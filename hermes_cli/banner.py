@@ -206,10 +206,8 @@ def check_for_updates() -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
-            repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
+        repo_dir = _resolve_repo_dir()
+        if repo_dir is None:
             return None
         behind = _check_via_local_git(repo_dir)
 
@@ -222,11 +220,19 @@ def check_for_updates() -> Optional[int]:
 
 
 def _resolve_repo_dir() -> Optional[Path]:
-    """Return the active Hermes git checkout, or None if this isn't a git install."""
+    """Return the active Hermes git checkout, or None if this isn't a git install.
+
+    Prefers the directory this module is loaded from (covers editable /
+    `pip install -e` installs, which live outside ``~/.hermes``). Falls back
+    to ``~/.hermes/hermes-agent`` for the managed-install layout. Reporting
+    against the path actually imported keeps the banner honest when a
+    developer ``pip install -e``'s a fork checkout.
+    """
+    code_dir = Path(__file__).parent.parent.resolve()
+    if (code_dir / ".git").exists():
+        return code_dir
     hermes_home = get_hermes_home()
     repo_dir = hermes_home / "hermes-agent"
-    if not (repo_dir / ".git").exists():
-        repo_dir = Path(__file__).parent.parent.resolve()
     return repo_dir if (repo_dir / ".git").exists() else None
 
 
