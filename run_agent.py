@@ -1206,6 +1206,17 @@ class AIAgent:
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
+        if self.max_tokens is None:
+            # Per-model config-level default: custom_providers[*].models.<id>.max_tokens.
+            # Lets thinking / reasoning models keep enough generation budget for both
+            # reasoning_content and the visible response without a CLI flag.
+            try:
+                from hermes_cli.config import get_custom_provider_max_tokens
+                _cfg_max = get_custom_provider_max_tokens(self.model, self.base_url)
+                if _cfg_max:
+                    self.max_tokens = _cfg_max
+            except Exception:
+                pass
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.service_tier = service_tier
         self.request_overrides = dict(request_overrides or {})

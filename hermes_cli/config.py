@@ -2773,6 +2773,61 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_max_tokens(
+    model: Optional[str],
+    base_url: Optional[str],
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Look up a per-model ``max_tokens`` default from ``custom_providers``.
+
+    Mirrors ``get_custom_provider_context_length`` but reads
+    ``custom_providers[i].models.<model>.max_tokens``. Useful for thinking
+    / reasoning models where the OpenAI-compat default lets reasoning consume
+    the entire generation budget; setting a default here gives the user a
+    config-level knob without having to pass ``--max-tokens`` every invocation.
+    """
+    if not model or not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        raw_max = model_cfg.get("max_tokens")
+        if raw_max is None:
+            continue
+        try:
+            value = int(raw_max)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
