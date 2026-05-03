@@ -403,11 +403,19 @@ def run_doctor(args):
                 "lmstudio",
                 "nous",
             }
+            # Normalize ``custom:<slug>`` → ``custom`` so user-defined custom
+            # providers (which use ``custom:<name>`` ids) match the ``custom``
+            # entry in the allowlist instead of tripping the vendor-prefix
+            # warning. The model id ``mlx-community/X`` is the actual id the
+            # user's exo / LM Studio endpoint serves, not a routing prefix.
+            policy_key = provider_for_policy
+            if isinstance(policy_key, str) and policy_key.startswith("custom:"):
+                policy_key = "custom"
             if (
                 default_model
                 and "/" in default_model
-                and provider_for_policy
-                and provider_for_policy not in providers_accepting_vendor_slugs
+                and policy_key
+                and policy_key not in providers_accepting_vendor_slugs
             ):
                 check_warn(
                     f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
