@@ -1094,6 +1094,11 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # Stash the ruflo agent_type (persona) so _run_single_child can tag
+    # delegation_stats records with the right role identifier. Empty
+    # string means the caller didn't pass one — stats land in the
+    # "(untagged)" bucket.
+    child._delegate_agent_type = (agent_type or "").strip()
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1830,6 +1835,47 @@ def _run_single_child(
                 )
         except Exception:
             logger.debug("delegate completion emit failed", exc_info=True)
+
+        # Persist a stats record for /delegation stats. Best-effort —
+        # never blocks or raises. Agent type was stashed on the child by
+        # _build_child_agent; falls back to "" (untagged bucket) when
+        # absent (e.g. test fixtures that bypass the builder).
+        try:
+            from hermes_cli.delegation_stats import DelegationStat, record as _record_stat
+
+            _api_calls_int = int(api_calls) if isinstance(api_calls, (int, float)) else 0
+            _max_iter_int = int(getattr(child, "max_iterations", 0) or 0)
+            _record_stat(
+                DelegationStat(
+                    role=str(getattr(child, "_delegate_agent_type", "") or ""),
+                    model=_model if isinstance(_model, str) else "",
+                    status=str(status or ""),
+                    exit_reason=str(exit_reason or ""),
+                    duration_seconds=float(duration or 0.0),
+                    input_tokens=(
+                        int(_input_tokens)
+                        if isinstance(_input_tokens, (int, float))
+                        else 0
+                    ),
+                    output_tokens=(
+                        int(_output_tokens)
+                        if isinstance(_output_tokens, (int, float))
+                        else 0
+                    ),
+                    cost_usd=(
+                        float(_cost_usd)
+                        if isinstance(_cost_usd, (int, float))
+                        else 0.0
+                    ),
+                    api_calls=_api_calls_int,
+                    max_iterations=_max_iter_int,
+                    hit_max_iter=(
+                        _max_iter_int > 0 and _api_calls_int >= _max_iter_int
+                    ),
+                )
+            )
+        except Exception:
+            logger.debug("delegation stats record failed", exc_info=True)
 
         return entry
 

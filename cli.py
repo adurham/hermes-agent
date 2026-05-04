@@ -7570,11 +7570,23 @@ class HermesCLI:
                                               user pins; only fills empties)
             /delegation defaults --force      Apply curated defaults, OVERWRITING
                                               any existing user pins
+            /delegation stats                 Show per-role observed metrics
+                                              (n, success%, avg duration/tokens,
+                                              total cost)
+            /delegation stats --suggest       Same + heuristic re-tune hints
+            /delegation stats --role <name>   Restrict to one role
+            /delegation stats --days <N>      Restrict to last N days
         """
         parts = cmd.strip().split(maxsplit=2)
 
         if len(parts) >= 2 and parts[1].lower() == "list":
             self._print_delegation_map()
+            return
+
+        if len(parts) >= 2 and parts[1].lower() == "stats":
+            # `/delegation stats [--suggest] [--role X] [--days N]`
+            rest = cmd.strip().split()[2:]  # everything after `/delegation stats`
+            self._print_delegation_stats(rest)
             return
 
         if len(parts) >= 2 and parts[1].lower() == "defaults":
@@ -7624,6 +7636,105 @@ class HermesCLI:
             _cprint(
                 f"  {_DIM}Run /delegation list to inspect, /delegation <role> "
                 f"to re-pin individually.{_RST}"
+            )
+
+    def _print_delegation_stats(self, args: list) -> None:
+        """Print per-role aggregated stats from delegation_stats.json.
+
+        Flags:
+            --suggest         Also show heuristic re-tune suggestions
+            --role <name>     Restrict to one role
+            --days <N>        Restrict to records from the last N days
+        """
+        try:
+            from hermes_cli.delegation_stats import (
+                aggregate,
+                load_all,
+                suggest_retunes,
+            )
+        except Exception:
+            _cprint(f"  {_DIM}(._.) Delegation stats module not available{_RST}")
+            return
+
+        # Parse flags (lightweight; we only have three).
+        suggest_only = False
+        role_filter: Optional[str] = None
+        since_ts: Optional[float] = None
+        i = 0
+        while i < len(args):
+            a = args[i].lower()
+            if a in ("--suggest", "suggest"):
+                suggest_only = True
+                i += 1
+            elif a in ("--role", "-r") and i + 1 < len(args):
+                role_filter = args[i + 1]
+                i += 2
+            elif a in ("--days", "-d") and i + 1 < len(args):
+                try:
+                    days = int(args[i + 1])
+                    since_ts = time.time() - (days * 86400.0)
+                except ValueError:
+                    _cprint(f"  {_DIM}Invalid --days value: {args[i + 1]}{_RST}")
+                    return
+                i += 2
+            else:
+                _cprint(f"  {_DIM}(._.) Unknown stats flag: {args[i]}{_RST}")
+                return
+
+        all_stats = load_all()
+        if not all_stats:
+            _cprint(
+                f"  {_DIM}No delegation stats yet. They start collecting on "
+                f"the next /delegate-driven run.{_RST}"
+            )
+            return
+
+        aggs = aggregate(all_stats, since_ts=since_ts, role=role_filter)
+        if not aggs:
+            _cprint(f"  {_DIM}No matching records.{_RST}")
+            return
+
+        # Header: role, model, n, ok%, hit_max%, avg dur, avg out tok, total $
+        # Build dynamic widths so role names fit.
+        role_w = max(4, max(len(a.role) for a in aggs))
+        model_w = max(5, max(len(a.model) for a in aggs))
+        header = (
+            f"  {'role':<{role_w}}  {'model':<{model_w}}  "
+            f"{'n':>3}  {'ok%':>4}  {'max%':>4}  "
+            f"{'avg_dur':>8}  {'avg_out':>8}  {'total $':>9}"
+        )
+        _cprint(header)
+        _cprint(f"  {'─' * (len(header) - 2)}")
+        for a in aggs:
+            ok_pct = f"{a.success_rate * 100:.0f}%" if a.n else "—"
+            max_pct = f"{a.hit_max_rate * 100:.0f}%" if a.n else "—"
+            dur = f"{a.avg_duration:.0f}s"
+            out_tok = f"{a.avg_output:.0f}"
+            cost = f"${a.total_cost:.4f}"
+            _cprint(
+                f"  {a.role:<{role_w}}  {a.model:<{model_w}}  "
+                f"{a.n:>3}  {ok_pct:>4}  {max_pct:>4}  "
+                f"{dur:>8}  {out_tok:>8}  {cost:>9}"
+            )
+
+        # Suggestions
+        suggestions = suggest_retunes(aggs)
+        if suggestions:
+            _cprint("")
+            _cprint(f"  {_ACCENT}Suggested re-tunes (run /delegation <role> "
+                    f"<model> to apply):{_RST}")
+            for s in suggestions:
+                arrow = "↑ promote" if s.direction == "promote" else "↓ demote"
+                _cprint(
+                    f"    {arrow}  {s.role:<{role_w}}  "
+                    f"{s.current_model} → {s.suggested_model}"
+                )
+                _cprint(f"      {_DIM}{s.reason}{_RST}")
+        elif suggest_only:
+            _cprint("")
+            _cprint(
+                f"  {_DIM}No suggestions — every role with ≥5 samples is "
+                f"performing within thresholds for its current model.{_RST}"
             )
 
     def _print_delegation_map(self) -> None:
