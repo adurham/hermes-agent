@@ -599,6 +599,33 @@ def _build_child_system_prompt(
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
+    # Skills awareness: children inherit the skills toolset but, without
+    # an explicit nudge, almost never call mcp_skills_list / mcp_skill_view
+    # before diving in.  This means domain-specific knowledge (Tanium EMG
+    # analysis, Salesforce case workflows, etc.) sitting in skills goes
+    # unused and the child reinvents from raw tool calls.
+    parts.append(
+        "\n## Skills (load before diving in)\n"
+        "Before acting on the task, scan available skills with "
+        "`mcp_skills_list` (cheap, returns name+description only). "
+        "If ANY skill name or description is even partially relevant to "
+        "your goal — domain match (Tanium, EMG, Salesforce, Jira, etc.), "
+        "tool match (debugging, code review, testing), or workflow match "
+        "(triage, analysis, summarization) — load it with "
+        "`mcp_skill_view(name)` and follow its instructions.\n\n"
+        "Skills encode proven workflows, exact tool names/commands, and "
+        "the user's preferred conventions. They almost always outperform "
+        "winging it from first principles. Err heavily on the side of "
+        "loading — a skill you didn't need costs ~200 tokens; a skill "
+        "you skipped can waste minutes of wrong-path tool calls.\n\n"
+        "Particularly relevant skill categories for common tasks:\n"
+        "- Tanium support work → `tanium-*`, `emg`, `case-*`, `support-*`\n"
+        "- Salesforce cases → `salesforce-cases`, `triage`, `case-summary`\n"
+        "- Code/repo work → `software-development`, `github`, `general`\n"
+        "- Debugging → `software-development/systematic-debugging`\n"
+        "If a loaded skill turns out to be stale or wrong, note it in "
+        "your summary — the parent can patch it."
+    )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
