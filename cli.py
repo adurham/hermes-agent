@@ -7576,6 +7576,12 @@ class HermesCLI:
             /delegation stats --suggest       Same + heuristic re-tune hints
             /delegation stats --role <name>   Restrict to one role
             /delegation stats --days <N>      Restrict to last N days
+            /delegation parallel              Show current max parallel children
+            /delegation parallel <N>          Set delegation.max_concurrent_children
+            /delegation parallel pick         Open the curses picker
+            /delegation depth                 Show current max spawn depth
+            /delegation depth <N>             Set delegation.max_spawn_depth (1-3)
+            /delegation depth pick            Open the curses picker
         """
         parts = cmd.strip().split(maxsplit=2)
 
@@ -7597,6 +7603,28 @@ class HermesCLI:
                 "overwrite",
             )
             self._apply_delegation_defaults(overwrite=force)
+            return
+
+        if len(parts) >= 2 and parts[1].lower() in ("parallel", "concurrency"):
+            arg = parts[2].strip() if len(parts) >= 3 else ""
+            if not arg:
+                self._show_delegation_concurrency()
+                return
+            if arg.lower() in ("pick", "picker", "menu"):
+                self._open_delegation_concurrency_picker()
+                return
+            self._apply_delegation_concurrency(arg)
+            return
+
+        if len(parts) >= 2 and parts[1].lower() == "depth":
+            arg = parts[2].strip() if len(parts) >= 3 else ""
+            if not arg:
+                self._show_delegation_depth()
+                return
+            if arg.lower() in ("pick", "picker", "menu"):
+                self._open_delegation_depth_picker()
+                return
+            self._apply_delegation_depth(arg)
             return
 
         if len(parts) >= 3:
@@ -7783,6 +7811,189 @@ class HermesCLI:
         else:
             note = "" if agent else f"  {_DIM}(role not found in ruflo — saved anyway){_RST}"
             _cprint(f"  {_ACCENT}✓ '{role}' → {model} (saved){_RST}{note}")
+
+    # ------------------------------------------------------------------
+    # /delegation parallel  — max_concurrent_children
+    # /delegation depth     — max_spawn_depth
+    # ------------------------------------------------------------------
+
+    # Curated picker rows for parallel-children. Users can also set
+    # arbitrary integers via `/delegation parallel <N>`.
+    _DELEGATION_PARALLEL_CHOICES: tuple[tuple[int, str], ...] = (
+        (1, "1   — serial (one child at a time)"),
+        (3, "3   — default (Hermes ships with this)"),
+        (5, "5   — moderate fan-out"),
+        (8, "8   — aggressive (watch your token spend)"),
+        (12, "12  — heavy (cost scales linearly)"),
+        (20, "20  — schema ceiling for swarm_run agents per swarm"),
+    )
+
+    _DELEGATION_DEPTH_CHOICES: tuple[tuple[int, str], ...] = (
+        (1, "1   — flat: parent → leaf children only (default)"),
+        (2, "2   — orchestrator: children may spawn their own workers"),
+        (3, "3   — three-level: rarely needed; cost compounds"),
+    )
+
+    @staticmethod
+    def _read_delegation_int(key: str, default: int) -> int:
+        """Read delegation.<key> from active config.yaml, fallback to default."""
+        try:
+            import yaml  # type: ignore
+            from pathlib import Path
+            home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+            cfg_path = Path(home) / "config.yaml"
+            if not cfg_path.exists():
+                return default
+            with cfg_path.open("r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            val = (cfg.get("delegation") or {}).get(key)
+            return int(val) if val is not None else default
+        except Exception:
+            return default
+
+    @staticmethod
+    def _save_delegation_int(key: str, value: int) -> bool:
+        """Persist delegation.<key> = value into active config.yaml."""
+        try:
+            from hermes_cli.personas import _save_to_config_yaml
+            return _save_to_config_yaml(f"delegation.{key}", int(value))
+        except Exception:
+            return False
+
+    def _show_delegation_concurrency(self) -> None:
+        cur = self._read_delegation_int("max_concurrent_children", 3)
+        _cprint(
+            f"  {_ACCENT}delegation.max_concurrent_children = {cur}{_RST}  "
+            f"{_DIM}(parallel children per delegate_task batch / swarm_run){_RST}"
+        )
+        _cprint(
+            f"  {_DIM}Change with: /delegation parallel <N> "
+            f"or /delegation parallel pick{_RST}"
+        )
+
+    def _apply_delegation_concurrency(self, arg: str) -> None:
+        try:
+            n = int(arg)
+        except (TypeError, ValueError):
+            _cprint(f"  {_DIM}(._.) Expected an integer, got {arg!r}{_RST}")
+            return
+        if n < 1:
+            _cprint(f"  {_DIM}(._.) Must be ≥ 1{_RST}")
+            return
+        if not self._save_delegation_int("max_concurrent_children", n):
+            _cprint(f"  {_DIM}(>_<) Failed to save delegation.max_concurrent_children{_RST}")
+            return
+        warn = ""
+        if n > 10:
+            warn = f"  {_DIM}(heads up: each child costs API tokens — cost scales linearly){_RST}"
+        _cprint(
+            f"  {_ACCENT}✓ delegation.max_concurrent_children = {n} (saved){_RST}{warn}"
+        )
+
+    def _open_delegation_concurrency_picker(self) -> None:
+        try:
+            from hermes_cli.curses_ui import curses_radiolist
+        except Exception as e:
+            _cprint(f"  {_DIM}(>_<) Picker unavailable: {e}{_RST}")
+            return
+        cur = self._read_delegation_int("max_concurrent_children", 3)
+        items: list[str] = []
+        actions: list[Optional[int]] = []
+        for n, label in self._DELEGATION_PARALLEL_CHOICES:
+            marker = "  ●" if n == cur else "   "
+            items.append(f"{marker}  {label}")
+            actions.append(n)
+        items.append("       Cancel")
+        actions.append(None)
+        default_idx = next((i for i, n in enumerate(actions) if n == cur), 0)
+        try:
+            picked = curses_radiolist(
+                title="Pick max parallel children for delegate_task / swarm_run",
+                items=items,
+                selected=default_idx,
+                cancel_returns=-1,
+                description=(
+                    f"Currently: {cur}\n"
+                    "Each running child consumes API tokens independently. "
+                    "Higher values fan out faster but cost scales linearly.\n"
+                    "Override per-batch via DELEGATION_MAX_CONCURRENT_CHILDREN env var."
+                ),
+            )
+        except Exception as e:
+            _cprint(f"  {_DIM}(>_<) Picker failed: {e}{_RST}")
+            return
+        if picked is None or picked < 0 or picked >= len(actions):
+            return
+        n = actions[picked]
+        if n is None:
+            return
+        self._apply_delegation_concurrency(str(n))
+
+    def _show_delegation_depth(self) -> None:
+        cur = self._read_delegation_int("max_spawn_depth", 1)
+        meanings = {1: "flat", 2: "orchestrator", 3: "three-level"}
+        meaning = meanings.get(cur, f"clamped → {cur}")
+        _cprint(
+            f"  {_ACCENT}delegation.max_spawn_depth = {cur}{_RST}  "
+            f"{_DIM}({meaning}){_RST}"
+        )
+        _cprint(
+            f"  {_DIM}Change with: /delegation depth <1|2|3> "
+            f"or /delegation depth pick{_RST}"
+        )
+
+    def _apply_delegation_depth(self, arg: str) -> None:
+        try:
+            n = int(arg)
+        except (TypeError, ValueError):
+            _cprint(f"  {_DIM}(._.) Expected an integer, got {arg!r}{_RST}")
+            return
+        if n < 1 or n > 3:
+            _cprint(f"  {_DIM}(._.) Depth must be 1, 2, or 3{_RST}")
+            return
+        if not self._save_delegation_int("max_spawn_depth", n):
+            _cprint(f"  {_DIM}(>_<) Failed to save delegation.max_spawn_depth{_RST}")
+            return
+        _cprint(f"  {_ACCENT}✓ delegation.max_spawn_depth = {n} (saved){_RST}")
+
+    def _open_delegation_depth_picker(self) -> None:
+        try:
+            from hermes_cli.curses_ui import curses_radiolist
+        except Exception as e:
+            _cprint(f"  {_DIM}(>_<) Picker unavailable: {e}{_RST}")
+            return
+        cur = self._read_delegation_int("max_spawn_depth", 1)
+        items: list[str] = []
+        actions: list[Optional[int]] = []
+        for n, label in self._DELEGATION_DEPTH_CHOICES:
+            marker = "  ●" if n == cur else "   "
+            items.append(f"{marker}  {label}")
+            actions.append(n)
+        items.append("       Cancel")
+        actions.append(None)
+        default_idx = next((i for i, n in enumerate(actions) if n == cur), 0)
+        try:
+            picked = curses_radiolist(
+                title="Pick max spawn depth for delegate_task children",
+                items=items,
+                selected=default_idx,
+                cancel_returns=-1,
+                description=(
+                    f"Currently: {cur}\n"
+                    "Depth 1 = flat (most cases). Depth 2 lets orchestrator "
+                    "children spawn their own workers. Depth 3 is rarely "
+                    "useful and compounds cost."
+                ),
+            )
+        except Exception as e:
+            _cprint(f"  {_DIM}(>_<) Picker failed: {e}{_RST}")
+            return
+        if picked is None or picked < 0 or picked >= len(actions):
+            return
+        n = actions[picked]
+        if n is None:
+            return
+        self._apply_delegation_depth(str(n))
 
     def _open_delegation_agent_picker(self) -> None:
         """Curses radiolist over discovered ruflo agents.
