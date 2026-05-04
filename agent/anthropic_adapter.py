@@ -2035,10 +2035,10 @@ def build_anthropic_kwargs(
         #
         # 2. The single-underscore separator is ambiguous.  Real Claude
         #    Code MCP tools use double underscores: ``mcp__server__tool``.
-        #    Single-underscore names like ``mcp_tanium_gateway_jira_search_issues``
-        #    don't match the pattern Claude is trained on, so the model
-        #    routinely strips the entire ``mcp_`` and emits the bare tool
-        #    name — triggering ``_repair_tool_call`` on every invocation.
+        #    Single-underscore names blur where the prefix ends, so the
+        #    model routinely strips the entire ``mcp_`` and emits the bare
+        #    tool name — triggering ``_repair_tool_call`` on every
+        #    invocation.
         #
         # Hermes' MCP tools are now registered with the canonical
         # ``mcp__<server>__<tool>`` form by ``tools/mcp_tool.py::

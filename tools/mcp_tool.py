@@ -2505,9 +2505,9 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     # 2. ``mcp__<server>__<tool>`` (double-underscore, real Claude Code
     #    convention).  Claude / the OAuth path *still* removed the ``mcp``
     #    substring on every call, leaving names like
-    #    ``_tanium_gateway__jira_search_issues`` (the leading ``_`` is
-    #    what's left of the ``mcp__`` prefix after the model stripped
-    #    ``mcp``).  Whatever component does the stripping — model bias from
+    #    ``_<server>__<tool>`` (the leading ``_`` is what's left of the
+    #    ``mcp__`` prefix after the model stripped ``mcp``).  Whatever
+    #    component does the stripping — model bias from
     #    Claude Code training, an Anthropic-side MCP-routing middleware,
     #    or both — keys on the literal ``mcp`` substring at the start of
     #    a tool name and removes it.
