@@ -1363,32 +1363,27 @@ def _run_single_child(
             # Piggybacks on the existing 30s cycle so we don't add another
             # thread.  Routes through `_emit_status` so the line reaches
             # both CLI scrollback and the gateway/TUI status channel.
+            #
+            # Intentionally lean: just model + tool + iteration + elapsed.
+            # Token / cost figures are surfaced on completion (per-child
+            # line) and rollup (delegate-done line), not on every tick —
+            # they were noisy and not actionable mid-flight.
             try:
                 emit = getattr(parent_agent, "_emit_status", None)
                 if emit:
                     elapsed = int(time.monotonic() - child_start)
                     child_model = getattr(child, "model", None) or "?"
-                    # Pull running token + cost so user sees the spend
-                    # accumulating per-child during long runs.
-                    in_toks = getattr(child, "session_prompt_tokens", 0) or 0
-                    out_toks = getattr(child, "session_completion_tokens", 0) or 0
-                    cost = getattr(child, "session_estimated_cost_usd", 0.0) or 0.0
-                    cost_str = f" | ${cost:.4f}" if cost > 0 else ""
-                    tok_str = (
-                        f" | {in_toks:,}↓/{out_toks:,}↑ tok"
-                        if (in_toks or out_toks) else ""
-                    )
                     if child_tool:
                         emit(
                             f"  ┊ 🔀 [{task_index}] {child_model} · "
                             f"{child_tool} (iter {child_iter}/{child_max}) "
-                            f"· {elapsed}s elapsed{tok_str}{cost_str}"
+                            f"· {elapsed}s elapsed"
                         )
                     else:
                         emit(
                             f"  ┊ 🔀 [{task_index}] {child_model} · "
                             f"thinking (iter {child_iter}/{child_max}) "
-                            f"· {elapsed}s elapsed{tok_str}{cost_str}"
+                            f"· {elapsed}s elapsed"
                         )
             except Exception:
                 logger.debug("delegate heartbeat emit failed", exc_info=True)
@@ -2251,6 +2246,49 @@ def delegate_task(
         try:
             current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
             parent_agent.session_estimated_cost_usd = current + _children_cost_total
+            # Also track subagent-only spend on a separate counter so /usage
+            # and the exit summary can break out "parent vs children" without
+            # double-counting.  Additive across delegate_task() calls in the
+            # same session (matches session_estimated_cost_usd's semantics).
+            try:
+                prior_sub = float(
+                    getattr(parent_agent, "session_subagent_cost_usd", 0.0) or 0.0
+                )
+                parent_agent.session_subagent_cost_usd = (
+                    prior_sub + _children_cost_total
+                )
+            except Exception:
+                logger.debug("Subagent-cost counter update failed", exc_info=True)
+            # Track total tokens from children too, broken out so we can
+            # show input/output split in /usage.  Children's own session_*
+            # counters were captured before AIAgent.close() in
+            # _run_single_child via the entry["tokens"] dict — re-walk
+            # results here to roll those up too.
+            try:
+                prior_in = int(
+                    getattr(parent_agent, "session_subagent_input_tokens", 0) or 0
+                )
+                prior_out = int(
+                    getattr(parent_agent, "session_subagent_output_tokens", 0) or 0
+                )
+                add_in = sum(
+                    int((r.get("tokens") or {}).get("input", 0) or 0)
+                    for r in results
+                )
+                add_out = sum(
+                    int((r.get("tokens") or {}).get("output", 0) or 0)
+                    for r in results
+                )
+                parent_agent.session_subagent_input_tokens = prior_in + add_in
+                parent_agent.session_subagent_output_tokens = prior_out + add_out
+                # Count of children spawned this session (across all
+                # delegate_task() calls) — useful in /usage breakdown.
+                prior_n = int(
+                    getattr(parent_agent, "session_subagent_count", 0) or 0
+                )
+                parent_agent.session_subagent_count = prior_n + len(results)
+            except Exception:
+                logger.debug("Subagent-token counters update failed", exc_info=True)
             # Upgrade the cost_source so the UI doesn't label a partially-real
             # total as "none" when the parent itself hadn't billed any calls
             # yet (rare but possible when the parent's only action this turn

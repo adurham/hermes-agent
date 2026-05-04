@@ -7839,6 +7839,20 @@ class HermesCLI:
             provider=getattr(agent, "provider", None),
             base_url=getattr(agent, "base_url", None),
         )
+        # Subagent rollup (delegate_task children) — folded into
+        # session_estimated_cost_usd by tools/delegate_tool.py; broken out
+        # here via dedicated counters so we can show parent vs children
+        # without double-counting. cost_result.amount_usd above only covers
+        # the parent's own tokens.
+        sub_cost = float(getattr(agent, "session_subagent_cost_usd", 0.0) or 0.0)
+        sub_in = int(getattr(agent, "session_subagent_input_tokens", 0) or 0)
+        sub_out = int(getattr(agent, "session_subagent_output_tokens", 0) or 0)
+        sub_n = int(getattr(agent, "session_subagent_count", 0) or 0)
+        # Authoritative session total: parent (computed) + children (rolled).
+        parent_cost = (
+            float(cost_result.amount_usd) if cost_result.amount_usd is not None else 0.0
+        )
+        session_cost_total = parent_cost + sub_cost
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
         print("  📊 Session Token Usage")
@@ -7855,9 +7869,31 @@ class HermesCLI:
         print(f"  Session duration:          {elapsed:>10}")
         print(f"  Cost status:              {cost_result.status:>10}")
         print(f"  Cost source:              {cost_result.source:>10}")
-        if cost_result.amount_usd is not None:
-            prefix = "~" if cost_result.status == "estimated" else ""
-            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
+        if session_cost_total > 0:
+            # Parent vs subagent breakdown when we have BOTH (otherwise just
+            # show the single Total cost line below for backward compat).
+            if parent_cost > 0 and sub_cost > 0:
+                print(f"  Parent cost:             ${parent_cost:>10.4f}")
+                print(
+                    f"  Subagent cost:           ${sub_cost:>10.4f}  "
+                    f"({sub_n} child{'ren' if sub_n != 1 else ''}, "
+                    f"{sub_in:,}↓/{sub_out:,}↑ tok)"
+                )
+                prefix = "~" if cost_result.status == "estimated" else ""
+                print(f"  Total cost:              {prefix}${session_cost_total:>10.4f}")
+            elif sub_cost > 0:
+                # No parent cost (rare — parent did nothing but delegate)
+                print(
+                    f"  Subagent cost:           ${sub_cost:>10.4f}  "
+                    f"({sub_n} child{'ren' if sub_n != 1 else ''}, "
+                    f"{sub_in:,}↓/{sub_out:,}↑ tok)"
+                )
+                prefix = "~"
+                print(f"  Total cost:              {prefix}${session_cost_total:>10.4f}")
+            else:
+                # Parent only — original single-line shape
+                prefix = "~" if cost_result.status == "estimated" else ""
+                print(f"  Total cost:              {prefix}${parent_cost:>10.4f}")
         elif cost_result.status == "included":
             print(f"  Total cost:              {'included':>10}")
         else:
@@ -9825,6 +9861,7 @@ class HermesCLI:
             # Cost: sum across the entire compaction lineage so the user sees
             # the true total for this conversation, not just the live tip.
             cost_str = None
+            sub_breakdown = None
             try:
                 live_cost = float(getattr(self.agent, "session_estimated_cost_usd", 0.0) or 0.0)
                 lineage_cost = 0.0
@@ -9846,6 +9883,31 @@ class HermesCLI:
                     cost_status = getattr(self.agent, "session_cost_status", "") or ""
                     if cost_status and cost_status != "actual":
                         cost_str = f"{cost_str} ({cost_status})"
+                # Subagent breakdown (delegate_task children).  Counters
+                # populated by tools/delegate_tool.py when children fold their
+                # spend into the parent's session_estimated_cost_usd.  Only
+                # shown if there were children — silent for plain sessions.
+                sub_cost = float(
+                    getattr(self.agent, "session_subagent_cost_usd", 0.0) or 0.0
+                )
+                sub_n = int(
+                    getattr(self.agent, "session_subagent_count", 0) or 0
+                )
+                if sub_cost > 0 and sub_n > 0:
+                    sub_in = int(
+                        getattr(self.agent, "session_subagent_input_tokens", 0) or 0
+                    )
+                    sub_out = int(
+                        getattr(self.agent, "session_subagent_output_tokens", 0) or 0
+                    )
+                    sub_cost_str = (
+                        f"${sub_cost:.4f}" if sub_cost < 0.01 else f"${sub_cost:.2f}"
+                    )
+                    sub_breakdown = (
+                        f"{sub_cost_str} across {sub_n} subagent"
+                        f"{'s' if sub_n != 1 else ''} "
+                        f"({sub_in:,}↓/{sub_out:,}↑ tok)"
+                    )
             except Exception:
                 pass
 
@@ -9861,6 +9923,8 @@ class HermesCLI:
             print(f"Messages:       {msg_count} ({user_msgs} user, {assistant_msgs} assistant, {tool_invocations} tool calls / {tool_results} results)")
             if cost_str:
                 print(f"Cost:           {cost_str}")
+            if sub_breakdown:
+                print(f"  ↳ subagents:  {sub_breakdown}")
         else:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye
