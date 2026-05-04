@@ -6485,6 +6485,8 @@ class HermesCLI:
             self._toggle_yolo()
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
+        elif canonical == "delegation":
+            self._handle_delegation_command(cmd_original)
         elif canonical == "interleaved":
             self._handle_interleaved_command(cmd_original)
         elif canonical == "fast":
@@ -7544,6 +7546,232 @@ class HermesCLI:
 
         # Typed form preserved — delegate to the shared apply path.
         self._apply_reasoning_arg(parts[1])
+
+    # ── /delegation — ruflo agent persona → model assignments ─────────────
+
+    # Curated short list shown in the model-picker. Other model names can
+    # still be set via the typed form `/delegation <role> <model>`.
+    _DELEGATION_MODEL_CHOICES = (
+        ("claude-haiku-4-5", "Haiku 4.5 — cheapest, fast retrieval / triage"),
+        ("claude-sonnet-4-6", "Sonnet 4.6 — balanced (good default for analysis)"),
+        ("claude-opus-4-7", "Opus 4.7 — deepest reasoning, most expensive"),
+    )
+
+    def _handle_delegation_command(self, cmd: str) -> None:
+        """Handle /delegation — configure ruflo agent persona → model map.
+
+        Usage:
+            /delegation                       Open interactive picker
+            /delegation <role>                Show current pin / pick a model
+            /delegation <role> <model>        Pin role to model
+            /delegation <role> clear          Remove the pin (revert to inherit)
+            /delegation list                  Print the current map
+        """
+        parts = cmd.strip().split(maxsplit=2)
+
+        if len(parts) >= 2 and parts[1].lower() == "list":
+            self._print_delegation_map()
+            return
+
+        if len(parts) >= 3:
+            role = parts[1].strip()
+            model = parts[2].strip()
+            self._apply_delegation_assignment(role, model)
+            return
+
+        if len(parts) == 2:
+            # /delegation <role> — show + pick model
+            self._open_delegation_model_picker(parts[1].strip())
+            return
+
+        # No args → open the agent picker.
+        self._open_delegation_agent_picker()
+
+    def _print_delegation_map(self) -> None:
+        try:
+            from hermes_cli.ruflo_agents import get_role_model_map
+        except Exception:
+            _cprint(f"  {_DIM}(._.) Delegation module not available{_RST}")
+            return
+        m = get_role_model_map()
+        if not m:
+            _cprint(f"  {_DIM}No per-role model assignments configured.{_RST}")
+            _cprint(
+                f"  {_DIM}Run /delegation to open the picker, or "
+                f"/delegation <role> <model>.{_RST}"
+            )
+            return
+        _cprint("  Current ruflo persona → model assignments:")
+        width = max(len(k) for k in m.keys())
+        for role in sorted(m.keys()):
+            _cprint(f"    {role:<{width}}  →  {m[role]}")
+
+    def _apply_delegation_assignment(self, role: str, model: str) -> None:
+        """Pin (or clear) a per-role model assignment and persist."""
+        try:
+            from hermes_cli.ruflo_agents import set_role_model, lookup_agent
+        except Exception:
+            _cprint(f"  {_DIM}(._.) Delegation module not available{_RST}")
+            return
+        if not role:
+            _cprint(f"  {_DIM}(._.) Role name required{_RST}")
+            return
+        # Sanity check: the role should match a discovered ruflo agent.
+        # We don't HARD-fail unknowns (user may want to map a custom role
+        # like "tanium-triage" they invent), but warn so typos are obvious.
+        try:
+            agent = lookup_agent(role)
+        except Exception:
+            agent = None
+        clear = model.lower() in ("clear", "none", "inherit", "unset", "")
+        ok = set_role_model(role, None if clear else model)
+        if not ok:
+            _cprint(f"  {_DIM}(>_<) Failed to save delegation map{_RST}")
+            return
+        if clear:
+            _cprint(f"  {_ACCENT}✓ Cleared model pin for '{role}' (saved){_RST}")
+        else:
+            note = "" if agent else f"  {_DIM}(role not found in ruflo — saved anyway){_RST}"
+            _cprint(f"  {_ACCENT}✓ '{role}' → {model} (saved){_RST}{note}")
+
+    def _open_delegation_agent_picker(self) -> None:
+        """Curses radiolist over discovered ruflo agents.
+
+        ENTER on a row → opens the model picker for that agent.
+        ESC bails to the prompt.
+        """
+        try:
+            from hermes_cli.ruflo_agents import (
+                discover_ruflo_agents,
+                get_role_model_map,
+                group_by_category,
+            )
+            from hermes_cli.curses_ui import curses_radiolist
+        except Exception as e:
+            _cprint(f"  {_DIM}(>_<) /delegation unavailable: {e}{_RST}")
+            return
+        try:
+            agents = discover_ruflo_agents()
+        except Exception as e:
+            _cprint(f"  {_DIM}(>_<) Could not discover ruflo agents: {e}{_RST}")
+            return
+        if not agents:
+            _cprint(
+                f"  {_DIM}No ruflo agents found at ~/repos/ruflo. "
+                f"Set delegation.ruflo_path or RUFLO_PATH to override.{_RST}"
+            )
+            return
+        m = get_role_model_map()
+        # Build display list grouped by category. Headers are non-selectable
+        # by virtue of having a name we'll filter on selection.
+        display: list[str] = []
+        index_map: list[Optional[str]] = []  # role name or None for header
+        groups = group_by_category(agents)
+        for cat in sorted(groups.keys()):
+            display.append(f"━━ {cat} ━━")
+            index_map.append(None)
+            for a in groups[cat]:
+                pinned = m.get(a.name, "")
+                pin_str = f"  →  {pinned}" if pinned else ""
+                desc_str = (
+                    f"  ({a.description[:50]}{'…' if len(a.description) > 50 else ''})"
+                    if a.description
+                    else ""
+                )
+                display.append(f"  {a.name}{pin_str}{desc_str}")
+                index_map.append(a.name)
+        # Default selection: first selectable row.
+        try:
+            default_idx = next(
+                i for i, name in enumerate(index_map) if name is not None
+            )
+        except StopIteration:
+            _cprint(f"  {_DIM}No agents to choose from{_RST}")
+            return
+        try:
+            picked = curses_radiolist(
+                title="Pick a ruflo agent persona to assign a model",
+                items=display,
+                selected=default_idx,
+                cancel_returns=-1,
+                description=(
+                    f"{len(agents)} agents across {len(groups)} categories. "
+                    "Selecting an agent opens the model picker."
+                ),
+            )
+        except Exception as e:
+            _cprint(f"  {_DIM}(>_<) Picker failed: {e}{_RST}")
+            return
+        if picked is None or picked < 0 or picked >= len(index_map):
+            return
+        role = index_map[picked]
+        if role is None:
+            return  # User landed on a category header — silently bail
+        self._open_delegation_model_picker(role)
+
+    def _open_delegation_model_picker(self, role: str) -> None:
+        """Second-stage picker: choose a model for ``role``.
+
+        Includes a "Clear / inherit" option to remove an existing pin and
+        a "Cancel" option that no-ops.
+        """
+        try:
+            from hermes_cli.ruflo_agents import get_role_model_map, lookup_agent
+            from hermes_cli.curses_ui import curses_radiolist
+        except Exception as e:
+            _cprint(f"  {_DIM}(>_<) /delegation unavailable: {e}{_RST}")
+            return
+        current = get_role_model_map().get(role, "")
+        try:
+            agent = lookup_agent(role)
+        except Exception:
+            agent = None
+        # Build options: model choices + clear + cancel.
+        items: list[str] = []
+        actions: list[tuple[str, Optional[str]]] = []  # (kind, model)
+        for model, label in self._DELEGATION_MODEL_CHOICES:
+            marker = "  ●" if model == current else "   "
+            items.append(f"{marker}  {label}")
+            actions.append(("model", model))
+        items.append("       Clear (inherit from delegation.model / parent)")
+        actions.append(("clear", None))
+        items.append("       Cancel")
+        actions.append(("cancel", None))
+        # Default cursor: current model row, else first.
+        default_idx = next(
+            (i for i, (k, m) in enumerate(actions) if k == "model" and m == current),
+            0,
+        )
+        desc_lines = [f"Role: {role}"]
+        if agent:
+            desc_lines.append(f"Category: {agent.category}")
+            if agent.description:
+                desc_lines.append(f"  {agent.description[:120]}")
+        if current:
+            desc_lines.append(f"Currently pinned to: {current}")
+        else:
+            desc_lines.append("Currently inherits from delegation.model / parent")
+        try:
+            picked = curses_radiolist(
+                title=f"Pick a model for ruflo persona '{role}'",
+                items=items,
+                selected=default_idx,
+                cancel_returns=-1,
+                description="\n".join(desc_lines),
+            )
+        except Exception as e:
+            _cprint(f"  {_DIM}(>_<) Picker failed: {e}{_RST}")
+            return
+        if picked is None or picked < 0 or picked >= len(actions):
+            return
+        kind, model = actions[picked]
+        if kind == "cancel":
+            return
+        if kind == "clear":
+            self._apply_delegation_assignment(role, "")
+            return
+        if kind == "model" and model:
+            self._apply_delegation_assignment(role, model)
 
     def _handle_interleaved_command(self, cmd: str):
         """Handle /interleaved — toggle one-tool-per-turn agent loop.

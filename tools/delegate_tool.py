@@ -538,8 +538,14 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    agent_type: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
+
+    When ``agent_type`` is set, the matching ruflo agent persona prompt is
+    prepended so the child inherits ruflo's curated researcher/coder/etc.
+    behavior. Discovery is best-effort — unknown ``agent_type`` values fall
+    through silently with the standard generic prompt.
 
     When role='orchestrator', appends a delegation-capability block
     modeled on OpenClaw's buildSubagentSystemPrompt (canSpawn branch at
@@ -547,11 +553,32 @@ def _build_child_system_prompt(
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
-    parts = [
+    parts: list[str] = []
+
+    # Optional ruflo persona prefix.  Pulled from the discovered .md file's
+    # markdown body (frontmatter stripped).  Falls through silently if the
+    # agent type is unknown or the ruflo install is missing.
+    if agent_type:
+        try:
+            from hermes_cli.ruflo_agents import lookup_agent
+
+            persona = lookup_agent(agent_type)
+        except Exception:
+            persona = None
+        if persona is not None:
+            persona_prompt = persona.load_prompt().strip()
+            if persona_prompt:
+                parts.append(
+                    f"# RUFLO PERSONA: {persona.name} ({persona.category})\n"
+                    + persona_prompt
+                    + "\n\n---\n"
+                )
+
+    parts.extend([
         "You are a focused subagent working on a specific delegated task.",
         "",
         f"YOUR TASK:\n{goal}",
-    ]
+    ])
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -852,6 +879,10 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Optional ruflo agent persona (e.g. "researcher", "code-analyzer").
+    # When set, ruflo's discovered .md prompt is prepended to the child's
+    # system prompt and a per-role model override is consulted.
+    agent_type: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -936,6 +967,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        agent_type=agent_type,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1884,6 +1916,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     model: Optional[str] = None,
+    agent_type: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1977,6 +2010,7 @@ def delegate_task(
                 "toolsets": toolsets,
                 "role": top_role,
                 "model": model,
+                "agent_type": agent_type,
             }
         ]
     else:
@@ -2008,21 +2042,40 @@ def delegate_task(
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
+    # Per-role model overrides (delegation.model_by_role in config) — used
+    # when a task supplies agent_type=... but no explicit model.  Loaded once
+    # so we don't hit the config file per-task.
+    try:
+        from hermes_cli.ruflo_agents import get_role_model_map
+
+        _role_model_map = get_role_model_map()
+    except Exception:
+        _role_model_map = {}
+
     try:
         for i, t in enumerate(task_list):
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task agent_type (ruflo persona) — when set, looks up a
+            # per-role model override AND injects ruflo's persona prompt.
+            task_agent_type = (t.get("agent_type") or "").strip() or None
+            # Model precedence: per-task model → per-task role-map → top-level
+            # model → delegation.model config (creds["model"]) → parent's model.
+            task_model_explicit = (t.get("model") or "").strip() or None
+            role_map_model = (
+                _role_model_map.get(task_agent_type) if task_agent_type else None
+            )
+            effective_task_model = (
+                task_model_explicit or role_map_model or creds["model"]
+            )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                # Per-task model override beats delegation.model config.  Lets
-                # the orchestrator pick `haiku` for cheap retrieval, `sonnet`
-                # for analysis, `opus` for deep reasoning per-child.
-                model=(t.get("model") or "").strip() or creds["model"],
+                model=effective_task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -2039,6 +2092,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                agent_type=task_agent_type,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2630,6 +2684,23 @@ DELEGATE_TASK_SCHEMA = {
                                 "= inherit top-level / config / parent."
                             ),
                         },
+                        "agent_type": {
+                            "type": "string",
+                            "description": (
+                                "Per-task ruflo agent persona (e.g. 'researcher', "
+                                "'coder', 'tester', 'reviewer', 'system-architect', "
+                                "'security-architect'). Overrides the top-level "
+                                "'agent_type'. When set: (1) loads the matching "
+                                "ruflo agent prompt as a persona prefix on the "
+                                "child's system prompt, (2) consults "
+                                "delegation.model_by_role in config.yaml for a "
+                                "role-specific model (lets the user pin "
+                                "'researcher → Haiku' once via /delegation). "
+                                "Browse available agents with the /delegation "
+                                "slash command. Per-task 'model' still wins over "
+                                "the role-map model if both are set."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2665,6 +2736,20 @@ DELEGATE_TASK_SCHEMA = {
                     "'claude-sonnet-4-6' (balanced — good default for analysis), "
                     "'claude-opus-4-7' (deepest reasoning, most expensive). "
                     "Cost rolls up into the parent's session total either way."
+                ),
+            },
+            "agent_type": {
+                "type": "string",
+                "description": (
+                    "Top-level ruflo agent persona applied to all children "
+                    "(overridden per-task in tasks[].agent_type). Loads the "
+                    "matching ruflo agent prompt as a persona prefix and "
+                    "consults delegation.model_by_role for a role-pinned "
+                    "model. Common values: 'researcher', 'coder', 'tester', "
+                    "'reviewer', 'system-architect', 'security-architect', "
+                    "'code-analyzer', 'performance-benchmarker'. Run "
+                    "/delegation in the CLI to browse all ~90 available "
+                    "agent types and assign default models per-role."
                 ),
             },
             "acp_command": {
@@ -2707,6 +2792,7 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         model=args.get("model"),
+        agent_type=args.get("agent_type"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
