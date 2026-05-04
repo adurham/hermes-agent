@@ -106,23 +106,6 @@ def _get_swarm_concurrency_hint() -> int:
 _SWARM_DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
-def _is_below_swarm_floor(model: str) -> bool:
-    """True for models below the swarm context-window floor.
-
-    "Below floor" means the model's context window is too narrow for typical
-    swarm fan-out workloads.  Currently that's the Claude Haiku family
-    (200K).  Sonnet (1M tier) and Opus (1M tier) clear the bar.
-
-    Used to bump stale ``delegation.model_by_role`` entries (set when
-    Haiku was the curated default for some research personas) up to the
-    swarm floor so swarm children don't compact mid-task on a workload
-    that's known to overflow.
-    """
-    if not model:
-        return False
-    return "haiku" in model.lower()
-
-
 def _resolve_swarm_child_model(
     agent: Dict[str, Any], role_model_map: Dict[str, str]
 ) -> str:
@@ -135,16 +118,29 @@ def _resolve_swarm_child_model(
     of what's pinned in the user's config (the floor is the whole point —
     let an explicit per-agent ``model`` opt out, but don't let an
     out-of-date persona mapping silently drag children below it).
+
+    The mapping → floor logic is delegated to ``swarm.persona_library``;
+    fallback inline if the library isn't installed.
     """
     explicit = (agent.get("model") or "").strip()
     if explicit:
         return explicit
     persona = (agent.get("type") or "").strip()
-    mapped = (role_model_map.get(persona) if persona else None) or ""
-    mapped = mapped.strip()
-    if mapped and not _is_below_swarm_floor(mapped):
-        return mapped
-    return _SWARM_DEFAULT_MODEL
+    try:
+        from swarm import persona_library as _plib
+        return _plib.recommend_model(
+            persona,
+            mapping=role_model_map,
+            use_suggested=False,
+            floor=_SWARM_DEFAULT_MODEL,
+        )
+    except ImportError:
+        # hermes-swarm not installed — same precedence, inline.
+        mapped = (role_model_map.get(persona) if persona else None) or ""
+        mapped = mapped.strip()
+        if mapped and "haiku" not in mapped.lower():
+            return mapped
+        return _SWARM_DEFAULT_MODEL
 
 
 def _load_role_model_map() -> Dict[str, str]:
