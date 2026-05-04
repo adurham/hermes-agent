@@ -318,7 +318,11 @@ _SONNET = "claude-sonnet-4-6"
 _OPUS = "claude-opus-4-7"
 
 SUGGESTED_ROLE_MODELS: dict[str, str] = {
-    # ── Haiku — retrieval / triage / monitors / scanners ──────────────────
+    # ── Haiku — retrieval / triage / monitors / scanners / glue ───────────
+    # Anything that's primarily "read state, route work, emit status" with
+    # no deep reasoning. Runtime guardians and fan-out coordinators are
+    # included here: their reasoning happens in the workers they spawn,
+    # not in their own prompts.
     "researcher": _HAIKU,
     "scout-explorer": _HAIKU,
     "code-analyzer": _HAIKU,
@@ -334,6 +338,14 @@ SUGGESTED_ROLE_MODELS: dict[str, str] = {
     "workflow-automation": _HAIKU,
     "load-balancer": _HAIKU,
     "test-long-runner": _HAIKU,
+    # Demoted from Sonnet (review pass): orchestration glue, not reasoning.
+    "swarm-issue": _HAIKU,
+    "swarm-pr": _HAIKU,
+    "release-swarm": _HAIKU,
+    "pr-manager": _HAIKU,
+    # Demoted: runtime guardians fire constantly; Haiku saves real money.
+    "aidefence-guardian": _HAIKU,
+    "claims-authorizer": _HAIKU,
 
     # ── Sonnet — balanced default for code work ───────────────────────────
     "coder": _SONNET,
@@ -341,20 +353,14 @@ SUGGESTED_ROLE_MODELS: dict[str, str] = {
     "reviewer": _SONNET,
     "planner": _SONNET,
     "code-review-swarm": _SONNET,
-    "pr-manager": _SONNET,
-    "swarm-pr": _SONNET,
-    "swarm-issue": _SONNET,
-    "release-swarm": _SONNET,
     "multi-repo-swarm": _SONNET,
     "github-modes": _SONNET,
-    "repo-architect": _SONNET,
     "dev-backend-api": _SONNET,
     "data-ml-model": _SONNET,
     "ops-cicd-github": _SONNET,
     "docs-api-openapi": _SONNET,
     "spec-mobile-react-native": _SONNET,
     "production-validator": _SONNET,
-    "tdd-london-swarm": _SONNET,
     "test-architect": _SONNET,
     "python-specialist": _SONNET,
     "typescript-specialist": _SONNET,
@@ -363,7 +369,7 @@ SUGGESTED_ROLE_MODELS: dict[str, str] = {
     "topology-optimizer": _SONNET,
     "benchmark-suite": _SONNET,
     "performance-benchmarker": _SONNET,
-    # SPARC stages — mostly tactical, sonnet-tier
+    # SPARC stages — mostly tactical, sonnet-tier (architecture stage is Opus below)
     "specification": _SONNET,
     "pseudocode": _SONNET,
     "refinement": _SONNET,
@@ -375,8 +381,7 @@ SUGGESTED_ROLE_MODELS: dict[str, str] = {
     # Codex-side workers
     "codex-worker": _SONNET,
     "codex-coordinator": _SONNET,
-    # Reasoning-bank / memory
-    "reasoningbank-learner": _SONNET,
+    # Memory subsystem (storage/index work; not novel design)
     "memory-specialist": _SONNET,
     "swarm-memory-manager": _SONNET,
     "v3-memory-specialist": _SONNET,
@@ -384,16 +389,23 @@ SUGGESTED_ROLE_MODELS: dict[str, str] = {
     "agent": _SONNET,
     "goal-planner": _SONNET,
     "code-goal-planner": _SONNET,
-    # Sublinear specialty (matrix/pagerank — math but bounded)
+    # Sublinear specialty (matrix/pagerank — bounded math)
     "matrix-optimizer": _SONNET,
     "pagerank-analyzer": _SONNET,
     "performance-optimizer": _SONNET,
     "consensus-coordinator": _SONNET,
     "trading-predictor": _SONNET,
-    # Sona / aidefence runtime guardian (high-volume)
+    # Sona learning loops (orchestration of LoRA/SAFLA pipelines)
     "sona-learning-optimizer": _SONNET,
-    "aidefence-guardian": _SONNET,
-    "claims-authorizer": _SONNET,
+    "safla-neural": _SONNET,
+    # Demoted from Opus (review pass): well-defined consensus algorithms,
+    # not novel design — implementing a CRDT or gossip protocol is
+    # mechanical once you know the type.
+    "crdt-synchronizer": _SONNET,
+    "gossip-coordinator": _SONNET,
+    # Promoted from Sonnet was tdd-london-swarm; on review TDD-with-mocks
+    # IS reasoning-heavy when done right. Promoting to Opus below.
+    # (Stays out of this block.)
 
     # ── Opus — deep reasoning, architecture, security, novel design ───────
     "arch-system-design": _OPUS,
@@ -407,19 +419,24 @@ SUGGESTED_ROLE_MODELS: dict[str, str] = {
     "performance-engineer": _OPUS,
     "v3-performance-engineer": _OPUS,
     "v3-integration-architect": _OPUS,
-    "byzantine-coordinator": _OPUS,
-    "raft-manager": _OPUS,
-    "quorum-manager": _OPUS,
-    "crdt-synchronizer": _OPUS,
-    "gossip-coordinator": _OPUS,
-    "security-manager": _OPUS,  # consensus-tier security
+    "byzantine-coordinator": _OPUS,  # adversarial — needs the depth
+    "raft-manager": _OPUS,           # subtle ordering / leader election
+    "quorum-manager": _OPUS,         # dynamic membership reasoning
+    "security-manager": _OPUS,       # consensus-tier security
     "queen-coordinator": _OPUS,
     "v3-queen-coordinator": _OPUS,
     "sparc-orchestrator": _OPUS,
     "injection-analyst": _OPUS,
-    "safla-neural": _OPUS,
     "collective-intelligence-coordinator": _OPUS,
     "dual-orchestrator": _OPUS,
+    # Promoted from Sonnet (review pass): cross-repo architecture work.
+    "repo-architect": _OPUS,
+    # Promoted from Sonnet (review pass): reasoning pattern extraction
+    # is the entire job description.
+    "reasoningbank-learner": _OPUS,
+    # Promoted from Sonnet (review pass): TDD-London with mock-driven
+    # design is reasoning-heavy when done well.
+    "tdd-london-swarm": _OPUS,
 }
 
 
