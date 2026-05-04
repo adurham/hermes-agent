@@ -986,6 +986,40 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
+    def test_oauth_mcp_tool_name_prefix_is_idempotent(self):
+        """OAuth path adds ``mcp_`` to tool names so Claude routes them
+        through the MCP-tool path. Tools that already start with ``mcp_``
+        (registered by tools/mcp_tool.py with the doubled-prefix shape
+        ``mcp_<server>_<tool>``) must NOT be prefixed a second time —
+        producing ``mcp_mcp_*`` in the schema would either confuse the
+        model into echoing the doubled form back or, more commonly,
+        train it to strip BOTH prefixes when emitting the call, tripping
+        _repair_tool_call on every single call.
+        """
+        tools = [
+            # Built-in tool — should get prefixed once.
+            {"type": "function", "function": {"name": "read_file", "description": "x"}},
+            # MCP-sourced tool — already prefixed, must not double-prefix.
+            {"type": "function", "function": {"name": "mcp_slack_slack_search_public", "description": "x"}},
+            {"type": "function", "function": {"name": "mcp_hermes_swarm_swarm_update_agent", "description": "x"}},
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        names = [t["name"] for t in kwargs["tools"]]
+        assert "mcp_read_file" in names, "built-in tool should gain the mcp_ prefix"
+        assert "mcp_slack_slack_search_public" in names, "already-prefixed MCP tool stays single-prefixed"
+        assert "mcp_hermes_swarm_swarm_update_agent" in names, "already-prefixed MCP tool stays single-prefixed"
+        # Hard guard against the doubled form regressing.
+        assert not any(n.startswith("mcp_mcp_") for n in names), (
+            f"tool name double-prefixed: {names}"
+        )
+
     def test_fast_mode_oauth_default_keeps_context_1m_beta(self):
         """Default OAuth fast-mode requests still carry context-1m-2025-08-07."""
         kwargs = build_anthropic_kwargs(

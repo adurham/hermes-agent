@@ -1919,11 +1919,18 @@ def build_anthropic_kwargs(
         # Skip Anthropic native server tools — they have a "type" field
         # (e.g. "web_search_20250305") instead of an input_schema, and
         # Anthropic only intercepts them under their canonical names.
+        # Idempotent: tools whose registered name ALREADY begins with
+        # ``mcp_`` (i.e. tools sourced from MCP servers, registered with
+        # the doubled-prefix shape ``mcp_<server>_<tool>``) must not be
+        # prefixed again — doing so produces ``mcp_mcp_*`` in the schema
+        # the model sees, which trains it to either echo the doubled form
+        # back or, more commonly, strip BOTH prefixes when emitting the
+        # call.  The latter trips _repair_tool_call on every call.
         if anthropic_tools:
             for tool in anthropic_tools:
                 if "type" in tool and tool.get("type", "").startswith(("web_search_", "code_execution_", "computer_", "bash_", "text_editor_")):
                     continue
-                if "name" in tool:
+                if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
                     tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
         # 4. Prefix tool names in message history (tool_use and tool_result blocks)
