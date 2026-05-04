@@ -175,10 +175,42 @@ def register_prompt_toolkit_keys() -> None:
     # modifyOtherKeys protocol emits CSI 27;2;13~ — prompt_toolkit ships
     # a default mapping for that to Keys.ControlM (i.e. plain Enter), so
     # we override it to disambiguate when modifyOtherKeys is in use.
-    extras = {
+    extras: dict[str, object] = {
         "\x1b[13;2u": shift_enter,
         "\x1b[27;2;13~": shift_enter,
     }
+
+    # Kitty's "disambiguate escape codes" flag (>1u, which we push at
+    # startup so Shift+Enter works) ALSO routes modified Ctrl+letter and
+    # Alt+key combinations through CSI-u instead of their legacy bytes.
+    # Without these mappings, Ctrl+C arrives as \x1b[99;5u (unknown to
+    # prompt_toolkit) and the kb.add('c-c') binding never fires.
+    #
+    # Modifier encoding (kitty spec): 1 + (shift=1) + (alt=2) + (ctrl=4).
+    # Ctrl alone = 5; Alt alone = 3; Shift+Ctrl = 6; Alt+Ctrl = 7.
+    import string as _string
+    from prompt_toolkit.keys import Keys as _Keys
+
+    for _ch in _string.ascii_lowercase:
+        _member = getattr(_Keys, f"Control{_ch.upper()}", None)
+        if _member is not None:
+            extras[f"\x1b[{ord(_ch)};5u"] = _member
+
+    # Alt-prefixed keys arrive as a (Escape, key) tuple — that's how
+    # prompt_toolkit's existing ANSI_SEQUENCES expresses meta-prefixed
+    # sequences (see line "\x1b[1;7u": (Keys.Escape, Keys.Control5)).
+    # The emacs key bindings already map (escape, backspace) to
+    # backward-kill-word, so this single line restores Option+Delete on
+    # macOS (Alt+Backspace) under the disambiguate flag.
+    extras["\x1b[127;3u"] = (_Keys.Escape, _Keys.Backspace)
+
+    # Common Alt+letter word-navigation keys (M-b/M-f/M-d) — restore them
+    # too so word-jump and kill-word-forward keep working under kitty's
+    # disambiguate mode. Emacs bindings register on ('escape', 'b') etc.,
+    # i.e. a tuple of (Keys.Escape, literal-char).
+    for _ch in _string.ascii_lowercase:
+        extras[f"\x1b[{ord(_ch)};3u"] = (_Keys.Escape, _ch)
+
     for seq, key in extras.items():
         ANSI_SEQUENCES[seq] = key  # type: ignore[assignment]
 
