@@ -7219,6 +7219,10 @@ class AIAgent:
                             except Exception:
                                 pass
                             self._emit_status("🔄 Reconnected — resuming…")
+                            if self._interrupt_requested:
+                                self._emit_status("⏹  Interrupt received during reconnect — aborting retry.")
+                                result["error"] = e
+                                return
                             continue
 
                         # SSE error events from proxies (e.g. OpenRouter sends
@@ -7288,6 +7292,10 @@ class AIAgent:
                                 except Exception:
                                     pass
                                 self._emit_status("🔄 Reconnected — resuming…")
+                                if self._interrupt_requested:
+                                    self._emit_status("⏹  Interrupt received during reconnect — aborting retry.")
+                                    result["error"] = e
+                                    return
                                 continue
                             self._emit_status(
                                 "❌ Connection to provider failed after "
