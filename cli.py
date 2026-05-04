@@ -9626,6 +9626,33 @@ class HermesCLI:
                 except Exception:
                     pass
 
+            # Cost: sum across the entire compaction lineage so the user sees
+            # the true total for this conversation, not just the live tip.
+            cost_str = None
+            try:
+                live_cost = float(getattr(self.agent, "session_estimated_cost_usd", 0.0) or 0.0)
+                lineage_cost = 0.0
+                if self._session_db:
+                    try:
+                        lineage_cost = float(
+                            self._session_db.get_lineage_cost_usd(self.session_id) or 0.0
+                        )
+                    except Exception:
+                        lineage_cost = 0.0
+                # Prefer lineage total when available; fall back to live agent
+                # value (which only covers the current tip's session row).
+                total_cost = lineage_cost if lineage_cost > 0 else live_cost
+                if total_cost > 0:
+                    if total_cost < 0.01:
+                        cost_str = f"${total_cost:.4f}"
+                    else:
+                        cost_str = f"${total_cost:.2f}"
+                    cost_status = getattr(self.agent, "session_cost_status", "") or ""
+                    if cost_status and cost_status != "actual":
+                        cost_str = f"{cost_str} ({cost_status})"
+            except Exception:
+                pass
+
             print("Resume this session with:")
             print(f"  hermes --resume {self.session_id}")
             if session_title:
@@ -9636,6 +9663,8 @@ class HermesCLI:
                 print(f"Title:          {session_title}")
             print(f"Duration:       {duration_str}")
             print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
+            if cost_str:
+                print(f"Cost:           {cost_str}")
         else:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye

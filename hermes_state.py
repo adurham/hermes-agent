@@ -948,6 +948,61 @@ class SessionDB:
             current = row["id"]
         return current
 
+    def get_lineage_cost_usd(self, session_id: str) -> float:
+        """Sum estimated_cost_usd across the compaction lineage of session_id.
+
+        Walks parent edges back to the lineage root (only through compaction
+        boundaries, not delegate/branch parents), then forward through every
+        compaction continuation, summing each session's cost.
+
+        Returns 0.0 if the session doesn't exist or has no recorded cost.
+        """
+        # Walk back to the compression-lineage root.
+        root = session_id
+        for _ in range(100):
+            with self._lock:
+                cursor = self._conn.execute(
+                    "SELECT s.parent_session_id, p.end_reason, p.ended_at, s.started_at "
+                    "FROM sessions s "
+                    "LEFT JOIN sessions p ON p.id = s.parent_session_id "
+                    "WHERE s.id = ?",
+                    (root,),
+                )
+                row = cursor.fetchone()
+            if row is None or not row["parent_session_id"]:
+                break
+            # Only traverse compaction edges (parent ended with 'compression'
+            # before child started). Delegate/branch parents are different
+            # logical conversations and shouldn't roll up into this total.
+            if row["end_reason"] != "compression":
+                break
+            if row["ended_at"] and row["started_at"] and row["started_at"] < row["ended_at"]:
+                break
+            root = row["parent_session_id"]
+
+        # Sum cost across the chain (root + every forward compaction continuation).
+        total = 0.0
+        with self._lock:
+            cursor = self._conn.execute(
+                "WITH RECURSIVE chain(id) AS ("
+                "    SELECT ? "
+                "    UNION ALL "
+                "    SELECT child.id "
+                "    FROM chain c "
+                "    JOIN sessions parent ON parent.id = c.id "
+                "    JOIN sessions child ON child.parent_session_id = c.id "
+                "    WHERE parent.end_reason = 'compression' "
+                "      AND child.started_at >= parent.ended_at "
+                ") "
+                "SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total "
+                "FROM sessions WHERE id IN (SELECT id FROM chain)",
+                (root,),
+            )
+            row = cursor.fetchone()
+        if row and row["total"] is not None:
+            total = float(row["total"])
+        return total
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -1132,6 +1187,13 @@ class SessionDB:
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
+                # Sum cost across the entire chain (root + every continuation)
+                # rather than taking only the root's or only the tip's cost —
+                # both are partials.
+                try:
+                    merged["estimated_cost_usd"] = self.get_lineage_cost_usd(s["id"])
+                except Exception:
+                    pass
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
