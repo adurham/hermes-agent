@@ -7357,28 +7357,27 @@ class HermesCLI:
 
         Different reasoning ecosystems support different tiers:
 
-        * DSv4-Flash exposes four distinct values through exo's wrapper
-          (``_v4_reasoning_effort`` in utils_mlx.py):
+        * DSv4-Flash supports **three** documented modes per its
+          HuggingFace model card (deepseek-ai/DeepSeek-V4-Flash):
 
-            - ``none``  → enable_thinking=False
-            - ``medium`` (or ``minimal``/``low``) → enable_thinking=True,
-              no effort hint = default depth
-            - ``high``  → enable_thinking=True, reasoning_effort="high"
-            - ``xhigh`` → enable_thinking=True, reasoning_effort="max"
+            - Non-think → ``none`` (enable_thinking=False)
+            - Think High → ``high`` (the default thinking mode)
+            - Think Max → ``xhigh`` (mapped to reasoning_effort="max"
+              by exo's _v4_reasoning_effort wrapper; needs ≥384K context)
 
-          ``minimal``/``low``/``medium`` collapse to the same default
-          tier on DSv4, so we drop ``minimal`` and ``low`` from its
-          picker to avoid the misleading equivalent-but-different-named
-          choices.
+          ``minimal``/``low``/``medium`` are NOT distinct modes on DSv4;
+          they all collapse to "default thinking" (= Think High) through
+          exo's wrapper. Listing them in the picker would be misleading,
+          so we omit them.
         * MiniMax has binary thinking only.
         * Tiered-reasoning models (gpt-5, o-series, openrouter
-          passthroughs) keep the full ladder.
+          passthroughs) keep the full six-tier ladder.
         """
         full_ladder = ["none", "minimal", "low", "medium", "high", "xhigh"]
         m = (self.model or "").lower()
         if "deepseek" in m or "dsv4" in m:
-            # DSv4 4-tier set — collapsed where exo's wrapper collapses.
-            return ["none", "medium", "high", "xhigh"]
+            # DSv4 3-mode set per HF model card.
+            return ["none", "high", "xhigh"]
         if "minimax" in m:
             return ["none", "on"]
         # Default to full ladder when uncertain — overshooting is
@@ -7393,11 +7392,12 @@ class HermesCLI:
         # those models map effort levels through model-specific wrappers.
         m = (self.model or "").lower()
         is_dsv4 = "deepseek" in m or "dsv4" in m
+        # Hints reflect the three modes documented on DSv4-Flash's
+        # HuggingFace model card.
         dsv4_hints = {
-            "none": "none (no thinking)",
-            "medium": "medium (default thinking)",
-            "high": "high (more thinking)",
-            "xhigh": "xhigh (maximum thinking)",
+            "none": "none — Non-think (fast, intuitive)",
+            "high": "high — Think High (default thinking; logical analysis)",
+            "xhigh": "xhigh — Think Max (max reasoning; needs ≥384K ctx)",
         }
         binary_hints = {
             "none": "none (no thinking)",
