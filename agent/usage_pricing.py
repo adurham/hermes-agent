@@ -96,6 +96,42 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ),
     (
         "anthropic",
+        "claude-opus-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05-03",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05-03",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05-03",
+    ),
+    (
+        "anthropic",
         "claude-sonnet-4-20250514",
     ): PricingEntry(
         input_cost_per_million=Decimal("3.00"),
@@ -105,6 +141,54 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
         pricing_version="anthropic-prompt-caching-2026-03-16",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05-03",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05-03",
+    ),
+    (
+        "anthropic",
+        "claude-haiku-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("5.00"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        cache_write_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05-03",
+    ),
+    (
+        "anthropic",
+        "claude-haiku-4-5-20251001",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("5.00"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        cache_write_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05-03",
     ),
     # OpenAI
     (
