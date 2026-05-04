@@ -330,8 +330,12 @@ def test_apply_suggested_defaults_fills_empties(monkeypatch, tmp_path):
     assert applied == len(personas.SUGGESTED_ROLE_MODELS)
     assert skipped == 0
     written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    assert "researcher: claude-haiku-4-5" in written
+    # Researcher: promoted to Sonnet 2026-05-04 (multi-source scans blow
+    # past Haiku's 200K context).  See SUGGESTED_ROLE_MODELS docstring.
+    assert "researcher: claude-sonnet-4-6" in written
     assert "security-architect: claude-opus-4-7" in written
+    # A role that's still Haiku — just to prove the test exercises both.
+    assert "pii-detector: claude-haiku-4-5" in written
 
 
 def test_apply_suggested_defaults_preserves_user_pins(monkeypatch, tmp_path):
@@ -366,7 +370,9 @@ def test_apply_suggested_defaults_force_overwrites(monkeypatch, tmp_path):
     applied, skipped = personas.apply_suggested_defaults(overwrite=True)
     assert applied == len(personas.SUGGESTED_ROLE_MODELS)
     written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    assert "researcher: claude-haiku-4-5" in written
+    # Suggested default for researcher is now Sonnet (promoted 2026-05-04
+    # because multi-source research scans hit Haiku's context cap).
+    assert "researcher: claude-sonnet-4-6" in written
     assert f"researcher: {user_pin}" not in written
 
 

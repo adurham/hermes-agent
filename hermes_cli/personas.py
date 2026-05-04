@@ -429,12 +429,11 @@ _SONNET = "claude-sonnet-4-6"
 _OPUS = "claude-opus-4-7"
 
 SUGGESTED_ROLE_MODELS: dict[str, str] = {
-    # ── Haiku — retrieval / triage / monitors / scanners / glue ───────────
-    "researcher": _HAIKU,
-    "scout-explorer": _HAIKU,
-    "code-analyzer": _HAIKU,
-    "analyze-code-quality": _HAIKU,
-    "issue-tracker": _HAIKU,
+    # ── Haiku — pure retrieval / triage / monitors / scanners / glue ──────
+    # Use Haiku only when the workload is bounded: a few tool calls, small
+    # output, no need to integrate sprawling cross-source results.  Roles
+    # that fan out across Jira + Stack + Slack with detailed body fetches
+    # blow past Haiku's 200K context window — those go to Sonnet below.
     "pii-detector": _HAIKU,
     "project-board-sync": _HAIKU,
     "sync-coordinator": _HAIKU,
@@ -445,14 +444,23 @@ SUGGESTED_ROLE_MODELS: dict[str, str] = {
     "workflow-automation": _HAIKU,
     "load-balancer": _HAIKU,
     "test-long-runner": _HAIKU,
-    "swarm-issue": _HAIKU,
-    "swarm-pr": _HAIKU,
-    "release-swarm": _HAIKU,
-    "pr-manager": _HAIKU,
     "aidefence-guardian": _HAIKU,
     "claims-authorizer": _HAIKU,
 
-    # ── Sonnet — balanced default for code work ───────────────────────────
+    # ── Sonnet — balanced default for code work + research roles ─────────
+    # Promoted from Haiku 2026-05-04: in real swarm runs, these roles
+    # routinely scanned multi-source corpora (Jira issues + Stack KB + Slack
+    # threads) and hit Haiku's 200K context, forcing 30–65% compaction
+    # mid-task.  Sonnet 4.6 has the 1M-context tier so the fan-out fits.
+    "researcher": _SONNET,
+    "scout-explorer": _SONNET,
+    "code-analyzer": _SONNET,
+    "analyze-code-quality": _SONNET,
+    "issue-tracker": _SONNET,
+    "swarm-issue": _SONNET,
+    "swarm-pr": _SONNET,
+    "release-swarm": _SONNET,
+    "pr-manager": _SONNET,
     "coder": _SONNET,
     "tester": _SONNET,
     "reviewer": _SONNET,

@@ -2221,21 +2221,53 @@ def delegate_task(
         result = _run_single_child(0, _t["goal"], child, parent_agent)
         results.append(result)
     else:
-        # Batch -- run in parallel with per-task progress lines
+        # Batch -- run in parallel with per-task progress lines.
+        # When 2+ children and stdout is a TTY, we render a single live
+        # multi-row board above the parent's spinner instead of letting
+        # each child print its chatter directly.  Errors and final
+        # summaries still flow up to stdout above the board.
+        from tools.swarm_board import SwarmBoard, make_child_print_fn
+
         completed_count = 0
         spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-        with ThreadPoolExecutor(max_workers=max_children) as executor:
-            futures = {}
+        with SwarmBoard.maybe_start(parent_agent, n_tasks) as _swarm_board:
+            # Pre-register every child as a row so the board paints
+            # immediately (otherwise rows pop in as the children fire
+            # their first event, which looks janky).
+            parent_print_fn = getattr(parent_agent, "_print_fn", None) or print
             for i, t, child in children:
-                future = executor.submit(
-                    _run_single_child,
-                    task_index=i,
-                    goal=t["goal"],
-                    child=child,
-                    parent_agent=parent_agent,
+                sid = getattr(child, "_subagent_id", None) or f"subagent-{i}"
+                _swarm_board.register(
+                    sid,
+                    model=getattr(child, "model", "") or "",
+                    goal=(t.get("goal") or "")[:60],
                 )
-                futures[future] = i
+                # Patch the child's _print_fn so its chatter goes to its
+                # row's note slot instead of stdout.  No-op when the
+                # board is the no-op variant.
+                child._print_fn = make_child_print_fn(
+                    _swarm_board, sid, fallback=parent_print_fn
+                )
+                # Stash the board on the child so the progress callback
+                # closure (built in _build_child_progress_callback) can
+                # find it via parent_agent's chain.
+                child._swarm_board = _swarm_board
+            # Also stash on the parent so the progress relay can update
+            # rows from the parent thread.
+            parent_agent._swarm_board = _swarm_board
+
+            with ThreadPoolExecutor(max_workers=max_children) as executor:
+                futures = {}
+                for i, t, child in children:
+                    future = executor.submit(
+                        _run_single_child,
+                        task_index=i,
+                        goal=t["goal"],
+                        child=child,
+                        parent_agent=parent_agent,
+                    )
+                    futures[future] = i
 
             # Poll futures with interrupt checking.  as_completed() blocks
             # until ALL futures finish — if a child agent gets stuck,
