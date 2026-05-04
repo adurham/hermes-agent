@@ -2264,6 +2264,9 @@ class HermesCLI:
         self._approval_deadline = 0
         self._approval_lock = threading.Lock()
         self._model_picker_state = None
+        # Active /reasoning picker state. Same dict-based modal pattern
+        # as the /model picker. None when picker is closed.
+        self._reasoning_picker_state: dict | None = None
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -7349,42 +7352,109 @@ class HermesCLI:
                 " — all commands auto-approved. Use with caution."
             )
 
-    def _handle_reasoning_command(self, cmd: str):
-        """Handle /reasoning — manage effort level and display toggle.
+    def _reasoning_levels_for_active_model(self) -> list[str]:
+        """Return the reasoning levels that make sense for the active model.
 
-        Usage:
-            /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
-            /reasoning show|on      Show model thinking/reasoning in output
-            /reasoning hide|off     Hide model thinking/reasoning from output
+        DSv4-Flash and similar binary-thinking models map any non-"none"
+        effort to enable_thinking=True at the API boundary, so showing
+        all six tiers (minimal/low/medium/high/xhigh) is misleading —
+        they all behave identically. For those, return just ``["none",
+        "on"]``. For tiered-reasoning models (gpt-5, o-series, openrouter
+        passthrough) return the full ladder.
         """
-        parts = cmd.strip().split(maxsplit=1)
+        full_ladder = ["none", "minimal", "low", "medium", "high", "xhigh"]
+        binary = ["none", "on"]
+        m = (self.model or "").lower()
+        # DSv4 / DeepSeek thinking is binary (enable_thinking flag).
+        if "deepseek" in m or "dsv4" in m or "minimax" in m:
+            return binary
+        # Default to full ladder when uncertain — overshooting is
+        # better than locking out a real reasoning model.
+        return full_ladder
 
-        if len(parts) < 2:
-            # Show current state
-            rc = self.reasoning_config
-            if rc is None:
-                level = "medium (default)"
-            elif rc.get("enabled") is False:
-                level = "none (disabled)"
-            else:
-                level = rc.get("effort", "medium")
-            display_state = "on ✓" if self.show_reasoning else "off"
-            _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
-            _cprint(f"  {_ACCENT}Reasoning display: {display_state}{_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide>{_RST}")
+    def _open_reasoning_picker(self) -> None:
+        """Open the /reasoning prompt_toolkit-native picker modal."""
+        levels = self._reasoning_levels_for_active_model()
+        choices: list[dict] = []
+        for level in levels:
+            label = level
+            if level == "none":
+                label = "none (no thinking)"
+            elif level == "on":
+                label = "on (thinking enabled)"
+            choices.append({"key": level, "label": label, "kind": "level"})
+        choices.append({"key": "show", "label": "show — render model thinking inline", "kind": "display"})
+        choices.append({"key": "hide", "label": "hide — suppress model thinking", "kind": "display"})
+        choices.append({"key": "__cancel__", "label": "Cancel", "kind": "cancel"})
+
+        # Default selection: current effort if listed, else 0.
+        current_level = self._current_reasoning_level_label()
+        default_idx = next(
+            (i for i, c in enumerate(choices) if c["kind"] == "level" and c["key"] == current_level),
+            0,
+        )
+
+        self._capture_modal_input_snapshot()
+        self._reasoning_picker_state = {
+            "choices": choices,
+            "selected": default_idx,
+            "current_level": current_level,
+            "current_display": "on" if self.show_reasoning else "off",
+            "_scroll_offset": 0,
+        }
+        self._invalidate(min_interval=0.0)
+
+    def _close_reasoning_picker(self) -> None:
+        self._reasoning_picker_state = None
+        self._restore_modal_input_snapshot()
+        self._invalidate(min_interval=0.0)
+
+    def _current_reasoning_level_label(self) -> str:
+        """Return the active reasoning effort as one of the user-facing
+        keys (``none`` / ``on`` / ``minimal`` / ``low`` / ... ).
+        """
+        rc = self.reasoning_config
+        if rc is None:
+            return "medium"
+        if rc.get("enabled") is False:
+            return "none"
+        # Binary models report any enabled state as "on".
+        if "on" in self._reasoning_levels_for_active_model():
+            return "on"
+        return rc.get("effort", "medium")
+
+    def _handle_reasoning_picker_selection(self) -> None:
+        """Apply the picker selection on Enter."""
+        state = self._reasoning_picker_state
+        if not state:
             return
+        choices = state.get("choices") or []
+        idx = state.get("selected", 0)
+        if idx < 0 or idx >= len(choices):
+            self._close_reasoning_picker()
+            return
+        choice = choices[idx]
+        kind = choice.get("kind")
+        key = choice.get("key")
+        self._close_reasoning_picker()
+        if kind == "cancel":
+            return
+        if kind == "display":
+            # Reuse the existing show/hide path.
+            self._apply_reasoning_arg(key)
+            return
+        if kind == "level":
+            self._apply_reasoning_arg(key)
 
-        arg = parts[1].strip().lower()
-
-        # Display toggle
-        if arg in ("show", "on"):
+    def _apply_reasoning_arg(self, arg: str) -> None:
+        """Shared apply path for both the picker and the typed CLI form."""
+        arg = arg.strip().lower()
+        if arg in ("show", "on") and arg != "on":
             self.show_reasoning = True
             if self.agent:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", True)
             _cprint(f"  {_ACCENT}✓ Reasoning display: ON (saved){_RST}")
-            _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
             return
         if arg in ("hide", "off"):
             self.show_reasoning = False
@@ -7393,22 +7463,40 @@ class HermesCLI:
             save_config_value("display.show_reasoning", False)
             _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
             return
-
-        # Effort level change
+        # "on" for binary models maps to enable_thinking=True (effort
+        # value doesn't matter for DSv4 — exo treats anything non-none
+        # as enable_thinking=True).
+        if arg == "on":
+            arg = "medium"
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}")
-            _cprint(f"  {_DIM}Display:      show, hide{_RST}")
             return
-
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
-
         if save_config_value("agent.reasoning_effort", arg):
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+
+    def _handle_reasoning_command(self, cmd: str):
+        """Handle /reasoning — interactive picker or typed effort/display.
+
+        Usage:
+            /reasoning              Open picker (interactive menu)
+            /reasoning <level>      Set reasoning effort directly
+            /reasoning show|on      Show model thinking inline
+            /reasoning hide|off     Hide model thinking
+        """
+        parts = cmd.strip().split(maxsplit=1)
+
+        if len(parts) < 2:
+            # No arg → open the picker.
+            self._open_reasoning_picker()
+            return
+
+        # Typed form preserved — delegate to the shared apply path.
+        self._apply_reasoning_arg(parts[1])
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Hermes is working.
@@ -9828,6 +9916,7 @@ class HermesCLI:
         approval_widget,
         clarify_widget,
         model_picker_widget=None,
+        reasoning_picker_widget=None,
         spinner_widget=None,
         spacer,
         status_bar,
@@ -9852,6 +9941,7 @@ class HermesCLI:
                 approval_widget,
                 clarify_widget,
                 model_picker_widget,
+                reasoning_picker_widget,
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
@@ -10076,6 +10166,13 @@ class HermesCLI:
             # --- /model picker modal ---
             if self._model_picker_state:
                 self._handle_model_picker_selection()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # --- /reasoning picker modal ---
+            if self._reasoning_picker_state:
+                self._handle_reasoning_picker_selection()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -10351,6 +10448,31 @@ class HermesCLI:
             event.app.current_buffer.reset()
             event.app.invalidate()
 
+        # ── /reasoning picker key bindings ──────────────────────────────
+        @kb.add('up', filter=Condition(lambda: bool(self._reasoning_picker_state)))
+        def reasoning_picker_up(event):
+            if self._reasoning_picker_state:
+                self._reasoning_picker_state["selected"] = max(
+                    0, self._reasoning_picker_state.get("selected", 0) - 1
+                )
+                event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: bool(self._reasoning_picker_state)))
+        def reasoning_picker_down(event):
+            state = self._reasoning_picker_state
+            if not state:
+                return
+            max_idx = len(state.get("choices") or []) - 1
+            state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+            event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._reasoning_picker_state)), eager=True)
+        def reasoning_picker_escape(event):
+            """ESC cancels the /reasoning picker."""
+            self._close_reasoning_picker()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+
         # Number keys for quick approval selection (1-9, 0 for 10th item)
         def _make_approval_number_handler(idx):
             def handler(event):
@@ -10370,7 +10492,7 @@ class HermesCLI:
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state and not self._model_picker_state and not self._reasoning_picker_state
         )
 
         @kb.add('up', filter=_normal_input)
@@ -10449,6 +10571,13 @@ class HermesCLI:
             # Cancel /model picker
             if self._model_picker_state:
                 self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # Cancel /reasoning picker
+            if self._reasoning_picker_state:
+                self._close_reasoning_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -11296,6 +11425,57 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._model_picker_state is not None),
         )
 
+        # --- /reasoning picker: display widget ---
+        def _get_reasoning_picker_display():
+            state = cli_ref._reasoning_picker_state
+            if not state:
+                return []
+            choices_data = state.get("choices") or []
+            labels = [c["label"] for c in choices_data]
+            title = "🧠 Reasoning"
+            current_level = state.get("current_level", "?")
+            current_display = state.get("current_display", "?")
+            hint = f"Effort: {current_level}   Display: {current_display}"
+
+            box_width = _panel_box_width(title, [hint] + labels, min_width=46, max_width=84)
+            inner_text_width = max(8, box_width - 6)
+            selected = state.get("selected", 0)
+
+            try:
+                from prompt_toolkit.application import get_app
+                term_rows = get_app().output.get_size().rows
+            except Exception:
+                term_rows = shutil.get_terminal_size((100, 24)).lines
+            scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
+                selected, state.get("_scroll_offset", 0), len(labels), term_rows,
+            )
+            state["_scroll_offset"] = scroll_offset
+
+            lines = []
+            lines.append(('class:clarify-border', '╭─ '))
+            lines.append(('class:clarify-title', title))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            for idx in range(scroll_offset, scroll_offset + visible):
+                label = labels[idx]
+                style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
+                prefix = '❯ ' if idx == selected else '  '
+                for wrapped in _wrap_panel_text(prefix + label, inner_text_width, subsequent_indent='  '):
+                    _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        reasoning_picker_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_reasoning_picker_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._reasoning_picker_state is not None),
+        )
+
         # Horizontal rules above and below the input.
         # On narrow/mobile terminals we keep the top separator for structure but
         # hide the bottom one to recover a full row for conversation content.
@@ -11372,6 +11552,7 @@ class HermesCLI:
                     approval_widget=approval_widget,
                     clarify_widget=clarify_widget,
                     model_picker_widget=model_picker_widget,
+                    reasoning_picker_widget=reasoning_picker_widget,
                     spinner_widget=spinner_widget,
                     spacer=spacer,
                     status_bar=status_bar,
