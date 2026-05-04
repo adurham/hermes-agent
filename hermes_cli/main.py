@@ -9694,27 +9694,42 @@ Examples:
             if not sessions:
                 print("No sessions found.")
                 return
+
+            def _fmt_cost(v):
+                try:
+                    c = float(v or 0.0)
+                except (TypeError, ValueError):
+                    return "—"
+                if c <= 0:
+                    return "—"
+                if c < 0.01:
+                    return f"${c:.4f}"
+                if c < 1:
+                    return f"${c:.3f}"
+                return f"${c:.2f}"
+
             has_titles = any(s.get("title") for s in sessions)
             if has_titles:
-                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
+                print(f"{'Title':<32} {'Preview':<36} {'Last Active':<13} {'Cost':>8}  {'ID'}")
+                print("─" * 115)
             else:
-                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 95)
+                print(f"{'Preview':<46} {'Last Active':<13} {'Src':<6} {'Cost':>8}  {'ID'}")
+                print("─" * 100)
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
+                cost = _fmt_cost(s.get("estimated_cost_usd"))
                 preview = (
-                    s.get("preview", "")[:38]
+                    s.get("preview", "")[:34]
                     if has_titles
-                    else s.get("preview", "")[:48]
+                    else s.get("preview", "")[:44]
                 )
                 if has_titles:
                     title = (s.get("title") or "—")[:30]
                     sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                    print(f"{title:<32} {preview:<36} {last_active:<13} {cost:>8}  {sid}")
                 else:
                     sid = s["id"]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                    print(f"{preview:<46} {last_active:<13} {s['source']:<6} {cost:>8}  {sid}")
 
         elif action == "export":
             if args.session_id:
