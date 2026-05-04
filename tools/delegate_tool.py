@@ -1356,6 +1356,43 @@ def _run_single_child(
             except Exception:
                 pass
 
+            # User-visible heartbeat: surface what the subagent is doing
+            # every _HEARTBEAT_INTERVAL seconds.  Without this, long
+            # delegations look frozen (the parent's spinner just shows
+            # `🔀 delegate ... 506.2s` with no indication of progress).
+            # Piggybacks on the existing 30s cycle so we don't add another
+            # thread.  Routes through `_emit_status` so the line reaches
+            # both CLI scrollback and the gateway/TUI status channel.
+            try:
+                emit = getattr(parent_agent, "_emit_status", None)
+                if emit:
+                    elapsed = int(time.monotonic() - child_start)
+                    child_model = getattr(child, "model", None) or "?"
+                    # Pull running token + cost so user sees the spend
+                    # accumulating per-child during long runs.
+                    in_toks = getattr(child, "session_prompt_tokens", 0) or 0
+                    out_toks = getattr(child, "session_completion_tokens", 0) or 0
+                    cost = getattr(child, "session_estimated_cost_usd", 0.0) or 0.0
+                    cost_str = f" | ${cost:.4f}" if cost > 0 else ""
+                    tok_str = (
+                        f" | {in_toks:,}↓/{out_toks:,}↑ tok"
+                        if (in_toks or out_toks) else ""
+                    )
+                    if child_tool:
+                        emit(
+                            f"  ┊ 🔀 [{task_index}] {child_model} · "
+                            f"{child_tool} (iter {child_iter}/{child_max}) "
+                            f"· {elapsed}s elapsed{tok_str}{cost_str}"
+                        )
+                    else:
+                        emit(
+                            f"  ┊ 🔀 [{task_index}] {child_model} · "
+                            f"thinking (iter {child_iter}/{child_max}) "
+                            f"· {elapsed}s elapsed{tok_str}{cost_str}"
+                        )
+            except Exception:
+                logger.debug("delegate heartbeat emit failed", exc_info=True)
+
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     _heartbeat_thread.start()
 
@@ -1734,6 +1771,39 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
+        # User-visible per-child completion line: status + duration + tokens + cost.
+        # Emits to scrollback so the user has a permanent record of what
+        # each subagent burned, even after the parent's own progress UI
+        # collapses the single "🔀 delegate ... 506.2s" line.  Pairs with the
+        # heartbeat emits above (running progress) and the rollup emit at the
+        # end of delegate_task() (aggregate spend).
+        try:
+            emit = getattr(parent_agent, "_emit_status", None)
+            if emit:
+                _model_str = (_model if isinstance(_model, str) else None) or "?"
+                _cost_total = (
+                    float(_cost_usd) if isinstance(_cost_usd, (int, float)) else 0.0
+                )
+                _cost_str = f" | ${_cost_total:.4f}" if _cost_total > 0 else ""
+                _ti = (
+                    int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0
+                )
+                _to = (
+                    int(_output_tokens) if isinstance(_output_tokens, (int, float)) else 0
+                )
+                _tok_str = (
+                    f" | {_ti:,}↓/{_to:,}↑ tok" if (_ti or _to) else ""
+                )
+                _icon = "✅" if status == "completed" else (
+                    "⏹" if status == "interrupted" else "❌"
+                )
+                emit(
+                    f"  ┊ {_icon} subagent [{task_index}] {_model_str} · "
+                    f"{status} in {duration:.1f}s{_tok_str}{_cost_str}"
+                )
+        except Exception:
+            logger.debug("delegate completion emit failed", exc_info=True)
+
         return entry
 
     except Exception as exc:
@@ -1818,6 +1888,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1905,7 +1976,13 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "model": model,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -1947,7 +2024,10 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                # Per-task model override beats delegation.model config.  Lets
+                # the orchestrator pick `haiku` for cheap retrieval, `sonnet`
+                # for analysis, `opus` for deep reasoning per-child.
+                model=(t.get("model") or "").strip() or creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -2184,6 +2264,39 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
+    # User-visible aggregate emit: one line per delegate_task() call summarising
+    # the total spend across all children + new running session total.  Lets
+    # the user see the cost-per-batch of fan-out work and the cumulative
+    # session spend at a glance.
+    try:
+        emit = getattr(parent_agent, "_emit_status", None)
+        if emit and len(results) > 0:
+            session_total = float(
+                getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0
+            )
+            n = len(results)
+            n_ok = sum(1 for r in results if r.get("status") == "completed")
+            children_str = (
+                f"{n_ok}/{n} subagent{'s' if n != 1 else ''} ok"
+                if n_ok < n
+                else f"{n} subagent{'s' if n != 1 else ''} ok"
+            )
+            cost_part = (
+                f" · children=${_children_cost_total:.4f}"
+                if _children_cost_total > 0
+                else ""
+            )
+            session_part = (
+                f" · session=${session_total:.4f}" if session_total > 0 else ""
+            )
+            emit(
+                f"  ┊ 🔀 delegate done · {children_str} · "
+                f"{total_duration:.1f}s{cost_part}{session_part}"
+            )
+    except Exception:
+        logger.debug("delegate rollup emit failed", exc_info=True)
+
+
     return json.dumps(
         {
             "results": results,
@@ -2398,7 +2511,13 @@ DELEGATE_TASK_SCHEMA = {
         "(default 2) and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Results are always returned as an array, one entry per task.\n"
+        "- MODEL SELECTION: pass 'model' (top-level for all children, or per-task in 'tasks[].model') "
+        "to right-size cost. Defaults inherit from delegation.model config or parent. "
+        "Suggested mapping: Haiku for retrieval/grep/light triage, Sonnet for analysis "
+        "and code review, Opus only for deep reasoning. The cost of every child rolls "
+        "up into the parent's session total — surfaced in lifecycle status emits "
+        "and /usage."
     ),
     "parameters": {
         "type": "object",
@@ -2460,6 +2579,19 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override (e.g. 'claude-haiku-4-5', "
+                                "'claude-sonnet-4-6', 'claude-opus-4-7'). "
+                                "Overrides the top-level 'model' arg AND the "
+                                "delegation.model config for THIS task only. "
+                                "Use this to right-size cost/quality per child: "
+                                "Haiku for retrieval/grep, Sonnet for analysis, "
+                                "Opus for deep reasoning. Empty string or omitted "
+                                "= inherit top-level / config / parent."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2483,6 +2615,18 @@ DELEGATE_TASK_SCHEMA = {
                     "(treated as 'leaf') when the child would exceed "
                     "max_spawn_depth or when "
                     "delegation.orchestrator_enabled=false."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Top-level model override applied to EVERY child unless "
+                    "the per-task 'model' is set. Overrides delegation.model "
+                    "from config.yaml. Use for cost/quality control: "
+                    "'claude-haiku-4-5' (cheapest, fast retrieval), "
+                    "'claude-sonnet-4-6' (balanced — good default for analysis), "
+                    "'claude-opus-4-7' (deepest reasoning, most expensive). "
+                    "Cost rolls up into the parent's session total either way."
                 ),
             },
             "acp_command": {
@@ -2524,6 +2668,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
