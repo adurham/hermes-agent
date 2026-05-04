@@ -7841,8 +7841,8 @@ class HermesCLI:
             _cprint(f"  {_DIM}(._.) Role name required{_RST}")
             return
         # Sanity check: the role should match a discovered ruflo agent.
-        # We don't HARD-fail unknowns (user may want to map a custom role
-        # like "tanium-triage" they invent), but warn so typos are obvious.
+        # We don't HARD-fail unknowns (the user may map a custom role
+        # they invent), but warn so typos are obvious.
         try:
             agent = lookup_agent(role)
         except Exception:
