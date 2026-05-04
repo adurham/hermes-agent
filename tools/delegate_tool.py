@@ -1361,6 +1361,19 @@ def _run_single_child(
     _last_seen_iter = [0]
     _last_seen_tool = [None]  # type: list
     _stale_count = [0]
+    # Track what was last EMITTED to the user, separate from _last_seen_*
+    # (which drives stale-detection).  Without this, heartbeats print a
+    # fresh "iter 13 · 30s elapsed" / "iter 13 · 60s elapsed" /
+    # "iter 13 · 90s elapsed" line every 30s for a slow subagent — three
+    # lines that say nothing new.  We only emit when the displayed state
+    # (tool + iter) actually changes; quiet ticks are dropped.  Force an
+    # emit roughly every _HEARTBEAT_FORCE_EMIT_CYCLES cycles regardless,
+    # so a child that genuinely stays on the same tool for minutes still
+    # surfaces an "I'm alive" line.
+    _last_emit_iter = [-1]
+    _last_emit_tool = [object()]  # sentinel: never matches a real tool name
+    _cycles_since_emit = [0]
+    _HEARTBEAT_FORCE_EMIT_CYCLES = 4  # ~every 2 min on the 30s interval
 
     def _heartbeat_loop():
         while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
@@ -1446,20 +1459,37 @@ def _run_single_child(
             try:
                 emit = getattr(parent_agent, "_emit_status", None)
                 if emit:
-                    elapsed = int(time.monotonic() - child_start)
-                    child_model = getattr(child, "model", None) or "?"
-                    if child_tool:
-                        emit(
-                            f"  ┊ 🔀 [{task_index}] {child_model} · "
-                            f"{child_tool} (iter {child_iter}/{child_max}) "
-                            f"· {elapsed}s elapsed"
-                        )
+                    # Decide whether to actually print.  Skip when nothing
+                    # has changed since the last emission, unless we've
+                    # been quiet for >= _HEARTBEAT_FORCE_EMIT_CYCLES (the
+                    # "I'm alive" backstop).
+                    state_changed = (
+                        child_iter != _last_emit_iter[0]
+                        or child_tool != _last_emit_tool[0]
+                    )
+                    force_emit = (
+                        _cycles_since_emit[0] >= _HEARTBEAT_FORCE_EMIT_CYCLES
+                    )
+                    if state_changed or force_emit:
+                        elapsed = int(time.monotonic() - child_start)
+                        child_model = getattr(child, "model", None) or "?"
+                        if child_tool:
+                            emit(
+                                f"  ┊ 🔀 [{task_index}] {child_model} · "
+                                f"{child_tool} (iter {child_iter}/{child_max}) "
+                                f"· {elapsed}s elapsed"
+                            )
+                        else:
+                            emit(
+                                f"  ┊ 🔀 [{task_index}] {child_model} · "
+                                f"thinking (iter {child_iter}/{child_max}) "
+                                f"· {elapsed}s elapsed"
+                            )
+                        _last_emit_iter[0] = child_iter
+                        _last_emit_tool[0] = child_tool
+                        _cycles_since_emit[0] = 0
                     else:
-                        emit(
-                            f"  ┊ 🔀 [{task_index}] {child_model} · "
-                            f"thinking (iter {child_iter}/{child_max}) "
-                            f"· {elapsed}s elapsed"
-                        )
+                        _cycles_since_emit[0] += 1
             except Exception:
                 logger.debug("delegate heartbeat emit failed", exc_info=True)
 
