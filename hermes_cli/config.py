@@ -934,6 +934,16 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        # Per-role model overrides (ruflo agent persona → model). Populated
+        # by the /delegation slash command. Lets users pin "researcher → Haiku,
+        # security-architect → Opus" once and have every delegated child of
+        # that persona auto-use the right model. Precedence (highest first):
+        # per-task `model` arg > per-role map (this dict) > top-level `model`
+        # arg > delegation.model > parent's model.
+        "model_by_role": {},
+        # Path to the ruflo install for /delegation's agent discovery. Empty
+        # = use ~/repos/ruflo. Override via this setting or RUFLO_PATH env.
+        "ruflo_path": "",
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
