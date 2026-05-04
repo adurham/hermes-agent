@@ -7519,7 +7519,8 @@ class AIAgent:
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
-        _last_heartbeat = time.time()
+        _request_started = time.time()
+        _last_heartbeat = _request_started
         _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
         # Track consecutive stale-stream kills with no chunk progress in between.
         # If close() fails to unblock the streaming thread (e.g. httpx blocked on
@@ -7542,18 +7543,37 @@ class AIAgent:
             _hb_now = time.time()
             if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
                 _last_heartbeat = _hb_now
-                _waiting_secs = int(_hb_now - last_chunk_time["t"])
+                # Silence (since last raw chunk/ping) drives the gateway
+                # activity touch — this is what the inactivity monitor and
+                # the stale-stream detector care about.
+                _silence_secs = int(_hb_now - last_chunk_time["t"])
                 self._touch_activity(
-                    f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
+                    f"waiting for stream response ({_silence_secs}s, no chunks yet)"
                 )
                 # User-visible heartbeat: long thinking pauses (large
                 # contexts on slow models, local provider prefill, etc.)
                 # produce zero terminal output for the entire stale-stream
                 # window — by default 180s.  That looks frozen.  Surface a
-                # status line every heartbeat tick once we've been silent
-                # for >= _HEARTBEAT_INTERVAL so the user knows we're alive
-                # and still waiting on the provider.
-                if _waiting_secs >= int(_HEARTBEAT_INTERVAL):
+                # status line every heartbeat tick so the user knows we're
+                # alive and still waiting on the provider.
+                #
+                # Cold-start vs mid-stream elapsed counter:
+                #   - Before first_event_seen flips, server pings reset
+                #     last_chunk_time roughly every 10 s (Anthropic SDK
+                #     ping cadence).  Using silence_secs there would keep
+                #     the user-visible counter pinned below the heartbeat
+                #     threshold and suppress every emit after the first.
+                #     Use total elapsed since request start instead so the
+                #     user sees a monotonically growing wait counter.
+                #   - Once first_event_seen flips, real semantic events
+                #     are flowing.  A subsequent silence is a true stall;
+                #     reporting silence_secs there ("streaming stalled —
+                #     30 s") is what the user actually wants to see.
+                if first_event_seen["yes"]:
+                    _user_elapsed = _silence_secs
+                else:
+                    _user_elapsed = int(_hb_now - _request_started)
+                if _user_elapsed >= int(_HEARTBEAT_INTERVAL):
                     try:
                         _model_name = api_kwargs.get("model", "unknown")
                         if first_event_seen["yes"]:
@@ -7563,7 +7583,7 @@ class AIAgent:
                         else:
                             _phase = "queued/prefilling"
                         self._emit_status(
-                            f"⏳ Still waiting on provider — {_waiting_secs}s elapsed "
+                            f"⏳ Still waiting on provider — {_user_elapsed}s elapsed "
                             f"(model: {_model_name}, {_phase})"
                         )
                     except Exception:
