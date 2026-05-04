@@ -30,10 +30,10 @@ class TestRegisterServerTools:
 
         with patch("tools.registry.registry", mock_registry):
             registered = _register_server_tools("my_srv", server, {})
-            assert "mcp_my_srv_my_tool" in registered
-            assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
+            assert "my_srv_my_tool" in registered
+            assert "my_srv_my_tool" in mock_registry.get_all_tool_names()
             assert validate_toolset("my_srv") is True
-            assert "mcp_my_srv_my_tool" in resolve_toolset("my_srv")
+            assert "my_srv_my_tool" in resolve_toolset("my_srv")
 
 
 class TestRefreshTools:

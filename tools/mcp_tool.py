@@ -992,7 +992,7 @@ class MCPServerTask:
             # notifications. Tools absent from the fresh list are no longer
             # callable, so remove only those stale registry entries first.
             stale_tool_names = old_tool_names - {
-                f"mcp_{sanitize_mcp_name_component(self.name)}_"
+                f"{sanitize_mcp_name_component(self.name)}_"
                 f"{sanitize_mcp_name_component(tool.name)}"
                 for tool in new_mcp_tools
             }
@@ -2496,7 +2496,29 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """
     safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
     safe_server_name = sanitize_mcp_name_component(server_name)
-    prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
+    # Drop the ``mcp_`` / ``mcp__`` prefix entirely.  Two convention shifts
+    # were tried before this and both leaked auto-repair traffic:
+    #
+    # 1. ``mcp_<server>_<tool>`` (single-underscore).  Ambiguous boundaries —
+    #    Claude couldn't tell where the prefix ended and stripped the whole
+    #    ``mcp_`` on every call.
+    # 2. ``mcp__<server>__<tool>`` (double-underscore, real Claude Code
+    #    convention).  Claude / the OAuth path *still* removed the ``mcp``
+    #    substring on every call, leaving names like
+    #    ``_tanium_gateway__jira_search_issues`` (the leading ``_`` is
+    #    what's left of the ``mcp__`` prefix after the model stripped
+    #    ``mcp``).  Whatever component does the stripping — model bias from
+    #    Claude Code training, an Anthropic-side MCP-routing middleware,
+    #    or both — keys on the literal ``mcp`` substring at the start of
+    #    a tool name and removes it.
+    #
+    # The fix that sticks: don't put ``mcp`` in the registered name at all.
+    # ``<server>_<tool>`` is unambiguous (the server name is a known prefix
+    # from the config), Claude has nothing to strip, and the existing
+    # built-in collision guard (see TestMCPBuiltinCollisionGuard) already
+    # protects against MCP names colliding with native tools.  The model
+    # emits the registered name verbatim — no auto-repair traffic.
+    prefixed_name = f"{safe_server_name}_{safe_tool_name}"
     return {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
@@ -2514,7 +2536,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
     return [
         {
             "schema": {
-                "name": f"mcp_{safe_name}_list_resources",
+                "name": f"{safe_name}_list_resources",
                 "description": f"List available resources from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -2525,7 +2547,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
         },
         {
             "schema": {
-                "name": f"mcp_{safe_name}_read_resource",
+                "name": f"{safe_name}_read_resource",
                 "description": f"Read a resource by URI from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -2542,7 +2564,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
         },
         {
             "schema": {
-                "name": f"mcp_{safe_name}_list_prompts",
+                "name": f"{safe_name}_list_prompts",
                 "description": f"List available prompts from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -2553,7 +2575,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
         },
         {
             "schema": {
-                "name": f"mcp_{safe_name}_get_prompt",
+                "name": f"{safe_name}_get_prompt",
                 "description": f"Get a prompt by name from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",

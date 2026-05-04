@@ -33,10 +33,11 @@ Topologies
               previous agent's output" framing.  Use when the work is
               genuinely a transform chain (researcher → analyst → reviewer).
 
-  hierarchical  First N-1 agents run in parallel as workers; the last
-                agent runs after, receives all worker outputs as context,
-                and synthesizes them.  Common pattern: 3 analysts → 1
-                reviewer.
+(Removed: ``hierarchical`` — the dedicated synthesizer child paid for a
+second cold-start prefill to do work the parent agent's *next* turn was
+going to do anyway.  Old callers passing ``hierarchical`` are now silently
+aliased to ``parallel``; the parent synthesises the worker outputs in its
+own next API call.)
 
 For a true mesh topology the workers need to talk *during* execution.  That
 already works through the hermes-swarm MCP tools: any agent in any topology
@@ -61,13 +62,103 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_TOPOLOGIES = ("parallel", "sequential", "pipeline", "hierarchical")
+VALID_TOPOLOGIES = ("parallel", "sequential", "pipeline")
 DEFAULT_TOPOLOGY = "parallel"
 
+# Topologies the LLM may still pass from older sessions or trained habit.
+# Resolve to a current valid topology rather than raising — the legacy
+# ``hierarchical`` mode is now an alias for ``parallel`` because the
+# parent agent's next turn already synthesises the worker outputs (the
+# tool result IS the synthesis input).  A dedicated synthesizer child
+# was paying for two cold-start prefills back-to-back for the same work.
+_LEGACY_TOPOLOGY_ALIASES = {
+    "hierarchical": "parallel",
+}
+
 # Soft cap on agents per swarm.  Above this, LLMs almost certainly chose
-# the wrong tool — a real swarm is 2–10 agents, not 50.  The hard cap from
-# delegation.max_concurrent_children still applies for parallel mode.
+# the wrong tool — a real swarm is 2–10 agents, not 50.  Concurrency in
+# parallel mode is bounded by delegation.max_concurrent_children; extras
+# queue and start as slots free up.
 MAX_AGENTS_PER_SWARM = 20
+
+
+def _get_swarm_concurrency_hint() -> int:
+    """Resolve current delegation.max_concurrent_children for schema text.
+
+    Read at module-import time and substituted into the swarm_run
+    description so the LLM sees the actual cap instead of a stale
+    "default 3" string.  Falls back to 3 if anything fails (e.g. config
+    missing or delegate_tool not yet importable during partial loads).
+    """
+    try:
+        from tools.delegate_tool import _get_max_concurrent_children
+        return _get_max_concurrent_children()
+    except Exception:
+        return 3
+
+
+# Floor model for swarm children — bumped from haiku to sonnet so swarm
+# subagents have the 1M-context tier by default.  In real swarm runs (e.g.
+# fanning out across Jira + Stack + Slack with full body fetches), haiku's
+# 200K window saturates and forces mid-task compaction; sonnet 4.6 fits the
+# fan-out without compaction.  Override per-agent with ``model: ...`` on the
+# agent dict, or per-persona via delegation.model_by_role.
+_SWARM_DEFAULT_MODEL = "claude-sonnet-4-6"
+
+
+def _is_below_swarm_floor(model: str) -> bool:
+    """True for models below the swarm context-window floor.
+
+    "Below floor" means the model's context window is too narrow for typical
+    swarm fan-out workloads.  Currently that's the Claude Haiku family
+    (200K).  Sonnet (1M tier) and Opus (1M tier) clear the bar.
+
+    Used to bump stale ``delegation.model_by_role`` entries (set when
+    Haiku was the curated default for some research personas) up to the
+    swarm floor so swarm children don't compact mid-task on a workload
+    that's known to overflow.
+    """
+    if not model:
+        return False
+    return "haiku" in model.lower()
+
+
+def _resolve_swarm_child_model(
+    agent: Dict[str, Any], role_model_map: Dict[str, str]
+) -> str:
+    """Pick the model for a swarm child.
+
+    Precedence: explicit ``agent["model"]`` > delegation.model_by_role[type]
+    > swarm default (sonnet).  Never inherits the parent's model.  Stale
+    role-map entries that point to a sub-floor model (haiku) get bumped up
+    to ``_SWARM_DEFAULT_MODEL`` so the swarm floor is enforced regardless
+    of what's pinned in the user's config (the floor is the whole point —
+    let an explicit per-agent ``model`` opt out, but don't let an
+    out-of-date persona mapping silently drag children below it).
+    """
+    explicit = (agent.get("model") or "").strip()
+    if explicit:
+        return explicit
+    persona = (agent.get("type") or "").strip()
+    mapped = (role_model_map.get(persona) if persona else None) or ""
+    mapped = mapped.strip()
+    if mapped and not _is_below_swarm_floor(mapped):
+        return mapped
+    return _SWARM_DEFAULT_MODEL
+
+
+def _load_role_model_map() -> Dict[str, str]:
+    """Read delegation.model_by_role once per swarm_run call.
+
+    Empty dict on any failure (config missing, malformed, personas module
+    unavailable).  The caller still applies the swarm default when no
+    mapping resolves.
+    """
+    try:
+        from hermes_cli.personas import get_role_model_map
+        return get_role_model_map() or {}
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -119,26 +210,25 @@ def _build_swarm_prelude(
         "call (don't rely on env-var defaults; you're spawned in-process).\n\n"
         "Note: the registered tool names carry a doubled ``swarm_`` (the\n"
         "first comes from the MCP server name ``hermes-swarm``, the second\n"
-        "from the tool's own name).  Emit them exactly as shown below — \n"
-        "guessing the singular form will trigger auto-repair on every call.\n\n"
+        "from the tool's own name).  Emit them exactly as shown below.\n\n"
         "  Memory (publish + read findings)\n"
-        "    mcp_hermes_swarm_swarm_memory_store(key, value, tags?)\n"
-        "    mcp_hermes_swarm_swarm_memory_get(key)\n"
-        "    mcp_hermes_swarm_swarm_memory_search(query)\n"
-        "    mcp_hermes_swarm_swarm_memory_list(prefix?, tag?)\n\n"
+        "    hermes_swarm_swarm_memory_store(key, value, tags?)\n"
+        "    hermes_swarm_swarm_memory_get(key)\n"
+        "    hermes_swarm_swarm_memory_search(query)\n"
+        "    hermes_swarm_swarm_memory_list(prefix?, tag?)\n\n"
         "  Messaging (peer comms)\n"
-        "    mcp_hermes_swarm_swarm_broadcast(body)            — send to all peers\n"
-        "    mcp_hermes_swarm_swarm_send_message(recipient, body)  — DM one peer\n"
-        "    mcp_hermes_swarm_swarm_inbox(since?)              — read messages addressed to you\n\n"
+        "    hermes_swarm_swarm_broadcast(body)            — send to all peers\n"
+        "    hermes_swarm_swarm_send_message(recipient, body)  — DM one peer\n"
+        "    hermes_swarm_swarm_inbox(since?)              — read messages addressed to you\n\n"
         "  Tasks (work-queue handoff between peers)\n"
-        "    mcp_hermes_swarm_swarm_task_create(description, assignee?)\n"
-        "    mcp_hermes_swarm_swarm_task_claim() / _swarm_task_complete(id, result)\n\n"
+        "    hermes_swarm_swarm_task_create(description, assignee?)\n"
+        "    hermes_swarm_swarm_task_claim() / _swarm_task_complete(id, result)\n\n"
         "  Voting (consensus)\n"
-        "    mcp_hermes_swarm_swarm_vote_open(question, options) / _swarm_vote_cast / _swarm_vote_tally\n\n"
+        "    hermes_swarm_swarm_vote_open(question, options) / _swarm_vote_cast / _swarm_vote_tally\n\n"
         "  Lifecycle (mark yourself running/done)\n"
-        f"    mcp_hermes_swarm_swarm_update_agent(agent_id='{agent_id}', "
+        f"    hermes_swarm_swarm_update_agent(agent_id='{agent_id}', "
         f"swarm_id='{swarm_id}', started=true)  — call at start\n"
-        f"    mcp_hermes_swarm_swarm_update_agent(agent_id='{agent_id}', "
+        f"    hermes_swarm_swarm_update_agent(agent_id='{agent_id}', "
         f"swarm_id='{swarm_id}', ended=true, result='<summary>')  — call at end\n\n"
         "## Coordination contract\n"
         "  1. As soon as you find something material to your task, store it \n"
@@ -189,6 +279,15 @@ def _validate_agents(agents: Any) -> List[Dict[str, Any]]:
 
 def _validate_topology(topology: Optional[str]) -> str:
     t = (topology or DEFAULT_TOPOLOGY).strip().lower()
+    # Resolve legacy aliases (e.g. hierarchical → parallel) silently.
+    aliased = _LEGACY_TOPOLOGY_ALIASES.get(t)
+    if aliased is not None:
+        logger.info(
+            "swarm_run: topology %r is aliased to %r — the parent agent "
+            "already synthesises worker outputs in its next turn.",
+            t, aliased,
+        )
+        t = aliased
     if t not in VALID_TOPOLOGIES:
         raise ValueError(
             f"unknown topology: {t!r}  (valid: {', '.join(VALID_TOPOLOGIES)})"
@@ -263,8 +362,14 @@ def _make_task(
     topology: str,
     peers: List[Dict[str, str]],
     extra_context: Optional[str] = None,
+    role_model_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Build the dict shape that ``delegate_task(tasks=[...])`` expects."""
+    """Build the dict shape that ``delegate_task(tasks=[...])`` expects.
+
+    Pre-resolves the model with the swarm-default floor (sonnet) so children
+    don't silently inherit a haiku parent and saturate their 200K window
+    mid-fan-out.  See ``_resolve_swarm_child_model`` for precedence.
+    """
     prelude = _build_swarm_prelude(
         swarm_id=swarm_id,
         agent_id=a["agent_id"],
@@ -282,10 +387,8 @@ def _make_task(
         "goal": a["goal"],
         "context": "\n".join(pieces),
         "agent_type": a["type"],
+        "model": _resolve_swarm_child_model(a, role_model_map or {}),
     }
-    # Carry through optional per-task overrides.
-    if a.get("model"):
-        task["model"] = a["model"]
     if a.get("toolsets"):
         task["toolsets"] = a["toolsets"]
     return task
@@ -308,11 +411,13 @@ def _run_parallel(
     swarm_id: str,
     shared_context: Optional[str],
     parent_agent,
+    role_model_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """All agents run concurrently in a single delegate_task batch."""
     from tools.delegate_tool import delegate_task
 
     peers = _peer_summaries(agents)
+    rmm = role_model_map if role_model_map is not None else _load_role_model_map()
     tasks = [
         _make_task(
             a,
@@ -320,6 +425,7 @@ def _run_parallel(
             topology="parallel",
             peers=peers,
             extra_context=shared_context,
+            role_model_map=rmm,
         )
         for a in agents
     ]
@@ -334,6 +440,7 @@ def _run_sequential(
     shared_context: Optional[str],
     parent_agent,
     pipeline_framing: bool = False,
+    role_model_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Agents run one at a time.  Each gets prior outputs in their context.
 
@@ -344,6 +451,7 @@ def _run_sequential(
     from tools.delegate_tool import delegate_task
 
     peers = _peer_summaries(agents)
+    rmm = role_model_map if role_model_map is not None else _load_role_model_map()
     accumulated: List[Dict[str, Any]] = []
     for idx, a in enumerate(agents):
         # Build extra context from prior agent outputs.
@@ -372,6 +480,7 @@ def _run_sequential(
             topology=topology_label,
             peers=peers,
             extra_context=extra,
+            role_model_map=rmm,
         )
         raw = delegate_task(tasks=[task], parent_agent=parent_agent)
         wrapped = _wrap_delegate_result(raw, [a])
@@ -391,53 +500,6 @@ def _run_sequential(
             }
             for acc in accumulated
         ],
-    }
-
-
-def _run_hierarchical(
-    agents: List[Dict[str, Any]],
-    *,
-    swarm_id: str,
-    shared_context: Optional[str],
-    parent_agent,
-) -> Dict[str, Any]:
-    """First N-1 agents run in parallel (workers); last agent runs after,
-    receiving all worker outputs (synthesizer/reviewer)."""
-    if len(agents) < 2:
-        # Degenerate case: hierarchical of one agent is just parallel-of-one.
-        return _run_parallel(
-            agents, swarm_id=swarm_id,
-            shared_context=shared_context, parent_agent=parent_agent,
-        )
-
-    workers, synthesizer = agents[:-1], agents[-1]
-
-    # Phase 1: workers in parallel.
-    worker_result = _run_parallel(
-        workers, swarm_id=swarm_id,
-        shared_context=shared_context, parent_agent=parent_agent,
-    )
-
-    # Phase 2: synthesizer with worker outputs threaded into context.
-    worker_summary_block = "\n\n".join(
-        f"### {r['agent_type']} ({r['agent_id']}) — output\n{r.get('summary', '')}"
-        for r in worker_result["results"]
-    )
-    synth_context_pieces: List[str] = []
-    if shared_context and shared_context.strip():
-        synth_context_pieces.append(shared_context.strip())
-    synth_context_pieces.append(
-        "## WORKER OUTPUTS (synthesise these)\n" + worker_summary_block
-    )
-    extra = "\n".join(synth_context_pieces)
-
-    synth_result = _run_parallel(
-        [synthesizer], swarm_id=swarm_id,
-        shared_context=extra, parent_agent=parent_agent,
-    )
-
-    return {
-        "results": worker_result["results"] + synth_result["results"],
     }
 
 
@@ -466,14 +528,27 @@ def _wrap_delegate_result(
     out: List[Dict[str, Any]] = []
     for i, r in enumerate(inner):
         a = agents[i] if i < len(agents) else None
+        # Per-child status from delegate_task: completed | timeout | error |
+        # interrupted | failed.  Treat anything not "completed" as not-ok so
+        # the orchestrator can't mistake a timeout for a successful empty
+        # response (the symptom we hit when the swarm wrapper only carried
+        # summary/ok and dropped status/error).
+        child_status = (r.get("status") or "").lower()
+        child_error = r.get("error")
+        is_ok = child_status == "completed" and not child_error
         entry: Dict[str, Any] = {
             "agent_id": a["agent_id"] if a else f"unknown-{i}",
             "agent_type": a["type"] if a else "unknown",
             # delegate_task currently returns 'summary' for the child's final
             # text output; fall back across known field names defensively.
             "summary": r.get("summary") or r.get("response") or r.get("output", ""),
-            "ok": r.get("ok", True if "summary" in r or "response" in r else False),
+            "ok": is_ok,
+            "status": child_status or ("completed" if is_ok else "unknown"),
         }
+        if child_error:
+            entry["error"] = child_error
+        if r.get("exit_reason"):
+            entry["exit_reason"] = r["exit_reason"]
         # Carry through any cost/iteration metadata delegate exposes.
         for k in ("model", "duration_s", "iterations", "cost_usd",
                   "input_tokens", "output_tokens"):
@@ -531,29 +606,32 @@ def swarm_run(
         sid, swarm_title, topo, len(validated), pre_registered,
     )
 
+    # Resolve the role→model map once for this swarm so each agent picks up
+    # delegation.model_by_role overrides without re-reading the config file
+    # per task.
+    role_model_map = _load_role_model_map()
+
     # Dispatch by topology.
     try:
         if topo == "parallel":
             outcome = _run_parallel(
                 validated, swarm_id=sid,
                 shared_context=shared_context, parent_agent=parent_agent,
+                role_model_map=role_model_map,
             )
         elif topo == "sequential":
             outcome = _run_sequential(
                 validated, swarm_id=sid,
                 shared_context=shared_context, parent_agent=parent_agent,
                 pipeline_framing=False,
+                role_model_map=role_model_map,
             )
         elif topo == "pipeline":
             outcome = _run_sequential(
                 validated, swarm_id=sid,
                 shared_context=shared_context, parent_agent=parent_agent,
                 pipeline_framing=True,
-            )
-        elif topo == "hierarchical":
-            outcome = _run_hierarchical(
-                validated, swarm_id=sid,
-                shared_context=shared_context, parent_agent=parent_agent,
+                role_model_map=role_model_map,
             )
         else:  # pragma: no cover — _validate_topology should have rejected
             return tool_error(f"unsupported topology: {topo}")
@@ -570,6 +648,34 @@ def swarm_run(
         not r.get("ok", True) for r in outcome.get("results", [])
     )
     _try_end_swarm(sid, "failed" if failed else "completed")
+
+    # User-visible "swarm done" line: surface the swarm's outcome before the
+    # parent agent makes its (potentially slow) next API call to process the
+    # result.  Without this, swarm completion is silent — the parent hits
+    # cold-start on its next turn while the user wonders if the swarm
+    # actually finished.  Distinct from the per-delegate_task rollup line
+    # (which emits once per inner ``_run_parallel`` call) — this final
+    # line is the swarm-level summary that fires after every topology.
+    try:
+        emit = getattr(parent_agent, "_emit_status", None)
+        if emit:
+            n_total = len(outcome.get("results", []))
+            n_ok = sum(
+                1 for r in outcome.get("results", [])
+                if r.get("ok", True) and not r.get("error")
+            )
+            outcome_glyph = "✅" if not failed else "⚠️"
+            children_str = (
+                f"{n_ok}/{n_total} ok" if n_ok < n_total
+                else f"{n_total} ok"
+            )
+            emit(
+                f"  ┊ {outcome_glyph} swarm done · {children_str} · "
+                f"topology={topo} · {duration:.1f}s · "
+                f"parent now processing result"
+            )
+    except Exception:
+        logger.debug("swarm_run done-emit failed", exc_info=True)
 
     response: Dict[str, Any] = {
         "swarm_id": sid,
@@ -601,18 +707,17 @@ SWARM_RUN_SCHEMA = {
         "  * 2+ agents needed with distinct roles (researcher + analyst + "
         "reviewer; N analysts on N independent inputs; etc.).\n"
         "  * You want them to share findings as they work, not just at the "
-        "end (use mcp_hermes_swarm_memory_store / _broadcast).\n\n"
+        "end (use hermes_swarm_swarm_memory_store / _swarm_broadcast).\n\n"
         "When NOT to use:\n"
         "  * Only one subagent needed → use delegate_task directly.\n"
         "  * Mechanical multi-step work with no reasoning → use "
         "execute_code.\n\n"
         "Topologies:\n"
         "  parallel     — all agents concurrent (default).  Best for "
-        "independent inputs.\n"
+        "independent inputs.  YOU (the parent) synthesise their outputs "
+        "in your next turn — don't add a separate synthesizer agent.\n"
         "  sequential   — one at a time, each sees prior outputs.\n"
-        "  pipeline     — chain: each agent's input is previous output.\n"
-        "  hierarchical — first N-1 in parallel as workers; last "
-        "synthesises their outputs.\n\n"
+        "  pipeline     — chain: each agent's input is previous output.\n\n"
         "Each agent dict needs: ``type`` (persona name from "
         "~/.hermes/personas/, e.g. 'researcher', 'code-analyzer'), "
         "``goal`` (what to do).  Optional: ``context`` (extra info just "
@@ -628,12 +733,13 @@ SWARM_RUN_SCHEMA = {
                 "description": (
                     "List of agents to spawn.  Hard ceiling: "
                     f"{MAX_AGENTS_PER_SWARM} per swarm.  In parallel topology "
-                    "the number of children running concurrently is bounded "
-                    "by delegation.max_concurrent_children (default 3); "
-                    "extra agents queue and run as slots free up.  Raise "
-                    "the cap from the CLI with /delegation parallel <N>, "
-                    "or in ~/.hermes/config.yaml under "
-                    "delegation.max_concurrent_children."
+                    f"up to {_get_swarm_concurrency_hint()} agents run "
+                    "concurrently (delegation.max_concurrent_children); "
+                    "extras queue and start as slots free up.  Submit as "
+                    "many agents as you actually need — no need to split. "
+                    "Raise the cap with /delegation parallel <N> in the "
+                    "CLI or delegation.max_concurrent_children in "
+                    "~/.hermes/config.yaml."
                 ),
                 "items": {
                     "type": "object",

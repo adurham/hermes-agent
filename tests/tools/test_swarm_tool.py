@@ -41,10 +41,17 @@ def _mock_parent():
 
 
 def _fake_delegate_response(*summaries: str) -> str:
-    """Build a JSON string mirroring delegate_task's return shape."""
+    """Build a JSON string mirroring delegate_task's return shape.
+
+    Real delegate_task entries always carry ``status`` ("completed" /
+    "failed" / "timeout" / "interrupted") + ``exit_reason``; the swarm
+    wrapper now uses status to derive ``ok`` so timeout-with-empty-summary
+    can't be confused for success.  Mirror that here.
+    """
     return json.dumps({
         "results": [
-            {"summary": s, "ok": True}
+            {"summary": s, "ok": True, "status": "completed",
+             "exit_reason": "completed"}
             for s in summaries
         ],
     })
@@ -136,7 +143,14 @@ class TestValidateTopology(unittest.TestCase):
             self.assertEqual(_validate_topology(t), t)
 
     def test_case_insensitive(self):
-        self.assertEqual(_validate_topology("HIERARCHICAL"), "hierarchical")
+        self.assertEqual(_validate_topology("PARALLEL"), "parallel")
+
+    def test_hierarchical_aliases_to_parallel(self):
+        # ``hierarchical`` was retired (the synthesizer paid for a redundant
+        # cold-start prefill that the parent's next turn already does).
+        # Keep accepting the name silently so older callers don't break.
+        self.assertEqual(_validate_topology("hierarchical"), "parallel")
+        self.assertEqual(_validate_topology("HIERARCHICAL"), "parallel")
 
     def test_unknown_rejected(self):
         with self.assertRaises(ValueError):
@@ -188,10 +202,10 @@ class TestPrelude(unittest.TestCase):
             swarm_id="sw-x", agent_id="a1", agent_type="t",
             topology="parallel", peers=[], role_in_swarm="worker",
         )
-        self.assertIn("mcp_hermes_swarm_swarm_memory_store", text)
-        self.assertIn("mcp_hermes_swarm_swarm_broadcast", text)
-        self.assertIn("mcp_hermes_swarm_swarm_inbox", text)
-        self.assertIn("mcp_hermes_swarm_swarm_update_agent", text)
+        self.assertIn("hermes_swarm_swarm_memory_store", text)
+        self.assertIn("hermes_swarm_swarm_broadcast", text)
+        self.assertIn("hermes_swarm_swarm_inbox", text)
+        self.assertIn("hermes_swarm_swarm_update_agent", text)
         # Guard against regression to the singular form.  A standalone
         # `mcp_hermes_swarm_memory_store` (no double swarm_) is the wrong
         # name — fail if it shows up.
@@ -232,6 +246,7 @@ class TestWrapDelegateResult(unittest.TestCase):
             "results": [{
                 "summary": "done",
                 "ok": True,
+                "status": "completed",
                 "model": "claude-haiku-4-5",
                 "duration_s": 12.3,
                 "cost_usd": 0.04,
@@ -360,11 +375,13 @@ class TestSwarmRunDispatch(unittest.TestCase):
         self.assertIn("first stage output", second_context)
 
     @patch("tools.delegate_tool.delegate_task")
-    def test_hierarchical_workers_then_synthesizer(self, mock_dt):
-        mock_dt.side_effect = [
-            _fake_delegate_response("worker A output", "worker B output"),
-            _fake_delegate_response("synthesis"),
-        ]
+    def test_hierarchical_aliases_to_parallel(self, mock_dt):
+        # ``hierarchical`` is retired — the synthesizer phase was redundant
+        # work the parent already does in its next turn.  Old callers
+        # should now see a single parallel batch with all agents.
+        mock_dt.return_value = _fake_delegate_response(
+            "out A", "out B", "out C"
+        )
         parent = _mock_parent()
         out = json.loads(swarm_run(
             agents=[
@@ -375,16 +392,10 @@ class TestSwarmRunDispatch(unittest.TestCase):
             topology="hierarchical",
             parent_agent=parent,
         ))
-        # Two delegate calls: one batched (workers), one solo (synthesizer).
-        self.assertEqual(mock_dt.call_count, 2)
-        self.assertEqual(len(mock_dt.call_args_list[0].kwargs["tasks"]), 2)
-        self.assertEqual(len(mock_dt.call_args_list[1].kwargs["tasks"]), 1)
-        # Synthesizer's context contains both workers' output blocks.
-        synth_context = mock_dt.call_args_list[1].kwargs["tasks"][0]["context"]
-        self.assertIn("worker A output", synth_context)
-        self.assertIn("worker B output", synth_context)
-        self.assertIn("WORKER OUTPUTS", synth_context)
-        # All three results are returned to caller.
+        # One delegate call: all three in parallel; no synthesizer phase.
+        self.assertEqual(mock_dt.call_count, 1)
+        self.assertEqual(len(mock_dt.call_args_list[0].kwargs["tasks"]), 3)
+        self.assertEqual(out["topology"], "parallel")
         self.assertEqual(len(out["results"]), 3)
 
 

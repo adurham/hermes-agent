@@ -168,7 +168,10 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("total_duration_seconds", result)
 
     @patch("tools.delegate_tool._run_single_child")
-    def test_batch_capped_at_3(self, mock_run):
+    def test_batch_over_cap_queues_extras(self, mock_run):
+        """Batches larger than max_concurrent_children queue extras instead
+        of erroring out — concurrency stays bounded by the executor's
+        max_workers, but the LLM doesn't have to pre-shard the work."""
         mock_run.return_value = {
             "task_index": 0, "status": "completed",
             "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
@@ -177,10 +180,11 @@ class TestDelegateTask(unittest.TestCase):
         limit = _get_max_concurrent_children()
         tasks = [{"goal": f"Task {i}"} for i in range(limit + 2)]
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should return an error instead of silently truncating
-        self.assertIn("error", result)
-        self.assertIn("Too many tasks", result["error"])
-        mock_run.assert_not_called()
+        # No error — extras run as slots free up.
+        self.assertNotIn("error", result)
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), limit + 2)
+        self.assertEqual(mock_run.call_count, limit + 2)
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):
@@ -730,12 +734,14 @@ class TestBlockedTools(unittest.TestCase):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
-    def test_constants(self):
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_constants(self, mock_cfg):
         from tools.delegate_tool import (
             _get_max_spawn_depth, _get_orchestrator_enabled,
             _MIN_SPAWN_DEPTH, _MAX_SPAWN_DEPTH_CAP,
         )
-        self.assertEqual(_get_max_concurrent_children(), 3)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_get_max_concurrent_children(), 5)
         self.assertEqual(MAX_DEPTH, 1)
         self.assertEqual(_get_max_spawn_depth(), 1)       # default: flat
         self.assertTrue(_get_orchestrator_enabled())      # default
@@ -1841,10 +1847,10 @@ class TestConcurrencyDefaults(unittest.TestCase):
     """Tests for the concurrency default and no hard ceiling."""
 
     @patch("tools.delegate_tool._load_config", return_value={})
-    def test_default_is_three(self, mock_cfg):
+    def test_default_is_five(self, mock_cfg):
         # Clear env var if set
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_get_max_concurrent_children(), 3)
+            self.assertEqual(_get_max_concurrent_children(), 5)
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 10})
