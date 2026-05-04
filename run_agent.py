@@ -7184,8 +7184,14 @@ class AIAgent:
                             )
                             try:
                                 self._fire_stream_delta(
-                                    "\n\n⚠ Connection dropped mid tool-call; "
-                                    "reconnecting…\n\n"
+                                    "\n\n"
+                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"⚠ ABANDONED STREAM (attempt {_stream_attempt + 1}/"
+                                    f"{_max_stream_retries + 1}) — "
+                                    f"{type(e).__name__}\n"
+                                    "  Partial output above is stale and will\n"
+                                    "  be replaced by the retry below.\n"
+                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                                 )
                             except Exception:
                                 pass
@@ -7282,6 +7288,14 @@ class AIAgent:
                                     f"stream retry {_stream_attempt + 2}/{_max_stream_retries + 1} "
                                     f"after {type(e).__name__}"
                                 )
+                                # Even though no user-visible text was delivered
+                                # on this attempt, the context scrubber may hold
+                                # a partial-tag tail from chunks it received.
+                                # Flush + reset so the retry starts clean.
+                                try:
+                                    self._reset_stream_delivery_tracking()
+                                except Exception:
+                                    pass
                                 # Close the stale request client before retry
                                 stale = request_client_holder.get("client")
                                 if stale is not None:
