@@ -10168,6 +10168,21 @@ class HermesCLI:
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
 
+        # Shift+Enter — works in any terminal that supports the kitty
+        # keyboard protocol (kitty, WezTerm, Ghostty, foot, Alacritty 0.13+,
+        # iTerm2 3.5+). Hermes pushes the protocol's "disambiguate" flag at
+        # startup via hermes_cli.keyboard_protocol.enable(), which makes the
+        # terminal emit \x1b[13;2u for Shift+Enter instead of plain \r.
+        # On unsupported terminals (Terminal.app, VS Code terminal, etc.)
+        # the push is silently ignored and Shift+Enter still acts as Enter.
+        from hermes_cli import keyboard_protocol as _kbp
+        _kbp.register_prompt_toolkit_keys()
+
+        @kb.add("<shift-enter>")
+        def handle_shift_enter(event):
+            """Shift+Enter inserts a newline (kitty keyboard protocol)."""
+            event.current_buffer.insert_text('\n')
+
         # VSCode/Cursor bind Ctrl+G to "Find Next" at the editor level, so
         # the keystroke never reaches the embedded terminal. Alt+G is unbound
         # in those IDEs and arrives here as ('escape', 'g') — register it as
@@ -11684,7 +11699,24 @@ class HermesCLI:
                     _loop.set_exception_handler(_suppress_closed_loop_errors)
                 except Exception:
                     pass
-                app.run()
+                # Enable kitty keyboard protocol so Shift+Enter (and friends)
+                # produce distinct sequences. No-op on unsupported terminals.
+                try:
+                    from hermes_cli import keyboard_protocol as _kbp
+                    _kbp.enable()
+                except Exception:
+                    pass
+                try:
+                    app.run()
+                finally:
+                    # Always restore the terminal's keyboard mode, even on
+                    # exception paths. atexit + SIGTERM handlers are belt-
+                    # and-suspenders for the cases this finally won't cover.
+                    try:
+                        from hermes_cli import keyboard_protocol as _kbp
+                        _kbp.disable()
+                    except Exception:
+                        pass
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
         except (KeyError, OSError) as _stdin_err:
