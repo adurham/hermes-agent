@@ -1,22 +1,25 @@
-"""Discover and configure agent personas for delegated subagents.
+"""Persona discovery + per-role model config (hermes-runtime side).
 
-Personas are markdown files with YAML frontmatter (``name``, ``description``)
-shipped under ``~/.hermes/personas/<category>/<name>.md``. They define system
-prompt prefixes that get injected into delegated children when their
-``agent_type`` matches a persona name.
+The canonical implementation lives in :mod:`swarm.persona_library` (shipped
+in the hermes-swarm package).  This module is a thin wrapper that:
 
-Originally these came from ruflo's ``.claude/agents/`` tree. We now store
-them locally so:
+  * Re-exports the library's persona discovery + curated-policy surface
+    (:class:`Persona`, :func:`discover_personas`, :data:`SUGGESTED_ROLE_MODELS`,
+    etc.) so the existing public API in hermes-agent keeps working without
+    churn for ``tools/delegate_tool.py``, ``cli.py``, slash commands, etc.
+  * Adds the hermes-runtime config bits — reading/writing
+    ``delegation.model_by_role`` in ``~/.hermes/config.yaml`` and the
+    one-shot :func:`sync_from_ruflo` bootstrap.  These belong here because
+    they're tied to hermes-agent's config plumbing, not to the library.
 
-  * Hermes doesn't depend on a ruflo install at runtime.
-  * Users can curate / add their own personas without forking ruflo.
-  * The list is portable across machines (just rsync the directory).
+When hermes-swarm isn't installed (it's an optional dependency), the
+fallbacks below kick in: persona discovery still works (it's pure
+filesystem), but :data:`SUGGESTED_ROLE_MODELS` is empty so
+:func:`apply_suggested_defaults` becomes a no-op.  Install hermes-swarm to
+get the curated table.
 
-Use :func:`sync_from_ruflo` once to populate from a ruflo checkout, then the
-ruflo dir can be unwired or deleted.
-
-Public surface (everything :mod:`tools.delegate_tool` and the ``/delegation``
-slash command rely on):
+Public surface (callers shouldn't need to know whether the library is
+available — same names either way):
 
   * :class:`Persona` (alias :class:`RufloAgent` for back-compat) — discovered
     persona record.
@@ -25,73 +28,167 @@ slash command rely on):
   * :func:`lookup_agent` — find one by name.
   * :func:`group_by_category` — bucket by subdir.
   * :data:`SUGGESTED_ROLE_MODELS` and :func:`apply_suggested_defaults` —
-    curated per-role model defaults (haiku/sonnet/opus by workload).
+    curated per-role model defaults.
   * :func:`get_role_model_map`, :func:`set_role_model`,
     :func:`lookup_model_for_role` — read/write ``delegation.model_by_role``
     in ~/.hermes/config.yaml.
   * :func:`sync_from_ruflo` — one-shot rsync from a ruflo checkout.
-
-All discovery is pure-filesystem; nothing here makes network calls.
 """
 from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
 
-# Default personas location.  Configurable via ``delegation.personas_path``
-# in ~/.hermes/config.yaml; resolved lazily.
-DEFAULT_PERSONAS_PATH = "~/.hermes/personas"
+# ---------------------------------------------------------------------------
+# Library import + fallback
+# ---------------------------------------------------------------------------
+#
+# We prefer ``swarm.persona_library`` (canonical).  If the hermes-swarm
+# package isn't installed, fall back to a minimal local implementation so
+# hermes-agent still runs; the curated SUGGESTED_ROLE_MODELS table is just
+# empty in that mode (apply_suggested_defaults becomes a no-op).
 
-# When syncing from a ruflo checkout, reuse ruflo's own filtering rules so
-# we don't pull in non-personas (docs, base templates) or cloud-only
-# integrations stripped from the lockdown build.
-_NON_AGENT_BASENAMES = frozenset({
-    "MIGRATION_SUMMARY",
-    "README",
-    "INDEX",
-})
-
-_SKIP_CATEGORIES_FROM_RUFLO = frozenset({
-    "flow-nexus",  # cloud sandbox/auth/payments
-    "payments",    # agentic-payments — cloud
-    "templates",   # base templates, not personas
-})
+try:
+    from swarm import persona_library as _plib
+    _HAVE_LIBRARY = True
+except ImportError:
+    _plib = None  # type: ignore[assignment]
+    _HAVE_LIBRARY = False
 
 
-@dataclass(frozen=True)
-class Persona:
-    """A discovered persona (system prompt + metadata).
+if _HAVE_LIBRARY:
+    # Re-export the library's surface verbatim so callers see the same
+    # types / functions either way.
+    Persona = _plib.Persona
+    DEFAULT_PERSONAS_PATH = _plib.DEFAULT_PERSONAS_PATH
+    SUGGESTED_ROLE_MODELS = _plib.SUGGESTED_ROLE_MODELS
+    _strip_frontmatter = _plib._strip_frontmatter
+    _parse_frontmatter = _plib._parse_frontmatter
+    discover_personas = _plib.discover_personas
+    group_by_category = _plib.group_by_category
+    _lookup_persona_lib = _plib.lookup_persona
+    _get_personas_path_lib = _plib.get_personas_path
+else:
+    # ── Minimal local fallback ────────────────────────────────────────────
+    from dataclasses import dataclass
 
-    Attributes:
-        name: Stable identifier (basename without .md).  Use this as the
-            ``agent_type`` when calling ``delegate_task``.
-        description: One-line description from the file's YAML frontmatter.
-            Empty string if the file has no parseable description.
-        category: Subdirectory under the personas root (e.g. ``"swarm"``,
-            ``"core"``, ``"github"``).  ``"general"`` for files at the root.
-        path: Absolute path to the .md file.  Use :meth:`load_prompt` to
-            read the markdown body (frontmatter stripped).
-    """
+    DEFAULT_PERSONAS_PATH = "~/.hermes/personas"
+    SUGGESTED_ROLE_MODELS: dict[str, str] = {}  # empty without the library
 
-    name: str
-    description: str
-    category: str
-    path: str
+    def _strip_frontmatter(text: str) -> str:
+        if not text.startswith("---"):
+            return text
+        rest = text[3:]
+        closer = rest.find("\n---")
+        if closer < 0:
+            return text
+        return rest[closer + 4:].lstrip("\n")
 
-    def load_prompt(self) -> str:
-        """Return the markdown body of the persona file (everything after the
-        closing ``---`` of the YAML frontmatter).  Returns the whole file if
-        there's no frontmatter, or an empty string on read error.
-        """
-        try:
-            text = Path(self.path).read_text(encoding="utf-8", errors="replace")
-        except (OSError, UnicodeDecodeError):
-            return ""
-        return _strip_frontmatter(text)
+    def _parse_frontmatter(text: str) -> dict[str, str]:
+        if not text.startswith("---"):
+            return {}
+        rest = text[3:]
+        closer = rest.find("\n---")
+        if closer < 0:
+            return {}
+        block = rest[:closer].strip()
+        out: dict[str, str] = {}
+        current_key: Optional[str] = None
+        for raw_line in block.splitlines():
+            line = raw_line.rstrip()
+            if not line:
+                continue
+            if not raw_line.startswith((" ", "\t")) and ":" in line:
+                key, _, value = line.partition(":")
+                key = key.strip().lower()
+                value = value.strip()
+                if (value.startswith('"') and value.endswith('"')) or (
+                    value.startswith("'") and value.endswith("'")
+                ):
+                    value = value[1:-1]
+                out[key] = value
+                current_key = key
+            elif current_key and raw_line.startswith((" ", "\t")):
+                extra = raw_line.strip()
+                if extra:
+                    out[current_key] = (out.get(current_key, "") + " " + extra).strip()
+        return out
+
+    @dataclass(frozen=True)
+    class Persona:  # type: ignore[no-redef]
+        name: str
+        description: str
+        category: str
+        path: str
+
+        def load_prompt(self) -> str:
+            try:
+                text = Path(self.path).read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                return ""
+            return _strip_frontmatter(text)
+
+    _NON_AGENT_BASENAMES_FALLBACK = frozenset({"MIGRATION_SUMMARY", "README", "INDEX"})
+
+    def _get_personas_path_lib(config_path: Optional[str] = None) -> Path:
+        if config_path:
+            return Path(os.path.expanduser(config_path)).resolve()
+        env = os.environ.get("HERMES_PERSONAS_PATH")
+        if env:
+            return Path(os.path.expanduser(env)).resolve()
+        return Path(os.path.expanduser(DEFAULT_PERSONAS_PATH)).resolve()
+
+    def discover_personas(personas_path: Optional[Path] = None) -> list[Persona]:
+        base = personas_path or _get_personas_path_lib()
+        if not base.is_dir():
+            return []
+        seen: dict[str, Persona] = {}
+        for md in base.rglob("*.md"):
+            if not md.is_file():
+                continue
+            name = md.stem
+            if name in _NON_AGENT_BASENAMES_FALLBACK:
+                continue
+            try:
+                rel = md.relative_to(base)
+            except ValueError:
+                continue
+            category = rel.parts[0] if len(rel.parts) > 1 else "general"
+            if name in seen:
+                continue
+            try:
+                with md.open("r", encoding="utf-8", errors="replace") as f:
+                    head = f.read(2048)
+            except OSError:
+                continue
+            meta = _parse_frontmatter(head)
+            seen[name] = Persona(
+                name=name,
+                description=meta.get("description", ""),
+                category=category,
+                path=str(md),
+            )
+        return sorted(seen.values(), key=lambda a: (a.category, a.name))
+
+    def group_by_category(personas: Iterable[Persona]) -> dict[str, list[Persona]]:
+        out: dict[str, list[Persona]] = {}
+        for p in personas:
+            out.setdefault(p.category, []).append(p)
+        return out
+
+    def _lookup_persona_lib(
+        name: str, personas_path: Optional[Path] = None
+    ) -> Optional[Persona]:
+        if not name:
+            return None
+        needle = name.strip()
+        for p in discover_personas(personas_path):
+            if p.name == needle:
+                return p
+        return None
 
 
 # Back-compat alias — older code (tools/delegate_tool.py before the rename,
@@ -100,58 +197,59 @@ RufloAgent = Persona
 
 
 # ---------------------------------------------------------------------------
-# Frontmatter parsing — kept dependency-free (no PyYAML import).
+# Personas-path resolution
+#
+# The library's resolver checks env + default; the hermes wrapper additionally
+# reads ``delegation.personas_path`` from ~/.hermes/config.yaml so existing
+# users' configs continue to take effect.
 # ---------------------------------------------------------------------------
 
 
-def _strip_frontmatter(text: str) -> str:
-    """Strip leading YAML frontmatter (``---\\n...\\n---\\n``) if present."""
-    if not text.startswith("---"):
-        return text
-    rest = text[3:]
-    closer = rest.find("\n---")
-    if closer < 0:
-        return text
-    after = rest[closer + 4:]
-    return after.lstrip("\n")
+def get_personas_path(config_path: Optional[str] = None) -> Path:
+    """Resolve the personas directory.
 
-
-def _parse_frontmatter(text: str) -> dict[str, str]:
-    """Extract ``name`` and ``description`` from YAML frontmatter.
-
-    Frontmatter here is simple flat key/value pairs.  Multi-line values
-    (continuation lines indented under the previous key) are joined into
-    a single description string.  Returns an empty dict if no frontmatter
-    is found.
+    Precedence: explicit ``config_path`` arg > ``delegation.personas_path``
+    in config.yaml > ``HERMES_PERSONAS_PATH`` env > :data:`DEFAULT_PERSONAS_PATH`.
     """
-    if not text.startswith("---"):
-        return {}
-    rest = text[3:]
-    closer = rest.find("\n---")
-    if closer < 0:
-        return {}
-    block = rest[:closer].strip()
-    out: dict[str, str] = {}
-    current_key: Optional[str] = None
-    for raw_line in block.splitlines():
-        line = raw_line.rstrip()
-        if not line:
-            continue
-        if not raw_line.startswith((" ", "\t")) and ":" in line:
-            key, _, value = line.partition(":")
-            key = key.strip().lower()
-            value = value.strip()
-            if (value.startswith('"') and value.endswith('"')) or (
-                value.startswith("'") and value.endswith("'")
-            ):
-                value = value[1:-1]
-            out[key] = value
-            current_key = key
-        elif current_key and raw_line.startswith((" ", "\t")):
-            extra = raw_line.strip()
-            if extra:
-                out[current_key] = (out.get(current_key, "") + " " + extra).strip()
-    return out
+    if config_path:
+        return Path(os.path.expanduser(config_path)).resolve()
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        delegation = cfg.get("delegation") if isinstance(cfg, dict) else None
+        if isinstance(delegation, dict):
+            cfg_path = delegation.get("personas_path")
+            if isinstance(cfg_path, str) and cfg_path.strip():
+                return Path(os.path.expanduser(cfg_path.strip())).resolve()
+    except Exception:
+        pass
+    return _get_personas_path_lib()
+
+
+# Back-compat alias — older code called this ``get_ruflo_path``.  Keep the
+# old name working so callers in tools/, tests/, and skills don't break.
+def get_ruflo_path(config_path: Optional[str] = None) -> Path:
+    """Deprecated alias for :func:`get_personas_path`."""
+    return get_personas_path(config_path)
+
+
+# Back-compat alias — older imports used ``discover_ruflo_agents``.
+def discover_ruflo_agents(
+    ruflo_path: Optional[Path] = None,
+) -> list[Persona]:
+    """Deprecated alias for :func:`discover_personas`."""
+    return discover_personas(ruflo_path)
+
+
+def lookup_agent(name: str) -> Optional[Persona]:
+    """Find a discovered persona by name (using the configured personas dir).
+
+    Returns None if not found.  Used by ``tools/delegate_tool.py`` to load
+    the persona prompt for a given ``agent_type=...`` argument on
+    ``delegate_task``.
+    """
+    return _lookup_persona_lib(name, personas_path=get_personas_path())
 
 
 # ---------------------------------------------------------------------------
@@ -203,139 +301,20 @@ def _save_to_config_yaml(key_path: str, value: object) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Discovery
-# ---------------------------------------------------------------------------
-
-
-def get_personas_path(config_path: Optional[str] = None) -> Path:
-    """Resolve the personas directory.
-
-    Precedence: explicit ``config_path`` arg > ``delegation.personas_path``
-    in config.yaml > ``HERMES_PERSONAS_PATH`` env > :data:`DEFAULT_PERSONAS_PATH`.
-    """
-    if config_path:
-        return Path(os.path.expanduser(config_path)).resolve()
-    try:
-        from hermes_cli.config import load_config
-
-        cfg = load_config() or {}
-        delegation = cfg.get("delegation") if isinstance(cfg, dict) else None
-        if isinstance(delegation, dict):
-            cfg_path = delegation.get("personas_path")
-            if isinstance(cfg_path, str) and cfg_path.strip():
-                return Path(os.path.expanduser(cfg_path.strip())).resolve()
-    except Exception:
-        pass
-    env = os.environ.get("HERMES_PERSONAS_PATH")
-    if env:
-        return Path(os.path.expanduser(env)).resolve()
-    return Path(os.path.expanduser(DEFAULT_PERSONAS_PATH)).resolve()
-
-
-# Back-compat alias — older code called this ``get_ruflo_path``.  Keep the
-# old name working so callers in tools/, tests/, and skills don't break.
-def get_ruflo_path(config_path: Optional[str] = None) -> Path:
-    """Deprecated alias for :func:`get_personas_path`."""
-    return get_personas_path(config_path)
-
-
-def discover_personas(
-    personas_path: Optional[Path] = None,
-) -> list[Persona]:
-    """Scan the personas directory for .md files.
-
-    Args:
-        personas_path: Personas root.  Defaults to :data:`DEFAULT_PERSONAS_PATH`.
-
-    Returns:
-        Sorted list of :class:`Persona` objects.  Ordered by (category, name).
-        Returns an empty list if the directory is missing or empty.
-
-    Layout convention:
-        ``<root>/<category>/<name>.md`` — top-level files use ``"general"``
-        as their category.
-
-    Filters out ``_NON_AGENT_BASENAMES`` (README/INDEX/etc.) so users can
-    safely drop documentation alongside personas without it appearing in the
-    picker.
-    """
-    base = personas_path or get_personas_path()
-    if not base.is_dir():
-        return []
-
-    seen: dict[str, Persona] = {}
-    for md in base.rglob("*.md"):
-        if not md.is_file():
-            continue
-        name = md.stem
-        if name in _NON_AGENT_BASENAMES:
-            continue
-        # Category = directory name relative to the personas root.
-        # Files at the root use "general".
-        try:
-            rel = md.relative_to(base)
-        except ValueError:
-            continue
-        if len(rel.parts) > 1:
-            category = rel.parts[0]
-        else:
-            category = "general"
-        if name in seen:
-            continue  # dedupe — first encounter wins
-        try:
-            with md.open("r", encoding="utf-8", errors="replace") as f:
-                head = f.read(2048)
-        except OSError:
-            continue
-        meta = _parse_frontmatter(head)
-        description = meta.get("description", "")
-        seen[name] = Persona(
-            name=name,
-            description=description,
-            category=category,
-            path=str(md),
-        )
-    return sorted(seen.values(), key=lambda a: (a.category, a.name))
-
-
-# Back-compat alias — older imports used ``discover_ruflo_agents``.
-def discover_ruflo_agents(
-    ruflo_path: Optional[Path] = None,
-) -> list[Persona]:
-    """Deprecated alias for :func:`discover_personas`."""
-    return discover_personas(ruflo_path)
-
-
-def group_by_category(
-    personas: Iterable[Persona],
-) -> dict[str, list[Persona]]:
-    """Group personas by category, preserving sort order within each bucket."""
-    out: dict[str, list[Persona]] = {}
-    for p in personas:
-        out.setdefault(p.category, []).append(p)
-    return out
-
-
-def lookup_agent(name: str) -> Optional[Persona]:
-    """Find a discovered persona by name.  Returns None if not found.
-
-    Used by ``tools/delegate_tool.py`` to load the persona prompt for a given
-    ``agent_type=...`` argument on ``delegate_task``.
-    """
-    if not name:
-        return None
-    needle = name.strip()
-    for p in discover_personas():
-        if p.name == needle:
-            return p
-    return None
-
-
-# ---------------------------------------------------------------------------
 # One-shot sync helper — pulls a ruflo checkout's .claude/agents tree into
 # the personas directory.  Idempotent.  Use to refresh after upstream ruflo
 # updates, or as a one-time bootstrap.
 # ---------------------------------------------------------------------------
+
+# Filtering matches the rules used by the original ruflo discovery code.
+# Kept here (not in the library) because the library is read-only and
+# never reaches into a ruflo checkout.
+_NON_AGENT_BASENAMES_SYNC = frozenset({"MIGRATION_SUMMARY", "README", "INDEX"})
+_SKIP_CATEGORIES_FROM_RUFLO = frozenset({
+    "flow-nexus",  # cloud sandbox/auth/payments
+    "payments",    # agentic-payments — cloud
+    "templates",   # base templates, not personas
+})
 
 
 def sync_from_ruflo(
@@ -354,14 +333,12 @@ def sync_from_ruflo(
             :func:`get_personas_path`.
 
     Returns:
-        ``(copied, skipped)`` — counts of files copied vs. skipped (because
-        they already existed and ``overwrite=False``).
+        ``(copied, skipped)`` — counts of files copied vs. skipped.
 
-    Filtering matches the rules used by the original ruflo discovery code:
-    skip ``v2/``, ``node_modules/``, ``__tests__/``, the
-    :data:`_NON_AGENT_BASENAMES` set, and the
-    :data:`_SKIP_CATEGORIES_FROM_RUFLO` cloud-integration categories.
-    First-encounter-wins dedup across the ruflo monorepo.
+    Filters: skip ``v2/``, ``node_modules/``, ``__tests__/``,
+    ``_NON_AGENT_BASENAMES_SYNC``, and the cloud-only category set
+    ``_SKIP_CATEGORIES_FROM_RUFLO``.  First-encounter-wins dedup across
+    the ruflo monorepo.
     """
     src_root = Path(os.path.expanduser(str(ruflo_root))).resolve()
     if not src_root.is_dir():
@@ -381,7 +358,7 @@ def sync_from_ruflo(
         if "v2" in parts or "node_modules" in parts or "__tests__" in parts:
             continue
         name = md.stem
-        if name in _NON_AGENT_BASENAMES:
+        if name in _NON_AGENT_BASENAMES_SYNC:
             continue
         rel_after = parts[i + 2 : -1]
         category = rel_after[0] if rel_after else "general"
@@ -406,141 +383,11 @@ def sync_from_ruflo(
 
 
 # ---------------------------------------------------------------------------
-# Suggested per-role model defaults — curated mapping of persona → model
-# based on the workload each persona typically performs.  Apply once via
-# the ``/delegation defaults`` command; individual roles can be re-pinned
-# afterwards.  Kept in lockstep with :data:`SUGGESTED_ROLE_MODELS` in the
-# v1 ``ruflo_agents.py`` module that this replaces.
+# Per-role model config (hermes ~/.hermes/config.yaml)
 #
-# Mapping rules:
-#   Haiku 4.5 — cheap retrieval / triage / monitors / scanners / glue.
-#               Anything that mostly reads state, routes work, emits status.
-#               Coordinators are here when their reasoning happens in their
-#               workers, not their own prompts.
-#   Sonnet 4.6 — balanced default for code work: coders, testers, reviewers,
-#                most swarm coordinators, github automation, refactoring.
-#   Opus 4.7 — deep reasoning: architecture, security, novel algorithm
-#              design, complex consensus, multi-step planning under
-#              uncertainty.
+# Reading/writing user pins is a hermes-runtime concern — the library
+# stays config-free.  These helpers persist ``delegation.model_by_role``.
 # ---------------------------------------------------------------------------
-
-_HAIKU = "claude-haiku-4-5"
-_SONNET = "claude-sonnet-4-6"
-_OPUS = "claude-opus-4-7"
-
-SUGGESTED_ROLE_MODELS: dict[str, str] = {
-    # ── Haiku — pure retrieval / triage / monitors / scanners / glue ──────
-    # Use Haiku only when the workload is bounded: a few tool calls, small
-    # output, no need to integrate sprawling cross-source results.  Roles
-    # that fan out across Jira + Stack + Slack with detailed body fetches
-    # blow past Haiku's 200K context window — those go to Sonnet below.
-    "pii-detector": _HAIKU,
-    "project-board-sync": _HAIKU,
-    "sync-coordinator": _HAIKU,
-    "performance-monitor": _HAIKU,
-    "resource-allocator": _HAIKU,
-    "base-template-generator": _HAIKU,
-    "release-manager": _HAIKU,
-    "workflow-automation": _HAIKU,
-    "load-balancer": _HAIKU,
-    "test-long-runner": _HAIKU,
-    "aidefence-guardian": _HAIKU,
-    "claims-authorizer": _HAIKU,
-
-    # ── Sonnet — balanced default for code work + research roles ─────────
-    # Promoted from Haiku 2026-05-04: in real swarm runs, these roles
-    # routinely scanned multi-source corpora (Jira issues + Stack KB + Slack
-    # threads) and hit Haiku's 200K context, forcing 30–65% compaction
-    # mid-task.  Sonnet 4.6 has the 1M-context tier so the fan-out fits.
-    "researcher": _SONNET,
-    "scout-explorer": _SONNET,
-    "code-analyzer": _SONNET,
-    "analyze-code-quality": _SONNET,
-    "issue-tracker": _SONNET,
-    "swarm-issue": _SONNET,
-    "swarm-pr": _SONNET,
-    "release-swarm": _SONNET,
-    "pr-manager": _SONNET,
-    "coder": _SONNET,
-    "tester": _SONNET,
-    "reviewer": _SONNET,
-    "planner": _SONNET,
-    "code-review-swarm": _SONNET,
-    "multi-repo-swarm": _SONNET,
-    "github-modes": _SONNET,
-    "dev-backend-api": _SONNET,
-    "data-ml-model": _SONNET,
-    "ops-cicd-github": _SONNET,
-    "docs-api-openapi": _SONNET,
-    "spec-mobile-react-native": _SONNET,
-    "production-validator": _SONNET,
-    "test-architect": _SONNET,
-    "python-specialist": _SONNET,
-    "typescript-specialist": _SONNET,
-    "database-specialist": _SONNET,
-    "project-coordinator": _SONNET,
-    "topology-optimizer": _SONNET,
-    "benchmark-suite": _SONNET,
-    "performance-benchmarker": _SONNET,
-    # SPARC stages — mostly tactical (architecture stage is in Opus below).
-    "specification": _SONNET,
-    "pseudocode": _SONNET,
-    "refinement": _SONNET,
-    # Swarm coordinators (tactical)
-    "adaptive-coordinator": _SONNET,
-    "hierarchical-coordinator": _SONNET,
-    "mesh-coordinator": _SONNET,
-    "worker-specialist": _SONNET,
-    # Codex-side workers
-    "codex-worker": _SONNET,
-    "codex-coordinator": _SONNET,
-    # Memory subsystem (storage/index work; not novel design)
-    "memory-specialist": _SONNET,
-    "swarm-memory-manager": _SONNET,
-    "v3-memory-specialist": _SONNET,
-    # Goal planning (tactical)
-    "agent": _SONNET,
-    "goal-planner": _SONNET,
-    "code-goal-planner": _SONNET,
-    # Sublinear specialty (matrix / pagerank — bounded math)
-    "matrix-optimizer": _SONNET,
-    "pagerank-analyzer": _SONNET,
-    "performance-optimizer": _SONNET,
-    "consensus-coordinator": _SONNET,
-    "trading-predictor": _SONNET,
-    # Sona learning loops (orchestration of LoRA/SAFLA pipelines)
-    "sona-learning-optimizer": _SONNET,
-    "safla-neural": _SONNET,
-    # Well-defined consensus algorithms — implementation, not novel design.
-    "crdt-synchronizer": _SONNET,
-    "gossip-coordinator": _SONNET,
-
-    # ── Opus — deep reasoning, architecture, security, novel design ───────
-    "arch-system-design": _OPUS,
-    "architecture": _OPUS,  # SPARC architecture stage
-    "adr-architect": _OPUS,
-    "security-architect": _OPUS,
-    "security-architect-aidefence": _OPUS,
-    "security-auditor": _OPUS,
-    "v3-security-architect": _OPUS,
-    "ddd-domain-expert": _OPUS,
-    "performance-engineer": _OPUS,
-    "v3-performance-engineer": _OPUS,
-    "v3-integration-architect": _OPUS,
-    "byzantine-coordinator": _OPUS,  # adversarial — needs the depth
-    "raft-manager": _OPUS,           # subtle ordering / leader election
-    "quorum-manager": _OPUS,         # dynamic membership reasoning
-    "security-manager": _OPUS,       # consensus-tier security
-    "queen-coordinator": _OPUS,
-    "v3-queen-coordinator": _OPUS,
-    "sparc-orchestrator": _OPUS,
-    "injection-analyst": _OPUS,
-    "collective-intelligence-coordinator": _OPUS,
-    "dual-orchestrator": _OPUS,
-    "repo-architect": _OPUS,
-    "reasoningbank-learner": _OPUS,
-    "tdd-london-swarm": _OPUS,
-}
 
 
 def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
@@ -554,6 +401,8 @@ def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
     Returns:
         ``(applied, skipped)`` — counts of roles updated and roles whose
         existing assignment was kept (or that weren't in the suggested map).
+
+    No-op when hermes-swarm isn't installed (the curated table is empty).
     """
     current = get_role_model_map()
     merged = dict(current)
@@ -573,11 +422,6 @@ def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
     if not _save_to_config_yaml("delegation.model_by_role", merged):
         return (0, skipped)
     return (applied, skipped)
-
-
-# ---------------------------------------------------------------------------
-# Per-role model assignment (config-backed)
-# ---------------------------------------------------------------------------
 
 
 def get_role_model_map() -> dict[str, str]:
@@ -647,3 +491,22 @@ def lookup_model_for_role(role: Optional[str]) -> Optional[str]:
     if not role:
         return None
     return get_role_model_map().get(role.strip())
+
+
+__all__ = [
+    "DEFAULT_PERSONAS_PATH",
+    "Persona",
+    "RufloAgent",
+    "SUGGESTED_ROLE_MODELS",
+    "apply_suggested_defaults",
+    "discover_personas",
+    "discover_ruflo_agents",
+    "get_personas_path",
+    "get_role_model_map",
+    "get_ruflo_path",
+    "group_by_category",
+    "lookup_agent",
+    "lookup_model_for_role",
+    "set_role_model",
+    "sync_from_ruflo",
+]
