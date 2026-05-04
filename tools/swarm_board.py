@@ -1,74 +1,54 @@
-"""Live multi-row Rich panel for active subagents during a delegate_task batch.
+"""Multi-row live status for active subagents during a delegate_task batch.
 
-Replaces the stream-of-prints UX during parallel swarm execution with a
-single live region above the parent's spinner.  Each row updates in place
-with the child's current status (model, tool count, last tool, last
-notable note, elapsed).  Children's chatter (auto-repair lines, retry
-banners, compaction notes, request-dump notices) is captured into the
-row's note slot instead of being printed to stdout.
+This module is a thread-safe state container.  Rendering is the responsibility
+of the surrounding UI — the CLI hosts a prompt_toolkit ``FormattedTextControl``
+that reads ``get_rows_snapshot()`` and re-renders whenever the board calls
+its ``on_change`` hook.
 
-Design constraints:
+Why no rendering here:
 
-* Coexists with prompt_toolkit's ``patch_stdout`` and the parent's
-  ``KawaiiSpinner``.  The board renders to ``self._out`` (the captured
-  stdout reference, like KawaiiSpinner) and uses ANSI cursor moves to
-  redraw N lines in place — no Rich.Live (which fights prompt_toolkit's
-  own line management).
+The previous implementation tried to paint multi-row live updates by writing
+raw ANSI cursor-up + clear-line sequences to ``sys.stdout`` from a daemon
+thread.  Under prompt_toolkit's ``patch_stdout`` (the active CLI runtime), raw
+cursor-movement escapes are silently filtered by ``StdoutProxy`` while line
+clears pass through as literal text — so each tick appended a fresh block of
+rows instead of updating in place.  See ``cli.py::_cprint`` for the documented
+note that raw ANSI through stdout doesn't survive ``patch_stdout``.
 
-* Errors and final completion summaries still flow up to stdout so they
-  scroll in the conversation history and survive the board teardown.
+The proper fix is to surface board state as a real widget in prompt_toolkit's
+own layout, where the rendering pipeline owns cursor management.  That's what
+the CLI does with the ``swarm_board_widget`` hung off the root ``HSplit``.
 
-* Single-process, parent-thread coordinator.  Children write to their
-  row via thread-safe dict updates; a daemon thread on the parent
-  redraws the board every ~250ms.  No locks held while writing to the
-  terminal.
+Public surface used by ``delegate_tool.py``:
 
-* Off by default.  The board only activates when the parent agent has
-  ``_print_fn`` (i.e. CLI session, not gateway/library), 2+ children
-  are about to run, and stdout is a TTY.  Otherwise children print
-  their lines to stdout as before.
+* ``SwarmBoard.maybe_start(parent_agent, n_children)`` — returns either a real
+  ``SwarmBoard`` (when the parent is attached to a CLI that can host the
+  widget) or a ``_NoopBoard`` (everything else: gateway, library, piped runs).
+* ``board.register(sid, model=..., goal=...)``
+* ``board.update(sid, status=..., tool_count=..., last_tool=..., last_note=...)``
+* ``board.note(sid, text)`` — convenience for setting only ``last_note``.
+* ``board.finish(sid, status=..., summary=...)``
+* ``board.get_rows_snapshot()`` — used by the widget's text getter.
 
-Public API:
-
-    with SwarmBoard.maybe_start(parent_agent, n_children) as board:
-        # Inside this block:
-        # - board.update(subagent_id, **fields) updates one row
-        # - board.note(subagent_id, text) sets the row's last note
-        # - board.finish(subagent_id, status, summary) marks a row done
-        # - children's _print_fn is patched to route their stdout into
-        #   note() automatically
-        ...
-
-If ``maybe_start`` decides not to activate (no TTY, only one child,
-quiet mode, etc.) it returns a no-op context manager so the caller's
-``with`` block still works without branching.
+Both ``SwarmBoard`` and ``_NoopBoard`` are context managers; ``__enter__`` /
+``__exit__`` handle showing and hiding the widget by toggling a CLI-side flag.
 """
 from __future__ import annotations
 
 import os
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 
-# ANSI cursor sequences — keep them minimal.  See KawaiiSpinner for the
-# precedent of using only \r-and-spaces for line clearing because some
-# terminal multiplexers + prompt_toolkit + redirected-stdout combos
-# garble \033[K.  We use up-cursor + carriage-return + spaces.
-_HIDE_CURSOR = "\033[?25l"
-_SHOW_CURSOR = "\033[?25h"
-_CLEAR_LINE = "\033[2K"
-_UP = "\033[{n}A"        # n lines up
-_BOL = "\r"
-
-
 # Status icons — kept in lockstep with the existing KawaiiSpinner /
 # subagent.complete UI so the eye doesn't have to retrain.
 _STATUS_GLYPH = {
+    "queued":     "⏸",
     "starting":   "⏳",
     "running":    "🔀",
+    "summarizing": "📝",
     "completed":  "✅",
     "ok":         "✅",
     "failed":     "❌",
@@ -76,6 +56,19 @@ _STATUS_GLYPH = {
     "timeout":    "⏱",
     "interrupted": "⛔",
 }
+
+
+@dataclass
+class RowSnapshot:
+    """Frozen view of a row, safe to render without holding the lock."""
+    subagent_id: str
+    model: str
+    goal: str
+    status: str
+    tool_count: int
+    last_tool: str
+    last_note: str
+    elapsed_seconds: float
 
 
 @dataclass
@@ -89,17 +82,101 @@ class _Row:
     last_note: str = ""
     started_at: float = field(default_factory=time.time)
     ended_at: Optional[float] = None
+    # Freeze point for the displayed elapsed clock once the child stops
+    # doing work and just streams the final summary to text.  The model has
+    # finished its tool-calling loop at this point, so the meaningful
+    # "work duration" is fixed; continuing to tick the clock made finished
+    # rows look like they were still iterating.  Set when status flips to
+    # "summarizing"; preserved through the eventual ``finish()`` call so the
+    # final completed row still displays the work-time, not the work-time +
+    # summary-write-time.
+    work_ended_at: Optional[float] = None
 
     def elapsed(self) -> float:
-        end = self.ended_at if self.ended_at is not None else time.time()
+        # Precedence: terminal end (finish/failure) > work-finished freeze
+        # (summarizing onwards) > current wall clock.
+        if self.ended_at is not None and self.work_ended_at is None:
+            end = self.ended_at
+        elif self.work_ended_at is not None:
+            end = self.work_ended_at
+        else:
+            end = time.time()
         return max(0.0, end - self.started_at)
+
+    def snapshot(self) -> RowSnapshot:
+        return RowSnapshot(
+            subagent_id=self.subagent_id,
+            model=self.model,
+            goal=self.goal,
+            status=self.status,
+            tool_count=self.tool_count,
+            last_tool=self.last_tool,
+            last_note=self.last_note,
+            elapsed_seconds=self.elapsed(),
+        )
+
+
+def _flatten_to_oneline(text: str, max_len: int) -> str:
+    """Collapse text to a single visual line for row rendering.
+
+    Newlines / carriage returns in ``last_note`` (or ``last_tool``)
+    overflow the row's allocated height in the prompt_toolkit Window —
+    the widget reserves ``len(rows)`` lines but a row whose text
+    contains a ``\\n`` renders on multiple visual lines, pushing later
+    rows out of the allocated area.  Sanitise here so format_row's
+    output is guaranteed single-line.
+    """
+    if not text:
+        return ""
+    # Replace any whitespace-newline run with a single space; strip the
+    # rest of the control-character range too so a stray ANSI fragment
+    # doesn't leak into the board.
+    flat = " ".join(text.split())
+    if len(flat) > max_len:
+        flat = flat[: max_len - 3] + "..."
+    return flat
+
+
+def format_row(row: RowSnapshot) -> str:
+    """Render a single row to a one-line status string.
+
+    Pure function so the CLI's widget getter can call it without taking the
+    board's lock.
+    """
+    glyph = _STATUS_GLYPH.get(row.status, "🔀")
+    sid = row.subagent_id[-12:] if len(row.subagent_id) > 12 else row.subagent_id
+    model = row.model or "?"
+    if "/" in model:
+        model = model.split("/", 1)[1]
+    elapsed = f"{row.elapsed_seconds:.0f}s"
+    tool = _flatten_to_oneline(row.last_tool or "", 30)
+    if tool.startswith("mcp_"):
+        tool = tool[4:]
+    n = row.tool_count
+    note = _flatten_to_oneline(row.last_note or "", 60)
+    parts = [
+        f"{glyph} [{sid}]",
+        f"{model}",
+        f"{row.status}",
+        f"{n} tool{'s' if n != 1 else ''}",
+    ]
+    if tool:
+        parts.append(tool)
+    if note:
+        parts.append(note)
+    parts.append(elapsed)
+    return " · ".join(parts)
 
 
 class _NoopBoard:
-    """Returned from ``SwarmBoard.maybe_start`` when the board is disabled.
+    """Returned from ``SwarmBoard.maybe_start`` when no CLI host is available.
 
     The caller's ``with`` block runs unmodified; every method is a no-op.
+    Children print their chatter to stdout via the existing spinner-driven
+    progress path (i.e. pre-board behavior).
     """
+
+    is_active = False
 
     def __enter__(self) -> "_NoopBoard":
         return self
@@ -119,37 +196,42 @@ class _NoopBoard:
     def finish(self, *_args, **_kwargs) -> None:
         return None
 
+    def get_rows_snapshot(self) -> List[RowSnapshot]:
+        return []
+
 
 class SwarmBoard:
-    """Multi-row live display for active subagents.
+    """Thread-safe state container for the live swarm display.
 
-    Owned by the parent thread; updated from any thread.  Render thread
-    is a daemon; it shuts down on ``__exit__``.
+    The CLI's prompt_toolkit widget reads ``get_rows_snapshot()`` and renders.
+    Mutators (``register``, ``update``, ``note``, ``finish``) call the
+    ``on_change`` callback after releasing the lock so the host can invalidate
+    its app and trigger a re-render.
+
+    The class is a context manager so callers can scope show/hide cleanly:
+
+        with SwarmBoard.maybe_start(parent_agent, n) as board:
+            board.register(sid, ...)
+            board.update(sid, last_tool="...")
     """
+
+    is_active = True
 
     def __init__(
         self,
         *,
-        out=sys.stdout,
-        refresh_interval: float = 0.25,
+        on_change: Optional[Callable[[], None]] = None,
+        on_show: Optional[Callable[["SwarmBoard"], None]] = None,
+        on_hide: Optional[Callable[[], None]] = None,
         title: str = "swarm",
     ) -> None:
-        self._out = out
-        self._refresh_interval = refresh_interval
+        self._on_change = on_change
+        self._on_show = on_show
+        self._on_hide = on_hide
         self._title = title
         self._rows: Dict[str, _Row] = {}
         self._row_order: List[str] = []
         self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._lines_drawn = 0  # how many lines the last paint occupied
-        # Buffer for emergency stdout passthrough (e.g. on errors before
-        # a row exists).  Currently unused but retained for future hooks.
-        self._suppressed_prints: List[str] = []
-
-    # -------------------------------------------------------------------
-    # Lifecycle
-    # -------------------------------------------------------------------
 
     @classmethod
     def maybe_start(
@@ -159,55 +241,61 @@ class SwarmBoard:
         *,
         title: str = "swarm",
     ) -> "SwarmBoard | _NoopBoard":
-        """Decide whether to activate; return a context manager.
+        """Activate the board only when there's a CLI host to render it.
 
-        Activates only when:
-          * 2+ children (single-child runs already render fine)
-          * stdout is a TTY (the in-place redraws need terminal control)
-          * parent has a ``_print_fn`` set or the env isn't quiet (gateway /
-            library callers don't get the board — their caller manages UI)
-          * not explicitly disabled via HERMES_SWARM_BOARD=0
+        Activates when:
+          * 2+ children (single-child runs render fine via existing chatter)
+          * the parent agent carries a ``_cli_ref`` that exposes the
+            ``_swarm_board_show`` / ``_swarm_board_hide`` /
+            ``_invalidate_app`` hooks
+          * not explicitly disabled via ``HERMES_SWARM_BOARD=0``
+
+        Otherwise returns a no-op board so callers don't have to branch.
         """
         if os.environ.get("HERMES_SWARM_BOARD", "").strip() == "0":
             return _NoopBoard()
         if n_children < 2:
             return _NoopBoard()
-        # Resolve the output stream the same way KawaiiSpinner does:
-        # parent's _print_fn lets us route through prompt_toolkit's
-        # patch_stdout cleanly.
-        out = sys.stdout
-        try:
-            if not out.isatty():
-                return _NoopBoard()
-        except (AttributeError, ValueError, OSError):
+
+        cli_ref = getattr(parent_agent, "_cli_ref", None)
+        if cli_ref is None:
             return _NoopBoard()
-        return cls(out=out, title=title)
+        # Sanity: the CLI must expose the hooks we need.  If a wrapper CLI
+        # subclasses HermesCLI without these, we degrade rather than crash.
+        for attr in ("_swarm_board_show", "_swarm_board_hide", "_invalidate_app"):
+            if not callable(getattr(cli_ref, attr, None)):
+                return _NoopBoard()
+
+        return cls(
+            on_change=cli_ref._invalidate_app,
+            on_show=cli_ref._swarm_board_show,
+            on_hide=cli_ref._swarm_board_hide,
+            title=title,
+        )
 
     def __enter__(self) -> "SwarmBoard":
-        try:
-            self._out.write(_HIDE_CURSOR)
-            self._out.flush()
-        except Exception:
-            pass
-        self._thread = threading.Thread(target=self._render_loop, daemon=True)
-        self._thread.start()
+        if self._on_show is not None:
+            try:
+                self._on_show(self)
+            except Exception:
+                pass
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=1.0)
-        self._final_paint()
-        try:
-            self._out.write(_SHOW_CURSOR)
-            self._out.flush()
-        except Exception:
-            pass
+        if self._on_hide is not None:
+            try:
+                self._on_hide()
+            except Exception:
+                pass
         return False  # never suppress exceptions
 
-    # -------------------------------------------------------------------
-    # Mutators (thread-safe)
-    # -------------------------------------------------------------------
+    def _notify(self) -> None:
+        if self._on_change is None:
+            return
+        try:
+            self._on_change()
+        except Exception:
+            pass
 
     def register(
         self,
@@ -215,12 +303,26 @@ class SwarmBoard:
         *,
         model: str = "",
         goal: str = "",
+        status: Optional[str] = None,
     ) -> None:
+        """Add or refresh a row.
+
+        ``status`` defaults to ``_Row``'s default ("starting").  Pass
+        ``"queued"`` to render rows for children that have been built and
+        submitted but are waiting on an executor slot — distinct from
+        rows where the child has actually begun work.  The orchestrator's
+        ``subagent.start`` event transitions the row to ``"running"``.
+        """
         with self._lock:
             if subagent_id not in self._rows:
-                self._rows[subagent_id] = _Row(
-                    subagent_id=subagent_id, model=model, goal=goal
-                )
+                row_kwargs = {
+                    "subagent_id": subagent_id,
+                    "model": model,
+                    "goal": goal,
+                }
+                if status:
+                    row_kwargs["status"] = status
+                self._rows[subagent_id] = _Row(**row_kwargs)
                 self._row_order.append(subagent_id)
             else:
                 row = self._rows[subagent_id]
@@ -228,6 +330,9 @@ class SwarmBoard:
                     row.model = model
                 if goal:
                     row.goal = goal
+                if status:
+                    row.status = status
+        self._notify()
 
     def update(
         self,
@@ -243,6 +348,22 @@ class SwarmBoard:
             if row is None:
                 return
             if status is not None:
+                # Reset the elapsed clock when the row transitions out of
+                # "queued" — otherwise a child that waited 30s for an
+                # executor slot starts its life showing "30s" of work
+                # already done.
+                if row.status == "queued" and status != "queued":
+                    row.started_at = time.time()
+                # Freeze the elapsed clock at the moment the child enters
+                # "summarizing" — the model has stopped calling tools and
+                # is just streaming its final answer text, so the displayed
+                # time should reflect the work duration, not the streaming
+                # latency.  Only the FIRST transition into summarizing wins
+                # (a later TASK_TOOL_STARTED could flip back to running and
+                # then back to summarizing again; we don't reset the freeze
+                # in that case — the original work end is still meaningful).
+                if status == "summarizing" and row.work_ended_at is None:
+                    row.work_ended_at = time.time()
                 row.status = status
             if tool_count is not None:
                 row.tool_count = tool_count
@@ -250,6 +371,7 @@ class SwarmBoard:
                 row.last_tool = last_tool
             if last_note is not None:
                 row.last_note = last_note
+        self._notify()
 
     def note(self, subagent_id: str, text: str) -> None:
         """Set the row's ``last_note`` slot.  Truncated to 60 chars."""
@@ -276,79 +398,15 @@ class SwarmBoard:
                 row.last_note = (
                     summary if len(summary) <= 60 else summary[:57] + "..."
                 )
+        self._notify()
 
-    # -------------------------------------------------------------------
-    # Rendering
-    # -------------------------------------------------------------------
+    def get_rows_snapshot(self) -> List[RowSnapshot]:
+        """Return frozen row snapshots in registration order.
 
-    def _render_loop(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                self._paint()
-            except Exception:
-                # Never let a render glitch take down the swarm.
-                pass
-            self._stop_event.wait(self._refresh_interval)
-
-    def _format_row(self, row: _Row) -> str:
-        glyph = _STATUS_GLYPH.get(row.status, "🔀")
-        sid = row.subagent_id[-12:] if len(row.subagent_id) > 12 else row.subagent_id
-        model = row.model or "?"
-        # Strip provider prefix: "anthropic/claude-…" -> "claude-…"
-        if "/" in model:
-            model = model.split("/", 1)[1]
-        elapsed = f"{row.elapsed():.0f}s"
-        tool = row.last_tool or ""
-        if tool.startswith("mcp_"):
-            tool = tool[4:]
-        if len(tool) > 30:
-            tool = tool[:27] + "..."
-        n = row.tool_count
-        note = row.last_note or ""
-        # Compose: GLYPH [id] model · status · n tools · last_tool · note · Ts
-        parts = [
-            f"{glyph} [{sid}]",
-            f"{model}",
-            f"{row.status}",
-            f"{n} tool{'s' if n != 1 else ''}",
-        ]
-        if tool:
-            parts.append(tool)
-        if note:
-            parts.append(note)
-        parts.append(elapsed)
-        return " · ".join(parts)
-
-    def _paint(self) -> None:
+        Callable from any thread; safe to render without further locking.
+        """
         with self._lock:
-            rows = [self._rows[sid] for sid in self._row_order]
-        if not rows:
-            return
-        lines = [self._format_row(r) for r in rows]
-        # Move cursor up over the previously drawn block, clear each line,
-        # rewrite.  ANSI sequences only — we accept that this requires a TTY.
-        buf = []
-        if self._lines_drawn > 0:
-            buf.append(_UP.format(n=self._lines_drawn))
-        for line in lines:
-            buf.append(_BOL + _CLEAR_LINE + line + "\n")
-        try:
-            self._out.write("".join(buf))
-            self._out.flush()
-        except Exception:
-            return
-        self._lines_drawn = len(lines)
-
-    def _final_paint(self) -> None:
-        """Final state paint at exit — leaves the board on screen so the
-        user sees the last state, with a blank line below for clean
-        separation from whatever scrolls next."""
-        try:
-            self._paint()
-            self._out.write("\n")
-            self._out.flush()
-        except Exception:
-            pass
+            return [self._rows[sid].snapshot() for sid in self._row_order]
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +415,7 @@ class SwarmBoard:
 
 
 def make_child_print_fn(
-    board: SwarmBoard | _NoopBoard,
+    board: "SwarmBoard | _NoopBoard",
     subagent_id: str,
     *,
     fallback,

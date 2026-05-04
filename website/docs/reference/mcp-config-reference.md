@@ -202,19 +202,27 @@ After changing MCP config, reload servers with:
 Server-native MCP tools become:
 
 ```text
-mcp_<server>_<tool>
+<server>_<tool>
 ```
 
 Examples:
-- `mcp_github_create_issue`
-- `mcp_filesystem_read_file`
-- `mcp_my_api_query_data`
+- `github_create_issue`
+- `filesystem_read_file`
+- `my_api_query_data`
 
 Utility tools follow the same prefixing pattern:
-- `mcp_<server>_list_resources`
-- `mcp_<server>_read_resource`
-- `mcp_<server>_list_prompts`
-- `mcp_<server>_get_prompt`
+- `<server>_list_resources`
+- `<server>_read_resource`
+- `<server>_list_prompts`
+- `<server>_get_prompt`
+
+> **Convention change:** earlier Hermes registered MCP tools with an
+> additional `mcp_` (or `mcp__`) prefix to mirror Claude Code's MCP
+> convention.  Both forms caused Claude to strip the literal `mcp`
+> substring when emitting the call, triggering an "Auto-repaired tool
+> name" log on every invocation.  The `mcp` part has been removed; the
+> server name is the only prefix.  Resumed sessions that saved
+> old-format names still resolve via Hermes' name-repair fallback.
 
 ### Name sanitization
 
@@ -223,7 +231,7 @@ Hyphens (`-`) and dots (`.`) in both server names and tool names are replaced wi
 For example, a server named `my-api` exposing a tool called `list-items.v2` becomes:
 
 ```text
-mcp_my_api_list_items_v2
+my_api_list_items_v2
 ```
 
 Keep this in mind when writing `include` / `exclude` filters — use the **original** MCP tool name (with hyphens/dots), not the sanitized version.

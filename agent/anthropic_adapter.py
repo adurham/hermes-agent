@@ -40,7 +40,104 @@ def _get_anthropic_sdk():
             _anthropic_sdk = _sdk
         except ImportError:
             _anthropic_sdk = None
+        else:
+            _install_sse_event_observer(_sdk)
     return _anthropic_sdk
+
+
+# ── SSE event observer (ping visibility) ──────────────────────────────
+#
+# The Anthropic SDK silently drops SSE ``ping`` events at
+# ``anthropic/_streaming.py:102`` (``if sse.event == "ping": continue``),
+# so during a request's queue + prefill phase the iterator yields nothing
+# even though the server is sending keep-alive pings every ~10 s.  The
+# downstream stale-stream detector in ``run_agent.py`` cannot distinguish
+# "queued upstream, healthy" from "connection black-holed" without ping
+# visibility, and ends up killing healthy long-TTFT requests (e.g.
+# Opus 4.7 + 1M-context with a 200 K-token prompt on the OAuth/subscription
+# path, where TTFT routinely exceeds 5 minutes).
+#
+# Hook design: monkey-patch ``Stream._iter_events`` — the source iterator
+# that yields *all* SSE events including pings — to fire a thread-local
+# callback before passing each event through.  The SDK's filtering layer
+# (``Stream.__stream__``) still drops pings as before, so consumers see
+# unchanged behavior.  Patches are installed once per process, guarded
+# against SDK-internal API changes; on failure we log a warning and leave
+# the SDK untouched (the cold-start tolerance in run_agent.py remains as
+# a backstop).
+import threading as _threading
+
+_sse_event_callback = _threading.local()
+
+
+def set_sse_event_callback(callback):
+    """Install a thread-local callback fired on every raw SSE event.
+
+    The callback receives one positional argument: the event name
+    (``"ping"``, ``"message_start"``, ``"content_block_delta"``, …).
+    Pass ``None`` to clear.  Per-thread — workers running in different
+    threads don't see each other's callbacks.
+    """
+    _sse_event_callback.value = callback
+
+
+def _get_sse_event_callback():
+    return getattr(_sse_event_callback, "value", None)
+
+
+_sse_observer_installed = False
+
+
+def _install_sse_event_observer(sdk) -> None:
+    """Wrap ``Stream._iter_events`` so we can observe pings.
+
+    Idempotent — only patches once per process.  Best-effort: if the SDK's
+    private API surface doesn't match what we expect (different version,
+    refactor), we log and skip, leaving the SDK untouched.
+    """
+    global _sse_observer_installed
+    if _sse_observer_installed:
+        return
+    try:
+        from anthropic._streaming import Stream as _AntStream
+    except Exception as exc:
+        logger.warning(
+            "Anthropic SDK SSE observer not installed (import failed: %s) — "
+            "stream-stale detector will use cold-start tolerance only.",
+            exc,
+        )
+        _sse_observer_installed = True
+        return
+
+    _orig_iter_events = getattr(_AntStream, "_iter_events", None)
+    if _orig_iter_events is None:
+        logger.warning(
+            "Anthropic SDK SSE observer not installed (Stream._iter_events "
+            "missing — SDK API changed?) — stream-stale detector will use "
+            "cold-start tolerance only.",
+        )
+        _sse_observer_installed = True
+        return
+
+    def _hermes_iter_events(self):
+        cb = _get_sse_event_callback()
+        if cb is None:
+            yield from _orig_iter_events(self)
+            return
+        for sse in _orig_iter_events(self):
+            try:
+                cb(getattr(sse, "event", None))
+            except Exception:
+                # Callback errors must never break SDK iteration.
+                pass
+            yield sse
+
+    _AntStream._iter_events = _hermes_iter_events
+    _sse_observer_installed = True
+    logger.debug(
+        "Anthropic SDK SSE observer installed — stream-stale detector "
+        "now sees ping events."
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +418,12 @@ def _detect_claude_code_version() -> str:
 
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
-_MCP_TOOL_PREFIX = "mcp_"
+# Real Claude Code MCP tools follow ``mcp__<server>__<tool>`` (double-
+# underscore separators).  Hermes' MCP-source tools are registered with the
+# same convention now (see ``tools/mcp_tool.py::_convert_mcp_schema``).  This
+# constant is the *prefix* check — anything starting with ``mcp__`` is
+# treated as already-prefixed by the OAuth-path identity rewriter.
+_MCP_TOOL_PREFIX = "mcp__"
 
 
 def _get_claude_code_version() -> str:
@@ -1915,35 +2017,37 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention).
-        # Skip Anthropic native server tools — they have a "type" field
-        # (e.g. "web_search_20250305") instead of an input_schema, and
-        # Anthropic only intercepts them under their canonical names.
-        # Idempotent: tools whose registered name ALREADY begins with
-        # ``mcp_`` (i.e. tools sourced from MCP servers, registered with
-        # the doubled-prefix shape ``mcp_<server>_<tool>``) must not be
-        # prefixed again — doing so produces ``mcp_mcp_*`` in the schema
-        # the model sees, which trains it to either echo the doubled form
-        # back or, more commonly, strip BOTH prefixes when emitting the
-        # call.  The latter trips _repair_tool_call on every call.
-        if anthropic_tools:
-            for tool in anthropic_tools:
-                if "type" in tool and tool.get("type", "").startswith(("web_search_", "code_execution_", "computer_", "bash_", "text_editor_")):
-                    continue
-                if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
-                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
-
-        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
-        for msg in anthropic_messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "tool_use" and "name" in block:
-                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
-                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
-                        elif block.get("type") == "tool_result" and "tool_use_id" in block:
-                            pass  # tool_result uses ID, not name
+        # 3. Tool naming: pass through whatever the registry assigned.
+        #
+        # Earlier versions of the OAuth identity rewriter prepended ``mcp_``
+        # (single-underscore) to *every* tool sent to the model.  The
+        # intent was to mimic Claude Code's MCP convention so the OAuth-
+        # authenticated Claude session would route the calls through its
+        # MCP path.  Two problems with that approach made it worse than
+        # leaving names alone:
+        #
+        # 1. Real Claude Code's built-in tools (Read, Write, Bash, …) do
+        #    NOT carry a ``mcp_`` prefix.  Only MCP-sourced tools do.
+        #    Prefixing every Hermes built-in (``read_file`` →
+        #    ``mcp_read_file``) made them look like MCP tools that didn't
+        #    exist in any MCP server — confusing the model into stripping
+        #    the prefix on every call.
+        #
+        # 2. The single-underscore separator is ambiguous.  Real Claude
+        #    Code MCP tools use double underscores: ``mcp__server__tool``.
+        #    Single-underscore names like ``mcp_tanium_gateway_jira_search_issues``
+        #    don't match the pattern Claude is trained on, so the model
+        #    routinely strips the entire ``mcp_`` and emits the bare tool
+        #    name — triggering ``_repair_tool_call`` on every invocation.
+        #
+        # Hermes' MCP tools are now registered with the canonical
+        # ``mcp__<server>__<tool>`` form by ``tools/mcp_tool.py::
+        # _convert_mcp_schema``, so no rewriting is needed here.  Built-in
+        # tools pass through with their natural names (``read_file``,
+        # ``terminal``, …) which is what real Claude Code does too.
+        # Tool_use / tool_result blocks in message history likewise stay
+        # untouched — they were saved with the registered names and that's
+        # what we want to send back.
 
     kwargs: Dict[str, Any] = {
         "model": model,

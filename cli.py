@@ -2281,6 +2281,11 @@ class HermesCLI:
         self._reasoning_picker_state: dict | None = None
         self._secret_state = None
         self._secret_deadline = 0
+        # Active swarm board (delegate_task multi-agent display).  When set,
+        # the swarm_board_widget is visible and reads rows via its
+        # ``get_rows_snapshot()``.  Mutated only by ``_swarm_board_show`` /
+        # ``_swarm_board_hide``; readable from prompt_toolkit's render loop.
+        self._swarm_board = None
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
@@ -2544,6 +2549,42 @@ class HermesCLI:
         if not getattr(self, "_agent_running", False):
             return 0
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
+
+    # ── Swarm board hooks (delegate_task multi-agent display) ────────────
+    #
+    # ``tools/swarm_board.py::SwarmBoard.maybe_start`` calls these when a
+    # batch of 2+ subagents is starting under a CLI parent.  They run on
+    # subagent threads, so ``_invalidate_app`` must be thread-safe (it is —
+    # ``Application.invalidate`` documents that).
+
+    def _swarm_board_show(self, board) -> None:
+        """Make ``board`` the active swarm board so its rows render above the spinner."""
+        self._swarm_board = board
+        self._invalidate_app()
+
+    def _swarm_board_hide(self) -> None:
+        """Tear down the active swarm board.  The widget hides on the next frame."""
+        self._swarm_board = None
+        self._invalidate_app()
+
+    def _invalidate_app(self) -> None:
+        """Ask prompt_toolkit to schedule a re-render.
+
+        Safe to call from any thread.  No-op when no Application is running
+        (single-query / non-TUI invocations) — the widget getter will pick
+        up board state on the next natural redraw if one occurs.
+        """
+        try:
+            from prompt_toolkit.application import get_app_or_none
+            app = get_app_or_none()
+        except Exception:
+            return
+        if app is None:
+            return
+        try:
+            app.invalidate()
+        except Exception:
+            pass
 
     def _spinner_widget_height(self, width: Optional[int] = None) -> int:
         """Return the visible height for the spinner/status text line above the status bar."""
@@ -3646,6 +3687,11 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Back-reference so tools that need CLI-side UI hooks (like the
+            # swarm board widget in tools/swarm_board.py) can find the CLI
+            # from the parent agent.  Setting this last so a partially-built
+            # agent never appears reachable.
+            self.agent._cli_ref = self
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -10669,6 +10715,7 @@ class HermesCLI:
         model_picker_widget=None,
         reasoning_picker_widget=None,
         spinner_widget=None,
+        swarm_board_widget=None,
         spacer,
         status_bar,
         input_rule_top,
@@ -10693,6 +10740,7 @@ class HermesCLI:
                 clarify_widget,
                 model_picker_widget,
                 reasoning_picker_widget,
+                swarm_board_widget,
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
@@ -11822,6 +11870,46 @@ class HermesCLI:
             wrap_lines=True,
         )
 
+        # --- Swarm board: live multi-row display for delegate_task batches ---
+        # Reads rows from cli_ref._swarm_board (set by SwarmBoard.maybe_start).
+        # Renders one line per active subagent.  Visibility is gated by the
+        # ConditionalContainer filter so the widget collapses to zero height
+        # when no swarm is running.
+
+        def get_swarm_board_text():
+            board = cli_ref._swarm_board
+            if board is None:
+                return []
+            try:
+                rows = board.get_rows_snapshot()
+            except Exception:
+                return []
+            if not rows:
+                return []
+            from tools.swarm_board import format_row as _format_swarm_row
+            fragments = []
+            for row in rows:
+                fragments.append(('class:hint', _format_swarm_row(row) + '\n'))
+            return fragments
+
+        def get_swarm_board_height():
+            board = cli_ref._swarm_board
+            if board is None:
+                return 0
+            try:
+                return len(board.get_rows_snapshot())
+            except Exception:
+                return 0
+
+        swarm_board_widget = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(get_swarm_board_text),
+                height=get_swarm_board_height,
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: cli_ref._swarm_board is not None),
+        )
+
         spacer = Window(
             content=FormattedTextControl(get_hint_text),
             height=get_hint_height,
@@ -12305,6 +12393,7 @@ class HermesCLI:
                     model_picker_widget=model_picker_widget,
                     reasoning_picker_widget=reasoning_picker_widget,
                     spinner_widget=spinner_widget,
+                    swarm_board_widget=swarm_board_widget,
                     spacer=spacer,
                     status_bar=status_bar,
                     input_rule_top=input_rule_top,

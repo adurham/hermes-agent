@@ -5430,16 +5430,44 @@ class AIAgent:
 
         # Build the full candidate set for class-like emissions.
         cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
-        # Common pattern from Claude-family children: emitting an MCP-server
-        # tool name without the leading ``mcp_`` prefix (e.g. emitting
-        # ``slack_slack_search_public`` instead of
-        # ``mcp_slack_slack_search_public``).  Try the prefixed forms as a
-        # cheap direct match before falling back to fuzzy.
+        # Strip mangled MCP-style prefixes so resumed sessions whose saved
+        # tool_use blocks carry old-format names (``mcp_<server>_<tool>`` or
+        # ``mcp__<server>__<tool>``) still resolve to today's bare
+        # ``<server>_<tool>`` registry names.  Two strip variants:
+        #   * ``mcp__<rest>`` → ``<rest>``
+        #   * ``mcp_<rest>``  → ``<rest>``
+        # And the partial-strip case where Claude's MCP-routing layer ate
+        # ``mcp`` but left the trailing ``__``: ``__<rest>`` → ``<rest>``.
+        prefix_stripped: set[str] = set()
+        for c in list(cands):
+            if not c:
+                continue
+            if c.startswith("mcp__"):
+                prefix_stripped.add(c[5:])
+            elif c.startswith("mcp_"):
+                prefix_stripped.add(c[4:])
+            elif c.startswith("__"):
+                prefix_stripped.add(c[2:])
+            elif c.startswith("_"):
+                prefix_stripped.add(c[1:])
+        cands |= prefix_stripped
+        # Also keep the legacy ``mcp_<name>`` / ``mcp__<name>`` *additions*
+        # for resumed sessions where ``valid_tool_names`` was loaded with
+        # an older registry that still prefixed its entries.
         prefixed_extra: set[str] = set()
         for c in list(cands):
-            if c and not c.startswith("mcp_"):
+            if not c:
+                continue
+            if not c.startswith("mcp"):
                 prefixed_extra.add(f"mcp_{c}")
+                prefixed_extra.add(f"mcp__{c}")
         cands |= prefixed_extra
+        # Also try ``__`` → ``_`` collapse for the case where the registry
+        # has bare ``<server>_<tool>`` but a saved session emitted
+        # ``<server>__<tool>``.
+        for c in list(cands):
+            if "__" in c:
+                cands.add(c.replace("__", "_"))
         # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.
         for _ in range(2):
             extra: set[str] = set()
@@ -6817,6 +6845,22 @@ class AIAgent:
         # poll loop uses this to detect stale connections that keep receiving
         # SSE keep-alive pings but no actual data.
         last_chunk_time = {"t": time.time()}
+        # Whether the stream iterator has yielded a semantic event (i.e.
+        # message_start / content_block_*).  Gates the cold-start vs
+        # mid-stream threshold split for the stale-stream detector.  See
+        # the comment on the kill-decision block in the outer poll loop.
+        first_event_seen = {"yes": False}
+        # Whether we've seen at least one SSE `ping` from the server.
+        # Pings prove "connection alive, server still working" during
+        # cold-start.  Wired up via agent.anthropic_adapter's monkey-patch
+        # on Stream._iter_events (the SDK silently drops pings at
+        # anthropic/_streaming.py:102 before they reach the high-level
+        # iterator).  The on_sse_event callback installed in
+        # _call_anthropic also resets last_chunk_time on every raw event,
+        # so as long as pings flow the stale detector won't fire spurious
+        # cold-start kills.  The chat_completions path doesn't get this
+        # signal (no equivalent SDK hook installed there).
+        ping_seen = {"yes": False}
 
         def _fire_first_delta():
             if not first_delta_fired["done"] and on_first_delta:
@@ -6898,6 +6942,7 @@ class AIAgent:
             usage_obj = None
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
+                first_event_seen["yes"] = True
                 self._touch_activity("receiving stream response")
 
                 if self._interrupt_requested:
@@ -7094,50 +7139,77 @@ class AIAgent:
 
             # Reset stale-stream timer for this attempt
             last_chunk_time["t"] = time.time()
-            # Use the Anthropic SDK's streaming context manager
-            with self._anthropic_client.messages.stream(**api_kwargs) as stream:
-                for event in stream:
-                    # Update stale-stream timer on every event so the
-                    # outer poll loop knows data is flowing.  Without
-                    # this, the detector kills healthy long-running
-                    # Opus streams after 180 s even when events are
-                    # actively arriving (the chat_completions path
-                    # already does this at the top of its chunk loop).
-                    last_chunk_time["t"] = time.time()
-                    self._touch_activity("receiving stream response")
 
-                    if self._interrupt_requested:
-                        break
+            # Install a thread-local SSE event observer so the outer poll
+            # loop's stale detector sees server keep-alive pings.  The
+            # Anthropic SDK silently drops `ping` events at
+            # anthropic/_streaming.py:102 — without this hook we cannot
+            # tell "queued upstream, healthy" apart from "connection
+            # black-holed" during a request's cold-start phase.  See
+            # agent/anthropic_adapter.py::_install_sse_event_observer for
+            # the monkey-patch that wires this up.
+            from agent.anthropic_adapter import set_sse_event_callback
 
-                    event_type = getattr(event, "type", None)
+            def _on_sse_event(event_name):
+                # Reset the stale timer on every raw SSE event, including
+                # pings.  Semantic events also reset it via the for-loop
+                # below (redundant but harmless).  Mark the connection as
+                # alive (pings count) but do NOT flip first_event_seen —
+                # that flag tracks "iterator has yielded a semantic event"
+                # and gates the cold-start vs mid-stream threshold split.
+                last_chunk_time["t"] = time.time()
+                if event_name == "ping":
+                    ping_seen["yes"] = True
 
-                    if event_type == "content_block_start":
-                        block = getattr(event, "content_block", None)
-                        if block and getattr(block, "type", None) == "tool_use":
-                            has_tool_use = True
-                            tool_name = getattr(block, "name", None)
-                            if tool_name:
-                                _fire_first_delta()
-                                self._fire_tool_gen_started(tool_name)
+            set_sse_event_callback(_on_sse_event)
+            try:
+                # Use the Anthropic SDK's streaming context manager
+                with self._anthropic_client.messages.stream(**api_kwargs) as stream:
+                    for event in stream:
+                        # Update stale-stream timer on every event so the
+                        # outer poll loop knows data is flowing.  Without
+                        # this, the detector kills healthy long-running
+                        # Opus streams after 180 s even when events are
+                        # actively arriving (the chat_completions path
+                        # already does this at the top of its chunk loop).
+                        last_chunk_time["t"] = time.time()
+                        first_event_seen["yes"] = True
+                        self._touch_activity("receiving stream response")
 
-                    elif event_type == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        if delta:
-                            delta_type = getattr(delta, "type", None)
-                            if delta_type == "text_delta":
-                                text = getattr(delta, "text", "")
-                                if text and not has_tool_use:
+                        if self._interrupt_requested:
+                            break
+
+                        event_type = getattr(event, "type", None)
+
+                        if event_type == "content_block_start":
+                            block = getattr(event, "content_block", None)
+                            if block and getattr(block, "type", None) == "tool_use":
+                                has_tool_use = True
+                                tool_name = getattr(block, "name", None)
+                                if tool_name:
                                     _fire_first_delta()
-                                    self._fire_stream_delta(text)
-                                    deltas_were_sent["yes"] = True
-                            elif delta_type == "thinking_delta":
-                                thinking_text = getattr(delta, "thinking", "")
-                                if thinking_text:
-                                    _fire_first_delta()
-                                    self._fire_reasoning_delta(thinking_text)
+                                    self._fire_tool_gen_started(tool_name)
 
-                # Return the native Anthropic Message for downstream processing
-                return stream.get_final_message()
+                        elif event_type == "content_block_delta":
+                            delta = getattr(event, "delta", None)
+                            if delta:
+                                delta_type = getattr(delta, "type", None)
+                                if delta_type == "text_delta":
+                                    text = getattr(delta, "text", "")
+                                    if text and not has_tool_use:
+                                        _fire_first_delta()
+                                        self._fire_stream_delta(text)
+                                        deltas_were_sent["yes"] = True
+                                elif delta_type == "thinking_delta":
+                                    thinking_text = getattr(delta, "thinking", "")
+                                    if thinking_text:
+                                        _fire_first_delta()
+                                        self._fire_reasoning_delta(thinking_text)
+
+                    # Return the native Anthropic Message for downstream processing
+                    return stream.get_final_message()
+            finally:
+                set_sse_event_callback(None)
 
         def _call():
             import httpx as _httpx
@@ -7484,9 +7556,15 @@ class AIAgent:
                 if _waiting_secs >= int(_HEARTBEAT_INTERVAL):
                     try:
                         _model_name = api_kwargs.get("model", "unknown")
+                        if first_event_seen["yes"]:
+                            _phase = "streaming stalled"
+                        elif ping_seen["yes"]:
+                            _phase = "queued/prefilling, server alive"
+                        else:
+                            _phase = "queued/prefilling"
                         self._emit_status(
                             f"⏳ Still waiting on provider — {_waiting_secs}s elapsed "
-                            f"(model: {_model_name})"
+                            f"(model: {_model_name}, {_phase})"
                         )
                     except Exception:
                         pass
@@ -7494,8 +7572,28 @@ class AIAgent:
             # Detect stale streams: connections kept alive by SSE pings
             # but delivering no real chunks.  Kill the client so the
             # inner retry loop can start a fresh connection.
+            #
+            # Cold-start vs mid-stream distinction: until the first event
+            # arrives, the SDK iterator is silent even when the server is
+            # actively keep-alive-ing (the SDK drops SSE `ping` frames at
+            # anthropic/_streaming.py:102).  A queued OAuth request on
+            # Opus 4.7 + 1M-context with a 200K-token prompt routinely
+            # exceeds 5 min before message_start.  Killing at 300s in
+            # that window is a false positive and pays for two server-side
+            # prefills (the killed one + the retry).  Once first_event_seen
+            # flips, any further silence is a real stall — kill at the
+            # configured (shorter) threshold.
             _stale_elapsed = time.time() - last_chunk_time["t"]
-            if _stale_elapsed > _stream_stale_timeout:
+            if first_event_seen["yes"]:
+                _effective_stale_timeout = _stream_stale_timeout
+            elif _stream_stale_timeout == float("inf"):
+                _effective_stale_timeout = float("inf")
+            else:
+                _effective_stale_timeout = max(
+                    _stream_stale_timeout * 3.0,
+                    float(os.getenv("HERMES_STREAM_COLD_START_TIMEOUT", 600.0)),
+                )
+            if _stale_elapsed > _effective_stale_timeout:
                 _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
                 # If a previous kill didn't produce any new chunks, the inner
                 # thread is hung on a socket that ignored close().  Count
@@ -7506,9 +7604,10 @@ class AIAgent:
                 else:
                     _stale_kill_count = 1
                 logger.warning(
-                    "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
+                    "Stream stale for %.0fs (threshold %.0fs, %s) — no chunks received. "
                     "model=%s context=~%s tokens. Kill attempt %d/%d.",
-                    _stale_elapsed, _stream_stale_timeout,
+                    _stale_elapsed, _effective_stale_timeout,
+                    "mid-stream" if first_event_seen["yes"] else "cold-start",
                     api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
                     _stale_kill_count, _MAX_STALE_KILLS + 1,
                 )
@@ -9606,7 +9705,13 @@ class AIAgent:
 
         # ── Pre-flight: interrupt check ──────────────────────────────────
         if self._interrupt_requested:
-            print(f"{self.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
+            # Route through _vprint so a child agent's patched _print_fn
+            # captures it (matches the rest of the interrupt-skip prints
+            # below at lines 10057, 10460).
+            self._vprint(
+                f"{self.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)",
+                force=True,
+            )
             for tc in tool_calls:
                 messages.append({
                     "role": "tool",
@@ -13263,7 +13368,17 @@ class AIAgent:
                         if tc.function.name not in self.valid_tool_names:
                             repaired = self._repair_tool_call(tc.function.name)
                             if repaired:
-                                print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                                # Route through _vprint so a child agent's
+                                # patched _print_fn (e.g. swarm board's note
+                                # interceptor) captures the line into its row
+                                # instead of letting it scroll past the live
+                                # board.  The bare print() this replaced was
+                                # the source of the "[subagent-N] Auto-repaired"
+                                # lines that interleaved with the swarm board.
+                                self._vprint(
+                                    f"{self.log_prefix}🔧 Auto-repaired tool name: "
+                                    f"'{tc.function.name}' -> '{repaired}'"
+                                )
                                 tc.function.name = repaired
                     invalid_tool_calls = [
                         tc.function.name for tc in assistant_message.tool_calls
@@ -13577,7 +13692,22 @@ class AIAgent:
                 else:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
-                    
+
+                    # Tell the parent's swarm board (or any other progress
+                    # consumer) that the child has stopped iterating: the
+                    # tool-calling loop is done and only the final-answer
+                    # text remains to be delivered.  This is the
+                    # deterministic signal that the heuristic in
+                    # delegate_tool's TASK_THINKING handler can't always
+                    # catch — the streamed text could be phrased many ways
+                    # ("Done.", "Here's the summary", "All set"), but
+                    # "the model returned no tool_calls" is unambiguous.
+                    if self.tool_progress_callback:
+                        try:
+                            self.tool_progress_callback("subagent.finalizing")
+                        except Exception:
+                            pass
+
                     # Fix: unmute output when entering the no-tool-call branch
                     # so the user can see empty-response warnings and recovery
                     # status messages.  _mute_post_response was set during a
