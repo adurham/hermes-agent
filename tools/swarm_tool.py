@@ -384,6 +384,12 @@ def _make_task(
         "context": "\n".join(pieces),
         "agent_type": a["type"],
         "model": _resolve_swarm_child_model(a, role_model_map or {}),
+        # Carry the swarm registry coordinates through to delegate_task so
+        # it can patch the child's hermes-agent session_id back onto the
+        # swarm.agents row once the child AIAgent has been constructed.
+        # Used by stats queries to join per-agent_type usage.
+        "swarm_id": swarm_id,
+        "swarm_agent_id": a["agent_id"],
     }
     if a.get("toolsets"):
         task["toolsets"] = a["toolsets"]

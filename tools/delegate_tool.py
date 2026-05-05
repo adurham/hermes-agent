@@ -2429,6 +2429,30 @@ def delegate_task(
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            # If swarm_tool seeded swarm coordinates onto the task, patch the
+            # child's hermes-agent session_id onto the swarm.agents row so
+            # stats queries can join onto per-session token usage. Best-
+            # effort — a missing swarm package or DB error must not block
+            # delegation.
+            _swarm_id = (t.get("swarm_id") or "").strip() or None
+            _swarm_agent_id = (t.get("swarm_agent_id") or "").strip() or None
+            _child_session_id = getattr(child, "session_id", None) or None
+            if _swarm_id and _swarm_agent_id and _child_session_id:
+                try:
+                    from swarm import lifecycle as _swarm_lc  # type: ignore
+
+                    _swarm_lc.update_agent(
+                        _swarm_id,
+                        _swarm_agent_id,
+                        session_id=_child_session_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "swarm.update_agent(session_id) failed for %s/%s",
+                        _swarm_id,
+                        _swarm_agent_id,
+                        exc_info=True,
+                    )
             children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
