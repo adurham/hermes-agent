@@ -1652,8 +1652,12 @@ def convert_messages_to_anthropic(
             preserved_server_blocks = m.get("server_tool_blocks")
             if isinstance(preserved_server_blocks, list):
                 for sb in preserved_server_blocks:
-                    if isinstance(sb, dict) and sb.get("type") in (
-                        "server_tool_use", "web_search_tool_result"
+                    if not isinstance(sb, dict):
+                        continue
+                    sb_type = sb.get("type", "")
+                    if sb_type in ("server_tool_use", "web_search_tool_result") or (
+                        isinstance(sb_type, str)
+                        and sb_type.startswith("tool_search_tool_")
                     ):
                         blocks.append(dict(sb))
             if content:

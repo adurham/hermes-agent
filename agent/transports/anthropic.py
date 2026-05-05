@@ -128,17 +128,22 @@ class AnthropicTransport(ProviderTransport):
                         arguments=json.dumps(block.input),
                     )
                 )
-            elif block.type in (
-                "server_tool_use",
-                "web_search_tool_result",
-                "tool_search_tool_result",
+            elif (
+                block.type
+                in (
+                    "server_tool_use",
+                    "web_search_tool_result",
+                )
+                or block.type.startswith("tool_search_tool_")
             ):
-                # tool_search_tool_result carries the discovered
+                # tool_search_tool_<variant>_tool_result (e.g.
+                # tool_search_tool_regex_tool_result) carries the discovered
                 # tool_reference array. Anthropic auto-expands tool_reference
                 # blocks across the conversation history so the model can
                 # reuse discovered tools without re-searching — but only as
                 # long as we round-trip the block back in messages on
-                # subsequent turns. Treat it like web_search_tool_result.
+                # subsequent turns. The block type is variant-specific, so
+                # match by prefix rather than a fixed name.
                 block_dict = _to_plain_data(block)
                 if isinstance(block_dict, dict):
                     server_tool_blocks.append(block_dict)
