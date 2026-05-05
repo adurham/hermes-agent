@@ -1655,11 +1655,23 @@ def convert_messages_to_anthropic(
                     if not isinstance(sb, dict):
                         continue
                     sb_type = sb.get("type", "")
+                    is_tool_search_result = (
+                        isinstance(sb_type, str)
+                        and sb_type.startswith("tool_search_tool_")
+                        and sb_type.endswith("_tool_result")
+                    )
                     if sb_type in ("server_tool_use", "web_search_tool_result") or (
                         isinstance(sb_type, str)
                         and sb_type.startswith("tool_search_tool_")
                     ):
-                        blocks.append(dict(sb))
+                        sb_copy = dict(sb)
+                        # tool_search_tool_<variant>_tool_result includes a
+                        # ``citations`` field on the response that Anthropic
+                        # rejects on input ("Extra inputs are not permitted").
+                        # Strip it so the round-trip is accepted.
+                        if is_tool_search_result:
+                            sb_copy.pop("citations", None)
+                        blocks.append(sb_copy)
             if content:
                 if isinstance(content, list):
                     converted_content = _convert_content_to_anthropic(content)
