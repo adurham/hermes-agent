@@ -1051,6 +1051,15 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Lazy-load the skills index. When True, the system prompt skips the
+        # bulky ``<available_skills>`` block (one entry per skill — names +
+        # descriptions for every skill in every external_dirs source). The
+        # model uses the existing ``skills_list`` tool to discover skills
+        # on demand, then ``skill_view(name)`` to load the full content.
+        # Mirrors the tool_search pattern: same just-in-time-retrieval idea
+        # applied to skills. Big context win on stacks like Adam's where
+        # the index alone is ~5K tokens / ~20K chars (148 skills).
+        "lazy_listing": False,
     },
 
     # Curator — background skill maintenance.

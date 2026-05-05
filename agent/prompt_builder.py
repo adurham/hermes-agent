@@ -733,6 +733,22 @@ def build_skills_system_prompt(
     if not skills_dir.exists() and not external_dirs:
         return ""
 
+    # ── Lazy-listing short-circuit ────────────────────────────────────
+    # When skills.lazy_listing is True, omit the per-skill index entirely
+    # and emit only the discovery instructions. The model uses
+    # ``skills_list`` to enumerate skills on demand, then
+    # ``skill_view(name)`` to load full content. Mirrors the tool_search
+    # pattern — names+descriptions of all 148 skills add ~20K chars to
+    # the system prompt; lazy mode replaces that with a few hundred
+    # bytes of pointer text and lets the model fetch what it needs.
+    _lazy_listing = False
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        _skills_cfg = (_load_cfg() or {}).get("skills") or {}
+        _lazy_listing = bool(_skills_cfg.get("lazy_listing", False))
+    except Exception:
+        pass
+
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
@@ -750,12 +766,46 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        _lazy_listing,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
         if cached is not None:
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
+
+    # ── Lazy listing: emit pointer prompt, skip the per-skill index ───
+    if _lazy_listing:
+        result = (
+            "## Skills (mandatory discovery)\n"
+            "Skills contain specialized, task-specific knowledge — API endpoints, "
+            "tool-specific commands, established workflows, the user's preferred "
+            "approach, and quality standards. Always check whether a relevant "
+            "skill exists before falling back to general-purpose tools.\n"
+            "Discovery flow:\n"
+            "  1. Call ``skills_list()`` (optionally with ``category=...``) to "
+            "enumerate available skills with their descriptions.\n"
+            "  2. Call ``skill_view(name)`` to load the full content of any skill "
+            "that matches or is even partially relevant to your task. Err on "
+            "the side of loading — better to have context you don't need than to "
+            "miss critical steps, pitfalls, or established workflows.\n"
+            "Whenever the user asks you to configure, set up, install, enable, "
+            "disable, modify, or troubleshoot Hermes Agent itself — its CLI, "
+            "config, models, providers, tools, skills, voice, gateway, plugins, "
+            "or any feature — load the ``hermes-agent`` skill first via "
+            "``skill_view('hermes-agent')``. It has the actual commands so you "
+            "don't have to guess or invent workarounds.\n"
+            "If a skill has issues, fix it with ``skill_manage(action='patch')``. "
+            "After difficult/iterative tasks, offer to save as a skill. "
+            "If a skill you loaded was missing steps, had wrong commands, or "
+            "needed pitfalls you discovered, update it before finishing."
+        )
+        with _SKILLS_PROMPT_CACHE_LOCK:
+            _SKILLS_PROMPT_CACHE[cache_key] = result
+            _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
+            while len(_SKILLS_PROMPT_CACHE) > _SKILLS_PROMPT_CACHE_MAX:
+                _SKILLS_PROMPT_CACHE.popitem(last=False)
+        return result
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
     snapshot = _load_skills_snapshot(skills_dir)
