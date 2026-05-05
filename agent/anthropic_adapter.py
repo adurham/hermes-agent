@@ -1939,6 +1939,85 @@ def convert_messages_to_anthropic(
     return system, result
 
 
+_TOOL_SEARCH_TOOL_TYPES = {
+    "regex": "tool_search_tool_regex_20251119",
+    "bm25":  "tool_search_tool_bm25_20251119",
+}
+
+
+def _apply_tool_search(
+    anthropic_tools: List[Dict[str, Any]],
+    tool_search_config: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Apply Anthropic server-side tool_search to the converted tools array.
+
+    When ``tool_search_config["enabled"]`` is True:
+      * Tools whose ``name`` matches the deferral policy are tagged with
+        ``defer_loading: True`` so Anthropic doesn't ship their full schemas
+        in the system-prompt prefix; the model discovers them on demand via
+        the tool_search server tool.
+      * The tool_search tool itself (regex or bm25 variant) is prepended to
+        the array. It MUST NOT carry ``defer_loading``.
+
+    Deferral policy (additive, evaluated in order):
+      1. ``additional_deferred`` — exact tool names always deferred.
+      2. ``additional_eager`` — exact tool names always eager (overrides 1).
+      3. ``defer_mcp_tools`` — when True, any tool whose name starts with
+         a known MCP server prefix is deferred. The server prefixes are
+         passed in via ``tool_search_config["mcp_server_prefixes"]`` (a list
+         of strings produced by the caller from its mcp_servers config).
+
+    Returns the transformed list. Returns the input unchanged when
+    tool_search is disabled, when there are no tools, or when fewer than
+    one tool would be deferred (Anthropic 400s on "all tools deferred").
+    """
+    if not tool_search_config or not tool_search_config.get("enabled"):
+        return anthropic_tools
+    if not anthropic_tools:
+        return anthropic_tools
+
+    variant = (tool_search_config.get("variant") or "regex").lower()
+    ts_type = _TOOL_SEARCH_TOOL_TYPES.get(variant, _TOOL_SEARCH_TOOL_TYPES["regex"])
+    ts_name = "tool_search_tool_bm25" if variant == "bm25" else "tool_search_tool_regex"
+
+    eager_names = set(tool_search_config.get("additional_eager") or [])
+    deferred_names = set(tool_search_config.get("additional_deferred") or [])
+    mcp_prefixes = tuple(tool_search_config.get("mcp_server_prefixes") or [])
+    defer_mcp = bool(tool_search_config.get("defer_mcp_tools", True))
+
+    def _should_defer(name: str) -> bool:
+        if name in eager_names:
+            return False
+        if name in deferred_names:
+            return True
+        if defer_mcp and mcp_prefixes and name.startswith(mcp_prefixes):
+            return True
+        return False
+
+    transformed: List[Dict[str, Any]] = []
+    deferred_count = 0
+    eager_count = 0
+    for tool in anthropic_tools:
+        name = tool.get("name", "")
+        if _should_defer(name):
+            new_tool = dict(tool)
+            new_tool["defer_loading"] = True
+            transformed.append(new_tool)
+            deferred_count += 1
+        else:
+            transformed.append(tool)
+            eager_count += 1
+
+    # Anthropic returns 400 when every tool is deferred. Skip injection in
+    # that case — caller pays the full token cost but the request goes
+    # through. Also skip when nothing is deferred (no benefit, just adds
+    # one extra tool entry).
+    if deferred_count == 0 or eager_count == 0:
+        return anthropic_tools
+
+    return [{"type": ts_type, "name": ts_name}] + transformed
+
+
 def build_anthropic_kwargs(
     model: str,
     messages: List[Dict],
@@ -1952,6 +2031,7 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    tool_search_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -2077,6 +2157,7 @@ def build_anthropic_kwargs(
         kwargs["system"] = system
 
     if anthropic_tools:
+        anthropic_tools = _apply_tool_search(anthropic_tools, tool_search_config)
         kwargs["tools"] = anthropic_tools
         # Map OpenAI tool_choice to Anthropic format
         if tool_choice == "auto" or tool_choice is None:

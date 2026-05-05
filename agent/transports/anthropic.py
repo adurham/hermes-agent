@@ -59,6 +59,9 @@ class AnthropicTransport(ProviderTransport):
             base_url: str | None
             fast_mode: bool
             drop_context_1m_beta: bool
+            tool_search_config: dict | None — see _apply_tool_search in
+                anthropic_adapter.py for the schema. When None or
+                disabled, no transformation is applied.
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
@@ -75,6 +78,7 @@ class AnthropicTransport(ProviderTransport):
             base_url=params.get("base_url"),
             fast_mode=params.get("fast_mode", False),
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
+            tool_search_config=params.get("tool_search_config"),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -124,7 +128,17 @@ class AnthropicTransport(ProviderTransport):
                         arguments=json.dumps(block.input),
                     )
                 )
-            elif block.type in ("server_tool_use", "web_search_tool_result"):
+            elif block.type in (
+                "server_tool_use",
+                "web_search_tool_result",
+                "tool_search_tool_result",
+            ):
+                # tool_search_tool_result carries the discovered
+                # tool_reference array. Anthropic auto-expands tool_reference
+                # blocks across the conversation history so the model can
+                # reuse discovered tools without re-searching — but only as
+                # long as we round-trip the block back in messages on
+                # subsequent turns. Treat it like web_search_tool_result.
                 block_dict = _to_plain_data(block)
                 if isinstance(block_dict, dict):
                     server_tool_blocks.append(block_dict)

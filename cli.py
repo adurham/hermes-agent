@@ -6569,6 +6569,8 @@ class HermesCLI:
             self._handle_delegation_command(cmd_original)
         elif canonical == "interleaved":
             self._handle_interleaved_command(cmd_original)
+        elif canonical == "toolsearch":
+            self._handle_toolsearch_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
@@ -8263,6 +8265,71 @@ class HermesCLI:
             _cprint(
                 f"  {_ACCENT}✓ Interleaved thinking: "
                 f"{'ON' if new_value else 'OFF'} (session only){_RST}"
+            )
+
+    def _handle_toolsearch_command(self, cmd: str):
+        """Handle /toolsearch — toggle Anthropic server-side tool_search.
+
+        When enabled, hermes prepends the tool_search server-side tool to
+        every Anthropic request and marks MCP tools with defer_loading=true
+        so their schemas are loaded on-demand by the model rather than
+        shipped in the system prompt prefix. Big context win when many MCP
+        servers are connected.
+
+        Reads/writes ``tool_search.enabled`` in config.yaml. The agent
+        reads this fresh on every API call, so toggles take effect on the
+        very next turn — no restart, no agent rebuild required.
+
+        Usage:
+            /toolsearch              Alias for /toolsearch status
+            /toolsearch status       Show current state and rough impact
+            /toolsearch on           Enable (saves to config)
+            /toolsearch off          Disable (saves to config)
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) >= 2 else "status"
+
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            cfg = _load_cfg() or {}
+        except Exception:
+            cfg = {}
+        ts_cfg = cfg.get("tool_search") if isinstance(cfg, dict) else {}
+        ts_cfg = ts_cfg if isinstance(ts_cfg, dict) else {}
+
+        if arg in ("status", "show", ""):
+            enabled = bool(ts_cfg.get("enabled"))
+            variant = ts_cfg.get("variant", "regex")
+            defer_mcp = bool(ts_cfg.get("defer_mcp_tools", True))
+            state = "ON" if enabled else "OFF"
+            _cprint(f"  {_ACCENT}Tool search: {state}{_RST}")
+            _cprint(f"  {_DIM}variant={variant}, defer_mcp_tools={defer_mcp}{_RST}")
+            _cprint(
+                f"  {_DIM}Lazy-loads MCP tool schemas via Anthropic's "
+                f"tool_search_tool_{variant}_20251119 server tool.{_RST}"
+            )
+            _cprint(f"  {_DIM}Usage: /toolsearch [on|off|status]{_RST}")
+            return
+
+        if arg in ("on", "true", "enable", "enabled", "yes", "1"):
+            new_value = True
+        elif arg in ("off", "false", "disable", "disabled", "no", "0"):
+            new_value = False
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /toolsearch [on|off|status]{_RST}")
+            return
+
+        if save_config_value("tool_search.enabled", new_value):
+            _cprint(
+                f"  {_ACCENT}✓ Tool search: {'ON' if new_value else 'OFF'} (saved){_RST}"
+            )
+            _cprint(
+                f"  {_DIM}Takes effect on the next message — no restart needed.{_RST}"
+            )
+        else:
+            _cprint(
+                f"  {_ACCENT}✓ Tool search: {'ON' if new_value else 'OFF'} (session only){_RST}"
             )
 
     def _handle_busy_command(self, cmd: str):

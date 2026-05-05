@@ -8592,6 +8592,53 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
+    def _build_tool_search_config(self) -> Optional[Dict[str, Any]]:
+        """Build the tool_search_config dict for Anthropic adapter, or None.
+
+        Reads ``tool_search`` from config.yaml on every call so /toolsearch
+        toggles take effect without process restart. Returns None when the
+        feature is disabled, when there are no MCP servers configured (no
+        prefixes to defer against), or when config can't be loaded.
+
+        Returned dict is consumed by ``agent.anthropic_adapter._apply_tool_search``;
+        see its docstring for the schema.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            cfg = _load_cfg() or {}
+        except Exception:
+            return None
+
+        ts_cfg = cfg.get("tool_search") if isinstance(cfg, dict) else None
+        if not isinstance(ts_cfg, dict) or not ts_cfg.get("enabled"):
+            return None
+
+        # Build MCP server prefixes from the configured mcp_servers map.
+        # Each prefix matches the sanitized server name + "_" — matching the
+        # registration form in tools/mcp_tool.py::_convert_mcp_schema
+        # (``f"{safe_server_name}_{safe_tool_name}"``). Without this, the
+        # defer policy can't tell built-in tools from MCP-sourced ones.
+        prefixes: list[str] = []
+        mcp_servers = cfg.get("mcp_servers") if isinstance(cfg, dict) else None
+        if isinstance(mcp_servers, dict):
+            try:
+                from tools.mcp_tool import sanitize_mcp_name_component as _san
+            except Exception:
+                _san = lambda s: re.sub(r"[^A-Za-z0-9_]", "_", str(s or ""))
+            for name, server_cfg in mcp_servers.items():
+                if isinstance(server_cfg, dict) and server_cfg.get("enabled") is False:
+                    continue
+                prefixes.append(f"{_san(name)}_")
+
+        return {
+            "enabled": True,
+            "variant": ts_cfg.get("variant", "regex"),
+            "defer_mcp_tools": ts_cfg.get("defer_mcp_tools", True),
+            "additional_eager": list(ts_cfg.get("additional_eager") or []),
+            "additional_deferred": list(ts_cfg.get("additional_deferred") or []),
+            "mcp_server_prefixes": prefixes,
+        }
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -8614,6 +8661,7 @@ class AIAgent:
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
                 drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+                tool_search_config=self._build_tool_search_config(),
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
