@@ -1644,17 +1644,22 @@ def _normalize_tool_search_result_inner(item: Any) -> Any:
 
 
 def _normalize_tool_search_result_for_input(sb: Dict[str, Any]) -> Dict[str, Any]:
-    """Rebuild a server-side tool_search_tool_<variant>_tool_result block
-    into the canonical input form Anthropic accepts.
+    """Strip response-only fields from a tool_search result block while
+    preserving the variant-suffixed type the API requires for pairing.
 
-    Per BetaToolSearchToolResultBlockParam, the accepted input fields are
-    ``type`` (literal ``"tool_search_tool_result"``), ``tool_use_id``,
-    ``content``, and optional ``cache_control``. Response shapes diverge
-    in two ways: the type is variant-suffixed
-    (``tool_search_tool_regex_tool_result``, ``tool_search_tool_bm25_tool_result``)
-    and both the outer block and inner content carry response-only fields
-    (``text``, ``citations``, etc.) that the API rejects on input with
-    "Extra inputs are not permitted". Allowlist at every level.
+    Empirically (verified via HERMES_DUMP_REQUESTS), Anthropic's input
+    validator pairs a ``server_tool_use`` named ``tool_search_tool_<variant>``
+    against a result block typed ``tool_search_tool_<variant>_tool_result``
+    — i.e. the variant suffix on the result block must match the tool_use
+    name. The Python SDK's BetaToolSearchToolResultBlockParam declares the
+    type as the canonical ``tool_search_tool_result`` but rewriting to that
+    canonical form fails the API's pairing check ("tool use ... was found
+    without a corresponding tool_search_tool_<variant>_tool_result block").
+
+    So preserve whatever ``type`` came back on the response. Strip only the
+    response-only fields (``text``, ``citations``, etc.) that fail input
+    validation with "Extra inputs are not permitted". Recursively allowlist
+    inner content the same way.
     """
     inner = sb.get("content")
     if isinstance(inner, list):
@@ -1664,7 +1669,7 @@ def _normalize_tool_search_result_for_input(sb: Dict[str, Any]) -> Dict[str, Any
     else:
         normalized_inner = _normalize_tool_search_result_inner(inner)
     out: Dict[str, Any] = {
-        "type": "tool_search_tool_result",
+        "type": sb.get("type"),
         "tool_use_id": sb.get("tool_use_id"),
         "content": normalized_inner,
     }
