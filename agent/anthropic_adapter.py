@@ -1598,6 +1598,81 @@ def _convert_content_to_anthropic(content: Any) -> Any:
     return converted
 
 
+def _normalize_tool_reference_for_input(ref: Any) -> Dict[str, Any]:
+    """Allowlist a tool_reference block to its accepted input fields.
+
+    Per BetaToolReferenceBlockParam: ``type``, ``tool_name``, optional
+    ``cache_control``. Anything else is response-only.
+    """
+    if not isinstance(ref, dict):
+        return {"type": "tool_reference", "tool_name": str(ref)}
+    out: Dict[str, Any] = {
+        "type": "tool_reference",
+        "tool_name": ref.get("tool_name"),
+    }
+    if isinstance(ref.get("cache_control"), dict):
+        out["cache_control"] = dict(ref["cache_control"])
+    return out
+
+
+def _normalize_tool_search_result_inner(item: Any) -> Any:
+    """Allowlist the inner content of a tool_search_tool_result.
+
+    Two accepted variants per the SDK:
+      - ``tool_search_tool_search_result``: ``type`` + ``tool_references``
+      - ``tool_search_tool_result_error``: ``type`` + ``error_code``
+    Both carry response-only fields (``text`` etc.) that Anthropic rejects
+    on input.
+    """
+    if not isinstance(item, dict):
+        return item
+    item_type = item.get("type")
+    if item_type == "tool_search_tool_search_result":
+        refs = item.get("tool_references") or []
+        return {
+            "type": "tool_search_tool_search_result",
+            "tool_references": [
+                _normalize_tool_reference_for_input(r) for r in refs
+            ],
+        }
+    if item_type == "tool_search_tool_result_error":
+        return {
+            "type": "tool_search_tool_result_error",
+            "error_code": item.get("error_code"),
+        }
+    return item
+
+
+def _normalize_tool_search_result_for_input(sb: Dict[str, Any]) -> Dict[str, Any]:
+    """Rebuild a server-side tool_search_tool_<variant>_tool_result block
+    into the canonical input form Anthropic accepts.
+
+    Per BetaToolSearchToolResultBlockParam, the accepted input fields are
+    ``type`` (literal ``"tool_search_tool_result"``), ``tool_use_id``,
+    ``content``, and optional ``cache_control``. Response shapes diverge
+    in two ways: the type is variant-suffixed
+    (``tool_search_tool_regex_tool_result``, ``tool_search_tool_bm25_tool_result``)
+    and both the outer block and inner content carry response-only fields
+    (``text``, ``citations``, etc.) that the API rejects on input with
+    "Extra inputs are not permitted". Allowlist at every level.
+    """
+    inner = sb.get("content")
+    if isinstance(inner, list):
+        normalized_inner: Any = [
+            _normalize_tool_search_result_inner(x) for x in inner
+        ]
+    else:
+        normalized_inner = _normalize_tool_search_result_inner(inner)
+    out: Dict[str, Any] = {
+        "type": "tool_search_tool_result",
+        "tool_use_id": sb.get("tool_use_id"),
+        "content": normalized_inner,
+    }
+    if isinstance(sb.get("cache_control"), dict):
+        out["cache_control"] = dict(sb["cache_control"])
+    return out
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
@@ -1666,22 +1741,7 @@ def convert_messages_to_anthropic(
                         and sb_type.startswith("tool_search_tool_")
                         and sb_type.endswith("_tool_result")
                     ):
-                        # Response shape uses a variant-suffixed type
-                        # (e.g. tool_search_tool_regex_tool_result) and
-                        # carries response-only fields like ``citations``
-                        # and ``text`` that Anthropic rejects on input
-                        # ("Extra inputs are not permitted"). The accepted
-                        # input shape per the SDK is the canonical
-                        # ``tool_search_tool_result`` with only
-                        # ``tool_use_id`` and ``content``. Rebuild it.
-                        canonical: dict = {
-                            "type": "tool_search_tool_result",
-                            "tool_use_id": sb.get("tool_use_id"),
-                            "content": sb.get("content"),
-                        }
-                        if "cache_control" in sb:
-                            canonical["cache_control"] = sb["cache_control"]
-                        blocks.append(canonical)
+                        blocks.append(_normalize_tool_search_result_for_input(sb))
             if content:
                 if isinstance(content, list):
                     converted_content = _convert_content_to_anthropic(content)
