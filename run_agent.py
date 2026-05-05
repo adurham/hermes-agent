@@ -7590,15 +7590,23 @@ class AIAgent:
                 #     are flowing.  A subsequent silence is a true stall;
                 #     reporting silence_secs there ("streaming stalled —
                 #     30 s") is what the user actually wants to see.
-                # _content_silence grows during summarized thinking (only SSE
-                # pings flow); _silence_secs gets reset by pings and stays
-                # near zero. Drive the heartbeat off content_silence so the
-                # user sees status updates during long thinking phases.
+                # _content_silence grows during text streaming when the model
+                # actually pauses; during summarized thinking on Opus 4.7 the
+                # thinking_delta tokens flow continuously and reset
+                # last_content_time, so silence stays near zero even though
+                # the user sees nothing in the TUI. Two regimes:
+                #   * thinking active OR pre-first-event: heartbeat on
+                #     request-elapsed time so the user gets progress every
+                #     ~30s during multi-minute thinking phases.
+                #   * post-thinking text streaming: heartbeat on
+                #     content-silence so we only warn when output stalls,
+                #     not while tokens are flowing visibly.
                 _content_silence = int(_hb_now - last_content_time["t"])
-                if first_event_seen["yes"]:
-                    _user_elapsed = _content_silence
+                _request_elapsed = int(_hb_now - _request_started)
+                if thinking_active["yes"] or not first_event_seen["yes"]:
+                    _user_elapsed = _request_elapsed
                 else:
-                    _user_elapsed = int(_hb_now - _request_started)
+                    _user_elapsed = _content_silence
                 if _user_elapsed >= int(_HEARTBEAT_INTERVAL):
                     try:
                         _model_name = api_kwargs.get("model", "unknown")
