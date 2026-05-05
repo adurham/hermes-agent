@@ -723,6 +723,23 @@ class CredentialPool:
             # has a newer token pair and retry once.
             if self.provider == "anthropic" and entry.source == "claude_code":
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
+                # If another process (Claude Code, another hermes instance)
+                # already refreshed and the new access token is still valid,
+                # adopt it directly — calling refresh_anthropic_oauth_pure
+                # again would consume the freshly-issued single-use
+                # refresh_token. If THAT call rate-limits or races, this entry
+                # ends up marked exhausted with error_code=null even though no
+                # real quota was hit. This is the dominant cause of spurious
+                # exhaustion when Claude Code + hermes share keychain creds.
+                if (
+                    synced.refresh_token != entry.refresh_token
+                    and not self._entry_needs_refresh(synced)
+                ):
+                    logger.debug(
+                        "Pool entry %s: adopting newer valid token from credentials store (no refresh needed)",
+                        entry.id,
+                    )
+                    return synced
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Retrying refresh with synced token from credentials file")
                     try:
