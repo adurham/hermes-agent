@@ -640,6 +640,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    model: Optional[str] = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -654,6 +655,14 @@ def build_anthropic_client(
     path in ``run_agent.py`` when a subscription rejects the beta; leave at
     its default on fresh clients so 1M-capable subscriptions keep the
     capability.
+
+    ``model`` (when provided) lets ``_common_betas_for_base_url`` strip the
+    1M-context beta proactively for models that don't have a 1M tier (e.g.
+    Haiku 4.5). Without this, the auxiliary client gets ``context-1m-…``
+    on its client-level headers and Haiku rejects every call with HTTP 400
+    "long context beta is not yet available for this subscription". The
+    main agent loop sets ``drop_context_1m_beta`` explicitly, so leaving
+    ``model`` at None there is fine.
 
     Returns an anthropic.Anthropic instance.
     """
@@ -687,6 +696,7 @@ def build_anthropic_client(
     common_betas = _common_betas_for_base_url(
         normalized_base_url,
         drop_context_1m_beta=drop_context_1m_beta,
+        model=model,
     )
 
     if _is_kimi_coding_endpoint(base_url):
