@@ -197,18 +197,27 @@ class TestNormalizeInnerSearchResult:
 # ---------------------------------------------------------------------------
 class TestNormalizeOuterToolSearchResult:
     @pytest.mark.parametrize("variant", ["regex", "bm25"])
-    def test_renames_variant_to_canonical_type(self, variant):
+    def test_preserves_variant_suffixed_type(self, variant):
+        """Verified empirically via HERMES_DUMP_REQUESTS: Anthropic's
+        validator pairs server_tool_use named ``tool_search_tool_<variant>``
+        against a result typed ``tool_search_tool_<variant>_tool_result``.
+        Rewriting to the SDK's nominal canonical ``tool_search_tool_result``
+        breaks the pairing — keep the variant suffix from the response."""
         sb = _sample_outer_response(variant=variant)
         out = _normalize_tool_search_result_for_input(sb)
-        assert out["type"] == "tool_search_tool_result"
+        assert out["type"] == f"tool_search_tool_{variant}_tool_result"
 
     def test_strips_response_only_fields_at_outer_level(self):
         sb = _sample_outer_response(with_text=True, with_citations=True)
         out = _normalize_tool_search_result_for_input(sb)
         assert "text" not in out
         assert "citations" not in out
-        # Output keys must be a subset of the SDK's declared TypedDict keys.
-        assert set(out.keys()).issubset(OUTER_KEYS)
+        # Outer keys minus the variant ``type`` must be a subset of the SDK
+        # TypedDict's declared keys (the SDK declares type as the canonical
+        # literal but the live API requires variant suffix — we keep the
+        # variant; everything else stays allowlisted).
+        non_type_keys = set(out.keys()) - {"type"}
+        assert non_type_keys.issubset(OUTER_KEYS - {"type"} | {"tool_use_id", "content", "cache_control"})
 
     def test_preserves_required_fields(self):
         sb = _sample_outer_response()
@@ -286,19 +295,18 @@ class TestConvertMessagesRoundTrip:
             for v in obj:
                 yield from self._walk(v)
 
-    def test_full_message_emits_canonical_outer_type(self):
-        sb = _sample_outer_response()
+    def test_full_message_preserves_variant_suffixed_type(self):
+        sb = _sample_outer_response(variant="regex")
         msg = self._build_assistant_msg([sb])
         _, out_msgs = convert_messages_to_anthropic(
             [{"role": "user", "content": "hi"}, msg]
         )
-        # Find the tool_search_tool_result block in the output.
+        # Find the variant-suffixed result block in the output.
         ts_blocks = [
             d for d in self._walk(out_msgs)
-            if isinstance(d, dict) and d.get("type") == "tool_search_tool_result"
+            if isinstance(d, dict) and d.get("type") == "tool_search_tool_regex_tool_result"
         ]
         assert len(ts_blocks) == 1
-        assert ts_blocks[0]["type"] == "tool_search_tool_result"
 
     def test_full_message_strips_all_response_only_fields(self):
         sb = _sample_outer_response(with_text=True, with_citations=True)
@@ -319,7 +327,8 @@ class TestConvertMessagesRoundTrip:
             [{"role": "user", "content": "hi"}, msg]
         )
         for d in self._walk(out_msgs):
-            if d.get("type") == "tool_search_tool_result":
+            t = d.get("type")
+            if isinstance(t, str) and t.startswith("tool_search_tool_") and t.endswith("_tool_result"):
                 assert "text" not in d
                 assert "citations" not in d
             if d.get("type") == "tool_search_tool_search_result":
@@ -327,21 +336,28 @@ class TestConvertMessagesRoundTrip:
                 assert "citations" not in d
 
     @pytest.mark.parametrize("variant", ["regex", "bm25"])
-    def test_variant_suffixed_response_normalizes_to_canonical(self, variant):
+    def test_variant_suffix_is_preserved_through_round_trip(self, variant):
         sb = _sample_outer_response(variant=variant)
         msg = self._build_assistant_msg([sb])
         _, out_msgs = convert_messages_to_anthropic(
             [{"role": "user", "content": "hi"}, msg]
         )
-        # Should not have any variant-suffixed types in output.
-        for d in self._walk(out_msgs):
-            t = d.get("type")
-            if isinstance(t, str) and t.startswith("tool_search_tool_") and t.endswith("_tool_result"):
-                assert t == "tool_search_tool_result"
+        expected_type = f"tool_search_tool_{variant}_tool_result"
+        types_seen = [
+            d.get("type") for d in self._walk(out_msgs)
+            if isinstance(d.get("type"), str)
+            and d.get("type").startswith("tool_search_tool_")
+            and d.get("type").endswith("_tool_result")
+        ]
+        assert expected_type in types_seen
+        # And no canonical-type rewrites snuck in.
+        assert "tool_search_tool_result" not in types_seen
 
     def test_full_message_outputs_only_sdk_declared_keys(self):
-        """Strict allowlist: every block type emitted should only contain
-        keys declared by the corresponding SDK TypedDict."""
+        """Strict allowlist for inner blocks: every emitted block (except
+        the outer one whose ``type`` carries a variant suffix not in the
+        SDK enum) must have only keys declared by the corresponding
+        TypedDict."""
         sb = _sample_outer_response()
         msg = self._build_assistant_msg([sb])
         _, out_msgs = convert_messages_to_anthropic(
@@ -349,11 +365,10 @@ class TestConvertMessagesRoundTrip:
         )
         for d in self._walk(out_msgs):
             t = d.get("type")
-            if t == "tool_search_tool_result":
-                assert set(d.keys()).issubset(OUTER_KEYS), (
-                    f"tool_search_tool_result has extra keys: "
-                    f"{set(d.keys()) - OUTER_KEYS}"
-                )
+            if isinstance(t, str) and t.startswith("tool_search_tool_") and t.endswith("_tool_result"):
+                # Outer block: same field set as the SDK declares, just
+                # with a variant-suffixed type.
+                assert set(d.keys()) - {"type"} <= OUTER_KEYS - {"type"} | {"tool_use_id", "content", "cache_control"}
             elif t == "tool_search_tool_search_result":
                 assert set(d.keys()).issubset(INNER_RESULT_KEYS)
             elif t == "tool_search_tool_result_error":
@@ -369,8 +384,9 @@ class TestConvertMessagesRoundTrip:
         )
         for d in self._walk(out_msgs):
             t = d.get("type")
-            if t == "tool_search_tool_result":
-                assert set(d.keys()).issubset(OUTER_KEYS)
+            if isinstance(t, str) and t.startswith("tool_search_tool_") and t.endswith("_tool_result"):
+                assert "text" not in d
+                assert "citations" not in d
             if t == "tool_search_tool_result_error":
                 assert set(d.keys()).issubset(INNER_ERROR_KEYS)
                 assert "message" not in d
