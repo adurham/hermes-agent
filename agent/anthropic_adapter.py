@@ -1643,6 +1643,101 @@ def _normalize_tool_search_result_inner(item: Any) -> Any:
     return item
 
 
+def _relocate_orphaned_tool_search_results(messages: List[Dict[str, Any]]) -> None:
+    """Move ``tool_search_tool_<variant>_tool_result`` blocks to the
+    assistant message containing their paired ``server_tool_use``,
+    matched by tool_use_id.
+
+    Anthropic delivers the search result block in a *later* response than
+    the one that emitted the tool_use (the search runs server-side after
+    the initial response returns to the client). The SDK captures the
+    result on whichever turn's response it arrived in — so by default it
+    lands on a different assistant message than its server_tool_use. But
+    Anthropic's input validator rejects that with:
+      ``tool_search_tool_<variant> tool use with id ... was found
+      without a corresponding tool_search_tool_<variant>_tool_result block``.
+
+    This pass walks the assembled message list and relocates any orphaned
+    result block to immediately after its matching server_tool_use in the
+    assistant message that owns it. Mutates ``messages`` in place.
+
+    Verified against a HERMES_DUMP_REQUESTS capture where the result on
+    turn 3 referenced a server_tool_use from turn 1 — the API rejected it
+    until pairing was restored within the same message.
+    """
+    # tool_use_id -> message index that contains its server_tool_use
+    tool_use_sources: Dict[str, int] = {}
+    for mi, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "server_tool_use":
+                tu_id = block.get("id")
+                if isinstance(tu_id, str):
+                    tool_use_sources[tu_id] = mi
+
+    # Find tool_search results that live in a different message than their
+    # paired server_tool_use.
+    relocations: List[Tuple[str, int, int, Dict[str, Any]]] = []
+    for mi, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for ci, block in enumerate(content):
+            if not isinstance(block, dict):
+                continue
+            t = block.get("type")
+            if not (
+                isinstance(t, str)
+                and t.startswith("tool_search_tool_")
+                and t.endswith("_tool_result")
+            ):
+                continue
+            tu_id = block.get("tool_use_id")
+            if not isinstance(tu_id, str):
+                continue
+            target_mi = tool_use_sources.get(tu_id)
+            if target_mi is not None and target_mi != mi:
+                relocations.append((tu_id, mi, ci, block))
+
+    if not relocations:
+        return
+
+    # Remove orphans from their source messages (reverse-order per source so
+    # earlier indices stay valid after deletes).
+    by_source: Dict[int, List[int]] = {}
+    for _, src_mi, src_ci, _ in relocations:
+        by_source.setdefault(src_mi, []).append(src_ci)
+    for src_mi, indices in by_source.items():
+        src_content = messages[src_mi].get("content")
+        if not isinstance(src_content, list):
+            continue
+        for ci in sorted(indices, reverse=True):
+            del src_content[ci]
+
+    # Insert each orphan immediately after its matching server_tool_use in
+    # the target message. Search fresh each time so successive inserts in
+    # the same target see the up-to-date content list.
+    for tu_id, _, _, block in relocations:
+        target_mi = tool_use_sources[tu_id]
+        target_content = messages[target_mi].get("content")
+        if not isinstance(target_content, list):
+            continue
+        for ci, b in enumerate(target_content):
+            if (
+                isinstance(b, dict)
+                and b.get("type") == "server_tool_use"
+                and b.get("id") == tu_id
+            ):
+                target_content.insert(ci + 1, block)
+                break
+
+
 def _normalize_tool_search_result_for_input(sb: Dict[str, Any]) -> Dict[str, Any]:
     """Strip response-only fields from a tool_search result block while
     preserving the variant-suffixed type the API requires for pairing.
@@ -2026,6 +2121,13 @@ def convert_messages_to_anthropic(
         for b in m["content"]:
             if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
                 b.pop("cache_control", None)
+
+    # Anthropic's tool_search emits the result block in a *later* response
+    # than the one that issued the server_tool_use, but its input validator
+    # requires same-message pairing. Walk the assembled message list and
+    # move any orphaned result blocks back to the assistant message that
+    # owns the matching server_tool_use.
+    _relocate_orphaned_tool_search_results(result)
 
     return system, result
 

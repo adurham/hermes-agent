@@ -13,6 +13,7 @@ discover the schema one rejected field at a time.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, get_type_hints
 
 import pytest
@@ -21,6 +22,7 @@ from agent.anthropic_adapter import (
     _normalize_tool_reference_for_input,
     _normalize_tool_search_result_for_input,
     _normalize_tool_search_result_inner,
+    _relocate_orphaned_tool_search_results,
     convert_messages_to_anthropic,
 )
 
@@ -405,3 +407,234 @@ class TestConvertMessagesRoundTrip:
         assert isinstance(assistant_msg["content"], list)
         text_blocks = [b for b in assistant_msg["content"] if b.get("type") == "text"]
         assert any("Looking that up" in b.get("text", "") for b in text_blocks)
+
+
+# ---------------------------------------------------------------------------
+# Relocation pass — same-message pairing for server_tool_use ↔ result
+# ---------------------------------------------------------------------------
+class TestRelocateOrphanedResults:
+    def _server_tool_use(self, tu_id: str, name: str = "tool_search_tool_regex"):
+        return {
+            "type": "server_tool_use",
+            "id": tu_id,
+            "name": name,
+            "input": {"query": "x"},
+        }
+
+    def _result(self, tu_id: str, variant: str = "regex"):
+        return {
+            "type": f"tool_search_tool_{variant}_tool_result",
+            "tool_use_id": tu_id,
+            "content": {
+                "type": "tool_search_tool_search_result",
+                "tool_references": [],
+            },
+        }
+
+    def test_no_orphans_no_change(self):
+        """When the tool_use and its result are already in the same message,
+        nothing should move."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    self._server_tool_use("srvtoolu_a"),
+                    self._result("srvtoolu_a"),
+                ],
+            },
+        ]
+        before = json.dumps(msgs, sort_keys=True)
+        _relocate_orphaned_tool_search_results(msgs)
+        assert json.dumps(msgs, sort_keys=True) == before
+
+    def test_relocates_orphan_from_later_message(self):
+        """Reproduces the dump: server_tool_use in msg[1], result in msg[3]."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "x", "signature": "s"},
+                    self._server_tool_use("srvtoolu_X"),
+                    {"type": "tool_use", "id": "tu_local", "name": "skills_list", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tu_local", "content": "ok"}],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "y", "signature": "s2"},
+                    self._result("srvtoolu_X"),
+                    {"type": "text", "text": "Done"},
+                ],
+            },
+        ]
+        _relocate_orphaned_tool_search_results(msgs)
+
+        # Result should now be in msg[1], right after the server_tool_use.
+        msg1_types = [b.get("type") for b in msgs[1]["content"]]
+        assert "tool_search_tool_regex_tool_result" in msg1_types
+        stu_idx = msg1_types.index("server_tool_use")
+        # The block immediately after server_tool_use should be the result.
+        assert (
+            msgs[1]["content"][stu_idx + 1].get("type")
+            == "tool_search_tool_regex_tool_result"
+        )
+        # And it must NOT remain in msg[3].
+        msg3_types = [b.get("type") for b in msgs[3]["content"]]
+        assert "tool_search_tool_regex_tool_result" not in msg3_types
+
+    def test_relocation_preserves_block_payload(self):
+        result_block = self._result("srvtoolu_K")
+        result_block["content"]["tool_references"] = [
+            {"type": "tool_reference", "tool_name": "alpha"},
+        ]
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [self._server_tool_use("srvtoolu_K")],
+            },
+            {
+                "role": "assistant",
+                "content": [result_block],
+            },
+        ]
+        _relocate_orphaned_tool_search_results(msgs)
+        moved = msgs[0]["content"][1]
+        assert moved["tool_use_id"] == "srvtoolu_K"
+        assert moved["content"]["tool_references"] == [
+            {"type": "tool_reference", "tool_name": "alpha"}
+        ]
+
+    def test_handles_multiple_orphans_across_multiple_messages(self):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    self._server_tool_use("srvtoolu_A"),
+                    self._server_tool_use("srvtoolu_B"),
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    self._result("srvtoolu_A", variant="regex"),
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    self._result("srvtoolu_B", variant="bm25"),
+                ],
+            },
+        ]
+        _relocate_orphaned_tool_search_results(msgs)
+        msg0_blocks = msgs[0]["content"]
+        # Each server_tool_use should be immediately followed by its result.
+        types = [b.get("type") for b in msg0_blocks]
+        a_idx = next(
+            i for i, b in enumerate(msg0_blocks)
+            if b.get("type") == "server_tool_use" and b.get("id") == "srvtoolu_A"
+        )
+        b_idx = next(
+            i for i, b in enumerate(msg0_blocks)
+            if b.get("type") == "server_tool_use" and b.get("id") == "srvtoolu_B"
+        )
+        assert msg0_blocks[a_idx + 1]["type"] == "tool_search_tool_regex_tool_result"
+        assert msg0_blocks[a_idx + 1]["tool_use_id"] == "srvtoolu_A"
+        assert msg0_blocks[b_idx + 1]["type"] == "tool_search_tool_bm25_tool_result"
+        assert msg0_blocks[b_idx + 1]["tool_use_id"] == "srvtoolu_B"
+        # Source messages should no longer carry the result blocks.
+        for src in (msgs[1]["content"], msgs[2]["content"]):
+            for b in src:
+                t = b.get("type", "")
+                assert not (t.startswith("tool_search_tool_") and t.endswith("_tool_result"))
+
+    def test_no_matching_tool_use_leaves_orphan_in_place(self):
+        """If the result has no matching server_tool_use in any message,
+        leave it where it is rather than dropping it on the floor."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [self._result("srvtoolu_does_not_exist")],
+            },
+        ]
+        _relocate_orphaned_tool_search_results(msgs)
+        assert msgs[0]["content"][0]["type"] == "tool_search_tool_regex_tool_result"
+
+    def test_relocation_runs_inside_convert_messages_to_anthropic(self):
+        """End-to-end: assistant messages whose persisted server_tool_blocks
+        carry the orphan pattern should come out paired after conversion."""
+        # First assistant turn issued the tool_search.
+        msg_turn1 = {
+            "role": "assistant",
+            "content": "",
+            "server_tool_blocks": [
+                {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_Z",
+                    "name": "tool_search_tool_regex",
+                    "input": {"query": "x"},
+                },
+            ],
+            "tool_calls": [
+                {
+                    "id": "tu_local",
+                    "function": {"name": "skills_list", "arguments": "{}"},
+                }
+            ],
+        }
+        msg_tool_result = {
+            "role": "tool",
+            "tool_call_id": "tu_local",
+            "content": "skills...",
+        }
+        # Third assistant turn — Anthropic delivered the search result here,
+        # but its tool_use_id pairs with msg_turn1's server_tool_use.
+        msg_turn3 = {
+            "role": "assistant",
+            "content": "Got it",
+            "server_tool_blocks": [
+                {
+                    "type": "tool_search_tool_regex_tool_result",
+                    "tool_use_id": "srvtoolu_Z",
+                    "content": {
+                        "type": "tool_search_tool_search_result",
+                        "tool_references": [],
+                    },
+                    "text": "RESPONSE-ONLY",
+                    "citations": ["RESPONSE-ONLY"],
+                },
+            ],
+            "tool_calls": [],
+        }
+        _, out_msgs = convert_messages_to_anthropic(
+            [
+                {"role": "user", "content": "hi"},
+                msg_turn1,
+                msg_tool_result,
+                msg_turn3,
+            ]
+        )
+        # Find the assistant messages in output (by role).
+        assistants = [m for m in out_msgs if m["role"] == "assistant"]
+        # The first assistant message must contain BOTH the server_tool_use
+        # AND the (variant-suffixed) tool_search result in same content list.
+        first = assistants[0]["content"]
+        types = [b.get("type") for b in first]
+        assert "server_tool_use" in types
+        assert "tool_search_tool_regex_tool_result" in types
+        stu_idx = types.index("server_tool_use")
+        assert (
+            first[stu_idx + 1]["type"] == "tool_search_tool_regex_tool_result"
+        )
+        # And response-only fields are stripped on the relocated block.
+        assert "text" not in first[stu_idx + 1]
+        assert "citations" not in first[stu_idx + 1]
+        # The later assistant message no longer carries the result.
+        last_types = [b.get("type") for b in assistants[-1]["content"]]
+        assert "tool_search_tool_regex_tool_result" not in last_types
