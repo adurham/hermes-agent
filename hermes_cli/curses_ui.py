@@ -156,6 +156,8 @@ def curses_checklist(
         flush_stdin()
         return result_holder[0] if result_holder[0] is not None else cancel_returns
 
+    except KeyboardInterrupt:
+        return cancel_returns
     except Exception:
         return _numbered_fallback(title, items, selected, cancel_returns, status_fn)
 
@@ -308,6 +310,8 @@ def curses_radiolist(
         flush_stdin()
         return result_holder[0] if result_holder[0] is not None else cancel_returns
 
+    except KeyboardInterrupt:
+        return cancel_returns
     except Exception:
         return _radio_numbered_fallback(title, items, selected, cancel_returns)
 
@@ -431,6 +435,8 @@ def curses_single_select(
             return None
         return result_holder[0]
 
+    except KeyboardInterrupt:
+        return None
     except Exception:
         all_items = list(items) + [cancel_label]
         cancel_idx = len(items)
