@@ -287,6 +287,112 @@ class TestApiCallsSchema:
             }
         assert "idx_api_calls_session" in indices
 
+    def test_session_fk_has_cascade(self, db):
+        """v13: deleting a session must cascade-delete its api_calls rows.
+        Without CASCADE the existing prune_sessions retention sweep fails
+        with a FOREIGN KEY constraint violation on any session that has
+        telemetry rows."""
+        db.create_session(session_id="s_cascade", source="cli")
+        db.record_api_call(
+            "s_cascade", call_seq=1,
+            started_at=0.0, ended_at=1.0, input_tokens=10,
+        )
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            assert conn.execute(
+                "SELECT COUNT(*) FROM api_calls WHERE session_id='s_cascade'"
+            ).fetchone()[0] == 1
+            conn.execute("DELETE FROM sessions WHERE id='s_cascade'")
+            conn.commit()
+            assert conn.execute(
+                "SELECT COUNT(*) FROM api_calls WHERE session_id='s_cascade'"
+            ).fetchone()[0] == 0
+
+    def test_v12_to_v13_migration_recreates_with_cascade(self, tmp_path):
+        """A v12 database (api_calls FK without CASCADE) must be migrated
+        in place: the api_calls table gets recreated with CASCADE, the
+        session row survives, schema_version bumps to 13.
+
+        Strategy: build a fully-shaped current DB via SessionDB, then mutate
+        it back to "looks like v12" (drop CASCADE on api_calls, set
+        schema_version=12), close, re-open. The re-open triggers the
+        v12→v13 migration.
+        """
+        db_path = tmp_path / "v12.db"
+
+        # 1. Build a full current-schema DB.
+        bootstrap = SessionDB(db_path=db_path)
+        bootstrap.create_session(session_id="s_legacy", source="cli")
+        bootstrap.record_api_call(
+            "s_legacy", call_seq=1,
+            started_at=0.0, ended_at=1.0, input_tokens=100,
+        )
+        bootstrap.close()
+
+        # 2. Mutate the DB back to a "v12 shape": rebuild api_calls without
+        #    CASCADE on the FK, and rewind schema_version to 12.
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.executescript("""
+                ALTER TABLE api_calls RENAME TO api_calls_v12_old;
+                CREATE TABLE api_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    call_seq INTEGER NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL NOT NULL,
+                    latency_seconds REAL NOT NULL,
+                    model TEXT,
+                    provider TEXT,
+                    input_tokens INTEGER,
+                    cache_read_tokens INTEGER,
+                    cache_write_tokens INTEGER,
+                    output_tokens INTEGER,
+                    reasoning_tokens INTEGER,
+                    prompt_tokens_total INTEGER,
+                    request_id TEXT,
+                    stop_reason TEXT,
+                    call_type TEXT,
+                    extra TEXT NOT NULL DEFAULT '{}'
+                );
+                INSERT INTO api_calls SELECT * FROM api_calls_v12_old;
+                DROP TABLE api_calls_v12_old;
+                UPDATE schema_version SET version = 12;
+            """)
+            conn.commit()
+
+        # 3. Re-open. Migration must run.
+        migrated = SessionDB(db_path=db_path)
+        try:
+            ver = migrated._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0]
+            assert ver == 13
+
+            # Session row survives.
+            row = migrated._conn.execute(
+                "SELECT id FROM sessions WHERE id='s_legacy'"
+            ).fetchone()
+            assert row is not None
+
+            # CASCADE now in effect — deleting the session sweeps api_calls.
+            migrated.record_api_call(
+                "s_legacy", call_seq=2,
+                started_at=10.0, ended_at=11.0, input_tokens=50,
+            )
+            conn = migrated._conn
+            conn.execute("PRAGMA foreign_keys=ON")
+            assert conn.execute(
+                "SELECT COUNT(*) FROM api_calls WHERE session_id='s_legacy'"
+            ).fetchone()[0] >= 1
+            conn.execute("DELETE FROM sessions WHERE id='s_legacy'")
+            conn.commit()
+            assert conn.execute(
+                "SELECT COUNT(*) FROM api_calls WHERE session_id='s_legacy'"
+            ).fetchone()[0] == 0
+        finally:
+            migrated.close()
+
 
 # =========================================================================
 # Message storage
@@ -1565,7 +1671,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 12
+        assert version == 13
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1862,7 +1968,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 12
+        assert cursor.fetchone()[0] == 13
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -3057,7 +3163,7 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 12
+            assert version == 13
         finally:
             session_db.close()
 

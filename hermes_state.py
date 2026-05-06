@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -94,14 +94,16 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
--- Per-API-call response telemetry (added v12). One row per response we
--- get back from the model provider, with the cache split, latency, and
--- request_id needed to confirm whether a slow turn was a cold prefill,
--- a queue stall, or something client-side. Cumulative session counters
--- alone can't answer that — they only tell you the average.
+-- Per-API-call response telemetry (added v12, CASCADE added v13). One row
+-- per response we get back from the model provider, with the cache split,
+-- latency, and request_id needed to confirm whether a slow turn was a
+-- cold prefill, a queue stall, or something client-side. Cumulative
+-- session counters alone can't answer that — they only tell you the
+-- average. ON DELETE CASCADE so existing prune_sessions retention sweeps
+-- it out when its parent session row goes away (default 90 days).
 CREATE TABLE IF NOT EXISTS api_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id),
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     call_seq INTEGER NOT NULL,            -- 1-indexed within session
     started_at REAL NOT NULL,
     ended_at REAL NOT NULL,
@@ -511,6 +513,24 @@ class SessionDB:
                     "COALESCE(tool_calls, '') "
                     "FROM messages"
                 )
+            if current_version < 13:
+                # v13: recreate api_calls with ON DELETE CASCADE on its
+                # session_id FK. The v12 table didn't have CASCADE, so the
+                # existing prune_sessions retention sweep would fail with a
+                # FOREIGN KEY constraint violation on any session that had
+                # telemetry rows. SQLite can't ALTER a foreign key, so the
+                # only option is drop + recreate. The data lost here is
+                # cheap to recreate (just per-call telemetry from the last
+                # run); preserving session-level cumulative counts is what
+                # matters and those live on the sessions table.
+                try:
+                    cursor.execute("DROP TABLE IF EXISTS api_calls")
+                except sqlite3.OperationalError:
+                    pass
+                # The post-migration CREATE IF NOT EXISTS pass at the top of
+                # _ensure_schema runs SCHEMA_SQL again, which will recreate
+                # api_calls with the v13 (CASCADE) shape. We just drop here.
+                cursor.executescript(SCHEMA_SQL)
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
