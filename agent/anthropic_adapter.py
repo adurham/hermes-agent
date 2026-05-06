@@ -2515,4 +2515,83 @@ def build_anthropic_kwargs(
                 merged.append(beta)
         kwargs["extra_headers"] = {**existing, "anthropic-beta": ",".join(merged)}
 
+    # ── 1M context tier gate ─────────────────────────────────────────
+    # Empirically (verified via api_calls telemetry on 2026-05-06),
+    # hermes hits sporadic multi-minute "queued/prefilling, server alive"
+    # stalls on Opus 4.7 even with perfect cache hits and tiny output.
+    # Claude Code's main chat path doesn't hit these — it uses the
+    # standard 200K context tier. Theory: opting into the 1M-context
+    # beta routes our requests to a different (slower-served, fewer-
+    # backends) model fleet at Anthropic, and for prompts that fit
+    # comfortably in 200K we're paying a queue tax for no benefit.
+    #
+    # Strategy: drop ``context-1m-2025-08-07`` from the per-request
+    # beta header when the estimated input fits in standard context.
+    # Threshold defaults to ~150K tokens (well under the 200K limit
+    # to leave headroom for output + uncertainty in the estimate).
+    # Prompts larger than the threshold keep the 1M beta — they need
+    # it. Override via env ``HERMES_CONTEXT_1M_THRESHOLD_TOKENS=0``
+    # to disable the gate (always send 1M beta) or set very high to
+    # always strip it.
+    try:
+        _threshold = int(os.environ.get(
+            "HERMES_CONTEXT_1M_THRESHOLD_TOKENS", "150000"
+        ))
+    except (TypeError, ValueError):
+        _threshold = 150000
+    if (
+        _threshold > 0
+        and not _requires_bearer_auth(base_url)
+        and _model_supports_1m_context(model)
+    ):
+        # Cheap byte-based prompt estimate — char/4 is the standard
+        # rough conversion. Tools count too: Anthropic loads them
+        # eagerly unless defer_loading=True, so for the gate we count
+        # only the eager portion.
+        _est_chars = 0
+        sys_obj = kwargs.get("system")
+        if sys_obj is not None:
+            try:
+                _est_chars += len(json.dumps(sys_obj))
+            except Exception:
+                pass
+        _msgs = kwargs.get("messages")
+        if isinstance(_msgs, list):
+            try:
+                _est_chars += len(json.dumps(_msgs))
+            except Exception:
+                pass
+        _tools_for_estimate = kwargs.get("tools")
+        if isinstance(_tools_for_estimate, list):
+            for _t in _tools_for_estimate:
+                if isinstance(_t, dict) and _t.get("defer_loading"):
+                    continue  # deferred tools don't count toward prefill
+                try:
+                    _est_chars += len(json.dumps(_t))
+                except Exception:
+                    pass
+        _est_tokens = _est_chars // 4
+        if _est_tokens < _threshold:
+            existing = kwargs.get("extra_headers", {}) or {}
+            prior = [
+                b.strip() for b in existing.get("anthropic-beta", "").split(",")
+                if b.strip()
+            ]
+            if not prior:
+                # No prior per-request override — start from the same
+                # base set the client would otherwise send. Then strip
+                # context-1m and emit as a per-request override.
+                prior = list(_common_betas_for_base_url(
+                    base_url,
+                    drop_context_1m_beta=False,
+                    model=model,
+                ))
+                if is_oauth:
+                    prior.extend(_OAUTH_ONLY_BETAS)
+            stripped = [b for b in prior if b != _CONTEXT_1M_BETA]
+            if len(stripped) != len(prior):
+                kwargs["extra_headers"] = {
+                    **existing, "anthropic-beta": ",".join(stripped)
+                }
+
     return kwargs

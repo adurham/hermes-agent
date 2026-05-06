@@ -1069,8 +1069,18 @@ class TestBuildAnthropicKwargs:
                 f"built-in tool incorrectly carries the legacy mcp_ prefix: {names}"
             )
 
-    def test_fast_mode_oauth_default_keeps_context_1m_beta(self):
-        """Default OAuth fast-mode requests still carry context-1m-2025-08-07."""
+    def test_fast_mode_oauth_default_keeps_context_1m_beta(self, monkeypatch):
+        """OAuth fast-mode requests carry context-1m-2025-08-07 when the
+        small-prompt 1M-tier gate is disabled (or when the prompt is large
+        enough to need 1M context).
+
+        Default behavior changed 2026-05-06: small prompts (<150K tokens
+        estimate) now strip context-1m to avoid the slower 1M-tier queue
+        — see the gate at the bottom of build_anthropic_kwargs. Disable
+        with HERMES_CONTEXT_1M_THRESHOLD_TOKENS=0 for this test so it
+        still asserts the underlying default-betas wiring works.
+        """
+        monkeypatch.setenv("HERMES_CONTEXT_1M_THRESHOLD_TOKENS", "0")
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-6",
             messages=[{"role": "user", "content": "Hi"}],
@@ -1084,6 +1094,61 @@ class TestBuildAnthropicKwargs:
         assert "fast-mode-2026-02-01" in betas
         assert "oauth-2025-04-20" in betas
         assert "context-1m-2025-08-07" in betas
+
+    def test_small_prompt_strips_context_1m_beta_by_default(self, monkeypatch):
+        """The 1M-tier gate (default 150K-token threshold) strips
+        context-1m-2025-08-07 from small-prompt requests so they don't
+        get routed to the slower 1M-context model fleet."""
+        monkeypatch.delenv("HERMES_CONTEXT_1M_THRESHOLD_TOKENS", raising=False)
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        betas = kwargs.get("extra_headers", {}).get("anthropic-beta", "")
+        assert "context-1m-2025-08-07" not in betas
+        # Other betas should still be present.
+        assert "interleaved-thinking-2025-05-14" in betas
+        assert "oauth-2025-04-20" in betas
+
+    def test_large_prompt_keeps_context_1m_beta(self, monkeypatch):
+        """Prompts above the threshold still get the 1M beta — they need it."""
+        monkeypatch.delenv("HERMES_CONTEXT_1M_THRESHOLD_TOKENS", raising=False)
+        # Build a prompt > 150K tokens (~600K chars). Char/4 estimate is
+        # what the gate uses, so a 700K-char user message exceeds it.
+        big = "x" * 700_000
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": big}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        # Large prompts don't get a per-request override; they keep the
+        # client-level betas (which include context-1m). Either no
+        # extra_headers, OR extra_headers with the beta still listed.
+        eh = kwargs.get("extra_headers")
+        if eh:
+            assert "context-1m-2025-08-07" in eh.get("anthropic-beta", "")
+
+    def test_gate_disabled_via_env_keeps_context_1m_beta(self, monkeypatch):
+        """HERMES_CONTEXT_1M_THRESHOLD_TOKENS=0 disables the gate entirely."""
+        monkeypatch.setenv("HERMES_CONTEXT_1M_THRESHOLD_TOKENS", "0")
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        eh = kwargs.get("extra_headers")
+        if eh:
+            assert "context-1m-2025-08-07" in eh.get("anthropic-beta", "")
 
     def test_fast_mode_oauth_drop_context_1m_beta_strips_only_1m(self):
         """drop_context_1m_beta=True strips context-1m from fast-mode
