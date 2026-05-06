@@ -7369,8 +7369,33 @@ class AIAgent:
                                         _fire_first_delta()
                                         self._fire_reasoning_delta(thinking_text)
 
-                    # Return the native Anthropic Message for downstream processing
-                    return stream.get_final_message()
+                    # Return the native Anthropic Message for downstream processing.
+                    # Capture the request_id from the underlying HTTP response
+                    # before exiting the context manager (the httpx Response
+                    # may be closed once the with-block ends). The Anthropic
+                    # SDK exposes the live HTTP response on stream.response;
+                    # request-id is the canonical header for support
+                    # correlation. Stash on the message so api_calls
+                    # telemetry can record it without re-doing the lookup.
+                    _final = stream.get_final_message()
+                    try:
+                        _http_resp = getattr(stream, "response", None)
+                        _hdrs = getattr(_http_resp, "headers", None) if _http_resp else None
+                        if _hdrs:
+                            _rid = _hdrs.get("request-id") or _hdrs.get("x-request-id")
+                            if _rid:
+                                # Attach as a private attr — the SDK Message
+                                # is a Pydantic model so we can't add fields,
+                                # but plain attribute assignment works on
+                                # BaseModel instances and survives until the
+                                # message is consumed.
+                                try:
+                                    object.__setattr__(_final, "_hermes_request_id", _rid)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    return _final
             finally:
                 set_sse_event_callback(None)
 
@@ -12393,19 +12418,28 @@ class AIAgent:
                             # can.
                             _request_id = None
                             try:
-                                # Anthropic SDK exposes the request id on the
-                                # response or as an _request_id attr (best-
-                                # effort across SDK versions / streaming vs
-                                # non-streaming). Header name is normalised.
-                                _hdrs = getattr(response, "headers", None)
-                                if _hdrs:
-                                    _request_id = (
-                                        _hdrs.get("request-id")
-                                        or _hdrs.get("x-request-id")
-                                    )
-                                _request_id = _request_id or getattr(
-                                    response, "_request_id", None
+                                # Streaming path (Anthropic): the request_id
+                                # was captured from stream.response.headers
+                                # before the context manager closed and
+                                # stashed as ``_hermes_request_id`` on the
+                                # final Message — pull it from there first.
+                                # Non-streaming and other transports fall
+                                # back to whatever the response object
+                                # exposes natively.
+                                _request_id = getattr(
+                                    response, "_hermes_request_id", None
                                 )
+                                if not _request_id:
+                                    _hdrs = getattr(response, "headers", None)
+                                    if _hdrs:
+                                        _request_id = (
+                                            _hdrs.get("request-id")
+                                            or _hdrs.get("x-request-id")
+                                        )
+                                if not _request_id:
+                                    _request_id = getattr(
+                                        response, "_request_id", None
+                                    )
                             except Exception:
                                 _request_id = None
                             self._session_db.record_api_call(
