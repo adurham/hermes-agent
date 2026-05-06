@@ -156,6 +156,50 @@ def cache_state_signal(conn, where, params):
         print(f"  {r['cache_state']:<22} {r['n']:>4} {r['avg_sec']:>6.1f}s {r['peak_sec']:>6.1f}s")
 
 
+def routing_breakdown(conn, where, params):
+    """Latency by Cloudflare POP / data-center code.
+
+    cf-ray header has the form ``<hash>-<airport>``. The 3-letter airport
+    code at the end is the Cloudflare edge that served the request. If
+    slow requests cluster in a different POP than fast ones, regional
+    routing is the cause.
+    """
+    sql = f"""
+        SELECT
+          substr(json_extract(extra, '$.routing."cf-ray"'), -3) AS dc,
+          COUNT(*) AS n,
+          ROUND(AVG(latency_seconds),1) AS avg_s,
+          ROUND(MAX(latency_seconds),1) AS peak_s,
+          SUM(CASE WHEN latency_seconds > 60 THEN 1 ELSE 0 END) AS slow_n
+        FROM api_calls
+        {where}
+        GROUP BY dc
+        ORDER BY peak_s DESC
+    """
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    print("\n== Cloudflare POP routing (cf-ray suffix) ==")
+    if not rows:
+        print("  (no routing headers captured yet — record_api_call extra "
+              "started populating after the routing-headers patch landed)")
+        return
+    seen = False
+    for r in rows:
+        dc = r["dc"] or "(none)"
+        if not r["dc"]:
+            continue
+        seen = True
+        print(
+            f"  {dc:<6} n={r['n']:>4}  avg={r['avg_s']:>6.1f}s  "
+            f"peak={r['peak_s']:>6.1f}s  slow(>60s)={r['slow_n']}"
+        )
+    if not seen:
+        print("  (cf-ray headers not yet present — restart hermes after "
+              "pulling the routing-headers patch and run a fresh session)")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--db", type=Path, default=_DEFAULT_DB)
@@ -176,6 +220,7 @@ def main():
     where, params = _filter_clauses(args.session, since_epoch)
     buckets(conn, where, params)
     cache_state_signal(conn, where, params)
+    routing_breakdown(conn, where, params)
     outliers(conn, where, params, args.outliers)
 
 

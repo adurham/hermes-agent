@@ -1095,11 +1095,30 @@ class TestBuildAnthropicKwargs:
         assert "oauth-2025-04-20" in betas
         assert "context-1m-2025-08-07" in betas
 
-    def test_small_prompt_strips_context_1m_beta_by_default(self, monkeypatch):
-        """The 1M-tier gate (default 150K-token threshold) strips
-        context-1m-2025-08-07 from small-prompt requests so they don't
-        get routed to the slower 1M-context model fleet."""
+    def test_gate_default_off_keeps_context_1m_beta(self, monkeypatch):
+        """The 1M-tier gate is DISABLED by default (threshold=0) because
+        running context can exceed the request body size when there's a
+        large cached prefix. With the gate off, small-prompt requests
+        keep context-1m-2025-08-07 (via the client-level default header)."""
         monkeypatch.delenv("HERMES_CONTEXT_1M_THRESHOLD_TOKENS", raising=False)
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        # No per-request override should have been emitted by the gate.
+        # (Other code paths — fast_mode, server-side tools — may still
+        # set extra_headers, but for this minimal request none of those
+        # apply, so extra_headers should be absent.)
+        assert "extra_headers" not in kwargs
+
+    def test_small_prompt_strips_context_1m_when_gate_enabled(self, monkeypatch):
+        """When the gate is opt-in via env, small-prompt requests strip
+        context-1m-2025-08-07 from the per-request beta header."""
+        monkeypatch.setenv("HERMES_CONTEXT_1M_THRESHOLD_TOKENS", "150000")
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-7",
             messages=[{"role": "user", "content": "Hi"}],
@@ -1110,13 +1129,13 @@ class TestBuildAnthropicKwargs:
         )
         betas = kwargs.get("extra_headers", {}).get("anthropic-beta", "")
         assert "context-1m-2025-08-07" not in betas
-        # Other betas should still be present.
         assert "interleaved-thinking-2025-05-14" in betas
         assert "oauth-2025-04-20" in betas
 
-    def test_large_prompt_keeps_context_1m_beta(self, monkeypatch):
-        """Prompts above the threshold still get the 1M beta — they need it."""
-        monkeypatch.delenv("HERMES_CONTEXT_1M_THRESHOLD_TOKENS", raising=False)
+    def test_large_prompt_keeps_context_1m_beta_with_gate_enabled(self, monkeypatch):
+        """Prompts above the threshold keep the 1M beta even when the
+        gate is enabled — they need it."""
+        monkeypatch.setenv("HERMES_CONTEXT_1M_THRESHOLD_TOKENS", "150000")
         # Build a prompt > 150K tokens (~600K chars). Char/4 estimate is
         # what the gate uses, so a 700K-char user message exceeds it.
         big = "x" * 700_000
