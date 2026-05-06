@@ -254,32 +254,59 @@ def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
     return value or None
 
 
-def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
-    """Return upstream/local git hashes for the startup banner."""
-    repo_dir = repo_dir or _resolve_repo_dir()
-    if repo_dir is None:
-        return None
-
-    upstream = _git_short_hash(repo_dir, "origin/main")
-    local = _git_short_hash(repo_dir, "HEAD")
-    if not upstream or not local:
-        return None
-
-    ahead = 0
+def _git_count(repo_dir: Path, range_spec: str) -> int:
+    """Return ``git rev-list --count <range_spec>`` or 0 on any failure."""
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            ["git", "rev-list", "--count", range_spec],
             capture_output=True,
             text=True,
             timeout=5,
             cwd=str(repo_dir),
         )
-        if result.returncode == 0:
-            ahead = int((result.stdout or "0").strip() or "0")
     except Exception:
-        ahead = 0
+        return 0
+    if result.returncode != 0:
+        return 0
+    try:
+        return max(int((result.stdout or "0").strip() or "0"), 0)
+    except ValueError:
+        return 0
 
-    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+
+def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
+    """Return git state for the startup banner.
+
+    Fields:
+        local: short SHA of HEAD (always present)
+        origin: short SHA of origin/main, or None if missing
+        upstream: short SHA of upstream/main, or None if no upstream remote
+        carried: commits on HEAD not on origin/main (your local-only commits)
+        upstream_behind: commits on upstream/main not on HEAD (only set when
+            an ``upstream`` remote exists; reflects how stale your fork is
+            relative to the real NousResearch repo)
+    """
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        return None
+
+    local = _git_short_hash(repo_dir, "HEAD")
+    if not local:
+        return None
+
+    origin = _git_short_hash(repo_dir, "origin/main")
+    upstream = _git_short_hash(repo_dir, "upstream/main")
+
+    carried = _git_count(repo_dir, "origin/main..HEAD") if origin else 0
+    upstream_behind = _git_count(repo_dir, "HEAD..upstream/main") if upstream else 0
+
+    return {
+        "local": local,
+        "origin": origin,
+        "upstream": upstream,
+        "carried": carried,
+        "upstream_behind": upstream_behind,
+    }
 
 
 _RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
@@ -328,6 +355,12 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
     return _latest_release_cache
 
 
+# Threshold (in commits) before the banner nudges that upstream/main has
+# moved on. Below this it's just routine drift; above it the fork is stale
+# enough that you probably want to consider a sync.
+_UPSTREAM_BEHIND_NUDGE = 10
+
+
 def format_banner_version_label() -> str:
     """Return the version label shown in the startup banner title."""
     base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
@@ -335,15 +368,22 @@ def format_banner_version_label() -> str:
     if not state:
         return base
 
-    upstream = state["upstream"]
-    local = state["local"]
-    ahead = int(state.get("ahead") or 0)
+    local = state.get("local")
+    if not local:
+        return base
 
-    if ahead <= 0 or upstream == local:
-        return f"{base} · upstream {upstream}"
+    carried = int(state.get("carried") or 0)
+    upstream_behind = int(state.get("upstream_behind") or 0)
 
-    carried_word = "commit" if ahead == 1 else "commits"
-    return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
+    label = f"{base} · {local}"
+    if carried > 0:
+        word = "commit" if carried == 1 else "commits"
+        label += f" (+{carried} carried {word})"
+
+    if upstream_behind >= _UPSTREAM_BEHIND_NUDGE:
+        label += f" · upstream +{upstream_behind}"
+
+    return label
 
 
 # =========================================================================
