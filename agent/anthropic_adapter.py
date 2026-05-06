@@ -764,12 +764,41 @@ def build_anthropic_client(
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
+        #
+        # Strip x-stainless-* fingerprint headers (2026-05-06): the Python
+        # SDK adds 6 x-stainless-{lang,os,arch,runtime,runtime-version,
+        # package-version} + 2 per-request (retry-count, read-timeout)
+        # headers identifying the request as Python SDK. Claude Code's
+        # native (Bun/JS) implementation doesn't send these. If Anthropic
+        # routes/prioritises requests by client fingerprint, these
+        # headers tag hermes as "third-party Python automation" while a
+        # bare claude-cli UA would tag it as the official client. Empirical
+        # evidence: hermes hits sporadic multi-minute "queued/prefilling"
+        # stalls Claude Code never sees, with same model + same betas +
+        # same OAuth scope. Use ``Omit()`` (the SDK's drop-header
+        # sentinel) to suppress them.
+        try:
+            from anthropic._types import Omit as _Omit
+            _omit_stainless = {
+                "x-stainless-lang": _Omit(),
+                "x-stainless-package-version": _Omit(),
+                "x-stainless-os": _Omit(),
+                "x-stainless-arch": _Omit(),
+                "x-stainless-runtime": _Omit(),
+                "x-stainless-runtime-version": _Omit(),
+                "x-stainless-retry-count": _Omit(),
+                "x-stainless-read-timeout": _Omit(),
+                "x-stainless-timeout": _Omit(),
+            }
+        except ImportError:
+            _omit_stainless = {}
         all_betas = common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
             "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
             "x-app": "cli",
+            **_omit_stainless,
         }
     else:
         # Regular API key → x-api-key header + common betas
