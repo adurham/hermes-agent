@@ -2452,20 +2452,30 @@ def build_anthropic_kwargs(
     # for that host.  (Kimi on chat_completions enables thinking via
     # extra_body in the ChatCompletionsTransport — see #13503.)
     #
-    # On 4.7+ the `thinking.display` field defaults to "omitted", which
-    # silently hides reasoning text that Hermes surfaces in its CLI. We
-    # request "summarized" so the reasoning blocks stay populated — matching
-    # 4.6 behavior and preserving the activity-feed UX during long tool runs.
+    # On 4.7+ ``thinking.display`` defaults to "omitted" (no summary text
+    # generated). Previously hermes set "summarized" to keep the activity
+    # feed populated, but verified via binary inspection 2026-05-06 that
+    # Claude Code DOES NOT set ``display`` — it accepts the omitted default.
+    # Multi-minute "queued/prefilling" stalls hermes was hitting that
+    # Claude Code didn't correlate with this difference: producing a
+    # summary forces the model to generate extra tokens after thinking
+    # before the visible output streams, magnifying any internal-thinking
+    # latency.  Match Claude Code's wire shape — let display default.
+    # See ``HERMES_THINKING_DISPLAY=summarized`` env var to opt back in
+    # if the activity feed UX matters more than latency parity.
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
-                kwargs["thinking"] = {
-                    "type": "adaptive",
-                    "display": "summarized",
-                }
+                _thinking_cfg: Dict[str, Any] = {"type": "adaptive"}
+                _display_override = os.environ.get(
+                    "HERMES_THINKING_DISPLAY", ""
+                ).strip().lower()
+                if _display_override in {"summarized", "verbose", "all", "omitted"}:
+                    _thinking_cfg["display"] = _display_override
+                kwargs["thinking"] = _thinking_cfg
                 adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
                 # Downgrade xhigh on models that don't support it. Claude Code
                 # falls back to "high" for non-4.7 models (verified by

@@ -1211,13 +1211,44 @@ class TestBuildAnthropicKwargs:
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "high"},
         )
-        # Adaptive thinking + display="summarized" keeps reasoning text
-        # populated in the response stream (Opus 4.7 default is "omitted").
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        # Adaptive thinking with no ``display`` field — matches Claude Code's
+        # wire shape (Opus 4.7 default is "omitted"; setting "summarized"
+        # adds a summary-generation pass that magnifies internal-thinking
+        # latency). Per HERMES_THINKING_DISPLAY env var to opt back in.
+        assert kwargs["thinking"] == {"type": "adaptive"}
         assert kwargs["output_config"] == {"effort": "high"}
         assert "budget_tokens" not in kwargs["thinking"]
+        assert "display" not in kwargs["thinking"]
         assert "temperature" not in kwargs
         assert kwargs["max_tokens"] == 4096
+
+    def test_thinking_display_env_override(self, monkeypatch):
+        """HERMES_THINKING_DISPLAY=summarized opts back into the previous
+        behaviour for users who prefer the visible thinking summary even
+        at the latency cost."""
+        monkeypatch.setenv("HERMES_THINKING_DISPLAY", "summarized")
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+
+    def test_thinking_display_env_invalid_ignored(self, monkeypatch):
+        """An unknown HERMES_THINKING_DISPLAY value is ignored — defaults
+        to omitted (no display field)."""
+        monkeypatch.setenv("HERMES_THINKING_DISPLAY", "garbage-value")
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert "display" not in kwargs["thinking"]
 
     def test_reasoning_config_downgrades_xhigh_to_max_for_4_6_models(self):
         # Opus 4.7 added "xhigh" as a distinct effort level (low/medium/high/
@@ -1233,7 +1264,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "xhigh"},
         )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["thinking"] == {"type": "adaptive"}
         assert kwargs["output_config"] == {"effort": "max"}
 
     def test_reasoning_config_preserves_xhigh_for_4_7_models(self):
@@ -1246,7 +1277,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "xhigh"},
         )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["thinking"] == {"type": "adaptive"}
         assert kwargs["output_config"] == {"effort": "xhigh"}
 
     def test_reasoning_config_maps_max_effort_for_4_7_models(self):
@@ -1257,7 +1288,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "max"},
         )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["thinking"] == {"type": "adaptive"}
         assert kwargs["output_config"] == {"effort": "max"}
 
     def test_opus_4_7_strips_sampling_params(self):
