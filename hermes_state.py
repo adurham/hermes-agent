@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -94,10 +94,40 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+-- Per-API-call response telemetry (added v12). One row per response we
+-- get back from the model provider, with the cache split, latency, and
+-- request_id needed to confirm whether a slow turn was a cold prefill,
+-- a queue stall, or something client-side. Cumulative session counters
+-- alone can't answer that — they only tell you the average.
+CREATE TABLE IF NOT EXISTS api_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    call_seq INTEGER NOT NULL,            -- 1-indexed within session
+    started_at REAL NOT NULL,
+    ended_at REAL NOT NULL,
+    latency_seconds REAL NOT NULL,
+    model TEXT,
+    provider TEXT,
+    -- Anthropic categorises prompt tokens into input/cache_read/cache_write.
+    -- input_tokens here is the *non-cached* portion (matches Anthropic's
+    -- field of the same name). Sum the three for the total prompt size.
+    input_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    output_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    prompt_tokens_total INTEGER,
+    request_id TEXT,                      -- Anthropic request id (for support)
+    stop_reason TEXT,
+    call_type TEXT,                       -- "main" | "auxiliary" | future
+    extra TEXT NOT NULL DEFAULT '{}'      -- JSON: raw provider usage etc.
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_api_calls_session ON api_calls(session_id, started_at);
 """
 
 FTS_SQL = """
@@ -582,6 +612,70 @@ class SessionDB:
                 (system_prompt, session_id),
             )
         self._execute_write(_do)
+
+    def record_api_call(
+        self,
+        session_id: str,
+        *,
+        call_seq: int,
+        started_at: float,
+        ended_at: float,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        input_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        output_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        request_id: Optional[str] = None,
+        stop_reason: Optional[str] = None,
+        call_type: str = "main",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist one API-call's response telemetry.
+
+        This is the per-call complement to ``update_token_counts`` — that
+        method bumps cumulative session totals; this one writes a row
+        capturing the split (input vs cache_read vs cache_write), latency,
+        and request_id needed to actually diagnose individual slow turns.
+
+        Best-effort: a write failure is logged at debug and never blocks
+        the agent loop. Counters in the sessions row remain authoritative
+        for cumulative views.
+        """
+        latency = max(0.0, float(ended_at) - float(started_at))
+        prompt_total = (
+            int(input_tokens or 0)
+            + int(cache_read_tokens or 0)
+            + int(cache_write_tokens or 0)
+        )
+        extra_json = json.dumps(extra or {}, default=str)
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO api_calls (
+                    session_id, call_seq, started_at, ended_at,
+                    latency_seconds, model, provider,
+                    input_tokens, cache_read_tokens, cache_write_tokens,
+                    output_tokens, reasoning_tokens, prompt_tokens_total,
+                    request_id, stop_reason, call_type, extra
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id, int(call_seq),
+                    float(started_at), float(ended_at), latency,
+                    model, provider,
+                    int(input_tokens or 0), int(cache_read_tokens or 0),
+                    int(cache_write_tokens or 0), int(output_tokens or 0),
+                    int(reasoning_tokens or 0), prompt_total,
+                    request_id, stop_reason, call_type, extra_json,
+                ),
+            )
+        try:
+            self._execute_write(_do)
+        except Exception:
+            logger.debug("record_api_call failed for session %s", session_id, exc_info=True)
 
     def update_token_counts(
         self,

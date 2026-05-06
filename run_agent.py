@@ -12382,6 +12382,53 @@ class AIAgent:
                                 )
                             except Exception:
                                 pass  # never block the agent loop
+
+                            # Per-call telemetry. update_token_counts above
+                            # writes cumulative session totals; this row
+                            # captures the per-call cache split, latency, and
+                            # request_id needed to actually diagnose
+                            # individual slow turns. Cumulative totals can't
+                            # answer "was THIS turn a cold prefill?" — only
+                            # the per-call cache_read vs cache_write split
+                            # can.
+                            _request_id = None
+                            try:
+                                # Anthropic SDK exposes the request id on the
+                                # response or as an _request_id attr (best-
+                                # effort across SDK versions / streaming vs
+                                # non-streaming). Header name is normalised.
+                                _hdrs = getattr(response, "headers", None)
+                                if _hdrs:
+                                    _request_id = (
+                                        _hdrs.get("request-id")
+                                        or _hdrs.get("x-request-id")
+                                    )
+                                _request_id = _request_id or getattr(
+                                    response, "_request_id", None
+                                )
+                            except Exception:
+                                _request_id = None
+                            self._session_db.record_api_call(
+                                self.session_id,
+                                call_seq=self.session_api_calls,
+                                started_at=api_start_time,
+                                ended_at=api_start_time + api_duration,
+                                model=self.model,
+                                provider=self.provider,
+                                input_tokens=canonical_usage.input_tokens,
+                                cache_read_tokens=canonical_usage.cache_read_tokens,
+                                cache_write_tokens=canonical_usage.cache_write_tokens,
+                                output_tokens=canonical_usage.output_tokens,
+                                reasoning_tokens=canonical_usage.reasoning_tokens,
+                                request_id=_request_id,
+                                stop_reason=getattr(
+                                    response, "stop_reason", None
+                                ) or getattr(response, "finish_reason", None),
+                                call_type="main",
+                                extra={
+                                    "raw_usage": canonical_usage.raw_usage,
+                                },
+                            )
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

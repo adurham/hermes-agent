@@ -1,5 +1,7 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
+import sqlite3
 import time
 import pytest
 from pathlib import Path
@@ -135,6 +137,155 @@ class TestSessionLifecycle:
 
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
+
+
+# =========================================================================
+# Per-API-call telemetry (api_calls table, schema v12)
+# =========================================================================
+
+class TestRecordApiCall:
+    def test_records_full_response_split(self, db):
+        """A single record_api_call writes a queryable row with the full
+        cache split, latency, model/provider, and request_id."""
+        db.create_session(session_id="s_api1", source="cli")
+        db.record_api_call(
+            "s_api1",
+            call_seq=1,
+            started_at=1000.0,
+            ended_at=1042.5,
+            model="claude-opus-4-7",
+            provider="anthropic",
+            input_tokens=82,
+            cache_read_tokens=165_000,
+            cache_write_tokens=2_300,
+            output_tokens=512,
+            reasoning_tokens=128,
+            request_id="req_011CajzvS1CqiA6S2VdZsYiA",
+            stop_reason="end_turn",
+            call_type="main",
+        )
+
+        with sqlite3.connect(db.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM api_calls WHERE session_id = 's_api1'"
+            ).fetchone()
+        assert row["call_seq"] == 1
+        assert row["model"] == "claude-opus-4-7"
+        assert row["provider"] == "anthropic"
+        assert row["input_tokens"] == 82
+        assert row["cache_read_tokens"] == 165_000
+        assert row["cache_write_tokens"] == 2_300
+        assert row["output_tokens"] == 512
+        assert row["reasoning_tokens"] == 128
+        # latency derived from started/ended
+        assert abs(row["latency_seconds"] - 42.5) < 1e-6
+        # prompt_tokens_total is the sum of input + cache_read + cache_write
+        assert row["prompt_tokens_total"] == 82 + 165_000 + 2_300
+        assert row["request_id"] == "req_011CajzvS1CqiA6S2VdZsYiA"
+        assert row["stop_reason"] == "end_turn"
+        assert row["call_type"] == "main"
+
+    def test_cold_prefill_signature_is_queryable(self, db):
+        """The whole point: a cold-prefill turn (cache_read=0, big input)
+        followed by warm turns (cache_read >> input) must be distinguishable
+        with a single SQL query. This is the smoking-gun shape."""
+        db.create_session(session_id="s_diag", source="cli")
+        # Turn 1 — cold prefill of a big history
+        db.record_api_call(
+            "s_diag", call_seq=1,
+            started_at=2000.0, ended_at=2330.0,  # 330s wait
+            input_tokens=167_000, cache_read_tokens=0, cache_write_tokens=167_000,
+            output_tokens=200, model="claude-opus-4-7", provider="anthropic",
+            call_type="main",
+        )
+        # Turn 2 — same prompt, now cached
+        db.record_api_call(
+            "s_diag", call_seq=2,
+            started_at=2400.0, ended_at=2412.0,  # 12s wait
+            input_tokens=50, cache_read_tokens=167_000, cache_write_tokens=0,
+            output_tokens=400, model="claude-opus-4-7", provider="anthropic",
+            call_type="main",
+        )
+
+        with sqlite3.connect(db.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT call_seq, latency_seconds, input_tokens, "
+                "cache_read_tokens, cache_write_tokens "
+                "FROM api_calls WHERE session_id = 's_diag' "
+                "ORDER BY call_seq"
+            ).fetchall()
+        # Cold turn: latency >> warm latency, cache_read=0, cache_write big
+        cold, warm = rows[0], rows[1]
+        assert cold["latency_seconds"] > warm["latency_seconds"] * 10
+        assert cold["cache_read_tokens"] == 0
+        assert cold["cache_write_tokens"] > 0
+        assert warm["cache_read_tokens"] > 0
+        assert warm["cache_write_tokens"] == 0
+
+    def test_extra_field_persists_raw_usage_json(self, db):
+        """Raw provider usage dict should round-trip through extra so we can
+        see e.g. ephemeral_5m vs ephemeral_1h breakdown when needed."""
+        db.create_session(session_id="s_extra", source="cli")
+        raw = {"cache_creation": {"ephemeral_5m_input_tokens": 1000,
+                                  "ephemeral_1h_input_tokens": 0}}
+        db.record_api_call(
+            "s_extra", call_seq=1,
+            started_at=10.0, ended_at=12.0,
+            extra={"raw_usage": raw},
+        )
+        with sqlite3.connect(db.db_path) as conn:
+            row = conn.execute(
+                "SELECT extra FROM api_calls WHERE session_id = 's_extra'"
+            ).fetchone()
+        loaded = json.loads(row[0])
+        assert loaded["raw_usage"]["cache_creation"]["ephemeral_5m_input_tokens"] == 1000
+
+    def test_failure_does_not_raise(self, db):
+        """Telemetry must never block the agent loop. A failing write logs
+        but doesn't propagate."""
+        db.create_session(session_id="s_safe", source="cli")
+        # Pass non-existent session — FK violation if FKs were enforced; if
+        # not, the row inserts but has no parent — either way must not raise.
+        # The spec is "best-effort", so simply not raising on a bad call is
+        # the contract.
+        db.record_api_call(
+            "no_such_session", call_seq=1,
+            started_at=0.0, ended_at=1.0, input_tokens=10,
+        )  # must not raise
+
+
+class TestApiCallsSchema:
+    def test_table_exists_and_has_expected_columns(self, db):
+        """Schema v12 introduces the api_calls table with the documented
+        column set. Lock it in so future schema edits trip a test."""
+        db.create_session(session_id="s_schema", source="cli")
+        with sqlite3.connect(db.db_path) as conn:
+            cols = {
+                r[1] for r in conn.execute(
+                    "PRAGMA table_info(api_calls)"
+                ).fetchall()
+            }
+        expected = {
+            "id", "session_id", "call_seq", "started_at", "ended_at",
+            "latency_seconds", "model", "provider",
+            "input_tokens", "cache_read_tokens", "cache_write_tokens",
+            "output_tokens", "reasoning_tokens", "prompt_tokens_total",
+            "request_id", "stop_reason", "call_type", "extra",
+        }
+        assert expected.issubset(cols), f"missing: {expected - cols}"
+
+    def test_session_index_present(self, db):
+        """idx_api_calls_session is used by the diagnostic queries; lock it."""
+        with sqlite3.connect(db.db_path) as conn:
+            indices = {
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='index' AND tbl_name='api_calls'"
+                ).fetchall()
+            }
+        assert "idx_api_calls_session" in indices
 
 
 # =========================================================================
@@ -1414,7 +1565,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == 12
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1711,7 +1862,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -2906,7 +3057,7 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == 12
         finally:
             session_db.close()
 
