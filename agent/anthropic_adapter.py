@@ -2515,30 +2515,30 @@ def build_anthropic_kwargs(
                 merged.append(beta)
         kwargs["extra_headers"] = {**existing, "anthropic-beta": ",".join(merged)}
 
-    # ── 1M context tier gate ─────────────────────────────────────────
-    # Empirically (verified via api_calls telemetry on 2026-05-06),
-    # hermes hits sporadic multi-minute "queued/prefilling, server alive"
-    # stalls on Opus 4.7 even with perfect cache hits and tiny output.
-    # Claude Code's main chat path doesn't hit these — it uses the
-    # standard 200K context tier. Theory: opting into the 1M-context
-    # beta routes our requests to a different (slower-served, fewer-
-    # backends) model fleet at Anthropic, and for prompts that fit
-    # comfortably in 200K we're paying a queue tax for no benefit.
+    # ── 1M context tier gate (DEFAULT OFF) ───────────────────────────
+    # Background: hermes hits sporadic multi-minute stalls on Opus 4.7
+    # even with perfect cache hits. Theory was that opting into
+    # ``context-1m-2025-08-07`` routes requests to a smaller, slower-
+    # served 1M-context model fleet vs the standard 200K tier.
     #
-    # Strategy: drop ``context-1m-2025-08-07`` from the per-request
-    # beta header when the estimated input fits in standard context.
-    # Threshold defaults to ~150K tokens (well under the 200K limit
-    # to leave headroom for output + uncertainty in the estimate).
-    # Prompts larger than the threshold keep the 1M beta — they need
-    # it. Override via env ``HERMES_CONTEXT_1M_THRESHOLD_TOKENS=0``
-    # to disable the gate (always send 1M beta) or set very high to
-    # always strip it.
+    # Why disabled by default (2026-05-06): the gate uses request-body
+    # size to decide, but the relevant size is the running CONTEXT
+    # (cached prefix + new tokens), which can be much larger than the
+    # body bytes we send (cached prefix is server-side). Adam's
+    # workflows regularly run 600K+ of cached context — those genuinely
+    # need the 1M beta even though each individual request body is small.
+    # Stripping the beta in that case would either break cache continuity
+    # or fail outright (200K context can't hold a 600K prefix).
+    #
+    # Set ``HERMES_CONTEXT_1M_THRESHOLD_TOKENS`` to a positive integer to
+    # enable the gate at that body-size threshold. Use only when you're
+    # confident the running context (not just the body) fits in 200K.
     try:
         _threshold = int(os.environ.get(
-            "HERMES_CONTEXT_1M_THRESHOLD_TOKENS", "150000"
+            "HERMES_CONTEXT_1M_THRESHOLD_TOKENS", "0"
         ))
     except (TypeError, ValueError):
-        _threshold = 150000
+        _threshold = 0
     if (
         _threshold > 0
         and not _requires_bearer_auth(base_url)

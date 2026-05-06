@@ -7370,13 +7370,14 @@ class AIAgent:
                                         self._fire_reasoning_delta(thinking_text)
 
                     # Return the native Anthropic Message for downstream processing.
-                    # Capture the request_id from the underlying HTTP response
-                    # before exiting the context manager (the httpx Response
-                    # may be closed once the with-block ends). The Anthropic
-                    # SDK exposes the live HTTP response on stream.response;
-                    # request-id is the canonical header for support
-                    # correlation. Stash on the message so api_calls
-                    # telemetry can record it without re-doing the lookup.
+                    # Capture routing headers from the underlying HTTP
+                    # response before exiting the context manager (the
+                    # httpx Response may be closed once the with-block
+                    # ends). request-id is for support correlation;
+                    # cf-ray exposes Cloudflare's POP / data-center code
+                    # so we can detect regional routing variance from the
+                    # api_calls telemetry. Stash on the message as
+                    # private attrs.
                     _final = stream.get_final_message()
                     try:
                         _http_resp = getattr(stream, "response", None)
@@ -7384,13 +7385,28 @@ class AIAgent:
                         if _hdrs:
                             _rid = _hdrs.get("request-id") or _hdrs.get("x-request-id")
                             if _rid:
-                                # Attach as a private attr — the SDK Message
-                                # is a Pydantic model so we can't add fields,
-                                # but plain attribute assignment works on
-                                # BaseModel instances and survives until the
-                                # message is consumed.
                                 try:
                                     object.__setattr__(_final, "_hermes_request_id", _rid)
+                                except Exception:
+                                    pass
+                            # Snapshot routing-relevant headers into a
+                            # small dict. Keys are lowercased; missing
+                            # headers map to None. Used by the api_calls
+                            # writer to populate ``extra.routing``.
+                            _routing: Dict[str, Any] = {}
+                            for _k in (
+                                "cf-ray",
+                                "anthropic-organization-id",
+                                "via",
+                                "x-served-by",
+                                "x-anthropic-served-by",
+                            ):
+                                _v = _hdrs.get(_k)
+                                if _v:
+                                    _routing[_k] = _v
+                            if _routing:
+                                try:
+                                    object.__setattr__(_final, "_hermes_routing_headers", _routing)
                                 except Exception:
                                     pass
                     except Exception:
@@ -12442,6 +12458,9 @@ class AIAgent:
                                     )
                             except Exception:
                                 _request_id = None
+                            _routing_headers = getattr(
+                                response, "_hermes_routing_headers", None
+                            ) or {}
                             self._session_db.record_api_call(
                                 self.session_id,
                                 call_seq=self.session_api_calls,
@@ -12461,6 +12480,7 @@ class AIAgent:
                                 call_type="main",
                                 extra={
                                     "raw_usage": canonical_usage.raw_usage,
+                                    "routing": _routing_headers,
                                 },
                             )
                         
