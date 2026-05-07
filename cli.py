@@ -11006,10 +11006,17 @@ class HermesCLI:
             except Exception:
                 pass
 
+            # Use the binary name the user actually invoked so a
+            # symlinked alias tells the user how to resume with that
+            # same name instead of always saying "hermes".
+            try:
+                _bin = os.path.basename(sys.argv[0]) or "hermes"
+            except Exception:
+                _bin = "hermes"
             print("Resume this session with:")
-            print(f"  hermes --resume {self.session_id}")
+            print(f"  {_bin} --resume {self.session_id}")
             if session_title:
-                print(f"  hermes -c \"{session_title}\"")
+                print(f"  {_bin} -c \"{session_title}\"")
             print()
             print(f"Session:        {self.session_id}")
             if session_title:
