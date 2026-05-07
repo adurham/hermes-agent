@@ -45,9 +45,14 @@ class AnthropicTransport(ProviderTransport):
         tools: Optional[List[Dict[str, Any]]] = None,
         **params,
     ) -> Dict[str, Any]:
-        """Build Anthropic messages.create() kwargs.
+        """Build kwargs for ``client.beta.messages.{create,stream}``.
 
-        Calls convert_messages and convert_tools internally.
+        Calls convert_messages and convert_tools internally. The output
+        is shaped for the beta namespace specifically — typed kwargs for
+        ``thinking``, ``output_config``, ``context_management``, ``betas``,
+        ``speed``, ``metadata`` go through directly without the
+        ``extra_body``/``extra_headers`` workarounds the plain
+        ``messages.*`` namespace required.
 
         params (all optional):
             max_tokens: int
@@ -62,6 +67,8 @@ class AnthropicTransport(ProviderTransport):
             tool_search_config: dict | None — see _apply_tool_search in
                 anthropic_adapter.py for the schema. When None or
                 disabled, no transformation is applied.
+            session_id: str | None — included in metadata.user_id blob
+                so Anthropic-side analytics can correlate per-session.
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
@@ -79,6 +86,7 @@ class AnthropicTransport(ProviderTransport):
             fast_mode=params.get("fast_mode", False),
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
             tool_search_config=params.get("tool_search_config"),
+            session_id=params.get("session_id"),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -155,6 +163,14 @@ class AnthropicTransport(ProviderTransport):
             provider_data["reasoning_details"] = reasoning_details
         if server_tool_blocks:
             provider_data["server_tool_blocks"] = server_tool_blocks
+        # Structured stop_details (Anthropic SDK 0.88+, propagated through
+        # streaming in 0.98+).  Today only refusal stops carry detail
+        # (category=cyber|bio + human-readable explanation); future stop
+        # types may add more.  Surface as-is so callers/UI can present
+        # the refusal explanation rather than a bare "refusal" string.
+        stop_details = _to_plain_data(getattr(response, "stop_details", None))
+        if stop_details:
+            provider_data["stop_details"] = stop_details
 
         return NormalizedResponse(
             content="\n".join(text_parts) if text_parts else None,

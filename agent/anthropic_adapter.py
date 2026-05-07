@@ -4,6 +4,16 @@ Translates between Hermes's internal OpenAI-style message format and
 Anthropic's Messages API. Follows the same pattern as the codex_responses
 adapter — all provider-specific logic is isolated here.
 
+Targets ``client.beta.messages.{create,stream}`` (anthropic SDK 0.100+).
+The beta namespace exposes typed kwargs for the beta-gated fields
+``thinking``, ``output_config``, ``context_management``, ``betas``,
+``speed``, and ``metadata`` — eliminating the ``extra_body`` /
+``extra_headers`` workarounds the plain ``messages.*`` namespace required.
+
+Wire shape mirrors Claude Code 2.1.119 (verified by mitmdump capture
+2026-05-06): same betas, same body field set, same metadata.user_id
+identity blob shape.
+
 Auth supports:
   - Regular API keys (sk-ant-api*) → x-api-key header
   - OAuth setup-tokens (sk-ant-oat*) → Bearer auth + beta header
@@ -11,11 +21,14 @@ Auth supports:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
 import platform
+import socket
 import subprocess
+import uuid
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -140,6 +153,61 @@ def _install_sse_event_observer(sdk) -> None:
     )
 
 logger = logging.getLogger(__name__)
+
+
+def _stable_device_id() -> str:
+    """Stable per-machine identifier for Anthropic's metadata.user_id field.
+
+    sha256 of the hostname — cheap, no FS access, stable across sessions.
+    Mirrors Claude Code's wire shape (a 64-char hex string) so OAuth
+    request fingerprints look identical to CC's.
+    """
+    return hashlib.sha256(socket.gethostname().encode("utf-8")).hexdigest()
+
+
+def _stable_account_uuid() -> str:
+    """Stable per-install UUID stored in ``~/.hermes/account_uuid.txt``.
+
+    Lazy-created on first read.  Mirrors Claude Code's account_uuid field
+    (a UUID4 string) for the metadata.user_id blob.  Surviving across
+    upgrades is the goal — keep the file outside any cleanup paths.
+    """
+    path = Path(get_hermes_home()) / "account_uuid.txt"
+    try:
+        if path.exists():
+            cached = path.read_text(encoding="utf-8").strip()
+            if cached:
+                return cached
+        new_id = str(uuid.uuid4())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(new_id, encoding="utf-8")
+        return new_id
+    except Exception:
+        # Filesystem hiccup — fall back to a deterministic hash so we
+        # still emit *something* stable for this run.
+        return str(uuid.UUID(bytes=hashlib.sha256(
+            socket.gethostname().encode("utf-8")
+        ).digest()[:16]))
+
+
+def _build_anthropic_metadata(session_id: str | None) -> Dict[str, str]:
+    """Construct the metadata.user_id JSON blob for /v1/messages.
+
+    Matches Claude Code 2.1.119's wire format:
+        {"device_id": "<sha256 hostname>",
+         "account_uuid": "<stable UUID>",
+         "session_id": "<this conversation>"}
+    The whole dict is serialized to a JSON string and placed in
+    ``metadata.user_id`` per Anthropic's API shape.
+    """
+    blob = {
+        "device_id": _stable_device_id(),
+        "account_uuid": _stable_account_uuid(),
+    }
+    if session_id:
+        blob["session_id"] = session_id
+    return {"user_id": json.dumps(blob, separators=(",", ":"))}
+
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
@@ -362,7 +430,22 @@ _COMMON_BETAS = [
     # ``prompt_caching.cache_ttl: 1h`` config. The header is harmless when
     # cache_ttl is "5m" (the marker just doesn't include ttl in that case).
     "extended-cache-ttl-2025-04-11",
+    # Added 2026-05-06 to mirror Claude Code 2.1.119's wire format
+    # (verified by mitmdump capture against api.anthropic.com).
+    # CC sends these on every /v1/messages request:
+    "redact-thinking-2026-02-12",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "effort-2025-11-24",
 ]
+# Anthropic-native-only betas — strip on bearer-auth third-party endpoints
+# (MiniMax etc. host their own models and reject unknown betas).
+_ANTHROPIC_NATIVE_ONLY_BETAS = {
+    "redact-thinking-2026-02-12",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "effort-2025-11-24",
+}
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
 # fall back to the provider's default response path.
@@ -659,7 +742,7 @@ def _common_betas_for_base_url(
     gating only — capable models still get the beta.
     """
     if _requires_bearer_auth(base_url):
-        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA, _EXTENDED_CACHE_TTL_BETA}
+        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA, _EXTENDED_CACHE_TTL_BETA} | _ANTHROPIC_NATIVE_ONLY_BETAS
         return [b for b in _COMMON_BETAS if b not in _stripped]
     if drop_context_1m_beta:
         return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
@@ -2294,8 +2377,9 @@ def build_anthropic_kwargs(
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
     tool_search_config: Optional[Dict[str, Any]] = None,
+    session_id: str | None = None,
 ) -> Dict[str, Any]:
-    """Build kwargs for anthropic.messages.create().
+    """Build kwargs for ``client.beta.messages.{create,stream}``.
 
     Naming note — two distinct concepts, easily confused:
       max_tokens     = OUTPUT token cap for a single response.
@@ -2328,10 +2412,14 @@ def build_anthropic_kwargs(
     When *base_url* points to a third-party Anthropic-compatible endpoint,
     thinking block signatures are stripped (they are Anthropic-proprietary).
 
-    When *fast_mode* is True, adds ``extra_body["speed"] = "fast"`` and the
-    fast-mode beta header for ~2.5x faster output throughput on Opus 4.6.
-    Currently only supported on native Anthropic endpoints (not third-party
-    compatible ones).
+    When *fast_mode* is True, sets typed ``speed="fast"`` and adds the
+    fast-mode beta to the per-request ``betas`` list for ~2.5x faster output
+    throughput on Opus 4.6. Native Anthropic only — third-party gateways
+    don't recognize the speed parameter.
+
+    Output kwargs assume ``client.beta.messages.{create,stream}``: typed
+    fields ``thinking``, ``output_config``, ``context_management``, ``betas``,
+    ``speed``, ``metadata`` all land on the wire as top-level body fields.
     """
     system, anthropic_messages = convert_messages_to_anthropic(
         messages, base_url=base_url, model=model
@@ -2423,7 +2511,9 @@ def build_anthropic_kwargs(
         kwargs["tools"] = anthropic_tools
         # Map OpenAI tool_choice to Anthropic format
         if tool_choice == "auto" or tool_choice is None:
-            kwargs["tool_choice"] = {"type": "auto"}
+            # Mirror Claude Code: omit tool_choice (the API treats absent as
+            # "auto", so we save bytes and match CC's wire shape exactly).
+            pass
         elif tool_choice == "required":
             kwargs["tool_choice"] = {"type": "any"}
         elif tool_choice == "none":
@@ -2464,6 +2554,16 @@ def build_anthropic_kwargs(
     # See ``HERMES_THINKING_DISPLAY=summarized`` env var to opt back in
     # if the activity feed UX matters more than latency parity.
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
+    # When reasoning_config is unset, default to enabling adaptive thinking
+    # at medium effort on Anthropic-native + adaptive-supporting models.
+    # Mirrors Claude Code 2.1.119 wire shape (verified by mitmdump capture
+    # 2026-05-06: every /v1/messages call sends thinking={type:"adaptive"}
+    # + output_config.effort).  Without this default, the entire
+    # thinking/output_config block below was a no-op for callers that
+    # don't explicitly pass reasoning_config — i.e. nearly every default
+    # session — leaving the interleaved-thinking + effort betas dormant.
+    if reasoning_config is None and not _is_kimi_coding and _supports_adaptive_thinking(model):
+        reasoning_config = {"enabled": True, "effort": "medium"}
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
@@ -2488,6 +2588,20 @@ def build_anthropic_kwargs(
                 kwargs["output_config"] = {
                     "effort": adaptive_effort,
                 }
+                # Mirror Claude Code 2.1.119: every /v1/messages call carries
+                # ``context_management`` with the clear_thinking_20251015 edit
+                # set to keep:"all".  Activates the server-side thinking-block
+                # lifecycle so cached thinking-blocks survive across turns
+                # (paired with redact-thinking-2026-02-12 +
+                # context-management-2025-06-27 betas).  Native Anthropic only
+                # — third-party gateways don't recognize the field.  Typed
+                # kwarg in client.beta.messages.* (Anthropic SDK 0.100+).
+                if not _is_third_party_anthropic_endpoint(base_url):
+                    kwargs["context_management"] = {
+                        "edits": [
+                            {"type": "clear_thinking_20251015", "keep": "all"},
+                        ],
+                    }
             else:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic requires temperature=1 when thinking is enabled on older models
@@ -2504,9 +2618,10 @@ def build_anthropic_kwargs(
             kwargs.pop(_sampling_key, None)
 
     # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
-    # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
-    # output speed. Per Anthropic docs, fast mode is only supported on
-    # Opus 4.6 — Opus 4.7 and other models 400 on the speed parameter.
+    # Sets typed ``speed="fast"`` + adds the fast-mode beta to the
+    # per-request ``betas`` list for ~2.5x output speed.  Per Anthropic
+    # docs, fast mode is only supported on Opus 4.6 — Opus 4.7 and other
+    # models 400 on the speed parameter.
     # Only for native Anthropic endpoints — third-party providers would
     # reject the unknown beta header and speed parameter.
     if (
@@ -2514,9 +2629,10 @@ def build_anthropic_kwargs(
         and not _is_third_party_anthropic_endpoint(base_url)
         and _supports_fast_mode(model)
     ):
-        kwargs.setdefault("extra_body", {})["speed"] = "fast"
-        # Build extra_headers with ALL applicable betas (the per-request
-        # extra_headers override the client-level anthropic-beta header).
+        # Typed ``speed`` kwarg in client.beta.messages.* (SDK 0.100+).
+        kwargs["speed"] = "fast"
+        # Per-request betas list overrides the client-level
+        # default_headers["anthropic-beta"] for this call.
         betas = list(_common_betas_for_base_url(
             base_url,
             drop_context_1m_beta=drop_context_1m_beta,
@@ -2525,7 +2641,7 @@ def build_anthropic_kwargs(
         if is_oauth:
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
-        kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+        kwargs["betas"] = betas
 
     # ── Server-side tool beta headers ────────────────────────────────
     # Tools like web_search_20250305 require their own anthropic-beta
@@ -2533,15 +2649,14 @@ def build_anthropic_kwargs(
     # that would be sent for every request (some Anthropic-compatible
     # third-party providers reject unknown betas). Instead, detect the
     # tools in this specific request and union with any already-set
-    # extra_headers (preserving fast-mode wiring above).
+    # ``betas`` (preserving fast-mode wiring above).
     server_tool_betas = _required_anthropic_server_tool_betas(tools or [])
     if server_tool_betas and not _is_third_party_anthropic_endpoint(base_url):
-        existing = kwargs.get("extra_headers", {}) or {}
-        prior = [b.strip() for b in existing.get("anthropic-beta", "").split(",") if b.strip()]
+        prior = list(kwargs.get("betas") or [])
         if not prior:
-            # No prior extra_headers — start from the same base set the
-            # client would otherwise send so we don't accidentally drop
-            # OAuth or context-1m betas.
+            # No prior per-request betas — start from the same base set
+            # the client would otherwise send so we don't accidentally
+            # drop OAuth or context-1m betas.
             prior = list(_common_betas_for_base_url(
                 base_url, drop_context_1m_beta=drop_context_1m_beta,
                 model=model,
@@ -2552,7 +2667,7 @@ def build_anthropic_kwargs(
         for beta in prior + server_tool_betas:
             if beta and beta not in merged:
                 merged.append(beta)
-        kwargs["extra_headers"] = {**existing, "anthropic-beta": ",".join(merged)}
+        kwargs["betas"] = merged
 
     # ── 1M context tier gate (DEFAULT OFF) ───────────────────────────
     # Background: hermes hits sporadic multi-minute stalls on Opus 4.7
@@ -2611,11 +2726,7 @@ def build_anthropic_kwargs(
                     pass
         _est_tokens = _est_chars // 4
         if _est_tokens < _threshold:
-            existing = kwargs.get("extra_headers", {}) or {}
-            prior = [
-                b.strip() for b in existing.get("anthropic-beta", "").split(",")
-                if b.strip()
-            ]
+            prior = list(kwargs.get("betas") or [])
             if not prior:
                 # No prior per-request override — start from the same
                 # base set the client would otherwise send. Then strip
@@ -2629,8 +2740,15 @@ def build_anthropic_kwargs(
                     prior.extend(_OAUTH_ONLY_BETAS)
             stripped = [b for b in prior if b != _CONTEXT_1M_BETA]
             if len(stripped) != len(prior):
-                kwargs["extra_headers"] = {
-                    **existing, "anthropic-beta": ",".join(stripped)
-                }
+                kwargs["betas"] = stripped
+
+    # ── Identity metadata (mirrors Claude Code's wire shape) ─────────
+    # Anthropic's metadata.user_id is a per-end-user identifier used for
+    # analytics + abuse routing.  Claude Code packs a JSON blob with
+    # device_id (sha256 hostname), account_uuid (stable UUID), and
+    # session_id.  Native Anthropic only — third-party gateways may
+    # validate or reject unrecognized metadata shapes.
+    if not _is_third_party_anthropic_endpoint(base_url):
+        kwargs["metadata"] = _build_anthropic_metadata(session_id)
 
     return kwargs

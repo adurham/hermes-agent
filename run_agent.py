@@ -6533,7 +6533,12 @@ class AIAgent:
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
-        return self._anthropic_client.messages.create(**api_kwargs)
+        # Use the beta namespace so typed kwargs for ``betas``,
+        # ``context_management``, and ``speed`` are accepted directly.
+        # The wire shape is identical to ``messages.create`` (same
+        # /v1/messages endpoint); the namespace just exposes Anthropic's
+        # beta-gated fields as typed parameters.
+        return self._anthropic_client.beta.messages.create(**api_kwargs)
 
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.
@@ -7320,8 +7325,9 @@ class AIAgent:
 
             set_sse_event_callback(_on_sse_event)
             try:
-                # Use the Anthropic SDK's streaming context manager
-                with self._anthropic_client.messages.stream(**api_kwargs) as stream:
+                # Use the Anthropic SDK's streaming context manager.
+                # Beta namespace — see _anthropic_messages_create comment.
+                with self._anthropic_client.beta.messages.stream(**api_kwargs) as stream:
                     for event in stream:
                         # Update stale-stream timer on every event so the
                         # outer poll loop knows data is flowing.  Without
@@ -8856,6 +8862,7 @@ class AIAgent:
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
                 drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
                 tool_search_config=self._build_tool_search_config(),
+                session_id=getattr(self, "session_id", None),
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
