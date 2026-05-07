@@ -79,6 +79,15 @@ class PricingEntry:
     # schema landed).
     cache_write_5m_cost_per_million: Optional[Decimal] = None
     cache_write_1h_cost_per_million: Optional[Decimal] = None
+    # Multiplier applied to every per-token rate (input/output/cache_*)
+    # when the request was made with ``speed: "fast"``.  Anthropic's fast
+    # mode (Opus 4.6 only as of 2026-05) charges 6x standard rates across
+    # the full context window, with cache multipliers stacking on top —
+    # i.e. fast-mode 1h cache write = 2x * 6x base = 12x base input.
+    # None / 1 means fast mode isn't applicable to this model; callers
+    # passing fast_mode=True will see cost reported as if the model
+    # accepted the parameter at standard rates (best-effort safe default).
+    fast_mode_multiplier: Optional[Decimal] = None
     request_cost: Optional[Decimal] = None
     source: CostSource = "none"
     source_url: Optional[str] = None
@@ -141,6 +150,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_write_cost_per_million=Decimal("6.25"),
         cache_write_5m_cost_per_million=Decimal("6.25"),
         cache_write_1h_cost_per_million=Decimal("10.00"),
+        # Fast mode (research preview, Opus 4.6 only): 6x all rates.
+        # https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing
+        fast_mode_multiplier=Decimal("6"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05-06",
@@ -732,6 +744,7 @@ def estimate_usage_cost(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    fast_mode: bool = False,
 ) -> CostResult:
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
@@ -749,6 +762,21 @@ def estimate_usage_cost(
 
     notes: list[str] = []
     amount = _ZERO
+
+    # Fast mode multiplier: when the request used ``speed: "fast"``
+    # (Opus 4.6 only as of 2026-05), Anthropic charges N x standard
+    # rates across every per-token category. Cache TTL multipliers stack
+    # on top, so we just scale every per-million rate uniformly.
+    _fm_mult = (
+        entry.fast_mode_multiplier
+        if (fast_mode and entry.fast_mode_multiplier is not None)
+        else Decimal("1")
+    )
+    if fast_mode and entry.fast_mode_multiplier is None:
+        notes.append(
+            "fast_mode requested but no multiplier defined for this model — "
+            "billed at standard rates"
+        )
 
     if usage.input_tokens and entry.input_cost_per_million is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
@@ -780,11 +808,11 @@ def estimate_usage_cost(
             )
 
     if entry.input_cost_per_million is not None:
-        amount += Decimal(usage.input_tokens) * entry.input_cost_per_million / _ONE_MILLION
+        amount += Decimal(usage.input_tokens) * entry.input_cost_per_million * _fm_mult / _ONE_MILLION
     if entry.output_cost_per_million is not None:
-        amount += Decimal(usage.output_tokens) * entry.output_cost_per_million / _ONE_MILLION
+        amount += Decimal(usage.output_tokens) * entry.output_cost_per_million * _fm_mult / _ONE_MILLION
     if entry.cache_read_cost_per_million is not None:
-        amount += Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
+        amount += Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million * _fm_mult / _ONE_MILLION
 
     # Cache-write billing: split by TTL when both response breakdown and
     # rate breakdown are available; otherwise use the legacy single rate
@@ -798,12 +826,14 @@ def estimate_usage_cost(
         amount += (
             Decimal(usage.cache_write_5m_tokens)
             * entry.cache_write_5m_cost_per_million
+            * _fm_mult
             / _ONE_MILLION
         )
     if entry.cache_write_1h_cost_per_million is not None and usage.cache_write_1h_tokens:
         amount += (
             Decimal(usage.cache_write_1h_tokens)
             * entry.cache_write_1h_cost_per_million
+            * _fm_mult
             / _ONE_MILLION
         )
     if _unsplit_tokens:
@@ -813,7 +843,7 @@ def estimate_usage_cost(
             or entry.cache_write_1h_cost_per_million
         )
         if _fallback_rate is not None:
-            amount += Decimal(_unsplit_tokens) * _fallback_rate / _ONE_MILLION
+            amount += Decimal(_unsplit_tokens) * _fallback_rate * _fm_mult / _ONE_MILLION
 
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost

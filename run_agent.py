@@ -12415,12 +12415,24 @@ class AIAgent:
                             api_duration, _cache_pct,
                         )
 
+                        # Fast mode (Anthropic Opus 4.6 only) charges 6x
+                        # standard rates. Source the flag from the same
+                        # api_kwargs that drove this request so per-call
+                        # cost reflects what Anthropic actually billed.
+                        _fast_mode_active = (
+                            self.api_mode == "anthropic_messages"
+                            and (
+                                api_kwargs.get("speed") == "fast"
+                                or (api_kwargs.get("extra_body") or {}).get("speed") == "fast"
+                            )
+                        )
                         cost_result = estimate_usage_cost(
                             self.model,
                             canonical_usage,
                             provider=self.provider,
                             base_url=self.base_url,
                             api_key=getattr(self, "api_key", ""),
+                            fast_mode=_fast_mode_active,
                         )
                         if cost_result.amount_usd is not None:
                             self.session_estimated_cost_usd += float(cost_result.amount_usd)
