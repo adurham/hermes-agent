@@ -2451,7 +2451,43 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
 
 
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
-    """Print a summary of enabled/disabled toolsets and MCP tool filters."""
+    """Print a summary of enabled/disabled toolsets and MCP tool filters.
+
+    Toolsets the user has marked enabled in config still get filtered at
+    runtime by per-tool ``check_fn`` probes (missing API keys, playwright
+    not installed, gateway not running, etc.). We probe the live registry
+    here so the listing reflects what the agent actually sees, not just
+    what the config asks for.
+    """
+    # Populate the tool registry so we can probe real availability.
+    # discover_builtin_tools() is idempotent — already-imported modules
+    # don't re-register.
+    try:
+        from tools.registry import discover_builtin_tools, registry as _registry
+        from toolsets import resolve_toolset as _resolve_toolset
+        discover_builtin_tools()
+        _have_registry = True
+    except Exception:
+        _have_registry = False
+
+    def _toolset_status(ts_key: str) -> str:
+        """Status string for a toolset, factoring in runtime check_fn."""
+        if ts_key not in enabled_toolsets:
+            return color("✗ disabled", Colors.RED)
+        if not _have_registry:
+            return color("✓ enabled", Colors.GREEN)
+        tools = _resolve_toolset(ts_key)
+        if not tools:
+            return color("✓ enabled", Colors.GREEN)
+        defs = _registry.get_definitions(set(tools), quiet=True)
+        avail = len(defs)
+        total = len(tools)
+        if avail == total:
+            return color("✓ enabled", Colors.GREEN)
+        if avail == 0:
+            return color(f"⚠ unavailable ({total} tools fail check)", Colors.YELLOW)
+        return color(f"⚠ partial ({avail}/{total} tools available)", Colors.YELLOW)
+
     effective_all = _get_effective_configurable_toolsets()
     effective = [
         (k, l, d) for (k, l, d) in effective_all
@@ -2463,9 +2499,7 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
     for ts_key, label, _ in effective:
         if ts_key not in builtin_keys:
             continue
-        status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                  else color("✗ disabled", Colors.RED))
-        print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+        print(f"  {_toolset_status(ts_key)}  {ts_key}  {color(label, Colors.DIM)}")
 
     # Plugin toolsets
     plugin_entries = [(k, l) for k, l, _ in effective if k not in builtin_keys]
@@ -2473,9 +2507,7 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         print()
         print(f"Plugin toolsets ({platform}):")
         for ts_key, label in plugin_entries:
-            status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                      else color("✗ disabled", Colors.RED))
-            print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+            print(f"  {_toolset_status(ts_key)}  {ts_key}  {color(label, Colors.DIM)}")
 
     if mcp_servers:
         print()
