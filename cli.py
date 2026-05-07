@@ -710,6 +710,22 @@ def _run_cleanup():
         _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
     except Exception:
         pass
+    # Phase 2 auto-extraction: surface the confirm UI for buffered proposals
+    # BEFORE shutdown_memory_provider runs (the latter would auto-stash if no
+    # confirm callback was registered). No-op when memory.auto_extract is off
+    # in config or when there are no proposals.
+    try:
+        if _active_agent_ref:
+            _session_msgs_for_mex = getattr(_active_agent_ref, '_session_messages', None) or []
+            from hermes_cli.memory_confirm import confirm_and_commit
+            confirm_and_commit(
+                getattr(_active_agent_ref, 'session_id', "") or "",
+                _session_msgs_for_mex if isinstance(_session_msgs_for_mex, list) else [],
+            )
+    except Exception:
+        # Never block exit on extraction issues
+        pass
+
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             # Forward the agent's own transcript so memory providers'

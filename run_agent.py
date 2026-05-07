@@ -4755,6 +4755,28 @@ class AIAgent:
                 self._memory_manager.shutdown_all()
             except Exception:
                 pass
+        # Phase 2 auto-extraction: session-end pass + commit. No-op when
+        # memory.auto_extract is off. Best-effort. The CLI's session-finalize
+        # callback is responsible for surfacing the confirm UI; here we just
+        # let extractor stash the proposals back to the buffer for the next
+        # interactive session if no callback was registered.
+        try:
+            from tools import memory_extraction as _mex
+            _summary = _mex.on_session_end(
+                self.session_id or "",
+                messages or [],
+                interactive=False,
+            )
+            if _summary.get("final_proposed", 0) or _summary.get("committed", 0):
+                logger.info(
+                    "memory extraction session end: buffered=%d proposed=%d committed=%d skipped=%d",
+                    _summary.get("buffered", 0),
+                    _summary.get("final_proposed", 0),
+                    _summary.get("committed", 0),
+                    _summary.get("skipped", 0),
+                )
+        except Exception:
+            pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
@@ -4770,10 +4792,20 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
-        if not self._memory_manager:
-            return
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_session_end(messages or [])
+            except Exception:
+                pass
+        # Phase 2 auto-extraction: same as shutdown_memory_provider but
+        # without the shutdown. Used when session_id rotates.
         try:
-            self._memory_manager.on_session_end(messages or [])
+            from tools import memory_extraction as _mex
+            _mex.on_session_end(
+                self.session_id or "",
+                messages or [],
+                interactive=False,
+            )
         except Exception:
             pass
 
@@ -4812,16 +4844,29 @@ class AIAgent:
         """
         if interrupted:
             return
-        if not (self._memory_manager and final_response and original_user_message):
+        if not (final_response and original_user_message):
             return
+        # External memory provider sync (existing path)
+        if self._memory_manager:
+            try:
+                self._memory_manager.sync_all(
+                    original_user_message, final_response,
+                    session_id=self.session_id or "",
+                )
+                self._memory_manager.queue_prefetch_all(
+                    original_user_message,
+                    session_id=self.session_id or "",
+                )
+            except Exception:
+                pass
+        # Phase 2 auto-extraction (per-turn hook). Backgrounded; never blocks.
+        # No-op when memory.auto_extract is off in config.
         try:
-            self._memory_manager.sync_all(
-                original_user_message, final_response,
-                session_id=self.session_id or "",
-            )
-            self._memory_manager.queue_prefetch_all(
-                original_user_message,
-                session_id=self.session_id or "",
+            from tools import memory_extraction as _mex
+            _mex.on_turn_end(
+                self.session_id or "",
+                user_msg=str(original_user_message),
+                assistant_msg=str(final_response),
             )
         except Exception:
             pass
@@ -5079,6 +5124,17 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+            # Warm-tier status — a small one-line "WARM MEMORY: N facts indexed"
+            # block teaching the agent that on-demand recall is available.
+            # Returns None when warm tier is empty / unavailable; safe to call
+            # every turn, the underlying count is a fast SQLite COUNT(*).
+            if self._memory_enabled or self._user_profile_enabled:
+                try:
+                    warm_block = self._memory_store.format_for_system_prompt("warm_status")
+                    if warm_block:
+                        prompt_parts.append(warm_block)
+                except Exception:
+                    pass
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
@@ -9701,6 +9757,16 @@ class AIAgent:
                 self._memory_manager.on_pre_compress(messages)
             except Exception:
                 pass
+
+        # Phase 2 auto-extraction: piggyback on the compression boundary to
+        # extract durable facts from the slice that's about to be discarded.
+        # No-op when memory.auto_extract is off in config. Best-effort; never
+        # blocks compression.
+        try:
+            from tools import memory_extraction as _mex
+            _mex.on_pre_compress(self.session_id or "", messages or [])
+        except Exception:
+            pass
 
         try:
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
