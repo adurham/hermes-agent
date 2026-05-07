@@ -578,6 +578,7 @@ def _display_toolset_name(toolset_name: str) -> str:
 def build_welcome_banner(console: Console, model: str, cwd: str,
                          tools: List[dict] = None,
                          enabled_toolsets: List[str] = None,
+                         disabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
                          context_length: int = None):
@@ -654,9 +655,19 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         toolset = _display_toolset_name(get_toolset_for_tool(tool_name) or "other")
         toolsets_dict.setdefault(toolset, []).append(tool_name)
 
+    # Toolsets the user has explicitly disabled in config shouldn't appear
+    # at all — even as "unavailable" hints. Otherwise users who turn off a
+    # toolset (discord, messaging, etc.) keep seeing it in the banner with
+    # "missing env var" styling, which feels like a bug rather than the
+    # configured intent.
+    _disabled_set = set(disabled_toolsets or [])
     for item in unavailable_toolsets:
         toolset_id = item.get("id", item.get("name", "unknown"))
+        if toolset_id in _disabled_set:
+            continue
         display_name = _display_toolset_name(toolset_id)
+        if display_name in _disabled_set:
+            continue
         if display_name not in toolsets_dict:
             toolsets_dict[display_name] = []
         for tool_name in item.get("tools", []):
