@@ -274,6 +274,29 @@ def _git_count(repo_dir: Path, range_spec: str) -> int:
         return 0
 
 
+def _git_head_date(repo_dir: Path) -> Optional[str]:
+    """Return HEAD's committer date as ``YYYY-MM-DD``, or None on any failure.
+
+    Used as the banner's release-date stand-in when running on a fork —
+    a stale ``__release_date__`` constant is meaningless once the fork
+    diverges from upstream tags.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cs", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
 def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     """Return git state for the startup banner.
 
@@ -309,16 +332,80 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     }
 
 
-_RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
+_CANONICAL_REPO = ("NousResearch", "hermes-agent")
+_FALLBACK_RELEASE_URL_BASE = (
+    f"https://github.com/{_CANONICAL_REPO[0]}/{_CANONICAL_REPO[1]}/releases/tag"
+)
 _latest_release_cache: Optional[tuple] = None  # (tag, url) once resolved
+_origin_repo_cache: Optional[tuple] = None  # ((owner, repo) | None,) once resolved
+
+
+def _parse_github_origin(repo_dir: Path) -> Optional[tuple]:
+    """Return ``(owner, repo)`` parsed from origin's URL, or None.
+
+    Handles both SSH (``git@github.com:owner/repo.git``) and HTTPS
+    (``https://github.com/owner/repo[.git]``) forms. Non-GitHub origins
+    return None — the banner falls back to the canonical
+    NousResearch/hermes-agent links in that case.
+    """
+    global _origin_repo_cache
+    if _origin_repo_cache is not None:
+        return _origin_repo_cache[0]
+
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        _origin_repo_cache = (None,)
+        return None
+
+    if result.returncode != 0:
+        _origin_repo_cache = (None,)
+        return None
+
+    url = (result.stdout or "").strip()
+    if not url:
+        _origin_repo_cache = (None,)
+        return None
+
+    # SSH form: git@github.com:owner/repo.git
+    # HTTPS form: https://github.com/owner/repo(.git)?
+    parsed: Optional[tuple] = None
+    if url.startswith("git@github.com:"):
+        path = url[len("git@github.com:"):]
+    elif url.startswith("https://github.com/"):
+        path = url[len("https://github.com/"):]
+    elif url.startswith("ssh://git@github.com/"):
+        path = url[len("ssh://git@github.com/"):]
+    else:
+        path = ""
+
+    if path:
+        if path.endswith(".git"):
+            path = path[:-4]
+        parts = path.split("/")
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            parsed = (parts[0], parts[1])
+
+    _origin_repo_cache = (parsed,)
+    return parsed
 
 
 def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
     """Return ``(tag, release_url)`` for the latest git tag, or None.
 
     Local-only — runs ``git describe --tags --abbrev=0`` against the
-    Hermes checkout. Cached per-process. Release URL always points at the
-    canonical NousResearch/hermes-agent repo (forks don't get a link).
+    Hermes checkout. Cached per-process. Release URL targets the origin
+    repo: ``releases/tag/<tag>`` for canonical NousResearch/hermes-agent,
+    ``tree/<tag>`` for any other GitHub fork (works without a published
+    Release on the fork — tag-tree URLs are valid for any pushed tag).
+    Falls back to the NousResearch release URL when origin isn't a
+    parseable GitHub remote.
     """
     global _latest_release_cache
     if _latest_release_cache is not None:
@@ -350,7 +437,17 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
         _latest_release_cache = ()
         return None
 
-    url = f"{_RELEASE_URL_BASE}/{tag}"
+    origin = _parse_github_origin(repo_dir)
+    if origin == _CANONICAL_REPO:
+        url = f"https://github.com/{origin[0]}/{origin[1]}/releases/tag/{tag}"
+    elif origin is not None:
+        # Fork: link to tree/<tag>. Works without a published GitHub Release
+        # (tag-tree URLs resolve for any pushed tag).
+        url = f"https://github.com/{origin[0]}/{origin[1]}/tree/{tag}"
+    else:
+        # Non-GitHub origin or unparseable — keep canonical link as a sane default.
+        url = f"{_FALLBACK_RELEASE_URL_BASE}/{tag}"
+
     _latest_release_cache = (tag, url)
     return _latest_release_cache
 
@@ -361,9 +458,45 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
 _UPSTREAM_BEHIND_NUDGE = 10
 
 
+def _resolve_agent_name() -> str:
+    """Resolve the agent display name shown in the banner title.
+
+    Priority:
+      1. Active skin's ``branding.agent_name`` if set to something other
+         than the built-in default ("Hermes Agent") — user customization wins.
+      2. ``<owner>/<repo>`` parsed from origin remote when the fork isn't
+         the canonical NousResearch/hermes-agent — auto fork-identification.
+      3. Default "Hermes Agent" — canonical or unparseable cases.
+    """
+    custom = _skin_branding("agent_name", "Hermes Agent")
+    if custom and custom != "Hermes Agent":
+        return custom
+
+    repo_dir = _resolve_repo_dir()
+    if repo_dir is None:
+        return "Hermes Agent"
+    origin = _parse_github_origin(repo_dir)
+    if origin and origin != _CANONICAL_REPO:
+        return f"{origin[0]}/{origin[1]}"
+    return "Hermes Agent"
+
+
 def format_banner_version_label() -> str:
-    """Return the version label shown in the startup banner title."""
-    base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
+    """Return the version label shown in the startup banner title.
+
+    On a fork, the date shown is HEAD's committer date — the hardcoded
+    ``__release_date__`` only tracks canonical NousResearch releases and
+    goes stale immediately on a fork that's been pulling from main.
+    """
+    repo_dir = _resolve_repo_dir()
+    date_label = RELEASE_DATE
+    if repo_dir is not None:
+        origin = _parse_github_origin(repo_dir)
+        if origin and origin != _CANONICAL_REPO:
+            head_date = _git_head_date(repo_dir)
+            if head_date:
+                date_label = head_date
+    base = f"{_resolve_agent_name()} v{VERSION} ({date_label})"
     state = get_git_banner_state()
     if not state:
         return base
