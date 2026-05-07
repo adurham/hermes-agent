@@ -1737,6 +1737,89 @@ def _extract_preserved_thinking_blocks(message: Dict[str, Any]) -> List[Dict[str
     return preserved
 
 
+# Input-accepted fields per assistant content block type, derived at import
+# time from the Anthropic SDK's BetaXBlockParam annotations.  The SDK is
+# the source of truth — when it bumps and adds a new field, this map
+# updates automatically.  Hardcoded baseline below covers the same set in
+# case the SDK rearranges its module layout (we'd notice on the next test
+# run rather than silently passing response-only fields through).
+#
+# Why this matters: Anthropic's response models carry fields not on the
+# input param models (e.g. text.parsed_output from structured output).
+# Replaying a response block verbatim trips the input validator with
+# HTTP 400 "Extra inputs are not permitted".  Allowlisting to input-shape
+# is the only stable contract.
+_INPUT_BLOCK_FIELDS_FALLBACK: Dict[str, frozenset] = {
+    "text": frozenset({"type", "text", "citations", "cache_control"}),
+    "thinking": frozenset({"type", "thinking", "signature"}),
+    "redacted_thinking": frozenset({"type", "data"}),
+    "tool_use": frozenset({"type", "id", "name", "input", "cache_control", "caller"}),
+    "server_tool_use": frozenset({"type", "id", "name", "input", "cache_control", "caller"}),
+    "web_search_tool_result": frozenset({"type", "tool_use_id", "content", "cache_control", "caller"}),
+    "image": frozenset({"type", "source", "cache_control"}),
+    "document": frozenset({"type", "source", "title", "context", "citations", "cache_control"}),
+}
+
+
+def _build_input_block_fields() -> Dict[str, frozenset]:
+    """Resolve input-allowed fields per block type from the SDK at import.
+
+    Returns the SDK-derived map merged over the hardcoded baseline so a
+    block type the SDK exposes wins, while a block type the SDK rearranged
+    out of the import path still has a working entry.
+    """
+    # (block "type" string, param class import path).  When the SDK adds a
+    # new block type with a Param model, drop a tuple here — no other
+    # change needed.
+    _PARAM_REGISTRY = (
+        ("text", "BetaTextBlockParam"),
+        ("thinking", "BetaThinkingBlockParam"),
+        ("redacted_thinking", "BetaRedactedThinkingBlockParam"),
+        ("tool_use", "BetaToolUseBlockParam"),
+        ("server_tool_use", "BetaServerToolUseBlockParam"),
+        ("web_search_tool_result", "BetaWebSearchToolResultBlockParam"),
+        ("image", "BetaImageBlockParam"),
+        ("document", "BetaBase64PDFBlockParam"),
+    )
+    resolved: Dict[str, frozenset] = dict(_INPUT_BLOCK_FIELDS_FALLBACK)
+    try:
+        import anthropic.types.beta as _beta_mod
+    except ImportError:
+        return resolved
+    for block_type, cls_name in _PARAM_REGISTRY:
+        cls = getattr(_beta_mod, cls_name, None)
+        if cls is None:
+            continue
+        annotations = getattr(cls, "__annotations__", None)
+        if not annotations:
+            continue
+        resolved[block_type] = frozenset(annotations.keys())
+    return resolved
+
+
+_INPUT_BLOCK_FIELDS: Dict[str, frozenset] = _build_input_block_fields()
+
+
+def _sanitize_block_for_anthropic_input(block: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip response-only fields from a captured response block so it round-trips.
+
+    Anthropic's response models (e.g. BetaTextBlock) carry fields not present
+    on the corresponding input param models (e.g. BetaTextBlockParam).
+    Replaying a response block verbatim trips the input validator with
+    HTTP 400 "Extra inputs are not permitted" on those extra fields.
+    Allowlist to known-good input fields per block type; pass through
+    unknown types unchanged so a new block type added by Anthropic doesn't
+    silently get stripped before this map is updated.
+    """
+    btype = block.get("type")
+    allowed = _INPUT_BLOCK_FIELDS.get(btype) if isinstance(btype, str) else None
+    if allowed is None:
+        # Unknown type — let it through; downstream normalizers (e.g.
+        # _normalize_tool_search_result_for_input) handle their own.
+        return block
+    return {k: v for k, v in block.items() if k in allowed}
+
+
 def _convert_content_to_anthropic(content: Any) -> Any:
     """Convert OpenAI-style multimodal content arrays to Anthropic blocks."""
     if not isinstance(content, list):
@@ -1971,6 +2054,53 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "assistant":
+            # ── Verbatim replay (Anthropic-native) ──────────────────
+            # When the assistant turn carries the original content array
+            # captured by AnthropicTransport.normalize_response, replay
+            # every block in its original position.  Anthropic signs
+            # thinking blocks against their position in the response, and
+            # context_management.clear_thinking_20251015 enforces that
+            # each block stays in place across turns.  Recomposing from
+            # reasoning_details + content + tool_calls reorders
+            # interleaved thinking emitted under
+            # interleaved-thinking-2025-05-14 and breaks signature
+            # validation with HTTP 400 "thinking ... cannot be modified".
+            #
+            # Downstream (line ~2176+) still applies thinking-signature
+            # management — strip-on-non-latest, downgrade-unsigned,
+            # third-party-strip — over m["content"] regardless of which
+            # branch produced it, so the verbatim blocks get the same
+            # post-processing as recomposed ones.
+            raw_blocks = m.get("anthropic_content_blocks")
+            if isinstance(raw_blocks, list) and raw_blocks:
+                rebuilt: List[Dict[str, Any]] = []
+                for b in copy.deepcopy(raw_blocks):
+                    if not isinstance(b, dict):
+                        rebuilt.append(b)
+                        continue
+                    btype = b.get("type", "")
+                    # tool_search_tool_<variant>_tool_result blocks have
+                    # their own input-shape normalizer (variant-specific
+                    # inner structure that _sanitize_block_for_anthropic_input
+                    # doesn't model).
+                    if (
+                        isinstance(btype, str)
+                        and btype.startswith("tool_search_tool_")
+                        and btype.endswith("_tool_result")
+                    ):
+                        rebuilt.append(_normalize_tool_search_result_for_input(b))
+                    else:
+                        # Strip response-only fields (e.g. text.parsed_output
+                        # from structured output, or any future response-side
+                        # field Anthropic adds).  Block position and the
+                        # signed payload are preserved.
+                        rebuilt.append(_sanitize_block_for_anthropic_input(b))
+                if not rebuilt:
+                    rebuilt = [{"type": "text", "text": "(empty)"}]
+                result.append({"role": "assistant", "content": rebuilt})
+                continue
+
+            # ── Recomposition path (fallback / cross-provider) ──────
             blocks = _extract_preserved_thinking_blocks(m)
             # Anthropic server-side tool blocks (web_search etc.) — must be
             # re-emitted verbatim before text/tool_use blocks. Stored on the

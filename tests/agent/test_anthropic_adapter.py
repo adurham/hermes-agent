@@ -887,6 +887,101 @@ class TestConvertMessages:
         assert assistant_blocks[0]["signature"] == "sig_123"
         assert assistant_blocks[1]["type"] == "tool_use"
 
+    def test_anthropic_content_blocks_replayed_verbatim(self):
+        """When the assistant turn carries the original Anthropic content
+        array, it's replayed in original block order.
+
+        Recomposing from reasoning_details + tool_calls would emit
+        ``[thinking_A, thinking_B, tool_use_1, tool_use_2]`` regardless of
+        original ordering. Anthropic signs each thinking block against its
+        position; ``clear_thinking_20251015`` rejects any reordering with
+        HTTP 400. The verbatim path keeps positions untouched.
+        """
+        original_blocks = [
+            {"type": "thinking", "thinking": "step 1", "signature": "sig_A"},
+            {"type": "tool_use", "id": "tu_1", "name": "lookup", "input": {"q": "x"}},
+            {"type": "thinking", "thinking": "step 2", "signature": "sig_B"},
+            {"type": "tool_use", "id": "tu_2", "name": "lookup", "input": {"q": "y"}},
+        ]
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": original_blocks,
+                # reasoning_details + tool_calls would normally co-exist;
+                # the verbatim path must ignore them in favor of the
+                # captured array.
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "step 1", "signature": "sig_A"},
+                    {"type": "thinking", "thinking": "step 2", "signature": "sig_B"},
+                ],
+                "tool_calls": [
+                    {"id": "tu_1", "function": {"name": "lookup", "arguments": '{"q": "x"}'}},
+                    {"id": "tu_2", "function": {"name": "lookup", "arguments": '{"q": "y"}'}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tu_1", "content": "x result"},
+            {"role": "tool", "tool_call_id": "tu_2", "content": "y result"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+        assistant_blocks = next(msg for msg in result if msg["role"] == "assistant")["content"]
+
+        # Original order preserved (interleaved thinking among tool_uses)
+        assert [b["type"] for b in assistant_blocks] == [
+            "thinking",
+            "tool_use",
+            "thinking",
+            "tool_use",
+        ]
+        assert assistant_blocks[0]["signature"] == "sig_A"
+        assert assistant_blocks[2]["signature"] == "sig_B"
+        # tool_use blocks intact (id + input round-trip)
+        assert assistant_blocks[1]["id"] == "tu_1"
+        assert assistant_blocks[1]["input"] == {"q": "x"}
+        assert assistant_blocks[3]["id"] == "tu_2"
+
+    def test_anthropic_content_blocks_deepcopied_not_aliased(self):
+        """Replayed array must be a deep copy — downstream mutation (e.g.
+        cache_control stripping at the bottom of convert_messages_to_anthropic)
+        must not leak back to the stored message."""
+        original_blocks = [
+            {"type": "thinking", "thinking": "x", "signature": "sig"},
+            {"type": "text", "text": "hello"},
+        ]
+        stored = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": original_blocks,
+        }
+        messages = [{"role": "user", "content": "hi"}, stored]
+
+        _, result = convert_messages_to_anthropic(messages)
+        # Mutate the result to confirm independence
+        result[1]["content"][0]["thinking"] = "MUTATED"
+        assert original_blocks[0]["thinking"] == "x"
+        assert stored["anthropic_content_blocks"][0]["thinking"] == "x"
+
+    def test_decomposition_path_still_runs_when_verbatim_absent(self):
+        """Sanity check: the existing recomposition logic is unchanged when
+        ``anthropic_content_blocks`` is not on the message."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Hello",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "thought", "signature": "sig"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        blocks = result[0]["content"]
+        assert blocks[0]["type"] == "thinking"
+        assert blocks[0]["signature"] == "sig"
+        assert blocks[1]["type"] == "text"
+        assert blocks[1]["text"] == "Hello"
+
     def test_converts_data_url_image_to_anthropic_image_block(self):
         messages = [
             {
@@ -1646,6 +1741,39 @@ class TestNormalizeResponse:
         assert nr.provider_data["reasoning_details"][0]["signature"] == "opaque_signature"
         assert nr.provider_data["reasoning_details"][0]["thinking"] == "Let me reason about this..."
 
+    def test_captures_full_content_blocks_in_original_order(self):
+        """Verbatim block array round-trips through provider_data so subsequent
+        turns can replay it in original position. Required for
+        interleaved-thinking-2025-05-14 + clear_thinking_20251015 strict
+        validation — recomposing from reasoning_details + tool_calls would
+        reorder thinking blocks among tool_uses and break signatures."""
+        blocks = [
+            SimpleNamespace(type="thinking", thinking="step 1", signature="sig_A"),
+            SimpleNamespace(
+                type="tool_use", id="tu_1", name="lookup", input={"q": "x"}
+            ),
+            SimpleNamespace(type="thinking", thinking="step 2", signature="sig_B"),
+            SimpleNamespace(
+                type="tool_use", id="tu_2", name="lookup", input={"q": "y"}
+            ),
+        ]
+        nr = get_transport("anthropic_messages").normalize_response(
+            self._make_response(blocks, "tool_use")
+        )
+        captured = nr.provider_data.get("anthropic_content_blocks")
+        assert captured is not None, "anthropic_content_blocks must be populated"
+        assert nr.anthropic_content_blocks is captured
+        # Original ordering preserved (thinking interleaved with tool_use)
+        assert [b["type"] for b in captured] == [
+            "thinking",
+            "tool_use",
+            "thinking",
+            "tool_use",
+        ]
+        # Signatures intact
+        assert captured[0]["signature"] == "sig_A"
+        assert captured[2]["signature"] == "sig_B"
+
     def test_stop_reason_mapping(self):
         block = SimpleNamespace(type="text", text="x")
         nr1 = get_transport("anthropic_messages").normalize_response(
@@ -2158,3 +2286,264 @@ class TestConvertToolsToAnthropicDedup:
 
     def test_none_tools_returns_empty(self):
         assert convert_tools_to_anthropic(None) == []
+
+
+# ---------------------------------------------------------------------------
+# Round-trip regression: response → store → replay preserves block order
+# ---------------------------------------------------------------------------
+#
+# Pre-2026-05-07 hermes recomposed assistant turns from
+# reasoning_details + content + tool_calls in a fixed order
+# [thinking..., server_tools, text, tool_use...].  When Anthropic returned
+# blocks in a different order — typical under interleaved-thinking-2025-05-14
+# with multi-step tool use, e.g. [thinking_A, tool_use_1, thinking_B, tool_use_2] —
+# the rebuild collapsed them to [thinking_A, thinking_B, tool_use_1, tool_use_2].
+#
+# Until 2026-05-06 Anthropic accepted the reordered shape silently.  That
+# day's wire-format change activated context_management.clear_thinking_20251015
+# (keep:"all"), which validates each thinking block stays in its original
+# position across turns.  The reorder started returning HTTP 400
+# "thinking ... cannot be modified".
+#
+# This class wires together the full path that broke — transport →
+# stored msg dict → rebuild — and asserts position is preserved end-to-end.
+# It would have caught the bug before commit.
+
+
+class TestThinkingBlockOrderRoundTrip:
+    """The path from API response back to API request must preserve block
+    position byte-identically.  Anthropic signs each thinking block against
+    its position in the response; clear_thinking_20251015 enforces it."""
+
+    def _make_response(self, content_blocks, stop_reason="tool_use"):
+        resp = SimpleNamespace()
+        resp.content = content_blocks
+        resp.stop_reason = stop_reason
+        resp.usage = SimpleNamespace(input_tokens=100, output_tokens=50)
+        return resp
+
+    def _build_stored_assistant_msg(self, normalized):
+        """Mirror what run_agent._build_assistant_message produces for the
+        downstream adapter.  Captures the same fields the real builder
+        attaches (content, reasoning, reasoning_content, reasoning_details,
+        anthropic_content_blocks, tool_calls)."""
+        msg = {
+            "role": "assistant",
+            "content": normalized.content or "",
+            "finish_reason": normalized.finish_reason,
+        }
+        if normalized.reasoning:
+            msg["reasoning"] = normalized.reasoning
+            msg["reasoning_content"] = normalized.reasoning
+        if normalized.reasoning_details:
+            msg["reasoning_details"] = normalized.reasoning_details
+        if normalized.anthropic_content_blocks:
+            msg["anthropic_content_blocks"] = normalized.anthropic_content_blocks
+        if normalized.tool_calls:
+            msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "function": {"name": tc.name, "arguments": tc.arguments},
+                }
+                for tc in normalized.tool_calls
+            ]
+        return msg
+
+    def test_interleaved_thinking_position_preserved_through_round_trip(self):
+        """Original: [thinking_A, tool_use_1, thinking_B, tool_use_2].
+        After replay: same exact order.  The pre-fix recomposition path
+        produced [thinking_A, thinking_B, tool_use_1, tool_use_2]."""
+        original_response_blocks = [
+            SimpleNamespace(
+                type="thinking", thinking="plan: lookup x", signature="sig_A"
+            ),
+            SimpleNamespace(
+                type="tool_use", id="tu_1", name="lookup", input={"q": "x"}
+            ),
+            SimpleNamespace(
+                type="thinking", thinking="now lookup y", signature="sig_B"
+            ),
+            SimpleNamespace(
+                type="tool_use", id="tu_2", name="lookup", input={"q": "y"}
+            ),
+        ]
+        nr = get_transport("anthropic_messages").normalize_response(
+            self._make_response(original_response_blocks)
+        )
+
+        stored = self._build_stored_assistant_msg(nr)
+        # Conversation is: user → assistant (the turn we care about) →
+        # tool results for both tool_uses.  This is the shape that
+        # triggered the API rejection — a tool_use continuation re-sending
+        # the assistant turn.
+        api_messages = [
+            {"role": "user", "content": "find x and y"},
+            stored,
+            {"role": "tool", "tool_call_id": "tu_1", "content": "x=1"},
+            {"role": "tool", "tool_call_id": "tu_2", "content": "y=2"},
+        ]
+
+        _, converted = convert_messages_to_anthropic(api_messages)
+        assistant_blocks = next(
+            m for m in converted if m["role"] == "assistant"
+        )["content"]
+
+        # Assertion the pre-fix code would have failed: original interleaved
+        # ordering preserved verbatim.
+        assert [b["type"] for b in assistant_blocks] == [
+            "thinking",
+            "tool_use",
+            "thinking",
+            "tool_use",
+        ]
+        # Signatures still attached to the right blocks
+        assert assistant_blocks[0]["signature"] == "sig_A"
+        assert assistant_blocks[2]["signature"] == "sig_B"
+        # Tool_use ids and inputs still associated with the right blocks
+        assert assistant_blocks[1]["id"] == "tu_1"
+        assert assistant_blocks[1]["input"] == {"q": "x"}
+        assert assistant_blocks[3]["id"] == "tu_2"
+        assert assistant_blocks[3]["input"] == {"q": "y"}
+
+    def test_thinking_text_tool_use_position_preserved(self):
+        """Three-part response [thinking, text, tool_use] — the common
+        single-tool case.  Position must round-trip just like the
+        interleaved case."""
+        blocks = [
+            SimpleNamespace(type="thinking", thinking="reasoning", signature="sig"),
+            SimpleNamespace(type="text", text="Looking that up..."),
+            SimpleNamespace(
+                type="tool_use", id="tu_1", name="lookup", input={"q": "x"}
+            ),
+        ]
+        nr = get_transport("anthropic_messages").normalize_response(
+            self._make_response(blocks)
+        )
+        stored = self._build_stored_assistant_msg(nr)
+
+        _, converted = convert_messages_to_anthropic(
+            [
+                {"role": "user", "content": "find x"},
+                stored,
+                {"role": "tool", "tool_call_id": "tu_1", "content": "x=1"},
+            ]
+        )
+        assistant_blocks = next(
+            m for m in converted if m["role"] == "assistant"
+        )["content"]
+
+        assert [b["type"] for b in assistant_blocks] == [
+            "thinking",
+            "text",
+            "tool_use",
+        ]
+        assert assistant_blocks[0]["signature"] == "sig"
+        assert assistant_blocks[1]["text"] == "Looking that up..."
+        assert assistant_blocks[2]["id"] == "tu_1"
+
+    def test_text_block_strips_parsed_output_on_replay(self):
+        """Anthropic's response BetaTextBlock carries ``parsed_output``
+        (structured output result) — a field the input validator rejects
+        with HTTP 400 "Extra inputs are not permitted".  Replay must
+        strip it.  Real failure: req_011CaoaYqmZD7qFyGjEtmR1E."""
+        captured_blocks = [
+            {
+                "type": "text",
+                "text": '{"answer": 42}',
+                "parsed_output": {"answer": 42},  # response-only
+                "citations": None,
+            },
+        ]
+        stored = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": captured_blocks,
+        }
+        _, converted = convert_messages_to_anthropic(
+            [{"role": "user", "content": "?"}, stored]
+        )
+        block = next(m for m in converted if m["role"] == "assistant")["content"][0]
+        assert block["type"] == "text"
+        assert block["text"] == '{"answer": 42}'
+        assert "parsed_output" not in block
+
+    def test_unknown_response_only_fields_stripped_per_block_type(self):
+        """Defense in depth: every known block type drops fields that
+        aren't in the input-allowed set, regardless of where they came
+        from."""
+        captured_blocks = [
+            {
+                "type": "thinking",
+                "thinking": "...",
+                "signature": "sig",
+                "_internal_id": "should_not_round_trip",  # not in input allowlist
+            },
+            {
+                "type": "tool_use",
+                "id": "tu_1",
+                "name": "lookup",
+                "input": {"q": "x"},
+                "stop_reason": "end_turn",  # response-only stop signal
+            },
+        ]
+        stored = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": captured_blocks,
+        }
+        # Pair the tool_use with a tool_result so the orphan stripper
+        # at line ~2180 doesn't drop it before we can inspect it.
+        _, converted = convert_messages_to_anthropic(
+            [
+                {"role": "user", "content": "?"},
+                stored,
+                {"role": "tool", "tool_call_id": "tu_1", "content": "x=1"},
+            ]
+        )
+        blocks = next(m for m in converted if m["role"] == "assistant")["content"]
+        assert "_internal_id" not in blocks[0]
+        assert blocks[0]["signature"] == "sig"
+        assert "stop_reason" not in blocks[1]
+        assert blocks[1]["id"] == "tu_1"
+        assert blocks[1]["input"] == {"q": "x"}
+
+    def test_redacted_thinking_block_position_preserved(self):
+        """redact-thinking-2026-02-12 emits redacted_thinking blocks with
+        a ``data`` field instead of plaintext thinking + signature.  These
+        must also round-trip in original position."""
+        blocks = [
+            SimpleNamespace(
+                type="redacted_thinking", data="encrypted_payload_A"
+            ),
+            SimpleNamespace(
+                type="tool_use", id="tu_1", name="lookup", input={"q": "x"}
+            ),
+            SimpleNamespace(
+                type="redacted_thinking", data="encrypted_payload_B"
+            ),
+            SimpleNamespace(type="text", text="result"),
+        ]
+        nr = get_transport("anthropic_messages").normalize_response(
+            self._make_response(blocks)
+        )
+        stored = self._build_stored_assistant_msg(nr)
+
+        _, converted = convert_messages_to_anthropic(
+            [
+                {"role": "user", "content": "go"},
+                stored,
+                {"role": "tool", "tool_call_id": "tu_1", "content": "x=1"},
+            ]
+        )
+        assistant_blocks = next(
+            m for m in converted if m["role"] == "assistant"
+        )["content"]
+
+        assert [b["type"] for b in assistant_blocks] == [
+            "redacted_thinking",
+            "tool_use",
+            "redacted_thinking",
+            "text",
+        ]
+        assert assistant_blocks[0]["data"] == "encrypted_payload_A"
+        assert assistant_blocks[2]["data"] == "encrypted_payload_B"

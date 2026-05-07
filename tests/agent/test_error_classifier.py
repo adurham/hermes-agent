@@ -476,6 +476,30 @@ class TestClassifyApiError:
         # Without "thinking" in the message, it shouldn't be thinking_signature
         assert result.reason != FailoverReason.thinking_signature
 
+    def test_anthropic_thinking_cannot_be_modified_strict_validation(self):
+        """The clear_thinking_20251015 strict-validation wording does not
+        contain 'signature' — the classifier must still recognize it so the
+        thinking-block recovery fires."""
+        e = MockAPIError(
+            "messages.1.content.2: `thinking` or `redacted_thinking` blocks "
+            "in the latest assistant message cannot be modified. These blocks "
+            "must remain as they were in the original response.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_anthropic_thinking_must_remain_wording(self):
+        """Alternate phrasing of the same strict-validation rejection."""
+        e = MockAPIError(
+            "thinking blocks must remain as they were in the original response",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.thinking_signature
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_grammar_parse_error(self):

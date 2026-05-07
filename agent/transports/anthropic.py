@@ -163,6 +163,16 @@ class AnthropicTransport(ProviderTransport):
             provider_data["reasoning_details"] = reasoning_details
         if server_tool_blocks:
             provider_data["server_tool_blocks"] = server_tool_blocks
+        # Verbatim content array.  reasoning_details + tool_calls lose the
+        # relative position of thinking blocks among text/tool_use blocks;
+        # interleaved-thinking-2025-05-14 + clear_thinking_20251015 require
+        # those positions to round-trip exactly or the API rejects the next
+        # turn ("thinking blocks ... cannot be modified").  Captured here in
+        # original order so convert_messages_to_anthropic can replay it
+        # without recomposing.
+        anthropic_content_blocks = _to_plain_data(response.content)
+        if isinstance(anthropic_content_blocks, list) and anthropic_content_blocks:
+            provider_data["anthropic_content_blocks"] = anthropic_content_blocks
         # Structured stop_details (Anthropic SDK 0.88+, propagated through
         # streaming in 0.98+).  Today only refusal stops carry detail
         # (category=cyber|bio + human-readable explanation); future stop

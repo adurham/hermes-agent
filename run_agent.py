@@ -9352,6 +9352,16 @@ class AIAgent:
         if server_tool_blocks:
             msg["server_tool_blocks"] = server_tool_blocks
 
+        # Anthropic-native: the full assistant content array, captured in
+        # original block order with all per-block fields (signature, data,
+        # cache_control absence) preserved.  Required for thinking-block
+        # signature validation under interleaved-thinking-2025-05-14 plus
+        # context_management.clear_thinking_20251015 — see the rebuild
+        # branch in convert_messages_to_anthropic.
+        anthropic_content_blocks = getattr(assistant_message, "anthropic_content_blocks", None)
+        if anthropic_content_blocks:
+            msg["anthropic_content_blocks"] = anthropic_content_blocks
+
         if assistant_tool_calls:
             tool_calls = []
             for tool_call in assistant_tool_calls:
@@ -12928,6 +12938,10 @@ class AIAgent:
                         for _m in messages:
                             if isinstance(_m, dict):
                                 _m.pop("reasoning_details", None)
+                                # Verbatim block array is the second source
+                                # of replayed thinking blocks; strip it too
+                                # so the retry sends none.
+                                _m.pop("anthropic_content_blocks", None)
                         self._vprint(
                             f"{self.log_prefix}⚠️  Thinking block signature invalid — "
                             f"stripped all thinking blocks, retrying...",
