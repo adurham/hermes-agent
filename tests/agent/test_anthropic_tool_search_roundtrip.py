@@ -23,6 +23,7 @@ from agent.anthropic_adapter import (
     _normalize_tool_search_result_for_input,
     _normalize_tool_search_result_inner,
     _relocate_orphaned_tool_search_results,
+    _restore_tool_search_variant_types,
     convert_messages_to_anthropic,
 )
 
@@ -638,3 +639,234 @@ class TestRelocateOrphanedResults:
         # The later assistant message no longer carries the result.
         last_types = [b.get("type") for b in assistants[-1]["content"]]
         assert "tool_search_tool_regex_tool_result" not in last_types
+
+
+# ---------------------------------------------------------------------------
+# Variant-suffix restoration (regression for HTTP 400 "tool_use ids were
+# found without tool_result blocks immediately after")
+# ---------------------------------------------------------------------------
+
+class TestRestoreToolSearchVariantTypes:
+    """The Anthropic SDK's BetaToolSearchToolResultBlock model declares
+    ``type: Literal["tool_search_tool_result"]`` — Pydantic strips the
+    variant suffix that arrived on the wire. The input validator on
+    subsequent turns still expects the variant-suffixed type, so verbatim
+    replay of the canonical bare type fails with a misleading 400 about
+    ``tool_use`` ids "without tool_result blocks immediately after"
+    (the validator can't pair the search result with its server_tool_use,
+    treats both as orphaned, and reports the leftmost client-side tool_use
+    as the unpaired block).
+
+    These tests guard against regression by exercising the restoration
+    helper at every code path: capture-time (transports/anthropic.py),
+    request-build-time (convert_messages_to_anthropic), and the helper
+    in isolation.
+    """
+
+    # ------------------------------------------------------------------
+    # Helper-level unit tests
+    # ------------------------------------------------------------------
+    def test_canonical_type_is_rewritten_to_variant_form(self):
+        content = [
+            {"type": "tool_use", "id": "toolu_x", "name": "terminal", "input": {}},
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_a",
+                "name": "tool_search_tool_regex",
+                "input": {"pattern": ".*"},
+            },
+            {
+                "type": "tool_search_tool_result",  # canonical bare form
+                "tool_use_id": "srvtoolu_a",
+                "content": {"type": "tool_search_tool_search_result", "tool_references": []},
+            },
+        ]
+        _restore_tool_search_variant_types(content)
+        assert content[2]["type"] == "tool_search_tool_regex_tool_result"
+        # Other blocks unchanged
+        assert content[0]["type"] == "tool_use"
+        assert content[1]["type"] == "server_tool_use"
+
+    def test_already_variant_suffixed_is_left_alone(self):
+        """Idempotent — second pass must not re-suffix into
+        tool_search_tool_regex_tool_result_tool_result."""
+        content = [
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_b",
+                "name": "tool_search_tool_regex",
+                "input": {},
+            },
+            {
+                "type": "tool_search_tool_regex_tool_result",
+                "tool_use_id": "srvtoolu_b",
+                "content": {"type": "tool_search_tool_search_result", "tool_references": []},
+            },
+        ]
+        _restore_tool_search_variant_types(content)
+        assert content[1]["type"] == "tool_search_tool_regex_tool_result"
+        # And again
+        _restore_tool_search_variant_types(content)
+        assert content[1]["type"] == "tool_search_tool_regex_tool_result"
+
+    def test_unpaired_result_is_left_alone(self):
+        """No matching server_tool_use → can't infer variant, leave as-is."""
+        content = [
+            {
+                "type": "tool_search_tool_result",
+                "tool_use_id": "srvtoolu_orphan",
+                "content": {"type": "tool_search_tool_search_result", "tool_references": []},
+            },
+        ]
+        _restore_tool_search_variant_types(content)
+        assert content[0]["type"] == "tool_search_tool_result"
+
+    def test_non_tool_search_server_tool_use_is_ignored(self):
+        """server_tool_use blocks for OTHER tools (e.g. web_search) must
+        not interfere with the variant lookup."""
+        content = [
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_web",
+                "name": "web_search_20250305",  # different server tool
+                "input": {"query": "x"},
+            },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_web",
+                "content": [],
+            },
+        ]
+        _restore_tool_search_variant_types(content)
+        # web_search blocks unchanged
+        assert content[0]["name"] == "web_search_20250305"
+        assert content[1]["type"] == "web_search_tool_result"
+
+    def test_message_list_dispatch_per_message(self):
+        """Helper auto-detects message-list shape and dispatches per-message."""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_m",
+                        "name": "tool_search_tool_regex",
+                        "input": {},
+                    },
+                    {
+                        "type": "tool_search_tool_result",
+                        "tool_use_id": "srvtoolu_m",
+                        "content": {"type": "tool_search_tool_search_result", "tool_references": []},
+                    },
+                ],
+            },
+        ]
+        _restore_tool_search_variant_types(messages)
+        assert messages[1]["content"][1]["type"] == "tool_search_tool_regex_tool_result"
+
+    def test_empty_and_non_list_inputs_are_safe(self):
+        """No exceptions on edge-case inputs."""
+        _restore_tool_search_variant_types([])
+        _restore_tool_search_variant_types(None)
+        _restore_tool_search_variant_types("not a list")
+        _restore_tool_search_variant_types([{"type": "text", "text": "x"}])
+
+    # ------------------------------------------------------------------
+    # End-to-end via convert_messages_to_anthropic
+    # ------------------------------------------------------------------
+    def test_canonical_type_in_anthropic_content_blocks_is_rewritten_on_send(self):
+        """Reproduces the HTTP 400 scenario:
+
+        Sequence captured from a live failing payload (session
+        20260507_172048_d372f2, dump 20260507_172126_174497):
+          msg[0] user
+          msg[1] assistant content = [
+            tool_use(toolu_0176) name=terminal,
+            server_tool_use(srvtoolu_011) name=tool_search_tool_regex,
+            tool_search_tool_result(srvtoolu_011)  ← CANONICAL TYPE (BUG)
+          ]
+          msg[2] user content = [tool_result(toolu_0176)]
+
+        Anthropic returned 400 because the canonical-typed result block
+        couldn't be paired with its server_tool_use, which made the
+        terminal tool_use look orphaned to the validator. The fix
+        rewrites the result block's type to
+        ``tool_search_tool_regex_tool_result`` before the request is
+        serialized.
+        """
+        anthropic_blocks = [
+            {
+                "type": "tool_use",
+                "id": "toolu_0176",
+                "name": "terminal",
+                "input": {"command": "echo hi"},
+            },
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_011",
+                "name": "tool_search_tool_regex",
+                "input": {"pattern": "tanium"},
+            },
+            {
+                "type": "tool_search_tool_result",  # the bug's signature
+                "tool_use_id": "srvtoolu_011",
+                "content": {
+                    "type": "tool_search_tool_search_result",
+                    "tool_references": [
+                        {"type": "tool_reference", "tool_name": "x"},
+                    ],
+                },
+            },
+        ]
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": anthropic_blocks,
+                "tool_calls": [],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_0176",
+                "content": "ok",
+            },
+        ]
+        _, out_msgs = convert_messages_to_anthropic(messages)
+
+        # Find the assistant message and verify the search result block's
+        # type was restored to its variant-suffixed form.
+        asst = next(m for m in out_msgs if m["role"] == "assistant")
+        types = [b.get("type") for b in asst["content"]]
+        assert "tool_search_tool_regex_tool_result" in types, types
+        # And the canonical bare form is GONE — that's the bug that
+        # caused the 400.
+        assert "tool_search_tool_result" not in types, types
+
+    def test_capture_time_restoration_via_normalize_response(self):
+        """The restoration also fires at capture time inside the
+        Anthropic transport. We can't easily exercise the transport
+        without mocking the SDK response object, so this test invokes
+        the helper directly on a list shaped like ``server_tool_blocks``
+        — which is what the transport stores under that key on the
+        provider_data dict. The transport calls
+        ``_restore_tool_search_variant_types(server_tool_blocks)``
+        before persisting; this verifies the helper handles that exact
+        list shape correctly."""
+        server_tool_blocks = [
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_capture",
+                "name": "tool_search_tool_regex",
+                "input": {"pattern": ".*"},
+            },
+            {
+                "type": "tool_search_tool_result",
+                "tool_use_id": "srvtoolu_capture",
+                "content": {"type": "tool_search_tool_search_result", "tool_references": []},
+            },
+        ]
+        _restore_tool_search_variant_types(server_tool_blocks)
+        assert server_tool_blocks[1]["type"] == "tool_search_tool_regex_tool_result"

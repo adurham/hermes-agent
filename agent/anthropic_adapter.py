@@ -1973,6 +1973,92 @@ def _relocate_orphaned_tool_search_results(messages: List[Dict[str, Any]]) -> No
                 break
 
 
+def _restore_tool_search_variant_types(content: Any) -> None:
+    """Rewrite canonical ``tool_search_tool_result`` block types back to
+    their wire-form variant suffix (``tool_search_tool_<variant>_tool_result``).
+
+    Why this exists:
+
+    Anthropic's wire payload delivers tool-search result blocks with a
+    variant-suffixed type (e.g. ``tool_search_tool_regex_tool_result``)
+    that mirrors the paired ``server_tool_use.name``
+    (``tool_search_tool_regex``). The Python SDK's
+    ``BetaToolSearchToolResultBlock`` model declares
+    ``type: Literal["tool_search_tool_result"]`` — the bare canonical
+    form — and Pydantic silently coerces the wire value to that literal
+    when parsing. By the time the response object reaches our code, the
+    variant suffix is gone.
+
+    Anthropic's *input* validator, however, still expects the variant
+    suffix on assistant-message replays. Replaying the canonical bare
+    type fails the input pairing check: the validator can't match the
+    result back to its ``server_tool_use``, treats both as orphaned,
+    and reports the leftmost client-side ``tool_use`` as the unpaired
+    block in a 400 response with a misleading error message about
+    ``tool_use`` ids "without ``tool_result`` blocks immediately after".
+
+    The variant is recoverable from the paired ``server_tool_use.name``
+    field — we walk the content array, build an
+    ``id -> server_tool_use.name`` map for any
+    ``server_tool_use`` whose ``name`` starts with
+    ``tool_search_tool_``, then rewrite each paired
+    ``tool_search_tool_result`` block's ``type`` to
+    ``<server_tool_use.name>_tool_result``. Mutates ``content`` in
+    place.
+
+    Safe to call repeatedly: blocks already carrying the variant
+    suffix are skipped (the rewrite only fires when ``type`` is
+    exactly the canonical ``tool_search_tool_result``).
+
+    Accepts either a single content array (``List[Dict]``) or a full
+    message list (``List[Dict]`` where each dict has ``role``/
+    ``content``); the latter case dispatches per-message.
+    """
+    if not isinstance(content, list):
+        return
+
+    # Detect message-list shape (each entry has role + content) vs raw
+    # block list. Per-message dispatch keeps both call sites simple.
+    if content and all(
+        isinstance(m, dict) and "role" in m and "content" in m
+        for m in content
+    ):
+        for m in content:
+            mc = m.get("content")
+            if isinstance(mc, list):
+                _restore_tool_search_variant_types(mc)
+        return
+
+    # Single content array — build id → server_tool_use.name index for
+    # tool-search server_tool_uses, then rewrite paired result blocks.
+    name_by_id: Dict[str, str] = {}
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") != "server_tool_use":
+            continue
+        nm = b.get("name")
+        if not isinstance(nm, str) or not nm.startswith("tool_search_tool_"):
+            continue
+        bid = b.get("id")
+        if isinstance(bid, str):
+            name_by_id[bid] = nm
+    if not name_by_id:
+        return
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") != "tool_search_tool_result":
+            continue  # already variant-suffixed or unrelated — leave alone
+        tu_id = b.get("tool_use_id")
+        if not isinstance(tu_id, str):
+            continue
+        variant_name = name_by_id.get(tu_id)
+        if not variant_name:
+            continue
+        b["type"] = f"{variant_name}_tool_result"
+
+
 def _normalize_tool_search_result_for_input(sb: Dict[str, Any]) -> Dict[str, Any]:
     """Strip response-only fields from a tool_search result block while
     preserving the variant-suffixed type the API requires for pairing.
@@ -2410,6 +2496,16 @@ def convert_messages_to_anthropic(
     # move any orphaned result blocks back to the assistant message that
     # owns the matching server_tool_use.
     _relocate_orphaned_tool_search_results(result)
+
+    # Defense-in-depth: restore variant-suffixed type on
+    # tool_search_tool_*_tool_result blocks. The capture-time fix in
+    # ``agent/transports/anthropic.py`` handles fresh responses, but
+    # sessions persisted before that fix landed (and any other code path
+    # that bypasses the transport — direct memory injection, test
+    # harnesses, future block-construction sites) need the same
+    # rewrite at outbound request time. Idempotent: blocks already
+    # carrying the variant suffix are skipped.
+    _restore_tool_search_variant_types(result)
 
     return system, result
 

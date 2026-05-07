@@ -158,6 +158,21 @@ class AnthropicTransport(ProviderTransport):
 
         finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
 
+        # Restore variant-suffixed type on tool_search_tool_*_tool_result
+        # blocks before persisting. Anthropic's SDK Pydantic model declares
+        # ``type: Literal["tool_search_tool_result"]`` (the canonical bare
+        # form), which strips the variant suffix that was on the wire
+        # (e.g. ``tool_search_tool_regex_tool_result``). The input
+        # validator on subsequent turns expects the variant suffix and
+        # otherwise rejects the message with a misleading 400 about
+        # ``tool_use`` ids "without ``tool_result`` blocks immediately
+        # after". Recoverable from the paired ``server_tool_use.name``
+        # field. See _restore_tool_search_variant_types in
+        # ``agent/anthropic_adapter.py`` for the full diagnosis.
+        from agent.anthropic_adapter import _restore_tool_search_variant_types
+        if server_tool_blocks:
+            _restore_tool_search_variant_types(server_tool_blocks)
+
         provider_data = {}
         if reasoning_details:
             provider_data["reasoning_details"] = reasoning_details
@@ -172,6 +187,7 @@ class AnthropicTransport(ProviderTransport):
         # without recomposing.
         anthropic_content_blocks = _to_plain_data(response.content)
         if isinstance(anthropic_content_blocks, list) and anthropic_content_blocks:
+            _restore_tool_search_variant_types(anthropic_content_blocks)
             provider_data["anthropic_content_blocks"] = anthropic_content_blocks
         # Structured stop_details (Anthropic SDK 0.88+, propagated through
         # streaming in 0.98+).  Today only refusal stops carry detail
