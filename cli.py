@@ -5091,8 +5091,20 @@ class HermesCLI:
 
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
+        # The hermes-<platform> composites for OTHER platforms (e.g.
+        # hermes-discord, hermes-feishu, hermes-yuanbao) all mirror
+        # _HERMES_CORE_TOOLS and only matter when running as that bot.
+        # Skip them here so the cli's `/toolsets` listing isn't padded
+        # with messenger-bot composites the user can't actually use.
+        from hermes_cli.platforms import PLATFORMS as _PLATFORMS
+        other_platform_composites = {
+            info.default_toolset
+            for key, info in _PLATFORMS.items()
+            if key != "cli"
+        }
+
         all_toolsets = get_all_toolsets()
-        
+
         # Header
         print()
         title = "(^_^)b Available Toolsets"
@@ -5102,17 +5114,19 @@ class HermesCLI:
         print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
         print("+" + "-" * width + "+")
         print()
-        
+
         for name in sorted(all_toolsets.keys()):
+            if name in other_platform_composites:
+                continue
             info = get_toolset_info(name)
             if info:
                 tool_count = info["tool_count"]
                 desc = info["description"]
-                
+
                 # Mark if currently enabled
                 marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
                 print(f"  {marker} {name:<18} [{tool_count:>2} tools] - {desc}")
-        
+
         print()
         print("  (*) = currently enabled")
         print()
