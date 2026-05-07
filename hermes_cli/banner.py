@@ -641,7 +641,15 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
     ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+    # Vendor / provider attribution string shown next to the model name.
+    # Default is "Nous Research" (canonical upstream attribution); skins
+    # can override via ``branding.vendor_label`` to drop the attribution
+    # entirely (set to empty string), or substitute a different label.
+    _vendor_label = _skin_branding("vendor_label", "Nous Research")
+    if _vendor_label:
+        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]{_vendor_label}[/]")
+    else:
+        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str}")
     left_lines.append(f"[dim {dim}]{cwd}[/]")
     if session_id:
         left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
