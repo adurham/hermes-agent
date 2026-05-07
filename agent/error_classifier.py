@@ -428,11 +428,21 @@ def classify_api_error(
     # Anthropic thinking block signature invalid (400).
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the
     # provider may be "openrouter" even though the error is Anthropic-specific.
-    # The message pattern ("signature" + "thinking") is unique enough.
+    # Two wordings to match:
+    #   - legacy: "Invalid signature in thinking block"
+    #   - context_management.clear_thinking_20251015 strict-validation
+    #     wording: "thinking or redacted_thinking blocks in the latest
+    #     assistant message cannot be modified. These blocks must remain
+    #     as they were in the original response."
+    # Both indicate the same recovery: strip thinking blocks and retry.
     if (
         status_code == 400
-        and "signature" in error_msg
         and "thinking" in error_msg
+        and (
+            "signature" in error_msg
+            or "cannot be modified" in error_msg
+            or "must remain as they were" in error_msg
+        )
     ):
         return _result(
             FailoverReason.thinking_signature,

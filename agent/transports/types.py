@@ -143,6 +143,24 @@ class NormalizedResponse:
         pd = self.provider_data or {}
         return pd.get("server_tool_blocks")
 
+    @property
+    def anthropic_content_blocks(self):
+        """Verbatim assistant content blocks for Anthropic-protocol replay.
+
+        Anthropic signs thinking blocks against their original positions
+        in the response, and ``context_management.clear_thinking_20251015``
+        validates each block stays in place across turns. Decomposing the
+        response into ``reasoning_details`` + ``content`` + ``tool_calls``
+        and reassembling in fixed ``[thinking, server_tools, text,
+        tool_use]`` order reorders interleaved thinking blocks (emitted
+        under ``interleaved-thinking-2025-05-14``) and invalidates
+        signatures.  Storing the full original block array lets
+        ``convert_messages_to_anthropic`` replay every block in its
+        original position. Populated by ``AnthropicTransport.normalize_response``.
+        """
+        pd = self.provider_data or {}
+        return pd.get("anthropic_content_blocks")
+
 
 # ---------------------------------------------------------------------------
 # Factory helpers
