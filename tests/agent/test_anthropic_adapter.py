@@ -26,6 +26,25 @@ from agent.anthropic_adapter import (
 from agent.transports import get_transport
 
 
+@pytest.fixture(autouse=True)
+def _isolate_credential_sources(monkeypatch):
+    """Block real macOS Keychain access from leaking into credential tests.
+
+    On a developer machine with Claude Code logged in,
+    ``_read_claude_code_credentials_from_keychain()`` returns the real
+    sk-ant-oat01 token regardless of how ``Path.home()`` or env vars are
+    monkeypatched — and any test that broadly patches ``subprocess.run``
+    additionally trips a TypeError when the keychain helper tries to
+    json.loads a MagicMock. Short-circuit the helper to None for every
+    test in this file; tests that specifically need to exercise keychain
+    behavior can re-patch it explicitly.
+    """
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
@@ -109,7 +128,7 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07,extended-cache-ttl-2025-04-11"
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07,extended-cache-ttl-2025-04-11,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24"
             }
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
@@ -1090,7 +1109,7 @@ class TestBuildAnthropicKwargs:
             is_oauth=True,
             fast_mode=True,
         )
-        betas = kwargs["extra_headers"]["anthropic-beta"]
+        betas = kwargs["betas"]
         assert "fast-mode-2026-02-01" in betas
         assert "oauth-2025-04-20" in betas
         assert "context-1m-2025-08-07" in betas
@@ -1127,7 +1146,7 @@ class TestBuildAnthropicKwargs:
             reasoning_config=None,
             is_oauth=True,
         )
-        betas = kwargs.get("extra_headers", {}).get("anthropic-beta", "")
+        betas = kwargs.get("betas") or []
         assert "context-1m-2025-08-07" not in betas
         assert "interleaved-thinking-2025-05-14" in betas
         assert "oauth-2025-04-20" in betas
@@ -1182,7 +1201,7 @@ class TestBuildAnthropicKwargs:
             fast_mode=True,
             drop_context_1m_beta=True,
         )
-        betas = kwargs["extra_headers"]["anthropic-beta"]
+        betas = kwargs["betas"]
         assert "context-1m-2025-08-07" not in betas
         assert "fast-mode-2026-02-01" in betas
         assert "oauth-2025-04-20" in betas
@@ -1250,13 +1269,14 @@ class TestBuildAnthropicKwargs:
         assert kwargs["thinking"] == {"type": "adaptive"}
         assert "display" not in kwargs["thinking"]
 
-    def test_reasoning_config_downgrades_xhigh_to_max_for_4_6_models(self):
+    def test_reasoning_config_downgrades_xhigh_to_high_for_4_6_models(self):
         # Opus 4.7 added "xhigh" as a distinct effort level (low/medium/high/
-        # xhigh/max). Opus 4.6 only supports low/medium/high/max — sending
-        # "xhigh" there returns an API 400. Preserve the pre-migration
-        # behavior of aliasing xhigh→max on pre-4.7 adaptive models so users
-        # who prefer xhigh as their default don't 400 every request when
-        # switching back to 4.6.
+        # xhigh/max). Sonnet/Opus 4.6 reject xhigh with a 400; Sonnet 4.6
+        # and Haiku 4.5 also reject "max" (Opus-tier only). Per Claude Code's
+        # disassembled binary (`return"xhigh";return"high"`), the right
+        # fallback is "high" — which works on every adaptive-thinking model.
+        # Updated 2026-05-05 (commit b8dea73373) from the previous
+        # xhigh→max alias that 400'd on Sonnet/Haiku.
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-6",
             messages=[{"role": "user", "content": "think harder"}],
@@ -1265,7 +1285,7 @@ class TestBuildAnthropicKwargs:
             reasoning_config={"enabled": True, "effort": "xhigh"},
         )
         assert kwargs["thinking"] == {"type": "adaptive"}
-        assert kwargs["output_config"] == {"effort": "max"}
+        assert kwargs["output_config"] == {"effort": "high"}
 
     def test_reasoning_config_preserves_xhigh_for_4_7_models(self):
         # On 4.7+ xhigh is a real level and the recommended default for
@@ -1332,10 +1352,9 @@ class TestBuildAnthropicKwargs:
             fast_mode=True,
         )
         # extra_body either absent or doesn't carry "speed"
-        assert "speed" not in kwargs.get("extra_body", {})
+        assert kwargs.get("speed") != "fast"
         # No fast-mode beta header should be added either
-        beta_header = (kwargs.get("extra_headers") or {}).get("anthropic-beta", "")
-        assert "fast-mode-2026-02-01" not in beta_header
+        assert "fast-mode-2026-02-01" not in (kwargs.get("betas") or [])
 
     def test_fast_mode_still_applied_on_opus_46(self):
         """Regression guard — fast mode must still work on Opus 4.6."""
@@ -1347,8 +1366,8 @@ class TestBuildAnthropicKwargs:
             reasoning_config=None,
             fast_mode=True,
         )
-        assert kwargs.get("extra_body", {}).get("speed") == "fast"
-        assert "fast-mode-2026-02-01" in kwargs["extra_headers"]["anthropic-beta"]
+        assert kwargs.get("speed") == "fast"
+        assert "fast-mode-2026-02-01" in kwargs["betas"]
 
     def test_reasoning_disabled(self):
         kwargs = build_anthropic_kwargs(
@@ -1372,6 +1391,9 @@ class TestBuildAnthropicKwargs:
         assert kwargs["max_tokens"] == 64_000  # Sonnet 4 output limit
 
     def test_default_max_tokens_opus_4_6(self):
+        # 4.6+ models cap at 16K to mirror Claude Code's main chat path
+        # (commit b8dea73373, 2026-05-05). Override per-call via the
+        # max_tokens kwarg when a longer output is needed.
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-6",
             messages=[{"role": "user", "content": "Hi"}],
@@ -1379,7 +1401,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=None,
             reasoning_config=None,
         )
-        assert kwargs["max_tokens"] == 128_000
+        assert kwargs["max_tokens"] == 16_000
 
     def test_default_max_tokens_sonnet_4_6(self):
         kwargs = build_anthropic_kwargs(
@@ -1389,7 +1411,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=None,
             reasoning_config=None,
         )
-        assert kwargs["max_tokens"] == 64_000
+        assert kwargs["max_tokens"] == 16_000
 
     def test_default_max_tokens_date_stamped_model(self):
         """Date-stamped model IDs should resolve via substring match."""
@@ -1400,7 +1422,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=None,
             reasoning_config=None,
         )
-        assert kwargs["max_tokens"] == 64_000
+        assert kwargs["max_tokens"] == 16_000
 
     def test_default_max_tokens_older_model(self):
         kwargs = build_anthropic_kwargs(
@@ -1435,9 +1457,14 @@ class TestBuildAnthropicKwargs:
         assert kwargs["max_tokens"] == 4096
 
     def test_context_length_clamp(self):
-        """max_tokens should be clamped to context_length if it's smaller."""
+        """max_tokens should be clamped to context_length if it's smaller.
+
+        Today the model output cap (16K for 4.6+) is below typical
+        context_length values, so clamp doesn't usually kick in. Use an
+        older model with a larger native limit to actually exercise it.
+        """
         kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",  # 128K output
+            model="claude-3-7-sonnet",  # 128K output
             messages=[{"role": "user", "content": "Hi"}],
             tools=None,
             max_tokens=None,
@@ -1449,14 +1476,14 @@ class TestBuildAnthropicKwargs:
     def test_context_length_no_clamp_when_larger(self):
         """No clamping when context_length exceeds output limit."""
         kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-6",  # 64K output
+            model="claude-sonnet-4-6",  # 16K output (post-2026-05-05)
             messages=[{"role": "user", "content": "Hi"}],
             tools=None,
             max_tokens=None,
             reasoning_config=None,
             context_length=200000,
         )
-        assert kwargs["max_tokens"] == 64_000
+        assert kwargs["max_tokens"] == 16_000
 
 
 # ---------------------------------------------------------------------------
@@ -1465,17 +1492,21 @@ class TestBuildAnthropicKwargs:
 
 
 class TestGetAnthropicMaxOutput:
+    # 4.6+ models cap at 16K to mirror Claude Code's main chat path
+    # (commit b8dea73373, 2026-05-05). The cap matters for billing/scheduling
+    # signals on the API side; callers can override via max_tokens kwarg
+    # when they actually need long outputs.
     def test_opus_4_6(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-opus-4-6") == 128_000
+        assert _get_anthropic_max_output("claude-opus-4-6") == 16_000
 
     def test_opus_4_6_variant(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-opus-4-6:1m:fast") == 128_000
+        assert _get_anthropic_max_output("claude-opus-4-6:1m:fast") == 16_000
 
     def test_sonnet_4_6(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
+        assert _get_anthropic_max_output("claude-sonnet-4-6") == 16_000
 
     def test_sonnet_4_date_stamped(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
@@ -1962,7 +1993,9 @@ class TestToolChoice:
             reasoning_config=None,
             tool_choice="auto",
         )
-        assert kwargs["tool_choice"] == {"type": "auto"}
+        # Anthropic treats absent tool_choice as "auto" — omit to match
+        # Claude Code's wire shape (verified by mitmdump capture 2026-05-06).
+        assert "tool_choice" not in kwargs
 
     def test_required_tool_choice(self):
         kwargs = build_anthropic_kwargs(
