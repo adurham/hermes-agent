@@ -13,7 +13,7 @@ license = { text = "MIT" }
 dependencies = [
   # Core — pinned to known-good ranges to limit supply chain attack surface
   "openai>=2.21.0,<3",
-  "anthropic>=0.39.0,<1",
+  "anthropic>=0.100.0,<1",
   "python-dotenv>=1.2.1,<2",
   "fire>=0.7.1,<1",
   "httpx[socks]>=0.28.1,<1",
@@ -167,3 +167,6 @@ select = [] # disable all lints for now, until we've wrangled typechecks a bit m
 
 [tool.uv]
 exclude-newer = "7 days"
+# Allow anthropic past the 7-day cutoff: 0.100.0 (2026-05-06) ships fields
+# we mirror to match Claude Code's wire format. Selective override only.
+exclude-newer-package = { anthropic = "2026-05-07" }
