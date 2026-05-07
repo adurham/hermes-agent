@@ -190,3 +190,90 @@ def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
 
     assert float(entry.input_cost_per_million) == 0.5
     assert float(entry.output_cost_per_million) == 2.0
+
+
+def test_normalize_usage_anthropic_extracts_5m_1h_cache_breakdown():
+    """Anthropic /v1/messages responses (post 2026-05-03 caching beta)
+    include a per-TTL breakdown under ``cache_creation``. normalize_usage
+    must surface those fields so estimate_usage_cost can bill the
+    different rates Anthropic charges for 5m vs 1h TTLs.
+    """
+    usage = SimpleNamespace(
+        input_tokens=10,
+        output_tokens=20,
+        cache_read_input_tokens=1000,
+        cache_creation_input_tokens=400,
+        cache_creation=SimpleNamespace(
+            ephemeral_5m_input_tokens=100,
+            ephemeral_1h_input_tokens=300,
+        ),
+    )
+    normalized = normalize_usage(usage, provider="anthropic", api_mode="anthropic_messages")
+    assert normalized.cache_write_tokens == 400
+    assert normalized.cache_write_5m_tokens == 100
+    assert normalized.cache_write_1h_tokens == 300
+
+
+def test_estimate_usage_cost_bills_1h_cache_write_at_higher_rate():
+    """Opus 4.7 1h cache writes are $10/MTok, vs $6.25 for 5m.  Hermes
+    sets ttl=1h on every request (post-2026-04-11 default) so the
+    correct rate matters — $0.51 difference per 137K tokens written.
+    """
+    usage = CanonicalUsage(
+        cache_write_tokens=137_077,
+        cache_write_1h_tokens=137_077,
+    )
+    result = estimate_usage_cost("claude-opus-4-7", usage, provider="anthropic")
+    # 137,077 * $10 / 1,000,000 = $1.37077
+    assert float(result.amount_usd) == 1.37077
+
+
+def test_estimate_usage_cost_falls_back_to_legacy_rate_without_breakdown():
+    """Sessions written before the 5m/1h breakdown landed only have the
+    aggregate cache_write_tokens count. They should bill at the legacy
+    cache_write_cost_per_million ($6.25 for Opus 4.7) so historical
+    session totals don't shift retroactively.
+    """
+    usage = CanonicalUsage(cache_write_tokens=137_077)
+    result = estimate_usage_cost("claude-opus-4-7", usage, provider="anthropic")
+    # 137,077 * $6.25 / 1,000,000 = $0.85673125
+    assert float(result.amount_usd) == 0.85673125
+
+
+def test_estimate_usage_cost_fast_mode_applies_6x_multiplier_on_opus_46():
+    """Fast mode (Opus 4.6 only) charges 6x standard rates across every
+    per-token category, with cache TTL multipliers stacking on top.
+    1M input + 1M output @ standard = $30; @ fast mode = $180.
+    """
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    standard = estimate_usage_cost("claude-opus-4-6", usage, provider="anthropic")
+    fast = estimate_usage_cost("claude-opus-4-6", usage, provider="anthropic", fast_mode=True)
+    assert float(standard.amount_usd) == 30.0
+    assert float(fast.amount_usd) == 180.0
+
+
+def test_estimate_usage_cost_fast_mode_stacks_on_cache_write_multipliers():
+    """Anthropic's docs: 'Cache multipliers apply on top of fast mode
+    pricing'. So 1h cache write on Opus 4.6 fast mode should be
+    2x base x 6x fast = 12x base = $60/MTok.
+    """
+    usage = CanonicalUsage(
+        cache_write_tokens=1_000_000,
+        cache_write_1h_tokens=1_000_000,
+    )
+    fast = estimate_usage_cost("claude-opus-4-6", usage, provider="anthropic", fast_mode=True)
+    assert float(fast.amount_usd) == 60.0
+
+
+def test_estimate_usage_cost_fast_mode_on_unsupported_model_warns_but_doesnt_inflate():
+    """If a caller passes fast_mode=True on a model that doesn't define
+    a multiplier (Opus 4.7, Sonnet, Haiku), don't silently inflate the
+    cost — bill at standard rates and surface a note. Anthropic would
+    400 the request anyway, but the cost calculator shouldn't make the
+    failure mode worse than the upstream 400.
+    """
+    usage = CanonicalUsage(input_tokens=1_000_000)
+    result = estimate_usage_cost("claude-opus-4-7", usage, provider="anthropic", fast_mode=True)
+    # Standard rate: 1M * $5 / 1M = $5
+    assert float(result.amount_usd) == 5.0
+    assert any("fast_mode" in n for n in result.notes)
