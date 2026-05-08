@@ -318,6 +318,59 @@ class IterationBudget:
 # When any of these appear in a batch, we fall back to sequential execution.
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 
+
+def _classify_anthropic_stream_phase(
+    *,
+    thinking_active: bool,
+    thinking_chars: int,
+    first_event_seen: bool,
+    content_silence: int,
+    thinking_requested: bool,
+    message_start_arrived: bool,
+    ping_seen: bool,
+    user_elapsed: int,
+) -> str:
+    """Classify the current Anthropic stream phase for the user heartbeat.
+
+    Pure function — extracted from the inline classifier so it can be unit
+    tested.  All inputs are observed wire signals (no inference).
+
+    Phase priorities (most-specific wins):
+      1. ``thinking_active``: model is currently emitting thinking_delta
+         tokens (display=summarized).  If thinking_chars > 0, surface the
+         count for visible progress.
+      2. ``first_event_seen`` AND content has been silent: stream started,
+         then went quiet — server is generating but emitting nothing
+         (display=omitted between blocks, or tool_use prep).
+      3. ``first_event_seen``: regular streaming.
+      4. ``message_start_arrived`` + ``thinking_requested``: pre-content,
+         post-acceptance with thinking enabled — the canonical
+         "thinking server-side, holding back content" state.
+      5. Pre-message_start states, distinguished by whether pings are
+         flowing — proves connection alive vs may-be-wedged.
+
+    The string returned is the value plugged into the heartbeat
+    "(model: X, <phase>)" slot.  Test names pin the exact phase string
+    so docs/UX changes are intentional.
+    """
+    if thinking_active:
+        if thinking_chars:
+            return f"thinking ({thinking_chars:,} chars streamed)"
+        return "thinking"
+    if first_event_seen and content_silence > 10:
+        return "thinking (server-side)"
+    if first_event_seen:
+        return "streaming"
+    if message_start_arrived and thinking_requested:
+        return "thinking server-side (display=omitted)"
+    if thinking_requested and ping_seen and user_elapsed >= 30:
+        return "queued/prefilling (thinking req'd, server pinging)"
+    if thinking_requested and user_elapsed >= 30:
+        return "no pings yet — connection may be cold or wedged"
+    if ping_seen:
+        return "queued/prefilling, server alive (pings flowing)"
+    return "queued/prefilling (no pings yet)"
+
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
     "ha_get_state",
@@ -7065,6 +7118,37 @@ class AIAgent:
         # cold-start kills.  The chat_completions path doesn't get this
         # signal (no equivalent SDK hook installed there).
         ping_seen = {"yes": False}
+        # Ping cadence diagnostics — track arrival count + last-N timestamps
+        # so the heartbeat can distinguish "real thinking, server actively
+        # ping-keep-aliving" from "connection wedged but counter still
+        # ticking".  Anthropic emits pings at ~10s cadence during long
+        # thinking phases with display=omitted, where no semantic events
+        # arrive until thinking completes.  Without this, the only way to
+        # know the difference between a 19-min real thinking phase and a
+        # 19-min wedge is to wait for the timeout.
+        ping_count = {"n": 0}
+        last_ping_time = {"t": 0.0}  # 0 == no ping yet
+        # message_start usage — captured the moment Anthropic accepts the
+        # request and starts the response stream.  Holds (input_tokens,
+        # cache_read_tokens, arrival_timestamp).  Lets the heartbeat report
+        # "request accepted, X input tokens (cache Y%)" so the user knows
+        # we're past the queue/prefill phase even when content blocks are
+        # still pending (e.g. summarized thinking, or display=omitted
+        # holding back content_block_start).
+        # Note: ``input_tokens`` from Anthropic's usage object is the
+        # NEW (uncached) prompt tokens for THIS turn — not the total
+        # prompt size.  Total prompt = input_tokens + cache_read +
+        # cache_creation.  Treating input_tokens as total produces
+        # absurd cache percentages on cache-hot turns (a 6-token new
+        # prefix + 177K cache_read shows up as 2,957,817% if you
+        # divide cache_read by input_tokens).  Always combine all three
+        # before computing display percentages.
+        message_start_usage = {
+            "input_tokens": None,        # new uncached tokens
+            "cache_read_tokens": None,   # served from cache
+            "cache_creation_tokens": None,  # written to cache this turn
+            "arrival": 0.0,
+        }
         # Whether the model is currently emitting a thinking content block
         # (content_block_start with type="thinking" fired, next non-thinking
         # content_block_start not yet seen). Drives the heartbeat status so
@@ -7376,9 +7460,12 @@ class AIAgent:
                 # alive (pings count) but do NOT flip first_event_seen —
                 # that flag tracks "iterator has yielded a semantic event"
                 # and gates the cold-start vs mid-stream threshold split.
-                last_chunk_time["t"] = time.time()
+                _now = time.time()
+                last_chunk_time["t"] = _now
                 if event_name == "ping":
                     ping_seen["yes"] = True
+                    ping_count["n"] += 1
+                    last_ping_time["t"] = _now
 
             set_sse_event_callback(_on_sse_event)
             try:
@@ -7400,6 +7487,47 @@ class AIAgent:
                             break
 
                         event_type = getattr(event, "type", None)
+
+                        # Capture input usage from message_start the moment
+                        # it arrives — proves the request was accepted and
+                        # tells the user how big the prompt was + how much
+                        # was cache-served. Logged at INFO so historical
+                        # evidence accrues in agent.log (previously we
+                        # threw this signal away entirely, which left us
+                        # unable to tell "thinking productively for 19m"
+                        # apart from "wedged for 19m" after the fact).
+                        if event_type == "message_start" and message_start_usage["arrival"] == 0.0:
+                            try:
+                                _msg = getattr(event, "message", None)
+                                _u = getattr(_msg, "usage", None) if _msg else None
+                                if _u is not None:
+                                    _it = getattr(_u, "input_tokens", None) or 0
+                                    _crt = getattr(_u, "cache_read_input_tokens", None) or 0
+                                    _cct = getattr(_u, "cache_creation_input_tokens", None) or 0
+                                    message_start_usage["input_tokens"] = _it
+                                    message_start_usage["cache_read_tokens"] = _crt
+                                    message_start_usage["cache_creation_tokens"] = _cct
+                                    message_start_usage["arrival"] = time.time()
+                                    # _request_started is set immediately
+                                    # before t.start() above so the closure
+                                    # always sees a valid value here.
+                                    _ms_elapsed = message_start_usage["arrival"] - _request_started
+                                    # Total prompt = NEW uncached + cache_read + cache_creation.
+                                    # ``input_tokens`` ALONE would give a misleading 6 on
+                                    # a 177K-token cache-hot turn.  Cache % must use the
+                                    # total or it produces nonsense (>100%) percentages.
+                                    _total_in = _it + _crt + _cct
+                                    _cache_pct = (
+                                        f" cache={_crt:,}/{_total_in:,} ({100*_crt/_total_in:.0f}%)"
+                                        if _total_in and _crt else ""
+                                    )
+                                    logger.info(
+                                        "anthropic stream: message_start arrived "
+                                        "after %.1fs (total_prompt=%d new=%d%s) — request accepted",
+                                        _ms_elapsed, _total_in, _it, _cache_pct,
+                                    )
+                            except Exception:
+                                pass
 
                         if event_type == "content_block_start":
                             last_content_time["t"] = time.time()
@@ -7472,6 +7600,48 @@ class AIAgent:
                                     object.__setattr__(_final, "_hermes_routing_headers", _routing)
                                 except Exception:
                                     pass
+                    except Exception:
+                        pass
+                    # Stream lifecycle summary for historical evidence in
+                    # agent.log.  Without this, we have no way to tell
+                    # after the fact whether a 19-minute wait was real
+                    # thinking (pings flowed, message_start arrived early,
+                    # then long content_block silence) or a wedge (no
+                    # pings, no message_start, just timeout). Single line
+                    # at INFO so it survives default log rotation and
+                    # rolls up cleanly with `grep stream-lifecycle`.
+                    try:
+                        _now = time.time()
+                        _total_elapsed = _now - _request_started
+                        _ms_arrival = message_start_usage["arrival"]
+                        _ms_offset = (
+                            f"{_ms_arrival - _request_started:.1f}"
+                            if _ms_arrival > 0 else "never"
+                        )
+                        _it = message_start_usage["input_tokens"] or 0
+                        _crt = message_start_usage["cache_read_tokens"] or 0
+                        _cct = message_start_usage["cache_creation_tokens"] or 0
+                        _total_prompt = _it + _crt + _cct
+                        _last_ping_age = (
+                            f"{_now - last_ping_time['t']:.1f}"
+                            if last_ping_time["t"] > 0 else "never"
+                        )
+                        # Three separate token counts because each tells a
+                        # different story:
+                        #   new            = uncached prompt this turn (≈ user msg + new tools)
+                        #   cache_read     = served from prompt cache (the win)
+                        #   cache_creation = written to cache this turn (next turn benefits)
+                        # Sum is the total billed input tokens.
+                        logger.info(
+                            "anthropic stream-lifecycle: total=%.1fs "
+                            "message_start=%s pings=%d (last_age=%s) "
+                            "thinking_chars=%d total_prompt=%d new=%d cache_read=%d "
+                            "cache_create=%d model=%s",
+                            _total_elapsed, _ms_offset, ping_count["n"],
+                            _last_ping_age, thinking_chars["n"],
+                            _total_prompt, _it, _crt, _cct,
+                            api_kwargs.get("model", "unknown"),
+                        )
                     except Exception:
                         pass
                     return _final
@@ -7784,9 +7954,14 @@ class AIAgent:
             else:
                 _stream_stale_timeout = _stream_stale_timeout_base
 
+        # Define _request_started BEFORE t.start() so the inner thread's
+        # closure (e.g. message_start logging) can read it without racing
+        # against this assignment.  Time captured here is the request
+        # *issue* time — close enough to thread spawn that any drift is
+        # microseconds.
+        _request_started = time.time()
         t = threading.Thread(target=_call, daemon=True)
         t.start()
-        _request_started = time.time()
         _last_heartbeat = _request_started
         _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
         # Track consecutive stale-stream kills with no chunk progress in between.
@@ -7868,38 +8043,83 @@ class AIAgent:
                             isinstance(_thinking_cfg, dict)
                             and _thinking_cfg.get("type") in ("adaptive", "enabled")
                         )
-                        if thinking_active["yes"]:
-                            if thinking_chars["n"]:
-                                _phase = (
-                                    f"thinking ({thinking_chars['n']:,} chars streamed)"
-                                )
-                            else:
-                                _phase = "thinking"
-                        elif first_event_seen["yes"] and _content_silence > 10:
-                            # Stream started, then went silent — model is
-                            # thinking server-side without emitting blocks
-                            # (display=omitted). Used to be labeled
-                            # "summarized" when display=summarized was
-                            # hardcoded; drop that since we no longer send it.
-                            _phase = "thinking (server-side)"
-                        elif first_event_seen["yes"]:
-                            _phase = "streaming"
-                        elif _thinking_requested and _user_elapsed >= 30:
-                            # No message_start yet and we've been waiting
-                            # ≥30s. With thinking enabled + display=omitted,
-                            # the server defers message_start until
-                            # thinking finishes — so this is overwhelmingly
-                            # likely to be the model thinking, not a queue
-                            # or prefill stall. Surface that to the user
-                            # instead of generic "queued/prefilling".
-                            _phase = "thinking (no events yet)"
-                        elif ping_seen["yes"]:
-                            _phase = "queued/prefilling, server alive"
-                        else:
-                            _phase = "queued/prefilling"
+                        # Surface the actual effort/budget in the model
+                        # label so the user can tell if a long wait
+                        # matches the requested depth.  Adaptive: model
+                        # picks its own budget — effort is just a bias
+                        # ("xhigh" = "lean toward longer thinking").
+                        # Enabled: explicit budget_tokens cap.
+                        _model_label_extra = ""
+                        if isinstance(_thinking_cfg, dict):
+                            _ttype = _thinking_cfg.get("type")
+                            if _ttype == "adaptive":
+                                _oc = api_kwargs.get("output_config") or {}
+                                _eff = _oc.get("effort") if isinstance(_oc, dict) else None
+                                if _eff:
+                                    _model_label_extra = f", thinking=adaptive/{_eff}"
+                                else:
+                                    _model_label_extra = ", thinking=adaptive"
+                            elif _ttype == "enabled":
+                                _budget = _thinking_cfg.get("budget_tokens")
+                                if _budget:
+                                    _model_label_extra = f", thinking={_budget}t"
+                                else:
+                                    _model_label_extra = ", thinking=on"
+                        # Build a real-evidence diagnostic suffix.  Without
+                        # this, every long pre-event wait looked identical
+                        # ("thinking (no events yet)" forever) regardless
+                        # of whether pings were actually flowing or
+                        # message_start had arrived.  The user couldn't
+                        # tell a productive 19-min thinking phase from a
+                        # 19-min wedge.  Now we surface what we actually
+                        # observed on the wire:
+                        #   * pings: count + last-arrival age. ≤15s gap
+                        #     means server is actively heartbeating;
+                        #     >30s gap is suspicious.
+                        #   * message_start: input_tokens + cache_pct +
+                        #     wall time it took to arrive.  Proves the
+                        #     queue/prefill phase is over and we're now
+                        #     either generating or thinking server-side.
+                        _diag_bits: list[str] = []
+                        if last_ping_time["t"] > 0:
+                            _ping_age = int(_hb_now - last_ping_time["t"])
+                            _diag_bits.append(
+                                f"{ping_count['n']} ping{'s' if ping_count['n'] != 1 else ''}, "
+                                f"last {_ping_age}s ago"
+                            )
+                        if message_start_usage["arrival"] > 0:
+                            _it = message_start_usage["input_tokens"] or 0
+                            _crt = message_start_usage["cache_read_tokens"] or 0
+                            _cct = message_start_usage["cache_creation_tokens"] or 0
+                            # Total prompt = new uncached + cache_read +
+                            # cache_creation.  ``input_tokens`` is just the
+                            # NEW prefix delta and on cache-hot turns can
+                            # be tiny (~6 tokens) while the actual prompt
+                            # is 177K — using it alone gave a 2,957,817%
+                            # cache figure first time we shipped this.
+                            _total_in = _it + _crt + _cct
+                            _ms_age = int(_hb_now - message_start_usage["arrival"])
+                            _bit = f"message_start +{_ms_age}s"
+                            if _total_in:
+                                _bit += f", {_total_in:,} prompt"
+                                if _crt:
+                                    _bit += f" (cache {100*_crt/_total_in:.0f}%)"
+                            _diag_bits.append(_bit)
+                        _diag = (" [" + " · ".join(_diag_bits) + "]") if _diag_bits else ""
+
+                        _phase = _classify_anthropic_stream_phase(
+                            thinking_active=thinking_active["yes"],
+                            thinking_chars=thinking_chars["n"],
+                            first_event_seen=first_event_seen["yes"],
+                            content_silence=_content_silence,
+                            thinking_requested=_thinking_requested,
+                            message_start_arrived=message_start_usage["arrival"] > 0,
+                            ping_seen=ping_seen["yes"],
+                            user_elapsed=_user_elapsed,
+                        )
                         self._emit_status(
                             f"⏳ Still waiting on provider — {_user_elapsed}s elapsed "
-                            f"(model: {_model_name}, {_phase})"
+                            f"(model: {_model_name}{_model_label_extra}, {_phase}){_diag}"
                         )
                     except Exception:
                         pass
