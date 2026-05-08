@@ -345,7 +345,17 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
-
+            # Which key interrupts a running agent.  Values:
+            #   "ctrl-c" (default) — Ctrl+C interrupts (legacy Hermes behaviour)
+            #   "escape"           — Esc interrupts (claude-code parity); Ctrl+C
+            #                        becomes a claude-code-style "press again to
+            #                        exit" shortcut and no longer interrupts the
+            #                        agent.  Note: Esc has a ~0.5s chord-flush
+            #                        delay so prompt_toolkit can disambiguate
+            #                        Alt+Enter / Alt+G / Alt+V chords first.
+            #   "both"             — Either key interrupts; Ctrl+C keeps its
+            #                        double-press force-exit behaviour.
+            "interrupt_key": "ctrl-c",
             "skin": "default",
         },
         "clarify": {
@@ -11466,7 +11476,99 @@ class HermesCLI:
         
         # Key bindings for the input area
         kb = KeyBindings()
-        
+
+        # Resolve the interrupt-key mode once.  Affects the bare-Esc handler
+        # registered later and the Ctrl+C semantics inside ``handle_ctrl_c``.
+        # Values: "ctrl-c" (default), "escape", "both".  Unknown values fall
+        # back to the legacy "ctrl-c" behaviour so a typo can never strand the
+        # user without a way to interrupt.
+        _ik_raw = str(CLI_CONFIG.get("display", {}).get("interrupt_key", "ctrl-c")).strip().lower()
+        # Normalize a few common spellings.
+        _ik_aliases = {
+            "ctrl+c": "ctrl-c", "control+c": "ctrl-c", "control-c": "ctrl-c",
+            "c-c": "ctrl-c", "ctrl_c": "ctrl-c",
+            "esc": "escape",
+        }
+        _ik_raw = _ik_aliases.get(_ik_raw, _ik_raw)
+        if _ik_raw not in ("ctrl-c", "escape", "both"):
+            logger.warning(
+                "display.interrupt_key=%r is not one of ctrl-c|escape|both; "
+                "falling back to ctrl-c.",
+                _ik_raw,
+            )
+            _ik_raw = "ctrl-c"
+        self._interrupt_key_mode = _ik_raw
+
+        def _run_cancel_ladder(event):
+            """Cancel any active interactive prompt and return True if handled.
+
+            Shared by the Ctrl+C and Esc handlers so both keys cancel modal
+            prompts (voice / sudo / secret / approval / model & reasoning
+            pickers / clarify) consistently before any agent-interrupt logic
+            fires. Returns True if a prompt was cancelled (caller should
+            short-circuit), False if there was nothing to cancel.
+            """
+            # Cancel active voice recording.
+            # Run cancel() in a background thread to prevent blocking the
+            # event loop if AudioRecorder._lock or CoreAudio takes time.
+            _should_cancel_voice = False
+            _recorder_ref = None
+            with cli_ref._voice_lock:
+                if cli_ref._voice_recording and cli_ref._voice_recorder:
+                    _recorder_ref = cli_ref._voice_recorder
+                    cli_ref._voice_recording = False
+                    cli_ref._voice_continuous = False
+                    _should_cancel_voice = True
+            if _should_cancel_voice:
+                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
+                threading.Thread(
+                    target=_recorder_ref.cancel, daemon=True
+                ).start()
+                event.app.invalidate()
+                return True
+
+            if self._sudo_state:
+                self._sudo_state["response_queue"].put("")
+                self._sudo_state = None
+                event.app.invalidate()
+                return True
+
+            if self._secret_state:
+                self._cancel_secret_capture()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return True
+
+            if self._approval_state:
+                self._approval_state["response_queue"].put("deny")
+                self._approval_state = None
+                event.app.invalidate()
+                return True
+
+            if self._model_picker_state:
+                self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return True
+
+            if self._reasoning_picker_state:
+                self._close_reasoning_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return True
+
+            if self._clarify_state:
+                self._clarify_state["response_queue"].put(
+                    "The user cancelled. Use your best judgement to proceed."
+                )
+                self._clarify_state = None
+                self._clarify_freetext = False
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return True
+
+            return False
+
         @kb.add('enter')
         def handle_enter(event):
             """Handle Enter key - submit input.
@@ -11858,91 +11960,47 @@ class HermesCLI:
 
         @kb.add('c-c')
         def handle_ctrl_c(event):
-            """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
-            
-            Priority:
-            0. Cancel active voice recording
-            1. Cancel active sudo/approval/clarify prompt
-            2. Interrupt the running agent (first press)
-            3. Force exit (second press within 2s, or when idle)
+            """Handle Ctrl+C — behaviour depends on display.interrupt_key.
+
+            All modes first run the cancel ladder (voice / sudo / secret /
+            approval / pickers / clarify).  Then:
+
+            * "ctrl-c" or "both" — Ctrl+C interrupts the running agent on
+              first press; second press within 2 s force-exits the CLI.
+            * "escape" — Esc owns the interrupt; Ctrl+C becomes a
+              claude-code-style "press again to exit" shortcut and never
+              calls ``agent.interrupt()`` directly.
             """
             now = time.time()
 
-            # Cancel active voice recording.
-            # Run cancel() in a background thread to prevent blocking the
-            # event loop if AudioRecorder._lock or CoreAudio takes time.
-            _should_cancel_voice = False
-            _recorder_ref = None
-            with cli_ref._voice_lock:
-                if cli_ref._voice_recording and cli_ref._voice_recorder:
-                    _recorder_ref = cli_ref._voice_recorder
-                    cli_ref._voice_recording = False
-                    cli_ref._voice_continuous = False
-                    _should_cancel_voice = True
-            if _should_cancel_voice:
-                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
-                threading.Thread(
-                    target=_recorder_ref.cancel, daemon=True
-                ).start()
-                event.app.invalidate()
+            if _run_cancel_ladder(event):
                 return
 
-            # Cancel sudo prompt
-            if self._sudo_state:
-                self._sudo_state["response_queue"].put("")
-                self._sudo_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel secret prompt
-            if self._secret_state:
-                self._cancel_secret_capture()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel approval prompt (deny)
-            if self._approval_state:
-                self._approval_state["response_queue"].put("deny")
-                self._approval_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel /model picker
-            if self._model_picker_state:
-                self._close_model_picker()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel /reasoning picker
-            if self._reasoning_picker_state:
-                self._close_reasoning_picker()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel clarify prompt
-            if self._clarify_state:
-                self._clarify_state["response_queue"].put(
-                    "The user cancelled. Use your best judgement to proceed."
-                )
-                self._clarify_state = None
-                self._clarify_freetext = False
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
+            mode = self._interrupt_key_mode
+            ctrl_c_interrupts = mode in ("ctrl-c", "both")
 
             if self._agent_running and self.agent:
-                if now - self._last_ctrl_c_time < 2.0:
-                    print("\n⚡ Force exiting...")
-                    self._should_exit = True
-                    event.app.exit()
-                    return
-                
-                self._last_ctrl_c_time = now
-                print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
-                self.agent.interrupt()
+                if ctrl_c_interrupts:
+                    if now - self._last_ctrl_c_time < 2.0:
+                        print("\n⚡ Force exiting...")
+                        self._should_exit = True
+                        event.app.exit()
+                        return
+                    self._last_ctrl_c_time = now
+                    print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
+                    self.agent.interrupt()
+                else:
+                    # mode == "escape": Ctrl+C does NOT interrupt the agent.
+                    # Match claude-code: single press primes a "press again
+                    # to exit" warning, second press within 2 s exits the
+                    # CLI.  Esc handles agent interruption separately.
+                    if now - self._last_ctrl_c_time < 2.0:
+                        print("\n⚡ Exiting...")
+                        self._should_exit = True
+                        event.app.exit()
+                        return
+                    self._last_ctrl_c_time = now
+                    print("\n⚡ Press Ctrl+C again to exit. Press Esc to interrupt the agent.")
             else:
                 # If there's text or images, clear them (like bash).
                 # If everything is already empty, exit.
@@ -11953,6 +12011,34 @@ class HermesCLI:
                 else:
                     self._should_exit = True
                     event.app.exit()
+
+        # Bare-Esc interrupt — only armed when display.interrupt_key allows it.
+        # Filter is checked at every keystroke; when the mode is "ctrl-c" the
+        # binding is simply unreachable and Esc retains its prompt_toolkit
+        # default semantics (clear cursor flag, abort selection, etc).
+        #
+        # NOT eager=True: existing chord handlers ('escape','enter'),
+        # ('escape','g'), ('escape','v') must keep matching first.  prompt_
+        # toolkit only fires this bare-Esc binding after the chord-flush
+        # timeout (~0.5 s) confirms no follow-up key is coming — accept that
+        # latency rather than break Alt+Enter / Alt+G / Alt+V mid-run.
+        # Modal pickers' own ('escape', filter=..., eager=True) bindings still
+        # win since they're eager.
+        _esc_interrupt_active = Condition(
+            lambda: self._interrupt_key_mode in ("escape", "both")
+        )
+
+        @kb.add('escape', filter=_esc_interrupt_active)
+        def handle_escape_interrupt(event):
+            """Esc — cancel active prompt or interrupt the running agent."""
+            if _run_cancel_ladder(event):
+                return
+            if self._agent_running and self.agent:
+                print("\n⚡ Interrupting agent...")
+                self.agent.interrupt()
+            # When idle and no prompt is active, fall through silently.  We
+            # deliberately do NOT clear the input buffer or exit on Esc — that
+            # would be surprising, and Ctrl+C still owns those gestures.
 
         # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
         # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before
