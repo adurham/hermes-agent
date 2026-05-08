@@ -1580,6 +1580,156 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["max_tokens"] == 16_000
 
+    # ── Stale tool_use scrubbing ────────────────────────────────────────
+    #
+    # Anthropic's API returns ``invalid_request_error: Tool reference 'X'
+    # not found in available tools`` when the message history contains a
+    # ``tool_use`` whose name isn't in the current ``tools`` array.
+    # Triggering scenarios in the wild (errors.log 2026-05-07/08):
+    #   * MCP server reconnect failures — ``hermes_swarm_get_prompt``,
+    #     ``salesforce_get_prompt``, ``StackOverflowTeams_create_QA``,
+    #     ``tanium_developer_get_endpoint_info``
+    #   * Toolset switches mid-session — ``clarify`` dropped after
+    #     ``/toolsets remove`` while tool_use blocks linger in history.
+    # build_anthropic_kwargs now scrubs these via
+    # ``_strip_unknown_tool_blocks`` after tool conversion.
+
+    def test_strips_unknown_tool_use_when_tool_missing_from_current_list(self):
+        """tool_use for a name not in the current tools array gets rewritten
+        to a text breadcrumb instead of the tool_use block (which would
+        otherwise be rejected by the API)."""
+        messages = [
+            {"role": "user", "content": "do the thing"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc_clarify_1",
+                        "function": {
+                            "name": "clarify",
+                            "arguments": '{"question": "which?"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_clarify_1", "content": "user picked option A"},
+            {"role": "user", "content": "now go"},
+        ]
+        # Current toolset does NOT include `clarify` (e.g. dropped via
+        # /toolsets remove, or this is a leaf subagent with no UI tools).
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=[
+                {"type": "function", "function": {"name": "read_file", "description": "x"}},
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+        # No tool_use / tool_result for `clarify` should remain in the
+        # outgoing messages.
+        for m in kwargs["messages"]:
+            content = m.get("content")
+            if not isinstance(content, list):
+                continue
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                assert not (
+                    b.get("type") == "tool_use" and b.get("name") == "clarify"
+                ), "stale tool_use must not reach the wire"
+                assert not (
+                    b.get("type") == "tool_result" and b.get("tool_use_id") == "tc_clarify_1"
+                ), "stale tool_result must not reach the wire"
+        # And a breadcrumb text block should mention clarify so the model
+        # still has context for what happened.
+        joined = ""
+        for m in kwargs["messages"]:
+            content = m.get("content")
+            if isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        joined += b.get("text", "")
+        assert "clarify" in joined, (
+            "expected a breadcrumb mentioning the dropped tool name"
+        )
+
+    def test_keeps_known_tool_use_intact(self):
+        """Sanity: tool_use for tools that ARE in the live list is untouched."""
+        messages = [
+            {"role": "user", "content": "search please"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc_read_1",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path": "/tmp/x"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_read_1", "content": "file contents"},
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=[
+                {"type": "function", "function": {"name": "read_file", "description": "x"}},
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+        # tool_use block should still be present with its original name.
+        found_tool_use = False
+        for m in kwargs["messages"]:
+            content = m.get("content")
+            if isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "read_file":
+                        found_tool_use = True
+        assert found_tool_use, "live tool_use block should not be rewritten"
+
+    def test_strips_unknown_tool_use_with_no_tools_at_all(self):
+        """When the current call has no tools whatsoever, ALL tool_use
+        blocks in history are stale by definition.  This used to 400
+        when the model history mentioned any tool — now they collapse
+        to text breadcrumbs."""
+        messages = [
+            {"role": "user", "content": "earlier"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc_x",
+                        "function": {"name": "salesforce_get_prompt", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_x", "content": "stale"},
+            {"role": "user", "content": "now"},
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+        assert "tools" not in kwargs
+        for m in kwargs["messages"]:
+            content = m.get("content")
+            if isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict):
+                        assert b.get("type") not in ("tool_use", "tool_result"), (
+                            "every tool_use/result must be stripped when tools=None"
+                        )
+
 
 # ---------------------------------------------------------------------------
 # Model output limit lookup

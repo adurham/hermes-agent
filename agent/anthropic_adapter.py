@@ -1547,6 +1547,145 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     return normalized
 
 
+def _strip_unknown_tool_blocks(
+    anthropic_messages: List[Dict],
+    available_tool_names: set,
+) -> List[Dict]:
+    """Drop tool_use / tool_result blocks for tools not in the live tool list.
+
+    Anthropic's Messages API rejects any request whose history contains a
+    ``tool_use`` block whose ``name`` is not present in the current
+    ``tools`` array — the error surfaces as
+    ``invalid_request_error: Tool reference 'X' not found in available tools``.
+
+    This is easy to hit in practice:
+
+      * MCP server reconnect storms — when ``mcp__salesforce__*`` /
+        ``hermes_swarm_*`` / ``StackOverflowTeams_*`` tools were used
+        last turn but the MCP server fails to reconnect this turn,
+        their schemas are absent from the tool list while the prior
+        ``tool_use`` blocks remain in the conversation transcript.
+      * Toolset switches mid-session via ``/toolsets remove`` — drops
+        ``clarify`` / ``send_message`` etc. while the assistant message
+        history still carries calls to them.
+      * Subagents / batched delegates — the parent's history contains
+        tool calls that the leaf subagent's narrower toolset doesn't
+        expose.
+
+    We replace each unknown ``tool_use`` (and its matching ``tool_result``)
+    with a small text block describing what was called.  Pure removal would
+    be safer wire-shape-wise but lossier: the model loses the breadcrumb
+    that a tool ran.  Text replacement preserves the trail while satisfying
+    Anthropic's validator.
+
+    Empty / None ``available_tool_names`` is treated as "drop everything"
+    — the orphan-stripping in ``convert_messages_to_anthropic`` already
+    handles the no-tools-at-all case for unmatched pairs, but a matched
+    pair with a stale name still slips through; this catches it.
+    """
+    if not anthropic_messages:
+        return anthropic_messages
+
+    # First pass: identify unknown tool_use ids (we need them to also
+    # rewrite the matching tool_result blocks in user messages).
+    unknown_tool_use_ids: dict[str, dict] = {}  # id -> {name, input_summary}
+    for msg in anthropic_messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = block.get("name")
+            if name and name in available_tool_names:
+                continue
+            tool_id = block.get("id")
+            if not tool_id:
+                continue
+            # Brief input echo for the breadcrumb — capped so a giant
+            # base64 payload doesn't bloat the replacement message.
+            try:
+                inp_str = str(block.get("input") or {})
+            except Exception:
+                inp_str = "{}"
+            if len(inp_str) > 200:
+                inp_str = inp_str[:200] + "...(truncated)"
+            unknown_tool_use_ids[tool_id] = {
+                "name": name or "(unnamed)",
+                "input_summary": inp_str,
+            }
+
+    if not unknown_tool_use_ids:
+        return anthropic_messages
+
+    # Second pass: rewrite blocks in place.
+    for msg in anthropic_messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        new_blocks: list = []
+        for block in content:
+            if not isinstance(block, dict):
+                new_blocks.append(block)
+                continue
+            btype = block.get("type")
+            if btype == "tool_use" and block.get("id") in unknown_tool_use_ids:
+                meta = unknown_tool_use_ids[block["id"]]
+                new_blocks.append({
+                    "type": "text",
+                    "text": (
+                        f"[Previous tool call: {meta['name']}("
+                        f"{meta['input_summary']}) — tool no longer available "
+                        f"in this turn.]"
+                    ),
+                })
+                continue
+            if btype == "tool_result" and block.get("tool_use_id") in unknown_tool_use_ids:
+                # Best-effort summary of the original result text so the
+                # model can still reason about what came back.
+                try:
+                    result_content = block.get("content")
+                    if isinstance(result_content, list):
+                        # Anthropic tool_result content is a list of text/image blocks
+                        text_pieces = []
+                        for rc in result_content:
+                            if isinstance(rc, dict) and rc.get("type") == "text":
+                                text_pieces.append(str(rc.get("text", "")))
+                        result_summary = "\n".join(text_pieces)
+                    else:
+                        result_summary = str(result_content or "")
+                except Exception:
+                    result_summary = ""
+                if len(result_summary) > 400:
+                    result_summary = result_summary[:400] + "...(truncated)"
+                meta = unknown_tool_use_ids[block["tool_use_id"]]
+                new_blocks.append({
+                    "type": "text",
+                    "text": (
+                        f"[Previous tool result for {meta['name']}: "
+                        f"{result_summary}]"
+                    ),
+                })
+                continue
+            new_blocks.append(block)
+        # Empty content after rewrites — leave a placeholder so the
+        # message still validates (Anthropic rejects empty content).
+        if not new_blocks:
+            new_blocks = [{"type": "text", "text": "(content removed)"}]
+        msg["content"] = new_blocks
+
+    if unknown_tool_use_ids:
+        logger.info(
+            "anthropic_adapter: rewrote %d tool_use/result block(s) for tools "
+            "no longer available: %s",
+            len(unknown_tool_use_ids),
+            sorted({m["name"] for m in unknown_tool_use_ids.values()}),
+        )
+    return anthropic_messages
+
+
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format.
 
@@ -2775,6 +2914,21 @@ def build_anthropic_kwargs(
         messages, base_url=base_url, model=model
     )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
+
+    # Drop / rewrite tool_use blocks for tools that aren't in the live tool
+    # list — Anthropic's API hard-rejects them with
+    #   invalid_request_error: Tool reference 'X' not found in available tools
+    # See _strip_unknown_tool_blocks for the full list of triggering
+    # scenarios (MCP reconnect failures, mid-session toolset switches,
+    # subagents with narrower toolsets).  We do this here, AFTER tools
+    # are converted, so the lookup set reflects exactly what's going on
+    # the wire (post-server-tool unwrap, post-dedup).
+    available_tool_names = {
+        t.get("name") for t in anthropic_tools if isinstance(t, dict) and t.get("name")
+    }
+    anthropic_messages = _strip_unknown_tool_blocks(
+        anthropic_messages, available_tool_names
+    )
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
     # effective_max_tokens = output cap for this call (≠ total context window)
