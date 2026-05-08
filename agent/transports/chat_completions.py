@@ -382,7 +382,13 @@ class ChatCompletionsTransport(ProviderTransport):
                     # so the OpenAI SDK doesn't reject it as unknown.
                     extra_body["enable_thinking"] = True
 
-        if is_qwen:
+        # Qwen portal (Alibaba DashScope OpenAI-compat endpoint) accepts a
+        # high-res image flag in extra_body.  Param name is is_qwen_portal —
+        # an earlier refactor referenced an undefined ``is_qwen`` here and
+        # raised NameError on every legacy-path call (e.g. aux client with
+        # no provider configured).  See errors.log:
+        #   "API call failed after 3 retries. name 'is_qwen' is not defined"
+        if params.get("is_qwen_portal", False):
             extra_body["vl_high_resolution_images"] = True
 
         if provider_name == "gemini":

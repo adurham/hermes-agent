@@ -340,6 +340,40 @@ class TestChatCompletionsBuildKwargs:
         # Qwen default: 65536 from profile.default_max_tokens
         assert kw["max_tokens"] == 65536
 
+    def test_legacy_path_no_provider_profile_does_not_NameError(self, transport):
+        """Regression: legacy fallback (no provider_profile) must not blow up.
+
+        ``agent/transports/chat_completions.py`` originally referenced an
+        undefined name ``is_qwen`` in the custom-provider branch, raising
+        ``NameError: name 'is_qwen' is not defined`` on every legacy-path
+        call.  This was hit constantly by the auxiliary client when no
+        provider was configured (errors.log on 2026-05-08 alone showed
+        30+ failures with that traceback).  Pin the fix so the legacy
+        path stays callable for unregistered/custom providers.
+        """
+        msgs = [{"role": "user", "content": "Hi"}]
+        # No provider_profile → legacy fallback. is_qwen_portal omitted
+        # entirely (most common shape — the param is the typed flag).
+        kw = transport.build_kwargs(
+            model="qwen3", messages=msgs,
+            is_custom_provider=True,
+            reasoning_config={"effort": "high"},
+        )
+        # Must not raise; vl_high_resolution_images NOT set when portal
+        # flag is absent / false.
+        assert "vl_high_resolution_images" not in kw.get("extra_body", {})
+
+    def test_legacy_path_qwen_portal_sets_vl_high_resolution(self, transport):
+        """Legacy fallback honors is_qwen_portal=True for the DashScope
+        OpenAI-compat endpoint, which accepts vl_high_resolution_images
+        as an extra_body knob for vision models."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="qwen-vl-max", messages=msgs,
+            is_qwen_portal=True,
+        )
+        assert kw["extra_body"]["vl_high_resolution_images"] is True
+
     def test_anthropic_max_output_for_claude_on_aggregator(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
