@@ -825,6 +825,15 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
         "resume_display": "full",
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # Which key interrupts a running agent in the classic CLI:
+        #   "ctrl-c" (default) — Ctrl+C interrupts (legacy Hermes behaviour)
+        #   "escape"           — Esc interrupts (claude-code parity); Ctrl+C
+        #                        becomes a "press again to exit" shortcut.
+        #                        Note: Esc has ~0.5s chord-flush delay so
+        #                        prompt_toolkit can disambiguate Alt+Enter etc.
+        #   "both"             — Either key interrupts; Ctrl+C keeps its
+        #                        double-press force-exit behaviour.
+        "interrupt_key": "ctrl-c",
         # When true, `hermes --tui` auto-resumes the most recent human-
         # facing session on launch instead of forging a fresh one.
         # Mirrors `hermes -c` muscle memory.  Default off so existing
