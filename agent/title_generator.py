@@ -26,9 +26,64 @@ _TITLE_PROMPT = (
 )
 
 
+def _extract_text(value) -> str:
+    """Coerce any message-content shape to plain text.
+
+    The CLI may pass the user message as either a plain string OR a list
+    of content blocks (the OpenAI-style ``[{"type": "text", ...},
+    {"type": "image_url", ...}]`` shape) when the user attached files /
+    images.  Naively slicing or f-stringing such a list embeds the entire
+    base64 image in the title-gen prompt — a single screenshot can blow
+    a Haiku request past Anthropic's 200K-token ceiling and turn every
+    image-attached session into an "Auxiliary title generation failed:
+    prompt is too long" warning.
+
+    This helper:
+      - returns ``str(value)`` for strings (fast path),
+      - extracts only ``text`` blocks from list-shaped content,
+      - drops ``image_url`` / ``image`` / file blocks (they don't
+        meaningfully describe the conversation topic for a 3-7 word
+        title and they're enormous),
+      - stringifies anything else with ``str()`` as a last-resort
+        fallback so we never raise from a malformed shape.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for block in value:
+            if isinstance(block, dict):
+                btype = block.get("type")
+                # Plain text block (OpenAI / Anthropic shape).
+                if btype == "text":
+                    text = block.get("text", "")
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+                    continue
+                # Drop binary content (images, files, audio, video, …).
+                # The title model would only see opaque base64 anyway.
+                if btype in {"image_url", "image", "input_image", "file",
+                             "input_file", "audio", "input_audio", "video"}:
+                    continue
+                # Unknown block type — fall back to its ``text`` field if
+                # present, else its name so the title still has a hint.
+                fallback = block.get("text") or block.get("name") or ""
+                if isinstance(fallback, str) and fallback:
+                    parts.append(fallback)
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        # Single block dict — recurse via the list path.
+        return _extract_text([value])
+    return str(value)
+
+
 def generate_title(
-    user_message: str,
-    assistant_response: str,
+    user_message,
+    assistant_response,
     timeout: float = 30.0,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
@@ -39,14 +94,24 @@ def generate_title(
     auxiliary LLM client (cheapest/fastest available model).
     Returns the title string or None on failure.
 
+    ``user_message`` and ``assistant_response`` accept either plain
+    strings or content-block lists (as produced by attaching files /
+    images in the CLI).  Non-text blocks are stripped before
+    truncation so a 339KB base64 image never gets inlined into the
+    title-gen prompt and trips Anthropic's 200K-token ceiling.
+
     ``failure_callback`` is invoked with ``(task, exception)`` when the
     auxiliary call raises — the caller typically wires this to
     ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
     of silently accumulating untitled sessions.
     """
-    # Truncate long messages to keep the request small
-    user_snippet = user_message[:500] if user_message else ""
-    assistant_snippet = assistant_response[:500] if assistant_response else ""
+    # Coerce list-shaped content (image attachments etc.) to plain text
+    # BEFORE truncating — otherwise [:500] slices list elements rather
+    # than characters and f-stringing the result inlines the whole image.
+    user_text = _extract_text(user_message)
+    assistant_text = _extract_text(assistant_response)
+    user_snippet = user_text[:500]
+    assistant_snippet = assistant_text[:500]
 
     messages = [
         {"role": "system", "content": _TITLE_PROMPT},

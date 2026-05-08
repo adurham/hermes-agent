@@ -113,6 +113,91 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_strips_image_blocks_from_content_lists(self):
+        """Regression: image-attached first turns must not blow Anthropic's 200K
+        token ceiling.
+
+        The CLI passes first-turn user content as a list of OpenAI-style
+        content blocks (``[{"type": "text", ...}, {"type": "image_url", ...}]``)
+        when the user attached a screenshot. The naive ``user_message[:500]``
+        slice operates on the *list*, then the f-string stringifies it via
+        ``repr()`` — embedding the entire base64 image data URL (~85K
+        tokens for a single Edge screenshot) in the title prompt. Anthropic
+        then 400s with::
+
+            prompt is too long: 218909 tokens > 200000 maximum
+
+        Verify the helper now strips image blocks before truncation, so the
+        title-gen prompt stays bounded regardless of attachments.
+        """
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Edge MCP Auth Issue"
+            return resp
+
+        # Simulate a 339KB base64 image like the real bug report.
+        big_b64 = "A" * 339_000
+        user_blocks = [
+            {"type": "text", "text": "so the tanium-developer mcp\nit keeps trying to open edge tabs"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{big_b64}"}},
+        ]
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            title = generate_title(user_blocks, "Got it — let me check.")
+
+        assert title == "Edge MCP Auth Issue"
+        user_content = captured_kwargs["messages"][1]["content"]
+        # 500-char user snippet + 500-char assistant snippet + formatting,
+        # not a 339K base64 blob.
+        assert len(user_content) < 1500, (
+            f"Title-gen content list ballooned to {len(user_content)} chars — "
+            f"image block was not stripped."
+        )
+        # Specific guard so a future regression that re-introduces
+        # ``str(value)`` on the list shape still trips this test.
+        assert "data:image/png" not in user_content
+        assert "AAAA" not in user_content
+        # The text block content should still make it through.
+        assert "tanium-developer mcp" in user_content
+
+    def test_handles_dict_shaped_content(self):
+        """Single-block dict shape (rare but possible) coerces cleanly."""
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Single Block Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            title = generate_title({"type": "text", "text": "hello world"}, "hi")
+
+        assert title == "Single Block Title"
+        assert "hello world" in captured["messages"][1]["content"]
+
+    def test_handles_none_message_content(self):
+        """None content (e.g. empty assistant turn) becomes empty string."""
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Empty Turn Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title(None, None)
+
+        # Should have produced an "User: \n\nAssistant: " skeleton, not crashed.
+        assert "User:" in captured["messages"][1]["content"]
+        assert "Assistant:" in captured["messages"][1]["content"]
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""
