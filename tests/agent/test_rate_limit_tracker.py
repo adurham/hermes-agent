@@ -215,6 +215,33 @@ class TestAgentIntegration:
         result = parse_rate_limit_headers({})
         assert result is None
 
+    def test_parse_handles_anthropic_error_response(self):
+        """A 429 response from Anthropic carries the same anthropic-ratelimit-*
+        headers as a 200.  Verify the parser handles that path so the agent's
+        capture-on-429 hook can refresh state through throttle events.
+        """
+        from datetime import datetime, timedelta, timezone
+        reset = (datetime.now(timezone.utc) + timedelta(seconds=45)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        # Headers as they arrive on a 429 — same shape as 200 OK + retry-after.
+        err_headers = {
+            "anthropic-ratelimit-requests-limit": "50",
+            "anthropic-ratelimit-requests-remaining": "0",
+            "anthropic-ratelimit-requests-reset": reset,
+            "anthropic-ratelimit-input-tokens-limit": "200000",
+            "anthropic-ratelimit-input-tokens-remaining": "0",
+            "anthropic-ratelimit-input-tokens-reset": reset,
+            "retry-after": "45",
+        }
+        state = parse_rate_limit_headers(err_headers, provider="anthropic")
+        assert state is not None
+        assert state.requests_min.remaining == 0
+        assert state.input_tokens_min.remaining == 0
+        # Hottest bucket would be either of the two exhausted ones — both
+        # at 100% — so the heartbeat formatter must render a ⚠ tag.
+        assert "⚠" in format_rate_limit_heartbeat(state)
+
 
 # ── Anthropic native schema (anthropic-ratelimit-*) ──────────────────────
 
