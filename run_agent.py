@@ -1359,9 +1359,18 @@ class AIAgent:
         self._current_tool: str | None = None
         self._api_call_count: int = 0
 
-        # Rate limit tracking — updated from x-ratelimit-* response headers
-        # after each API call.  Accessed by /usage slash command.
+        # Rate limit tracking — updated from x-ratelimit-* / anthropic-
+        # ratelimit-* response headers after each API call (and from 429
+        # error responses).  Accessed by /usage and the streaming heartbeat.
         self._rate_limit_state: Optional["RateLimitState"] = None
+        # First-capture flag and per-bucket "currently hot" set, used to
+        # emit one-shot observability events (INFO on first capture, WARN
+        # on bucket transitions across the 90% threshold) without spamming
+        # the log on every successful API call.  Hysteresis: a bucket
+        # leaves the set only after dropping below 80%, so noisy 89↔91
+        # oscillations don't generate paired warn/clear pairs.
+        self._rate_limit_first_logged: bool = False
+        self._rate_limit_hot_buckets: set[str] = set()
 
         # OpenRouter response cache hit counter — incremented when
         # X-OpenRouter-Cache-Status: HIT is seen in streaming response headers.
@@ -4757,16 +4766,106 @@ class AIAgent:
         that already extracted ``response.headers`` for other purposes
         (Retry-After parsing, Nous rate-limit verification) can hand the
         same Mapping directly without re-walking the response object.
+
+        Emits two one-shot observability events:
+
+          * INFO on first successful capture per session — proves the
+            tracker is wired and shows what limits the provider published.
+          * WARN when a bucket crosses 80% utilisation; INFO when it drops
+            back below 80%.  Hysteresis (warn at ≥80%, clear at <80%) is
+            handled in ``_log_rate_limit_transitions`` so a bucket
+            oscillating around the warn threshold doesn't paint the log
+            with paired warn/clear pairs.
         """
         if not headers:
             return
         try:
             from agent.rate_limit_tracker import parse_rate_limit_headers
             state = parse_rate_limit_headers(headers, provider=self.provider)
-            if state is not None:
-                self._rate_limit_state = state
+            if state is None:
+                return
+            self._rate_limit_state = state
+            self._log_rate_limit_first_capture(state)
+            self._log_rate_limit_transitions(state)
         except Exception:
             pass  # Never let header parsing break the agent loop
+
+    def _log_rate_limit_first_capture(self, state: "RateLimitState") -> None:
+        """Emit a one-shot INFO when the tracker first sees rate-limit data.
+
+        Useful for confirming the tracker is wired against the active
+        provider, and for diff-ing the published caps against what the
+        agent expected.  Subsequent captures are silent — ``/usage`` is
+        the live view; transitions are warned separately.
+        """
+        if self._rate_limit_first_logged:
+            return
+        try:
+            from agent.rate_limit_tracker import format_rate_limit_compact
+            logger.info(
+                "rate-limit tracker captured initial state (%s schema, "
+                "provider=%s): %s",
+                state.schema or "unknown",
+                state.provider or "unknown",
+                format_rate_limit_compact(state),
+            )
+        except Exception:
+            pass
+        self._rate_limit_first_logged = True
+
+    def _log_rate_limit_transitions(self, state: "RateLimitState") -> None:
+        """Warn when buckets cross the 80% line; info when they drop back.
+
+        Tracks per-bucket "currently hot" state in
+        ``self._rate_limit_hot_buckets``; transitions are reported once
+        per change.  Hysteresis uses the same 80% threshold as the
+        warning string in ``format_rate_limit_display`` so reporting
+        stays consistent with the user-facing display.
+        """
+        try:
+            from agent.rate_limit_tracker import _fmt_count, _fmt_seconds  # noqa
+        except Exception:
+            return
+        from agent.rate_limit_tracker import _fmt_count, _fmt_seconds
+        candidates = [
+            ("RPM", state.requests_min),
+            ("RPH", state.requests_hour),
+            ("TPM", state.tokens_min),
+            ("TPH", state.tokens_hour),
+            ("ITPM", state.input_tokens_min),
+            ("OTPM", state.output_tokens_min),
+        ]
+        currently_hot: set[str] = set()
+        for label, bucket in candidates:
+            if bucket.limit <= 0:
+                continue
+            if bucket.usage_pct >= 80.0:
+                currently_hot.add(label)
+                if label not in self._rate_limit_hot_buckets:
+                    try:
+                        logger.warning(
+                            "rate-limit bucket %s crossed 80%% utilisation: "
+                            "%.0f%% (%s/%s remaining, resets in %s)",
+                            label,
+                            bucket.usage_pct,
+                            _fmt_count(bucket.remaining),
+                            _fmt_count(bucket.limit),
+                            _fmt_seconds(bucket.remaining_seconds_now),
+                        )
+                    except Exception:
+                        pass
+        # Buckets that left the hot set: log a clear note so the timeline
+        # shows pressure released, not just absence of alarms.
+        cleared = self._rate_limit_hot_buckets - currently_hot
+        for label in cleared:
+            try:
+                logger.info(
+                    "rate-limit bucket %s recovered (back below 80%%)",
+                    label,
+                )
+            except Exception:
+                pass
+        self._rate_limit_hot_buckets = currently_hot
 
     def get_rate_limit_state(self):
         """Return the last captured RateLimitState, or None."""
