@@ -4729,14 +4729,35 @@ class AIAgent:
         self._last_activity_desc = desc
 
     def _capture_rate_limits(self, http_response: Any) -> None:
-        """Parse x-ratelimit-* headers from an HTTP response and cache the state.
+        """Parse rate-limit headers from an HTTP response and cache the state.
 
-        Called after each streaming API call.  The httpx Response object is
-        available on the OpenAI SDK Stream via ``stream.response``.
+        Accepts an httpx Response (from ``stream.response``) or any object
+        exposing ``.headers``.  Recognised schemas:
+
+          * ``x-ratelimit-*``         (Nous / OpenRouter / OpenAI-compatible)
+          * ``anthropic-ratelimit-*`` (Anthropic native)
+
+        Called after each streaming API call AND on 429-error responses
+        — see ``_capture_rate_limits_from_headers`` for the error path.
+        Anthropic emits the same headers on 200 OK and on 429, so capturing
+        from the error response keeps state fresh through throttle events
+        instead of stale-stamping it at the last successful call.
         """
         if http_response is None:
             return
         headers = getattr(http_response, "headers", None)
+        if not headers:
+            return
+        self._capture_rate_limits_from_headers(headers)
+
+    def _capture_rate_limits_from_headers(self, headers: Any) -> None:
+        """Parse rate-limit headers (any Mapping-like) and cache the state.
+
+        Split out from ``_capture_rate_limits`` so error-handling paths
+        that already extracted ``response.headers`` for other purposes
+        (Retry-After parsing, Nous rate-limit verification) can hand the
+        same Mapping directly without re-walking the response object.
+        """
         if not headers:
             return
         try:
@@ -13538,6 +13559,18 @@ class AIAgent:
                                 getattr(_err_resp, "headers", None)
                                 if _err_resp else None
                             )
+                            # Refresh rate-limit state from the error
+                            # response headers BEFORE classifying the
+                            # 429.  Anthropic / Nous both emit the same
+                            # ratelimit-* headers on 429 as on 200 OK,
+                            # so this is the moment when state most
+                            # accurately reflects "right now"; the
+                            # genuine-rate-limit check below then sees
+                            # the freshest data instead of last-known.
+                            try:
+                                self._capture_rate_limits_from_headers(_err_hdrs)
+                            except Exception:
+                                pass
                             _genuine_nous_rate_limit = is_genuine_nous_rate_limit(
                                 headers=_err_hdrs,
                                 last_known_state=self._rate_limit_state,
@@ -13971,6 +14004,18 @@ class AIAgent:
                                     _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
+                            # Also refresh rate-limit state from the 429
+                            # response headers.  This catches non-Nous
+                            # 429s (Anthropic native, OpenRouter, etc.)
+                            # that bypass the genuine-Nous-rate-limit
+                            # branch above.  Without this, /usage and
+                            # the heartbeat would still display the
+                            # last-known state from before the throttle
+                            # event.
+                            try:
+                                self._capture_rate_limits_from_headers(_resp_headers)
+                            except Exception:
+                                pass
                     wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
