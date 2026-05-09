@@ -7472,6 +7472,16 @@ class AIAgent:
                 # Use the Anthropic SDK's streaming context manager.
                 # Beta namespace — see _anthropic_messages_create comment.
                 with self._anthropic_client.beta.messages.stream(**api_kwargs) as stream:
+                    # Capture anthropic-ratelimit-* headers from the initial
+                    # HTTP response.  Anthropic emits these on the 200 OK
+                    # before any SSE events arrive — the BetaMessageStream
+                    # exposes the underlying httpx response via .response.
+                    # Lets the streaming heartbeat answer "is this stall
+                    # near a rate limit, or pure upstream queue?".
+                    try:
+                        self._capture_rate_limits(getattr(stream, "response", None))
+                    except Exception:
+                        pass  # Never let header capture break the stream loop.
                     for event in stream:
                         # Update stale-stream timer on every event so the
                         # outer poll loop knows data is flowing.  Without
@@ -8105,6 +8115,24 @@ class AIAgent:
                                 if _crt:
                                     _bit += f" (cache {100*_crt/_total_in:.0f}%)"
                             _diag_bits.append(_bit)
+                        # Rate-limit signal: tells the user whether a stall is
+                        # plausibly throttle-related or upstream-only.  Hot
+                        # bucket (≥80%) gets a ⚠ tag; healthy state collapses
+                        # to "limits OK (RPM 47/50)" which is shorter than
+                        # silence-and-guessing.  Captured up front from the
+                        # 200 OK headers, so this bit lights up immediately
+                        # — no need to wait for message_start.
+                        try:
+                            _rl_state = self._rate_limit_state
+                            if _rl_state and _rl_state.has_data:
+                                from agent.rate_limit_tracker import (
+                                    format_rate_limit_heartbeat,
+                                )
+                                _rl_bit = format_rate_limit_heartbeat(_rl_state)
+                                if _rl_bit:
+                                    _diag_bits.append(_rl_bit)
+                        except Exception:
+                            pass  # Never let display formatting break the heartbeat.
                         _diag = (" [" + " · ".join(_diag_bits) + "]") if _diag_bits else ""
 
                         _phase = _classify_anthropic_stream_phase(
