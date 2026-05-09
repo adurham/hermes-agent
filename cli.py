@@ -2229,6 +2229,16 @@ class HermesCLI:
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        self._stream_drained = False  # True once _flush_stream has drained deferred msgs
+        # Messages queued while the response box is open (e.g. "Queued for the
+        # next turn" confirmations from the UI thread).  Drained by
+        # _flush_stream() AFTER the box closes so they don't interleave with
+        # streamed response text inside the box frame.  Guarded by a Lock
+        # because the producer (key handler, UI thread) and the consumer
+        # (_flush_stream, agent thread) run concurrently.
+        import threading as _th_mod
+        self._post_stream_messages: list[str] = []
+        self._post_stream_lock = _th_mod.Lock()
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         self._pending_edit_snapshots = {}
         self._last_input_mode_recovery = 0.0
@@ -3585,18 +3595,82 @@ class HermesCLI:
             _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
             self._stream_buf = ""
 
-        # Close the response box
+        # Close the response box.  Note: _stream_box_opened stays True
+        # past this point so the post-stream "already_streamed" check
+        # downstream can see the box was rendered and skip the Rich
+        # Panel duplicate; _reset_stream_state() clears it next turn.
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+
+        # Drain any messages that were queued while the box was open
+        # (e.g. "Queued for the next turn" confirmations the user
+        # triggered mid-stream).  Now that the box is closed they can
+        # render without breaking the frame.  Flip _stream_drained
+        # FIRST so concurrent producers from the UI thread don't queue
+        # a new message after we've already drained — they'll see the
+        # flag and print directly.
+        self._stream_drained = True
+        try:
+            with self._post_stream_lock:
+                pending, self._post_stream_messages = self._post_stream_messages, []
+        except Exception:
+            pending = []
+        for _msg in pending:
+            try:
+                _cprint(_msg)
+            except Exception:
+                pass
+
+    def _emit_or_defer_post_stream(self, message: str) -> None:
+        """Print ``message`` immediately, or defer it until the response box closes.
+
+        Confirmations like "Queued for the next turn" are emitted by the
+        UI thread (key handler) while the agent thread may be actively
+        streaming response tokens INTO an open box frame.  A direct
+        ``_cprint`` from the UI thread races with the streamed lines and
+        the confirmation visibly interleaves between body lines, breaking
+        the frame.  When the box is open we stash the message and let
+        ``_flush_stream`` print it after the closing ``╰───╯``.
+
+        Outside an open box (idle prompt, no agent running, or the
+        stream has already drained), print right away — no reason to
+        delay.
+        """
+        try:
+            box_open = bool(getattr(self, "_stream_box_opened", False))
+            already_drained = bool(getattr(self, "_stream_drained", False))
+        except Exception:
+            box_open = False
+            already_drained = False
+        if not box_open or already_drained:
+            _cprint(message)
+            return
+        try:
+            with self._post_stream_lock:
+                # Re-check inside the lock: _flush_stream may have
+                # drained between our check above and acquiring the
+                # lock.  If so, fall through to a direct print.
+                if getattr(self, "_stream_drained", False):
+                    _cprint(message)
+                else:
+                    self._post_stream_messages.append(message)
+        except Exception:
+            # Lock missing (very early init) — fall back to direct print
+            _cprint(message)
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False
+        self._stream_drained = False
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
+        # Don't drop _post_stream_messages here — _flush_stream() drains
+        # them after closing the box.  Resetting at turn-start would
+        # silently swallow a confirmation that arrived between
+        # _flush_stream and the next turn's reset.
         self._in_reasoning_block = False
         self._stream_last_was_newline = True
         self._reasoning_box_opened = False
@@ -7027,7 +7101,9 @@ class HermesCLI:
             else:
                 self._pending_input.put(payload)
                 if self._agent_running:
-                    _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                    self._emit_or_defer_post_stream(
+                        f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}"
+                    )
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "steer":
@@ -7044,12 +7120,14 @@ class HermesCLI:
                 try:
                     accepted = self.agent.steer(payload)
                 except Exception as exc:
-                    _cprint(f"  Steer failed: {exc}")
+                    self._emit_or_defer_post_stream(f"  Steer failed: {exc}")
                 else:
                     if accepted:
-                        _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                        self._emit_or_defer_post_stream(
+                            f"  ⏩ Steer queued — arrives after the next tool call: {payload[:80]}{'...' if len(payload) > 80 else ''}"
+                        )
                     else:
-                        _cprint("  Steer rejected (empty payload).")
+                        self._emit_or_defer_post_stream("  Steer rejected (empty payload).")
             else:
                 # No active run — treat as a normal next-turn message.
                 self._pending_input.put(payload)
@@ -11692,18 +11770,24 @@ class HermesCLI:
                                 if self.agent is not None and hasattr(self.agent, "steer"):
                                     accepted = bool(self.agent.steer(text))
                             except Exception as exc:
-                                _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
+                                self._emit_or_defer_post_stream(
+                                    f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}"
+                                )
                                 accepted = False
                             if accepted:
                                 preview = text[:80] + ("..." if len(text) > 80 else "")
-                                _cprint(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
+                                self._emit_or_defer_post_stream(
+                                    f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}"
+                                )
                             else:
                                 _effective_mode = "queue"
                     if _effective_mode == "queue":
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-                        _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                        self._emit_or_defer_post_stream(
+                            f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}"
+                        )
                     elif _effective_mode == "interrupt":
                         self._interrupt_queue.put(payload)
                         # Debug: log to file when message enters interrupt queue
