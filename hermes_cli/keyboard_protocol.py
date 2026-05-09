@@ -212,6 +212,20 @@ def register_prompt_toolkit_keys() -> None:
     # but that surprises more users than it pleases).
     extras["\x1b[127;2u"] = _Keys.Backspace
 
+    # Bare Escape — kitty disambiguate mode emits CSI 27 u (`\x1b[27u`)
+    # for an unmodified Esc, because the legacy `\x1b` byte is
+    # indistinguishable from the start of any other CSI sequence under
+    # the protocol. prompt_toolkit only knows `\x1b` → Keys.Escape, so
+    # without this mapping the disambiguated form leaks into the input
+    # buffer as literal "[27u" and breaks every kb.add('escape', ...)
+    # binding (interrupt, modal close, alt-chord chain).  Map all four
+    # modifier-stripped variants the spec emits so Esc behaves
+    # identically with and without the protocol active.
+    extras["\x1b[27u"] = _Keys.Escape          # bare Esc
+    extras["\x1b[27;1u"] = _Keys.Escape        # bare Esc (explicit "no modifier" encoding)
+    extras["\x1b[27;5u"] = _Keys.Escape        # Ctrl+Esc — collapse to Esc
+    extras["\x1b[27;2u"] = _Keys.Escape        # Shift+Esc — collapse to Esc
+
     # Common Alt+letter word-navigation keys (M-b/M-f/M-d) — restore them
     # too so word-jump and kill-word-forward keep working under kitty's
     # disambiguate mode. Emacs bindings register on ('escape', 'b') etc.,
