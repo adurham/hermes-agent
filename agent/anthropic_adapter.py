@@ -505,7 +505,12 @@ _OAUTH_ONLY_BETAS = [
 # Without these, Anthropic's infrastructure intermittently 500s OAuth traffic.
 # The version must stay reasonably current — Anthropic rejects OAuth requests
 # when the spoofed user-agent version is too far behind the actual release.
-_CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+# Confirmed failure mode for stale fallbacks: requests come back as HTTP 400
+# "You're out of extra usage" — a misleading billing-tier message that
+# actually signals the user-agent version is rejected. Bump this constant
+# whenever you notice deployments without Claude Code installed start to
+# 400 inexplicably.
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.138"
 _claude_code_version_cache: Optional[str] = None
 
 
