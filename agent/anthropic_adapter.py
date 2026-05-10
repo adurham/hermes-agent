@@ -3381,13 +3381,17 @@ def build_anthropic_kwargs(
     # client. Without it, even a request with canonical CC tool names
     # and CC-shaped schemas still routes to extra-usage billing —
     # producing the "out of extra usage" 400 on personal Max plans.
+    # WITH it (and matching CC tool surface via ``cc_aliases``), the
+    # classifier accepts ~50K-byte requests as plan-budget traffic.
     #
-    # Captured from a live `claude` session via mitmdump; the cch hash
-    # appears stable across sessions (likely a build-time checksum of
-    # the system prompt content). If Anthropic ever rotates the
-    # checksum or starts validating cch against a per-version registry,
-    # this stub will need refreshing — but until then a static value
-    # captured from CC 2.1.138 keeps the bot on plan budget.
+    # Captured from a live `claude` session via mitmdump (CC 2.1.138).
+    # cc_version is intentionally hardcoded rather than read from
+    # _detect_claude_code_version() because the classifier may
+    # validate the cch checksum against the (cc_version, prompt
+    # content) pair — using a different cc_version with a stale cch
+    # could fail validation. Refresh both values in lockstep when CC
+    # ships a major version change; see scripts in /tmp/cc-flows.har
+    # for the capture recipe.
     if is_oauth and isinstance(system, list):
         _BILLING_HEADER_TEXT = (
             "x-anthropic-billing-header: cc_version=2.1.138.de9; "
@@ -3414,14 +3418,12 @@ def build_anthropic_kwargs(
         # CC-name aliasing on the OAuth path. Real Claude Code's eager
         # tool surface (Bash/Read/Edit/Write/Grep/...) is what
         # Anthropic's billing classifier on personal Max accounts
-        # accepts as plan-budget; hermes-named tools at low byte counts
-        # still route to extra-usage and 400 with "out of extra usage"
-        # even though no extra usage is billed. Substituting hermes
-        # tools for their CC canonical equivalents (preserved in
-        # ``agent/cc_canonical/tools_eager.json``) makes the wire
-        # request look like real CC. Inbound tool_use dispatch routes
-        # CC names back to hermes handlers — see ``cc_aliases.adapt_tool_use``
-        # called from run_agent.py's tool dispatcher.
+        # accepts as plan-budget — combined with the
+        # x-anthropic-billing-header system block prepended above,
+        # this makes the request indistinguishable from real CC.
+        # Inbound tool_use dispatch routes CC names back to hermes
+        # handlers via ``cc_aliases.adapt_tool_use`` called from
+        # ``model_tools.handle_function_call``.
         if is_oauth:
             from agent import cc_aliases as _cc
             if _cc.is_enabled():
