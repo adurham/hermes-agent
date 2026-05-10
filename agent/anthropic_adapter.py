@@ -3116,9 +3116,36 @@ def _apply_tool_search(
     for tool in anthropic_tools:
         name = tool.get("name", "")
         if _should_defer(name):
-            new_tool = dict(tool)
-            new_tool["defer_loading"] = True
-            transformed.append(new_tool)
+            # Strip ``description`` + ``input_schema`` from deferred
+            # entries so we send a name-only stub to Anthropic. The
+            # original implementation copied the full tool dict and
+            # only added ``defer_loading: true`` — that flag tells the
+            # MODEL not to surface the tool in its context, but the
+            # full schema bytes still ride on the HTTPS body, which
+            # means deferral saves model-context tokens but does
+            # nothing for wire payload size. On the OAuth path (where
+            # Anthropic's billing classifier scores wire bytes) that
+            # difference matters — full schemas keep the request
+            # over the classifier's threshold even when defer_loading
+            # is on, producing the misleading "out of extra usage"
+            # 400 even though no extra usage is actually billed.
+            #
+            # Stripping the schema sends ~50 bytes per deferred tool
+            # instead of 1-5K. The model still sees the tool name in
+            # the available-tools list (so it knows it can summon it
+            # via the tool_search server tool), and Anthropic's server
+            # hydrates the full schema from its registry when
+            # tool_search returns the entry.
+            stub = {
+                "name": name,
+                "type": tool.get("type", "function") if "type" in tool else "function",
+                "defer_loading": True,
+            }
+            # Preserve cache_control if the caller had set it; it
+            # affects prompt-caching boundary placement and is cheap.
+            if "cache_control" in tool:
+                stub["cache_control"] = tool["cache_control"]
+            transformed.append(stub)
             deferred_count += 1
         else:
             transformed.append(tool)
