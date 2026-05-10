@@ -2352,8 +2352,21 @@ def refresh_launchd_plist_if_needed() -> bool:
 
 
 def launchd_install(force: bool = False):
+    if os.getuid() == 0:
+        sudo_user = os.environ.get("SUDO_USER")
+        hint = f"  Re-run as your user, e.g.: hermes gateway install{' --force' if force else ''}"
+        if sudo_user and sudo_user != "root":
+            hint = f"  Re-run without sudo: sudo -u {sudo_user} hermes gateway install{' --force' if force else ''}"
+        raise SystemExit(
+            "Refusing to install gateway as root.\n"
+            "  The gateway runs as a per-user LaunchAgent in your GUI session.\n"
+            "  Running with sudo writes the plist to /var/root and bootstraps into\n"
+            "  gui/0, which has no GUI session — launchctl will fail with error 125.\n"
+            f"{hint}"
+        )
+
     plist_path = get_launchd_plist_path()
-    
+
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
