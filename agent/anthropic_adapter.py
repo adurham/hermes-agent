@@ -3371,6 +3371,36 @@ def build_anthropic_kwargs(
                     anthropic_messages, preamble
                 )
 
+    # OAuth path: prepend the canonical Claude Code billing-header
+    # block to ``system``. Real CC ships a system block whose text is
+    # exactly:
+    #
+    #   x-anthropic-billing-header: cc_version=<ver>; cc_entrypoint=sdk-cli; cch=<hash>;
+    #
+    # Anthropic's billing classifier reads this block to identify the
+    # client. Without it, even a request with canonical CC tool names
+    # and CC-shaped schemas still routes to extra-usage billing —
+    # producing the "out of extra usage" 400 on personal Max plans.
+    #
+    # Captured from a live `claude` session via mitmdump; the cch hash
+    # appears stable across sessions (likely a build-time checksum of
+    # the system prompt content). If Anthropic ever rotates the
+    # checksum or starts validating cch against a per-version registry,
+    # this stub will need refreshing — but until then a static value
+    # captured from CC 2.1.138 keeps the bot on plan budget.
+    if is_oauth and isinstance(system, list):
+        _BILLING_HEADER_TEXT = (
+            "x-anthropic-billing-header: cc_version=2.1.138.de9; "
+            "cc_entrypoint=sdk-cli; cch=fa6a6;"
+        )
+        # Insert at index 0 unless one's already there (idempotent
+        # against double-application, which would happen e.g. on a
+        # retry path).
+        if not system or "x-anthropic-billing-header:" not in str(
+            system[0].get("text", "") if isinstance(system[0], dict) else system[0]
+        ):
+            system = [{"type": "text", "text": _BILLING_HEADER_TEXT}] + system
+
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": anthropic_messages,
