@@ -556,6 +556,69 @@ def _get_claude_code_version() -> str:
     return _claude_code_version_cache
 
 
+def _system_prompt_mode_compact() -> bool:
+    """Return True when ``agent.system_prompt_mode`` is set to ``compact``.
+
+    Cheap import — the module loads lazily so we don't pay for it on every
+    request unless the user opts in to compact mode. Falls back to False on
+    any config-load failure so legacy behavior wins under errors.
+    """
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        mode = ((_load_cfg() or {}).get("agent") or {}).get("system_prompt_mode")
+        return str(mode or "").strip().lower() == "compact"
+    except Exception:
+        return False
+
+
+def _prepend_user_message_preamble(
+    messages: List[Dict[str, Any]],
+    preamble: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Insert ``preamble`` (a content block) at the head of the first
+    user-role message's content list. Pure — returns a new list.
+
+    Used by compact-mode system-prompt placement: dynamic context that
+    would otherwise live in ``system`` rides on the conversation instead.
+    Handles three content shapes:
+      * ``content`` is a string → wrap in a list and prepend
+      * ``content`` is already a list → prepend the block in place
+      * No user messages exist → return ``messages`` unchanged
+
+    Tool_result-only first turns (resume from background tool call) are
+    rare on the gateway path; if encountered we leave them alone since
+    Anthropic disallows non-tool_result content as the first block of a
+    tool_result turn.
+    """
+    if not isinstance(messages, list) or not messages:
+        return messages
+
+    out = list(messages)
+    for i, msg in enumerate(out):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        # Skip messages whose first content block is a tool_result —
+        # Anthropic enforces tool_result-first ordering on those turns.
+        if isinstance(content, list) and content and isinstance(content[0], dict):
+            if content[0].get("type") == "tool_result":
+                continue
+        new_msg = dict(msg)
+        if isinstance(content, str):
+            new_msg["content"] = [preamble, {"type": "text", "text": content}]
+        elif isinstance(content, list):
+            new_msg["content"] = [preamble, *content]
+        else:
+            # Unrecognized content shape — leave it alone, return untouched.
+            return messages
+        out[i] = new_msg
+        return out
+
+    return messages
+
+
 def _is_oauth_token(key: str) -> bool:
     """Check if the key is an Anthropic OAuth/setup token.
 
@@ -3221,6 +3284,51 @@ def build_anthropic_kwargs(
         # Tool_use / tool_result blocks in message history likewise stay
         # untouched — they were saved with the registered names and that's
         # what we want to send back.
+
+        # 4. system_prompt_mode=compact: move everything past the CC prefix
+        #    into a preamble block on the first user message.
+        #
+        #    Anthropic's billing classifier on personal Max plans rejects
+        #    OAuth requests whose ``system`` extends beyond the official
+        #    Claude Code identity prefix — they get routed to "extra
+        #    usage" billing and 400 with a misleading
+        #    "out of extra usage" error. Mirroring Claude Code's
+        #    --exclude-dynamic-system-prompt-sections flag, we keep only
+        #    the CC prefix in ``system`` and ride everything dynamic on
+        #    the conversation. Behavior is unchanged (the model still
+        #    sees the same content); only the placement moves.
+        #
+        #    Cache control: if the moved blocks carried cache_control
+        #    markers, we preserve them on the preamble block so prompt
+        #    caching continues to work across turns.
+        if _system_prompt_mode_compact() and isinstance(system, list) and len(system) > 1:
+            tail_blocks = system[1:]
+            system = [system[0]]
+            tail_text_parts = []
+            tail_cache_control = None
+            for blk in tail_blocks:
+                if not isinstance(blk, dict):
+                    continue
+                if blk.get("type") == "text":
+                    txt = blk.get("text", "")
+                    if txt:
+                        tail_text_parts.append(txt)
+                # Inherit the strongest cache_control found on the moved
+                # blocks (last write wins — typical pattern is a single
+                # ephemeral marker on the final static block).
+                cc = blk.get("cache_control")
+                if cc:
+                    tail_cache_control = cc
+            if tail_text_parts:
+                preamble = {
+                    "type": "text",
+                    "text": "\n\n".join(tail_text_parts),
+                }
+                if tail_cache_control:
+                    preamble["cache_control"] = tail_cache_control
+                anthropic_messages = _prepend_user_message_preamble(
+                    anthropic_messages, preamble
+                )
 
     kwargs: Dict[str, Any] = {
         "model": model,
