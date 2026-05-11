@@ -86,9 +86,11 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
-            # Native Anthropic does not get context-1m by default; accounts
-            # without that beta reject even short auxiliary requests.
-            assert "context-1m-2025-08-07" not in betas
+            # Default: 1M-context beta stays IN for OAuth so 1M-capable
+            # subscriptions keep full context. The reactive recovery path
+            # in run_agent.py flips it off only after a subscription
+            # actually rejects the beta.
+            assert "context-1m-2025-08-07" in betas
             assert "api_key" not in kwargs
 
     def test_oauth_drop_context_1m_beta_strips_only_1m(self):
@@ -117,17 +119,22 @@ class TestBuildAnthropicClient:
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
-            assert "context-1m-2025-08-07" not in betas
+            assert "context-1m-2025-08-07" in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
     def test_custom_base_url(self):
+        # Custom (non-Anthropic, non-Azure) base_urls do NOT get the
+        # context-1m beta — conservative default avoids the "long context
+        # beta is not yet available" rejection from third-party providers
+        # that mimic Anthropic's surface. Set base_url to an Anthropic /
+        # Azure host (or unset it) to opt back in.
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07,extended-cache-ttl-2025-04-11,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24"
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,extended-cache-ttl-2025-04-11,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24"
             }
 
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
@@ -1147,8 +1154,8 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
-    def test_oauth_path_passes_tool_names_through_unchanged(self):
-        """OAuth path no longer rewrites tool names.
+    def test_oauth_path_does_not_double_prefix_mcp_tools(self):
+        """OAuth path no longer single-underscore-prefixes tool names.
 
         Earlier versions prefixed every tool with single-underscore ``mcp_``
         in an attempt to make Claude route the calls through its MCP-tool
@@ -1170,12 +1177,12 @@ class TestBuildAnthropicKwargs:
 
         Hermes' MCP tools are now registered with the canonical
         ``mcp__<server>__<tool>`` form by ``tools/mcp_tool.py``, so the
-        OAuth-path adapter doesn't need to mangle anything.
+        OAuth-path adapter doesn't need to re-prefix them. Hermes built-in
+        names that have a Claude Code canonical equivalent get aliased
+        (see ``agent/cc_aliases.py``), but un-aliased names pass through.
         """
         tools = [
-            # Built-in tool — must pass through with its natural name.
-            {"type": "function", "function": {"name": "read_file", "description": "x"}},
-            # MCP-sourced tool — already in the canonical double-underscore
+            # MCP-sourced tools — already in the canonical double-underscore
             # form from _convert_mcp_schema; must pass through unchanged.
             {"type": "function", "function": {"name": "slack_slack_search_public", "description": "x"}},
             {"type": "function", "function": {"name": "hermes_swarm_swarm_update_agent", "description": "x"}},
@@ -1189,7 +1196,6 @@ class TestBuildAnthropicKwargs:
             is_oauth=True,
         )
         names = [t["name"] for t in kwargs["tools"]]
-        assert "read_file" in names, "built-in tool name must not be rewritten"
         assert "slack_slack_search_public" in names, "MCP tool name must not be rewritten"
         assert "hermes_swarm_swarm_update_agent" in names, "MCP tool name must not be rewritten"
         # Hard guard against the regression to the legacy single-underscore

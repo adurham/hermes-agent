@@ -6283,31 +6283,7 @@ class HermesCLI:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
         else:
-            # Background thread: prompt_toolkit owns stdin via its renderer,
-            # so a bare input() call would race the renderer.  Schedule the
-            # prompt onto the application's event loop and wait for it.
-            if self._app and getattr(self._app, "loop", None):
-                import asyncio
-                from prompt_toolkit.application import run_in_terminal
-                done = threading.Event()
-                was_visible = self._status_bar_visible
-                self._status_bar_visible = False
-
-                async def _scheduled():
-                    try:
-                        await run_in_terminal(_ask)
-                    finally:
-                        done.set()
-
-                try:
-                    self._app.invalidate()
-                    asyncio.run_coroutine_threadsafe(_scheduled(), self._app.loop)
-                    done.wait()
-                finally:
-                    self._status_bar_visible = was_visible
-                    self._app.invalidate()
-            else:
-                _ask()
+            _ask()
         return result[0]
 
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:

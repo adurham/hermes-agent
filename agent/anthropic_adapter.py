@@ -421,7 +421,6 @@ def _supports_fast_mode(model: str) -> bool:
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
-    "context-1m-2025-08-07",
     # extended-cache-ttl-2025-04-11 enables the ``ttl`` field on
     # cache_control markers (e.g. ``{"type": "ephemeral", "ttl": "1h"}``).
     # Without this header, Anthropic ignores the ttl field and falls back
@@ -437,6 +436,9 @@ _COMMON_BETAS = [
     "prompt-caching-scope-2026-01-05",
     "effort-2025-11-24",
 ]
+# context-1m-2025-08-07 is added conditionally — see
+# ``_base_url_needs_context_1m_beta`` and the insert in
+# ``_common_betas_for_base_url`` below.
 # Anthropic-native-only betas — strip on bearer-auth third-party endpoints
 # (MiniMax etc. host their own models and reject unknown betas).
 _ANTHROPIC_NATIVE_ONLY_BETAS = {
@@ -777,11 +779,25 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
 
 
 def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
-    """Return True for endpoints that still gate 1M context behind a beta."""
+    """Return True for endpoints that gate 1M context behind a beta.
+
+    Native Anthropic (no base_url override, or any *.anthropic.com host)
+    plus Azure AI Foundry. Bedrock has its own client helper
+    (``build_anthropic_bedrock_client``) that opts in explicitly.
+    Bearer-auth third-party endpoints (MiniMax) reject the beta and have
+    it stripped further down in ``_common_betas_for_base_url``. Custom
+    base_urls of unknown origin do NOT get the beta — conservative
+    default to avoid the "long context beta is not yet available"
+    rejection from third-party providers that mimic Anthropic's surface.
+    """
     normalized = _normalize_base_url_text(base_url).lower()
     if not normalized:
-        return False
-    return "azure.com" in normalized
+        return True  # native Anthropic — default base_url
+    if "azure.com" in normalized:
+        return True
+    if "anthropic.com" in normalized:
+        return True
+    return False
 
 
 def _common_betas_for_base_url(
@@ -816,16 +832,19 @@ def _common_betas_for_base_url(
     gating only — capable models still get the beta.
     """
     betas = list(_COMMON_BETAS)
-    if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
-        betas.append(_CONTEXT_1M_BETA)
+    if (
+        _base_url_needs_context_1m_beta(base_url)
+        and not drop_context_1m_beta
+        and (model is None or _model_supports_1m_context(model))
+    ):
+        # Insert at position 3 (after fine-grained-tool-streaming) to
+        # preserve Claude Code 2.1.119's wire-format ordering verified
+        # by mitmdump against api.anthropic.com.
+        betas.insert(2, _CONTEXT_1M_BETA)
     if _requires_bearer_auth(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA, _EXTENDED_CACHE_TTL_BETA} | _ANTHROPIC_NATIVE_ONLY_BETAS
-        return [b for b in _COMMON_BETAS if b not in _stripped]
-    if drop_context_1m_beta:
-        return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
-    if model is not None and not _model_supports_1m_context(model):
-        return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
-    return _COMMON_BETAS
+        return [b for b in betas if b not in _stripped]
+    return betas
 
 
 def build_anthropic_client(
