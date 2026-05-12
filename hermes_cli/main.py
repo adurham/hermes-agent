@@ -1527,6 +1527,17 @@ def cmd_submit(args):
     sys.exit(submit_command(args))
 
 
+def cmd_mcp_gateway(args):
+    """Run an MCP server that proxies the remote hermes gateway as tools.
+
+    Intended to be spawned by Claude Code (or any MCP client) over
+    stdio. Blocks until the client disconnects.
+    """
+    from hermes_cli.mcp_gateway import main as mcp_main
+
+    mcp_main()
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -9186,6 +9197,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
+        "mcp-gateway",
         "pairing", "plugins", "profile", "sessions", "setup", "skills",
         "slack", "status", "submit", "tools", "uninstall", "update", "version",
         "webhook", "whatsapp", "chat",
@@ -9580,6 +9592,21 @@ def main():
         help="Print only the run_id (machine-friendly, suitable for $(…)).",
     )
     submit_parser.set_defaults(func=cmd_submit)
+
+    # =========================================================================
+    # mcp-gateway command — expose the remote gateway as MCP tools
+    # =========================================================================
+    mcp_gw_parser = subparsers.add_parser(
+        "mcp-gateway",
+        help="Run an MCP server (stdio) exposing the remote hermes gateway's "
+             "/v1/runs API as tools (submit_task, get_run_status, ...).",
+        description=(
+            "Stdio-transport MCP server. Designed to be spawned by Claude "
+            "Code or another MCP client; blocks until the client disconnects. "
+            "Resolves gateway URL + bearer the same way `hermes submit` does."
+        ),
+    )
+    mcp_gw_parser.set_defaults(func=cmd_mcp_gateway)
 
     # =========================================================================
     # setup command
