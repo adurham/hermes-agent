@@ -2848,6 +2848,17 @@ class DiscordAdapter(BasePlatformAdapter):
         port = os.getenv("API_SERVER_PORT", "8642")
         return f"http://{host}:{port}"
 
+    @staticmethod
+    def _local_api_bearer() -> str:
+        """Bearer token the discord adapter sends to the local api_server.
+
+        Prefers the per-principal `HERMES_DISCORD_API_KEY` so /submit calls
+        show up in the audit log under principal ``discord-adapter`` instead
+        of the laptop's ``default`` principal. Falls back to API_SERVER_KEY
+        for pre-Phase-7 deployments where only the single legacy key exists.
+        """
+        return os.getenv("HERMES_DISCORD_API_KEY", "") or os.getenv("API_SERVER_KEY", "")
+
     async def _submit_run_via_local_api(self, prompt: str) -> Optional[Dict[str, Any]]:
         """POST prompt → /v1/runs on the local api_server. Return parsed body or None on failure."""
         try:
@@ -2856,9 +2867,9 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[Discord] /submit needs httpx but it's not installed")
             return None
 
-        api_key = os.getenv("API_SERVER_KEY", "")
+        api_key = self._local_api_bearer()
         if not api_key:
-            logger.error("[Discord] /submit: API_SERVER_KEY unset; api_server adapter likely not running")
+            logger.error("[Discord] /submit: neither HERMES_DISCORD_API_KEY nor API_SERVER_KEY set")
             return None
 
         url = f"{self._local_api_base_url()}/v1/runs"
@@ -2903,7 +2914,7 @@ class DiscordAdapter(BasePlatformAdapter):
         except ImportError:
             return
 
-        api_key = os.getenv("API_SERVER_KEY", "")
+        api_key = self._local_api_bearer()
         url = f"{self._local_api_base_url()}/v1/runs/{run_id}"
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
