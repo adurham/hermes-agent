@@ -126,7 +126,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "claude-code"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -204,6 +204,9 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "claude-code":
+        from tools.web_providers.claude_code import is_configured as _cc_is_configured
+        return _cc_is_configured()
     return False
 
 
@@ -1217,6 +1220,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "claude-code":
+            from tools.web_providers.claude_code import ClaudeCodeSearchProvider
+            response_data = ClaudeCodeSearchProvider().search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "searxng":
             from tools.web_providers.searxng import SearXNGSearchProvider
             response_data = SearXNGSearchProvider().search(query, limit)
@@ -1405,6 +1418,15 @@ async def web_extract_tool(
                     "error": f"{_label} is a search-only backend and cannot extract URL content. "
                              "Set web.extract_backend to firecrawl, tavily, exa, or parallel.",
                 }, ensure_ascii=False)
+            elif backend == "claude-code":
+                from tools.web_providers.claude_code import ClaudeCodeExtractProvider
+                cc_resp = ClaudeCodeExtractProvider().extract(safe_urls)
+                if not cc_resp.get("success"):
+                    return json.dumps({
+                        "success": False,
+                        "error": cc_resp.get("error") or "claude-code extract failed",
+                    }, ensure_ascii=False)
+                results = list(cc_resp.get("data", []))
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -2093,8 +2115,10 @@ def check_web_api_key() -> bool:
     exposed to the model at all.
     """
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "claude-code"):
         return _is_backend_available(configured)
+    # Note: claude-code is opt-in only — not auto-detected here so that simply
+    # having the claude CLI installed doesn't silently claim availability.
     if any(
         _is_backend_available(backend)
         for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")

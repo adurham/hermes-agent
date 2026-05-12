@@ -328,6 +328,13 @@ TOOL_CATEGORIES = {
                 "env_vars": [],
                 "post_setup": "ddgs",
             },
+            {
+                "name": "Claude Code",
+                "badge": "free · uses Anthropic subscription",
+                "tag": "Delegates to the Claude Code CLI's built-in WebSearch/WebFetch — no extra API keys",
+                "web_backend": "claude-code",
+                "env_vars": [],
+            },
         ],
     },
     "image_gen": {
