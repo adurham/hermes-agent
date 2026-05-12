@@ -70,6 +70,7 @@ async def test_submit_via_local_api_returns_parsed_body(monkeypatch):
     monkeypatch.setenv("API_SERVER_KEY", "secret-key")
     monkeypatch.setenv("API_SERVER_PORT", "8642")
     monkeypatch.delenv("API_SERVER_HOST", raising=False)
+    monkeypatch.delenv("HERMES_DISCORD_API_KEY", raising=False)
 
     fake = _FakeAsyncClient(response=_FakeAsyncResp(200, {"id": "run_xyz"}))
     with patch("httpx.AsyncClient", return_value=fake):
@@ -79,6 +80,20 @@ async def test_submit_via_local_api_returns_parsed_body(monkeypatch):
     assert fake.calls[0]["url"] == "http://127.0.0.1:8642/v1/runs"
     assert fake.calls[0]["headers"]["Authorization"] == "Bearer secret-key"
     assert fake.calls[0]["json"] == {"input": "hello world"}
+
+
+@pytest.mark.asyncio
+async def test_submit_prefers_discord_api_key_over_api_server_key(monkeypatch):
+    """Phase 7: discord adapter uses its own principal key when set."""
+    monkeypatch.setenv("API_SERVER_KEY", "laptop-shared-key")
+    monkeypatch.setenv("HERMES_DISCORD_API_KEY", "discord-only-key")
+    monkeypatch.delenv("API_SERVER_HOST", raising=False)
+    monkeypatch.delenv("API_SERVER_PORT", raising=False)
+
+    fake = _FakeAsyncClient(response=_FakeAsyncResp(200, {"id": "r"}))
+    with patch("httpx.AsyncClient", return_value=fake):
+        await _adapter()._submit_run_via_local_api("p")
+    assert fake.calls[0]["headers"]["Authorization"] == "Bearer discord-only-key"
 
 
 @pytest.mark.asyncio
