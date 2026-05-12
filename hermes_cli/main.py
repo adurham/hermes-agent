@@ -1518,6 +1518,15 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def cmd_submit(args):
+    """Submit a prompt to a remote hermes gateway."""
+    from hermes_cli.submit import submit_command, tail_only_command
+
+    if getattr(args, "tail_run", None):
+        sys.exit(tail_only_command(args))
+    sys.exit(submit_command(args))
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -9178,7 +9187,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
         "pairing", "plugins", "profile", "sessions", "setup", "skills",
-        "slack", "status", "tools", "uninstall", "update", "version",
+        "slack", "status", "submit", "tools", "uninstall", "update", "version",
         "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -9520,6 +9529,57 @@ def main():
     )
 
     gateway_parser.set_defaults(func=cmd_gateway)
+
+    # =========================================================================
+    # submit command — fire a prompt at a remote gateway and exit
+    # =========================================================================
+    submit_parser = subparsers.add_parser(
+        "submit",
+        help="Submit a prompt to a remote hermes gateway and exit",
+        description=(
+            "POST a prompt to the configured gateway's /v1/runs endpoint, "
+            "print the run_id, and exit. Use --tail to also stream SSE events "
+            "until the run completes; ctrl-C detaches without stopping the run."
+        ),
+    )
+    submit_parser.add_argument(
+        "prompt",
+        nargs="*",
+        help="Prompt text (joined with spaces). Omit to read from --file or stdin.",
+    )
+    submit_parser.add_argument(
+        "--file", "-f",
+        help="Read prompt from this file instead of args/stdin.",
+    )
+    submit_parser.add_argument(
+        "--instructions",
+        help="Ephemeral system-prompt override sent as the run's `instructions`.",
+    )
+    submit_parser.add_argument(
+        "--gateway-url",
+        help="Override the gateway base URL (default: HERMES_GATEWAY_URL env "
+             "or http://172.16.0.50:8642).",
+    )
+    submit_parser.add_argument(
+        "--api-key",
+        help="Override the bearer token (default: HERMES_GATEWAY_API_KEY or "
+             "API_SERVER_KEY from env / ~/.hermes/.env).",
+    )
+    submit_parser.add_argument(
+        "--tail", action="store_true",
+        help="After submitting, stream the SSE event feed until the run ends. "
+             "Ctrl-C detaches without stopping the run.",
+    )
+    submit_parser.add_argument(
+        "--tail-run",
+        metavar="RUN_ID",
+        help="Skip submission; just tail the event feed for an existing run.",
+    )
+    submit_parser.add_argument(
+        "--quiet", "-q", action="store_true",
+        help="Print only the run_id (machine-friendly, suitable for $(…)).",
+    )
+    submit_parser.set_defaults(func=cmd_submit)
 
     # =========================================================================
     # setup command
