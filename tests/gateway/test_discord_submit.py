@@ -69,6 +69,7 @@ class _FakeAsyncClient:
 async def test_submit_via_local_api_returns_parsed_body(monkeypatch):
     monkeypatch.setenv("API_SERVER_KEY", "secret-key")
     monkeypatch.setenv("API_SERVER_PORT", "8642")
+    monkeypatch.delenv("API_SERVER_HOST", raising=False)
 
     fake = _FakeAsyncClient(response=_FakeAsyncResp(200, {"id": "run_xyz"}))
     with patch("httpx.AsyncClient", return_value=fake):
@@ -78,6 +79,19 @@ async def test_submit_via_local_api_returns_parsed_body(monkeypatch):
     assert fake.calls[0]["url"] == "http://127.0.0.1:8642/v1/runs"
     assert fake.calls[0]["headers"]["Authorization"] == "Bearer secret-key"
     assert fake.calls[0]["json"] == {"input": "hello world"}
+
+
+@pytest.mark.asyncio
+async def test_submit_via_local_api_honors_api_server_host(monkeypatch):
+    """api_server bound off-127.0.0.1 → discord adapter follows it, not localhost."""
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("API_SERVER_HOST", "172.16.0.50")
+    monkeypatch.setenv("API_SERVER_PORT", "8642")
+
+    fake = _FakeAsyncClient(response=_FakeAsyncResp(200, {"id": "r"}))
+    with patch("httpx.AsyncClient", return_value=fake):
+        await _adapter()._submit_run_via_local_api("p")
+    assert fake.calls[0]["url"] == "http://172.16.0.50:8642/v1/runs"
 
 
 @pytest.mark.asyncio

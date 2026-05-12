@@ -2832,21 +2832,36 @@ class DiscordAdapter(BasePlatformAdapter):
     # background poller that edits the reply when the run finishes.
     # Lets the user fire jobs from a phone DM and walk away.
 
+    @staticmethod
+    def _local_api_base_url() -> str:
+        """Compose the api_server base URL the discord adapter targets.
+
+        api_server.py honors API_SERVER_HOST/PORT from env (the same
+        env we read here), so a host other than 127.0.0.1 means the
+        platform was deliberately bound to a routable interface. The
+        discord adapter runs in the same process tree as the api_server
+        adapter, so calling that bound address from inside the box is
+        the only path that always works — calling 127.0.0.1 fails when
+        api_server is bound off-localhost.
+        """
+        host = os.getenv("API_SERVER_HOST", "127.0.0.1") or "127.0.0.1"
+        port = os.getenv("API_SERVER_PORT", "8642")
+        return f"http://{host}:{port}"
+
     async def _submit_run_via_local_api(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """POST prompt → /v1/runs on localhost. Return parsed body or None on failure."""
+        """POST prompt → /v1/runs on the local api_server. Return parsed body or None on failure."""
         try:
             import httpx
         except ImportError:
             logger.error("[Discord] /submit needs httpx but it's not installed")
             return None
 
-        port = os.getenv("API_SERVER_PORT", "8642")
         api_key = os.getenv("API_SERVER_KEY", "")
         if not api_key:
             logger.error("[Discord] /submit: API_SERVER_KEY unset; api_server adapter likely not running")
             return None
 
-        url = f"http://127.0.0.1:{port}/v1/runs"
+        url = f"{self._local_api_base_url()}/v1/runs"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
@@ -2888,9 +2903,8 @@ class DiscordAdapter(BasePlatformAdapter):
         except ImportError:
             return
 
-        port = os.getenv("API_SERVER_PORT", "8642")
         api_key = os.getenv("API_SERVER_KEY", "")
-        url = f"http://127.0.0.1:{port}/v1/runs/{run_id}"
+        url = f"{self._local_api_base_url()}/v1/runs/{run_id}"
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
         terminal_states = {"completed", "failed", "cancelled", "errored"}
