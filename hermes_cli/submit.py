@@ -12,9 +12,9 @@ Configuration (in precedence order):
   * --gateway-url / --api-key flags
   * HERMES_GATEWAY_URL / HERMES_GATEWAY_API_KEY env vars
   * ~/.hermes/.env values for the same names
-  * Defaults: http://172.16.0.50:8642 and no key (will fail auth on
-    a network-bound gateway because of the bind_guard in
-    gateway/platforms/api_server.py:3372)
+  * Defaults: https://hermes-gw-01.tail19c543.ts.net (TLS via
+    `tailscale serve` with a real Let's Encrypt cert) and no key
+    (will fail auth without one — Bearer required by api_server)
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-DEFAULT_GATEWAY_URL = "http://172.16.0.50:8642"
+DEFAULT_GATEWAY_URL = "https://hermes-gw-01.tail19c543.ts.net"
 
 
 @dataclass

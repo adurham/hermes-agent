@@ -9558,7 +9558,7 @@ def main():
     submit_parser.add_argument(
         "--gateway-url",
         help="Override the gateway base URL (default: HERMES_GATEWAY_URL env "
-             "or http://172.16.0.50:8642).",
+             "or https://hermes-gw-01.tail19c543.ts.net).",
     )
     submit_parser.add_argument(
         "--api-key",
