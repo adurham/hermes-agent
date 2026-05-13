@@ -5728,6 +5728,13 @@ class AIAgent:
                 )
         except Exception:
             pass
+        # Phase 3 auto-feedback: drop per-session window so a long-running
+        # CLI process doesn't accumulate session state forever.
+        try:
+            from tools.memory_auto_feedback import flush_session as _maf_flush
+            _maf_flush(self.session_id or "")
+        except Exception:
+            pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
@@ -5832,6 +5839,19 @@ class AIAgent:
                 self.session_id or "",
                 user_msg=str(original_user_message),
                 assistant_msg=str(final_response),
+            )
+        except Exception:
+            pass
+
+        # Phase 3 auto-feedback: walk the recall window for this session,
+        # match fingerprints against the assistant response, and upvote
+        # any fact whose distinctive content the assistant cited. Best-
+        # effort; never blocks. No-op when memory.auto_feedback is off.
+        try:
+            from tools import memory_auto_feedback as _maf
+            _maf.on_turn_end(
+                self.session_id or "",
+                assistant_text=str(final_response),
             )
         except Exception:
             pass
@@ -12533,6 +12553,18 @@ class AIAgent:
         _install_safe_stdio()
 
         self._ensure_db_session()
+
+        # Phase 3 auto-feedback: bind session_id to a contextvar so
+        # ``WarmStore.recall`` can stash recall results in the per-session
+        # window without us having to thread session_id through the
+        # memory tool surface (which would also need to touch the two
+        # memory-bypass blocks in this file — known pitfall, see
+        # ``software-development/hermes-agent-internals``).
+        try:
+            from tools.memory_auto_feedback import set_session as _maf_set
+            _maf_set(self.session_id or None)
+        except Exception:
+            pass
 
         # Tell auxiliary_client what the live main provider/model are for
         # this turn. Used by tools whose behaviour depends on the active

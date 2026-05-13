@@ -179,6 +179,7 @@ class WarmStore:
             min_trust=min_trust,
             limit=top_k,
         )
+        _record_recall_for_auto_feedback(rows)
         return rows
 
     def recall_related(
@@ -206,7 +207,9 @@ class WarmStore:
 
         # OR the tokens together. FTS5 syntax: "foo" OR "bar" OR "baz".
         query = " OR ".join(f'"{self._escape_fts_phrase(t)}"' for t in tokens[:8])
-        return self._inner.search_facts(query=query, limit=max(1, min(int(top_k), 25)))
+        rows = self._inner.search_facts(query=query, limit=max(1, min(int(top_k), 25)))
+        _record_recall_for_auto_feedback(rows)
+        return rows
 
     def list_facts(
         self,
@@ -294,6 +297,38 @@ class WarmStore:
             self._inner.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Auto-feedback bridge — fires after every recall to stash results in the
+# per-session window (see ``tools/memory_auto_feedback``). No-op when the
+# feature is disabled in config; failures are swallowed so audit issues
+# can never break a recall call.
+# ---------------------------------------------------------------------------
+
+
+def _record_recall_for_auto_feedback(rows: List[Dict[str, Any]]) -> None:
+    """Tell the auto-feedback layer about recall results, if it's enabled.
+
+    Best-effort: import + dispatch are both wrapped in try/except.
+    Session id is read from a contextvar set by ``run_agent.py`` at turn
+    start — when no session is bound (subagent, test, gateway side-call),
+    this returns immediately without doing any work.
+    """
+    if not rows:
+        return
+    try:
+        from tools.memory_auto_feedback.audit import (
+            current_session_id,
+            record_recall,
+        )
+        session_id = current_session_id()
+        if not session_id:
+            return
+        record_recall(session_id, rows)
+    except Exception:
+        # Audit must NEVER break recall. Swallow everything.
+        pass
 
 
 # ---------------------------------------------------------------------------
