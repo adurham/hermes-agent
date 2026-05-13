@@ -1759,7 +1759,14 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
             ptype = part.get("type")
             if ptype in {"image", "image_url", "input_image"}:
                 count += 1
-    stashed = msg.get("_anthropic_content_blocks") if isinstance(msg, dict) else None
+    # Anthropic stashes the full provider content array on assistant
+    # messages under ``anthropic_content_blocks`` (see run_agent.py where
+    # it is attached after each Anthropic response).  An older code path
+    # used the underscore-prefixed name ``_anthropic_content_blocks``;
+    # both forms can appear in the wild, so check either.
+    stashed = None
+    if isinstance(msg, dict):
+        stashed = msg.get("anthropic_content_blocks") or msg.get("_anthropic_content_blocks")
     if isinstance(stashed, list):
         for part in stashed:
             if isinstance(part, dict) and part.get("type") == "image":
@@ -1779,14 +1786,44 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
 
     Base64 images are counted via `_count_image_tokens` instead; including
     their raw chars here would massively overestimate token usage.
+
+    When ``anthropic_content_blocks`` is present on an assistant message
+    it IS what ships to the Anthropic API (see ``anthropic_adapter`` —
+    ``content = msg.get("anthropic_content_blocks")`` with the visible
+    ``content`` string as fallback).  The string ``content`` field on the
+    same message is an extracted text duplicate.  Counting both walks
+    every web_search_tool_result, thinking block, and tool_use payload
+    twice — easily 200K+ phantom tokens on a search-heavy session and
+    the cause of the preflight estimator running ahead of the provider's
+    actual ``prompt_tokens`` by 30-50 %.  Older code looked for the
+    stash under ``_anthropic_content_blocks``; the live key is
+    unprefixed.  Treat blocks (when present) as the authoritative
+    source of size and skip the ``content`` duplicate.
     """
     if not isinstance(msg, dict):
         return len(str(msg))
+    has_anthropic_blocks = bool(
+        msg.get("anthropic_content_blocks") or msg.get("_anthropic_content_blocks")
+    )
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k == "_anthropic_content_blocks":
+        if k in ("_anthropic_content_blocks", "anthropic_content_blocks"):
+            if isinstance(v, list):
+                cleaned = []
+                for part in v:
+                    if isinstance(part, dict) and part.get("type") == "image":
+                        cleaned.append({"type": "image", "image": "[stripped]"})
+                    else:
+                        cleaned.append(part)
+                shadow["anthropic_content_blocks"] = cleaned
+            else:
+                shadow[k] = v
             continue
         if k == "content":
+            # Skip the text-extracted duplicate when blocks already
+            # represents the same content for the provider.
+            if has_anthropic_blocks:
+                continue
             if isinstance(v, list):
                 cleaned = []
                 for part in v:
@@ -1882,9 +1919,36 @@ def _count_message_chars_with_image_token_credit(
     Falls back to plain ``len(str(msg))`` when the message has no list
     content (string content, missing content, etc.) — in that case
     nothing image-related is in play anyway.
+
+    Anthropic-specific: assistant messages can carry both a text
+    ``content`` field AND an ``anthropic_content_blocks`` stash of the
+    full provider response.  The blocks ARE what ships to the API (see
+    ``anthropic_adapter``); the visible ``content`` is an extracted
+    duplicate.  Counting both -- as the previous implementation did via
+    ``len(str(msg))`` -- inflated estimates by 30-50% on search-heavy
+    sessions, because every ``web_search_tool_result`` and ``thinking``
+    block got walked twice.  When the stash is present we strip the
+    duplicated ``content`` from the sanitized message before counting.
     """
-    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(msg, dict):
+        return len(str(msg)), 0
+
+    blocks = msg.get("anthropic_content_blocks") or msg.get("_anthropic_content_blocks")
+    has_blocks = bool(blocks)
+
+    content = msg.get("content")
     if not isinstance(content, list):
+        # String / missing content: handle the blocks-duplicate case
+        # and fall back to a normal stringify otherwise.
+        if has_blocks:
+            sanitized_msg = dict(msg)
+            sanitized_msg.pop("content", None)
+            # Strip raw image bytes that may live inside blocks.
+            sanitized_msg["anthropic_content_blocks"] = _strip_image_data_from_blocks(blocks)
+            # Image credit for any images in blocks (no list content path
+            # to walk, so do it here).
+            image_count = _count_images_in_blocks(blocks)
+            return len(str(sanitized_msg)), image_count * _IMAGE_TOKEN_COST
         return len(str(msg)), 0
 
     image_count = 0
@@ -1896,6 +1960,14 @@ def _count_message_chars_with_image_token_credit(
         else:
             sanitized_parts.append(part)
 
+    # Blocks duplicate: strip ``content`` from the sanitized view.
+    if has_blocks:
+        sanitized_msg = dict(msg)
+        sanitized_msg.pop("content", None)
+        sanitized_msg["anthropic_content_blocks"] = _strip_image_data_from_blocks(blocks)
+        image_count += _count_images_in_blocks(blocks)
+        return len(str(sanitized_msg)), image_count * _IMAGE_TOKEN_COST
+
     if image_count == 0:
         return len(str(msg)), 0
 
@@ -1904,6 +1976,25 @@ def _count_message_chars_with_image_token_credit(
     sanitized_msg = dict(msg)
     sanitized_msg["content"] = sanitized_parts
     return len(str(sanitized_msg)), image_count * _IMAGE_TOKEN_COST
+
+
+def _strip_image_data_from_blocks(blocks: Any) -> Any:
+    """Return ``blocks`` with raw image bytes replaced by a placeholder."""
+    if not isinstance(blocks, list):
+        return blocks
+    cleaned = []
+    for part in blocks:
+        if isinstance(part, dict) and part.get("type") == "image":
+            cleaned.append({"type": "image", "image": "[stripped]"})
+        else:
+            cleaned.append(part)
+    return cleaned
+
+
+def _count_images_in_blocks(blocks: Any) -> int:
+    if not isinstance(blocks, list):
+        return 0
+    return sum(1 for p in blocks if isinstance(p, dict) and p.get("type") == "image")
 
 
 def estimate_request_tokens_rough(
