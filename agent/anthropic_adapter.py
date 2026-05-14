@@ -1089,6 +1089,35 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     return None
 
 
+def _read_longlived_claude_token_from_keychain() -> Optional[str]:
+    """Read a long-lived Claude Code setup token from the macOS Keychain.
+
+    Stored as a raw string under service name "claude-code-oauth-longlived".
+    Created via `claude setup-token`; lacks user:profile scope so it must
+    NOT be exported to the shell where interactive `claude` invocations would
+    pick it up and fail org verification.  Hermes reads it directly here
+    instead.
+    """
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", "claude-code-oauth-longlived",
+             "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("Keychain: security command not available or timed out")
+        return None
+    if result.returncode != 0:
+        return None
+    token = result.stdout.strip()
+    return token if token else None
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 

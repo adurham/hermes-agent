@@ -204,6 +204,26 @@ def _remove_claude_code(provider: str, removed) -> RemovalResult:
     ])
 
 
+def _remove_keychain_longlived(provider: str, removed) -> RemovalResult:
+    """Keychain "claude-code-oauth-longlived" entry is Hermes-managed — delete it."""
+    import subprocess
+
+    result = RemovalResult()
+    try:
+        proc = subprocess.run(
+            ["security", "delete-generic-password", "-s", "claude-code-oauth-longlived"],
+            capture_output=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            result.cleaned.append('Deleted keychain entry "claude-code-oauth-longlived"')
+        else:
+            result.hints.append('Keychain entry "claude-code-oauth-longlived" not found or already deleted.')
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        result.hints.append(f"Could not delete keychain entry: {exc}")
+    return result
+
+
 def _remove_hermes_pkce(provider: str, removed) -> RemovalResult:
     """~/.hermes/.anthropic_oauth.json is ours — delete it outright."""
     from hermes_constants import get_hermes_home
@@ -410,6 +430,11 @@ def _register_all_sources() -> None:
         provider="anthropic", source_id="hermes_pkce",
         remove_fn=_remove_hermes_pkce,
         description="~/.hermes/.anthropic_oauth.json",
+    ))
+    register(RemovalStep(
+        provider="anthropic", source_id="keychain_longlived",
+        remove_fn=_remove_keychain_longlived,
+        description='macOS Keychain "claude-code-oauth-longlived" setup token',
     ))
     register(RemovalStep(
         provider="nous", source_id="device_code",
