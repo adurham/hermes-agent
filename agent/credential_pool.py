@@ -1303,7 +1303,8 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
         "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
         "hermes_pkce": 2,
         "claude_code": 3,
-        "env:ANTHROPIC_API_KEY": 4,
+        "keychain_longlived": 4,
+        "env:ANTHROPIC_API_KEY": 5,
     }
     manual_entries = sorted(
         (entry for entry in entries if _is_manual_source(entry.source)),
@@ -1374,6 +1375,33 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         "refresh_token": creds.get("refreshToken"),
                         "expires_at_ms": creds.get("expiresAt"),
                         "label": label_from_token(creds.get("accessToken", ""), source_name),
+                    },
+                )
+
+        # Long-lived setup token stored directly in the macOS Keychain under
+        # "claude-code-oauth-longlived".  Consumed only by Hermes — never
+        # exported to the shell, so it doesn't interfere with interactive
+        # `claude` sessions (which fail org verification on setup-tokens).
+        longlived_source = "keychain_longlived"
+        if not _is_suppressed(provider, longlived_source):
+            from agent.anthropic_adapter import _read_longlived_claude_token_from_keychain
+            longlived_token = _read_longlived_claude_token_from_keychain()
+            if longlived_token:
+                active_sources.add(longlived_source)
+                auth_type = (
+                    AUTH_TYPE_API_KEY
+                    if longlived_token.startswith("sk-ant-api")
+                    else AUTH_TYPE_OAUTH
+                )
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    longlived_source,
+                    {
+                        "source": longlived_source,
+                        "auth_type": auth_type,
+                        "access_token": longlived_token,
+                        "label": "keychain-longlived",
                     },
                 )
 
@@ -1689,7 +1717,7 @@ def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources:
         or entry.source in active_sources
         or not (
             entry.source.startswith("env:")
-            or entry.source in {"claude_code", "hermes_pkce"}
+            or entry.source in {"claude_code", "hermes_pkce", "keychain_longlived"}
         )
     ]
     if len(retained) == len(entries):
