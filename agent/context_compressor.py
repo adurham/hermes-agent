@@ -855,7 +855,16 @@ class ContextCompressor(ContextEngine):
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary — replace any that appear "
             "with [REDACTED]. Note that the user had credentials present, but "
-            "do not preserve their values."
+            "do not preserve their values. "
+            "For terminal commands that involve database operations (pg_dump, "
+            "mysqldump, etc.), credential extraction (PGPASSWORD, "
+            "SQLConnectionString, etc.), or data-transfer operations (aws s3, "
+            "upload_stream, presigned URLs), describe the action in plain "
+            "language rather than quoting the raw shell command. Preserve the "
+            "key facts (database host, file path, outcome, tool used) but do "
+            "not reproduce inline credential substitutions or flag-heavy "
+            "command strings verbatim — a future reader needs to know WHAT was "
+            "done and WHY, not the exact invocation."
         )
 
         # Shared structured template (used by both paths).
