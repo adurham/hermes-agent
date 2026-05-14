@@ -11408,6 +11408,61 @@ class HermesCLI:
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
 
+    def _fire_attention_signals(self, summary: str) -> None:
+        """Get the user's attention when an interactive prompt opens.
+
+        Approval / sudo / clarify prompts used to just appear silently in
+        the TUI.  Users running multiple windows or SSH sessions routinely
+        missed the prompt entirely until after it timed out.  This helper
+        fires two attention signals, both gated on
+        ``approvals.bell_on_prompt`` / ``approvals.notify_on_prompt``:
+
+          * Terminal bell (``\a``).  Propagates through SSH to the local
+            terminal, works in tmux, iTerm, Terminal.app, Ghostty, etc.
+            Many emulators also flash the tab / Dock icon on bell.
+          * macOS native notification via ``osascript`` (fire-and-forget
+            subprocess).  Pops a banner with the default Hermes sound on
+            the Mac that owns the GUI, even when the user is SSH'd in
+            from elsewhere.  No-op on non-darwin platforms.
+
+        Safe to call from any thread.  Failures are swallowed — never
+        block or crash the prompt path because the bell didn't ring.
+        """
+        approvals_cfg = CLI_CONFIG.get("approvals", {}) if isinstance(CLI_CONFIG, dict) else {}
+        if not isinstance(approvals_cfg, dict):
+            approvals_cfg = {}
+
+        # Terminal bell
+        if approvals_cfg.get("bell_on_prompt", True):
+            try:
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+        # macOS native notification (banner + default sound)
+        if approvals_cfg.get("notify_on_prompt", True) and sys.platform == "darwin":
+            try:
+                import subprocess as _subprocess
+                # Escape double quotes and backslashes for AppleScript.
+                _summary = (summary or "Hermes needs your attention").replace(
+                    "\\", "\\\\"
+                ).replace('"', '\\"')
+                _title = "Hermes"
+                _applescript = (
+                    f'display notification "{_summary}" '
+                    f'with title "{_title}" sound name "Submarine"'
+                )
+                _subprocess.Popen(
+                    ["osascript", "-e", _applescript],
+                    stdout=_subprocess.DEVNULL,
+                    stderr=_subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception:
+                # Notification failure must never block the prompt.
+                pass
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -11432,6 +11487,13 @@ class HermesCLI:
         self._clarify_deadline = _time.monotonic() + timeout
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
+
+        # Bell + native notification — clarify questions can sit on the
+        # screen for a long time before the user notices.
+        _clarify_summary = question if question else "Hermes is asking a question"
+        if len(_clarify_summary) > 120:
+            _clarify_summary = _clarify_summary[:117] + "..."
+        self._fire_attention_signals(_clarify_summary)
 
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
@@ -11485,7 +11547,13 @@ class HermesCLI:
         """
         import time as _time
 
-        timeout = 45
+        # Honor approvals.timeout for sudo too — same reasoning as the
+        # main approval prompt.  Previously hardcoded to 45s.
+        try:
+            from tools.approval import _get_approval_timeout
+            timeout = _get_approval_timeout()
+        except Exception:
+            timeout = 300
         response_queue = queue.Queue()
 
         self._capture_modal_input_snapshot()
@@ -11493,6 +11561,9 @@ class HermesCLI:
             "response_queue": response_queue,
         }
         self._sudo_deadline = _time.monotonic() + timeout
+
+        # Bell + native notification — sudo prompts are easy to miss.
+        self._fire_attention_signals("Sudo password requested")
 
         self._invalidate()
 
@@ -11539,7 +11610,15 @@ class HermesCLI:
         import time as _time
 
         with self._approval_lock:
-            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
+            # Honor approvals.timeout from config (default 300s).  Previously
+            # this was hardcoded to 60s, which silently overrode the user's
+            # config setting.  See `_get_approval_timeout()` in
+            # tools/approval.py for the single source of truth.
+            try:
+                from tools.approval import _get_approval_timeout
+                timeout = _get_approval_timeout()
+            except Exception:
+                timeout = 300
             response_queue = queue.Queue()
 
             self._approval_state = {
@@ -11550,6 +11629,16 @@ class HermesCLI:
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
+
+            # Bell + native notification so the user notices the prompt
+            # even when they're in a different window or SSH'd in from
+            # another machine.  Gated by approvals.bell_on_prompt /
+            # approvals.notify_on_prompt (both default True).
+            _approval_summary = description if description else "Approval required"
+            # Trim long descriptions for the banner.
+            if len(_approval_summary) > 120:
+                _approval_summary = _approval_summary[:117] + "..."
+            self._fire_attention_signals(f"Approval needed: {_approval_summary}")
 
             self._invalidate()
 
