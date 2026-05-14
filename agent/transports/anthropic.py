@@ -216,6 +216,13 @@ class AnthropicTransport(ProviderTransport):
         — the model's canonical way of signalling "nothing more to add" after
         a tool turn that already delivered the user-facing text. Treating it
         as invalid falsely retries a completed response.
+
+        ``pause_turn`` always fails validation here — the caller's retry loop
+        detects it via ``stop_reason`` and handles it separately (resume with
+        reduced effort).  Non-empty content with ``pause_turn`` could in
+        principle be usable partial output, but allowing it through would
+        surface an incomplete response to the user without triggering
+        continuation logic, which is worse than retrying.
         """
         if response is None:
             return False
