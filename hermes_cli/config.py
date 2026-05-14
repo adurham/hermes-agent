@@ -1449,8 +1449,24 @@ DEFAULT_CONFIG = {
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
         "mode": "manual",
-        "timeout": 60,
+        # Seconds to wait for the user to respond to an approval prompt
+        # before timing out and denying.  Bumped from 60s to 300s (5 min)
+        # because users juggling multiple windows / SSH sessions routinely
+        # miss the 60s window before they ever notice the prompt is up.
+        # Sudo and approval prompts both honor this knob.
+        "timeout": 300,
         "cron_mode": "deny",
+        # When true (default), play the terminal bell (\a) when an
+        # approval / sudo / clarify prompt opens.  Bell propagates through
+        # SSH so a session running on a remote box can still ping the
+        # local terminal.  Set to false to silence.
+        "bell_on_prompt": True,
+        # When true (default on macOS), fire a native macOS notification
+        # (osascript "display notification") with sound when a prompt
+        # opens.  Useful when the user has SSH'd into the box from
+        # another machine — the Mac still owns the GUI.  Set to false to
+        # silence.  No-op on non-darwin platforms.
+        "notify_on_prompt": True,
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system
