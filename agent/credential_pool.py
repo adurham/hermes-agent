@@ -1354,35 +1354,16 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         except ImportError:
             pass
 
-        from agent.anthropic_adapter import read_claude_code_credentials, read_hermes_oauth_credentials
-
-        for source_name, creds in (
-            ("hermes_pkce", read_hermes_oauth_credentials()),
-            ("claude_code", read_claude_code_credentials()),
-        ):
-            if creds and creds.get("accessToken"):
-                if _is_suppressed(provider, source_name):
-                    continue
-                active_sources.add(source_name)
-                changed |= _upsert_entry(
-                    entries,
-                    provider,
-                    source_name,
-                    {
-                        "source": source_name,
-                        "auth_type": AUTH_TYPE_OAUTH,
-                        "access_token": creds.get("accessToken", ""),
-                        "refresh_token": creds.get("refreshToken"),
-                        "expires_at_ms": creds.get("expiresAt"),
-                        "label": label_from_token(creds.get("accessToken", ""), source_name),
-                    },
-                )
-
         # Long-lived setup token stored directly in the macOS Keychain under
         # "claude-code-oauth-longlived".  Consumed only by Hermes — never
         # exported to the shell, so it doesn't interfere with interactive
         # `claude` sessions (which fail org verification on setup-tokens).
+        # When present, Hermes uses it exclusively and skips seeding the
+        # Claude Code app's session credentials — sharing those with the
+        # interactive `claude` CLI causes per-turn credential-pool rotation
+        # that rebuilds the AIAgent every turn.
         longlived_source = "keychain_longlived"
+        longlived_token = None
         if not _is_suppressed(provider, longlived_source):
             from agent.anthropic_adapter import _read_longlived_claude_token_from_keychain
             longlived_token = _read_longlived_claude_token_from_keychain()
@@ -1404,6 +1385,31 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         "label": "keychain-longlived",
                     },
                 )
+
+        if not longlived_token:
+            from agent.anthropic_adapter import read_claude_code_credentials, read_hermes_oauth_credentials
+
+            for source_name, creds in (
+                ("hermes_pkce", read_hermes_oauth_credentials()),
+                ("claude_code", read_claude_code_credentials()),
+            ):
+                if creds and creds.get("accessToken"):
+                    if _is_suppressed(provider, source_name):
+                        continue
+                    active_sources.add(source_name)
+                    changed |= _upsert_entry(
+                        entries,
+                        provider,
+                        source_name,
+                        {
+                            "source": source_name,
+                            "auth_type": AUTH_TYPE_OAUTH,
+                            "access_token": creds.get("accessToken", ""),
+                            "refresh_token": creds.get("refreshToken"),
+                            "expires_at_ms": creds.get("expiresAt"),
+                            "label": label_from_token(creds.get("accessToken", ""), source_name),
+                        },
+                    )
 
     elif provider == "nous":
         state = _load_provider_state(auth_store, "nous")
