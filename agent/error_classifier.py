@@ -851,6 +851,9 @@ def _classify_by_error_code(
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
 
+    if code_lower in {"overloaded_error", "overloaded"}:
+        return result_fn(FailoverReason.overloaded, retryable=True)
+
     if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
             FailoverReason.rate_limit,
