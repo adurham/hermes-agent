@@ -1483,6 +1483,7 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
         "accessToken": "tok", "refreshToken": "r", "expiresAt": 9999999999000,
     })
     monkeypatch.setattr(aa, "read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr(aa, "_read_longlived_claude_token_from_keychain", lambda: None)
 
     from agent.credential_pool import _seed_from_singletons
     entries = []

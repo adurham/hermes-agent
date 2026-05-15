@@ -640,6 +640,10 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
         "agent.anthropic_adapter.read_claude_code_credentials",
         lambda: None,
     )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_longlived_claude_token_from_keychain",
+        lambda: None,
+    )
 
     from agent.credential_pool import load_pool
 
@@ -669,6 +673,10 @@ def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, 
         "agent.anthropic_adapter.read_claude_code_credentials",
         lambda: None,
     )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_longlived_claude_token_from_keychain",
+        lambda: None,
+    )
 
     from agent.credential_pool import load_pool
 
@@ -678,6 +686,74 @@ def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, 
     assert entry is not None
     assert entry.source == "env:ANTHROPIC_TOKEN"
     assert entry.access_token == "env-override-token"
+
+
+def test_keychain_longlived_suppresses_claude_code_seed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        lambda: {
+            "accessToken": "pkce-token",
+            "refreshToken": "pkce-refresh",
+            "expiresAt": 1711234999000,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "cc-session-token",
+            "refreshToken": "cc-refresh",
+            "expiresAt": 1711234999000,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_longlived_claude_token_from_keychain",
+        lambda: "sk-ant-oat-longlived-token",
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+    sources = {entry.source for entry in pool.entries()}
+
+    assert sources == {"keychain_longlived"}
+
+
+def test_keychain_longlived_absence_falls_back_to_claude_code(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "cc-session-token",
+            "refreshToken": "cc-refresh",
+            "expiresAt": 1711234999000,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_longlived_claude_token_from_keychain",
+        lambda: None,
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+    sources = {entry.source for entry in pool.entries()}
+
+    assert sources == {"claude_code"}
 
 
 def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
