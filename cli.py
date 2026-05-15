@@ -335,13 +335,15 @@ def load_cli_config() -> Dict[str, Any]:
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
-            # Force one tool call per turn so the model emits a fresh
-            # <think> block before each tool. Useful for models like
-            # DSv4-Flash that contractually emit one <think> per turn
-            # but support multi-step reasoning chained across turns.
-            # Off by default — costs ~2× wall time even with prefix
-            # cache hits, only worth it for adaptive agent tasks.
+            # Interleaved thinking: Claude reasons between tool calls
+            # (Think-Act-Think-Act loop) rather than only at turn start.
+            # Recommended for multi-step agentic workflows — lets the model
+            # adapt its plan based on intermediate tool results. Latency
+            # increase is real but variable (proportional to thinking token
+            # budget and number of tool calls), not a fixed multiplier.
+            # Off by default; enable in your local config for agent tasks.
             "interleaved_thinking": False,
+            "strip_cache_on_overload": False,
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",

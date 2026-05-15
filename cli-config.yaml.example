@@ -578,6 +578,12 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
+
+  # Strip prompt-cache breakpoints on overloaded retries so the request lands
+  # on a different routing pool (cached vs uncached traffic may be served by
+  # separate capacity). Loses cache savings on the retry but improves the
+  # chance of getting through when the primary pool is saturated. (default false)
+  # strip_cache_on_overload: false
   
   # Enable verbose logging
   verbose: false

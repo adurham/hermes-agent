@@ -1090,6 +1090,17 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
     return found
 
 
+def _strip_cache_control(payload: Any) -> None:
+    """Remove all cache_control keys from a nested dict/list payload in-place."""
+    if isinstance(payload, dict):
+        payload.pop("cache_control", None)
+        for value in payload.values():
+            _strip_cache_control(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            _strip_cache_control(item)
+
+
 
 
 
@@ -2109,6 +2120,7 @@ class AIAgent:
         # needed later by the startup feasibility check.  Avoid exposing a
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
+        self._strip_cache_on_overload = bool(_agent_cfg.get("strip_cache_on_overload", False))
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -14405,6 +14417,7 @@ class AIAgent:
             oauth_1m_beta_retry_attempted = False
             llama_cpp_grammar_retry_attempted = False
             has_retried_429 = False
+            _strip_cache_for_overload = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
             _refusal_sanitize_attempted = False
@@ -14470,6 +14483,8 @@ class AIAgent:
                 try:
                     self._reset_stream_delivery_tracking()
                     api_kwargs = self._build_api_kwargs(api_messages)
+                    if _strip_cache_for_overload:
+                        _strip_cache_control(api_kwargs)
                     if self._force_ascii_payload:
                         _sanitize_structure_non_ascii(api_kwargs)
                     if self.api_mode == "codex_responses":
@@ -15676,6 +15691,16 @@ class AIAgent:
                                 "image-shrink recovery: no data-URL image parts found "
                                 "or shrink didn't reduce size; surfacing original error."
                             )
+
+                    # Overloaded: strip prompt-cache breakpoints so the retry
+                    # lands on a different routing pool (cached vs uncached
+                    # requests may be served by separate capacity).
+                    if self._strip_cache_on_overload and classified.reason == FailoverReason.overloaded and not _strip_cache_for_overload:
+                        _strip_cache_for_overload = True
+                        self._vprint(
+                            f"{self.log_prefix}🔄 Overloaded — stripping prompt cache to force fresh routing on retry...",
+                            force=True,
+                        )
 
                     # Anthropic OAuth subscription rejected the 1M-context beta
                     # header ("long context beta is not yet available for this
