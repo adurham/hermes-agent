@@ -3715,7 +3715,8 @@ class GatewayRunner:
                         )
                     except Exception:
                         pass
-                    return False
+                    # Fall through to the normal "running" state — reconnect
+                    # watcher takes it from here.
                 else:
                     # All enabled platforms had no adapter (missing library or credentials).
                     # In fleet deployments the same config.yaml is shared across nodes that

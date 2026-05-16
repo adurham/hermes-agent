@@ -259,6 +259,11 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        # check_web_api_key() falls through to "Anthropic native available?"
+        # when no third-party search backend is wired. Tests for "no keys"
+        # paths must scrub these too.
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
     )
 
     def setup_method(self):
@@ -601,7 +606,11 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_no_keys_returns_false(self):
+    def test_no_keys_returns_false(self, monkeypatch, tmp_path):
+        # check_web_api_key() also falls through to a ~/.claude/.credentials.json
+        # existence probe; redirect HOME to an empty tempdir so a host login can't
+        # leak True into this assertion.
+        monkeypatch.setenv("HOME", str(tmp_path))
         from tools.web_tools import check_web_api_key
         assert check_web_api_key() is False
 
