@@ -9160,14 +9160,22 @@ class HermesCLI:
         * MiniMax has binary thinking only.
         * Tiered-reasoning models (gpt-5, o-series, openrouter
           passthroughs) keep the full six-tier ladder.
+
+        ``max`` is Opus-tier only on Anthropic adaptive thinking — Sonnet 4.6
+        and Haiku 4.5 reject it with a 400 (see anthropic_adapter.py:3714).
+        Listed for Opus 4.x; omitted elsewhere so users can't pick a tier the
+        backend will reject.
         """
-        full_ladder = ["none", "minimal", "low", "medium", "high", "xhigh"]
+        full_ladder = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
         m = (self.model or "").lower()
         if "deepseek" in m or "dsv4" in m:
             # DSv4 3-mode set per HF model card.
             return ["none", "high", "xhigh"]
         if "minimax" in m:
             return ["none", "on"]
+        # Strip "max" on non-Opus Anthropic models (Sonnet/Haiku 400 on it).
+        if "claude" in m and "opus" not in m:
+            full_ladder = [e for e in full_ladder if e != "max"]
         # Default to full ladder when uncertain — overshooting is
         # better than locking out a real reasoning model.
         return full_ladder
