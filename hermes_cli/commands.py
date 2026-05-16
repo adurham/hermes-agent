@@ -947,9 +947,11 @@ def discord_skill_commands_by_category(
 # ---------------------------------------------------------------------------
 
 # Slack slash command name constraints: lowercase a-z, 0-9, hyphens,
-# underscores. Max 32 chars. Slack app manifest accepts up to 50 slash
-# commands per app.
-_SLACK_MAX_SLASH_COMMANDS = 50
+# underscores. Max 32 chars. Slack app manifest accepts up to 100 slash
+# commands per app (the 50-cap was the pre-2025 limit). Hermes ships 72
+# canonicals + 14 aliases = 86 entries after the v2026.5.16 merge; 100
+# fits the full set without dropping aliases or canonicals.
+_SLACK_MAX_SLASH_COMMANDS = 100
 _SLACK_NAME_LIMIT = 32
 _SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
 _SLACK_RESERVED_COMMANDS = frozenset({
@@ -989,8 +991,9 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     (e.g. ``/status``, ``/me``, ``/join``) are silently skipped.  Users
     can still reach them via ``/hermes <command>``.
 
-    Results are clamped to Slack's 50-command limit with duplicate-name
-    avoidance. ``/hermes`` is always reserved as the first entry so the
+    Results are clamped to Slack's per-app slash-command limit (see
+    ``_SLACK_MAX_SLASH_COMMANDS``) with duplicate-name avoidance.
+    ``/hermes`` is always reserved as the first entry so the
     legacy ``/hermes <subcommand>`` form keeps working for anything that
     gets dropped by the clamp or for free-form questions.
     """
