@@ -368,11 +368,13 @@ class CDPSupervisor:
                         pass
 
             try:
-                fut = asyncio.run_coroutine_threadsafe(_close_ws(), loop)
-                try:
-                    fut.result(timeout=2.0)
-                except Exception:
-                    pass
+                from agent.async_utils import safe_schedule_threadsafe
+                fut = safe_schedule_threadsafe(_close_ws(), loop)
+                if fut is not None:
+                    try:
+                        fut.result(timeout=2.0)
+                    except Exception:
+                        pass
             except RuntimeError:
                 pass  # loop already shutting down
         if self._thread is not None:
@@ -412,7 +414,7 @@ class CDPSupervisor:
         ``{"ok": False, "error": "..."}`` on a recoverable error (no dialog,
         ambiguous dialog_id, supervisor inactive).
         """
-        if action not in ("accept", "dismiss"):
+        if action not in {"accept", "dismiss"}:
             return {"ok": False, "error": f"action must be 'accept' or 'dismiss', got {action!r}"}
 
         with self._state_lock:
@@ -451,7 +453,10 @@ class CDPSupervisor:
             )
 
         try:
-            fut = asyncio.run_coroutine_threadsafe(_do_respond(), loop)
+            from agent.async_utils import safe_schedule_threadsafe
+            fut = safe_schedule_threadsafe(_do_respond(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
             fut.result(timeout=timeout)
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -507,7 +512,10 @@ class CDPSupervisor:
             )
 
         try:
-            fut = asyncio.run_coroutine_threadsafe(_do_eval(), loop)
+            from agent.async_utils import safe_schedule_threadsafe
+            fut = safe_schedule_threadsafe(_do_eval(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
             response = fut.result(timeout=timeout + 1)
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -1206,7 +1214,7 @@ class CDPSupervisor:
         info = params.get("targetInfo") or {}
         sid = params.get("sessionId")
         target_type = info.get("type")
-        if not sid or target_type not in ("iframe", "worker"):
+        if not sid or target_type not in {"iframe", "worker"}:
             return
         self._child_sessions[sid] = {"info": info, "type": target_type}
 
@@ -1290,7 +1298,7 @@ class CDPSupervisor:
             event = ConsoleEvent(ts=time.time(), level="exception", text=text, url=url)
         else:
             raw_level = str(params.get("type") or "log")
-            level = "error" if raw_level in ("error", "assert") else (
+            level = "error" if raw_level in {"error", "assert"} else (
                 "warning" if raw_level == "warning" else "log"
             )
             args = params.get("args") or []
