@@ -993,7 +993,7 @@ class TestAnthropicStreamCallbacks:
         mock_stream.get_final_message.return_value = final_message
 
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.stream.return_value = mock_stream
+        agent._anthropic_client.beta.messages.stream.return_value = mock_stream
 
         agent._interruptible_streaming_api_call({})
 
@@ -1039,7 +1039,7 @@ class TestAnthropicStreamCallbacks:
         good_stream.get_final_message.return_value = final_message
 
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.stream.side_effect = [
+        agent._anthropic_client.beta.messages.stream.side_effect = [
             _BadStream(),
             good_stream,
         ]
@@ -1047,7 +1047,7 @@ class TestAnthropicStreamCallbacks:
         response = agent._interruptible_streaming_api_call({})
 
         assert response is final_message
-        assert agent._anthropic_client.messages.stream.call_count == 2
+        assert agent._anthropic_client.beta.messages.stream.call_count == 2
         assert mock_replace.call_count == 1
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
@@ -1071,14 +1071,14 @@ class TestAnthropicStreamCallbacks:
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
 
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.stream.side_effect = ValueError(
+        agent._anthropic_client.beta.messages.stream.side_effect = ValueError(
             "invalid local request shape"
         )
 
         with pytest.raises(ValueError, match="invalid local request shape"):
             agent._interruptible_streaming_api_call({})
 
-        assert agent._anthropic_client.messages.stream.call_count == 1
+        assert agent._anthropic_client.beta.messages.stream.call_count == 1
         assert mock_replace.call_count == 0
 
 
