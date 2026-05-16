@@ -70,7 +70,12 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All seven bundled web plugins discover and register correctly."""
+    """All eight bundled web plugins discover and register correctly.
+
+    Seven providers ship from upstream (brave-free / ddgs / searxng / exa /
+    parallel / tavily / firecrawl); the fork adds an eighth, ``claude-code``,
+    which delegates to the Claude Code CLI's WebSearch/WebFetch tools.
+    """
 
     def test_all_seven_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
@@ -79,6 +84,7 @@ class TestBundledPluginsRegister:
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "claude-code",
             "ddgs",
             "exa",
             "firecrawl",
