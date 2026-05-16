@@ -73,3 +73,6 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+# Workspace-local plan markdown written by the `plan` skill.
+# These are per-workspace planning artifacts, not source.
+.hermes/

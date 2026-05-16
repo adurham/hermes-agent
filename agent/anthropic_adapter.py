@@ -1821,15 +1821,7 @@ def _strip_unknown_tool_blocks(
 
 
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI tool definitions to Anthropic format.
-
-    Server-side Anthropic tools (web_search_20250305, etc.) are signalled
-    by a top-level ``_anthropic_server_tool`` key inside the function
-    schema — when present, that block is emitted verbatim instead of the
-    function-shaped form. The model still sees the tool by its original
-    ``name``; Anthropic intercepts the call server-side, so the local
-    handler is never invoked on Anthropic providers.
-    """
+    """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:
         return []
     result = []
@@ -1864,35 +1856,6 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
             anthropic_tool["cache_control"] = dict(cache_control)
         result.append(anthropic_tool)
     return result
-
-
-def _required_anthropic_server_tool_betas(tools: List[Dict]) -> List[str]:
-    """Inspect the OpenAI-shaped tool list and return any extra anthropic-beta
-    headers required by server-side tools that appear in the request.
-
-    Maps each declared ``_anthropic_server_tool.type`` to its corresponding
-    beta. Returns an empty list when no server tools are present (so the
-    beta header set isn't unnecessarily widened — some Anthropic-compatible
-    third-party endpoints reject unknown beta headers).
-    """
-    if not tools:
-        return []
-    beta_for_type = {
-        "web_search_20250305": "web-search-2025-03-05",
-        # Future server tools (e.g. computer_use_20250124) get added here.
-    }
-    seen: set[str] = set()
-    for t in tools:
-        fn = t.get("function") if isinstance(t, dict) else None
-        if not isinstance(fn, dict):
-            continue
-        spec = fn.get("_anthropic_server_tool")
-        if not isinstance(spec, dict):
-            continue
-        beta = beta_for_type.get(spec.get("type", ""))
-        if beta:
-            seen.add(beta)
-    return sorted(seen)
 
 
 def _image_source_from_openai_url(url: str) -> Dict[str, str]:
@@ -3812,31 +3775,6 @@ def build_anthropic_kwargs(
         kwargs["betas"] = betas
 
     # ── Server-side tool beta headers ────────────────────────────────
-    # Tools like web_search_20250305 require their own anthropic-beta
-    # header. We can't put it on the client-level default_headers because
-    # that would be sent for every request (some Anthropic-compatible
-    # third-party providers reject unknown betas). Instead, detect the
-    # tools in this specific request and union with any already-set
-    # ``betas`` (preserving fast-mode wiring above).
-    server_tool_betas = _required_anthropic_server_tool_betas(tools or [])
-    if server_tool_betas and not _is_third_party_anthropic_endpoint(base_url):
-        prior = list(kwargs.get("betas") or [])
-        if not prior:
-            # No prior per-request betas — start from the same base set
-            # the client would otherwise send so we don't accidentally
-            # drop OAuth or context-1m betas.
-            prior = list(_common_betas_for_base_url(
-                base_url, drop_context_1m_beta=drop_context_1m_beta,
-                model=model,
-            ))
-            if is_oauth:
-                prior.extend(_OAUTH_ONLY_BETAS)
-        merged: list[str] = []
-        for beta in prior + server_tool_betas:
-            if beta and beta not in merged:
-                merged.append(beta)
-        kwargs["betas"] = merged
-
     # ── 1M context tier gate (DEFAULT OFF) ───────────────────────────
     # Background: hermes hits sporadic multi-minute stalls on Opus 4.7
     # even with perfect cache hits. Theory was that opting into
