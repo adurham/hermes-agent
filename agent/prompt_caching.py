@@ -44,6 +44,7 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
 
 
 def _build_cache_marker(cache_ttl: str = "5m") -> Dict[str, str]:
+    """Build a cache_control marker dict for the given TTL ('5m' or '1h')."""
     marker: Dict[str, str] = {"type": "ephemeral"}
     if cache_ttl == "1h":
         marker["ttl"] = "1h"

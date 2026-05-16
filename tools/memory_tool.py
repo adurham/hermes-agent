@@ -156,10 +156,7 @@ class MemoryStore:
             yield
             return
 
-        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-            lock_path.write_text(" ", encoding="utf-8")
-
-        fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
+        fd = open(lock_path, "a+", encoding="utf-8")
         try:
             if fcntl:
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -291,7 +288,7 @@ class MemoryStore:
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), operate on the first one
-                unique_texts = set(e for _, e in matches)
+                unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                     return {
@@ -341,7 +338,7 @@ class MemoryStore:
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), remove the first one
-                unique_texts = set(e for _, e in matches)
+                unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                     return {
@@ -816,7 +813,7 @@ def memory_tool(
     # specified" — see _handle_warm_action's promote/demote branches).
     if target is None:
         target = "memory"
-    if target not in ("memory", "user"):
+    if target not in {"memory", "user"}:
         return tool_error(
             f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False,
         )
