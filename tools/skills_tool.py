@@ -1405,6 +1405,189 @@ def skill_view(
 
 
 
+# ---------------------------------------------------------------------------
+# skill_pitfalls — cheap recall of just the gotchas/pitfalls section
+# ---------------------------------------------------------------------------
+#
+# Why this exists: a full skill_view of a large skill (some are 30k+ chars)
+# is expensive to call repeatedly. But the most operationally-relevant part —
+# the section that prevents repeating known mistakes — is a fraction of that.
+# `skill_pitfalls(name)` extracts just that section. Designed to be called
+# CHEAPLY before destructive operations to re-surface gotchas that may have
+# scrolled out of immediate attention since the skill was first loaded.
+#
+# Heuristic: match common pitfall-section headings (case-insensitive) and
+# return the section body until the next heading of equal or higher level.
+
+_PITFALL_HEADING_PATTERNS = [
+    re.compile(r"^#{2,4}\s+(?:common\s+)?pitfalls?\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^#{2,4}\s+gotchas?\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^#{2,4}\s+footguns?\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^#{2,4}\s+known\s+issues?\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^#{2,4}\s+warnings?\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^#{2,4}\s+caveats?\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^#{2,4}\s+troubleshooting\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^#{2,4}\s+honesty\s+discipline\b", re.IGNORECASE | re.MULTILINE),
+]
+
+# Boundary: any ATX heading of equal-or-higher level (## or # — not ###).
+_SECTION_END_PATTERN = re.compile(r"^#{1,2}\s+", re.MULTILINE)
+
+_PITFALLS_MAX_CHARS = 12000  # cap output size for token-cost control
+
+
+def _extract_pitfall_sections(content: str) -> List[Tuple[str, str]]:
+    """Find every pitfall-flavoured heading in ``content`` and return
+    (heading_line, section_body) tuples in document order.
+
+    A section ends at the next heading of the SAME or HIGHER ATX level.
+    For a `## Pitfalls` block, that means stopping at the next `## ...` or
+    `# ...`, but NOT at `### ...` subsections inside it.
+    """
+    matches: List[Tuple[int, int]] = []
+    for pattern in _PITFALL_HEADING_PATTERNS:
+        for m in pattern.finditer(content):
+            line_start = m.start()
+            hashes = 0
+            for ch in content[line_start:]:
+                if ch == "#":
+                    hashes += 1
+                else:
+                    break
+            matches.append((line_start, hashes))
+
+    # Deduplicate (a heading might match multiple patterns).
+    seen: set = set()
+    deduped: List[Tuple[int, int]] = []
+    for start, level in sorted(matches):
+        if start in seen:
+            continue
+        seen.add(start)
+        deduped.append((start, level))
+
+    if not deduped:
+        return []
+
+    sections: List[Tuple[str, str]] = []
+    for start, level in deduped:
+        end = len(content)
+        cursor = start + 1
+        for m in _SECTION_END_PATTERN.finditer(content, cursor):
+            line_start = m.start()
+            hashes = 0
+            for ch in content[line_start:]:
+                if ch == "#":
+                    hashes += 1
+                else:
+                    break
+            if hashes <= level:
+                end = line_start
+                break
+
+        block = content[start:end].rstrip()
+        nl = block.find("\n")
+        heading = block[:nl] if nl >= 0 else block
+        body = block[nl + 1:] if nl >= 0 else ""
+        sections.append((heading.strip(), body.strip()))
+    return sections
+
+
+def skill_pitfalls(
+    name: str,
+    task_id: str = None,
+) -> str:
+    """
+    Return ONLY the pitfalls / gotchas / known-issues sections of a loaded
+    skill — much cheaper than ``skill_view`` for re-checking what NOT to do
+    before risky operations.
+
+    Use this when:
+      - You loaded a skill earlier in the session and the relevant pitfalls
+        have scrolled out of immediate context.
+      - You're about to do something destructive (cluster restart, file
+        overwrite, bench launch, mass-edit) and want to confirm the loaded
+        skill doesn't already document this as a known-bad pattern.
+      - You want a cheap "checklist refresh" before continuing.
+
+    If the skill has no recognizable pitfalls section, returns a brief
+    description + a hint to use ``skill_view(name)`` for full content.
+
+    Args:
+        name: Same identifier semantics as ``skill_view``.
+        task_id: Optional task identifier.
+
+    Returns:
+        JSON string with ``sections`` (list of {heading, body}), ``name``,
+        and ``hint``. On failure, returns the same error shape as
+        ``skill_view``.
+    """
+    try:
+        raw = skill_view(name, file_path=None, task_id=task_id, preprocess=False)
+        parsed = json.loads(raw)
+        if not parsed.get("success"):
+            return raw  # Pass through error as-is.
+
+        content = parsed.get("content", "") or ""
+        sections = _extract_pitfall_sections(content)
+
+        if not sections:
+            stripped = content.lstrip()
+            if stripped.startswith("---"):
+                end = stripped.find("\n---", 3)
+                if end >= 0:
+                    stripped = stripped[end + 4:].lstrip()
+            preview = stripped[:1500].rstrip()
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": parsed.get("name", name),
+                    "sections": [],
+                    "no_pitfalls_section": True,
+                    "fallback_preview": preview,
+                    "hint": (
+                        f"Skill '{name}' has no '## Pitfalls' / '## Gotchas' / "
+                        "'## Known Issues' section. Returning the skill intro "
+                        f"as a fallback. For the full content, call "
+                        f"skill_view('{name}')."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        out_sections: List[Dict[str, str]] = []
+        total_chars = 0
+        truncated = False
+        for heading, body in sections:
+            remaining = _PITFALLS_MAX_CHARS - total_chars
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(body) > remaining:
+                body = body[:remaining].rstrip() + "\n\n[truncated - call skill_view for full content]"
+                truncated = True
+            out_sections.append({"heading": heading, "body": body})
+            total_chars += len(body) + len(heading)
+
+        return json.dumps(
+            {
+                "success": True,
+                "name": parsed.get("name", name),
+                "sections": out_sections,
+                "section_count": len(out_sections),
+                "truncated": truncated,
+                "hint": (
+                    "Re-check these BEFORE the destructive operation you're "
+                    "about to perform. If the section count is large, scroll "
+                    "the full list -- pitfalls #1 and #N are equally likely "
+                    "to bite. For complete content, call skill_view."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return tool_error(str(e), success=False)
+
+
 
 if __name__ == "__main__":
     """Test the skills tool"""
@@ -1531,3 +1714,42 @@ registry.register(
     emoji="📚",
 )
 
+
+SKILL_PITFALLS_SCHEMA = {
+    "name": "skill_pitfalls",
+    "description": (
+        "Return ONLY the pitfalls / gotchas / known-issues sections of a skill — "
+        "cheap (~500-3000 tokens, vs ~30k for skill_view) so you can re-check "
+        "what NOT to do before any risky operation. Use this whenever you "
+        "loaded a skill earlier in the session and now want a fast checklist "
+        "refresh before a destructive command (cluster restart, file "
+        "overwrite, bench launch, mass-edit, ssh ... pkill, etc.). "
+        "If the skill has no recognizable pitfalls heading, returns a short "
+        "intro fallback. Use skill_view for the full content."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": (
+                    "The skill name (same semantics as skill_view). For "
+                    "plugin-provided skills, use 'plugin:skill'."
+                ),
+            },
+        },
+        "required": ["name"],
+    },
+}
+
+
+registry.register(
+    name="skill_pitfalls",
+    toolset="skills",
+    schema=SKILL_PITFALLS_SCHEMA,
+    handler=lambda args, **kw: skill_pitfalls(
+        name=args.get("name", ""), task_id=kw.get("task_id")
+    ),
+    check_fn=check_skills_requirements,
+    emoji="⚠️",
+)
