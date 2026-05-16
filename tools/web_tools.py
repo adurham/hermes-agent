@@ -2282,20 +2282,6 @@ WEB_SEARCH_SCHEMA = {
         },
         "required": ["query"]
     },
-    # ── Anthropic native server-side tool marker ─────────────────────
-    # When the active provider is Anthropic, agent/anthropic_adapter.py
-    # detects this field in convert_tools_to_anthropic() and emits the
-    # native server-tool spec instead of the function-shaped form. The
-    # local handler below is then never invoked: Anthropic's infra runs
-    # the search and returns web_search_tool_result blocks inline.
-    # On non-Anthropic providers (OpenAI, Bedrock, etc.) this field is
-    # silently ignored and the local Tavily/Exa/Parallel handler runs.
-    # max_uses caps searches per turn; bump if you find the model
-    # frequently exhausting the budget.
-    "_anthropic_server_tool": {
-        "type": "web_search_20250305",
-        "max_uses": 5,
-    },
 }
 
 WEB_EXTRACT_SCHEMA = {
