@@ -9158,24 +9158,34 @@ class HermesCLI:
           exo's wrapper. Listing them in the picker would be misleading,
           so we omit them.
         * MiniMax has binary thinking only.
+        * Anthropic adaptive thinking (Claude 4.6+) exposes a fixed
+          set of levels: low/medium/high/max on 4.6, plus xhigh on 4.7.
+          The adapter aliases ``minimal`` → ``low``
+          (``agent/anthropic_adapter.py:ADAPTIVE_EFFORT_MAP``), so
+          ``minimal`` is omitted to avoid a duplicate of ``low``.
         * Tiered-reasoning models (gpt-5, o-series, openrouter
           passthroughs) keep the full six-tier ladder.
-
-        ``max`` is Opus-tier only on Anthropic adaptive thinking — Sonnet 4.6
-        and Haiku 4.5 reject it with a 400 (see anthropic_adapter.py:3714).
-        Listed for Opus 4.x; omitted elsewhere so users can't pick a tier the
-        backend will reject.
         """
-        full_ladder = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        full_ladder = ["none", "minimal", "low", "medium", "high", "xhigh"]
         m = (self.model or "").lower()
         if "deepseek" in m or "dsv4" in m:
             # DSv4 3-mode set per HF model card.
             return ["none", "high", "xhigh"]
         if "minimax" in m:
             return ["none", "on"]
-        # Strip "max" on non-Opus Anthropic models (Sonnet/Haiku 400 on it).
-        if "claude" in m and "opus" not in m:
-            full_ladder = [e for e in full_ladder if e != "max"]
+        try:
+            from agent.anthropic_adapter import (
+                _supports_adaptive_thinking,
+                _supports_xhigh_effort,
+            )
+            if _supports_adaptive_thinking(self.model or ""):
+                levels = ["none", "low", "medium", "high"]
+                if _supports_xhigh_effort(self.model or ""):
+                    levels.append("xhigh")
+                levels.append("max")
+                return levels
+        except Exception:
+            pass
         # Default to full ladder when uncertain — overshooting is
         # better than locking out a real reasoning model.
         return full_ladder
@@ -11787,19 +11797,59 @@ class HermesCLI:
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         return prompt_for_secret(self, var_name, prompt, metadata)
 
+    def _run_on_app_loop(self, fn) -> None:
+        """Execute ``fn`` on the prompt_toolkit event loop and block until done.
+
+        Buffer mutations from a non-main thread (process_loop dispatches
+        slash commands like /clear off the UI thread) corrupt prompt_toolkit's
+        input pipeline and freeze every keybinding — including Ctrl+C.
+        Route the mutation through the app's loop via call_soon_threadsafe
+        and wait on a threading.Event so the caller still sees synchronous
+        semantics.
+        """
+        import threading as _threading
+        app = getattr(self, "_app", None)
+        loop = getattr(app, "loop", None) if app is not None else None
+        on_main = _threading.current_thread() is _threading.main_thread()
+        if loop is None or not getattr(loop, "is_running", lambda: False)() or on_main:
+            try:
+                fn()
+            except Exception:
+                pass
+            return
+        done = _threading.Event()
+        def _runner():
+            try:
+                fn()
+            except Exception:
+                pass
+            finally:
+                done.set()
+        try:
+            loop.call_soon_threadsafe(_runner)
+        except Exception:
+            try:
+                fn()
+            except Exception:
+                pass
+            return
+        done.wait(timeout=2.0)
+
     def _capture_modal_input_snapshot(self) -> None:
         """Temporarily clear the input buffer and save the user's in-progress draft."""
         if self._modal_input_snapshot is not None or not getattr(self, "_app", None):
             return
-        try:
-            buf = self._app.current_buffer
-            self._modal_input_snapshot = {
-                "text": buf.text,
-                "cursor_position": buf.cursor_position,
-            }
-            buf.reset()
-        except Exception:
-            self._modal_input_snapshot = None
+        def _do():
+            try:
+                buf = self._app.current_buffer
+                self._modal_input_snapshot = {
+                    "text": buf.text,
+                    "cursor_position": buf.cursor_position,
+                }
+                buf.reset()
+            except Exception:
+                self._modal_input_snapshot = None
+        self._run_on_app_loop(_do)
 
     def _restore_modal_input_snapshot(self) -> None:
         """Restore any draft text that was present before a modal prompt opened."""
@@ -11807,12 +11857,14 @@ class HermesCLI:
         self._modal_input_snapshot = None
         if not snapshot or not getattr(self, "_app", None):
             return
-        try:
-            buf = self._app.current_buffer
-            buf.text = snapshot.get("text", "")
-            buf.cursor_position = min(snapshot.get("cursor_position", 0), len(buf.text))
-        except Exception:
-            pass
+        def _do():
+            try:
+                buf = self._app.current_buffer
+                buf.text = snapshot.get("text", "")
+                buf.cursor_position = min(snapshot.get("cursor_position", 0), len(buf.text))
+            except Exception:
+                pass
+        self._run_on_app_loop(_do)
 
     def _submit_secret_response(self, value: str) -> None:
         if not self._secret_state:
