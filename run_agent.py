@@ -2008,6 +2008,25 @@ class AIAgent:
         self._memory_nudge_interval = 10
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+
+        # ── Skill-recall reminder state ─────────────────────────────────
+        # Tracks skills the agent has actively loaded via ``skill_view`` in
+        # THIS session. Used by the post-tool reminder injector below to
+        # nudge the agent to call ``skill_pitfalls(name)`` before risky
+        # operations — the full skill content scrolls out of immediate
+        # attention long before the session ends, but its gotchas remain
+        # relevant the whole time. See "Skill recall reminder" comment near
+        # the tool-result hint sites for the firing rule.
+        self._loaded_skills_this_session: set = set()
+        # Counter ticks each time a "risky" tool runs (terminal / Bash /
+        # write_file / patch / Edit / Write). Reminder fires when it hits
+        # the interval, then resets to 0.
+        self._risky_ops_since_skill_recall = 0
+        # Configurable via agent.skills.recall_reminder_interval (0 = off).
+        # Default 6: after a skill is loaded, every 6th destructive tool
+        # call gets a one-line reminder appended to its result asking the
+        # agent to call skill_pitfalls(name) before proceeding.
+        self._skill_recall_reminder_interval = 6
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -2116,6 +2135,16 @@ class AIAgent:
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+        except Exception:
+            pass
+
+        # Skill-recall reminder interval (see __init__ above for the rationale).
+        # Reads agent.skills.recall_reminder_interval if present. 0 disables.
+        try:
+            skills_config = _agent_cfg.get("skills", {})
+            self._skill_recall_reminder_interval = int(
+                skills_config.get("recall_reminder_interval", 6)
+            )
         except Exception:
             pass
 
@@ -5522,6 +5551,99 @@ class AIAgent:
         """Update the last-activity timestamp and description (thread-safe)."""
         self._last_activity_ts = time.time()
         self._last_activity_desc = desc
+
+    # Tool names that count as a "risky operation" for the skill-recall
+    # reminder. Tick the counter when one of these runs; when it hits the
+    # configured interval, the NEXT tool result gets a one-line nudge
+    # asking the agent to call skill_pitfalls(name) before the next
+    # destructive action. Read-only / informational tools (web_search,
+    # read_file, Grep, etc.) are intentionally excluded — they don't
+    # break things and re-checking pitfalls before every Grep would be
+    # noisy.
+    _RISKY_TOOL_NAMES = frozenset({
+        "terminal",
+        "Bash",
+        "write_file",
+        "Write",
+        "patch",
+        "Edit",
+        "execute_code",
+        "process",
+        "ha_call_service",
+        "browser_navigate",
+        "browser_click",
+        "browser_type",
+        "send_message",
+    })
+
+    def _record_loaded_skill(self, name: str, tool_result: str) -> None:
+        """Record that a skill was loaded successfully via ``skill_view``.
+
+        Parses the tool result JSON; on success adds the resolved skill
+        name to ``self._loaded_skills_this_session``. Resets the risky-op
+        counter so the agent doesn't get a reminder on the very next tool
+        — the agent just SAW the full skill content, the reminder is
+        useful later when that context has scrolled off.
+
+        Best-effort: any parse failure is silently ignored.
+        """
+        if not name or not tool_result:
+            return
+        try:
+            parsed = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+            if isinstance(parsed, dict) and parsed.get("success"):
+                resolved = parsed.get("name") or name
+                if isinstance(resolved, str) and resolved:
+                    self._loaded_skills_this_session.add(resolved)
+                    self._risky_ops_since_skill_recall = 0
+        except Exception:
+            pass  # Defensive: never break tool execution on tracker error.
+
+    def _maybe_skill_recall_hint(self, function_name: str) -> Optional[str]:
+        """Return a one-line reminder string when it's time to nudge the
+        agent to re-check loaded-skill pitfalls, else ``None``.
+
+        Fires only when ALL of these hold:
+          * recall_reminder_interval > 0 (feature enabled)
+          * at least one skill has been loaded this session
+          * the current tool is in ``_RISKY_TOOL_NAMES``
+          * the risky-op counter has reached the interval
+
+        Increments the counter when the current tool is risky. Resets the
+        counter to 0 when the reminder fires.
+
+        Why this exists: a loaded skill's pitfalls section can scroll out
+        of immediate attention 30+ turns after the skill was loaded, but
+        its warnings remain operationally relevant. Without an active
+        nudge the agent will re-discover the pitfalls by stepping on them.
+        See ``skill_pitfalls`` in ``tools/skills_tool.py`` for the cheap
+        recall path the reminder points the agent toward.
+        """
+        interval = getattr(self, "_skill_recall_reminder_interval", 0)
+        if interval <= 0:
+            return None
+        loaded = getattr(self, "_loaded_skills_this_session", None)
+        if not loaded:
+            return None
+        if function_name not in self._RISKY_TOOL_NAMES:
+            return None
+
+        self._risky_ops_since_skill_recall += 1
+        if self._risky_ops_since_skill_recall < interval:
+            return None
+
+        # Fire and reset.
+        self._risky_ops_since_skill_recall = 0
+        skills_list = ", ".join(sorted(loaded))
+        return (
+            "\n\n[skill-recall reminder] You loaded "
+            f"{len(loaded)} skill(s) earlier this session ({skills_list}). "
+            "Before the next destructive command, consider calling "
+            f"skill_pitfalls('{sorted(loaded)[0]}') "
+            "to re-check its gotchas — the full skill content has "
+            "scrolled out of immediate context. This reminder fires "
+            f"every {interval} risky tool calls and is cheap to act on."
+        )
 
     def _capture_rate_limits(self, http_response: Any) -> None:
         """Parse rate-limit headers from an HTTP response and cache the state.
@@ -11869,6 +11991,19 @@ class AIAgent:
                 else:
                     function_result += subdir_hints
 
+            # ── Skill-recall reminder hooks ──────────────────────────────
+            # 1. If this call was skill_view, record the skill as "loaded".
+            # 2. If this call was a risky tool, maybe append a recall hint.
+            # Both are best-effort and never break tool execution.
+            if name == "skill_view":
+                self._record_loaded_skill(args.get("name", ""), function_result)
+            _recall_hint = self._maybe_skill_recall_hint(name)
+            if _recall_hint:
+                if _is_multimodal_tool_result(function_result):
+                    _append_subdir_hint_to_multimodal(function_result, _recall_hint)
+                else:
+                    function_result += _recall_hint
+
             # Unwrap _multimodal dicts to an OpenAI-style content list so any
             # vision-capable provider receives [{type:text},{type:image_url}]
             # rather than a raw Python dict.  The Anthropic adapter already
@@ -12333,6 +12468,16 @@ class AIAgent:
                     _append_subdir_hint_to_multimodal(function_result, subdir_hints)
                 else:
                     function_result += subdir_hints
+
+            # ── Skill-recall reminder hooks (see concurrent path above) ──
+            if function_name == "skill_view":
+                self._record_loaded_skill(function_args.get("name", ""), function_result)
+            _recall_hint = self._maybe_skill_recall_hint(function_name)
+            if _recall_hint:
+                if _is_multimodal_tool_result(function_result):
+                    _append_subdir_hint_to_multimodal(function_result, _recall_hint)
+                else:
+                    function_result += _recall_hint
 
             # Unwrap _multimodal dicts to an OpenAI-style content list
             # (see parallel path for rationale). String results pass through.
