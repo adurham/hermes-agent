@@ -2008,7 +2008,7 @@ def _extract_preserved_thinking_blocks(message: Dict[str, Any]) -> List[Dict[str
 # HTTP 400 "Extra inputs are not permitted".  Allowlisting to input-shape
 # is the only stable contract.
 _INPUT_BLOCK_FIELDS_FALLBACK: Dict[str, frozenset] = {
-    "text": frozenset({"type", "text", "citations", "cache_control"}),
+    "text": frozenset({"type", "text", "cache_control"}),
     "thinking": frozenset({"type", "thinking", "signature"}),
     "redacted_thinking": frozenset({"type", "data"}),
     "tool_use": frozenset({"type", "id", "name", "input", "cache_control", "caller"}),
@@ -2075,7 +2075,16 @@ def _sanitize_block_for_anthropic_input(block: Dict[str, Any]) -> Dict[str, Any]
         # Unknown type — let it through; downstream normalizers (e.g.
         # _normalize_tool_search_result_for_input) handle their own.
         return block
-    return {k: v for k, v in block.items() if k in allowed}
+    sanitized = {k: v for k, v in block.items() if k in allowed}
+    # Strip citations from text blocks. Citations with encrypted_index reference
+    # Anthropic's server-side web search results — sending them without the
+    # corresponding web_search_tool_result block causes Anthropic to try to
+    # validate the reference and 400 with "unexpected tool_use_id found in
+    # web_search_tool_result blocks". The text content is complete without
+    # citations metadata; removing it is safe for all replay scenarios.
+    if btype == "text":
+        sanitized.pop("citations", None)
+    return sanitized
 
 
 def _convert_content_to_anthropic(content: Any) -> Any:
@@ -2295,6 +2304,46 @@ def drop_orphan_server_tool_uses_in_storage(
             keep.append(block)
         if dropped:
             msg["anthropic_content_blocks"] = keep
+
+    # Also strip web_search_tool_result / server_tool_use pairs that are
+    # unpaired within a message.  These come from web_search_20250305 server-
+    # side tool calls; after compression the server_tool_use can be dropped
+    # from the tail while the web_search_tool_result stays, causing a 400.
+    # We handle them per-message: collect use IDs present in the message's
+    # anthropic_content_blocks, then strip any web_search_tool_result whose
+    # tool_use_id has no matching server_tool_use in the same message.
+    # server_tool_blocks is cleared entirely when either half is missing.
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        acb = msg.get("anthropic_content_blocks")
+        if not isinstance(acb, list):
+            continue
+        use_ids_in_msg = {
+            b["id"] for b in acb
+            if isinstance(b, dict) and b.get("type") == "server_tool_use" and b.get("id")
+        }
+        result_ids_in_msg = {
+            b.get("tool_use_id") for b in acb
+            if isinstance(b, dict) and b.get("type") == "web_search_tool_result"
+        }
+        if not (use_ids_in_msg or result_ids_in_msg):
+            continue
+        unpaired_results = result_ids_in_msg - use_ids_in_msg
+        unpaired_uses = use_ids_in_msg - result_ids_in_msg
+        if unpaired_results or unpaired_uses:
+            bad_ids = unpaired_results | unpaired_uses
+            msg["anthropic_content_blocks"] = [
+                b for b in acb
+                if not (
+                    isinstance(b, dict)
+                    and b.get("type") in ("server_tool_use", "web_search_tool_result")
+                    and (b.get("id") or b.get("tool_use_id")) in bad_ids
+                )
+            ]
+            msg.pop("server_tool_blocks", None)
+            dropped += len(bad_ids)
+
     return dropped
 
 
