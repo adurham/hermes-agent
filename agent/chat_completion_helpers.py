@@ -1263,6 +1263,68 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
     last_chunk_time = {"t": time.time()}
+    # Whether the stream iterator has yielded a semantic event (i.e.
+    # message_start / content_block_*).  Gates the cold-start vs
+    # mid-stream threshold split for the stale-stream detector.  See
+    # the comment on the kill-decision block in the outer poll loop.
+    first_event_seen = {"yes": False}
+    # Whether we've seen at least one SSE `ping` from the server.
+    # Pings prove "connection alive, server still working" during
+    # cold-start.  Wired up via agent.anthropic_adapter's monkey-patch
+    # on Stream._iter_events (the SDK silently drops pings at
+    # anthropic/_streaming.py:102 before they reach the high-level
+    # iterator).  The on_sse_event callback installed in
+    # _call_anthropic also resets last_chunk_time on every raw event,
+    # so as long as pings flow the stale detector won't fire spurious
+    # cold-start kills.  The chat_completions path doesn't get this
+    # signal (no equivalent SDK hook installed there).
+    ping_seen = {"yes": False}
+    # Ping cadence diagnostics — track arrival count + last-N timestamps
+    # so the heartbeat can distinguish "real thinking, server actively
+    # ping-keep-aliving" from "connection wedged but counter still
+    # ticking".  Anthropic emits pings at ~10s cadence during long
+    # thinking phases with display=omitted, where no semantic events
+    # arrive until thinking completes.  Without this, the only way to
+    # know the difference between a 19-min real thinking phase and a
+    # 19-min wedge is to wait for the timeout.
+    ping_count = {"n": 0}
+    last_ping_time = {"t": 0.0}  # 0 == no ping yet
+    # message_start usage — captured the moment Anthropic accepts the
+    # request and starts the response stream.  Holds (input_tokens,
+    # cache_read_tokens, arrival_timestamp).  Lets the heartbeat report
+    # "request accepted, X input tokens (cache Y%)" so the user knows
+    # we're past the queue/prefill phase even when content blocks are
+    # still pending (e.g. summarized thinking, or display=omitted
+    # holding back content_block_start).
+    # Note: ``input_tokens`` from Anthropic's usage object is the
+    # NEW (uncached) prompt tokens for THIS turn — not the total
+    # prompt size.  Total prompt = input_tokens + cache_read +
+    # cache_creation.  Treating input_tokens as total produces
+    # absurd cache percentages on cache-hot turns (a 6-token new
+    # prefix + 177K cache_read shows up as 2,957,817% if you
+    # divide cache_read by input_tokens).  Always combine all three
+    # before computing display percentages.
+    message_start_usage = {
+        "input_tokens": None,        # new uncached tokens
+        "cache_read_tokens": None,   # served from cache
+        "cache_creation_tokens": None,  # written to cache this turn
+        "arrival": 0.0,
+    }
+    # Whether the model is currently emitting a thinking content block
+    # (content_block_start with type="thinking" fired, next non-thinking
+    # content_block_start not yet seen). Drives the heartbeat status so
+    # multi-minute thinking phases display as "thinking" instead of the
+    # generic "queued/prefilling".
+    thinking_active = {"yes": False}
+    # Cumulative characters streamed in thinking_delta events for this
+    # request. Surfaced in the heartbeat as a progress signal.
+    thinking_chars = {"n": 0}
+    # Last semantic content event (any content_block_*). Distinct from
+    # last_chunk_time, which is also reset by SSE pings — when pings flow
+    # but no content events arrive (server-side summarized thinking),
+    # content_silence grows while last_chunk_time stays fresh, so the
+    # heartbeat keys off this for accurate status during long thinking.
+    last_content_time = {"t": time.time()}
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
@@ -1356,6 +1418,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         usage_obj = None
         for chunk in stream:
             last_chunk_time["t"] = time.time()
+            first_event_seen["yes"] = True
             agent._touch_activity("receiving stream response")
 
             # Update per-attempt diagnostic counters.  Best-effort —
@@ -1739,8 +1802,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # additional INFO line needed.
                         try:
                             agent._fire_stream_delta(
-                                "\n\n⚠ Connection dropped mid tool-call; "
-                                "reconnecting…\n\n"
+                                "\n\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"⚠ ABANDONED STREAM (attempt {_stream_attempt + 1}/"
+                                f"{_max_stream_retries + 1}) — "
+                                f"{type(e).__name__}\n"
+                                "  Partial output above is stale and will\n"
+                                "  be replaced by the retry below.\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                             )
                         except Exception:
                             pass
@@ -1777,6 +1846,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             )
                         except Exception:
                             pass
+                        agent._emit_status("🔄 Reconnected — resuming…")
+                        if agent._interrupt_requested:
+                            agent._emit_status("⏹  Interrupt received during reconnect — aborting retry.")
+                            result["error"] = e
+                            return
                         continue
 
                     # SSE error events from proxies (e.g. OpenRouter sends

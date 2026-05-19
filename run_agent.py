@@ -389,6 +389,11 @@ class AIAgent:
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
+        # Force one tool call per turn so the model emits a fresh
+        # <think> block before each tool. Useful for models that
+        # contractually emit one <think> per turn but support
+        # multi-step reasoning chained across turns (DSv4-Flash, etc).
+        interleaved_thinking: bool = False,
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
@@ -458,6 +463,7 @@ class AIAgent:
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
+            interleaved_thinking=interleaved_thinking,
             request_overrides=request_overrides,
             prefill_messages=prefill_messages,
             platform=platform,
@@ -555,7 +561,9 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+        self._usage_history = []
+        self._tools_hash_cache = None
+
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
@@ -1291,6 +1299,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    anthropic_content_blocks=msg.get("anthropic_content_blocks") if role == "assistant" else None,
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
@@ -1569,6 +1578,7 @@ class AIAgent:
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
+                "usage_history": list(self._usage_history),
             }
 
             atomic_json_write(
@@ -1923,6 +1933,35 @@ class AIAgent:
                 self._memory_manager.shutdown_all()
             except Exception:
                 pass
+        # Phase 2 auto-extraction: session-end pass + commit. No-op when
+        # memory.auto_extract is off. Best-effort. The CLI's session-finalize
+        # callback is responsible for surfacing the confirm UI; here we just
+        # let extractor stash the proposals back to the buffer for the next
+        # interactive session if no callback was registered.
+        try:
+            from tools import memory_extraction as _mex
+            _summary = _mex.on_session_end(
+                self.session_id or "",
+                messages or [],
+                interactive=False,
+            )
+            if _summary.get("final_proposed", 0) or _summary.get("committed", 0):
+                logger.info(
+                    "memory extraction session end: buffered=%d proposed=%d committed=%d skipped=%d",
+                    _summary.get("buffered", 0),
+                    _summary.get("final_proposed", 0),
+                    _summary.get("committed", 0),
+                    _summary.get("skipped", 0),
+                )
+        except Exception:
+            pass
+        # Phase 3 auto-feedback: drop per-session window so a long-running
+        # CLI process doesn't accumulate session state forever.
+        try:
+            from tools.memory_auto_feedback import flush_session as _maf_flush
+            _maf_flush(self.session_id or "")
+        except Exception:
+            pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
@@ -1993,16 +2032,42 @@ class AIAgent:
         """
         if interrupted:
             return
-        if not (self._memory_manager and final_response and original_user_message):
+        if not (final_response and original_user_message):
             return
+        # External memory provider sync (existing path)
+        if self._memory_manager:
+            try:
+                self._memory_manager.sync_all(
+                    original_user_message, final_response,
+                    session_id=self.session_id or "",
+                )
+                self._memory_manager.queue_prefetch_all(
+                    original_user_message,
+                    session_id=self.session_id or "",
+                )
+            except Exception:
+                pass
+        # Phase 2 auto-extraction (per-turn hook). Backgrounded; never blocks.
+        # No-op when memory.auto_extract is off in config.
         try:
-            self._memory_manager.sync_all(
-                original_user_message, final_response,
-                session_id=self.session_id or "",
+            from tools import memory_extraction as _mex
+            _mex.on_turn_end(
+                self.session_id or "",
+                user_msg=str(original_user_message),
+                assistant_msg=str(final_response),
             )
-            self._memory_manager.queue_prefetch_all(
-                original_user_message,
-                session_id=self.session_id or "",
+        except Exception:
+            pass
+
+        # Phase 3 auto-feedback: walk the recall window for this session,
+        # match fingerprints against the assistant response, and upvote
+        # any fact whose distinctive content the assistant cited. Best-
+        # effort; never blocks. No-op when memory.auto_feedback is off.
+        try:
+            from tools import memory_auto_feedback as _maf
+            _maf.on_turn_end(
+                self.session_id or "",
+                assistant_text=str(final_response),
             )
         except Exception:
             pass
@@ -2750,6 +2815,7 @@ class AIAgent:
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -2824,6 +2890,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
