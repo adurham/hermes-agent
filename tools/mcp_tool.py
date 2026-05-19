@@ -79,6 +79,7 @@ Thread safety:
 
 import asyncio
 import concurrent.futures
+import hashlib
 import inspect
 import json
 import logging
@@ -2171,6 +2172,441 @@ def _load_mcp_config() -> Dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# Tool-schema cache (startup acceleration)
+# ---------------------------------------------------------------------------
+#
+# MCP server discovery dominates cold-start time: each cc_proxy_mcp / npx /
+# stdio child spawns a Python process, opens an httpx HTTP/2 connection to its
+# upstream, and runs the MCP ``initialize`` + ``list_tools`` JSON-RPC round
+# trip before Hermes can register a single tool. On a config with ~9 servers
+# that's 2-4s of wall-clock on a fast network and 10-20s on a slower one.
+#
+# The cache below persists the discovered tool list + advertised capabilities
+# under ``$HERMES_HOME/cache/mcp_tools/<server>.json`` keyed on a hash of the
+# server config. On startup we register tools from the cache instantly (no
+# subprocess, no network), then:
+#
+#   * On first invocation of a tool from server X, ``_make_tool_handler``
+#     spins up the real ``MCPServerTask`` lazily (paying the connect cost
+#     once per session, only for servers the agent actually uses).
+#   * A daemon thread runs the real discovery in the background, compares the
+#     fresh tool set to the cached one, and rewrites the cache on disk.
+#     Any added/removed tools become visible on the NEXT session start.
+#
+# Cache invalidation: if the config hash differs (e.g. user edited
+# ``mcp_servers.<name>.args``), the cache entry is discarded and we fall
+# through to live discovery synchronously, matching pre-cache behaviour.
+#
+# A cached tool call against a tool that no longer exists on the server
+# returns a normal "tool not found" error from the upstream, which the
+# circuit breaker handles. The cache is best-effort acceleration, never a
+# source of truth.
+
+_CACHE_SCHEMA_VERSION = 1
+
+# Sentinel returned by hash helpers for inputs we don't want to cache.
+_CACHE_HASH_NOCACHE = ""
+
+# In-memory mirror of the cached spec for the current session, keyed by
+# server name. Cleared on cache hit failure / config change.
+_cached_specs: Dict[str, dict] = {}
+_cached_specs_lock = threading.Lock()
+
+# Per-server lazy-spawn locks. Each server has its own lock so two tool
+# calls against the same server don't race to spawn; calls to different
+# servers are independent.
+_lazy_spawn_locks: Dict[str, threading.Lock] = {}
+_lazy_spawn_locks_lock = threading.Lock()
+
+
+def _get_lazy_spawn_lock(server_name: str) -> threading.Lock:
+    """Return the per-server lazy-spawn lock, creating it on first use."""
+    with _lazy_spawn_locks_lock:
+        lock = _lazy_spawn_locks.get(server_name)
+        if lock is None:
+            lock = threading.Lock()
+            _lazy_spawn_locks[server_name] = lock
+        return lock
+
+
+def _cache_root() -> Optional[str]:
+    """Return the on-disk root for cached MCP specs, or None if unavailable.
+
+    Uses ``$HERMES_HOME`` when set (respects per-profile installs), otherwise
+    falls back to ``~/.hermes``. Returns None if the directory can't be
+    created — the caller treats that as a cache miss and continues without
+    persistence.
+    """
+    try:
+        # Defer the import: ``hermes_constants`` pulls in a non-trivial set of
+        # modules and the cache root is recomputed on every save. Importing
+        # at module top would also create an import cycle in slimmed-down
+        # test fixtures that stub the constants module.
+        from hermes_constants import get_hermes_home
+        root = os.path.join(str(get_hermes_home()), "cache", "mcp_tools")
+    except Exception:
+        # Fall back to the literal default; matches what get_hermes_home()
+        # returns for non-profile installs.
+        root = os.path.join(os.path.expanduser("~"), ".hermes", "cache", "mcp_tools")
+    try:
+        os.makedirs(root, exist_ok=True)
+        return root
+    except OSError as exc:
+        logger.debug("MCP cache: cannot create %s (%s); caching disabled", root, exc)
+        return None
+
+
+def _cache_path_for(server_name: str) -> Optional[str]:
+    """Return the on-disk cache file path for ``server_name`` (or None)."""
+    root = _cache_root()
+    if not root:
+        return None
+    # Keep the filename predictable and shell-safe. Server names come from
+    # user config so they could in theory contain ``/`` or other path-unsafe
+    # characters; sanitize_mcp_name_component is already permissive enough
+    # for filesystem use.
+    safe = sanitize_mcp_name_component(server_name) or "_unnamed"
+    return os.path.join(root, f"{safe}.json")
+
+
+def _hash_server_config(config: dict) -> str:
+    """Stable hash of the parts of ``config`` that affect the tool set.
+
+    Excludes runtime-only knobs (``timeout``, ``connect_timeout``,
+    ``enabled``, ``supports_parallel_tool_calls``, ``sampling``) and the
+    ``tools`` filter (we cache the FULL upstream tool list and apply the
+    include/exclude filter at register-from-cache time — so a user can flip
+    a filter without re-discovering).
+    """
+    # Whitelist of keys that, when changed, plausibly change the tool set:
+    # command/args/env change the underlying server; url/headers/transport
+    # change which endpoint we hit. ``auth`` covers OAuth profile changes
+    # that might unlock different scoped tools.
+    keys = ("command", "args", "env", "url", "headers", "transport", "auth")
+    payload = {k: config.get(k) for k in keys if k in config}
+    try:
+        blob = json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
+    except (TypeError, ValueError):
+        # Unserializable config — disable caching for this server rather
+        # than failing the whole discovery pass.
+        return _CACHE_HASH_NOCACHE
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _capabilities_to_cache(initialize_result) -> dict:
+    """Extract the capability flags ``_select_utility_schemas`` cares about.
+
+    The full ``InitializeResult`` is rich (server-info, instructions,
+    protocol version, sub-objects) but the only thing the schema selector
+    inspects is whether ``capabilities.resources`` and
+    ``capabilities.prompts`` are non-None. Persist a tiny shape that's
+    cheap to JSON-encode and round-trip.
+    """
+    if initialize_result is None:
+        return {"resources": None, "prompts": None}
+    caps = getattr(initialize_result, "capabilities", None)
+    if caps is None:
+        return {"resources": None, "prompts": None}
+    # Capture truthiness, not the full sub-object — _select_utility_schemas
+    # only checks ``is not None``. Use a flag rather than mirror the object
+    # because the upstream MCP class can change shape across SDK versions.
+    return {
+        "resources": True if getattr(caps, "resources", None) is not None else None,
+        "prompts": True if getattr(caps, "prompts", None) is not None else None,
+    }
+
+
+class _CachedCapabilities:
+    """Stand-in for ``InitializeResult.capabilities`` built from cache.
+
+    Provides ``.resources`` and ``.prompts`` attributes so that
+    ``_select_utility_schemas`` can treat a cached spec the same as a freshly
+    discovered one without special-casing the read.
+    """
+
+    __slots__ = ("resources", "prompts")
+
+    def __init__(self, resources, prompts):
+        self.resources = resources
+        self.prompts = prompts
+
+
+class _CachedInitializeResult:
+    """Stand-in for an MCP ``InitializeResult`` rebuilt from a cached spec."""
+
+    __slots__ = ("capabilities",)
+
+    def __init__(self, capabilities: _CachedCapabilities):
+        self.capabilities = capabilities
+
+
+class _CachedMCPTool:
+    """Lightweight stand-in for an MCP ``Tool`` rebuilt from cached JSON.
+
+    ``_register_server_tools`` only reads ``.name``, ``.description``, and
+    ``.inputSchema`` off each tool object, so the in-memory shape mirrors
+    that subset. Persisting the raw upstream ``inputSchema`` (pre-normalize)
+    keeps the cache format independent of future changes to
+    ``_normalize_mcp_input_schema``.
+    """
+
+    __slots__ = ("name", "description", "inputSchema")
+
+    def __init__(self, name: str, description: Optional[str], inputSchema: Optional[dict]):
+        self.name = name
+        self.description = description
+        self.inputSchema = inputSchema
+
+
+def _load_cached_spec(server_name: str, config: dict) -> Optional[dict]:
+    """Read the on-disk cache entry for ``server_name`` if it matches config.
+
+    Returns the parsed spec dict (with ``tools`` already deserialized to
+    ``_CachedMCPTool`` instances) or None on miss / hash mismatch / corrupted
+    cache. Never raises — failures fall back to live discovery.
+    """
+    path = _cache_path_for(server_name)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("MCP cache: %s unreadable (%s); skipping", path, exc)
+        return None
+
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("version") != _CACHE_SCHEMA_VERSION:
+        logger.debug("MCP cache: %s schema mismatch (got %r); skipping",
+                     path, raw.get("version"))
+        return None
+
+    expected_hash = _hash_server_config(config)
+    if not expected_hash or raw.get("config_hash") != expected_hash:
+        logger.debug("MCP cache: %s config hash drift; skipping", path)
+        return None
+
+    raw_tools = raw.get("tools") or []
+    if not isinstance(raw_tools, list):
+        return None
+    tools: List[_CachedMCPTool] = []
+    for t in raw_tools:
+        if not isinstance(t, dict):
+            continue
+        name = t.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        tools.append(_CachedMCPTool(
+            name=name,
+            description=t.get("description"),
+            inputSchema=t.get("inputSchema"),
+        ))
+    if not tools:
+        # Cache entry exists but has no tools — treat as miss so live
+        # discovery runs (and either confirms zero tools or repopulates).
+        return None
+
+    caps_raw = raw.get("capabilities") or {}
+    if not isinstance(caps_raw, dict):
+        caps_raw = {}
+    capabilities = _CachedCapabilities(
+        resources=True if caps_raw.get("resources") else None,
+        prompts=True if caps_raw.get("prompts") else None,
+    )
+
+    return {
+        "tools": tools,
+        "capabilities": capabilities,
+        "config_hash": expected_hash,
+        "cached_at": raw.get("cached_at"),
+    }
+
+
+def _save_cached_spec(server_name: str, config: dict, server: "MCPServerTask") -> None:
+    """Persist the live discovery result for ``server_name`` to disk.
+
+    Idempotent. Best-effort: any IO error is logged at DEBUG and dropped —
+    the cache is a startup optimization, not authoritative state.
+    """
+    path = _cache_path_for(server_name)
+    if not path:
+        return
+    config_hash = _hash_server_config(config)
+    if not config_hash:
+        return
+
+    tools_payload: List[dict] = []
+    for tool in getattr(server, "_tools", []) or []:
+        # Defensively pluck the three fields we need; tolerate unexpected
+        # shapes (e.g. MCP SDK upgrades that add attrs).
+        name = getattr(tool, "name", None)
+        if not isinstance(name, str) or not name:
+            continue
+        description = getattr(tool, "description", None)
+        input_schema = getattr(tool, "inputSchema", None)
+        tools_payload.append({
+            "name": name,
+            "description": description if isinstance(description, str) else None,
+            "inputSchema": input_schema if isinstance(input_schema, dict) else None,
+        })
+
+    payload = {
+        "version": _CACHE_SCHEMA_VERSION,
+        "server_name": server_name,
+        "config_hash": config_hash,
+        "cached_at": time.time(),
+        "capabilities": _capabilities_to_cache(getattr(server, "initialize_result", None)),
+        "tools": tools_payload,
+    }
+
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        logger.debug("MCP cache: failed to write %s (%s)", path, exc)
+        # Clean up the temp file if the replace didn't run.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _make_cached_server_shell(name: str, config: dict, spec: dict) -> "MCPServerTask":
+    """Build a placeholder ``MCPServerTask`` that exposes cached tools/caps.
+
+    The shell has ``session=None`` so ``_make_check_fn`` and the tool
+    handlers can detect that a real connection hasn't been established yet
+    and trigger lazy-spawn on first use. Everything else
+    (``initialize_result``, ``_tools``, ``tool_timeout``) is populated from
+    the cache so existing helpers work without branching.
+    """
+    server = MCPServerTask(name)
+    server.tool_timeout = float(config.get("timeout", _DEFAULT_TOOL_TIMEOUT))
+    server._tools = list(spec["tools"])
+    server.initialize_result = _CachedInitializeResult(spec["capabilities"])
+    server._config = config
+    return server
+
+
+def _ensure_server_connected(server_name: str, tool_label: str = "tool call") -> Optional[str]:
+    """Lazy-spawn the real MCP session for a cache-registered server.
+
+    Called from tool handlers when ``server.session is None`` indicates the
+    cache shell is still in place. Synchronously connects on the MCP loop
+    behind a per-server lock so concurrent calls dedupe to a single spawn.
+
+    Returns:
+        None on success (the real session is in ``_servers[server_name]``).
+        A JSON error string on failure that the caller can return verbatim.
+    """
+    lock = _get_lazy_spawn_lock(server_name)
+    with lock:
+        # Re-check under the lock — another thread may have already spawned
+        # the server while we were blocked.
+        with _lock:
+            server = _servers.get(server_name)
+        if server is not None and server.session is not None:
+            return None
+
+        # Need the original config to spawn. Reload from disk so we pick
+        # up edits the user made since startup (matches the behaviour of
+        # the live discovery path).
+        configs = _load_mcp_config()
+        cfg = configs.get(server_name)
+        if cfg is None:
+            return json.dumps({
+                "error": f"MCP server '{server_name}' is no longer in config; "
+                         f"cannot fulfill {tool_label}"
+            }, ensure_ascii=False)
+        if not _parse_boolish(cfg.get("enabled", True), default=True):
+            return json.dumps({
+                "error": f"MCP server '{server_name}' is disabled in config; "
+                         f"cannot fulfill {tool_label}"
+            }, ensure_ascii=False)
+
+        _ensure_mcp_loop()
+
+        connect_timeout = cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+
+        async def _spawn():
+            return await asyncio.wait_for(
+                _connect_server(server_name, cfg),
+                timeout=connect_timeout,
+            )
+
+        try:
+            # Outer timeout = connect_timeout + a small buffer to swallow the
+            # inner wait_for's own raise without races. We don't add the
+            # full per-server discovery slack here because the user is
+            # waiting in the tool-call hot path.
+            outer_timeout = float(connect_timeout) + 5.0
+            new_server = _run_on_mcp_loop(_spawn, timeout=outer_timeout)
+        except InterruptedError:
+            return _interrupted_call_result()
+        except Exception as exc:
+            logger.warning(
+                "MCP lazy-spawn for '%s' failed: %s",
+                server_name, _format_connect_error(exc),
+            )
+            _bump_server_error(server_name)
+            return json.dumps({
+                "error": f"MCP server '{server_name}' failed to connect: "
+                         f"{_sanitize_error(_exc_str(exc))}"
+            }, ensure_ascii=False)
+
+        # Swap the shell out for the real server. Preserve the cached
+        # ``_registered_tool_names`` list so the registry view stays
+        # consistent with the names already exposed to the model.
+        with _lock:
+            cached_shell = _servers.get(server_name)
+            cached_names = (
+                list(getattr(cached_shell, "_registered_tool_names", []) or [])
+                if cached_shell is not None else []
+            )
+            _servers[server_name] = new_server
+            if cached_names and not getattr(new_server, "_registered_tool_names", None):
+                new_server._registered_tool_names = cached_names
+
+        # Persist a fresh cache snapshot opportunistically so the next
+        # startup benefits even if the background refresh hasn't fired
+        # yet (or was throttled / skipped due to interpreter shutdown).
+        _save_cached_spec(server_name, cfg, new_server)
+        return None
+
+
+def _resolve_live_server(server_name: str, tool_label: str):
+    """Return the live ``MCPServerTask`` for ``server_name``, spawning if needed.
+
+    Helper for utility handlers (list_resources / read_resource / list_prompts /
+    get_prompt) that all share the same "fetch from _servers, lazy-spawn if
+    only the cache shell is present, fail cleanly if neither" preamble.
+
+    Returns ``(server, None)`` on success or ``(None, error_json_str)`` when
+    the caller should return the error directly to the model.
+    """
+    with _lock:
+        server = _servers.get(server_name)
+    if server is None:
+        return None, json.dumps({
+            "error": f"MCP server '{server_name}' is not connected"
+        }, ensure_ascii=False)
+    if server.session is None:
+        err = _ensure_server_connected(server_name, tool_label=tool_label)
+        if err is not None:
+            return None, err
+        with _lock:
+            server = _servers.get(server_name)
+        if server is None or server.session is None:
+            return None, json.dumps({
+                "error": f"MCP server '{server_name}' is not connected"
+            }, ensure_ascii=False)
+    return server, None
+
+
+# ---------------------------------------------------------------------------
 # Server connection helper
 # ---------------------------------------------------------------------------
 
@@ -2230,11 +2666,33 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         with _lock:
             server = _servers.get(server_name)
-        if not server or not server.session:
+        # ``server`` may be a cached shell (session=None) when this is the
+        # first call against the server in the current session. Lazy-spawn
+        # the real session on demand. If the shell exists we trust the
+        # cache and just need to bring it online; if there's no entry at
+        # all (i.e. the server isn't even configured) treat that as a hard
+        # error since lazy-spawn would have nothing to spawn from.
+        if server is None:
             _bump_server_error(server_name)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
+        if server.session is None:
+            err = _ensure_server_connected(
+                server_name,
+                tool_label=f"tools/call {tool_name}",
+            )
+            if err is not None:
+                # _ensure_server_connected already bumped the breaker on
+                # failure paths, so don't double-count here.
+                return err
+            with _lock:
+                server = _servers.get(server_name)
+            if server is None or server.session is None:
+                _bump_server_error(server_name)
+                return json.dumps({
+                    "error": f"MCP server '{server_name}' is not connected"
+                }, ensure_ascii=False)
 
         async def _call():
             async with server._rpc_lock:
@@ -2342,12 +2800,9 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+        server, err = _resolve_live_server(server_name, "resources/list")
+        if err is not None:
+            return err
 
         async def _call():
             async with server._rpc_lock:
@@ -2402,16 +2857,13 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
-
         uri = args.get("uri")
         if not uri:
             return tool_error("Missing required parameter 'uri'")
+
+        server, err = _resolve_live_server(server_name, f"resources/read {uri}")
+        if err is not None:
+            return err
 
         async def _call():
             async with server._rpc_lock:
@@ -2460,12 +2912,9 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+        server, err = _resolve_live_server(server_name, "prompts/list")
+        if err is not None:
+            return err
 
         async def _call():
             async with server._rpc_lock:
@@ -2525,17 +2974,14 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
-
         name = args.get("name")
         if not name:
             return tool_error("Missing required parameter 'name'")
         arguments = args.get("arguments", {})
+
+        server, err = _resolve_live_server(server_name, f"prompts/get {name}")
+        if err is not None:
+            return err
 
         async def _call():
             async with server._rpc_lock:
@@ -2591,12 +3037,20 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
 
 
 def _make_check_fn(server_name: str):
-    """Return a check function that verifies the MCP connection is alive."""
+    """Return a check function that verifies an MCP tool is usable.
+
+    Pre-cache-era this returned True only when a live session existed. With
+    the startup cache, ``_servers[name]`` can also hold a cache shell whose
+    ``session`` is None — the tool *is* usable, the underlying connection
+    just hasn't been spawned yet. Treat the presence of an entry as good
+    enough; lazy-spawn happens at call time, and circuit-breaker handles
+    the case where spawning repeatedly fails.
+    """
 
     def _check() -> bool:
         with _lock:
             server = _servers.get(server_name)
-        return server is not None and server.session is not None
+        return server is not None
 
     return _check
 
@@ -3087,6 +3541,11 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
 
+    # Persist the discovered tool list so the next session can skip the
+    # network round-trip and register from cache instantly. Best-effort —
+    # _save_cached_spec swallows IO errors at DEBUG.
+    _save_cached_spec(name, config, server)
+
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(
         "MCP server '%s' (%s): registered %d tool(s): %s",
@@ -3105,6 +3564,14 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     Idempotent for already-connected server names. Servers with
     ``enabled: false`` are skipped without disconnecting existing sessions.
+
+    Startup-cache fast path: for servers that have an on-disk cache entry
+    whose config hash matches the current config, tools are registered
+    immediately from the cache and a real ``MCPServerTask`` is lazy-spawned
+    on the first call to one of those tools (see ``_make_tool_handler``
+    and ``_ensure_server_connected``). A daemon thread runs the live
+    discovery in the background so the cache stays fresh for the next
+    session, but the current process never blocks on that work.
 
     Args:
         servers: Mapping of ``{server_name: server_config}``.
@@ -3138,61 +3605,201 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     if not new_servers:
         return _existing_tool_names()
 
-    # Start the background event loop for MCP connections
-    _ensure_mcp_loop()
+    # ------------------------------------------------------------------
+    # Cache fast path: any server with a valid on-disk cache gets its
+    # tools registered immediately (no subprocess, no network) and is
+    # removed from ``new_servers`` so the live-discovery loop only deals
+    # with the genuine cache-miss set.
+    # ------------------------------------------------------------------
+    cache_hit_servers: Dict[str, dict] = {}
+    cache_hit_tool_count = 0
+    if os.environ.get("HERMES_MCP_NO_CACHE", "").lower() not in {"1", "true", "yes", "on"}:
+        for name in list(new_servers.keys()):
+            cfg = new_servers[name]
+            spec = _load_cached_spec(name, cfg)
+            if spec is None:
+                continue
+            try:
+                shell = _make_cached_server_shell(name, cfg, spec)
+            except Exception as exc:
+                logger.debug(
+                    "MCP cache: failed to build shell for '%s' (%s); "
+                    "falling back to live discovery", name, exc,
+                )
+                continue
+            with _lock:
+                _servers[name] = shell
+            try:
+                registered = _register_server_tools(name, shell, cfg)
+            except Exception as exc:
+                # Registering from cache shouldn't fail under normal conditions
+                # (it's the same code path used post-discovery), but if it does
+                # we drop the shell so live discovery can retry below.
+                logger.warning(
+                    "MCP cache: registration from cache failed for '%s' (%s); "
+                    "falling back to live discovery", name, exc,
+                )
+                with _lock:
+                    _servers.pop(name, None)
+                continue
+            shell._registered_tool_names = list(registered)
+            cache_hit_servers[name] = cfg
+            cache_hit_tool_count += len(registered)
+            new_servers.pop(name, None)
+
+    if cache_hit_servers:
+        logger.info(
+            "MCP cache: registered %d tool(s) from %d cached server(s) "
+            "(spawn deferred to first call)",
+            cache_hit_tool_count, len(cache_hit_servers),
+        )
+
+    if not new_servers and not cache_hit_servers:
+        return _existing_tool_names()
+
+    # Start the background event loop for MCP connections — needed for
+    # both the synchronous miss path and the background refresh.
+    if new_servers or cache_hit_servers:
+        _ensure_mcp_loop()
 
     async def _discover_one(name: str, cfg: dict) -> List[str]:
         """Connect to a single server and return its registered tool names."""
         return await _discover_and_register_server(name, cfg)
 
-    async def _discover_all():
-        server_names = list(new_servers.keys())
-        # Connect to all servers in PARALLEL
-        results = await asyncio.gather(
-            *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
-            return_exceptions=True,
-        )
-        for name, result in zip(server_names, results):
-            if isinstance(result, Exception):
-                command = new_servers.get(name, {}).get("command")
-                logger.warning(
-                    "Failed to connect to MCP server '%s'%s: %s",
-                    name,
-                    f" (command={command})" if command else "",
-                    _format_connect_error(result),
-                )
+    # ------------------------------------------------------------------
+    # Synchronous discovery for true cache misses. The model can't see
+    # these servers' tools until we've round-tripped to them once, so
+    # this stays blocking — same behaviour as pre-cache.
+    # ------------------------------------------------------------------
+    if new_servers:
+        async def _discover_all():
+            server_names = list(new_servers.keys())
+            # Connect to all servers in PARALLEL
+            results = await asyncio.gather(
+                *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
+                return_exceptions=True,
+            )
+            for name, result in zip(server_names, results):
+                if isinstance(result, Exception):
+                    command = new_servers.get(name, {}).get("command")
+                    logger.warning(
+                        "Failed to connect to MCP server '%s'%s: %s",
+                        name,
+                        f" (command={command})" if command else "",
+                        _format_connect_error(result),
+                    )
 
-    # Per-server timeouts are handled inside _discover_and_register_server.
-    # The outer timeout is generous: 120s total for parallel discovery.
-    #
-    # Temporarily clear the interrupt flag on the current thread so that MCP
-    # discovery is never cancelled by a stale interrupt from a prior agent
-    # session (executor threads get reused and may carry old interrupt state).
-    from tools.interrupt import is_interrupted as _is_interrupted, set_interrupt as _set_interrupt
-    _was_interrupted = _is_interrupted()
-    if _was_interrupted:
-        _set_interrupt(False)
-    try:
-        _run_on_mcp_loop(_discover_all, timeout=120)
-    finally:
+        # Per-server timeouts are handled inside _discover_and_register_server.
+        # The outer timeout is generous: 120s total for parallel discovery.
+        #
+        # Temporarily clear the interrupt flag on the current thread so that
+        # MCP discovery is never cancelled by a stale interrupt from a prior
+        # agent session (executor threads get reused and may carry old
+        # interrupt state).
+        from tools.interrupt import is_interrupted as _is_interrupted, set_interrupt as _set_interrupt
+        _was_interrupted = _is_interrupted()
         if _was_interrupted:
-            _set_interrupt(True)
+            _set_interrupt(False)
+        try:
+            _run_on_mcp_loop(_discover_all, timeout=120)
+        finally:
+            if _was_interrupted:
+                _set_interrupt(True)
 
-    # Log a summary so ACP callers get visibility into what was registered.
-    with _lock:
-        connected = [n for n in new_servers if n in _servers]
-        new_tool_count = sum(
-            len(getattr(_servers[n], "_registered_tool_names", []))
-            for n in connected
-        )
-    failed = len(new_servers) - len(connected)
-    if new_tool_count or failed:
-        summary = f"MCP: registered {new_tool_count} tool(s) from {len(connected)} server(s)"
-        if failed:
-            summary += f" ({failed} failed)"
-        logger.info(summary)
+        # Log a summary so ACP callers get visibility into what was registered.
+        # ``new_servers`` here contains only the live-discovery set (cache
+        # hits were popped out earlier), so ``n in _servers`` equivalently
+        # means the discovery succeeded — _discover_and_register_server
+        # only inserts into _servers on success.
+        with _lock:
+            connected = [n for n in new_servers if n in _servers]
+            new_tool_count = sum(
+                len(getattr(_servers[n], "_registered_tool_names", []))
+                for n in connected
+            )
+        failed = len(new_servers) - len(connected)
+        if new_tool_count or failed:
+            summary = f"MCP: registered {new_tool_count} tool(s) from {len(connected)} server(s)"
+            if failed:
+                summary += f" ({failed} failed)"
+            logger.info(summary)
+
+    # ------------------------------------------------------------------
+    # Background refresh for cache hits. Spawn the real sessions, diff
+    # the live tool set against the cache, rewrite the cache file. Don't
+    # touch the in-memory registry for this session — that would risk
+    # races with tool calls in flight. The new tool set goes live on the
+    # next process start.
+    # ------------------------------------------------------------------
+    if cache_hit_servers:
+        _spawn_background_refresh(cache_hit_servers)
 
     return _existing_tool_names()
+
+
+def _spawn_background_refresh(cache_hit_servers: Dict[str, dict]) -> None:
+    """Refresh cached MCP specs in a daemon thread.
+
+    For each server passed in, run live discovery and rewrite the on-disk
+    cache. Skip any server that has already been lazy-spawned by an early
+    tool call (the lazy-spawn path persists a fresh cache on its own).
+    All exceptions are caught and logged at DEBUG — the refresh is purely
+    a "make next startup correct" optimization, never user-facing.
+    """
+
+    def _runner():
+        # Tiny delay so the interactive prompt has rendered before we
+        # start nine subprocess spawns that compete for the same CPU.
+        # Without this, the cold-start CPU spike collides with banner
+        # painting and prompt_toolkit init on slower machines, which
+        # is exactly what the cache was supposed to eliminate.
+        time.sleep(0.5)
+
+        for name, cfg in cache_hit_servers.items():
+            with _lock:
+                existing = _servers.get(name)
+            # If a tool call already lazy-spawned this server, the live
+            # session is in place and _save_cached_spec was called from
+            # _ensure_server_connected. Nothing to do here.
+            if existing is not None and existing.session is not None:
+                continue
+            try:
+                async def _do_refresh(_name=name, _cfg=cfg):
+                    connect_timeout = _cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+                    fresh = await asyncio.wait_for(
+                        _connect_server(_name, _cfg),
+                        timeout=connect_timeout,
+                    )
+                    # Update the cache file. We deliberately do NOT swap
+                    # _servers[_name] here — that would race with any tool
+                    # call that just picked up the shell. The user gets the
+                    # new tool set on the next process start, which is the
+                    # contract documented in the cache header comment.
+                    _save_cached_spec(_name, _cfg, fresh)
+                    # The freshly opened transport needs to be torn down
+                    # since we're not keeping it in _servers. shutdown()
+                    # is the supported async cleanup.
+                    try:
+                        await fresh.shutdown()
+                    except Exception:  # noqa: BLE001 — best-effort cleanup
+                        pass
+
+                _run_on_mcp_loop(
+                    _do_refresh,
+                    timeout=float(cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)) + 30.0,
+                )
+            except Exception as exc:  # noqa: BLE001 — background, must not crash
+                logger.debug(
+                    "MCP cache: background refresh for '%s' failed (%s); "
+                    "cache will be retried next session", name, exc,
+                )
+
+    thread = threading.Thread(
+        target=_runner,
+        name="mcp-cache-refresh",
+        daemon=True,
+    )
+    thread.start()
 
 
 def discover_mcp_tools() -> List[str]:
@@ -3272,6 +3879,11 @@ def get_mcp_status() -> List[dict]:
 
     Returns a list of dicts with keys: name, transport, tools, connected.
     Includes both successfully connected servers and configured-but-failed ones.
+
+    Cache shells (registered from disk, real session pending lazy-spawn)
+    report ``connected=True`` with the cached tool count — from the user's
+    perspective those tools ARE available; the connection is just deferred
+    until the model actually calls one.
     """
     result: List[dict] = []
 
@@ -3286,15 +3898,23 @@ def get_mcp_status() -> List[dict]:
     for name, cfg in configured.items():
         transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
         server = active_servers.get(name)
-        if server and server.session is not None:
+        if server is not None:
             entry = {
                 "name": name,
                 "transport": transport,
-                "tools": len(server._registered_tool_names) if hasattr(server, "_registered_tool_names") else len(server._tools),
+                "tools": (
+                    len(server._registered_tool_names)
+                    if hasattr(server, "_registered_tool_names") and server._registered_tool_names
+                    else len(getattr(server, "_tools", []) or [])
+                ),
                 "connected": True,
             }
-            if server._sampling:
+            if getattr(server, "_sampling", None):
                 entry["sampling"] = dict(server._sampling.metrics)
+            # Surface whether this is a cache shell awaiting lazy-spawn so
+            # the banner / tooling can render it distinctly if it wants to.
+            if server.session is None:
+                entry["lazy_spawn_pending"] = True
             result.append(entry)
         else:
             result.append({

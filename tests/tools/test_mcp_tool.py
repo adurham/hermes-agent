@@ -385,14 +385,26 @@ class TestCheckFunction:
         finally:
             _servers.pop("test_server", None)
 
-    def test_session_none_returns_false(self):
+    def test_session_none_returns_true_for_cache_shell(self):
+        """Cache-registered servers report check=True even with session=None.
+
+        Pre-cache-era the check function returned False whenever a server's
+        session was None — meaning the connection had failed or been torn
+        down. The startup cache introduces a third state: ``_servers[name]``
+        holds a placeholder shell whose tools are already registered from
+        disk but whose real session is deferred until first use. The check
+        function MUST return True in that case so the banner /
+        ``check_tool_availability`` keep treating those tools as available;
+        the lazy-spawn path in the tool handlers resolves the session on
+        demand. See ``_ensure_server_connected``.
+        """
         from tools.mcp_tool import _make_check_fn, _servers
 
         server = _make_mock_server("test_server", session=None)
         _servers["test_server"] = server
         try:
             check = _make_check_fn("test_server")
-            assert check() is False
+            assert check() is True
         finally:
             _servers.pop("test_server", None)
 
@@ -2169,7 +2181,15 @@ class TestUtilityToolRegistration:
         _servers.pop("myserv", None)
 
     def test_utility_tools_have_check_fn(self):
-        """Utility tools have a working check_fn."""
+        """Utility tools have a working check_fn.
+
+        The check function returns True whenever ``_servers[name]`` holds an
+        entry — covering both a fully-connected server AND a cache shell
+        whose real session is deferred until first use. It only returns
+        False when the server has been removed entirely (e.g. config edit
+        + restart, OAuth blowup that purged the entry). The lazy-spawn
+        path handles bringing the session online on demand.
+        """
         from tools.registry import ToolRegistry
         from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
@@ -2193,11 +2213,15 @@ class TestUtilityToolRegistration:
         # Server is connected, check_fn should return True
         assert entry.check_fn() is True
 
-        # Disconnect the server
+        # Drop the session — emulates the cache shell state. check_fn must
+        # still return True so the banner / tool-availability reporting
+        # keeps showing these tools; lazy-spawn handles reconnection on use.
         _servers["chk"].session = None
-        assert entry.check_fn() is False
+        assert entry.check_fn() is True
 
+        # Remove the server entirely — only NOW should check_fn report False.
         _servers.pop("chk", None)
+        assert entry.check_fn() is False
 
 
 # ===========================================================================
