@@ -272,3 +272,127 @@ class TestCCArgsTranslationAfterRepair:
         assert new_args["path"] == "/tmp"
         # CC's -i flag maps to case_insensitive
         assert new_args["case_insensitive"] is True
+
+
+class TestCCAgentToDelegateTaskInbound:
+    """Inbound-only CC ``Agent`` → hermes ``delegate_task`` adapter.
+
+    The model is heavily trained to emit ``Agent(...)`` for subagent spawns
+    (Anthropic's canonical name).  Before this adapter, when the model
+    reflexively emitted ``Agent`` instead of ``delegate_task`` on our CC-
+    OAuth path, the tool name fell through to "Unknown tool" — burning a
+    self-correction round-trip.  This adapter routes inbound only: the
+    model still SEES hermes's full ``delegate_task`` schema (batch tasks,
+    agent_type, ACP, toolsets) and can use it directly; ``Agent`` is just
+    a safety net for the trained reflex.
+    """
+
+    def test_agent_in_cc_to_hermes(self):
+        from agent.cc_aliases import CC_TO_HERMES
+        assert CC_TO_HERMES.get("Agent") == "delegate_task"
+
+    def test_agent_NOT_in_hermes_to_cc(self):
+        """Outbound substitution must NOT replace delegate_task with Agent
+        on the wire — that would hide hermes's batch/ACP/agent_type fields
+        from the model."""
+        from agent.cc_aliases import HERMES_TO_CC
+        assert "delegate_task" not in HERMES_TO_CC
+        assert "Agent" not in HERMES_TO_CC.values()
+
+    def test_prompt_maps_to_goal(self):
+        from agent.cc_aliases import adapt_tool_use
+        name, args = adapt_tool_use("Agent", {"prompt": "Find auth bugs"})
+        assert name == "delegate_task"
+        assert args == {"goal": "Find auth bugs"}
+
+    def test_description_maps_to_context(self):
+        from agent.cc_aliases import adapt_tool_use
+        _, args = adapt_tool_use(
+            "Agent",
+            {"description": "Bug hunt", "prompt": "Find auth bugs"},
+        )
+        assert args["goal"] == "Find auth bugs"
+        assert args["context"] == "Bug hunt"
+
+    def test_model_passes_through(self):
+        from agent.cc_aliases import adapt_tool_use
+        _, args = adapt_tool_use(
+            "Agent",
+            {"prompt": "do thing", "model": "claude-haiku-4-5"},
+        )
+        assert args["model"] == "claude-haiku-4-5"
+
+    def test_subagent_type_dropped(self):
+        """CC's subagent_type (Explore/Plan/general-purpose/statusline-setup)
+        doesn't map to hermes's ruflo agent_type (researcher/coder/...).
+        Forcing a wrong mapping would inject the wrong persona — drop it."""
+        from agent.cc_aliases import adapt_tool_use
+        _, args = adapt_tool_use(
+            "Agent",
+            {"prompt": "do thing", "subagent_type": "Explore"},
+        )
+        assert "agent_type" not in args
+        assert "subagent_type" not in args
+
+    def test_run_in_background_dropped(self):
+        """delegate_task is synchronous; background work needs cron/process.
+        Silently dropping is better than misleading the model into thinking
+        the request was queued asynchronously."""
+        from agent.cc_aliases import adapt_tool_use
+        _, args = adapt_tool_use(
+            "Agent",
+            {"prompt": "do thing", "run_in_background": True},
+        )
+        assert "run_in_background" not in args
+        assert "background" not in args
+
+    def test_isolation_dropped(self):
+        from agent.cc_aliases import adapt_tool_use
+        _, args = adapt_tool_use(
+            "Agent",
+            {"prompt": "do thing", "isolation": "worktree"},
+        )
+        assert "isolation" not in args
+
+    def test_empty_args_safe(self):
+        """Empty input must not crash; downstream delegate_task gives a
+        clear 'Provide either goal or tasks' error."""
+        from agent.cc_aliases import adapt_tool_use
+        name, args = adapt_tool_use("Agent", {})
+        assert name == "delegate_task"
+        assert args == {}
+
+    def test_empty_string_model_skipped(self):
+        """Defensive: empty/whitespace model should NOT be forwarded
+        (would override config-default model with empty string)."""
+        from agent.cc_aliases import adapt_tool_use
+        _, args = adapt_tool_use("Agent", {"prompt": "x", "model": ""})
+        assert "model" not in args
+        _, args = adapt_tool_use("Agent", {"prompt": "x", "model": "   "})
+        assert "model" not in args
+
+    def test_repair_picks_up_agent(self):
+        """``_repair_tool_call`` should resolve ``Agent`` to
+        ``delegate_task`` when delegate_task is registered."""
+        from run_agent import AIAgent
+        stub = SimpleNamespace(valid_tool_names={"delegate_task", "read_file"})
+        repair = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+        assert repair("Agent") == "delegate_task"
+
+    def test_translate_cc_args_after_repair_fires_for_agent(self):
+        """End-to-end: after _repair_tool_call renames Agent → delegate_task,
+        ``_translate_cc_args_after_repair`` must run ``_adapt_agent`` on
+        the args — same as it does for Read/Write/Edit/Bash/Grep."""
+        import json
+        from run_agent import AIAgent
+        translate = AIAgent._translate_cc_args_after_repair.__get__(
+            SimpleNamespace(), AIAgent,
+        )
+        tc = SimpleNamespace(function=SimpleNamespace(
+            name="delegate_task",
+            arguments='{"prompt": "search for X", "description": "task",'
+                      ' "subagent_type": "Explore"}',
+        ))
+        translate(tc, original_name="Agent")
+        new_args = json.loads(tc.function.arguments)
+        assert new_args == {"goal": "search for X", "context": "task"}

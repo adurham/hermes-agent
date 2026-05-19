@@ -70,19 +70,25 @@ HERMES_TO_CC: Dict[str, str] = {
     "patch":        "Edit",
     "write_file":   "Write",
     "search_files": "Grep",
-    # No 1:1 mapping for these yet — left unmapped so they ship as
-    # native hermes entries (for now):
-    #   delegate_task → Agent (CC's Agent has a different arg shape;
-    #     subagent_type vs hermes's role/skill model — needs a fuller
-    #     adapter, deferred to phase 2.3)
-    #   todo → TodoWrite (CC's TodoWrite has different arg shape, also
-    #     not in CC's eager set in some session profiles)
-    #   process → Bash w/ run_in_background (semantically overlaps but
-    #     not 1:1; keep separate so the model can manage existing
-    #     background processes via hermes's tool)
+    # No bidirectional mapping for these — hermes keeps its richer native
+    # schema on the wire so the model retains access to features the CC
+    # canonical doesn't expose (batch tasks, agent_type, ACP override,
+    # toolset selection).  The CC names are still recognized INBOUND via
+    # the supplementary entries appended to CC_TO_HERMES below — when the
+    # model emits e.g. ``Agent(...)`` instead of ``delegate_task(...)``
+    # (Anthropic's training heavily reinforces the CC name), the inbound
+    # adapter still routes correctly.  See:
+    #   * delegate_task ← Agent     (handled below)
+    #   * todo ← TodoWrite          (still deferred — different arg shape)
+    #   * process ← Bash background (different lifecycle semantics)
 }
 
 CC_TO_HERMES: Dict[str, str] = {cc: h for h, cc in HERMES_TO_CC.items()}
+
+# Inbound-only aliases — recognize the CC name on incoming tool_use blocks
+# without substituting the hermes tool on the outbound side.  Lets the model
+# fall back to the CC reflex without losing access to hermes-only features.
+CC_TO_HERMES["Agent"] = "delegate_task"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -176,12 +182,52 @@ def _adapt_grep(cc_args: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _adapt_agent(cc_args: Dict[str, Any]) -> Dict[str, Any]:
+    """CC ``Agent`` → hermes ``delegate_task`` (inbound-only).
+
+    CC schema:    description, prompt, subagent_type, model, run_in_background, isolation
+    Hermes:       goal, context, tasks[], role, model, agent_type, toolsets, acp_*
+
+    Mapping decisions (kept narrow to avoid lying about hermes capabilities):
+
+      * ``prompt`` → ``goal``                — the actual task description
+      * ``description`` → prepended to ``context`` — short summary the model writes
+      * ``model`` → ``model``                — straight pass-through
+      * ``subagent_type`` → DROPPED          — CC's subagent types (Explore,
+        general-purpose, Plan, statusline-setup) don't map to hermes's ruflo
+        ``agent_type`` taxonomy (researcher, coder, reviewer, etc.).  Forcing
+        a wrong mapping would inject the wrong persona prompt.  The model's
+        ``prompt`` describes the work, which is enough.
+      * ``run_in_background`` → DROPPED      — hermes delegate_task is
+        synchronous.  Background work needs cron/terminal/process — different
+        lifecycle, not a one-line translation.
+      * ``isolation`` → DROPPED              — no hermes equivalent.
+
+    This is the safe inbound fallback: when the model reflexively emits the
+    CC name (heavy Anthropic training bias) we route it without losing
+    correctness.  When the model uses the native ``delegate_task`` it still
+    has access to batch tasks, ACP, toolsets, and agent_type.
+    """
+    out: Dict[str, Any] = {}
+    if "prompt" in cc_args:
+        out["goal"] = cc_args["prompt"]
+    description = cc_args.get("description", "").strip() if isinstance(cc_args.get("description"), str) else ""
+    if description:
+        out["context"] = description
+    if "model" in cc_args and isinstance(cc_args["model"], str) and cc_args["model"].strip():
+        out["model"] = cc_args["model"]
+    # subagent_type, run_in_background, isolation: intentionally dropped —
+    # see docstring for rationale.
+    return out
+
+
 _ADAPTERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "Bash":  _adapt_bash,
     "Read":  _adapt_read,
     "Edit":  _adapt_edit,
     "Write": _adapt_write,
     "Grep":  _adapt_grep,
+    "Agent": _adapt_agent,
 }
 
 
