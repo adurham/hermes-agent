@@ -81,11 +81,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             force=True,
         )
         for tc in tool_calls:
-            messages.append(make_tool_result_message(
-                tc.function.name,
-                f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
-                tc.id,
-            ))
+            messages.append({
+                "role": "tool",
+                "name": tc.function.name,
+                "content": f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
+                "tool_call_id": tc.id,
+            })
         return
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
@@ -214,7 +215,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # the tool returns True on the next poll.
         if agent._interrupt_requested:
             try:
-                _ra()._set_interrupt(True, _worker_tid)
+                _set_interrupt(True, _worker_tid)
             except Exception:
                 pass
         # Set the activity callback on THIS worker thread so
@@ -264,7 +265,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         with agent._tool_worker_threads_lock:
             agent._tool_worker_threads.discard(_worker_tid)
         try:
-            _ra()._set_interrupt(False, _worker_tid)
+            _set_interrupt(False, _worker_tid)
         except Exception:
             pass
         # Clear thread-local callbacks so a recycled worker thread
@@ -462,7 +463,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
-        messages.append(make_tool_result_message(name, _tool_content, tc.id))
+        tool_msg = {
+            "role": "tool",
+            "name": name,
+            "content": _tool_content,
+            "tool_call_id": tc.id,
+        }
+        messages.append(tool_msg)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -481,8 +488,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # so the steer marker is never truncated. See steer() for details.
     if num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
-
-
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
@@ -635,10 +640,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     query=function_args.get("query", ""),
                     role_filter=function_args.get("role_filter"),
                     limit=function_args.get("limit", 3),
-                    session_id=function_args.get("session_id"),
-                    around_message_id=function_args.get("around_message_id"),
-                    window=function_args.get("window", 5),
-                    sort=function_args.get("sort"),
                     db=session_db,
                     current_session_id=agent.session_id,
                 )
@@ -646,21 +647,34 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
-            target = function_args.get("target", "memory")
+            # See the parallel bypass at line 10062 for why we forward
+            # raw_target (None when not specified) instead of defaulting
+            # to "memory" — the warm promote/demote dispatch needs to
+            # tell defaulted apart from explicit.
+            raw_target = function_args.get("target")
             from tools.memory_tool import memory_tool as _memory_tool
             function_result = _memory_tool(
                 action=function_args.get("action"),
-                target=target,
+                target=raw_target,
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
                 store=agent._memory_store,
+                # Warm-tier args — see the parallel bypass above for why
+                # these must be forwarded explicitly.
+                tier=function_args.get("tier", "hot"),
+                query=function_args.get("query"),
+                top_k=function_args.get("top_k"),
+                category=function_args.get("category"),
+                tags=function_args.get("tags"),
+                fact_id=function_args.get("fact_id"),
+                helpful=function_args.get("helpful"),
             )
             # Bridge: notify external memory provider of built-in memory writes
             if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
                 try:
                     agent._memory_manager.on_memory_write(
                         function_args.get("action", ""),
-                        target,
+                        raw_target or "memory",
                         function_args.get("content", ""),
                         metadata=agent._build_memory_write_metadata(
                             task_id=effective_task_id,
@@ -802,7 +816,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _spinner_result = None
             try:
-                function_result = _ra().handle_function_call(
+                function_result = handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
@@ -822,7 +836,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent._vprint(f"  {cute_msg}")
         else:
             try:
-                function_result = _ra().handle_function_call(
+                function_result = handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
@@ -925,7 +939,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
+        tool_msg = {
+            "role": "tool",
+            "name": function_name,
+            "content": _tool_content,
+            "tool_call_id": tool_call.id
+        }
+        messages.append(tool_msg)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
@@ -947,11 +967,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
             for skipped_tc in assistant_message.tool_calls[i:]:
                 skipped_name = skipped_tc.function.name
-                messages.append(make_tool_result_message(
-                    skipped_name,
-                    f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
-                    skipped_tc.id,
-                ))
+                skip_msg = {
+                    "role": "tool",
+                    "name": skipped_name,
+                    "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
+                    "tool_call_id": skipped_tc.id
+                }
+                messages.append(skip_msg)
             break
 
         if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):
@@ -968,10 +990,3 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     if num_tools_seq > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
 
-
-
-
-__all__ = [
-    "execute_tool_calls_concurrent",
-    "execute_tool_calls_sequential",
-]

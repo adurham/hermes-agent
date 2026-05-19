@@ -248,38 +248,16 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
-def compress_context(
-    agent: Any,
-    messages: list,
-    system_message: str,
-    *,
-    approx_tokens: Optional[int] = None,
-    task_id: str = "default",
-    focus_topic: Optional[str] = None,
-    force: bool = False,
-) -> Tuple[list, str]:
+def compress_context(agent, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
     """Compress conversation context and split the session in SQLite.
 
     Args:
-        agent: The owning :class:`AIAgent`.
-        messages: Current message history (will be summarised).
-        system_message: Current system prompt; rebuilt after compression.
-        approx_tokens: Pre-compression token estimate, logged for ops.
-        task_id: Tool task scope (used for clearing file-read dedup state).
         focus_topic: Optional focus string for guided compression — the
             summariser will prioritise preserving information related to
             this topic.  Inspired by Claude Code's ``/compact <focus>``.
-        force: If True, bypass any active summary-failure cooldown.  Set
-            by the manual ``/compress`` slash command so users can retry
-            immediately after an auto-compress abort.  Auto-compress
-            callers use the default ``False``.
 
     Returns:
-        ``(compressed_messages, new_system_prompt)`` tuple.  When
-        compression aborts (aux LLM failed to produce a usable summary),
-        returns the original messages unchanged and the existing system
-        prompt — the session is NOT rotated.  Callers should detect the
-        no-op via ``len(returned) == len(input)`` and stop the retry loop.
+        (compressed_messages, new_system_prompt) tuple
     """
     _pre_msg_count = len(messages)
     logger.info(
@@ -299,31 +277,22 @@ def compress_context(
         except Exception:
             pass
 
+    # Phase 2 auto-extraction: piggyback on the compression boundary to
+    # extract durable facts from the slice that's about to be discarded.
+    # No-op when memory.auto_extract is off in config. Best-effort; never
+    # blocks compression.
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        from tools import memory_extraction as _mex
+        _mex.on_pre_compress(agent.session_id or "", messages or [])
+    except Exception:
+        pass
+
+    try:
+        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
+        # focus_topic — fall back to calling without it.
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
-
-    # If compression aborted (aux LLM failed to produce a usable summary)
-    # the compressor returns the input messages unchanged.  Surface the
-    # error to the user, skip the session-rotation work entirely (no
-    # session has logically ended), and let auto-compress callers detect
-    # the no-op via len(returned) == len(input).
-    if getattr(agent.context_compressor, "_last_compress_aborted", False):
-        _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
-        if getattr(agent, "_last_compression_summary_warning", None) != _err:
-            agent._last_compression_summary_warning = _err
-            agent._emit_warning(
-                f"⚠ Compression aborted: {_err}. "
-                "No messages were dropped — conversation continues unchanged. "
-                "Run /compress to retry, or /new to start a fresh session."
-            )
-        _existing_sp = getattr(agent, "_cached_system_prompt", None)
-        if not _existing_sp:
-            _existing_sp = agent._build_system_prompt(system_message)
-        return messages, _existing_sp
 
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
     if summary_error:
@@ -469,7 +438,6 @@ def compress_context(
         f"{_compressed_est:,}",
     )
     return compressed, new_system_prompt
-
 
 def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
     """Re-encode all native image parts at a smaller size to recover from

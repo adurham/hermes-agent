@@ -57,7 +57,7 @@ def _ra():
     return run_agent
 
 
-def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
+def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
     Returns a dict with three keys:
@@ -69,17 +69,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
       * ``volatile`` — memory snapshot, user profile, external
         memory provider block, timestamp line.
 
-    Joined into a single string by :func:`build_system_prompt` and
-    cached on ``agent._cached_system_prompt`` for the lifetime of the
+    Joined into a single string by ``_build_system_prompt`` and
+    cached on ``_cached_system_prompt`` for the lifetime of the
     AIAgent.  Hermes never re-renders parts of this string mid-
     session — that's the only way to keep upstream prompt caches
     warm across turns.
     """
-    # Local import to avoid pulling model_tools at module load.  Tests
-    # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
-    # we resolve through ``_ra()`` to honor those patches.
-    _r = _ra()
-
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
@@ -88,7 +83,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md()
+        _soul_content = load_soul_md()
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -111,12 +106,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
-    # this block. Resolved once at __init__ (see _kanban_worker_guidance).
-    _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance:
-        tool_guidance.append(_kanban_guidance)
-    elif _kanban_guidance is None and "kanban_show" in agent.valid_tool_names:
-        # Fallback for code paths that bypass agent_init (rare).
+    # this block.
+    if "kanban_show" in agent.valid_tool_names:
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
@@ -127,7 +118,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         from agent.prompt_builder import COMPUTER_USE_GUIDANCE
         stable_parts.append(COMPUTER_USE_GUIDANCE)
 
-    nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
+    nous_subscription_prompt = build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
@@ -160,10 +151,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+            if "gpt" in _model_lower or "codex" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
@@ -171,11 +159,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         avail_toolsets = {
             toolset
             for toolset in (
-                _r.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
+                get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
             )
             if toolset
         }
-        skills_prompt = _r.build_skills_system_prompt(
+        skills_prompt = build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
         )
@@ -201,7 +189,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
     # execution environment so it can translate paths and adapt behavior.
     # Stable for the lifetime of the process.
-    _env_hints = _r.build_environment_hints()
+    _env_hints = build_environment_hints()
     if _env_hints:
         stable_parts.append(_env_hints)
 
@@ -232,7 +220,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # dir, so os.getcwd() would pick up the repo's AGENTS.md and
         # other dev files — inflating token usage by ~10k for no benefit.
         _context_cwd = os.getenv("TERMINAL_CWD") or None
-        context_files_prompt = _r.build_context_files_prompt(
+        context_files_prompt = build_context_files_prompt(
             cwd=_context_cwd, skip_soul=_soul_loaded)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
@@ -273,13 +261,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()
-    # Date-only (not minute-precision) so the system prompt is byte-stable
-    # for the full day.  Minute-precision changes invalidate prefix-cache KV
-    # on every rebuild path (compression boundary, fresh-agent gateway turns,
-    # session resume without a stored prompt).  The model can still query the
-    # exact wall-clock time via tools when it actually needs it.
-    # Credit: @iamfoz (PR #20451).
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:
@@ -293,7 +275,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
         "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
     }
-
 
 def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
     """Assemble the full system prompt from all layers.

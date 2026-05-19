@@ -1021,7 +1021,7 @@ def dump_api_request_debug(
         try:
             api_key = getattr(agent.client, "api_key", None)
         except Exception as e:
-            _ra().logger.debug("Could not extract API key for debug dump: %s", e)
+            logger.debug("Could not extract API key for debug dump: %s", e)
 
         dump_payload: Dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
@@ -1058,7 +1058,7 @@ def dump_api_request_debug(
                     error_info["response_status"] = getattr(response_obj, "status_code", None)
                     error_info["response_text"] = response_obj.text
                 except Exception as e:
-                    _ra().logger.debug("Could not extract error response details: %s", e)
+                    logger.debug("Could not extract error response details: %s", e)
 
             dump_payload["error"] = error_info
 
@@ -1079,8 +1079,6 @@ def dump_api_request_debug(
         if agent.verbose_logging:
             logging.warning(f"Failed to dump API request debug payload: {dump_error}")
         return None
-
-
 
 def anthropic_prompt_cache_policy(
     agent,
@@ -1355,9 +1353,23 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         agent.api_key = effective_key
         agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+        # Re-evaluate the 1M-beta latch for the new model: if we're
+        # switching to a non-1M model (e.g. Opus → Haiku), set the
+        # latch so the new client doesn't carry the rejected beta;
+        # if we're going the other way (Haiku → Opus), clear it.
+        try:
+            from agent.anthropic_adapter import _model_supports_1m_context
+            if not _model_supports_1m_context(agent.model):
+                agent._oauth_1m_beta_disabled = True
+            else:
+                # Drop the latch so 1M-capable models can use the beta again.
+                agent._oauth_1m_beta_disabled = False
+        except Exception:
+            pass
         agent._anthropic_client = build_anthropic_client(
             effective_key, agent._anthropic_base_url,
             timeout=get_provider_request_timeout(agent.provider, agent.model),
+            drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
         )
         agent._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
         agent.client = None
@@ -1404,16 +1416,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
         except Exception:
             _sm_custom_providers = None
-        # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
-        # token provider). ``get_model_context_length`` expects a
-        # string for its live-probe paths; for Foundry the context
-        # length normally resolves via config or static catalogs and
-        # never hits a probe, but coerce to empty string defensively.
-        _ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
         new_context_length = get_model_context_length(
             agent.model,
             base_url=agent.base_url,
-            api_key=_ctx_api_key,
+            api_key=agent.api_key,
             provider=agent.provider,
             config_context_length=getattr(agent, "_config_context_length", None),
             custom_providers=_sm_custom_providers,
@@ -1422,7 +1428,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             model=agent.model,
             context_length=new_context_length,
             base_url=agent.base_url,
-            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
+            api_key=getattr(agent, "api_key", ""),
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
@@ -1482,8 +1488,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         old_model, old_provider, new_model, new_provider,
     )
 
-
-
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False) -> str:
@@ -1523,29 +1527,40 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             query=function_args.get("query", ""),
             role_filter=function_args.get("role_filter"),
             limit=function_args.get("limit", 3),
-            session_id=function_args.get("session_id"),
-            around_message_id=function_args.get("around_message_id"),
-            window=function_args.get("window", 5),
-            sort=function_args.get("sort"),
             db=session_db,
             current_session_id=agent.session_id,
         )
     elif function_name == "memory":
-        target = function_args.get("target", "memory")
+        # Preserve raw target=None signal for the warm dispatcher's
+        # promote/demote branches. The hot path inside memory_tool
+        # defaults target to 'memory' when it's None, so this is
+        # safe for the existing add/replace/remove flow.
+        raw_target = function_args.get("target")
         from tools.memory_tool import memory_tool as _memory_tool
         result = _memory_tool(
             action=function_args.get("action"),
-            target=target,
+            target=raw_target,
             content=function_args.get("content"),
             old_text=function_args.get("old_text"),
             store=agent._memory_store,
+            # Warm-tier args — must be forwarded so recall / recall_related
+            # / read / replace / remove / feedback / promote / demote work.
+            # Without these the warm dispatcher in tools/memory_tool.py
+            # rejects valid calls with "query is required for recall." etc.
+            tier=function_args.get("tier", "hot"),
+            query=function_args.get("query"),
+            top_k=function_args.get("top_k"),
+            category=function_args.get("category"),
+            tags=function_args.get("tags"),
+            fact_id=function_args.get("fact_id"),
+            helpful=function_args.get("helpful"),
         )
         # Bridge: notify external memory provider of built-in memory writes
         if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
             try:
                 agent._memory_manager.on_memory_write(
                     function_args.get("action", ""),
-                    target,
+                    raw_target or "memory",
                     function_args.get("content", ""),
                     metadata=agent._build_memory_write_metadata(
                         task_id=effective_task_id,
@@ -1564,18 +1579,37 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             choices=function_args.get("choices"),
             callback=agent.clarify_callback,
         )
+    elif function_name == "hermes_load_tools":
+        # Client-side lazy tool loading.  Mutates agent._promoted_tools;
+        # the schema for promoted names will ship on the NEXT API call
+        # (handled by _apply_tool_search in client_side mode).
+        from tools.hermes_load_tools import load_tools as _load_tools
+        return _load_tools(
+            names=function_args.get("names") or [],
+            promoted=agent._promoted_tools,
+            available_names=set(agent.valid_tool_names or ()),
+            deferred_names=agent._currently_deferred_names(),
+        )
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
+    elif function_name == "swarm_run":
+        from tools.swarm_tool import swarm_run as _swarm_run
+        return _swarm_run(
+            agents=function_args.get("agents"),
+            topology=function_args.get("topology"),
+            title=function_args.get("title"),
+            shared_context=function_args.get("shared_context"),
+            swarm_id=function_args.get("swarm_id"),
+            parent_agent=agent,
+        )
     else:
-        return _ra().handle_function_call(
+        return handle_function_call(
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
         )
-
-
 
 def repair_tool_call(agent, tool_name: str) -> str | None:
     """Attempt to repair a mismatched tool name before aborting.
@@ -1598,11 +1632,33 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
     Returns the repaired name if found in valid_tool_names, else None.
     """
+    # CC alias hits are well-known and silent — see agent/cc_aliases.py
+    agent._last_repair_silent = False
     import re
     from difflib import get_close_matches
 
     if not tool_name:
         return None
+
+    # CC canonical alias fast-path. The Anthropic OAuth path swaps
+    # hermes tool entries for canonical CC schemas (Bash, Read, Edit,
+    # Write, Grep) on the outbound side via cc_aliases.replace_with_cc_canonical
+    # so the billing classifier accepts the request. The model then
+    # emits tool_use blocks with the CC names. cc_aliases.adapt_tool_use
+    # translates them back at dispatch (model_tools.py), but validation
+    # against valid_tool_names runs *before* dispatch — so without this
+    # fast-path the model burns a round-trip agent-correcting to the
+    # hermes name. Match exactly (CC names are case-sensitive: ``Bash``,
+    # not ``bash``) and short-circuit before any normalization.
+    try:
+        from agent.cc_aliases import CC_TO_HERMES
+        hermes_name = CC_TO_HERMES.get(tool_name)
+        if hermes_name and hermes_name in agent.valid_tool_names:
+            # CC alias hits are well-known and silent — see agent/cc_aliases.py
+            agent._last_repair_silent = True
+            return hermes_name
+    except Exception:
+        pass
 
     def _norm(s: str) -> str:
         return s.lower().replace("-", "_").replace(" ", "_")
@@ -1686,8 +1742,6 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         return matches[0]
 
     return None
-
-
 
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
@@ -2102,13 +2156,11 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             messages[target_idx]["content"] = f"{existing_content}{marker}"
     else:
         messages[target_idx]["content"] = existing_content + marker
-    _ra().logger.info(
+    logger.info(
         "Delivered /steer to agent after tool batch (%d chars): %s",
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
-
-
 
 def force_close_tcp_sockets(client: Any) -> int:
     """Force-close underlying TCP sockets to prevent CLOSE-WAIT accumulation.
