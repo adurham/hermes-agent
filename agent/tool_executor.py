@@ -73,7 +73,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # ── Pre-flight: interrupt check ──────────────────────────────────
     if agent._interrupt_requested:
-        print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
+        # Route through _vprint so a child agent's patched _print_fn
+        # captures it (matches the rest of the interrupt-skip prints
+        # below at lines 10057, 10460).
+        agent._vprint(
+            f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)",
+            force=True,
+        )
         for tc in tool_calls:
             messages.append(make_tool_result_message(
                 tc.function.name,
@@ -434,6 +440,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             else:
                 function_result += subdir_hints
 
+        # ── Skill-recall reminder hooks ──────────────────────────────
+        # 1. If this call was skill_view, record the skill as "loaded".
+        # 2. If this call was a risky tool, maybe append a recall hint.
+        # Both are best-effort and never break tool execution.
+        if name == "skill_view":
+            agent._record_loaded_skill(args.get("name", ""), function_result)
+        _recall_hint = agent._maybe_skill_recall_hint(name)
+        if _recall_hint:
+            if _is_multimodal_tool_result(function_result):
+                _append_subdir_hint_to_multimodal(function_result, _recall_hint)
+            else:
+                function_result += _recall_hint
+
         # Unwrap _multimodal dicts to an OpenAI-style content list so any
         # vision-capable provider receives [{type:text},{type:image_url}]
         # rather than a raw Python dict.  The Anthropic adapter already
@@ -663,6 +682,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+        elif function_name == "hermes_load_tools":
+            from tools.hermes_load_tools import load_tools as _load_tools
+            function_result = _load_tools(
+                names=function_args.get("names") or [],
+                promoted=agent._promoted_tools,
+                available_names=set(agent.valid_tool_names or ()),
+                deferred_names=agent._currently_deferred_names(),
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('hermes_load_tools', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):
@@ -684,6 +714,33 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._delegate_spinner = None
                 tool_duration = time.time() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
+                if spinner:
+                    spinner.stop(cute_msg)
+                elif agent._should_emit_quiet_tool_messages():
+                    agent._vprint(f"  {cute_msg}")
+        elif function_name == "swarm_run":
+            from tools.swarm_tool import swarm_run as _swarm_run
+            agents_arg = function_args.get("agents") or []
+            spinner_label = f"🐝 swarm of {len(agents_arg)}"
+            spinner = None
+            if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
+                face = random.choice(KawaiiSpinner.get_waiting_faces())
+                spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=agent._print_fn)
+                spinner.start()
+            _swarm_result = None
+            try:
+                function_result = _swarm_run(
+                    agents=function_args.get("agents"),
+                    topology=function_args.get("topology"),
+                    title=function_args.get("title"),
+                    shared_context=function_args.get("shared_context"),
+                    swarm_id=function_args.get("swarm_id"),
+                    parent_agent=agent,
+                )
+                _swarm_result = function_result
+            finally:
+                tool_duration = time.time() - tool_start_time
+                cute_msg = _get_cute_tool_message_impl('swarm_run', function_args, tool_duration, result=_swarm_result)
                 if spinner:
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
@@ -854,6 +911,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
             else:
                 function_result += subdir_hints
+
+        # ── Skill-recall reminder hooks (see concurrent path above) ──
+        if function_name == "skill_view":
+            agent._record_loaded_skill(function_args.get("name", ""), function_result)
+        _recall_hint = agent._maybe_skill_recall_hint(function_name)
+        if _recall_hint:
+            if _is_multimodal_tool_result(function_result):
+                _append_subdir_hint_to_multimodal(function_result, _recall_hint)
+            else:
+                function_result += _recall_hint
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.

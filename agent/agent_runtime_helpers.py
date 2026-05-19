@@ -1627,6 +1627,44 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
     # Build the full candidate set for class-like emissions.
     cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
+    # Strip mangled MCP-style prefixes so resumed sessions whose saved
+    # tool_use blocks carry old-format names (``mcp_<server>_<tool>`` or
+    # ``mcp__<server>__<tool>``) still resolve to today's bare
+    # ``<server>_<tool>`` registry names.  Two strip variants:
+    #   * ``mcp__<rest>`` → ``<rest>``
+    #   * ``mcp_<rest>``  → ``<rest>``
+    # And the partial-strip case where Claude's MCP-routing layer ate
+    # ``mcp`` but left the trailing ``__``: ``__<rest>`` → ``<rest>``.
+    prefix_stripped: set[str] = set()
+    for c in list(cands):
+        if not c:
+            continue
+        if c.startswith("mcp__"):
+            prefix_stripped.add(c[5:])
+        elif c.startswith("mcp_"):
+            prefix_stripped.add(c[4:])
+        elif c.startswith("__"):
+            prefix_stripped.add(c[2:])
+        elif c.startswith("_"):
+            prefix_stripped.add(c[1:])
+    cands |= prefix_stripped
+    # Also keep the legacy ``mcp_<name>`` / ``mcp__<name>`` *additions*
+    # for resumed sessions where ``valid_tool_names`` was loaded with
+    # an older registry that still prefixed its entries.
+    prefixed_extra: set[str] = set()
+    for c in list(cands):
+        if not c:
+            continue
+        if not c.startswith("mcp"):
+            prefixed_extra.add(f"mcp_{c}")
+            prefixed_extra.add(f"mcp__{c}")
+    cands |= prefixed_extra
+    # Also try ``__`` → ``_`` collapse for the case where the registry
+    # has bare ``<server>_<tool>`` but a saved session emitted
+    # ``<server>__<tool>``.
+    for c in list(cands):
+        if "__" in c:
+            cands.add(c.replace("__", "_"))
     # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.
     for _ in range(2):
         extra: set[str] = set()
