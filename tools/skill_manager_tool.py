@@ -134,6 +134,49 @@ def _containing_skills_root(skill_path: Path) -> Path:
     return SKILLS_DIR
 
 
+def _background_review_external_guard(name: str, skill_path: Path, action: str) -> Optional[str]:
+    """Refuse curator (background_review) writes that would mutate a skill
+    living under ``skills.external_dirs`` (e.g. a team-shared repo).
+
+    Returns a refusal message if the call should be blocked, else None.
+
+    Rationale: the background review fork autonomously consolidates skills
+    based on session sediment. Foreground users explicitly editing an
+    external skill is fine (and is the established behavior — see issues
+    #4759 and #4381). But the curator running with no user in the loop
+    must NOT silently push session artifacts into a shared repo's working
+    tree; that produces accidental commits, personal-preference bleed,
+    and surprise PR diffs.
+
+    Foreground (CLI / gateway / subagent / cron) calls fall through
+    unchanged — only when the ContextVar from tools.skill_provenance is
+    ``"background_review"`` does this gate activate.
+    """
+    try:
+        from tools.skill_provenance import is_background_review
+    except ImportError:
+        return None
+    if not is_background_review():
+        return None
+
+    root = _containing_skills_root(skill_path)
+    if root.resolve() == SKILLS_DIR.resolve():
+        return None  # local ~/.hermes/skills/<name> — always OK
+
+    # External dir under skills.external_dirs (team repo, shared vault, etc.)
+    return (
+        f"Skill '{name}' lives in an external skills directory ({root}). "
+        f"Background-review curator passes do not auto-mutate external "
+        f"skills — that path produces accidental commits, personal-"
+        f"preference bleed, and surprise PR diffs in shared repos. "
+        f"Refusing '{action}'. If this learning belongs in the user's "
+        f"personal skills, create or patch a local skill under "
+        f"~/.hermes/skills/ instead. If it genuinely belongs upstream, "
+        f"surface a suggestion in your reply text so the user can "
+        f"review and apply it themselves."
+    )
+
+
 def _pinned_guard(name: str) -> Optional[str]:
     """Return a refusal message if *name* is pinned, else None.
 
@@ -441,6 +484,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
+    guard = _background_review_external_guard(name, existing["path"], "edit")
+    if guard:
+        return {"success": False, "error": guard}
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -480,6 +527,10 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
+
+    guard = _background_review_external_guard(name, existing["path"], "patch")
+    if guard:
+        return {"success": False, "error": guard}
 
     skill_dir = existing["path"]
 
@@ -639,6 +690,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
+    guard = _background_review_external_guard(name, existing["path"], "write_file")
+    if guard:
+        return {"success": False, "error": guard}
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -672,6 +727,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
+
+    guard = _background_review_external_guard(name, existing["path"], "remove_file")
+    if guard:
+        return {"success": False, "error": guard}
 
     skill_dir = existing["path"]
 
