@@ -38,6 +38,11 @@ from typing import Any, List, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
 
+def _ra():
+    """Lazy reference to run_agent (for test-patch contract)."""
+    import run_agent
+    return run_agent
+
 logger = logging.getLogger(__name__)
 
 
@@ -411,11 +416,11 @@ def compress_context(agent, messages: list, system_message: str, *, approx_token
 
     # Update token estimate after compaction so pressure calculations
     # use the post-compression count, not the stale pre-compression one.
-    # Use estimate_request_tokens_rough() so tool schemas are included —
+    # Use _ra().estimate_request_tokens_rough() so tool schemas are included —
     # with 50+ tools enabled, schemas alone can add 20-30K tokens, and
     # omitting them delays the next compression cycle far past the
     # configured threshold (issue #14695).
-    _compressed_est = estimate_request_tokens_rough(
+    _compressed_est = _ra().estimate_request_tokens_rough(
         compressed,
         system_prompt=new_system_prompt or "",
         tools=agent.tools or None,

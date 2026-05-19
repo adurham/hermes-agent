@@ -703,7 +703,7 @@ def try_recover_primary_transport(
         agent.api_key = rt["api_key"]
 
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
             agent._anthropic_client = build_anthropic_client(
@@ -1603,7 +1603,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             parent_agent=agent,
         )
     else:
-        return handle_function_call(
+        return _ra().handle_function_call(
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
