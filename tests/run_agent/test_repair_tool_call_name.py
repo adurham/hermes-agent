@@ -157,3 +157,118 @@ class TestCCCanonicalAliasFastPath:
         stub = SimpleNamespace(valid_tool_names={"read_file", "patch"})
         repair = AIAgent._repair_tool_call.__get__(stub, AIAgent)
         assert repair("Bash") is None
+
+
+class TestCCArgsTranslationAfterRepair:
+    """``_translate_cc_args_after_repair`` is the second half of the CC
+    alias fast-path: after ``_repair_tool_call`` renames ``Read`` →
+    ``read_file``, this helper also rewrites the args from CC's shape
+    (``{"file_path": ...}``) to hermes's shape (``{"path": ...}``).
+    Without it, the handler reads ``args["path"]`` → "" → "File not
+    found: " with no path and bogus similar-files suggestions.
+    """
+
+    @staticmethod
+    def _make_tc(name: str, args_json: str):
+        """Build a minimal tool_call object with the shape the agent loop sees."""
+        function = SimpleNamespace(name=name, arguments=args_json)
+        return SimpleNamespace(function=function)
+
+    @staticmethod
+    def _make_translator():
+        from run_agent import AIAgent
+        stub = SimpleNamespace()
+        return AIAgent._translate_cc_args_after_repair.__get__(stub, AIAgent)
+
+    def test_read_file_args_translated(self):
+        import json
+        translate = self._make_translator()
+        tc = self._make_tc("read_file", '{"file_path": "/tmp/x", "offset": 5}')
+        translate(tc, original_name="Read")
+        # name unchanged here (the loop set it before calling us)
+        assert tc.function.name == "read_file"
+        # but args translated to hermes shape
+        new_args = json.loads(tc.function.arguments)
+        assert new_args == {"path": "/tmp/x", "offset": 5}
+
+    def test_write_file_args_translated(self):
+        import json
+        translate = self._make_translator()
+        tc = self._make_tc("write_file", '{"file_path": "/tmp/x", "content": "hi"}')
+        translate(tc, original_name="Write")
+        new_args = json.loads(tc.function.arguments)
+        assert new_args == {"path": "/tmp/x", "content": "hi"}
+
+    def test_patch_args_translated_from_edit(self):
+        import json
+        translate = self._make_translator()
+        tc = self._make_tc(
+            "patch",
+            '{"file_path": "/tmp/x", "old_string": "a", "new_string": "b"}',
+        )
+        translate(tc, original_name="Edit")
+        new_args = json.loads(tc.function.arguments)
+        assert new_args == {
+            "mode": "replace",
+            "path": "/tmp/x",
+            "old_string": "a",
+            "new_string": "b",
+            "replace_all": False,
+        }
+
+    def test_terminal_args_translated_from_bash(self):
+        import json
+        translate = self._make_translator()
+        tc = self._make_tc(
+            "terminal",
+            '{"command": "ls", "run_in_background": true, "timeout": 5000}',
+        )
+        translate(tc, original_name="Bash")
+        new_args = json.loads(tc.function.arguments)
+        # CC timeout is ms; hermes is seconds — adapter divides
+        assert new_args["command"] == "ls"
+        assert new_args["background"] is True
+        assert new_args["timeout"] == 5
+
+    def test_non_cc_alias_is_noop(self):
+        """Non-CC names (e.g. ``read_file`` already, or fuzzy-matched
+        ``write file`` → ``write_file``) must NOT trigger arg
+        translation — only CC name hits should."""
+        translate = self._make_translator()
+        original_json = '{"path": "/tmp/x", "offset": 1}'
+        tc = self._make_tc("read_file", original_json)
+        translate(tc, original_name="read_file")  # not a CC name
+        assert tc.function.arguments == original_json
+
+    def test_empty_args_is_safe(self):
+        """An empty args string must not crash the helper."""
+        translate = self._make_translator()
+        tc = self._make_tc("read_file", "")
+        # The adapter raises on missing file_path, but the helper catches it
+        # and leaves args unchanged. That's fine — the downstream handler
+        # will return its actionable "missing required field 'path'" error.
+        translate(tc, original_name="Read")
+        # arguments unchanged (couldn't translate empty dict)
+        assert tc.function.arguments == ""
+
+    def test_malformed_json_args_is_safe(self):
+        """Malformed JSON in args must not crash the helper."""
+        translate = self._make_translator()
+        tc = self._make_tc("read_file", "{not valid json")
+        translate(tc, original_name="Read")
+        # arguments unchanged
+        assert tc.function.arguments == "{not valid json"
+
+    def test_grep_to_search_files_args_translated(self):
+        import json
+        translate = self._make_translator()
+        tc = self._make_tc(
+            "search_files",
+            '{"pattern": "foo", "path": "/tmp", "-i": true}',
+        )
+        translate(tc, original_name="Grep")
+        new_args = json.loads(tc.function.arguments)
+        assert new_args["pattern"] == "foo"
+        assert new_args["path"] == "/tmp"
+        # CC's -i flag maps to case_insensitive
+        assert new_args["case_insensitive"] is True

@@ -7105,6 +7105,69 @@ class AIAgent:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
 
+    def _translate_cc_args_after_repair(self, tc, original_name: str) -> None:
+        """Translate CC-shaped args after _repair_tool_call renamed a CC alias.
+
+        The Anthropic OAuth path advertises Claude Code canonical tool names
+        (``Bash``, ``Read``, ``Edit``, ``Write``, ``Grep``) on the wire so
+        the plan-budget billing classifier accepts the request.  The model
+        emits tool_use blocks with the CC names AND the CC arg shape
+        (``file_path``, not ``path``; ``run_in_background``, not
+        ``background``; ...).
+
+        ``model_tools.handle_function_call`` translates both via
+        ``cc_aliases.adapt_tool_use``, BUT — the validation step in the
+        agent loop runs ``_repair_tool_call`` BEFORE dispatch.  When the
+        repair routine name-maps ``Read → read_file`` (its CC-alias
+        fast-path), the rest of the loop sees the hermes name, so
+        ``adapt_tool_use`` later finds no CC name to translate.  Result:
+        ``read_file({"file_path": "..."})`` reaches the handler, which
+        reads ``args["path"]`` → empty string → "File not found: " with
+        no path and a spurious similar-files list pulled from cwd.
+
+        This helper closes the gap by running ``adapt_tool_use`` itself
+        when a CC alias was repaired.  It's a no-op for non-CC repairs.
+
+        Args:
+            tc: An OpenAI-style tool_call object with ``function.arguments``
+                (a JSON string) we may rewrite in place.
+            original_name: The PRE-repair tool name (so we can detect a CC
+                alias hit; the post-repair ``tc.function.name`` has already
+                been overwritten with the hermes name).
+        """
+        try:
+            from agent.cc_aliases import CC_TO_HERMES, adapt_tool_use
+        except Exception as e:  # pragma: no cover — defensive
+            logger.warning(
+                "_translate_cc_args_after_repair: cc_aliases unavailable "
+                "(%s) — leaving args untranslated", e,
+            )
+            return
+
+        if original_name not in CC_TO_HERMES:
+            return  # not a CC alias hit; nothing to translate
+
+        raw_args = getattr(tc.function, "arguments", None)
+        try:
+            parsed_args = json.loads(raw_args) if raw_args else {}
+        except (json.JSONDecodeError, TypeError):
+            parsed_args = {}
+
+        if not isinstance(parsed_args, dict):
+            return  # adapt_tool_use only handles dict input
+
+        try:
+            _, translated = adapt_tool_use(original_name, parsed_args)
+        except Exception as e:
+            logger.warning(
+                "_translate_cc_args_after_repair: adapt_tool_use raised "
+                "for %s: %s — passing original args through", original_name, e,
+            )
+            return
+
+        if translated is not parsed_args:
+            tc.function.arguments = json.dumps(translated)
+
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
 
@@ -16507,7 +16570,8 @@ class AIAgent:
                     # Repair mismatched tool names before validating
                     for tc in assistant_message.tool_calls:
                         if tc.function.name not in self.valid_tool_names:
-                            repaired = self._repair_tool_call(tc.function.name)
+                            original_name = tc.function.name
+                            repaired = self._repair_tool_call(original_name)
                             if repaired:
                                 # Route through _vprint so a child agent's
                                 # patched _print_fn (e.g. swarm board's note
@@ -16520,9 +16584,14 @@ class AIAgent:
                                 if not getattr(self, "_last_repair_silent", False):
                                     self._vprint(
                                         f"{self.log_prefix}🔧 Auto-repaired tool name: "
-                                        f"'{tc.function.name}' -> '{repaired}'"
+                                        f"'{original_name}' -> '{repaired}'"
                                     )
                                 tc.function.name = repaired
+                                # CC alias hits also need ARGS translated —
+                                # otherwise Read({"file_path": ...}) gets
+                                # renamed to read_file but the args still use
+                                # the CC ``file_path`` key. See helper docstring.
+                                self._translate_cc_args_after_repair(tc, original_name)
                     invalid_tool_calls = [
                         tc.function.name for tc in assistant_message.tool_calls
                         if tc.function.name not in self.valid_tool_names
