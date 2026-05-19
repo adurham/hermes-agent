@@ -215,7 +215,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # the tool returns True on the next poll.
         if agent._interrupt_requested:
             try:
-                _set_interrupt(True, _worker_tid)
+                _ra()._set_interrupt(True, _worker_tid)
             except Exception:
                 pass
         # Set the activity callback on THIS worker thread so
@@ -265,7 +265,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         with agent._tool_worker_threads_lock:
             agent._tool_worker_threads.discard(_worker_tid)
         try:
-            _set_interrupt(False, _worker_tid)
+            _ra()._set_interrupt(False, _worker_tid)
         except Exception:
             pass
         # Clear thread-local callbacks so a recycled worker thread
@@ -816,7 +816,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _spinner_result = None
             try:
-                function_result = handle_function_call(
+                function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
@@ -836,7 +836,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent._vprint(f"  {cute_msg}")
         else:
             try:
-                function_result = handle_function_call(
+                function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",

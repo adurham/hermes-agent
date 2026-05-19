@@ -75,6 +75,7 @@ def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, st
     session — that's the only way to keep upstream prompt caches
     warm across turns.
     """
+    _r = _ra()
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
@@ -83,7 +84,7 @@ def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, st
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = load_soul_md()
+        _soul_content = _r.load_soul_md()
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -118,7 +119,7 @@ def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, st
         from agent.prompt_builder import COMPUTER_USE_GUIDANCE
         stable_parts.append(COMPUTER_USE_GUIDANCE)
 
-    nous_subscription_prompt = build_nous_subscription_prompt(agent.valid_tool_names)
+    nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
@@ -151,7 +152,7 @@ def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, st
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
-            if "gpt" in _model_lower or "codex" in _model_lower:
+            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
@@ -159,11 +160,11 @@ def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, st
         avail_toolsets = {
             toolset
             for toolset in (
-                get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
+                _r.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
             )
             if toolset
         }
-        skills_prompt = build_skills_system_prompt(
+        skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
         )
@@ -189,7 +190,7 @@ def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, st
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
     # execution environment so it can translate paths and adapt behavior.
     # Stable for the lifetime of the process.
-    _env_hints = build_environment_hints()
+    _env_hints = _r.build_environment_hints()
     if _env_hints:
         stable_parts.append(_env_hints)
 
@@ -220,7 +221,7 @@ def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, st
         # dir, so os.getcwd() would pick up the repo's AGENTS.md and
         # other dev files — inflating token usage by ~10k for no benefit.
         _context_cwd = os.getenv("TERMINAL_CWD") or None
-        context_files_prompt = build_context_files_prompt(
+        context_files_prompt = _r.build_context_files_prompt(
             cwd=_context_cwd, skip_soul=_soul_loaded)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
@@ -261,7 +262,7 @@ def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, st
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:
@@ -291,6 +292,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     mid-session, which is the only way to keep upstream prompt caches
     warm across turns.
     """
+    _r = _ra()
     parts = build_system_prompt_parts(agent, system_message=system_message)
     return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 

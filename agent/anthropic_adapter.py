@@ -895,7 +895,15 @@ def _common_betas_for_base_url(
         # by mitmdump against api.anthropic.com.
         betas.insert(2, _CONTEXT_1M_BETA)
     if _requires_bearer_auth(base_url):
-        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA, _EXTENDED_CACHE_TTL_BETA} | _ANTHROPIC_NATIVE_ONLY_BETAS
+        # MiniMax rejects both fine-grained-tool-streaming AND context-1m;
+        # Azure keeps both. Differentiate by checking which provider it is.
+        if _is_minimax_anthropic_endpoint(base_url):
+            _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA, _EXTENDED_CACHE_TTL_BETA} | _ANTHROPIC_NATIVE_ONLY_BETAS
+        else:
+            # Azure (and any other future bearer-auth endpoint that's not MiniMax)
+            # only strips the truly Anthropic-native-only betas. Keeps
+            # tool-streaming and 1M-context.
+            _stripped = _ANTHROPIC_NATIVE_ONLY_BETAS
         return [b for b in betas if b not in _stripped]
     return betas
 
