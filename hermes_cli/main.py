@@ -407,19 +407,50 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
+class _TerminalTooSmall(Exception):
+    """Raised inside the curses picker when the window is below the layout
+    minimum (40 cols × 5 rows).  Caught by ``_session_browse_picker``'s outer
+    ``except Exception`` so the call falls through to the numbered-list
+    picker.  Previously the in-curses code painted "Terminal too small" and
+    blocked on ``getch()`` — a dead-end with no good user response.
+    """
+
+
 def _session_browse_picker(sessions: list) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
     Returns the selected session ID, or None if cancelled.
     Uses curses (not simple_term_menu) to avoid the ghost-duplication rendering
     bug in tmux/iTerm when arrow keys are used.
+
+    Falls back to a plain numbered-list picker when the terminal is too small
+    for the curses layout (under 40 cols × 5 rows — happens with narrow tmux
+    splits, iTerm2 pane init races, and sleep/wake resize bursts).
     """
     if not sessions:
         print("No sessions found.")
         return None
 
-    # Try curses-based picker first
+    # Pre-check terminal size before paying the curses init cost.  When the
+    # window can't fit our 40 × 5 layout, jump straight to the numbered-list
+    # fallback below — same UX as Windows-without-curses.  We still defend
+    # inside the curses block because the window can shrink between this
+    # check and curses init (resize burst, tmux split during launch).
     try:
+        _ts = os.get_terminal_size()
+        _too_small_upfront = _ts.columns < 40 or _ts.lines < 5
+    except OSError:
+        # Stdout isn't a tty (piped output, non-interactive run).  Let the
+        # curses block below try and fail naturally; its outer exception
+        # handler already routes to the numbered fallback.
+        _too_small_upfront = False
+
+    # Try curses-based picker first (skipped when window is too small).
+    try:
+        if _too_small_upfront:
+            raise _TerminalTooSmall(
+                f"window {_ts.columns}x{_ts.lines} below 40x5 minimum"
+            )
         import curses
 
         result_holder = [None]
@@ -475,14 +506,15 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
                 if max_y < 5 or max_x < 40:
-                    # Terminal too small
-                    try:
-                        stdscr.addstr(0, 0, "Terminal too small")
-                    except curses.error:
-                        pass
-                    stdscr.refresh()
-                    stdscr.getch()
-                    return
+                    # Window too small for the curses layout (40 cols × 5 rows
+                    # minimum).  Bail out of curses and let the caller fall
+                    # through to the numbered-list picker — far better UX than
+                    # the old dead-end that painted "Terminal too small" and
+                    # then blocked on getch().  Raises into the outer
+                    # ``except Exception: pass`` in _session_browse_picker.
+                    raise _TerminalTooSmall(
+                        f"window {max_x}x{max_y} below 40x5 minimum"
+                    )
 
                 # Header line
                 if search_text:
