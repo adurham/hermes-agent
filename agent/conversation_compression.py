@@ -253,7 +253,7 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
-def compress_context(agent, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
+def compress_context(agent, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None, force: bool = False) -> tuple:
     """Compress conversation context and split the session in SQLite.
 
     Args:
@@ -293,10 +293,10 @@ def compress_context(agent, messages: list, system_message: str, *, approx_token
         pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
-        # focus_topic — fall back to calling without it.
+        # focus_topic / force — fall back to calling without them.
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
 
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)

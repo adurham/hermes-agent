@@ -4505,6 +4505,107 @@ class AIAgent:
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
+
+def _classify_anthropic_stream_phase(
+    *,
+    thinking_active: bool,
+    thinking_chars: int,
+    first_event_seen: bool,
+    content_silence: int,
+    thinking_requested: bool,
+    message_start_arrived: bool,
+    ping_seen: bool,
+    user_elapsed: int,
+) -> str:
+    """Classify the current Anthropic stream phase for the user heartbeat.
+
+    Pure function — extracted from the inline classifier so it can be unit
+    tested.  All inputs are observed wire signals (no inference).
+
+    Phase priorities (most-specific wins):
+      1. ``thinking_active``: model is currently emitting thinking_delta
+         tokens (display=summarized).  If thinking_chars > 0, surface the
+         count for visible progress.
+      2. ``first_event_seen`` AND content has been silent: stream started,
+         then went quiet — server is generating but emitting nothing
+         (display=omitted between blocks, or tool_use prep).
+      3. ``first_event_seen``: regular streaming.
+      4. ``message_start_arrived`` + ``thinking_requested``: pre-content,
+         post-acceptance with thinking enabled — the canonical
+         "thinking server-side, holding back content" state.
+      5. Pre-message_start states, distinguished by whether pings are
+         flowing — proves connection alive vs may-be-wedged.
+
+    The string returned is the value plugged into the heartbeat
+    "(model: X, <phase>)" slot.  Test names pin the exact phase string
+    so docs/UX changes are intentional.
+    """
+    if thinking_active:
+        if thinking_chars:
+            return f"thinking ({thinking_chars:,} chars streamed)"
+        return "thinking"
+    if first_event_seen and content_silence > 10:
+        return "thinking (server-side)"
+    if first_event_seen:
+        return "streaming"
+    if message_start_arrived and thinking_requested:
+        return "thinking server-side (display=omitted)"
+    if thinking_requested and ping_seen and user_elapsed >= 30:
+        return "queued/prefilling (thinking req'd, server pinging)"
+    if thinking_requested and user_elapsed >= 30:
+        return "no pings yet — connection may be cold or wedged"
+    if ping_seen:
+        return "queued/prefilling, server alive (pings flowing)"
+    return "queued/prefilling (no pings yet)"
+
+# Read-only tools with no shared mutable session state.
+_PARALLEL_SAFE_TOOLS = frozenset({
+    "ha_get_state",
+    "ha_list_entities",
+    "ha_list_services",
+    "read_file",
+    "search_files",
+    "session_search",
+    "skill_view",
+    "skills_list",
+    "vision_analyze",
+    "web_extract",
+    "web_search",
+})
+
+# File tools can run concurrently when they target independent paths.
+_PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
+
+# Tools that mutate files on disk.  Used by the per-turn verifier that
+# surfaces silently-failed file edits so the model can't over-claim success.
+# Imported above as `_FILE_MUTATING_TOOLS` from `agent.tool_result_classification`.
+
+# Maximum number of concurrent worker threads for parallel tool execution.
+_MAX_TOOL_WORKERS = 8
+
+# Guard so the OpenRouter metadata pre-warm thread is only spawned once per
+# process, not once per AIAgent instantiation.  Without this, long-running
+# gateway processes leak one OS thread per incoming message and eventually
+# exhaust the system thread limit (RuntimeError: can't start new thread).
+_openrouter_prewarm_done = threading.Event()
+
+# Patterns that indicate a terminal command may modify/delete files.
+_DESTRUCTIVE_PATTERNS = re.compile(
+    r"""(?:^|\s|&&|\|\||;|`)(?:
+        rm\s|rmdir\s|
+        cp\s|install\s|
+        mv\s|
+        sed\s+-i|
+        truncate\s|
+        dd\s|
+        shred\s|
+        git\s+(?:reset|clean|checkout)\s
+    )""",
+    re.VERBOSE,
+)
+# Output redirects that overwrite files (> but not >>)
+_REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+
 def main(
     query: str = None,
     model: str = "",
