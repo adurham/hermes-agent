@@ -94,9 +94,13 @@ def test_marker_message_inserted_when_missing():
     repaired = AIAgent._sanitize_tool_call_arguments(messages)
 
     assert repaired == 1
+    # Upstream commit a61420952 added tool_name on construction
+    # (separate from the wire-format ``name``).  This test pre-dates
+    # that change; accept both fields.
     assert messages[1] == {
         "role": "tool",
         "name": "read_file",
+        "tool_name": "read_file",
         "tool_call_id": "call_1",
         "content": marker,
     }
