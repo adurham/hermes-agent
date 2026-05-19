@@ -250,6 +250,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             user_block = agent._memory_store.format_for_system_prompt("user")
             if user_block:
                 volatile_parts.append(user_block)
+        # Warm-tier status — a small one-line "WARM MEMORY: N facts indexed"
+        # block teaching the agent that on-demand recall is available.
+        # Returns None when warm tier is empty / unavailable; safe to call
+        # every turn, the underlying count is a fast SQLite COUNT(*).
+        if agent._memory_enabled or agent._user_profile_enabled:
+            try:
+                warm_block = agent._memory_store.format_for_system_prompt("warm_status")
+                if warm_block:
+                    volatile_parts.append(warm_block)
+            except Exception:
+                pass
 
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
