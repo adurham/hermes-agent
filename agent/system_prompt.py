@@ -251,6 +251,18 @@ def build_system_prompt_parts(agent, system_message: str = None) -> Dict[str, st
             except Exception:
                 pass
 
+        # Session-pinned facts — warm-tier facts the agent (or user)
+        # has pinned for the rest of this session. Returns None when
+        # no facts are pinned. Best-effort: any render failure just
+        # skips the block rather than crashing prompt assembly.
+        try:
+            from agent.fork.memory_session_pin import render_pinned_block
+            pinned_block = render_pinned_block(agent)
+            if pinned_block:
+                volatile_parts.append(pinned_block)
+        except Exception:
+            pass
+
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
         try:

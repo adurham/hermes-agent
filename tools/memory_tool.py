@@ -760,10 +760,55 @@ def _handle_warm_action(
             "warm_category": warm_category,
         }
 
+    elif action in ("pin", "unpin", "pinned"):
+        # Session-pin actions — keep a warm fact visible in the system
+        # prompt for the rest of this session. See
+        # ``agent.fork.memory_session_pin`` for semantics.
+        if agent is None:
+            return tool_error(
+                "Session-pin requires an agent reference. This call must "
+                "originate from the AIAgent runtime (not a subagent stub "
+                "or test harness without agent= passed).",
+                success=False,
+            )
+        try:
+            from agent.fork import memory_session_pin
+        except Exception as e:
+            return tool_error(
+                f"Session-pin module unavailable: {e}.", success=False,
+            )
+
+        if action == "pinned":
+            result = memory_session_pin.list_pinned(agent)
+        elif action == "pin":
+            if args_fact_id is None:
+                return tool_error(
+                    "fact_id is required for pin.", success=False,
+                )
+            result = memory_session_pin.pin_fact(agent, int(args_fact_id))
+        else:  # unpin
+            if args_fact_id is None:
+                return tool_error(
+                    "fact_id is required for unpin.", success=False,
+                )
+            result = memory_session_pin.unpin_fact(agent, int(args_fact_id))
+
+        # Pin/unpin mutate the system prompt — invalidate the cached
+        # version so the next turn includes the change. Best-effort:
+        # any failure here is non-fatal (worst case the pin shows up
+        # one turn late).
+        if action != "pinned" and result.get("success"):
+            try:
+                from agent.system_prompt import invalidate_system_prompt
+                invalidate_system_prompt(agent)
+            except Exception:
+                pass
+
     else:
         return tool_error(
             f"Unknown warm action '{action}'. Use: add, recall, recall_related, "
-            f"read, replace, remove, feedback, promote, demote",
+            f"read, replace, remove, feedback, promote, demote, "
+            f"pin, unpin, pinned",
             success=False,
         )
 
@@ -806,6 +851,10 @@ def memory_tool(
     # Warm-tier-only actions route directly regardless of tier param.
     WARM_ONLY_ACTIONS = {
         "recall", "recall_related", "feedback", "promote", "demote",
+        # Session-pin actions operate on the agent's session state but
+        # are dispatched alongside warm-tier actions because they
+        # reference warm-tier fact ids.
+        "pin", "unpin", "pinned",
     }
     is_warm_action = (tier == "warm") or (action in WARM_ONLY_ACTIONS)
 
@@ -911,6 +960,9 @@ MEMORY_SCHEMA = {
         "recall_related (query OR fact_id), read ([+category +top_k]), "
         "replace (fact_id+content), remove (fact_id), "
         "feedback (fact_id+helpful) — train trust scores by rating retrieved facts.\n"
+        "  SESSION-PIN: pin (fact_id) — keep a warm fact visible in the system prompt "
+        "for the rest of THIS session; unpin (fact_id); pinned — list current pins. "
+        "Use pin when a fact applies to your whole current investigation; gone on session restart.\n"
         "  CROSS-TIER: promote (fact_id [+target]) — move warm fact to hot tier "
         "(target='memory' or 'user', defaults to 'memory'); "
         "demote (old_text [+target +category]) — move hot entry to warm "
@@ -931,6 +983,7 @@ MEMORY_SCHEMA = {
                     "add", "replace", "remove", "read",
                     "recall", "recall_related",
                     "feedback", "promote", "demote",
+                    "pin", "unpin", "pinned",
                 ],
                 "description": "The action to perform.",
             },

@@ -14,6 +14,8 @@ will never touch them.
 |---|---|
 | `agent/fork/__init__.py` | Marker module for fork-only code |
 | `agent/fork/skill_recall.py` | Skill-recall reminder — tracks loaded skills + nudges agent to re-check `skill_pitfalls()` before destructive ops |
+| `agent/fork/memory_recall.py` | Memory-recall reminder — nudges agent to call `memory(action='recall', ...)` against the warm-tier store every N tool calls (or on explicit "remember"-style directives); auto mode runs the recall and injects the top hit. Config: `agent.memory.recall_reminder_*`. |
+| `agent/fork/memory_session_pin.py` | Session-pin — keeps selected warm-tier facts visible in the system prompt for the rest of the current session (gone on restart). Exposes `memory(action='pin'/'unpin'/'pinned', fact_id=N)`. Config: `agent.memory.session_pin_max_count`/`max_chars`. |
 | `agent/fork/rate_limit_tracker.py` | Rate-limit observability — one-shot INFO on first header capture, WARN on 90% bucket transitions with 80% hysteresis |
 | `agent/fork/anthropic_recovery.py` | Refusal retry sanitization (strip credential-extraction shell patterns from historical context) + CC alias arg translation |
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
@@ -89,6 +91,8 @@ When conflicts do happen:
 The fork adds these test files:
 
 * `tests/test_skill_recall_reminder.py` (14 tests, fork-only feature)
+* `tests/test_memory_recall_reminder.py` (20 tests, fork-only feature)
+* `tests/test_memory_session_pin.py` (18 tests, fork-only feature)
 * `tests/run_agent/test_rate_limit_observability.py` (6 tests, fork-only feature)
 * `tests/run_agent/test_anthropic_stream_phase_classifier.py` (16 tests, exercises `_classify_anthropic_stream_phase`)
 * `tests/run_agent/test_repair_tool_call_name.py` (CC alias coverage)

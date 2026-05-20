@@ -998,12 +998,14 @@ def init_agent(
     # See agent/fork/<module>.py::init_state for what gets set.
     from agent.fork import skill_recall as _fork_skill_recall
     from agent.fork import memory_recall as _fork_memory_recall
+    from agent.fork import memory_session_pin as _fork_session_pin
     from agent.fork import rate_limit_tracker as _fork_rl
     from agent.fork import tool_search_lazy as _fork_ts
     from agent.fork import diagnostics as _fork_diag
     for _fork_mod in (
         _fork_skill_recall,
         _fork_memory_recall,
+        _fork_session_pin,
         _fork_rl,
         _fork_ts,
         _fork_diag,
@@ -1166,6 +1168,8 @@ def init_agent(
     #   agent.memory.recall_reminder_mode     — "auto" | "hint" (default "auto")
     #   agent.memory.recall_auto_top_k        — top_k for auto-run mode (default 3)
     #   agent.memory.recall_min_user_chars    — min user-msg length to fire (default 200)
+    #   agent.memory.session_pin_max_count    — max pinned facts per session (default 5)
+    #   agent.memory.session_pin_max_chars    — total char budget across pins (default 2000)
     try:
         _memory_cfg = _agent_cfg.get("memory", {})
         if not isinstance(_memory_cfg, dict):
@@ -1184,6 +1188,13 @@ def init_agent(
         )
         agent._memory_recall_min_user_chars = max(
             0, int(_memory_cfg.get("recall_min_user_chars", 200))
+        )
+        # Session-pin caps.
+        agent._session_pin_max_count = max(
+            1, int(_memory_cfg.get("session_pin_max_count", 5))
+        )
+        agent._session_pin_max_chars = max(
+            100, int(_memory_cfg.get("session_pin_max_chars", 2000))
         )
     except Exception:
         # Defaults already set by init_state; keep them on bad config.
