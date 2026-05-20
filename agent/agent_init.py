@@ -997,10 +997,17 @@ def init_agent(
     # Fork-only feature state — each module owns its own init.
     # See agent/fork/<module>.py::init_state for what gets set.
     from agent.fork import skill_recall as _fork_skill_recall
+    from agent.fork import memory_recall as _fork_memory_recall
     from agent.fork import rate_limit_tracker as _fork_rl
     from agent.fork import tool_search_lazy as _fork_ts
     from agent.fork import diagnostics as _fork_diag
-    for _fork_mod in (_fork_skill_recall, _fork_rl, _fork_ts, _fork_diag):
+    for _fork_mod in (
+        _fork_skill_recall,
+        _fork_memory_recall,
+        _fork_rl,
+        _fork_ts,
+        _fork_diag,
+    ):
         _fork_mod.init_state(agent)
 
     # Load config once for memory, skills, and compression sections
@@ -1148,6 +1155,38 @@ def init_agent(
             skills_config.get("recall_reminder_interval", 6)
         )
     except Exception:
+        pass
+
+    # Memory-recall reminder config. Mirrors the skill-recall reminder
+    # but targets the warm-tier store. See
+    # ``agent.fork.memory_recall`` for semantics and
+    # ``docs/plans/2026-05-19-memory-recall-reminder-and-session-pin.md``
+    # for the design.  Config keys (all optional):
+    #   agent.memory.recall_reminder_interval — turns between reminders (default 8, 0 disables)
+    #   agent.memory.recall_reminder_mode     — "auto" | "hint" (default "auto")
+    #   agent.memory.recall_auto_top_k        — top_k for auto-run mode (default 3)
+    #   agent.memory.recall_min_user_chars    — min user-msg length to fire (default 200)
+    try:
+        _memory_cfg = _agent_cfg.get("memory", {})
+        if not isinstance(_memory_cfg, dict):
+            _memory_cfg = {}
+        agent._memory_recall_reminder_interval = int(
+            _memory_cfg.get("recall_reminder_interval", 8)
+        )
+        _mode = str(
+            _memory_cfg.get("recall_reminder_mode", "auto")
+        ).lower().strip()
+        if _mode not in ("auto", "hint"):
+            _mode = "auto"
+        agent._memory_recall_reminder_mode = _mode
+        agent._memory_recall_auto_top_k = max(
+            1, int(_memory_cfg.get("recall_auto_top_k", 3))
+        )
+        agent._memory_recall_min_user_chars = max(
+            0, int(_memory_cfg.get("recall_min_user_chars", 200))
+        )
+    except Exception:
+        # Defaults already set by init_state; keep them on bad config.
         pass
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded

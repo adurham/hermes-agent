@@ -454,6 +454,28 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             else:
                 function_result += _recall_hint
 
+        # ── Memory-recall reminder hook ──────────────────────────────
+        # Closes the warm-tier visibility gap: the agent rarely calls
+        # memory(action='recall', ...) on its own, especially during
+        # hypothesis formation. Inject a one-line nudge every N tool
+        # calls. Best-effort; never breaks tool execution.
+        _mem_hint = agent._maybe_memory_recall_hint(name)
+        if _mem_hint:
+            if _is_multimodal_tool_result(function_result):
+                _append_subdir_hint_to_multimodal(function_result, _mem_hint)  # type: ignore[arg-type]
+            else:
+                function_result += _mem_hint
+
+        # Maintain the sliding window of recent tool args used by the
+        # memory-recall reminder for query-candidate extraction. Cap at
+        # 3 so we only look back a few tool calls.
+        try:
+            agent._recent_tool_args.append(args)
+            if len(agent._recent_tool_args) > 3:
+                agent._recent_tool_args = agent._recent_tool_args[-3:]
+        except Exception:
+            pass
+
         # Unwrap _multimodal dicts to an OpenAI-style content list so any
         # vision-capable provider receives [{type:text},{type:image_url}]
         # rather than a raw Python dict.  The Anthropic adapter already
@@ -668,6 +690,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 tags=function_args.get("tags"),
                 fact_id=function_args.get("fact_id"),
                 helpful=function_args.get("helpful"),
+                # Agent ref — used by warm recall to reset the
+                # memory-recall-reminder counter on voluntary calls.
+                agent=agent,
             )
             # Bridge: notify external memory provider of built-in memory writes
             if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
@@ -935,6 +960,23 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _append_subdir_hint_to_multimodal(function_result, _recall_hint)
             else:
                 function_result += _recall_hint
+
+        # ── Memory-recall reminder hook (mirrors concurrent path) ────
+        _mem_hint = agent._maybe_memory_recall_hint(function_name)
+        if _mem_hint:
+            if _is_multimodal_tool_result(function_result):
+                _append_subdir_hint_to_multimodal(function_result, _mem_hint)  # type: ignore[arg-type]
+            else:
+                function_result += _mem_hint
+
+        # Maintain sliding window of recent tool args (3-deep) for the
+        # memory-recall query-candidate extractor.
+        try:
+            agent._recent_tool_args.append(function_args)
+            if len(agent._recent_tool_args) > 3:
+                agent._recent_tool_args = agent._recent_tool_args[-3:]
+        except Exception:
+            pass
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.

@@ -522,8 +522,15 @@ def _handle_warm_action(
     args_helpful: Optional[bool],
     args_target: Optional[str],
     hot_store: Optional[MemoryStore],
+    agent: Optional[Any] = None,
 ) -> str:
-    """Dispatch warm-tier actions. Always returns a JSON string."""
+    """Dispatch warm-tier actions. Always returns a JSON string.
+
+    ``agent`` is optional — when provided, voluntary ``recall`` calls
+    reset the memory-recall-reminder counter (so the agent doesn't get a
+    redundant nudge on the next tool result). Pass ``None`` from tests
+    or non-agent callers.
+    """
     warm, err = _get_warm_store_or_error()
     if err is not None:
         return err
@@ -550,6 +557,15 @@ def _handle_warm_action(
             top_k=int(args_top_k) if args_top_k else 5,
             category=args_category,
         )
+        # Voluntary recall — reset the recall-reminder counter so the
+        # agent doesn't get a nudge on the very next tool result.
+        # Best-effort: skip silently when agent ref is unavailable.
+        if agent is not None:
+            try:
+                from agent.fork.memory_recall import record_voluntary_recall
+                record_voluntary_recall(agent)
+            except Exception:
+                pass
         if not rows:
             result = {
                 "success": True,
@@ -768,6 +784,10 @@ def memory_tool(
     tags: Optional[str] = None,
     fact_id: Optional[int] = None,
     helpful: Optional[bool] = None,
+    # Agent reference for recall-reminder counter reset on voluntary
+    # recall calls (see ``agent.fork.memory_recall``). Optional —
+    # tests and non-agent callers pass None.
+    agent: Optional[Any] = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore (hot
@@ -802,6 +822,7 @@ def memory_tool(
             args_helpful=helpful,
             args_target=target,
             hot_store=store,
+            agent=agent,
         )
 
     # Hot-tier path (legacy behavior — unchanged for backward compat).
