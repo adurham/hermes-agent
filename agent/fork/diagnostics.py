@@ -136,3 +136,22 @@ def decorate_xai_entitlement_error(detail: str) -> str:
     if "X Premium+ does NOT include" in detail:
         return detail
     return f"{detail}{hint}"
+
+
+def init_state(agent) -> None:
+    """Initialize fork instance state for per-turn diagnostics.
+
+    Called once from ``agent.agent_init.init_agent``.  Sets:
+
+    * ``agent._strip_cache_on_overload`` — opt-in flag for stripping cache
+      breakpoints on retry when an overloaded_error fires.
+    * ``agent._usage_history``           — bounded list of per-API-call
+      usage records (used by :func:`record_usage_history`).
+    * ``agent._usage_history_cap``       — soft cap on history length.
+    * ``agent._tools_hash_cache``        — memoized (id, hex) tuple of the
+      most-recently-hashed tools[].  Cleared when tools change.
+    """
+    agent._strip_cache_on_overload = False
+    agent._usage_history = []
+    agent._usage_history_cap = 2000
+    agent._tools_hash_cache = None

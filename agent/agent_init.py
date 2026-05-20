@@ -994,42 +994,14 @@ def init_agent(
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
 
-    # Client-side lazy tool loading — names promoted via hermes_load_tools.
-    # When tool_search.mode == "client_side", the anthropic adapter ships
-    # name-only stubs for deferred MCP tools and inflates them to full
-    # schemas only for names present in this set. The set survives for
-    # the lifetime of the agent (one session) so the model doesn't have
-    # to re-discover the same tools every turn.
-    agent._promoted_tools: set[str] = set()
-    agent._strip_cache_on_overload = False
-
-    # ── Skill-recall reminder state ─────────────────────────────────
-    # Tracks skills the agent has actively loaded via ``skill_view`` in
-    # THIS session. Used by the post-tool reminder injector below to
-    # nudge the agent to call ``skill_pitfalls(name)`` before risky
-    # operations — the full skill content scrolls out of immediate
-    # attention long before the session ends, but its gotchas remain
-    # relevant the whole time. See "Skill recall reminder" comment near
-    # the tool-result hint sites for the firing rule.
-    agent._loaded_skills_this_session: set = set()
-    # Counter ticks each time a "risky" tool runs (terminal / Bash /
-    # write_file / patch / Edit / Write). Reminder fires when it hits
-    # the interval, then resets to 0.
-    agent._risky_ops_since_skill_recall = 0
-    # Configurable via agent.skills.recall_reminder_interval (0 = off).
-    # Default 6: after a skill is loaded, every 6th destructive tool
-    # call gets a one-line reminder appended to its result asking the
-    # agent to call skill_pitfalls(name) before proceeding.
-    agent._skill_recall_reminder_interval = 6
-
-    # Per-turn usage breakdown — append one record per successful API
-    # response so post-mortems can spot a cache flush (cache_read drops
-    # to ~0 while msg_count keeps climbing) without needing the bloaty
-    # ``HERMES_DUMP_REQUESTS`` capture. Bounded so a long session
-    # doesn't grow the field unbounded.
-    agent._usage_history: List[Dict[str, Any]] = []
-    agent._usage_history_cap: int = 2000
-    agent._tools_hash_cache: Optional[Tuple[int, str]] = None
+    # Fork-only feature state — each module owns its own init.
+    # See agent/fork/<module>.py::init_state for what gets set.
+    from agent.fork import skill_recall as _fork_skill_recall
+    from agent.fork import rate_limit_tracker as _fork_rl
+    from agent.fork import tool_search_lazy as _fork_ts
+    from agent.fork import diagnostics as _fork_diag
+    for _fork_mod in (_fork_skill_recall, _fork_rl, _fork_ts, _fork_diag):
+        _fork_mod.init_state(agent)
 
     # Load config once for memory, skills, and compression sections
     try:
