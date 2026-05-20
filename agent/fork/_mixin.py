@@ -9,6 +9,7 @@ tests and call sites rely on.
 The real implementations live in the sibling modules:
 
   ``agent.fork.skill_recall``        — skill-recall reminder
+  ``agent.fork.memory_recall``       — memory-recall reminder (warm tier)
   ``agent.fork.rate_limit_tracker``  — rate-limit observability
   ``agent.fork.anthropic_recovery``  — refusal retry + CC alias translation
   ``agent.fork.tool_search_lazy``    — lazy MCP tool gating
@@ -107,3 +108,13 @@ class ForkForwardersMixin:
         """Forwarder — see ``agent.fork.skill_recall.maybe_skill_recall_hint``."""
         from agent.fork.skill_recall import maybe_skill_recall_hint
         return maybe_skill_recall_hint(self, function_name)
+
+    def _maybe_memory_recall_hint(self, function_name: str) -> Optional[str]:
+        """Forwarder — see ``agent.fork.memory_recall.maybe_memory_recall_hint``."""
+        from agent.fork.memory_recall import maybe_memory_recall_hint
+        return maybe_memory_recall_hint(self, function_name)
+
+    def _record_voluntary_memory_recall(self) -> None:
+        """Forwarder — see ``agent.fork.memory_recall.record_voluntary_recall``."""
+        from agent.fork.memory_recall import record_voluntary_recall
+        return record_voluntary_recall(self)

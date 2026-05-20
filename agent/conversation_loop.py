@@ -271,6 +271,24 @@ def run_conversation(
     if isinstance(persist_user_message, str):
         persist_user_message = _sanitize_surrogates(persist_user_message)
 
+    # Capture the user message text for the memory-recall reminder
+    # (agent/fork/memory_recall.py). The reminder uses the user's
+    # framing as the primary seed for query-candidate extraction. Best-
+    # effort — non-string inputs (multimodal lists) get the str() form.
+    try:
+        if isinstance(user_message, str):
+            agent._last_user_message = user_message
+        else:
+            agent._last_user_message = str(user_message or "")
+    except Exception:
+        agent._last_user_message = ""
+    # Each new user turn resets the recent-tool-args window — old args
+    # from a prior turn don't seed a query for the new investigation.
+    try:
+        agent._recent_tool_args = []
+    except Exception:
+        pass
+
     # Store stream callback for _interruptible_api_call to pick up
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None

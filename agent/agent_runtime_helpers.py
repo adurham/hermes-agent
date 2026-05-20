@@ -1554,6 +1554,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             tags=function_args.get("tags"),
             fact_id=function_args.get("fact_id"),
             helpful=function_args.get("helpful"),
+            # Agent ref — used by warm recall to reset the
+            # memory-recall-reminder counter on voluntary calls.
+            agent=agent,
         )
         # Bridge: notify external memory provider of built-in memory writes
         if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
