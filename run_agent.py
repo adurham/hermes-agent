@@ -1298,6 +1298,26 @@ class AIAgent:
             if getattr(self, "verbose_logging", False):
                 logging.debug("Failed to record usage history: %s", e)
 
+    # Tool names that count as a "risky operation" for the skill-recall
+    # reminder. Tick the counter when one of these runs; when it hits the
+    # configured interval, the NEXT tool result gets a one-line nudge
+    # asking the agent to re-check skill_pitfalls for the loaded skills.
+    _RISKY_TOOL_NAMES = frozenset({
+        "terminal",
+        "Bash",
+        "write_file",
+        "Write",
+        "patch",
+        "Edit",
+        "execute_code",
+        "process",
+        "ha_call_service",
+        "browser_navigate",
+        "browser_click",
+        "browser_type",
+        "send_message",
+    })
+
     def _record_loaded_skill(self, name: str, tool_result: str) -> None:
         """Record that a skill was loaded successfully via ``skill_view``.
 
