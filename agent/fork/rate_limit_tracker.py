@@ -126,3 +126,24 @@ def log_rate_limit_transitions(agent, state: "RateLimitState") -> None:
         except Exception:
             pass
     agent._rate_limit_hot_buckets = currently_hot
+
+
+def init_state(agent) -> None:
+    """Initialize fork instance state for rate-limit observability.
+
+    Called once from ``agent.agent_init.init_agent``.  Sets:
+
+    * ``agent._rate_limit_first_logged`` — gates the one-shot INFO message
+      emitted on the first rate-limit header capture per session.
+    * ``agent._rate_limit_hot_buckets``  — set of bucket names currently
+      above the 90% threshold.  Used for the 80% hysteresis on transition
+      warnings.
+
+    Note: ``agent._rate_limit_state`` (the last-seen header snapshot) is
+    initialized to ``None`` by ``init_agent`` directly because the
+    type-annotated form ``Optional["RateLimitState"]`` lives at the
+    module's class-attribute scope and needs to import the
+    forward-referenced type.
+    """
+    agent._rate_limit_first_logged = False
+    agent._rate_limit_hot_buckets = set()

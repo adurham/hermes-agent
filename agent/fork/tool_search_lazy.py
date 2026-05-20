@@ -120,3 +120,16 @@ def currently_deferred_names(agent) -> Optional[Set[str]]:
         if defer_mcp and mcp_prefixes and name.startswith(mcp_prefixes):
             out.add(name)
     return out
+
+
+def init_state(agent) -> None:
+    """Initialize fork instance state for client-side lazy MCP tool loading.
+
+    Called once from ``agent.agent_init.init_agent``.  Sets:
+
+    * ``agent._promoted_tools`` — names promoted via ``hermes_load_tools``
+      from name-only stubs to full schemas.  Survives for the lifetime of
+      the agent (one session) so the model doesn't have to re-discover
+      the same tools every turn.
+    """
+    agent._promoted_tools = set()

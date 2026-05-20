@@ -106,3 +106,23 @@ def maybe_skill_recall_hint(agent, function_name: str) -> Optional[str]:
         "scrolled out of immediate context. This reminder fires "
         f"every {interval} risky tool calls and is cheap to act on."
     )
+
+
+def init_state(agent) -> None:
+    """Initialize fork instance state for skill-recall feature.
+
+    Called once from ``agent.agent_init.init_agent``.  Sets:
+
+    * ``agent._loaded_skills_this_session``     — names of skills loaded via
+      ``skill_view`` so far this session.  Adds to it in
+      :func:`record_loaded_skill`.
+    * ``agent._risky_ops_since_skill_recall``   — counter ticked by
+      :func:`maybe_skill_recall_hint`.  Resets to 0 when the reminder fires
+      or when a new skill is loaded.
+    * ``agent._skill_recall_reminder_interval`` — default 6.  Overridden later
+      by ``init_agent`` from ``agent.skills.recall_reminder_interval`` config.
+      Set to 0 to disable the reminder feature entirely.
+    """
+    agent._loaded_skills_this_session = set()
+    agent._risky_ops_since_skill_recall = 0
+    agent._skill_recall_reminder_interval = 6
