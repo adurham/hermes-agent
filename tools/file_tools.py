@@ -118,7 +118,13 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's live terminal cwd when possible."""
-    p = Path(filepath).expanduser()
+    try:
+        p = Path(filepath).expanduser()
+    except RuntimeError:
+        # pathlib raises when ~ / ~user can't resolve (HOME unset, or
+        # ~unknownuser).  posixpath.expanduser silently leaves the path
+        # unchanged in that case, which is the safer fallback here.
+        p = Path(os.path.expanduser(filepath))
     if not p.is_absolute():
         base = _get_live_tracking_cwd(task_id) or os.environ.get(
             "TERMINAL_CWD", os.getcwd()
@@ -159,7 +165,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     """Return an error message if the path targets a sensitive system location."""
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         resolved = filepath
     normalized = os.path.normpath(os.path.expanduser(filepath))
     _err = (
