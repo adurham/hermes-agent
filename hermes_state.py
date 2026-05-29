@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -54,7 +54,6 @@ SCHEMA_VERSION = 14
 _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
-    "disk i/o error",         # Flaky network FS during WAL setup
 )
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
@@ -125,6 +124,27 @@ def format_session_db_unavailable(prefix: str = "Session database not available"
     return f"{prefix}: {cause}{hint}."
 
 
+def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
+    """Read the journal mode from the SQLite DB header on disk.
+
+    Returns the mode string (e.g. ``"wal"``, ``"delete"``), or ``None``
+    if the value cannot be determined (new DB, or PRAGMA read failed).
+    """
+    try:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    mode = row[0]
+    if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
+        try:
+            mode = mode.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    return str(mode).strip().lower() if mode is not None else None
+
+
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
@@ -147,7 +167,18 @@ def apply_wal_with_fallback(
 
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
+
+    Never downgrades to DELETE if the on-disk DB header reports WAL — see _on_disk_journal_mode.
     """
+    # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
+    # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
+    try:
+        current_mode = conn.execute("PRAGMA journal_mode").fetchone()
+        if current_mode and current_mode[0] == "wal":
+            return "wal"
+    except sqlite3.OperationalError:
+        pass
+
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         return "wal"
@@ -155,6 +186,10 @@ def apply_wal_with_fallback(
         msg = str(exc).lower()
         if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
             # Unrelated OperationalError — don't silently swallow.
+            raise
+        # Don't downgrade if another process already set WAL on disk.
+        existing = _on_disk_journal_mode(conn)
+        if existing == "wal":
             raise
         _log_wal_fallback_once(db_label, exc)
         conn.execute("PRAGMA journal_mode=DELETE")
@@ -242,7 +277,9 @@ CREATE TABLE IF NOT EXISTS messages (
     -- thinking-block positions (signed against position; reordering
     -- triggers HTTP 400 under context_management.clear_thinking_20251015).
     -- JSON list of block dicts. Added v14.
-    anthropic_content_blocks TEXT
+    anthropic_content_blocks TEXT,
+    platform_message_id TEXT,
+    observed INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -608,6 +645,19 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+
+        # Indexes that reference reconciler-added columns must be created
+        # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
+        # makes the initial executescript fail on legacy DBs (the index's
+        # WHERE clause references a column that doesn't exist yet).
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_platform_msg_id "
+                "ON messages(session_id, platform_message_id) "
+                "WHERE platform_message_id IS NOT NULL"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
@@ -1628,12 +1678,20 @@ class SessionDB:
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
         anthropic_content_blocks: Any = None,
+        platform_message_id: str = None,
+        observed: bool = False,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
 
         Also increments the session's message_count (and tool_call_count
         if role is 'tool' or tool_calls is present).
+
+        ``platform_message_id`` is the external messaging platform's own
+        message ID (e.g. Telegram update_id, Yuanbao msg_id).  It is
+        independent of the SQLite autoincrement primary key and is used by
+        platform-specific flows like yuanbao's recall guard to redact a
+        message by its platform-side identifier.
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
@@ -1667,8 +1725,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, anthropic_content_blocks)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, anthropic_content_blocks,
+                   platform_message_id, observed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1685,6 +1744,8 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     anthropic_content_blocks_json,
+                    platform_message_id,
+                    1 if observed else 0,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1752,13 +1813,19 @@ class SessionDB:
                     json.dumps(anthropic_content_blocks) if anthropic_content_blocks else None
                 )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                # Accept either `platform_message_id` (new explicit name) or
+                # `message_id` (yuanbao's existing convention on message dicts).
+                platform_msg_id = (
+                    msg.get("platform_message_id") or msg.get("message_id")
+                )
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items, anthropic_content_blocks)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, anthropic_content_blocks,
+                       platform_message_id, observed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -1775,6 +1842,8 @@ class SessionDB:
                         codex_items_json,
                         codex_message_items_json,
                         anthropic_content_blocks_json,
+                        platform_msg_id,
+                        1 if msg.get("observed") else 0,
                     ),
                 )
                 total_messages += 1
@@ -2092,7 +2161,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, anthropic_content_blocks "
+                "codex_reasoning_items, codex_message_items, anthropic_content_blocks, "
+                "platform_message_id, observed "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
@@ -2113,6 +2183,15 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []
+            # Surface the platform-side message id (e.g. yuanbao msg_id,
+            # telegram update_id) so platform-specific flows like recall
+            # can match by external identifier instead of having to fall
+            # back to content-match heuristics.  Exposed as ``message_id``
+            # for backward compatibility with the JSONL transcript shape.
+            if row["platform_message_id"]:
+                msg["message_id"] = row["platform_message_id"]
+            if row["observed"]:
+                msg["observed"] = True
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.

@@ -356,10 +356,32 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     """
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
+        # No git checkout (canonical case: the published Docker image, which
+        # excludes ``.git`` from the build context).  Fall back to the baked
+        # build SHA — a built image is pinned to one commit, so it is a frozen
+        # ``local == origin`` state with no carried/behind counts.
+        try:
+            from hermes_cli.build_info import get_build_sha
+            baked = get_build_sha(short=8)
+            if baked:
+                return {"local": baked, "origin": baked, "upstream": None,
+                        "carried": 0, "upstream_behind": 0}
+        except Exception:
+            pass
         return None
 
     local = _git_short_hash(repo_dir, "HEAD")
     if not local:
+        # Live-git lookup failed (e.g. shallow clone without HEAD resolvable).
+        # Fall back to the baked build SHA if available.
+        try:
+            from hermes_cli.build_info import get_build_sha
+            baked = get_build_sha(short=8)
+            if baked:
+                return {"local": baked, "origin": baked, "upstream": None,
+                        "carried": 0, "upstream_behind": 0}
+        except Exception:
+            pass
         return None
 
     origin = _git_short_hash(repo_dir, "origin/main")

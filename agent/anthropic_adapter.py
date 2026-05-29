@@ -26,7 +26,9 @@ import json
 import logging
 import os
 import platform
+import secrets
 import socket
+import stat
 import subprocess
 import uuid
 from pathlib import Path
@@ -240,16 +242,16 @@ ADAPTIVE_EFFORT_MAP = {
 # xhigh as a distinct level between high and max; older adaptive-thinking
 # models (4.6) reject it with a 400.  Keep this substring list in sync with
 # the Anthropic migration guide as new model families ship.
-_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7")
+_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8")
 
 # Models where extended thinking is deprecated/removed (4.6+ behavior: adaptive
 # is the only supported mode; 4.7 additionally forbids manual thinking entirely
 # and drops temperature/top_p/top_k).
-_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7")
+_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7", "4-8", "4.8")
 
 # Models where temperature/top_p/top_k return 400 if set to non-default values.
 # This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
-_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
+_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8")
 _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 
 # ── Max output token limits per Anthropic model ───────────────────────
@@ -265,6 +267,8 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     # with what real Claude Code sends — even though the model itself isn't
     # supposed to see this value, we don't know what other API-side decisions
     # are keyed on it. Override per-call via max_tokens kwarg when needed.
+    # Claude 4.8
+    "claude-opus-4-8":   128_000,
     # Claude 4.7
     "claude-opus-4-7":    16_000,
     # Claude 4.6
@@ -1452,11 +1456,34 @@ def _write_claude_code_credentials(
         existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
-        _tmp_cred = cred_path.with_suffix(".tmp")
-        _tmp_cred.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-        _tmp_cred.replace(cred_path)
-        # Restrict permissions (credentials file)
-        cred_path.chmod(0o600)
+        # Per-process random suffix avoids collisions between concurrent
+        # writers and stale leftovers from a prior crashed write.
+        _tmp_cred = cred_path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+        try:
+            # Create the temp file atomically at 0o600. The previous
+            # write_text + post-replace chmod opened a TOCTOU window where
+            # both the temp file and the destination briefly inherited the
+            # process umask (commonly 0o644 = world-readable), exposing
+            # Claude Code OAuth tokens to other local users between create
+            # and chmod. Mirrors agent/google_oauth.py (#19673) and
+            # tools/mcp_oauth.py (#21148). Parent dir (~/.claude/) is
+            # owned by Claude Code itself, so we leave its mode alone.
+            fd = os.open(
+                str(_tmp_cred),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(existing, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(_tmp_cred, cred_path)
+        except OSError:
+            try:
+                _tmp_cred.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
     except (OSError, IOError) as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 
