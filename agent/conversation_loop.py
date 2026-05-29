@@ -1491,11 +1491,10 @@ def run_conversation(
                     # provider first (different providers have different policies);
                     # if none is available, give up immediately with a clear message
                     # rather than burning 60s of backoff on hopeless attempts.
-                    _is_refusal = (
-                        agent.api_mode == "anthropic_messages"
-                        and response is not None
-                        and getattr(response, "stop_reason", None) == "refusal"
-                    )
+                    # Fork-only refusal detection lives in
+                    # agent/fork/anthropic_recovery.py (via the mixin forwarder)
+                    # so upstream rewrites of this loop don't collide with it.
+                    _is_refusal = agent._is_anthropic_refusal(response)
                     if _is_refusal:
                         logging.error(
                             "%sContent policy refusal (stop_reason='refusal'). "

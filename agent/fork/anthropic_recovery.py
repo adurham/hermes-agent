@@ -171,3 +171,23 @@ def translate_cc_args_after_repair(agent, tc, original_name: str) -> None:
 
     if translated is not parsed_args:
         tc.function.arguments = json.dumps(translated)
+
+
+# ── Refusal detection ────────────────────────────────────────────────
+
+
+def is_anthropic_refusal(agent, response) -> bool:
+    """True when an Anthropic-native response is a content-policy refusal.
+
+    Fork-only: the refusal-recovery ladder (fallback → history sanitize →
+    give-up) in ``conversation_loop`` keys off this. Extracted here so the
+    detection predicate — the part upstream's loop rewrites would collide
+    with — lives on the fork-only side. The loop-control (continue/return,
+    loop-var resets) stays inline in conversation_loop because it is tightly
+    coupled to that function's local state.
+    """
+    return (
+        getattr(agent, "api_mode", None) == "anthropic_messages"
+        and response is not None
+        and getattr(response, "stop_reason", None) == "refusal"
+    )
