@@ -272,12 +272,9 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
-    -- Anthropic-native: full assistant content array captured verbatim
-    -- from response.content. Replayed on subsequent turns to preserve
-    -- thinking-block positions (signed against position; reordering
-    -- triggers HTTP 400 under context_management.clear_thinking_20251015).
-    -- JSON list of block dicts. Added v14.
-    anthropic_content_blocks TEXT,
+    -- NOTE: the fork's anthropic_content_blocks column is NOT declared here
+    -- (it lives in FORK_TABLE_COLUMNS and is ALTER-ADDed by _reconcile_columns)
+    -- so this upstream-owned CREATE TABLE stays conflict-free on merge.
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0
 );
@@ -343,6 +340,23 @@ CREATE TABLE IF NOT EXISTS api_calls (
 
 CREATE INDEX IF NOT EXISTS idx_api_calls_session ON api_calls(session_id, started_at);
 """
+
+# Fork-only COLUMNS added to upstream-owned tables. Kept out of SCHEMA_SQL's
+# CREATE TABLE bodies so upstream's table edits never collide with the fork's
+# columns on merge (the anthropic_content_blocks column previously sat inline in
+# the messages CREATE TABLE and conflicted positionally with upstream's
+# platform_message_id/observed additions). _reconcile_columns() ALTER-ADDs these
+# on every startup, exactly like it does for SCHEMA_SQL-declared columns.
+# Format: {table: {column_name: column_type_with_constraints}}.
+FORK_TABLE_COLUMNS = {
+    "messages": {
+        # Anthropic-native: full assistant content array captured verbatim from
+        # response.content. Replayed on subsequent turns to preserve thinking-
+        # block positions (signed against position; reordering triggers HTTP 400
+        # under context_management.clear_thinking_20251015). JSON list of blocks.
+        "anthropic_content_blocks": "TEXT",
+    },
+}
 
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -609,8 +623,17 @@ class SessionDB:
         This makes column additions a declarative operation — just add
         the column to SCHEMA_SQL and it appears on the next startup.
         Version-gated migration blocks are no longer needed for ADD COLUMN.
+
+        Fork-only columns (FORK_TABLE_COLUMNS) are merged into the expected set
+        so they're ALTER-ADDed the same way, without living inside SCHEMA_SQL's
+        upstream-owned CREATE TABLE bodies (keeps them conflict-free on merge).
         """
         expected = self._parse_schema_columns(SCHEMA_SQL)
+        # Merge fork-only columns into the expected set (additive; never removes).
+        for _tbl, _cols in FORK_TABLE_COLUMNS.items():
+            expected.setdefault(_tbl, {})
+            for _cn, _ct in _cols.items():
+                expected[_tbl].setdefault(_cn, _ct)
         for table_name, declared_cols in expected.items():
             # Get current columns from the live table
             try:
