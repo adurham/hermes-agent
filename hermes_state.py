@@ -287,6 +287,29 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS compression_locks (
+    session_id TEXT PRIMARY KEY,
+    holder TEXT NOT NULL,
+    acquired_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+"""
+
+# ── Fork-only schema (see FORK.md) ───────────────────────────────────────
+# Tables/indexes the fork adds that upstream does not have. Kept in a SEPARATE
+# constant from SCHEMA_SQL so upstream's SCHEMA_SQL edits never collide with
+# the fork's DDL on merge (the api_calls block previously sat inline in
+# SCHEMA_SQL and conflicted positionally with every upstream table addition).
+# Executed via executescript() immediately after SCHEMA_SQL at every call site.
+# Both are idempotent (CREATE ... IF NOT EXISTS), so re-running is safe and the
+# unconditional _reconcile_columns() pass still handles additive columns.
+FORK_SCHEMA_SQL = """
 -- Per-API-call response telemetry (added v12, CASCADE added v13). One row
 -- per response we get back from the model provider, with the cache split,
 -- latency, and request_id needed to confirm whether a slow turn was a
@@ -318,19 +341,7 @@ CREATE TABLE IF NOT EXISTS api_calls (
     extra TEXT NOT NULL DEFAULT '{}'      -- JSON: raw provider usage etc.
 );
 
-CREATE TABLE IF NOT EXISTS compression_locks (
-    session_id TEXT PRIMARY KEY,
-    holder TEXT NOT NULL,
-    acquired_at REAL NOT NULL,
-    expires_at REAL NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
-CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_api_calls_session ON api_calls(session_id, started_at);
-CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 """
 
 FTS_SQL = """
@@ -646,6 +657,9 @@ class SessionDB:
         cursor = self._conn.cursor()
 
         cursor.executescript(SCHEMA_SQL)
+        # Fork-only tables/indexes (see FORK_SCHEMA_SQL). Run right after the
+        # upstream schema so api_calls etc. exist on fresh and existing DBs.
+        cursor.executescript(FORK_SCHEMA_SQL)
 
         # ── Declarative column reconciliation ──────────────────────────
         # Diff live tables against SCHEMA_SQL and ADD any missing columns.
@@ -759,9 +773,12 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass
                 # The post-migration CREATE IF NOT EXISTS pass at the top of
-                # _ensure_schema runs SCHEMA_SQL again, which will recreate
+                # _ensure_schema runs FORK_SCHEMA_SQL again, which recreates
                 # api_calls with the v13 (CASCADE) shape. We just drop here.
+                # (api_calls is fork-only, so it lives in FORK_SCHEMA_SQL, not
+                # SCHEMA_SQL — run both to be safe; CREATE IF NOT EXISTS is idempotent.)
                 cursor.executescript(SCHEMA_SQL)
+                cursor.executescript(FORK_SCHEMA_SQL)
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
