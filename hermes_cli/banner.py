@@ -53,12 +53,9 @@ def _skin_color(key: str, fallback: str) -> str:
 
 
 def _skin_branding(key: str, fallback: str) -> str:
-    """Get a branding string from the active skin, or return fallback."""
-    try:
-        from hermes_cli.skin_engine import get_active_skin
-        return get_active_skin().get_branding(key, fallback)
-    except Exception:
-        return fallback
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.skin_branding``."""
+    from hermes_cli.fork_banner import skin_branding
+    return skin_branding(key, fallback)
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================
@@ -280,7 +277,12 @@ def _resolve_repo_dir() -> Optional[Path]:
 
 
 def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
-    """Resolve a git revision to an 8-character short hash."""
+    """Resolve a git revision to an 8-character short hash.
+
+    Low-level git plumbing — stays in banner.py (not fork_banner) because the
+    fork's banner tests patch ``hermes_cli.banner.subprocess.run`` and call
+    these directly. fork_banner's composite logic calls back to these names.
+    """
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=8", rev],
@@ -341,247 +343,52 @@ def _git_head_date(repo_dir: Path) -> Optional[str]:
 
 
 def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
-    """Return git state for the startup banner.
-
-    Fields:
-        local: short SHA of HEAD (always present)
-        origin: short SHA of origin/main, or None if missing
-        upstream: short SHA of upstream/main, or None if no upstream remote
-        carried: commits on HEAD not on origin/main (your local-only commits)
-        upstream_behind: commits on upstream/main not on HEAD (only set when
-            an ``upstream`` remote exists; reflects how stale your fork is
-            relative to the real NousResearch repo)
-    """
-    repo_dir = repo_dir or _resolve_repo_dir()
-    if repo_dir is None:
-        # No git checkout (canonical case: the published Docker image, which
-        # excludes ``.git`` from the build context).  Fall back to the baked
-        # build SHA — a built image is pinned to one commit, so it is a frozen
-        # ``local == origin`` state with no carried/behind counts.
-        try:
-            from hermes_cli.build_info import get_build_sha
-            baked = get_build_sha(short=8)
-            if baked:
-                return {"local": baked, "origin": baked, "upstream": None,
-                        "carried": 0, "upstream_behind": 0}
-        except Exception:
-            pass
-        return None
-
-    local = _git_short_hash(repo_dir, "HEAD")
-    if not local:
-        # Live-git lookup failed (e.g. shallow clone without HEAD resolvable).
-        # Fall back to the baked build SHA if available.
-        try:
-            from hermes_cli.build_info import get_build_sha
-            baked = get_build_sha(short=8)
-            if baked:
-                return {"local": baked, "origin": baked, "upstream": None,
-                        "carried": 0, "upstream_behind": 0}
-        except Exception:
-            pass
-        return None
-
-    origin = _git_short_hash(repo_dir, "origin/main")
-    upstream = _git_short_hash(repo_dir, "upstream/main")
-
-    carried = _git_count(repo_dir, "origin/main..HEAD") if origin else 0
-    upstream_behind = _git_count(repo_dir, "HEAD..upstream/main") if upstream else 0
-
-    return {
-        "local": local,
-        "origin": origin,
-        "upstream": upstream,
-        "carried": carried,
-        "upstream_behind": upstream_behind,
-    }
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.get_git_banner_state``."""
+    from hermes_cli.fork_banner import get_git_banner_state as _impl
+    return _impl(repo_dir)
 
 
+# ── Fork-owned branding + git-state (see hermes_cli/fork_banner.py) ──
+# These are thin forwarders. The implementations live in the fork module so
+# upstream rewrites of this file can't drop them (a real bug we hit). On merge,
+# take-ours on these few lines.
+#
+# The constants + per-process caches live HERE (not fork_banner) so the fork's
+# banner tests, which reset ``banner._origin_repo_cache = None`` and read
+# ``banner._CANONICAL_REPO``, operate on the live values. fork_banner reads and
+# writes them via the ``banner`` module namespace.
 _CANONICAL_REPO = ("NousResearch", "hermes-agent")
 _FALLBACK_RELEASE_URL_BASE = (
     f"https://github.com/{_CANONICAL_REPO[0]}/{_CANONICAL_REPO[1]}/releases/tag"
 )
 _latest_release_cache: Optional[tuple] = None  # (tag, url) once resolved
 _origin_repo_cache: Optional[tuple] = None  # ((owner, repo) | None,) once resolved
-
-
-def _parse_github_origin(repo_dir: Path) -> Optional[tuple]:
-    """Return ``(owner, repo)`` parsed from origin's URL, or None.
-
-    Handles both SSH (``git@github.com:owner/repo.git``) and HTTPS
-    (``https://github.com/owner/repo[.git]``) forms. Non-GitHub origins
-    return None — the banner falls back to the canonical
-    NousResearch/hermes-agent links in that case.
-    """
-    global _origin_repo_cache
-    if _origin_repo_cache is not None:
-        return _origin_repo_cache[0]
-
-    try:
-        result = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            cwd=str(repo_dir),
-        )
-    except Exception:
-        _origin_repo_cache = (None,)
-        return None
-
-    if result.returncode != 0:
-        _origin_repo_cache = (None,)
-        return None
-
-    url = (result.stdout or "").strip()
-    if not url:
-        _origin_repo_cache = (None,)
-        return None
-
-    # SSH form: git@github.com:owner/repo.git
-    # HTTPS form: https://github.com/owner/repo(.git)?
-    parsed: Optional[tuple] = None
-    if url.startswith("git@github.com:"):
-        path = url[len("git@github.com:"):]
-    elif url.startswith("https://github.com/"):
-        path = url[len("https://github.com/"):]
-    elif url.startswith("ssh://git@github.com/"):
-        path = url[len("ssh://git@github.com/"):]
-    else:
-        path = ""
-
-    if path:
-        if path.endswith(".git"):
-            path = path[:-4]
-        parts = path.split("/")
-        if len(parts) >= 2 and parts[0] and parts[1]:
-            parsed = (parts[0], parts[1])
-
-    _origin_repo_cache = (parsed,)
-    return parsed
-
-
-def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
-    """Return ``(tag, release_url)`` for the latest git tag, or None.
-
-    Local-only — runs ``git describe --tags --abbrev=0`` against the
-    Hermes checkout. Cached per-process. Release URL targets the origin
-    repo: ``releases/tag/<tag>`` for canonical NousResearch/hermes-agent,
-    ``tree/<tag>`` for any other GitHub fork (works without a published
-    Release on the fork — tag-tree URLs are valid for any pushed tag).
-    Falls back to the NousResearch release URL when origin isn't a
-    parseable GitHub remote.
-    """
-    global _latest_release_cache
-    if _latest_release_cache is not None:
-        return _latest_release_cache or None
-
-    repo_dir = repo_dir or _resolve_repo_dir()
-    if repo_dir is None:
-        _latest_release_cache = ()  # falsy sentinel — skip future lookups
-        return None
-
-    try:
-        result = subprocess.run(
-            ["git", "describe", "--tags", "--abbrev=0"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            cwd=str(repo_dir),
-        )
-    except Exception:
-        _latest_release_cache = ()
-        return None
-
-    if result.returncode != 0:
-        _latest_release_cache = ()
-        return None
-
-    tag = (result.stdout or "").strip()
-    if not tag:
-        _latest_release_cache = ()
-        return None
-
-    origin = _parse_github_origin(repo_dir)
-    if origin == _CANONICAL_REPO:
-        url = f"https://github.com/{origin[0]}/{origin[1]}/releases/tag/{tag}"
-    elif origin is not None:
-        # Fork: link to tree/<tag>. Works without a published GitHub Release
-        # (tag-tree URLs resolve for any pushed tag).
-        url = f"https://github.com/{origin[0]}/{origin[1]}/tree/{tag}"
-    else:
-        # Non-GitHub origin or unparseable — keep canonical link as a sane default.
-        url = f"{_FALLBACK_RELEASE_URL_BASE}/{tag}"
-
-    _latest_release_cache = (tag, url)
-    return _latest_release_cache
-
-
-# Threshold (in commits) before the banner nudges that upstream/main has
-# moved on. Below this it's just routine drift; above it the fork is stale
-# enough that you probably want to consider a sync.
+# Threshold (commits) before the banner nudges that upstream/main has moved on.
 _UPSTREAM_BEHIND_NUDGE = 10
 
 
+def _parse_github_origin(repo_dir: Path) -> Optional[tuple]:
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner._parse_github_origin``."""
+    from hermes_cli.fork_banner import _parse_github_origin as _impl
+    return _impl(repo_dir)
+
+
+def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.get_latest_release_tag``."""
+    from hermes_cli.fork_banner import get_latest_release_tag as _impl
+    return _impl(repo_dir)
+
+
 def _resolve_agent_name() -> str:
-    """Resolve the agent display name shown in the banner title.
-
-    Priority:
-      1. Active skin's ``branding.agent_name`` if set to something other
-         than the built-in default ("Hermes Agent") — user customization wins.
-      2. ``<owner>/<repo>`` parsed from origin remote when the fork isn't
-         the canonical NousResearch/hermes-agent — auto fork-identification.
-      3. Default "Hermes Agent" — canonical or unparseable cases.
-    """
-    custom = _skin_branding("agent_name", "Hermes Agent")
-    if custom and custom != "Hermes Agent":
-        return custom
-
-    repo_dir = _resolve_repo_dir()
-    if repo_dir is None:
-        return "Hermes Agent"
-    origin = _parse_github_origin(repo_dir)
-    if origin and origin != _CANONICAL_REPO:
-        return f"{origin[0]}/{origin[1]}"
-    return "Hermes Agent"
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.resolve_agent_name``."""
+    from hermes_cli.fork_banner import resolve_agent_name
+    return resolve_agent_name()
 
 
 def format_banner_version_label() -> str:
-    """Return the version label shown in the startup banner title.
-
-    On a fork, the date shown is HEAD's committer date — the hardcoded
-    ``__release_date__`` only tracks canonical NousResearch releases and
-    goes stale immediately on a fork that's been pulling from main.
-    """
-    repo_dir = _resolve_repo_dir()
-    date_label = RELEASE_DATE
-    if repo_dir is not None:
-        origin = _parse_github_origin(repo_dir)
-        if origin and origin != _CANONICAL_REPO:
-            head_date = _git_head_date(repo_dir)
-            if head_date:
-                date_label = head_date
-    base = f"{_resolve_agent_name()} v{VERSION} ({date_label})"
-    state = get_git_banner_state()
-    if not state:
-        return base
-
-    local = state.get("local")
-    if not local:
-        return base
-
-    carried = int(state.get("carried") or 0)
-    upstream_behind = int(state.get("upstream_behind") or 0)
-
-    label = f"{base} · {local}"
-    if carried > 0:
-        word = "commit" if carried == 1 else "commits"
-        label += f" (+{carried} carried {word})"
-
-    if upstream_behind >= _UPSTREAM_BEHIND_NUDGE:
-        label += f" · upstream +{upstream_behind}"
-
-    return label
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.format_banner_version_label``."""
+    from hermes_cli.fork_banner import format_banner_version_label as _impl
+    return _impl()
 
 
 # =========================================================================
