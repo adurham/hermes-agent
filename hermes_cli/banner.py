@@ -59,8 +59,6 @@ def _skin_branding(key: str, fallback: str) -> str:
         return get_active_skin().get_branding(key, fallback)
     except Exception:
         return fallback
-
-
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================
