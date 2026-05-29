@@ -17,21 +17,31 @@ will never touch them.
 | `agent/fork/memory_recall.py` | Memory-recall reminder — nudges agent to call `memory(action='recall', ...)` against the warm-tier store every N tool calls (or on explicit "remember"-style directives); auto mode runs the recall and injects the top hit. Config: `agent.memory.recall_reminder_*`. |
 | `agent/fork/memory_session_pin.py` | Session-pin — keeps selected warm-tier facts visible in the system prompt for the rest of the current session (gone on restart). Exposes `memory(action='pin'/'unpin'/'pinned', fact_id=N)`. Config: `agent.memory.session_pin_max_count`/`max_chars`. |
 | `agent/fork/rate_limit_tracker.py` | Rate-limit observability — one-shot INFO on first header capture, WARN on 90% bucket transitions with 80% hysteresis |
-| `agent/fork/anthropic_recovery.py` | Refusal retry sanitization (strip credential-extraction shell patterns from historical context) + CC alias arg translation |
+| `agent/fork/anthropic_recovery.py` | Refusal retry sanitization (strip credential-extraction shell patterns from historical context) + CC alias arg translation + `is_anthropic_refusal` detection predicate (T2.3) |
+| `agent/fork/anthropic_messages.py` | The fork's ~540-line `convert_messages_to_anthropic` OpenAI→Anthropic converter (T2.2). Moved out of `anthropic_adapter.py` so upstream's converter refactors can't tangle with it. |
+| `agent/fork/stream_recovery.py` | Cold-start stale-timeout computation (`effective_stale_timeout`) — the fork's grace window before the first stream event (T2.3). |
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
 | `agent/fork/diagnostics.py` | Per-turn usage history + tools-signature hash + xAI 403 entitlement hint |
+| `hermes_cli/fork_banner.py` | The fork's banner branding + git-state subsystem (carried/upstream-behind line, fork-aware agent name, HEAD-date label, fork-tree release URLs) (T2.5). Moved out of `banner.py`. |
 | `FORK.md` | This file |
 | `scripts/fork-merge-plan.py` | Pre-merge analyzer (see "Future upstream merges" below) |
+| `scripts/setup-merge-drivers.sh` | One-time-per-clone registration of the uv.lock merge driver |
 
 ### Soft-fork edits (merge conflicts possible)
 
 These are upstream files we've modified. Fork divergence vs `upstream/main`:
 
+After the Tier-2 refactors (2026-05), several of these shrank: the biggest
+inline blocks moved into hard-fork modules (see table above), leaving thin
+forwarders. The conflict surface on these files is now mostly forwarder lines.
+
 | File | Adds / Dels | Why |
 |---|---|---|
-| `agent/anthropic_adapter.py` | +1922 / -59 | Claude Code OAuth mimicry (wire format, betas, metadata, 1M-context gate). This is the headline fork feature and is intentionally never going upstream. |
-| `agent/chat_completion_helpers.py` | +780 / -124 | Streaming reliability: SDK monkey-patch hook for SSE events, heartbeat ticks, stream-drop reconnect, cold-start detection. Currently a wholesale-replaced `interruptible_streaming_api_call`. |
-| `agent/conversation_loop.py` | +330 / -7 | Per-turn callouts to fork modules (rate-limit capture, usage history, refusal handler), plus the refusal handler itself which is wedged in mid-control-flow. |
+| `agent/anthropic_adapter.py` | +1922 / -59 | Claude Code OAuth mimicry (wire format, betas, metadata, 1M-context gate). This is the headline fork feature and is intentionally never going upstream. **T2.2**: the 540-line `convert_messages_to_anthropic` converter moved to `agent/fork/anthropic_messages.py` (thin forwarder remains). |
+| `agent/chat_completion_helpers.py` | +780 / -124 | Streaming reliability: SDK monkey-patch hook for SSE events, heartbeat ticks, stream-drop reconnect, cold-start detection. **T2.3**: cold-start stale-timeout calc moved to `agent/fork/stream_recovery.py`. |
+| `agent/conversation_loop.py` | +330 / -7 | Per-turn callouts to fork modules (rate-limit capture, usage history, refusal handler). **T2.3**: refusal *detection* moved to `agent/fork/anthropic_recovery.is_anthropic_refusal`; the recovery ladder stays inline (control-flow-coupled). |
+| `hermes_cli/banner.py` | (reduced by T2.5) | Branding + git-state subsystem moved to `hermes_cli/fork_banner.py`; banner.py keeps thin forwarders + the patchable git plumbing/caches. |
+| `hermes_state.py` | (reduced by T2.1/T2.4) | Fork-only `api_calls` table → `FORK_SCHEMA_SQL`; fork column `anthropic_content_blocks` → `FORK_TABLE_COLUMNS` (reconciler-added). SCHEMA_SQL is now pure-upstream shape. |
 | `run_agent.py` | +234 / -24 | 12 forwarder methods (now extracted to `ForkForwardersMixin`), `_classify_anthropic_stream_phase` top-level function, fork-state initialization. |
 | `agent/agent_init.py` | +122 / -13 | Fork instance state initialization (delegated to `fork.<module>.init_state(agent)` where possible). |
 | `agent/agent_runtime_helpers.py` | +119 / -29 | Scattered port additions during the 2026-05-19 upstream merge — mostly CC alias support in `repair_tool_call`, switch_model 1M-beta latch re-eval, swarm_run handling in `invoke_tool`. |
@@ -87,39 +97,47 @@ just take either side and run `uv lock`.
 
 ### Conflict guidance by file (refresh after each sync; line numbers drift)
 
-* `agent/fork/*` — **never conflicts.** This is the goal pattern: fork logic lives
-  in its own modules, hooked into upstream files via thin forwarders. Every file
-  still inline (below) is a Tier-2 refactor candidate — move it here and it stops
-  conflicting. Proven: across two syncs, `agent/fork/*` had zero conflicts.
+* `agent/fork/*` + `hermes_cli/fork_banner.py` — **never conflicts.** This is the
+  goal pattern: fork logic lives in its own modules, hooked into upstream files via
+  thin forwarders. Proven: across two syncs, these had zero conflicts. The Tier-2
+  refactors (2026-05) moved the worst inline offenders here — see below.
 * `uv.lock` — handled by the merge driver (see above). No manual work.
-* `hermes_state.py` — **recurring multi-hunk pain.** Two distinct causes:
-  (1) `SCHEMA_VERSION` — both sides bump it. Resolution: pick `max(both) + 1`.
-  NOTE: `_reconcile_columns()` runs unconditionally on boot and adds any column
-  declared in `SCHEMA_SQL` that's missing from the live table, and tables use
-  `CREATE TABLE IF NOT EXISTS` — so the version bump is **only** needed to gate
-  *destructive* migrations, not additive ones. (2) Fork-only DDL (`api_calls`
-  table/index) collides positionally with upstream-new DDL (`compression_locks`).
-  Resolution: keep BOTH — they're independent tables. See Tier-2 plan for the
-  `FORK_SCHEMA_SQL` fragment refactor that eliminates cause (2). Also: `add_message`
-  INSERT/VALUES/param + the multi-session SELECT carry fork columns
-  (`anthropic_content_blocks`) interleaved with upstream columns
-  (`platform_message_id`, `observed`) — keep all, consistent column order, and the
-  message-row consumer reads BY NAME (`row["col"]`) so column-order shifts are safe.
-* `agent/anthropic_adapter.py` — biggest pain. Take "ours" for anything on the OAuth
-  path. The `convert_messages_to_anthropic` converter is the worst case: upstream
-  periodically does extract-method refactors (pulling per-message logic into
-  `_convert_assistant_message` / `_convert_user_message` / `_convert_tool_message_to_result`)
-  while the fork keeps it inline — git interleaves them into an unresolvable tangle.
-  Resolution: replace the whole tangled region with the fork's complete inline
-  converter (the helpers have no external callers). Tool naming: the fork
-  DELIBERATELY does NOT prepend `mcp_` to bare tool names (it registers MCP tools as
-  `mcp__server__tool`); upstream re-adds single-underscore prefixing every few syncs —
-  always take ours and drop upstream's prefix loop + its 2 outgoing-prefix tests.
-* `agent/conversation_loop.py` — the refusal handler (a ~67-line fork-only block) is
-  the most likely conflict. Take "ours" and verify loop vars (`retry_count`,
-  `compression_attempts`, `primary_recovery_attempted`) still reset on the
-  refusal-recovery paths. Recovery blocks (cache-strip-on-overload vs
-  multimodal-tool-content) are independent — keep BOTH.
+* `hermes_state.py` — **mostly defused by Tier-2.** Remaining: `SCHEMA_VERSION` —
+  both sides bump it, pick `max(both) + 1`. NOTE: `_reconcile_columns()` runs
+  unconditionally on boot and ALTER-ADDs any column in `SCHEMA_SQL` OR
+  `FORK_TABLE_COLUMNS` that's missing live, and tables use `CREATE TABLE IF NOT
+  EXISTS` — so the version bump only gates *destructive* migrations.
+  - **T2.1**: fork-only tables (`api_calls`) now live in `FORK_SCHEMA_SQL` (executed
+    after `SCHEMA_SQL` at both call sites), NOT inline in `SCHEMA_SQL`. No more
+    positional collision with upstream table additions.
+  - **T2.4**: the fork column `anthropic_content_blocks` now lives in
+    `FORK_TABLE_COLUMNS` (reconciler ALTER-ADDs it), NOT in the messages CREATE
+    TABLE. SCHEMA_SQL's messages table is pure-upstream shape.
+  - Residual (accepted): the `append_message` INSERT/VALUES/param + multi-session
+    SELECT still carry `anthropic_content_blocks` interleaved with upstream columns.
+    These are additive "keep-both" merges (overriding the whole method would be a
+    bigger liability). Consumer reads BY NAME (`row["col"]`) so column order is safe.
+* `agent/anthropic_adapter.py` — **converter defused by T2.2.** The ~540-line
+  `convert_messages_to_anthropic` (vs upstream's ~63) now lives in
+  `agent/fork/anthropic_messages.py`; the adapter has a 2-line forwarder. Upstream's
+  extract-method refactors of its own converter can no longer tangle with it — on
+  conflict, take-ours on the forwarder. The block/tool/content helpers stay in the
+  adapter (some upstream-shared); the fork converter binds them via a lazy
+  `from agent import anthropic_adapter` import (also breaks the circular dep).
+  Still take "ours" for OAuth-path edits. Tool naming: the fork DELIBERATELY does
+  NOT prepend `mcp_` to bare tool names (registers MCP tools as `mcp__server__tool`);
+  upstream re-adds single-underscore prefixing every few syncs — take ours, drop
+  upstream's prefix loop + its 2 outgoing-prefix tests.
+* `agent/conversation_loop.py` + `agent/chat_completion_helpers.py` — **partially
+  defused by T2.3.** Refusal detection is now `agent._is_anthropic_refusal()`
+  (forwarder → `agent/fork/anthropic_recovery.is_anthropic_refusal`); the cold-start
+  stale-timeout is `agent/fork/stream_recovery.effective_stale_timeout`. Residual
+  (accepted, control-flow-coupled): the refusal-recovery LADDER (fallback → sanitize
+  → giveup, with `continue`/`return`/loop-var resets) and the stale-kill counters
+  stay inline — moving control flow out of a retry loop is riskier than the conflict
+  it saves. On conflict: take "ours", verify loop vars (`retry_count`,
+  `compression_attempts`, `primary_recovery_attempted`) still reset; keep BOTH
+  recovery blocks (cache-strip-on-overload vs multimodal-tool-content).
 * `agent/credential_pool.py` — `_seed_from_singletons` auth seeding. Keep the fork's
   keychain-longlived precedence; nest upstream's api-key-path pruning inside the
   fork's `if not longlived_token:` block. The pruning predicate uses
