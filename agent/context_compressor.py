@@ -631,6 +631,7 @@ class ContextCompressor(ContextEngine):
             self.last_cache_read_tokens = usage.get("cache_read_tokens", 0)
         if "cache_write_tokens" in usage:
             self.last_cache_write_tokens = usage.get("cache_write_tokens", 0)
+        self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
@@ -919,7 +920,7 @@ class ContextCompressor(ContextEngine):
         into the warning log.
         """
         self._summary_model_fallen_back = True
-        logging.warning(
+        logger.warning(
             "Summary model '%s' %s (%s). "
             "Falling back to main model '%s' for compression.",
             self.summary_model, reason, e, self.model,
@@ -1117,7 +1118,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             self._last_summary_error = "no auxiliary LLM provider configured"
-            logging.warning("Context compression: no provider available for "
+            logger.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
                             _SUMMARY_FAILURE_COOLDOWN_SECONDS)
@@ -1213,7 +1214,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
             self._last_summary_error = err_text
-            logging.warning(
+            logger.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
                 e,

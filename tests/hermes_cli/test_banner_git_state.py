@@ -316,3 +316,36 @@ def test_resolve_agent_name_skin_branding_wins(tmp_path):
         patch.object(banner, "_skin_branding", return_value="Ares Agent"),
     ):
         assert banner._resolve_agent_name() == "Ares Agent"
+
+
+def test_get_git_banner_state_falls_back_to_build_sha_when_no_repo():
+    """Docker image case: no .git checkout — baked build SHA fills the gap.
+
+    ``_resolve_repo_dir`` returns None inside the published container (where
+    .git is dockerignored). The fork's banner returns its rich-schema dict
+    with the baked SHA as a frozen ``local == origin`` state and zero counts.
+    """
+    from hermes_cli import banner
+
+    with patch.object(banner, "_resolve_repo_dir", return_value=None), \
+         patch("hermes_cli.build_info.get_build_sha", return_value="abcdef12"):
+        state = banner.get_git_banner_state()
+
+    assert state == {
+        "local": "abcdef12",
+        "origin": "abcdef12",
+        "upstream": None,
+        "carried": 0,
+        "upstream_behind": 0,
+    }
+
+
+def test_get_git_banner_state_returns_none_when_no_repo_and_no_build_sha():
+    """Pip-installed wheel with neither git checkout nor baked SHA -> None."""
+    from hermes_cli import banner
+
+    with patch.object(banner, "_resolve_repo_dir", return_value=None), \
+         patch("hermes_cli.build_info.get_build_sha", return_value=None):
+        state = banner.get_git_banner_state()
+
+    assert state is None
