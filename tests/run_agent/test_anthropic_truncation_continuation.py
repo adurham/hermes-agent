@@ -112,3 +112,51 @@ class TestContinuationLogicBranching:
         # codex_responses has its own truncation path (not continuation-based)
         # and should NOT be routed through the shared block.
         assert "codex_responses" not in {"chat_completions", "bedrock_converse", "anthropic_messages"}
+
+
+class TestTruncatedToolCallContinuationParity:
+    """Truncated tool-call recovery should mirror the text-continuation path:
+    retry up to 3x with an output-budget boost, not a single futile same-request
+    retry. Source-level guards so the behavior can't silently regress on a future
+    upstream merge of this hot-path block.
+    """
+
+    def _loop_source(self) -> str:
+        import inspect
+        import agent.conversation_loop as cl
+        return inspect.getsource(cl)
+
+    def test_tool_call_retry_budget_is_three_not_one(self):
+        src = self._loop_source()
+        # The futile single-retry guard `truncated_tool_call_retries < 1` must be
+        # gone; parity uses a 3-attempt budget.
+        assert "truncated_tool_call_retries < 1" not in src, (
+            "tool-call truncation still uses the futile single same-request retry"
+        )
+        assert "truncated_tool_call_retries < 3" in src, (
+            "tool-call truncation should retry up to 3x (parity with text path)"
+        )
+
+    def test_tool_call_path_drives_budget_boost_restart(self):
+        # The tool-call branch must hand off to the restart_with_length_continuation
+        # machinery (which boosts _ephemeral_max_output_tokens) rather than a bare
+        # `continue` that re-runs the identical request.
+        src = self._loop_source()
+        tc_branch = src[src.index("_trunc_has_tool_calls:"):]
+        tc_branch = tc_branch[: tc_branch.index("# If we have prior messages")]
+        assert "restart_with_length_continuation = True" in tc_branch, (
+            "tool-call truncation must trigger the output-budget-boost restart path"
+        )
+        assert "_get_continuation_prompt(" in tc_branch, (
+            "tool-call truncation should send a continuation/break-it-up prompt"
+        )
+
+    def test_continuation_prompt_helper_handles_dropped_tools(self):
+        # The prompt the tool-call path reuses must steer the model to break large
+        # tool calls up when the stream dropped an oversized one.
+        from agent.conversation_loop import _get_continuation_prompt
+        msg = _get_continuation_prompt(True, ["patch", "write_file"])
+        assert "patch" in msg and "smaller" in msg.lower()
+        # Plain truncation (no dropped tools) → continue-where-you-left-off.
+        plain = _get_continuation_prompt(False, None)
+        assert "truncated" in plain.lower() or "continue" in plain.lower()

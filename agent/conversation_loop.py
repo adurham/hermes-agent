@@ -1872,18 +1872,58 @@ def run_conversation(
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
-                            if truncated_tool_call_retries < 1:
+                            # Parity with the text-continuation path above: instead
+                            # of re-running the IDENTICAL request (same max_tokens →
+                            # same truncation → futile), retry up to 3× while the
+                            # restart path boosts the output-token budget so the
+                            # model has room to finish the tool-call arguments it
+                            # ran out of space for. We do NOT append the truncated
+                            # assistant message — its tool_calls carry incomplete
+                            # JSON args that would corrupt the replay; a fresh
+                            # attempt with more headroom is the correct recovery.
+                            if truncated_tool_call_retries < 3:
                                 truncated_tool_call_retries += 1
-                                agent._buffer_vprint(
-                                    f"⚠️  Truncated tool call detected — retrying API call..."
+                                _is_partial_stream_stub = (
+                                    getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
                                 )
-                                # Don't append the broken response to messages;
-                                # just re-run the same API call from the current
-                                # message state, giving the model another chance.
-                                continue
+                                _dropped_tools = getattr(
+                                    response, "_dropped_tool_names", None
+                                )
+                                if _is_partial_stream_stub and _dropped_tools:
+                                    _tool_list = ", ".join(_dropped_tools[:3])
+                                    agent._vprint(
+                                        f"{agent.log_prefix}↻ Truncated tool call "
+                                        f"({_tool_list}) — retrying with more output "
+                                        f"headroom ({truncated_tool_call_retries}/3)..."
+                                    )
+                                else:
+                                    agent._vprint(
+                                        f"{agent.log_prefix}↻ Truncated tool call — "
+                                        f"retrying with more output headroom "
+                                        f"({truncated_tool_call_retries}/3)..."
+                                    )
+                                # Nudge the model to break oversized tool calls up
+                                # (mirrors the dropped-tool continuation prompt). The
+                                # truncated response itself is intentionally NOT
+                                # appended (broken JSON args).
+                                continue_msg = {
+                                    "role": "user",
+                                    "content": _get_continuation_prompt(
+                                        _is_partial_stream_stub, _dropped_tools
+                                    ),
+                                }
+                                messages.append(continue_msg)
+                                agent._session_messages = messages
+                                # Reuse the length-continuation budget-boost machinery
+                                # (see ~restart_with_length_continuation handling): the
+                                # boost scales with length_continue_retries, so advance
+                                # it too to widen the budget on the tool-call retry.
+                                length_continue_retries += 1
+                                restart_with_length_continuation = True
+                                break
                             agent._flush_status_buffer()
                             agent._vprint(
-                                f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
+                                f"{agent.log_prefix}⚠️  Tool call still truncated after 3 attempts — refusing to execute incomplete tool arguments.",
                                 force=True,
                             )
                             agent._cleanup_task_resources(effective_task_id)
@@ -1894,7 +1934,7 @@ def run_conversation(
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response truncated due to output length limit",
+                                "error": "Response truncated due to output length limit (tool call incomplete after 3 retries)",
                             }
 
                     # If we have prior messages, roll back to last complete state
@@ -4120,8 +4160,12 @@ def run_conversation(
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
-                # entire conversation.
+                # entire conversation.  Also reset length_continue_retries:
+                # the tool-call truncation path advances it to drive the
+                # output-budget boost, so clear it once a tool call lands
+                # cleanly to avoid an ever-climbing boost across the turn.
                 truncated_tool_call_retries = 0
+                length_continue_retries = 0
 
                 # Signal that a paragraph break is needed before the next
                 # streamed text.  We don't emit it immediately because
