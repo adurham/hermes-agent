@@ -73,6 +73,14 @@ class _FakeRequest:
         if bearer is not None:
             self.headers["Authorization"] = f"Bearer {bearer}"
         self._state: dict = {}
+        # Attributes read by _request_audit_context when _check_auth logs a
+        # 401 (the fork's per-request audit-log suffix). Post the upstream
+        # merge the 401 paths build an audit context, so the stand-in must
+        # expose these or the audit builder raises AttributeError.
+        self.method = "GET"
+        self.path_qs = "/v1/test"
+        self.remote = "127.0.0.1"
+        self.transport = None
 
     def __setitem__(self, k, v):
         self._state[k] = v
