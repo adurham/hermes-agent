@@ -58,33 +58,107 @@ clean PR built from upstream's tree, not a backport of fork code.
 
 ## Future upstream merges
 
-Weekly cadence — `git fetch upstream && git merge upstream/main` into `main`.
-Before merging, run:
+**Cadence is the #1 conflict lever.** Conflict count scales with drift, measured:
+a sync at ~715 commits behind produced 20 conflicts; the next sync at 134 produced
+5. Merge little and often. A weekly cron (`~/.hermes/scripts/upstream_drift_check.sh`,
+job "hermes-agent upstream drift digest") fetches upstream over HTTPS and pings when
+drift/conflicts appear — but acting on it is manual.
+
+Per merge:
 
 ```bash
-python scripts/fork-merge-plan.py
+git fetch upstream && git checkout -b sync/upstream-$(date +%F)
+python scripts/fork-merge-plan.py    # predicts conflict files before you touch anything
+git merge upstream/main
 ```
 
-Predicts which files will conflict + where, based on overlap between upstream's
-new commits and fork's known divergent regions. Lets you see merge friction
-before you touch anything.
+Work on a `sync/upstream-*` branch (never merge directly to `main`), resolve,
+run tests, push the branch, review, then merge to `main`.
 
-When conflicts do happen:
+### One-time per clone
 
-* `agent/fork/*` — never conflicts (upstream doesn't know these exist).
-* `run_agent.py` — divergence is concentrated in the `ForkForwardersMixin`
-  (which is in `agent/fork/_mixin.py`) plus 4-line forwarders that import
-  from `agent/fork/`. These either auto-merge or resolve trivially as
-  "take ours".
-* `agent/anthropic_adapter.py` — biggest pain. Take "ours" for anything that
-  touches the OAuth path; review carefully for anything that touches the
-  base-url normalization, beta-header gating, or client construction (where
-  upstream + fork both work).
-* `agent/conversation_loop.py` — the refusal handler at line ~1273-1340 is
-  the most likely conflict source. It's a 67-line block fork-only. Take
-  "ours" and verify the surrounding loop variables (`retry_count`,
-  `compression_attempts`, `primary_recovery_attempted`) still get reset
-  correctly on the refusal-recovery paths.
+```bash
+./scripts/setup-merge-drivers.sh   # registers the uv.lock "ours-then-regen" driver
+```
+
+After this, `uv.lock` conflicts auto-resolve (keep ours, run `uv lock` to reconcile
+against the merged `pyproject.toml`). Without it, `uv.lock` conflicts every merge —
+just take either side and run `uv lock`.
+
+### Conflict guidance by file (refresh after each sync; line numbers drift)
+
+* `agent/fork/*` — **never conflicts.** This is the goal pattern: fork logic lives
+  in its own modules, hooked into upstream files via thin forwarders. Every file
+  still inline (below) is a Tier-2 refactor candidate — move it here and it stops
+  conflicting. Proven: across two syncs, `agent/fork/*` had zero conflicts.
+* `uv.lock` — handled by the merge driver (see above). No manual work.
+* `hermes_state.py` — **recurring multi-hunk pain.** Two distinct causes:
+  (1) `SCHEMA_VERSION` — both sides bump it. Resolution: pick `max(both) + 1`.
+  NOTE: `_reconcile_columns()` runs unconditionally on boot and adds any column
+  declared in `SCHEMA_SQL` that's missing from the live table, and tables use
+  `CREATE TABLE IF NOT EXISTS` — so the version bump is **only** needed to gate
+  *destructive* migrations, not additive ones. (2) Fork-only DDL (`api_calls`
+  table/index) collides positionally with upstream-new DDL (`compression_locks`).
+  Resolution: keep BOTH — they're independent tables. See Tier-2 plan for the
+  `FORK_SCHEMA_SQL` fragment refactor that eliminates cause (2). Also: `add_message`
+  INSERT/VALUES/param + the multi-session SELECT carry fork columns
+  (`anthropic_content_blocks`) interleaved with upstream columns
+  (`platform_message_id`, `observed`) — keep all, consistent column order, and the
+  message-row consumer reads BY NAME (`row["col"]`) so column-order shifts are safe.
+* `agent/anthropic_adapter.py` — biggest pain. Take "ours" for anything on the OAuth
+  path. The `convert_messages_to_anthropic` converter is the worst case: upstream
+  periodically does extract-method refactors (pulling per-message logic into
+  `_convert_assistant_message` / `_convert_user_message` / `_convert_tool_message_to_result`)
+  while the fork keeps it inline — git interleaves them into an unresolvable tangle.
+  Resolution: replace the whole tangled region with the fork's complete inline
+  converter (the helpers have no external callers). Tool naming: the fork
+  DELIBERATELY does NOT prepend `mcp_` to bare tool names (it registers MCP tools as
+  `mcp__server__tool`); upstream re-adds single-underscore prefixing every few syncs —
+  always take ours and drop upstream's prefix loop + its 2 outgoing-prefix tests.
+* `agent/conversation_loop.py` — the refusal handler (a ~67-line fork-only block) is
+  the most likely conflict. Take "ours" and verify loop vars (`retry_count`,
+  `compression_attempts`, `primary_recovery_attempted`) still reset on the
+  refusal-recovery paths. Recovery blocks (cache-strip-on-overload vs
+  multimodal-tool-content) are independent — keep BOTH.
+* `agent/credential_pool.py` — `_seed_from_singletons` auth seeding. Keep the fork's
+  keychain-longlived precedence; nest upstream's api-key-path pruning inside the
+  fork's `if not longlived_token:` block. The pruning predicate uses
+  `is_borrowed_credential_source()` — verify `keychain_longlived` stays kept-while-active.
+* `agent/agent_runtime_helpers.py` (`switch_model`) — keep the fork's 1M-beta latch +
+  `drop_context_1m_beta=` param; integrate into upstream's try/except-rollback +
+  MiniMax-OAuth structure.
+* `run_agent.py` — import unions (keep fork's `Set`/`Tuple`/`ForkForwardersMixin`).
+  `_sync_external_memory_for_turn`: upstream threads a `messages=` kwarg into
+  `sync_all` — keep that threading; the fork's separate `memory_extraction.on_turn_end`
+  Phase-2 hook is independent, keep it too.
+* `hermes_cli/banner.py` — upstream rewrites this file periodically. The fork's helper
+  `_skin_branding` and `_resolve_agent_name` get DROPPED by auto-merge while their
+  callers survive → latent runtime crash. After any banner merge, grep for
+  `def _skin_branding` and `def _resolve_agent_name`; if missing, restore from the
+  prior fork commit. The rich `get_git_banner_state` schema
+  (`{local,origin,upstream,carried,upstream_behind}`) is fork-only — keep it, fold
+  upstream's Docker build-SHA fallback into it.
+* `cli.py` — additions near `kb = KeyBindings()` collide (fork's cancel-ladder vs
+  upstream's keybindings). Keep BOTH blocks. Tool-count/status logic: keep fork's
+  `disabled_toolsets` arg + upstream's defer logic.
+* `.gitignore` / docstrings / comments — incidental collisions from edits near fork
+  changes. Keep both / take either. Keep fork edits surgical (don't reformat upstream
+  lines near your changes) to avoid these.
+
+### After every merge — run the real blast radius, not just changed files
+
+Tests catch defects auto-merge introduces in files that DIDN'T conflict (this bit us
+twice: a dropped `_skin_branding`, a missing `messages=` thread). Minimum:
+
+```bash
+python -m pytest tests/agent/ tests/run_agent/ -o 'addopts=' -q --timeout=90
+python -c "import cli, run_agent, hermes_state, hermes_cli.banner"   # boot smoke
+```
+
+Known pre-existing flake (NOT merge-caused): `auxiliary_client` provider/vision tests
+(`test_vision_routing_31179.py`, `test_provider_parity.py::...openrouter_always_wins`,
+`test_auxiliary_main_first.py`) fail only under full-suite ordering (global-state
+pollution), pass in isolation. Deselect them when judging a merge.
 
 ## Tests
 
