@@ -2950,15 +2950,10 @@ def interruptible_streaming_api_call(
         # flips, any further silence is a real stall — kill at the
         # configured (shorter) threshold.
         _stale_elapsed = time.time() - last_chunk_time["t"]
-        if first_event_seen["yes"]:
-            _effective_stale_timeout = _stream_stale_timeout
-        elif _stream_stale_timeout == float("inf"):
-            _effective_stale_timeout = float("inf")
-        else:
-            _effective_stale_timeout = max(
-                _stream_stale_timeout * 3.0,
-                float(os.getenv("HERMES_STREAM_COLD_START_TIMEOUT", 600.0)),
-            )
+        # Fork-only cold-start grace window lives in agent/fork/stream_recovery.py
+        # so upstream edits to this watchdog block don't collide with it.
+        from agent.fork.stream_recovery import effective_stale_timeout as _eff_timeout
+        _effective_stale_timeout = _eff_timeout(first_event_seen["yes"], _stream_stale_timeout)
         if _stale_elapsed > _effective_stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             # If a previous kill didn't produce any new chunks, the inner
