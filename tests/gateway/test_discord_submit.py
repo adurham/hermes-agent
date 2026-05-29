@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.discord import DiscordAdapter, DISCORD_AVAILABLE
+from plugins.platforms.discord.adapter import DiscordAdapter, DISCORD_AVAILABLE
 
 
 pytestmark = pytest.mark.skipif(

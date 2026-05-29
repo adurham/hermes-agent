@@ -364,10 +364,11 @@ class TestApiCallsSchema:
         # 3. Re-open. Migration must run.
         migrated = SessionDB(db_path=db_path)
         try:
+            from hermes_state import SCHEMA_VERSION
             ver = migrated._conn.execute(
                 "SELECT version FROM schema_version"
             ).fetchone()[0]
-            assert ver == 14
+            assert ver == SCHEMA_VERSION
 
             # Session row survives.
             row = migrated._conn.execute(

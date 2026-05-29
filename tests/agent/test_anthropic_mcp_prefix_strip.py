@@ -186,9 +186,20 @@ class TestAnthropicMcpPrefixStrip:
 
 
 class TestAnthropicOAuthOutgoingPrefix:
-    """Verify the outgoing-side companion fix: build_anthropic_kwargs must not
-    double-prefix tool names that already start with ``mcp_`` (native MCP server
-    tools registered as ``mcp_<server>_<tool>``). GH-25255."""
+    """Outgoing-side tool naming on the OAuth path.
+
+    FORK DIVERGENCE: upstream (GH-25255) prepends a single-underscore ``mcp_``
+    prefix to every bare tool name on the OAuth path, to mimic Claude Code's
+    MCP convention.  This fork DELIBERATELY removed that behavior — see the
+    "3. Tool naming" comment in ``agent/anthropic_adapter.py``.  Hermes now
+    registers MCP tools with the canonical double-underscore
+    ``mcp__<server>__<tool>`` form (``tools/mcp_tool.py::_convert_mcp_schema``),
+    so built-in tools pass through with their natural names (``read_file``,
+    ``terminal``) exactly like real Claude Code does.  The two upstream tests
+    that asserted bare-name → ``mcp_read_file`` prefixing were removed here
+    because they assert behavior this fork intentionally does not have.  The
+    invariants below still hold: already-``mcp_``-prefixed names are not
+    double-prefixed, and non-OAuth requests pass through untouched."""
 
     def _build(self, tools, is_oauth=True):
         from agent.anthropic_adapter import build_anthropic_kwargs
@@ -200,15 +211,6 @@ class TestAnthropicOAuthOutgoingPrefix:
             reasoning_config=None,
             is_oauth=is_oauth,
         )
-
-    def test_oauth_adds_prefix_to_bare_tool_name(self):
-        """OAuth + bare name → prefix added (existing Claude Code convention)."""
-        kwargs = self._build([{
-            "type": "function",
-            "function": {"name": "read_file", "description": "x", "parameters": {}},
-        }])
-        names = [t["name"] for t in kwargs["tools"]]
-        assert names == ["mcp_read_file"]
 
     def test_oauth_does_not_double_prefix_native_mcp_tool(self):
         """OAuth + already-prefixed native MCP name → left alone."""
@@ -224,19 +226,6 @@ class TestAnthropicOAuthOutgoingPrefix:
         # Must NOT become "mcp_mcp_composio_..." — that breaks the round-trip
         # because normalize_response only strips ONE mcp_ prefix.
         assert names == ["mcp_composio_COMPOSIO_SEARCH_TOOLS"]
-
-    def test_oauth_mixed_native_and_bare_tools(self):
-        """Mixed: native MCP preserved, bare names prefixed."""
-        kwargs = self._build([
-            {"type": "function", "function": {"name": "read_file",
-                                               "description": "x", "parameters": {}}},
-            {"type": "function", "function": {"name": "mcp_composio_SEARCH",
-                                               "description": "y", "parameters": {}}},
-            {"type": "function", "function": {"name": "terminal",
-                                               "description": "z", "parameters": {}}},
-        ])
-        names = sorted(t["name"] for t in kwargs["tools"])
-        assert names == ["mcp_composio_SEARCH", "mcp_read_file", "mcp_terminal"]
 
     def test_non_oauth_path_untouched(self):
         """Non-OAuth requests never get the prefix — schemas pass through as-is."""
