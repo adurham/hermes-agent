@@ -39,7 +39,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 |---|---|---|
 | `agent/anthropic_adapter.py` | +1922 / -59 | Claude Code OAuth mimicry (wire format, betas, metadata, 1M-context gate). This is the headline fork feature and is intentionally never going upstream. **T2.2**: the 540-line `convert_messages_to_anthropic` converter moved to `agent/fork/anthropic_messages.py` (thin forwarder remains). |
 | `agent/chat_completion_helpers.py` | +780 / -124 | Streaming reliability: SDK monkey-patch hook for SSE events, heartbeat ticks, stream-drop reconnect, cold-start detection. **T2.3**: cold-start stale-timeout calc moved to `agent/fork/stream_recovery.py`. |
-| `agent/conversation_loop.py` | +330 / -7 | Per-turn callouts to fork modules (rate-limit capture, usage history, refusal handler). **T2.3**: refusal *detection* moved to `agent/fork/anthropic_recovery.is_anthropic_refusal`; the recovery ladder stays inline (control-flow-coupled). |
+| `agent/conversation_loop.py` | +330 / -7 | Per-turn callouts to fork modules (rate-limit capture, usage history, refusal handler). **T2.3**: refusal *detection* moved to `agent/fork/anthropic_recovery.is_anthropic_refusal`; the recovery ladder stays inline (control-flow-coupled). **2026-06**: the truncated tool-call recovery block was CONVERGED to upstream verbatim (upstream caught up with the same `_ephemeral_max_output_tokens` boost the fork added in cb293a90f) — that block is now byte-identical to upstream and won't conflict again. |
 | `hermes_cli/banner.py` | (reduced by T2.5) | Branding + git-state subsystem moved to `hermes_cli/fork_banner.py`; banner.py keeps thin forwarders + the patchable git plumbing/caches. |
 | `hermes_state.py` | (reduced by T2.1/T2.4) | Fork-only `api_calls` table → `FORK_SCHEMA_SQL`; fork column `anthropic_content_blocks` → `FORK_TABLE_COLUMNS` (reconciler-added). SCHEMA_SQL is now pure-upstream shape. |
 | `run_agent.py` | +234 / -24 | 12 forwarder methods (now extracted to `ForkForwardersMixin`), `_classify_anthropic_stream_phase` top-level function, fork-state initialization. |
@@ -73,6 +73,19 @@ a sync at ~715 commits behind produced 20 conflicts; the next sync at 134 produc
 5. Merge little and often. A weekly cron (`~/.hermes/scripts/upstream_drift_check.sh`,
 job "hermes-agent upstream drift digest") fetches upstream over HTTPS and pings when
 drift/conflicts appear — but acting on it is manual.
+
+**When upstream catches up, take upstream.** If a conflict is on a fork patch that
+upstream has since implemented natively (same feature, possibly different shape),
+resolve it by adopting upstream's version verbatim, not by re-applying the fork's.
+This shrinks the divergence permanently — that hunk stops conflicting on every
+future merge. Confirm it's the SAME feature first (same observable behavior + tests
+still green), then drop any fork-only test infrastructure / helpers the convergence
+orphans. Done 2026-06 for: the truncated tool-call recovery block in
+`conversation_loop.py` (now byte-identical to upstream), and the
+`conversation_compression.py` estimator call (dropped the `_ra()` test-patch
+indirection). Distinguish from genuine fork FEATURES with no upstream equivalent
+(Claude Code OAuth, MCP disk-cache, claude-code web backend, memory/skill-recall) —
+those stay.
 
 Per merge:
 
