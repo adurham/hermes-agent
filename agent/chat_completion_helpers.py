@@ -548,6 +548,19 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+            # Wire MCP-tool deferral (client-side lazy loading) and the native
+            # tools[] cache breakpoint. The transport and _apply_tool_search
+            # fully support both, but this builder was the one live call site
+            # that never passed them, leaving deferral + tools-array caching as
+            # dead code. Without tool_search_config every MCP tool ships its
+            # full schema (observed: 253 tools / ~399KB / ~100K tokens cold-
+            # cached on an MCP-heavy install). cache_tools mirrors the tools[]
+            # breakpoint conversation_loop already reserves when
+            # _use_native_cache_layout is set.
+            tool_search_config=agent._build_tool_search_config(),
+            session_id=getattr(agent, "session_id", None),
+            cache_tools=bool(getattr(agent, "_use_native_cache_layout", False)),
+            cache_ttl=getattr(agent, "_cache_ttl", "5m"),
         )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
