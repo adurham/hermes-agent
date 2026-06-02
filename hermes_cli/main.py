@@ -14349,9 +14349,39 @@ Examples:
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
 
+            # Best-effort: pull the authoritative billed figure from the
+            # provider usage API so the cost section can anchor on ground truth
+            # instead of a list-price estimate. Only attempted for Anthropic
+            # OAuth accounts; any failure is swallowed and we fall back to the
+            # token estimate alone.
+            account_billed = None
+            try:
+                from hermes_cli.config import load_config
+
+                model_cfg = load_config().get("model")
+                cfg_provider = (
+                    (model_cfg.get("provider") or "").strip().lower()
+                    if isinstance(model_cfg, dict)
+                    else ""
+                )
+                if cfg_provider in ("", "anthropic"):
+                    from agent.account_usage import fetch_anthropic_billing
+
+                    billing = fetch_anthropic_billing()
+                    if billing is not None:
+                        account_billed = {
+                            "billed_usd": billing.billed_usd,
+                            "currency": billing.currency,
+                            "monthly_limit_usd": billing.monthly_limit_usd,
+                        }
+            except Exception:
+                account_billed = None
+
             db = SessionDB()
             engine = InsightsEngine(db)
-            report = engine.generate(days=args.days, source=args.source)
+            report = engine.generate(
+                days=args.days, source=args.source, account_billed=account_billed
+            )
             print(engine.format_terminal(report))
             db.close()
         except Exception as e:
