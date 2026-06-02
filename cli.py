@@ -13222,6 +13222,38 @@ class HermesCLI:
             except Exception:
                 pass
 
+    @staticmethod
+    def _combine_interrupt_parts(parts: list):
+        """Merge queued interrupt messages into one ``_pending_input`` payload.
+
+        Each part is either a plain ``str`` or a ``(text, [Path, ...])`` tuple
+        (the latter when the user attached one or more images before hitting
+        Enter). Text is joined with newlines; images from every part are
+        concatenated in order. Returns a ``(text, images)`` tuple when any
+        images are present, otherwise a plain ``str`` — exactly the two shapes
+        the process loop's ``_pending_input`` consumer already unpacks.
+
+        This is the structural replacement for the old ``"\\n".join(parts)``,
+        which raised ``TypeError`` the instant a part was a tuple (image
+        attached), silently dropping the interrupting prompt.
+        """
+        texts: list = []
+        images: list = []
+        for part in parts:
+            if isinstance(part, tuple):
+                p_text = part[0] if len(part) > 0 else ""
+                p_images = part[1] if len(part) > 1 and part[1] else []
+                if p_text:
+                    texts.append(p_text)
+                if p_images:
+                    images.extend(p_images)
+            elif part:
+                texts.append(part)
+        combined_text = "\n".join(texts)
+        if images:
+            return (combined_text, images)
+        return combined_text
+
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
@@ -13817,9 +13849,24 @@ class HermesCLI:
                             all_parts.append(extra)
                     except queue.Empty:
                         break
-                combined = "\n".join(all_parts)
+                # Each part is either a plain ``str`` or a ``(text, [Path, ...])``
+                # multimodal tuple (images attached at submit time). A naive
+                # "\n".join(all_parts) raises TypeError the moment any part is a
+                # tuple, which the outer handler swallows — so an interrupt whose
+                # message carried an image silently dropped the new prompt
+                # entirely. Combine text + images structurally instead, preserving
+                # the tuple shape ``_pending_input`` already knows how to unpack.
+                combined = self._combine_interrupt_parts(all_parts)
+                _combined_text, _combined_images = (
+                    combined if isinstance(combined, tuple) else (combined, [])
+                )
                 n = len(all_parts)
-                preview = combined[:50] + ("..." if len(combined) > 50 else "")
+                if _combined_text:
+                    preview = _combined_text[:50] + ("..." if len(_combined_text) > 50 else "")
+                else:
+                    preview = f"[{len(_combined_images)} image{'s' if len(_combined_images) != 1 else ''} attached]"
+                if _combined_images and _combined_text:
+                    preview = f"{preview} (+{len(_combined_images)} image{'s' if len(_combined_images) != 1 else ''})"
                 if n > 1:
                     print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
                 else:
