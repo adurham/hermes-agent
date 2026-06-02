@@ -42,6 +42,12 @@ def _mirror_agent_predicate(err: BaseException) -> bool:
             and "nonetype" in str(err).lower()
             and "not iterable" in str(err).lower()
         )
+        # The Anthropic SDK re-raises a bare ValueError when the model
+        # emits malformed tool-call JSON in a streamed input_json_delta.
+        # Same class as JSONDecodeError (corrupt wire bytes, retryable) but
+        # surfaced without a specific type, so match on the message. See
+        # the agent/conversation_loop.py inline comment for #39021.
+        and "unable to parse tool parameter json" not in str(err).lower()
     )
 
 
@@ -153,4 +159,53 @@ class TestAgentLoopSourceHasNoneTypeCarveOut:
         assert "nonetype" in src.lower() and "not iterable" in src.lower(), (
             "agent/conversation_loop.py must carve out 'NoneType is not iterable' "
             "TypeErrors from the is_local_validation_error classification — see #33136."
+        )
+
+
+class TestMalformedToolJSONIsRetryable:
+    """Regression for #39021: the Anthropic SDK raises a bare ValueError when
+    the model streams malformed tool-call JSON (e.g. a double comma in an
+    input_json_delta). It is NOT a json.JSONDecodeError — the SDK catches the
+    inner parse error and re-raises a plain ValueError with a fixed prefix.
+
+    This is the same class of failure as JSONDecodeError (corrupt bytes off
+    the wire, not a local programming bug); the SDK message literally says
+    "Please retry your request". The classifier must treat it as retryable so
+    resampling the model can produce well-formed JSON.
+    """
+
+    # The exact message the SDK emits — see
+    # anthropic/lib/streaming/_beta_messages.py.
+    _SDK_MSG = (
+        "Unable to parse tool parameter JSON from model. Please retry your "
+        "request or adjust your prompt. Error: key must be a string at line 1 "
+        'column 94. JSON: {"file_path": "x", "offset": 1642, , "limit": 90'
+    )
+
+    def test_malformed_tool_json_is_not_local_validation(self):
+        err = ValueError(self._SDK_MSG)
+        assert not _mirror_agent_predicate(err), (
+            "The SDK's 'Unable to parse tool parameter JSON' ValueError must "
+            "be excluded from is_local_validation_error — it is corrupt wire "
+            "data, not a local bug, and the SDK asks the caller to retry."
+        )
+
+    def test_unrelated_value_error_remains_local_validation(self):
+        """A bare ValueError without the SDK tool-JSON prefix still aborts."""
+        assert _mirror_agent_predicate(ValueError("bad arg"))
+        assert _mirror_agent_predicate(ValueError("invalid literal for int()"))
+
+
+class TestAgentLoopSourceHasToolJSONCarveOut:
+    """Belt-and-suspenders: the production source must include the carve-out."""
+
+    def test_conversation_loop_excludes_tool_json_parse_error_from_local_validation(self):
+        import inspect
+        from agent import conversation_loop
+        src = inspect.getsource(conversation_loop)
+        assert "is_local_validation_error" in src
+        assert "unable to parse tool parameter json" in src.lower(), (
+            "agent/conversation_loop.py must carve out the SDK's 'Unable to "
+            "parse tool parameter JSON' ValueError from the "
+            "is_local_validation_error classification — see #39021."
         )
