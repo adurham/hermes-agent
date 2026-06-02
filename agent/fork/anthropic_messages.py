@@ -291,11 +291,25 @@ def convert_messages_to_anthropic(
                     tool_result_ids.add(block.get("tool_use_id"))
     for m in result:
         if m["role"] == "assistant" and isinstance(m["content"], list):
-            m["content"] = [
+            kept = [
                 b
                 for b in m["content"]
                 if b.get("type") != "tool_use" or b.get("id") in tool_result_ids
             ]
+            # If stripping an orphaned tool_use mutated a turn that also carries a
+            # signed thinking block, that block's Anthropic signature was computed
+            # against the ORIGINAL (un-stripped) turn content and is now invalid.
+            # Anthropic rejects the replayed turn with HTTP 400 "thinking blocks in
+            # the latest assistant message cannot be modified". Flag the turn so the
+            # thinking-signature pass below can demote the dead signature instead of
+            # replaying it verbatim. See hermes-agent: extended-thinking + parallel
+            # tool batch interrupted mid-flight → non-retryable 400 crash-loop.
+            if len(kept) != len(m["content"]) and any(
+                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+                for b in m["content"]
+            ):
+                m["_thinking_signature_invalidated"] = True
+            m["content"] = kept
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool call removed)"}]
 
@@ -340,6 +354,10 @@ def convert_messages_to_anthropic(
                     fixed[-1]["content"] = prev_content + curr_content
             else:
                 # Consecutive assistant messages — merge text content.
+                # Propagate the orphan-strip signature-invalidation flag onto the
+                # surviving (prev) dict so the thinking-signature pass still sees it.
+                if m.get("_thinking_signature_invalidated"):
+                    fixed[-1]["_thinking_signature_invalidated"] = True
                 # Drop thinking blocks from the *second* message: their
                 # signature was computed against a different turn boundary
                 # and becomes invalid once merged.
@@ -440,12 +458,26 @@ def convert_messages_to_anthropic(
             # Latest assistant on direct Anthropic: keep signed thinking
             # blocks for reasoning continuity; downgrade unsigned ones to
             # plain text.
+            #
+            # Exception: if orphan-stripping (or another structural mutation)
+            # removed a tool_use block from THIS turn, every thinking signature
+            # on it was computed against the original content and is now dead.
+            # Anthropic rejects the replayed turn with a non-retryable HTTP 400
+            # ("thinking blocks in the latest assistant message cannot be
+            # modified"). Demote ALL thinking blocks on this turn to text so the
+            # turn replays cleanly. See the orphan-strip flag set above.
+            signature_dead = bool(m.get("_thinking_signature_invalidated"))
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
                     continue
-                if b.get("type") == "redacted_thinking":
+                if signature_dead:
+                    # Dead signature — preserve the reasoning text, drop the block.
+                    thinking_text = b.get("thinking", "")
+                    if thinking_text:
+                        new_content.append({"type": "text", "text": thinking_text})
+                elif b.get("type") == "redacted_thinking":
                     # Redacted blocks use 'data' for the signature payload
                     if b.get("data"):
                         new_content.append(b)
@@ -465,6 +497,9 @@ def convert_messages_to_anthropic(
         for b in m["content"]:
             if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
                 b.pop("cache_control", None)
+
+        # Internal bookkeeping flag must never leak into the API payload.
+        m.pop("_thinking_signature_invalidated", None)
 
     # Anthropic's tool_search emits the result block in a *later* response
     # than the one that issued the server_tool_use, but its input validator
