@@ -3379,6 +3379,23 @@ def run_conversation(
                         and "nonetype" in str(api_error).lower()
                         and "not iterable" in str(api_error).lower()
                     )
+                    # The Anthropic SDK's streaming consumer raises a *plain*
+                    # ValueError (not a json.JSONDecodeError) when the model
+                    # emits a malformed input_json_delta for a tool call —
+                    # e.g. a double comma `{"offset": 1642, , "limit": 90}`.
+                    # See anthropic/lib/streaming/_beta_messages.py: it catches
+                    # the inner parse ValueError and re-raises with the prefix
+                    # "Unable to parse tool parameter JSON from model. Please
+                    # retry your request or adjust your prompt."  This is the
+                    # same class of failure as the JSONDecodeError carve-out
+                    # above (corrupt bytes off the wire, not a local bug), and
+                    # the SDK itself instructs the caller to retry — resampling
+                    # the model almost always yields well-formed JSON.  Match
+                    # on the hardcoded message prefix since the SDK surfaces it
+                    # as a bare ValueError with no more-specific type (#39021).
+                    and "unable to parse tool parameter json" not in str(
+                        api_error
+                    ).lower()
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:
