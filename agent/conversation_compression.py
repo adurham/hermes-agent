@@ -38,11 +38,6 @@ from typing import Any, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
 
-def _ra():
-    """Lazy reference to run_agent (for test-patch contract)."""
-    import run_agent
-    return run_agent
-
 logger = logging.getLogger(__name__)
 
 
@@ -571,17 +566,13 @@ def compress_context(agent, messages: list, system_message: str, *, approx_token
             force=True,
         )
 
-    # Update token estimate after compaction so pressure calculations
-    # use the post-compression count, not the stale pre-compression one.
-    # Use _ra().estimate_request_tokens_rough() so tool schemas are included —
-    # with 50+ tools enabled, schemas alone can add 20-30K tokens, and
-    # omitting them delays the next compression cycle far past the
-    # configured threshold (issue #14695). Routing through _ra() preserves the
-    # `patch("run_agent.estimate_request_tokens_rough")` test contract.
-    # NOTE (upstream): keep this rough estimate for diagnostics only — it is not
-    # provider-reported prompt usage, and schema-heavy rough estimates can stay
-    # above threshold even after the next real API request fits.
-    _compressed_est = _ra().estimate_request_tokens_rough(
+    # Keep the post-compression rough estimate for diagnostics, but do not
+    # treat it as provider-reported prompt usage. Schema-heavy rough estimates
+    # can remain above threshold even after the next real API request fits.
+    # (Tool schemas ARE included — with 50+ tools enabled, schemas alone can add
+    # 20-30K tokens, and omitting them delays the next compression cycle far past
+    # the configured threshold; see issue #14695.)
+    _compressed_est = estimate_request_tokens_rough(
         compressed,
         system_prompt=new_system_prompt or "",
         tools=agent.tools or None,
