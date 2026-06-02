@@ -83,10 +83,9 @@ def log_rate_limit_transitions(agent, state: "RateLimitState") -> None:
     stays consistent with the user-facing display.
     """
     try:
-        from agent.rate_limit_tracker import _fmt_count, _fmt_seconds  # noqa
+        from agent.rate_limit_tracker import _fmt_count, _fmt_seconds
     except Exception:
         return
-    from agent.rate_limit_tracker import _fmt_count, _fmt_seconds
     candidates = [
         ("RPM", state.requests_min),
         ("RPH", state.requests_hour),

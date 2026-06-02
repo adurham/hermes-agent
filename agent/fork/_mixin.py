@@ -58,11 +58,6 @@ class ForkForwardersMixin:
     # we re-export here so callers / tests reach it as ``AIAgent._RISKY_TOOL_NAMES``.
     from agent.fork.skill_recall import _RISKY_TOOL_NAMES
 
-    # Tool names that count as a "risky operation" for the skill-recall
-    # reminder.  Source-of-truth lives in ``agent.fork.skill_recall``;
-    # we re-export here so callers / tests reach it as ``AIAgent._RISKY_TOOL_NAMES``.
-    from agent.fork.skill_recall import _RISKY_TOOL_NAMES
-
     def _record_loaded_skill(self, name: str, tool_result: str) -> None:
         """Forwarder — see ``agent.fork.skill_recall.record_loaded_skill``."""
         from agent.fork.skill_recall import record_loaded_skill

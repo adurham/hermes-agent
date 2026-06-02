@@ -38,7 +38,6 @@ def sanitize_messages_for_refusal_retry(agent, messages: list) -> tuple:
 
     Returns (sanitized_messages, was_modified).
     """
-    import re
     _TRIGGER_PATTERNS = [
         # PGPASSWORD= with inline subshell credential extraction + pg_dump
         (re.compile(
