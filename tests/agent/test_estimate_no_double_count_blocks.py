@@ -10,6 +10,10 @@ stash under the underscore-prefixed name ``_anthropic_content_blocks``
 content twice -- once via ``content`` and again via the blocks JSON.
 On a search-heavy session with many ``web_search_tool_result`` /
 ``thinking`` blocks the inflation hit 200-300K phantom tokens.
+
+(The historical ``_anthropic_content_blocks`` underscore-prefixed stash was
+removed once it was confirmed nothing wrote it anymore; the live key is the
+unprefixed ``anthropic_content_blocks``.)
 """
 from __future__ import annotations
 
@@ -33,10 +37,6 @@ def _big_search_result_block(payload_chars: int = 40_000) -> dict:
         "content": [{"type": "web_search_result", "title": "x", "url": "x", "page_age": "1d",
                      "snippet": "A" * payload_chars}],
     }
-
-
-def _big_thinking_block(payload_chars: int = 4_000) -> dict:
-    return {"type": "thinking", "signature": "sig", "thinking": "A" * payload_chars}
 
 
 class TestNoDoubleCountWhenBlocksAndContentBothPresent:
@@ -76,26 +76,6 @@ class TestNoDoubleCountWhenBlocksAndContentBothPresent:
         # No regression on the historical path.
         expected = len(str({"role": "assistant", "content": "hello world"}))
         assert chars == expected
-
-    def test_legacy_underscore_prefix_also_skips_content(self):
-        """Older messages used '_anthropic_content_blocks'; still handled."""
-        block = _big_thinking_block(2_000)
-        msg = {
-            "role": "assistant",
-            "content": "extracted text",
-            "_anthropic_content_blocks": [block],
-        }
-        chars = _estimate_message_chars(msg)
-        # Should NOT include the visible 'extracted text' chars when
-        # the underscore-prefixed stash is present either.
-        with_content_double = (
-            len(str({"role": "assistant",
-                     "content": "extracted text",
-                     "_anthropic_content_blocks": [block]}))
-        )
-        # Patched: content is skipped, so result is smaller than the
-        # naive 'both counted' size.
-        assert chars < with_content_double
 
 
 class TestPreflightRegressionScenario:

@@ -1814,12 +1814,10 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
                 count += 1
     # Anthropic stashes the full provider content array on assistant
     # messages under ``anthropic_content_blocks`` (see run_agent.py where
-    # it is attached after each Anthropic response).  An older code path
-    # used the underscore-prefixed name ``_anthropic_content_blocks``;
-    # both forms can appear in the wild, so check either.
+    # it is attached after each Anthropic response).
     stashed = None
     if isinstance(msg, dict):
-        stashed = msg.get("anthropic_content_blocks") or msg.get("_anthropic_content_blocks")
+        stashed = msg.get("anthropic_content_blocks")
     if isinstance(stashed, list):
         for part in stashed:
             if isinstance(part, dict) and part.get("type") == "image":
@@ -1848,19 +1846,15 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     every web_search_tool_result, thinking block, and tool_use payload
     twice — easily 200K+ phantom tokens on a search-heavy session and
     the cause of the preflight estimator running ahead of the provider's
-    actual ``prompt_tokens`` by 30-50 %.  Older code looked for the
-    stash under ``_anthropic_content_blocks``; the live key is
-    unprefixed.  Treat blocks (when present) as the authoritative
-    source of size and skip the ``content`` duplicate.
+    actual ``prompt_tokens`` by 30-50 %.  Treat blocks (when present) as
+    the authoritative source of size and skip the ``content`` duplicate.
     """
     if not isinstance(msg, dict):
         return len(str(msg))
-    has_anthropic_blocks = bool(
-        msg.get("anthropic_content_blocks") or msg.get("_anthropic_content_blocks")
-    )
+    has_anthropic_blocks = bool(msg.get("anthropic_content_blocks"))
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k in ("_anthropic_content_blocks", "anthropic_content_blocks"):
+        if k == "anthropic_content_blocks":
             if isinstance(v, list):
                 cleaned = []
                 for part in v:
@@ -1986,7 +1980,7 @@ def _count_message_chars_with_image_token_credit(
     if not isinstance(msg, dict):
         return len(str(msg)), 0
 
-    blocks = msg.get("anthropic_content_blocks") or msg.get("_anthropic_content_blocks")
+    blocks = msg.get("anthropic_content_blocks")
     has_blocks = bool(blocks)
 
     content = msg.get("content")

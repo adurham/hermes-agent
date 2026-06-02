@@ -227,15 +227,6 @@ def convert_messages_to_anthropic(
                 converted = _content_parts_to_anthropic_blocks(content)
                 if any(b.get("type") == "image" for b in converted):
                     multimodal_blocks = converted
-            # Back-compat: some callers stash blocks under a private key.
-            if multimodal_blocks is None:
-                stashed = m.get("_anthropic_content_blocks")
-                if isinstance(stashed, list) and stashed:
-                    text_content = content if isinstance(content, str) and content.strip() else None
-                    multimodal_blocks = (
-                        [{"type": "text", "text": text_content}] + stashed
-                        if text_content else list(stashed)
-                    )
 
             if multimodal_blocks:
                 result_content: Any = multimodal_blocks
