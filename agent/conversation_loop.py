@@ -1030,6 +1030,18 @@ def run_conversation(
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        # The cached system prompt may carry the internal volatile-boundary
+        # sentinel (see agent.system_prompt.build_system_prompt). It is only
+        # consumed by the native Anthropic stable|volatile cache split below.
+        # On every other path (non-native transports, caching disabled) strip
+        # it here so the marker never reaches the model; stripping restores
+        # the exact "\n\n" separator, keeping sent bytes identical to before.
+        _will_split = bool(
+            agent._use_prompt_caching and agent._use_native_cache_layout
+        )
+        if effective_system and not _will_split:
+            from agent.prompt_caching import strip_volatile_sentinel
+            effective_system = strip_volatile_sentinel(effective_system)
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

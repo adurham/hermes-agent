@@ -14,7 +14,52 @@ Pure functions -- no class state, no AIAgent dependency.
 """
 
 import copy
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
+
+
+# Boundary marker injected by ``agent.system_prompt.build_system_prompt``
+# between the STABLE (+context) tiers and the VOLATILE tier (memory snapshot,
+# user profile, daily timestamp). It lets the Anthropic cache layer place the
+# system cache_control breakpoint at the END of the stable prefix instead of
+# after the whole system block. Result: the stable identity + tool guidance
+# (byte-stable across sessions/days) stays cache-warm even when memory or the
+# date line changes — only the small volatile tail re-writes.
+#
+# The marker is internal-only: it is ALWAYS either stripped (non-split path)
+# or consumed by the split (native Anthropic path) before the system prompt
+# is sent, so the model never sees it. ``_SENTINEL_FULL`` includes the
+# surrounding blank-line spacing so that stripping it reproduces the exact
+# ``"\n\n"`` separator the old flat join produced — keeping sent bytes
+# identical to pre-change behaviour for every non-split transport.
+SYSTEM_VOLATILE_SENTINEL = "<<<HERMES_SYS_VOLATILE_BOUNDARY>>>"
+_SENTINEL_FULL = "\n\n" + SYSTEM_VOLATILE_SENTINEL + "\n\n"
+
+
+def strip_volatile_sentinel(text: str) -> str:
+    """Remove the volatile-boundary sentinel, restoring the plain ``\\n\\n``
+    separator. No-op when the sentinel is absent. Used on every non-split
+    transport so the marker never reaches the model."""
+    if SYSTEM_VOLATILE_SENTINEL in text:
+        return text.replace(_SENTINEL_FULL, "\n\n")
+    return text
+
+
+def split_system_for_cache(text: str) -> Optional[Tuple[str, str]]:
+    """Split the system prompt at the volatile boundary.
+
+    Returns ``(stable_head, volatile_tail)`` where concatenating
+    ``stable_head + volatile_tail`` reproduces the exact bytes of the
+    stripped (model-visible) prompt — i.e. ``stable_head`` carries the
+    trailing ``"\\n\\n"`` separator. Returns ``None`` when no sentinel is
+    present (volatile tier empty, or an older stored prompt from before
+    this change), in which case callers fall back to a single block.
+    """
+    idx = text.find(_SENTINEL_FULL)
+    if idx < 0:
+        return None
+    head = text[:idx] + "\n\n"
+    tail = text[idx + len(_SENTINEL_FULL):]
+    return head, tail
 
 
 def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
@@ -41,6 +86,54 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         last = content[-1]
         if isinstance(last, dict):
             last["cache_control"] = cache_marker
+
+
+def _system_text(msg: dict) -> Optional[str]:
+    """Return the flat text of a system message whether its content is a
+    plain string or a single text block. Returns None for shapes we won't
+    touch (multi-block already, non-text), leaving them to the legacy path."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and len(content) == 1:
+        blk = content[0]
+        if isinstance(blk, dict) and blk.get("type") == "text" and "cache_control" not in blk:
+            return blk.get("text", "")
+    return None
+
+
+def _strip_system_sentinel(msg: dict) -> None:
+    """Strip the volatile sentinel from a system message in place, so the
+    marker never reaches the model on the single-block (non-split) path."""
+    text = _system_text(msg)
+    if text is None or SYSTEM_VOLATILE_SENTINEL not in text:
+        return
+    msg["content"] = strip_volatile_sentinel(text)
+
+
+def _apply_split_system_marker(msg: dict, cache_marker: dict) -> bool:
+    """Split a system message into ``[{stable+context, cache_control}, {volatile}]``.
+
+    Returns True when the split was applied (sentinel found and content was a
+    splittable string/single-text-block), False otherwise so the caller can
+    fall back to the legacy single-block marking.
+    """
+    text = _system_text(msg)
+    if text is None:
+        return False
+    parts = split_system_for_cache(text)
+    if parts is None:
+        return False
+    stable_head, volatile_tail = parts
+    blocks: List[Dict[str, Any]] = [
+        {"type": "text", "text": stable_head, "cache_control": cache_marker},
+    ]
+    # Only emit the volatile block when it carries content; an empty tail
+    # would just add a useless block.
+    if volatile_tail:
+        blocks.append({"type": "text", "text": volatile_tail})
+    msg["content"] = blocks
+    return True
 
 
 def _build_cache_marker(cache_ttl: str = "5m") -> Dict[str, str]:
@@ -77,7 +170,24 @@ def apply_anthropic_cache_control(
 
     breakpoints_used = 0
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
+        # Stable|volatile split: on the native Anthropic layout, emit the
+        # system prompt as a two-block content array
+        # ``[{stable+context, cache_control}, {volatile}]`` so the cache
+        # breakpoint sits at the END of the stable prefix rather than after
+        # the whole block. The volatile tail stays cached cumulatively by the
+        # first message breakpoint, so multi-turn within a session is
+        # unchanged — but a memory edit or date rollover no longer cold-
+        # rewrites the stable identity + tool guidance. Breakpoint COUNT is
+        # unchanged (still one on the system param). Falls back to a single
+        # marked block when no sentinel is present (volatile empty, or an
+        # older stored prompt). Non-native transports strip the sentinel and
+        # take the legacy single-block path.
+        split_done = False
+        if native_anthropic:
+            split_done = _apply_split_system_marker(messages[0], marker)
+        if not split_done:
+            _strip_system_sentinel(messages[0])
+            _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
         breakpoints_used += 1
 
     # Reserve one breakpoint for tools[] so a tools mutation only forces

@@ -363,10 +363,28 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     one cached block — Hermes never rebuilds or reinjects parts of it
     mid-session, which is the only way to keep upstream prompt caches
     warm across turns.
+
+    Cache split marker: when a volatile tier is present, a single
+    ``SYSTEM_VOLATILE_SENTINEL`` line is inserted between the stable+context
+    head and the volatile tail. The Anthropic cache layer
+    (``agent.prompt_caching``) uses it to place the system cache_control
+    breakpoint at the end of the stable head so a memory edit or date
+    rollover doesn't cold-rewrite the stable identity. The sentinel is
+    internal-only — it is always either consumed by the split or stripped
+    (restoring the plain ``\\n\\n`` separator) before the prompt is sent,
+    so the model never sees it, and the stored/displayed flat string stays
+    byte-reproducible. No sentinel is emitted when volatile is empty.
     """
     _r = _ra()
+    from agent.prompt_caching import SYSTEM_VOLATILE_SENTINEL
+
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    head = "\n\n".join(p for p in (parts["stable"], parts["context"]) if p)
+    volatile = parts["volatile"]
+    if head and volatile:
+        return head + "\n\n" + SYSTEM_VOLATILE_SENTINEL + "\n\n" + volatile
+    # Only one side present — no boundary to mark; emit a plain join.
+    return "\n\n".join(p for p in (head, volatile) if p)
 
 
 def invalidate_system_prompt(agent: Any) -> None:
