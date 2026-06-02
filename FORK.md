@@ -50,6 +50,58 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 
 Plus 165 commits of fork-only history. See `git log upstream/main..main`.
 
+### Fork-only fixes — 2026-06-02 (prompt-cache cost work)
+
+Three changes from a cost-tracking investigation (polaris was cold-caching
+~157K tokens/session, ~5x Claude Code). Root cause was a wiring bug, not a
+config issue. **Not sent upstream** (user decision — "not my problem").
+
+1. **`7b6cb3f98` — MCP tool-search deferral was dead code on the live path.**
+   `agent/chat_completion_helpers.py::build_api_kwargs` (the anthropic_messages
+   branch) never passed `tool_search_config=` or `cache_tools=` to the
+   transport, so `agent/fork/tool_search_lazy.py`'s MCP-stub deferral and the
+   native `tools[]` cache breakpoint were both inert. Every request shipped all
+   MCP tool schemas in full (measured: 253 tools / ~399KB / ~100K tokens cold-
+   cached on a 9-server install). Fix threads
+   `tool_search_config=agent._build_tool_search_config()`, `session_id`,
+   `cache_tools=agent._use_native_cache_layout`, `cache_ttl` through. Result:
+   157K → 42K cold prompt. Test: `tests/run_agent/test_tool_search_config_wiring.py`.
+   **Merge note:** this is a fork file already (streaming reliability edits). On
+   conflict take ours; verify the anthropic branch still passes all four kwargs.
+
+2. **`0eff5e9cc` — system-prompt stable|volatile cache split.** Anthropic caches
+   the prefix cumulatively (tools → system → messages); the whole system prompt
+   was one cached block, so the volatile tail (memory snapshot, USER profile,
+   daily timestamp) cold-rewrote the byte-stable identity+tools head on any
+   memory edit or date rollover. `agent/system_prompt.py::build_system_prompt`
+   now inserts an internal `SYSTEM_VOLATILE_SENTINEL` at the boundary;
+   `agent/prompt_caching.py::apply_anthropic_cache_control` splits the system
+   block into `[{stable, cache_control}, {volatile}]` on the native layout
+   (`_use_native_cache_layout`), keeping breakpoint count at 4. The sentinel is
+   internal-only — always consumed by the split or stripped (at the injection
+   point in `conversation_loop.py`) before send, so the model never sees it and
+   sent bytes are unchanged. Falls back to a single block when no sentinel
+   (empty volatile / pre-change stored prompts). Proven live: a warm session
+   dropped from $0.27 → $0.066. Test:
+   `tests/agent/test_system_prompt_cache_split.py` (8 tests).
+   **Merge note:** `prompt_caching.py` becomes a soft-fork file (new helpers
+   `split_system_for_cache` / `strip_volatile_sentinel` / `_apply_split_system_marker`).
+   The `system_prompt.py` and `conversation_loop.py` edits are small; on
+   conflict keep ours and re-verify the sentinel round-trips (strip == legacy
+   flat join).
+
+3. **Config (not code) — `prompt_caching.cache_ttl: 1h → 5m`** on both boxes, to
+   match Claude Code's default (CC defaults to 5m; the 1h tier costs 2x on write
+   vs 1.25x for 5m). The 1h tier only wins for 5–60-min idle gaps between turns;
+   for sub-5-min or >1h gaps, 5m is cheaper. Hermes already SHIPS 5m as the
+   default (`hermes_cli/config.py`); the 1h was a local override now removed.
+   A dynamic-TTL adjustment system was discussed as future work.
+
+Verified along the way: the cost tracker (`agent/usage_pricing.py`) prices
+cache tiers correctly (read 10% of input; write 1.25x@5m / 2x@1h; no double-
+counting; TTL-aware) and its hardcoded rate snapshot matches Anthropic's live
+pricing as of 2026-06-02.
+
 ## Why a fork
 
 Adam closed PR #25234 upstream in early 2026 — it included ~28K LOC of fork
