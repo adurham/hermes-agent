@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Optional, Tuple
 
 
 def record_usage_history(agent, canonical_usage) -> None:
