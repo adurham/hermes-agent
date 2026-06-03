@@ -102,6 +102,78 @@ cache tiers correctly (read 10% of input; write 1.25x@5m / 2x@1h; no double-
 counting; TTL-aware) and its hardcoded rate snapshot matches Anthropic's live
 pricing as of 2026-06-02.
 
+
+### Fork-only fixes — 2026-06-02 (oversized-image 413 / false compaction)
+
+A 35 MB phone photo (4284×5712) attached to a CLI session triggered an endless
+"Compacting context — summarizing earlier conversation" loop at only ~10% of
+the 1M window, then died with `Request payload too large (413). Cannot compress
+further.` The window was a red herring; three real bugs stacked up. **Not sent
+upstream** (personal fork; same "not my problem" stance as the cache work).
+
+Root cause chain:
+- Anthropic's hard limit on this path is the **32 MB HTTP request body**, not
+  tokens. A 35 MB image inflates to ~47 MB base64 and 413s
+  (`request_too_large`) on the FIRST call, regardless of how few conversation
+  tokens exist (the second observed failure was "11 msgs / ~10K tokens" — still
+  413, because the image *is* the payload).
+- The 413 classifies as `FailoverReason.payload_too_large`, whose only recovery
+  is "compress conversation history + retry." But `compression.protect_last_n`
+  (20) shields the turn holding the image, so compressing 93→10 messages leaves
+  the ~47 MB image untouched → retry 413s again → "cannot compress further."
+- The recovery that *would* work — `try_shrink_image_parts_in_messages` — was
+  gated solely on `FailoverReason.image_too_large` (Anthropic's 5 MB
+  *per-image* 400), so it never fired for the 32 MB *body* 413.
+- And even if it had fired, **Pillow was not installed in the runtime venv**, so
+  every resize path (`vision_tools._resize_image_for_vision`) silently no-op'd
+  and returned native-size bytes.
+
+Fixes:
+
+1. **Proactive ingestion ceiling — `agent/image_routing.py`.**
+   `_file_to_data_url` previously embedded local images at native size by
+   design (deferring all shrink to "the provider's first rejection"). It now
+   estimates base64 size and, when over `_NATIVE_IMAGE_CEILING_BYTES` (4 MB —
+   matches the reactive shrink target, slides under both Anthropic's 32 MB body
+   and 5 MB per-image limits), downscales via `_resize_image_for_vision` before
+   encoding. Images under the ceiling pass through verbatim (no quality tax on
+   screenshots / normal uploads). Anthropic downscales to ~1568px server-side
+   anyway, so the trimmed pixels were going to be discarded regardless.
+   Verified live: the actual pump photo → 47 MB base64 became a 3.56 MB PNG.
+
+2. **Reactive recovery reorder — `agent/conversation_loop.py`.** The
+   `is_payload_too_large` (413) handler now attempts
+   `_try_shrink_image_parts_in_messages` FIRST, and only falls through to
+   history compression when there are no shrinkable image parts. Shares the
+   single-shot `image_shrink_retry_attempted` flag with the existing
+   `image_too_large` path, so a genuinely text-too-large 413 still reaches
+   compression after one image attempt. This is the safety net for images that
+   reach the wire oversized through paths that bypass `_file_to_data_url`.
+
+3. **Pillow made a real (lazy) dependency — `tools/lazy_deps.py`,
+   `tools/vision_tools.py`.** Added `image.resize → Pillow==12.2.0` to the
+   `LAZY_DEPS` allowlist; `_resize_image_for_vision` now calls
+   `lazy_deps.ensure("image.resize", prompt=False)` on first `ImportError`
+   instead of silently giving up. Pillow stays out of core deps (text-only
+   sessions never touch it) but auto-installs the first time an oversized image
+   actually needs downscaling.
+
+Tests: `tests/agent/test_image_routing.py::TestFileToDataUrlIngestionCeiling`
+(4 new — pass-through under ceiling, missing-file None, oversized downscaled
+under ceiling, Pillow-absent native fallback). Full image sweep green
+(`test_vision_tools`, `test_image_routing`, `test_image_shrink_recovery`,
+`test_image_rejection_fallback`, `test_vision_aware_preprocessing`,
+`test_compressor_image_tokens`, `test_lazy_deps`).
+
+**Merge note:** `image_routing.py` and `conversation_loop.py` are already
+soft-fork files; on conflict keep ours and re-verify (a) `_file_to_data_url`
+still resizes over `_NATIVE_IMAGE_CEILING_BYTES`, and (b) the 413 handler tries
+image-shrink before `compression_attempts += 1`. `lazy_deps.py` /
+`vision_tools.py` edits are additive — the `image.resize` key and the
+`ensure(...)` fallback. **Activation:** running sessions must `/restart` to load
+the patched `image_routing.py`; the module is read once at startup.
+
+
 ## Why a fork
 
 Adam closed PR #25234 upstream in early 2026 — it included ~28K LOC of fork

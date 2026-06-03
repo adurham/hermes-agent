@@ -393,14 +393,49 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
     }.get(suffix, "image/jpeg")
 
 
-def _file_to_data_url(path: Path) -> Optional[str]:
-    """Encode a local image as a base64 data URL at its native size.
+# Proactive ingestion ceiling for native image attachments.
+#
+# This is NOT about token budget — it's about the provider's HTTP request
+# *body* limit. Anthropic rejects any request whose total body exceeds
+# 32 MB with a 413 ``request_too_large`` regardless of how few tokens the
+# conversation holds. A single ~35 MB phone photo inflates to ~49 MB once
+# base64-encoded and blows the body limit on the very first call, before
+# the conversation has any history to compress.
+#
+# Crucially, vision models gain nothing from the extra pixels: Anthropic
+# (and most others) downscale to a ~1568px long edge server-side anyway,
+# so a 4284px capture carries ~7x the bytes for identical comprehension.
+# We therefore cap encoded size at a universally-safe ceiling at ingestion
+# time. Providers that happily accept large images (OpenAI 49 MB+, Gemini
+# 100 MB) lose no real quality — the cap only trims pixels the model would
+# have discarded. Images already under the ceiling are passed through at
+# native size, so the common case (screenshots, normal uploads) is
+# untouched.
+#
+# 4 MB matches the reactive retry-loop shrink target
+# (``conversation_compression.try_shrink_image_parts_in_messages``), which
+# is deliberately chosen to slide under Anthropic's 5 MB *per-image* base64
+# ceiling with header overhead. Using the same target here means a
+# freshly-ingested image can't trip EITHER the 32 MB request-body limit or
+# the 5 MB per-image limit. Providers that accept large images (OpenAI
+# 49 MB+, Gemini 100 MB) lose no real quality — the cap only trims pixels
+# the model would have discarded during its own server-side downscale. The
+# reactive shrink remains as a safety net for images that arrive oversized
+# through other paths.
+_NATIVE_IMAGE_CEILING_BYTES = 4 * 1024 * 1024
 
-    Size limits are NOT enforced here — the agent retry loop
-    (``run_agent._try_shrink_image_parts_in_messages``) shrinks on the
-    provider's first rejection. Keeping this simple means providers that
-    accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
-    quality tax just because one other provider is stricter.
+
+def _file_to_data_url(path: Path) -> Optional[str]:
+    """Encode a local image as a base64 data URL, downscaling if oversized.
+
+    Images whose base64 encoding would exceed ``_NATIVE_IMAGE_CEILING_BYTES``
+    are downscaled via ``vision_tools._resize_image_for_vision`` before
+    encoding. This prevents a single large photo from tripping a provider's
+    HTTP body limit (Anthropic 413 ``request_too_large``) on the first call,
+    which the conversation-compression recovery path cannot fix because the
+    oversized payload is one protected image, not history. Images already
+    under the ceiling are encoded at native size — no quality tax for the
+    common case.
 
     Returns None only if the file can't be read (missing, permission
     denied, etc.); the caller reports those paths in ``skipped``.
@@ -410,7 +445,52 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
+
     mime = _guess_mime(path, raw=raw)
+
+    # Estimate encoded size (base64 inflates by ~4/3 plus a small header).
+    # Only pay the resize cost when the image would actually breach the
+    # body-size ceiling.
+    estimated_b64 = (len(raw) * 4) // 3 + 64
+    if estimated_b64 <= _NATIVE_IMAGE_CEILING_BYTES:
+        b64 = base64.b64encode(raw).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+
+    # Oversized — downscale before encoding. _resize_image_for_vision is a
+    # soft dependency on Pillow; it falls back to native bytes if Pillow is
+    # missing or can't open the image, in which case the reactive retry-loop
+    # shrink remains the backstop.
+    try:
+        from tools.vision_tools import _resize_image_for_vision
+
+        data_url = _resize_image_for_vision(
+            path, mime_type=mime, max_base64_bytes=_NATIVE_IMAGE_CEILING_BYTES,
+        )
+        if data_url:
+            if len(data_url) > _NATIVE_IMAGE_CEILING_BYTES:
+                logger.warning(
+                    "image_routing: %s still %.1f MB after resize (ceiling "
+                    "%.1f MB) — Pillow unavailable or image incompressible; "
+                    "relying on retry-loop shrink",
+                    path, len(data_url) / (1024 * 1024),
+                    _NATIVE_IMAGE_CEILING_BYTES / (1024 * 1024),
+                )
+            else:
+                logger.info(
+                    "image_routing: downscaled %s from ~%.1f MB to %.1f MB "
+                    "base64 to fit native-attach ceiling",
+                    path, estimated_b64 / (1024 * 1024),
+                    len(data_url) / (1024 * 1024),
+                )
+            return data_url
+    except Exception as exc:
+        logger.warning(
+            "image_routing: resize of oversized %s failed (%s) — "
+            "falling back to native-size encode", path, exc,
+        )
+
+    # Resize unavailable or failed: encode at native size and let the
+    # reactive retry-loop shrink handle the provider rejection.
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 
