@@ -115,6 +115,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
+    # Image downscaling for native vision attachments. Pillow lets us shrink
+    # oversized user-attached photos (35 MB phone captures → ~49 MB base64)
+    # under provider HTTP-body limits before sending — both proactively at
+    # ingestion (agent/image_routing.py) and reactively on a 413
+    # (agent/conversation_compression.py). Without it, a single large image
+    # 413s the request and no compression can recover it. Optional because
+    # text-only sessions never touch it.
+    "image.resize": ("Pillow==12.2.0",),
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),

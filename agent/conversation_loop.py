@@ -3132,6 +3132,33 @@ def run_conversation(
                     )
 
                 if is_payload_too_large:
+                    # Image-dominated 413 recovery: a single oversized image
+                    # part (e.g. a 35 MB phone photo → ~49 MB base64) blows the
+                    # provider's HTTP body limit (Anthropic 32 MB → 413
+                    # request_too_large) no matter how few conversation tokens
+                    # exist. History compression CANNOT fix this — the
+                    # oversized payload is one image in the protected last-N
+                    # turns, so compressing 93→10 messages leaves the same
+                    # image in place and the retry 413s again ("cannot compress
+                    # further"). Try shrinking image parts FIRST; only fall
+                    # through to history compression if there were no
+                    # shrinkable images. Gated on a single attempt so a
+                    # genuinely text-too-large 413 still reaches compression.
+                    if not image_shrink_retry_attempted:
+                        image_shrink_retry_attempted = True
+                        if agent._try_shrink_image_parts_in_messages(api_messages):
+                            agent._vprint(
+                                f"{agent.log_prefix}📐 Payload too large (413) — shrank "
+                                f"oversized image(s) and retrying...",
+                                force=True,
+                            )
+                            continue
+                        else:
+                            logger.info(
+                                "413 payload-too-large: no shrinkable image parts "
+                                "found; falling through to history compression."
+                            )
+
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
                         # Terminal — surface the buffered retry trace.

@@ -363,15 +363,30 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     else:
         data_url = None  # defer full encode; try Pillow resize first
 
-    # Attempt auto-resize with Pillow (soft dependency)
+    # Attempt auto-resize with Pillow (soft dependency). Pillow is not in the
+    # core dependency set — it's lazy-installed the first time an oversized
+    # image actually needs downscaling. Without this, a single large photo
+    # 413s the request (Anthropic 32 MB body / 5 MB per-image) and no
+    # compression can recover it, because the oversized payload is one
+    # protected image, not history.
     try:
         from PIL import Image
         import io as _io
     except ImportError:
-        logger.info("Pillow not installed — cannot auto-resize oversized image")
-        if data_url is None:
-            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-        return data_url  # caller will raise the size error
+        try:
+            from tools import lazy_deps
+
+            lazy_deps.ensure("image.resize", prompt=False)
+            from PIL import Image
+            import io as _io
+        except Exception as exc:
+            logger.info(
+                "Pillow unavailable and lazy-install failed (%s) — cannot "
+                "auto-resize oversized image", exc,
+            )
+            if data_url is None:
+                data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+            return data_url  # caller will raise the size error
 
     logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB), auto-resizing...",
                 file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
