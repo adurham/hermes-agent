@@ -9,3 +9,11 @@ web/package-lock.json linguist-generated=true
 # isn't installed git falls back to a normal conflict and you regenerate by hand.
 uv.lock              merge=uvlock-ours linguist-generated=true
 web/package-lock.json merge=ours
+
+# Enforce LF for scripts that run inside Linux containers.
+# Without this, Windows checkout converts to CRLF and breaks `exec` in the
+# container entrypoint with "no such file or directory".
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.dockerfile text eol=lf
+docker/entrypoint.sh text eol=lf

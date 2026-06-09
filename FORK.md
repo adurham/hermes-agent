@@ -174,6 +174,61 @@ image-shrink before `compression_attempts += 1`. `lazy_deps.py` /
 the patched `image_routing.py`; the module is read once at startup.
 
 
+### Upstream sync — 2026-06-08 (771 commits, 17 conflicts)
+
+Merge-base was 2026-06-02; pulled 771 upstream commits on branch
+`sync/upstream-2026-06-08` (tag `pre-upstream-sync-2026-06-08`). 17 conflict
+files, all resolved. New/changed fork surface this sync:
+
+* **`agent/turn_context.py` is now a SOFT-FORK file.** Upstream extracted the
+  entire per-turn prologue out of `conversation_loop.py` into this new module
+  (`build_turn_context()`). Three fork-only prologue steps were PORTED into it:
+  the `memory_auto_feedback` session bind, the `_last_user_message` capture (feeds
+  `agent/fork/memory_recall.py`), and the `_recent_tool_args` reset. On conflict:
+  keep these three; the rest is upstream-shared. `conversation_loop.py` now just
+  calls `build_turn_context(...)` — do NOT re-inline the prologue.
+* **`conversation_loop.py` retry flags → upstream's `TurnRetryState`.** Upstream
+  consolidated the per-turn auth/retry single-shot flags into a `TurnRetryState`
+  dataclass (`_retry`). Took upstream's consolidation; the fork's 413-image-shrink
+  path was rewired from a bare local to `_retry.image_shrink_retry_attempted` so it
+  shares upstream's single-shot flag (the FORK.md image-413 design intent). Two
+  fork-only flags have no `TurnRetryState` home and stay bare locals:
+  `_strip_cache_for_overload`, `_refusal_sanitize_attempted`.
+* **`agent_runtime_helpers.py` + `tool_executor.py` dispatch → `_execute` closures.**
+  Upstream moved tool dispatch to a uniform `_execute(next_args)` + middleware
+  pattern (busy-input steering). Converted the fork's `session_search` / `memory` /
+  `hermes_load_tools` / `swarm_run` branches to the closure form, preserving warm-
+  tier memory args + merged session-search scroll params.
+* **`AGENT_RUNTIME_POST_HOOK_TOOL_NAMES` frozenset gained `hermes_load_tools` +
+  `swarm_run`.** Upstream shipped a new invariant test
+  (`test_frozenset_matches_inline_dispatch_chain`) asserting every inline dispatch
+  branch that emits its own post-hook is listed in this frozenset. The fork's two
+  extra inline branches (fork-only in `tool_executor`) weren't in upstream's
+  frozenset → added them, else `post_tool_call` double-fires. **Merge note:** if a
+  future sync re-introduces this drift, add any fork-only inline dispatch branch to
+  the frozenset.
+* **`main.py` — `cmd_insights` relocated by upstream.** Upstream moved
+  `cmd_insights` to a module-level def + a `build_insights_parser()` helper. Ported
+  the fork's `account_billed` feature (authoritative billed figure via
+  `fetch_anthropic_billing`) into the relocated def.
+* **Converged to upstream ("when upstream catches up, take upstream"):**
+  `hermes_cli/models.py` (gemini flash slugs — upstream now offers both
+  preview+GA), `hermes_cli/doctor.py` (vendor-slug `custom:` predicate),
+  `tools/vision_tools.py` (Pillow lazy-install — adopted upstream's `tool.vision`
+  key + #40490 deadlock comment, removed the orphaned fork `image.resize` key from
+  `tools/lazy_deps.py`).
+* `SCHEMA_VERSION` 16 → 17 (max of fork-16 / upstream-15 + 1).
+
+Verification: full `tests/agent/` + `tests/run_agent/` = 5805 passed. The one real
+failure (frozenset drift, above) was fixed; the other 12 are the documented
+ordering-pollution flakes (`test_subagent_stop_hook`, `test_vision_routing_31179`,
+`test_provider_parity::...openrouter_always_wins`, `test_auxiliary_main_first`),
+all green in isolation. Pre-existing red (NOT this merge):
+`test_mcp_tool.py::...test_registered_tool_provenance_prevents_prefix_collision`
+asserts the `mcp_`-prefix the fork deliberately removed — fails identically on the
+pre-merge tag.
+
+
 ## Why a fork
 
 Adam closed PR #25234 upstream in early 2026 — it included ~28K LOC of fork
