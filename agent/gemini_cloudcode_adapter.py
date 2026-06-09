@@ -853,6 +853,16 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
             except (TypeError, ValueError):
                 retry_delay_seconds = None
 
+    # Fall back to parsing the error message text (e.g. "Your quota will reset after 53s.")
+    if retry_delay_seconds is None and err_message:
+        import re
+        match = re.search(r"reset after\s+(\d+(?:\.\d+)?)s", err_message, re.IGNORECASE)
+        if match:
+            try:
+                retry_delay_seconds = float(match.group(1))
+            except ValueError:
+                pass
+
     # Classify the error code.  ``code_assist_rate_limited`` stays the default
     # for 429s; a more specific reason tag helps downstream callers (e.g. tests,
     # logs) without changing the rate_limit classification path.
