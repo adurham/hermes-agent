@@ -146,12 +146,20 @@ def _build_gemini_contents(
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
 
-        # Tool result message — emit a user-role turn with functionResponse
+        # Tool result message — collect into a user-role turn with functionResponse.
+        # Gemini requires that the number of functionResponse parts in a user
+        # turn matches the number of functionCall parts in the preceding model
+        # turn.  Consecutive tool messages must be merged into a single turn.
         if role == "tool" or role == "function":
-            contents.append({
-                "role": "user",
-                "parts": [_translate_tool_result_to_gemini(msg)],
-            })
+            part = _translate_tool_result_to_gemini(msg)
+            if contents and contents[-1].get("role") == "user" and contents[-1]["parts"] and "functionResponse" in contents[-1]["parts"][-1]:
+                # Merge into the preceding user turn that already has functionResponse parts
+                contents[-1]["parts"].append(part)
+            else:
+                contents.append({
+                    "role": "user",
+                    "parts": [part],
+                })
             continue
 
         gemini_role = _ROLE_MAP_OPENAI_TO_GEMINI.get(role, "user")
