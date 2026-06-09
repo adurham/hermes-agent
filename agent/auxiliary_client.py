@@ -3563,6 +3563,14 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── Google Code Assist (Gemini CLI) ──────────────────────────────
+    if provider == "google-gemini-cli":
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        client = GeminiCloudCodeClient(model=model or "gemini-3.1-pro-preview")
+        final_model = _normalize_resolved_model(model or "gemini-3.1-pro-preview", provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
