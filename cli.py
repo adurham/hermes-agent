@@ -14300,6 +14300,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             state = cli_ref._model_picker_state
             if not state:
                 return []
+
+            def _prettify_model(slug: str) -> str:
+                # Add pretty display names for common models, especially Gemini CLI
+                mapping = {
+                    "gemini-3.5-flash": "Gemini 3.5 Flash",
+                    "gemini-3.1-pro-preview": "Gemini 3.1 Pro",
+                    "gemini-3-flash-preview": "Gemini 3.0 Flash",
+                    "gemini-3-pro-preview": "Gemini 3.0 Pro",
+                    "gemini-2.5-pro": "Gemini 2.5 Pro",
+                    "gemini-2.5-flash": "Gemini 2.5 Flash",
+                }
+                return mapping.get(slug, slug)
+
             stage = state.get("stage", "provider")
             if stage == "provider":
                 title = "⚙ Model Picker — Select Provider"
@@ -14312,12 +14325,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         label += "  ← current"
                     choices.append(label)
                 choices.append("Cancel")
-                hint = f"Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
+                hint = f"Current: {_prettify_model(state.get('current_model', 'unknown'))} on {state.get('current_provider', 'unknown')}"
             else:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
+                choices = [_prettify_model(m) for m in model_list] + ["← Back", "Cancel"]
                 if model_list:
                     hint = f"Select a model ({len(model_list)} available)"
                 else:
