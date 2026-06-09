@@ -843,6 +843,20 @@ def run_conversation(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
+            # ── Code Assist egress pacing ──────────────────────────
+            # The Google Code Assist endpoint (cloudcode-pa) has strict
+            # per-user RPM/TPM limits because it's designed for sparse IDE
+            # requests, not bursty agent loops. When agent context grows,
+            # rapid tool loops easily hit the ~30k TPM ceiling.
+            # Proactively pace requests to smooth out the bursts and avoid
+            # the hard 60s penalty box.
+            _provider = getattr(agent, "provider", "unknown")
+            if _provider == "google-gemini-cli" and approx_tokens > 3000 and retry_count == 0:
+                _pace_s = min(max((approx_tokens - 3000) / 1000.0, 1.0), 6.0)
+                if not agent.quiet_mode:
+                    agent._vprint(f"{agent.log_prefix}   ⏱️  Pacing request to avoid Code Assist limits ({_pace_s:.1f}s delay)")
+                time.sleep(_pace_s)
+
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
