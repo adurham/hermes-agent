@@ -314,6 +314,9 @@ ALIASES: Dict[str, str] = {
     # google-gemini-cli (OAuth + Code Assist)
     "gemini-cli": "google-gemini-cli",
     "gemini-oauth": "google-gemini-cli",
+    "antigravity": "google-gemini-cli",
+    "antigravity-cli": "google-gemini-cli",
+    "agy": "google-gemini-cli",
 
 
     # huggingface
@@ -378,6 +381,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
+    "google-gemini-cli": "agy/antigravity cli",
 }
 
 
