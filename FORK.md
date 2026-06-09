@@ -47,6 +47,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/agent_runtime_helpers.py` | +119 / -29 | Scattered port additions during the 2026-05-19 upstream merge — mostly CC alias support in `repair_tool_call`, switch_model 1M-beta latch re-eval, swarm_run handling in `invoke_tool`. |
 | `agent/tool_executor.py` | +111 / -29 | Skill-recall hook callsites (`_record_loaded_skill`, `_maybe_skill_recall_hint`) in both sequential + concurrent paths, plus hermes_load_tools and swarm_run dispatch. |
 | `agent/system_prompt.py` | +17 / -23 | Date-only timestamp restored (upstream's prompt-cache fix), grok added to OPENAI_MODEL_EXECUTION_GUIDANCE gate. |
+| `agent/turn_context.py` | (new upstream file, fork-patched) | Upstream (2026-06-08) extracted the per-turn prologue out of `conversation_loop.py` into this new `build_turn_context()` module. Carries 3 PORTED fork-only prologue steps: `memory_auto_feedback` session bind, `_last_user_message` capture (feeds `agent/fork/memory_recall.py`), `_recent_tool_args` reset. On conflict: keep those 3, the rest is upstream-shared; do NOT re-inline the prologue into `conversation_loop.py`. |
 
 Plus 165 commits of fork-only history. See `git log upstream/main..main`.
 
@@ -223,10 +224,35 @@ Verification: full `tests/agent/` + `tests/run_agent/` = 5805 passed. The one re
 failure (frozenset drift, above) was fixed; the other 12 are the documented
 ordering-pollution flakes (`test_subagent_stop_hook`, `test_vision_routing_31179`,
 `test_provider_parity::...openrouter_always_wins`, `test_auxiliary_main_first`),
-all green in isolation. Pre-existing red (NOT this merge):
-`test_mcp_tool.py::...test_registered_tool_provenance_prevents_prefix_collision`
-asserts the `mcp_`-prefix the fork deliberately removed — fails identically on the
-pre-merge tag.
+all green in isolation.
+
+
+### Fork-only fix — 2026-06-08 (MCP parallel-safe prefix gate)
+
+Post-sync cleanup of a stale fork test
+(`test_mcp_tool.py::...test_registered_tool_provenance_prevents_prefix_collision`,
+which asserted the upstream `mcp_` prefix the fork deliberately removed) surfaced
+a REAL latent fork bug, not just a test-shape mismatch:
+
+`tools/mcp_tool.py::is_mcp_tool_parallel_safe` still early-returned `False` on
+`if not tool_name.startswith("mcp_")`. But the fork registers MCP tools WITHOUT
+that prefix (`_build_tool_schema` → `{server}_{tool}`, e.g. `github_search`), so
+**every fork MCP tool was wrongly classified non-parallel-safe** and silently
+serialized — even on servers with `supports_parallel_tool_calls: true`. The
+function's own docstring already prescribed the correct approach ("use exact
+server provenance captured at registration, not prefix matching"); the gate was
+leftover from before the prefix was dropped.
+
+Fix: replaced the `startswith("mcp_")` gate with an empty-name guard, keying
+purely on the `_mcp_tool_server_names` provenance map (a tool only has an entry
+there if registered as MCP, so the map lookup already filters non-MCP tools).
+Updated the stale test to assert the fork's actual `{server}_{tool}` name shape
+with a docstring documenting the divergence. Consumer
+(`agent/tool_dispatch_helpers.py::_is_mcp_tool_parallel_safe`) unchanged. Verified:
+`tests/tools/test_mcp_tool.py` + `tests/agent/test_tool_dispatch_helpers.py` =
+225 passed. **Merge note:** `mcp_tool.py` is otherwise upstream-shared; on a future
+conflict here keep the provenance-only gate (no `mcp_` prefix check) — re-adding
+upstream's prefix match would re-break fork MCP parallelism.
 
 
 ## Why a fork

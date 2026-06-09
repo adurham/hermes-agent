@@ -3965,7 +3965,17 @@ class TestMcpParallelToolCalls:
                 _mcp_tool_server_names.pop("mcp_a_b_tool", None)
 
     def test_registered_tool_provenance_prevents_prefix_collision(self):
-        """Registration records exact server ownership for ambiguous names."""
+        """Registration records exact server ownership for ambiguous names.
+
+        Fork divergence: upstream prefixes registered MCP tool names with
+        ``mcp_`` (so this would be ``mcp_a_b_tool``); this fork DELIBERATELY
+        does NOT single-underscore-prefix bare tool names — ``_register_server_tools``
+        registers them as ``{server}_{tool}`` (here ``a_b_tool``) and keys
+        ``_mcp_tool_server_names`` on that unprefixed name. See FORK.md
+        (anthropic_adapter tool-naming note). The provenance/parallel-safe
+        invariant this test guards is unchanged; only the registered name shape
+        differs from upstream.
+        """
         from tools.registry import registry
         from tools.mcp_tool import (
             _mcp_tool_server_names, _parallel_safe_servers,
@@ -3978,22 +3988,22 @@ class TestMcpParallelToolCalls:
         )
         registered = _register_server_tools("a_b", server, {})
         try:
-            assert registered == ["mcp_a_b_tool"]
+            assert registered == ["a_b_tool"]
             with _lock:
-                assert _mcp_tool_server_names["mcp_a_b_tool"] == "a_b"
+                assert _mcp_tool_server_names["a_b_tool"] == "a_b"
                 _parallel_safe_servers.add("a")
-            assert is_mcp_tool_parallel_safe("mcp_a_b_tool") is False
+            assert is_mcp_tool_parallel_safe("a_b_tool") is False
 
             with _lock:
                 _parallel_safe_servers.add("a_b")
-            assert is_mcp_tool_parallel_safe("mcp_a_b_tool") is True
+            assert is_mcp_tool_parallel_safe("a_b_tool") is True
         finally:
             for tool_name in registered:
                 registry.deregister(tool_name)
             with _lock:
                 _parallel_safe_servers.discard("a")
                 _parallel_safe_servers.discard("a_b")
-                _mcp_tool_server_names.pop("mcp_a_b_tool", None)
+                _mcp_tool_server_names.pop("a_b_tool", None)
 
     def test_is_mcp_tool_parallel_safe_no_tool_suffix(self):
         """Tool name that is just 'mcp_{server}' without a tool part returns False."""

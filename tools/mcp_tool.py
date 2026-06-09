@@ -4267,15 +4267,17 @@ def discover_mcp_tools() -> List[str]:
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Check if an MCP tool belongs to a server that supports parallel tool calls.
 
-    MCP tool names follow the pattern ``mcp_{server}_{tool}``, but that string
-    shape is ambiguous when server names contain underscores. Use the exact
-    server provenance captured at registration time rather than prefix
-    matching, then check whether that server's config includes
+    This fork registers MCP tools WITHOUT the upstream ``mcp_`` prefix
+    (``{server}_{tool}`` — see ``_build_tool_schema``), so prefix matching
+    cannot be used to identify MCP tools. Use the exact server provenance
+    captured at registration time (``_mcp_tool_server_names``) instead: a tool
+    only has an entry there if it was registered as an MCP tool, which also
+    filters out non-MCP tools. Then check whether that server's config includes
     ``supports_parallel_tool_calls: true``.
 
     Returns False for non-MCP tools or tools from servers without the flag.
     """
-    if not tool_name.startswith("mcp_"):
+    if not tool_name:
         return False
     with _lock:
         server_name = _mcp_tool_server_names.get(tool_name)
