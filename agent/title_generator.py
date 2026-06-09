@@ -5,7 +5,9 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
+import time
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
@@ -118,45 +120,64 @@ def generate_title(
         {"role": "user", "content": f"User: {user_snippet}\n\nAssistant: {assistant_snippet}"},
     ]
 
-    try:
-        response = call_llm(
-            task="title_generation",
-            messages=messages,
-            max_tokens=500,
-            temperature=0.3,
-            timeout=timeout,
-            main_runtime=main_runtime,
-        )
-        title = (response.choices[0].message.content or "").strip()
-        # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\'')
-        if title.lower().startswith("title:"):
-            title = title[6:].strip()
-        # Enforce reasonable length
-        if len(title) > 80:
-            title = title[:77] + "..."
-        return title if title else None
-    except Exception as e:
-        err_str = str(e).lower()
-        is_rate_limit = "429" in err_str or "rate limit" in err_str or "quota" in err_str
+    max_retries = 1
+    for attempt in range(max_retries + 1):
+        try:
+            response = call_llm(
+                task="title_generation",
+                messages=messages,
+                max_tokens=500,
+                temperature=0.3,
+                timeout=timeout,
+                main_runtime=main_runtime,
+            )
+            title = (response.choices[0].message.content or "").strip()
+            # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
+            title = title.strip('"\'')
+            if title.lower().startswith("title:"):
+                title = title[6:].strip()
+            # Enforce reasonable length
+            if len(title) > 80:
+                title = title[:77] + "..."
+            return title if title else None
+        except Exception as e:
+            err_str = str(e).lower()
+            is_rate_limit = "429" in err_str or "rate limit" in err_str or "quota" in err_str
 
-        # Full detail at debug level for operators who need the stack.
-        logger.debug("Title generation traceback", exc_info=True)
+            if is_rate_limit and attempt < max_retries:
+                retry_after = getattr(e, "retry_after", None)
+                if retry_after is None:
+                    # Look for something like "after 51s." or "after 51.5s"
+                    match = re.search(r"after (\d+(?:\.\d+)?)s", err_str)
+                    if match:
+                        retry_after = float(match.group(1))
+                    else:
+                        retry_after = 60.0
+                logger.info("Title generation rate limited. Retrying in %ss (attempt %d/%d)", retry_after, attempt + 1, max_retries)
+                time.sleep(retry_after + 1)  # add 1s buffer
+                continue
 
-        if is_rate_limit:
-            # Title generation is a background convenience. If it hits a rate limit
-            # (common for tight per-minute quotas like Code Assist), just quietly
-            # skip it rather than emitting a prominent UI warning.
-            logger.info("Title generation skipped (rate limited): %s", e)
-        else:
-            # Log at WARNING so this shows up in agent.log without debug mode.
-            logger.warning("Title generation failed: %s", e)
-            if failure_callback is not None:
-                try:
-                    failure_callback("title generation", e)
-                except Exception:
-                    logger.debug("Title generation failure_callback raised", exc_info=True)
-        return None
+            # Full detail at debug level for operators who need the stack.
+            logger.debug("Title generation traceback", exc_info=True)
+
+            if is_rate_limit:
+                # Title generation is a background convenience. If it hits a rate limit
+                # (common for tight per-minute quotas like Code Assist), just quietly
+                # skip it rather than emitting a prominent UI warning.
+                logger.info("Title generation skipped (rate limited): %s", e)
+            else:
+                # Log at WARNING so this shows up in agent.log without debug mode.
+                logger.warning("Title generation failed: %s", e)
+                if failure_callback is not None:
+                    try:
+                        from agent.config import read_config
+                        cfg = read_config()
+                        # Allow suppression via config if the user wants.
+                        if cfg.get("ui", {}).get("show_auxiliary_errors", True):
+                            failure_callback("title generation", e)
+                    except Exception:
+                        logger.debug("Title generation failure_callback raised", exc_info=True)
+            return None
 
 
 def auto_title_session(
