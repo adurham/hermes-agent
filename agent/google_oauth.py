@@ -469,6 +469,25 @@ def load_credentials() -> Optional[GoogleCredentials]:
     """Load credentials from disk. Returns None if missing or corrupt."""
     path = _credentials_path()
     if not path.exists():
+        # Fallback to antigravity CLI's ~/.gemini/oauth_creds.json
+        gemini_path = Path.home() / ".gemini" / "oauth_creds.json"
+        if gemini_path.exists():
+            try:
+                raw = gemini_path.read_text(encoding="utf-8")
+                data = json.loads(raw)
+                if isinstance(data, dict) and data.get("access_token"):
+                    expires = data.get("expiry_date", 0)
+                    expires_ms = int(expires) if expires else 0
+                    return GoogleCredentials(
+                        access_token=str(data.get("access_token") or ""),
+                        refresh_token=str(data.get("refresh_token") or ""),
+                        expires_ms=expires_ms,
+                        email="",
+                        project_id="",
+                        managed_project_id="",
+                    )
+            except Exception as exc:
+                logger.warning("Failed to fallback to ~/.gemini/oauth_creds.json: %s", exc)
         return None
     try:
         with _credentials_lock():
