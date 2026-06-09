@@ -137,15 +137,25 @@ def generate_title(
             title = title[:77] + "..."
         return title if title else None
     except Exception as e:
-        # Log at WARNING so this shows up in agent.log without debug mode.
+        err_str = str(e).lower()
+        is_rate_limit = "429" in err_str or "rate limit" in err_str or "quota" in err_str
+
         # Full detail at debug level for operators who need the stack.
-        logger.warning("Title generation failed: %s", e)
         logger.debug("Title generation traceback", exc_info=True)
-        if failure_callback is not None:
-            try:
-                failure_callback("title generation", e)
-            except Exception:
-                logger.debug("Title generation failure_callback raised", exc_info=True)
+
+        if is_rate_limit:
+            # Title generation is a background convenience. If it hits a rate limit
+            # (common for tight per-minute quotas like Code Assist), just quietly
+            # skip it rather than emitting a prominent UI warning.
+            logger.info("Title generation skipped (rate limited): %s", e)
+        else:
+            # Log at WARNING so this shows up in agent.log without debug mode.
+            logger.warning("Title generation failed: %s", e)
+            if failure_callback is not None:
+                try:
+                    failure_callback("title generation", e)
+                except Exception:
+                    logger.debug("Title generation failure_callback raised", exc_info=True)
         return None
 
 
