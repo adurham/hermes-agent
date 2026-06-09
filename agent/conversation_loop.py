@@ -3513,6 +3513,14 @@ def run_conversation(
                             agent._capture_rate_limits_from_headers(_resp_headers)
                         except Exception:
                             pass
+                    # Code Assist (google-gemini-cli) puts retry delay in
+                    # google.rpc.RetryInfo inside the JSON body, not in the
+                    # HTTP Retry-After header.  CodeAssistError.retry_after
+                    # carries the parsed value.
+                    if _retry_after is None:
+                        _ca_retry = getattr(api_error, "retry_after", None)
+                        if isinstance(_ca_retry, (int, float)) and _ca_retry > 0:
+                            _retry_after = min(float(_ca_retry), 120)
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 if is_rate_limited:
                     agent._buffer_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
