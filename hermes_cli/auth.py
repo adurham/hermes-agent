@@ -202,7 +202,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "google-gemini-cli": ProviderConfig(
         id="google-gemini-cli",
-        name="Google Gemini (OAuth)",
+        name="agy/antigravity cli",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
     ),
