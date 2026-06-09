@@ -115,14 +115,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
-    # Image downscaling for native vision attachments. Pillow lets us shrink
-    # oversized user-attached photos (35 MB phone captures → ~49 MB base64)
-    # under provider HTTP-body limits before sending — both proactively at
-    # ingestion (agent/image_routing.py) and reactively on a 413
-    # (agent/conversation_compression.py). Without it, a single large image
-    # 413s the request and no compression can recover it. Optional because
-    # text-only sessions never touch it.
-    "image.resize": ("Pillow==12.2.0",),
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
@@ -143,7 +135,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
-        "Markdown==3.10.2",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
@@ -183,6 +174,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "uvicorn[standard]==0.41.0",
         "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
     ),
+    # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
+    # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback
+    # for stripped/source-build installs that somehow dropped it. The vision
+    # call site uses prompt=False so it can never raise a blocking input()
+    # prompt mid-session (#40490).
+    "tool.vision": ("Pillow==12.2.0",),
 }
 
 
@@ -459,7 +456,23 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             "lazy installs disabled (security.allow_lazy_installs=false)"
         )
 
-    if prompt and sys.stdin.isatty() and sys.stdout.isatty():
+    # Only show the interactive confirmation when we own a TTY and
+    # prompt_toolkit isn't running.  A bare input() deadlocks when a
+    # prompt_toolkit app owns the terminal because keystrokes route to
+    # its event loop rather than stdin, so the prompt blocks forever.
+    # Under the TUI we skip the prompt and proceed — lazy installs are
+    # gated by security.allow_lazy_installs, so reaching here is
+    # already user opt-in.
+    _pt_active = False
+    if "prompt_toolkit.application.current" in sys.modules:
+        try:
+            from prompt_toolkit.application.current import get_app_or_none
+            _app = get_app_or_none()
+            _pt_active = _app is not None and getattr(_app, "is_running", False)
+        except Exception:
+            _pt_active = False
+
+    if prompt and not _pt_active and sys.stdin.isatty() and sys.stdout.isatty():
         spec_list = ", ".join(missing)
         try:
             answer = input(
