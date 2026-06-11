@@ -499,6 +499,49 @@ def convert_messages_to_anthropic(
     # owns the matching server_tool_use.
     _relocate_orphaned_tool_search_results(result)
 
+    # Anthropic's native web_search (web_search_20250305) requires the
+    # server_tool_use and its web_search_tool_result to live in the SAME
+    # assistant message, with the use immediately before the result.
+    # Compaction or message-merging can split the pair; strip orphans in
+    # either direction per message so neither half survives without its
+    # partner.
+    for _m in result:
+        if _m.get("role") != "assistant":
+            continue
+        _c = _m.get("content")
+        if not isinstance(_c, list):
+            continue
+        _ws_use_ids: set = set()
+        _ws_result_ids: set = set()
+        for _b in _c:
+            if not isinstance(_b, dict):
+                continue
+            _t = _b.get("type")
+            if _t == "server_tool_use" and _b.get("name") == "web_search":
+                _id = _b.get("id")
+                if isinstance(_id, str):
+                    _ws_use_ids.add(_id)
+            elif _t == "web_search_tool_result":
+                _ru = _b.get("tool_use_id")
+                if isinstance(_ru, str):
+                    _ws_result_ids.add(_ru)
+        _ws_orphans = _ws_use_ids.symmetric_difference(_ws_result_ids)
+        if _ws_orphans:
+            _kept_ws = [
+                _b for _b in _c
+                if not (
+                    isinstance(_b, dict)
+                    and (
+                        (_b.get("type") == "server_tool_use"
+                         and _b.get("name") == "web_search"
+                         and _b.get("id") in _ws_orphans)
+                        or (_b.get("type") == "web_search_tool_result"
+                            and _b.get("tool_use_id") in _ws_orphans)
+                    )
+                )
+            ]
+            _m["content"] = _kept_ws or [{"type": "text", "text": "(empty)"}]
+
     # Drop ``server_tool_use`` blocks whose paired result NEVER arrived
     # (stream interruption, timeout, cancel mid-response). Without this,
     # the assistant message has a use without a result, and every API
@@ -506,6 +549,14 @@ def convert_messages_to_anthropic(
     # split-but-deliverable pair gets repaired first; only truly
     # missing results trigger a drop. Operates on the wire-shape
     # ``msg["content"]`` (lists of blocks).
+    #
+    # Includes both tool_search_tool_*_tool_result ids (cross-message
+    # pairing already reconciled by the relocator above) and
+    # web_search_tool_result ids (same-message pairing already
+    # reconciled by the web_search orphan pass above) — without the
+    # latter, a server_tool_use legitimately paired with a web_search
+    # result would be misclassified as orphaned and dropped, stranding
+    # the result block and triggering a 400 on the next request.
     _result_ids_wire: set = set()
     for _m in result:
         if _m.get("role") != "assistant":
@@ -517,9 +568,12 @@ def convert_messages_to_anthropic(
             if not isinstance(_b, dict):
                 continue
             _t = _b.get("type")
-            if isinstance(_t, str) and (
+            if not isinstance(_t, str):
+                continue
+            if (
                 _t == "tool_search_tool_result"
                 or (_t.startswith("tool_search_tool_") and _t.endswith("_tool_result"))
+                or _t == "web_search_tool_result"
             ):
                 _ru = _b.get("tool_use_id")
                 if isinstance(_ru, str):

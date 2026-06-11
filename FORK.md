@@ -308,9 +308,10 @@ Fix — provider-aware priority (Claude → native, everything else → client):
 4. **`tools/web_tools.py` (soft-fork, comment only).** Corrected the stale
    `check_web_api_key` docstring to point at the real swap site.
 
-Tests: `tests/agent/test_anthropic_native_web_search.py` (22 — unit swap logic
+Tests: `tests/agent/test_anthropic_native_web_search.py` (27 — unit swap logic
 + first/third-party classification + integration through
-`build_anthropic_kwargs` for native/oauth/third-party paths). Regression:
+`build_anthropic_kwargs` for native/oauth/third-party paths + wire-shape orphan
+pairing for `web_search_tool_result` blocks, see follow-up below). Regression:
 `test_anthropic_adapter` + `test_minimax_provider` +
 `test_kimi_coding_anthropic_thinking` = 242 passed.
 
@@ -322,6 +323,60 @@ implements native web search natively, converge per the "when upstream catches
 up, take upstream" rule and drop this module + its forwarder + test. Until
 then it stays — it depends on the fork-only first-party-Anthropic / OAuth
 surface and is not upstream-bound.
+
+
+### Fork-only fix — 2026-06-10 (native web_search wire-shape orphan pairing)
+
+Follow-up to the native-web-search swap above. Putting the native tool
+definition on the wire surfaced a latent bug in the fork's
+`convert_messages_to_anthropic` orphan-stripping pass — the swap itself was
+fine, but the very next request after a successful web search 400'd:
+
+    messages.N.content.M: unexpected `tool_use_id` found in
+    `web_search_tool_result` blocks: srvtoolu_...
+    Each `web_search_tool_result` block must have a corresponding
+    `server_tool_use` block before it.
+
+Root cause: `agent/fork/anthropic_messages.py`'s wire-shape orphan pass
+(written for `tool_search_tool_*_tool_result` blocks) collected result IDs ONLY
+from the `tool_search_tool_*` family. A `server_tool_use` paired with a
+`web_search_tool_result` had its result ID missing from the set, so the use
+looked orphaned and got dropped — stranding the result block as a same-message
+orphan that Anthropic rejected on the next call. Pre-swap the path was dead
+code (no native tool on the wire = no `web_search_tool_result` blocks to
+mishandle); turning it on lit the bug.
+
+Fix (`agent/fork/anthropic_messages.py`, hard-fork — zero conflict surface):
+1. **Same-message web_search orphan pass** (new, runs before the existing
+   tool_search pass). Anthropic's input validator requires
+   `web_search_tool_result` to live in the same assistant message as its
+   `server_tool_use`, immediately before it. Per assistant message, collect
+   web_search uses and results and strip the symmetric difference — neither
+   half survives without its partner. Identifies web_search `server_tool_use`
+   blocks by `name == "web_search"`, so tool_search uses are untouched.
+2. **Cross-message result-ID set extended** to include `web_search_tool_result`
+   ids alongside `tool_search_tool_*_tool_result` ids. With (1) already
+   reconciling web_search same-message pairing, the broader set just prevents
+   a paired `server_tool_use` from being misclassified as orphaned by the
+   pre-existing tool_search drop loop.
+
+Tool_search behaviour is unchanged (its cross-message pairing still goes
+through `_relocate_orphaned_tool_search_results` first, then the same drop
+loop).
+
+Tests: 5 new in `tests/agent/test_anthropic_native_web_search.py`
+(`TestWebSearchWireShapeOrphanPairing`) — paired pair survives (direct
+regression), orphan result stripped, orphan use stripped, split pair both
+halves stripped, tool_search orphan-drop still works. Total in that file:
+27 passed. Regression: full anthropic sweep
+(`pytest tests/agent/ -k anthropic`) = 461 passed, 2 skipped.
+
+**Merge note:** same as the parent native-web-search section — both the new
+pass and the existing one live entirely in `agent/fork/anthropic_messages.py`,
+which never conflicts. If a future sync converges this module back to
+upstream's converter (extremely unlikely; the converter is the T2.2 hard-fork
+boundary), the orphan-stripping passes must be ported across as a unit (drop
+one without the other and you re-introduce this 400).
 
 
 ### Upstream sync — 2026-06-10 (187 commits, 12 conflicts)
