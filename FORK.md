@@ -324,6 +324,62 @@ then it stays — it depends on the fork-only first-party-Anthropic / OAuth
 surface and is not upstream-bound.
 
 
+### Upstream sync — 2026-06-10 (187 commits, 12 conflicts)
+
+Merge-base was 2026-06-08; pulled 187 upstream commits on branch
+`sync/upstream-2026-06-10` (tag `pre-upstream-sync-2026-06-10`). Drift now 0.
+12 conflict files, all resolved. Notable points this sync:
+
+* **The native-web-search fork feature (2026-06-10) merged with ZERO conflicts.**
+  `agent/fork/anthropic_native_web_search.py` + its test were untouched by the
+  merge (the `agent/fork/` isolation pattern working as designed); the only
+  shared touch — the 3-line forwarder in `build_anthropic_kwargs` — survived
+  intact because the actual `anthropic_adapter.py` conflict was elsewhere (the
+  `_ANTHROPIC_OUTPUT_LIMITS` dict). All 22 web-search tests green post-merge.
+  This was the live proof that the fork-safe design holds across a real sync.
+* **Conflict resolutions (keep-both unless noted):**
+  - `anthropic_adapter.py` — `_ANTHROPIC_OUTPUT_LIMITS`: kept fork's CC-mimicry
+    comment + upstream's new `claude-fable` entry.
+  - `hermes_cli/config.py` — skills dict: kept fork's `lazy_listing` +
+    upstream's new `write_approval`.
+  - `agent_runtime_helpers.py` — `AGENT_RUNTIME_POST_HOOK_TOOL_NAMES` frozenset:
+    kept fork's `hermes_load_tools`/`swarm_run` + upstream's new `read_terminal`
+    (the recurring frozenset-drift from the 2026-06-08 sync — same fix). Plus
+    the `_execute`-closure dispatch chain: kept both branches.
+  - `tool_executor.py` — same dispatch-chain keep-both (fork `hermes_load_tools`
+    + upstream `read_terminal`).
+  - `conversation_loop.py` — thinking-sig recovery: kept fork's
+    `anthropic_content_blocks` pop + upstream's `_api_stripped` counter.
+  - `chat_completion_helpers.py` — streaming reliability (fork file): kept fork's
+    cold-start tracking vars + upstream's `_stream_stale_timeout` socket-read
+    floor.
+  - `error_classifier.py`, `cli.py`, `memory_tool.py`, `test_error_classifier.py`,
+    `test_usage_pricing.py` — keep-both (independent fns/tests colliding).
+  - `cli.py` session-finalize: **converged to upstream** — upstream extracted the
+    fork's inline `invoke_hook("on_session_finalize")` into
+    `_notify_session_finalize`; took upstream's, kept the fork-only Phase-2
+    memory-extraction block beside it.
+  - `uv.lock` — regenerated via `uv lock` after pyproject merge.
+* **Real regression caught by the post-merge sweep (NOT a conflict file):**
+  `agent/title_generator.py` auto-merged into a Frankenstein — upstream's slim
+  function body wrapped with a fork-era `show_auxiliary_errors` config gate that
+  did `from agent.config import read_config`. **`agent.config` exists in neither
+  fork nor upstream**, so the import raised, got swallowed by the bare `except`,
+  and `failure_callback` silently never fired (`test_title_generator` red).
+  Fix: dropped the dead config gate, call `failure_callback` directly (matches
+  upstream's shape). This is the canonical "run the real blast radius" catch —
+  the file never conflicted, so only the test suite surfaced it.
+* **Pre-existing failures (NOT merge-caused), confirmed by re-running at the
+  pre-sync tag + in isolation:** `test_credential_pool` (3 — env-dependent on the
+  machine's real keychain `keychain_longlived` Anthropic cred), plus the
+  documented global-state-pollution flakes `test_vision_routing_31179`,
+  `test_provider_parity::...openrouter_always_wins`, `test_auxiliary_main_first`,
+  `test_display_todo_progress::test_default_skin_prefix` — all green in isolation.
+
+Verification: `tests/agent/` + `tests/run_agent/` = 5900 passed, 10 failed (all
+the pre-existing flakes above), 38 skipped. Boot smoke clean.
+
+
 ## Why a fork
 
 Adam closed PR #25234 upstream in early 2026 — it included ~28K LOC of fork
