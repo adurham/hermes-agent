@@ -22,6 +22,7 @@ will never touch them.
 | `agent/fork/stream_recovery.py` | Cold-start stale-timeout computation (`effective_stale_timeout`) — the fork's grace window before the first stream event (T2.3). |
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
 | `agent/fork/diagnostics.py` | Per-turn usage history + tools-signature hash + xAI 403 entitlement hint |
+| `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. |
 | `hermes_cli/fork_banner.py` | The fork's banner branding + git-state subsystem (carried/upstream-behind line, fork-aware agent name, HEAD-date label, fork-tree release URLs) (T2.5). Moved out of `banner.py`. |
 | `FORK.md` | This file |
 | `scripts/fork-merge-plan.py` | Pre-merge analyzer (see "Future upstream merges" below) |
@@ -253,6 +254,74 @@ with a docstring documenting the divergence. Consumer
 225 passed. **Merge note:** `mcp_tool.py` is otherwise upstream-shared; on a future
 conflict here keep the provenance-only gate (no `mcp_` prefix check) — re-adding
 upstream's prefix match would re-break fork MCP parallelism.
+
+
+### Fork-only fix — 2026-06-10 (provider-aware web search: native on Claude)
+
+The CLI kept emitting **"Web search isn't configured"** on a plain Anthropic
+setup with no third-party search key. Root cause was a half-built capability,
+not a config mistake. **Not sent upstream** (personal fork; same stance as the
+rest of this file — and it leans on the Claude Code OAuth machinery, which is
+the headline never-upstream feature).
+
+Root cause:
+- Hermes' `web_search` is a **client tool** (`tools/web_tools.py`) that the
+  agent calls and Hermes dispatches to a configured backend (firecrawl / exa /
+  parallel / tavily / searxng / brave-free / ddgs / xai).
+- On first-party Anthropic, `check_web_api_key()` reports the tool *available*
+  purely because Anthropic creds are present (`ANTHROPIC_API_KEY` / Claude Code
+  OAuth, web_tools.py ~1209), so the tool is registered and offered to the
+  model. But at dispatch `_get_search_backend()` falls back to the `firecrawl`
+  default with no key → `web_search_tool` returns "No web search provider
+  configured." Every time.
+- Anthropic exposes a **native server-side** web search tool
+  (`web_search_20250305`): the model searches inline, Anthropic runs it, and
+  results stream back as `server_tool_use` / `web_search_tool_result` blocks.
+  The adapter already had the code to STORE + reconcile those result blocks
+  (`anthropic_adapter.py` ~2230-2540 + `agent/fork/anthropic_messages.py`) —
+  but **nothing ever put the native tool definition on the request wire.** A
+  stale comment in `web_tools.py::check_web_api_key` even claimed
+  `convert_tools_to_anthropic()` "decides whether to send the native form";
+  it never did. Half-built, never reachable.
+
+Fix — provider-aware priority (Claude → native, everything else → client):
+1. **`agent/fork/anthropic_native_web_search.py` (hard-fork, new).**
+   `apply_native_web_search(anthropic_tools, base_url)` finds the client
+   `web_search` entry in the converted tools array and replaces it in place
+   with the native server-tool param dict
+   (`{"type": "web_search_20250305", "name": "web_search", "max_uses": N}`),
+   but ONLY when `is_first_party_anthropic(base_url)` (delegates to
+   `anthropic_adapter._is_third_party_anthropic_endpoint` — any non
+   `*anthropic.com*` host is third-party). Idempotent, order-preserving,
+   cache_control-preserving, never raises (degrades to the client tool on any
+   error). Scoped to first-party Anthropic only — Bedrock/Vertex Claude
+   classify as third-party here and keep the client tool until explicitly
+   opted in. `web_extract` deliberately left on the client path (its native
+   analog is a separate `web_fetch` server tool).
+2. **`agent/anthropic_adapter.py::build_anthropic_kwargs` (soft-fork, ~3 lines).**
+   A thin forwarder calls `apply_native_web_search(anthropic_tools, base_url)`
+   right after the OAuth cc-aliasing and before `_apply_tool_search`. This is
+   the only edit to an upstream-shared file.
+3. **`hermes_cli/config.py` (soft-fork).** Two `web:` keys —
+   `anthropic_native_search` (default `True`) and
+   `anthropic_native_search_max_uses` (default `5`).
+4. **`tools/web_tools.py` (soft-fork, comment only).** Corrected the stale
+   `check_web_api_key` docstring to point at the real swap site.
+
+Tests: `tests/agent/test_anthropic_native_web_search.py` (22 — unit swap logic
++ first/third-party classification + integration through
+`build_anthropic_kwargs` for native/oauth/third-party paths). Regression:
+`test_anthropic_adapter` + `test_minimax_provider` +
+`test_kimi_coding_anthropic_thinking` = 242 passed.
+
+**Merge note:** the logic is isolated in `agent/fork/` (never conflicts). The
+only upstream-shared touch is the 3-line forwarder in `build_anthropic_kwargs`
+— on conflict keep ours (the `apply_native_web_search(...)` call must stay
+between the OAuth cc-alias block and `_apply_tool_search`). If upstream ever
+implements native web search natively, converge per the "when upstream catches
+up, take upstream" rule and drop this module + its forwarder + test. Until
+then it stays — it depends on the fork-only first-party-Anthropic / OAuth
+surface and is not upstream-bound.
 
 
 ## Why a fork

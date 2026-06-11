@@ -1028,6 +1028,14 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        # FORK: on first-party Anthropic (Claude) endpoints, use Anthropic's
+        # native server-side web_search_20250305 tool inline instead of the
+        # client web_search tool + a third-party backend. Default on; set
+        # false to force the client tool even on Claude. Non-Claude providers
+        # always use the client tool regardless of this flag.
+        # See agent/fork/anthropic_native_web_search.py.
+        "anthropic_native_search": True,
+        "anthropic_native_search_max_uses": 5,  # per-turn cap for native searches
     },
 
     "browser": {
@@ -3721,6 +3729,69 @@ def _set_nested(config, dotted_key: str, value):
         current[last] = value
 
 
+_MISSING = object()
+
+
+def _lookup_default(defaults: dict, dotted_key: str):
+    """Return the DEFAULT_CONFIG value at a dotted key path, or ``_MISSING``.
+
+    Used by ``set_config_value`` to learn the *intended type* of a key so a
+    CLI string can be coerced correctly (e.g. a list-typed key like
+    ``agent.disabled_toolsets`` must become a YAML list, not a comma string).
+    Numeric path segments (list indices) abort the lookup — we only resolve
+    types for statically-known dict paths, not into list elements.
+    """
+    cur = defaults
+    for part in dotted_key.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return _MISSING
+    return cur
+
+
+def _coerce_config_value(key: str, value: str, defaults: dict):
+    """Coerce a CLI-supplied string to the right config type.
+
+    Order of resolution:
+      1. Explicit JSON (``[...]`` / ``{...}``) is parsed as-is — lets callers
+         pass lists/dicts unambiguously, e.g. ``'["a","b"]'``.
+      2. If the key is list-typed in DEFAULT_CONFIG, split a comma-separated
+         string into a list (``a,b,c`` → ``["a","b","c"]``; empty → ``[]``).
+         This fixes the bug where ``hermes config set agent.disabled_toolsets
+         a,b,c`` stored a single string, silently disabling enforcement.
+      3. Otherwise fall back to scalar coercion (bool / int / float / str).
+
+    Indexed scalar writes (e.g. ``custom_providers.0.api_key``) are
+    unaffected: their default lookup returns ``_MISSING`` (numeric segment),
+    so they take the scalar path.
+    """
+    stripped = value.strip()
+    if stripped[:1] in ("[", "{"):
+        import json
+        try:
+            return json.loads(stripped)
+        except (ValueError, TypeError):
+            pass  # not valid JSON — fall through to other coercions
+
+    default_at_key = _lookup_default(defaults, key)
+    if isinstance(default_at_key, list):
+        if stripped == "":
+            return []
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    low = value.lower()
+    if low in {"true", "yes", "on"}:
+        return True
+    if low in {"false", "no", "off"}:
+        return False
+    if value.isdigit():
+        return int(value)
+    if value.replace(".", "", 1).isdigit():
+        return float(value)
+    return value
+
+
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).
@@ -6192,17 +6263,13 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    # Convert the CLI string to the right type. List-typed keys (e.g.
+    # agent.disabled_toolsets, toolsets) parse comma/JSON into an actual
+    # list — previously they were stored as a raw comma-string, which
+    # silently broke any consumer that iterates the value as a list.
+    coerced = _coerce_config_value(key, value, DEFAULT_CONFIG)
 
-    _set_nested(user_config, key, value)
+    _set_nested(user_config, key, coerced)
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
