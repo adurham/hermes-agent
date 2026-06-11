@@ -3358,6 +3358,14 @@ def build_anthropic_kwargs(
             from agent import cc_aliases as _cc
             if _cc.is_enabled():
                 anthropic_tools = _cc.replace_with_cc_canonical(anthropic_tools)
+        # FORK: provider-aware web search. On first-party Anthropic (Claude),
+        # swap the client `web_search` tool for Anthropic's native server-side
+        # web_search_20250305 tool so the model searches inline. Non-Claude
+        # endpoints keep the client tool. No-op when disabled / no web_search
+        # present / not first-party. See agent/fork/anthropic_native_web_search.py
+        # and FORK.md.
+        from agent.fork.anthropic_native_web_search import apply_native_web_search
+        anthropic_tools = apply_native_web_search(anthropic_tools, base_url)
         anthropic_tools = _apply_tool_search(anthropic_tools, tool_search_config)
         if cache_tools:
             from agent.prompt_caching import apply_anthropic_tools_cache_control

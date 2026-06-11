@@ -1186,12 +1186,16 @@ def check_web_api_key() -> bool:
     """Check whether the configured web backend is available.
 
     Anthropic native web_search (server-side) is also a valid backend —
-    it requires no third-party key, only that we're running against an
-    Anthropic endpoint. Detection is loose: any of the standard Anthropic
-    credential paths counts. The adapter's convert_tools_to_anthropic()
-    is what actually decides whether to send the native form or the
-    third-party form; this function only gates whether the schema is
-    exposed to the model at all.
+    it requires no third-party key, only that we're running against a
+    first-party Anthropic (Claude) endpoint. Detection is loose: any of the
+    standard Anthropic credential paths counts. This function only gates
+    whether the client `web_search` schema is exposed to the model at all;
+    the actual native-vs-client swap happens in the adapter at request-build
+    time — agent/fork/anthropic_native_web_search.apply_native_web_search()
+    (called from anthropic_adapter.build_anthropic_kwargs) replaces the
+    client tool entry with Anthropic's native web_search_20250305 server tool
+    when the endpoint is first-party Anthropic. On non-Claude providers the
+    client tool stays and dispatches to the configured backend as before.
     """
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai", "claude-code"}:
