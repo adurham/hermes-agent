@@ -170,11 +170,7 @@ def generate_title(
                 logger.warning("Title generation failed: %s", e)
                 if failure_callback is not None:
                     try:
-                        from agent.config import read_config
-                        cfg = read_config()
-                        # Allow suppression via config if the user wants.
-                        if cfg.get("ui", {}).get("show_auxiliary_errors", True):
-                            failure_callback("title generation", e)
+                        failure_callback("title generation", e)
                     except Exception:
                         logger.debug("Title generation failure_callback raised", exc_info=True)
             return None

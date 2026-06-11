@@ -54,8 +54,9 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
     # tool loading + multi-agent swarm). They go through the same
     # _run_agent_tool_execution_middleware path, so the executor fires their
     # post_tool_call hook — they must be listed here or it double-fires.
-    {"todo", "session_search", "memory", "clarify", "delegate_task",
-     "hermes_load_tools", "swarm_run"}
+    # read_terminal is upstream's; keep it alongside the two fork-only names.
+    {"todo", "session_search", "memory", "clarify", "read_terminal",
+     "delegate_task", "hermes_load_tools", "swarm_run"}
 )
 
 
@@ -1824,6 +1825,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     promoted=agent._promoted_tools,
                     available_names=set(agent.valid_tool_names or ()),
                     deferred_names=agent._currently_deferred_names(),
+                ),
+                next_args,
+            )
+    elif function_name == "read_terminal":
+        def _execute(next_args: dict) -> Any:
+            from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool
+            return _finish_agent_tool(
+                _read_terminal_tool(
+                    start_line=next_args.get("start_line"),
+                    count=next_args.get("count"),
+                    callback=getattr(agent, "read_terminal_callback", None),
                 ),
                 next_args,
             )
