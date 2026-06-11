@@ -80,6 +80,67 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=False):
             assert decide_image_input_mode("openrouter", "some-non-vision-model", cfg) == "native"
 
+    def test_native_capable_model_attaches_natively_even_with_exo_aux_vision(self):
+        """Regression: an explicit (exo) aux vision backend must NOT suppress
+        native vision on a model that can already see (e.g. Claude). The old
+        code returned 'text' here and shipped every image to the aux model."""
+        cfg = {
+            "auxiliary": {"vision": {
+                "provider": "custom:exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+            }},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-opus-4-8", cfg) == "native"
+
+    def test_exo_nonvision_model_delegates_to_aux_vision(self):
+        """DSv4 on exo (no native vision) + explicit exo aux vision → text
+        (delegate the image to the exo-hosted vision model)."""
+        cfg = {
+            "auxiliary": {"vision": {
+                "provider": "custom:exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+            }},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            # work machine: provider string is "exo"
+            assert decide_image_input_mode("exo", "mlx-community/DeepSeek-V4-Flash", cfg) == "text"
+            # personal machine: provider string is "custom:exo"
+            assert decide_image_input_mode("custom:exo", "mlx-community/DeepSeek-V4-Flash", cfg) == "text"
+
+    def test_nonexo_nonvision_model_does_not_route_to_exo_delegate(self):
+        """A non-exo, non-vision model must NOT be pulled into the exo vision
+        delegate. With native capability unknown/false it native-attaches and
+        lets its own provider handle/reject the image — the exo cluster stays
+        out of non-exo sessions (Adam's explicit scoping)."""
+        cfg = {
+            "auxiliary": {"vision": {
+                "provider": "custom:exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+            }},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("openrouter", "some-text-only-model", cfg) == "native"
+
+    def test_exo_bare_custom_runtime_matched_by_base_url(self):
+        """When the runtime collapses the provider to bare 'custom', exo is
+        identified by matching the active main base_url against the configured
+        exo provider entry."""
+        cfg = {
+            "model": {"provider": "custom", "base_url": "http://192.168.86.201:52415/v1"},
+            "providers": {"exo": {"base_url": "http://192.168.86.201:52415/v1"}},
+            "auxiliary": {"vision": {
+                "provider": "custom:exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+            }},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("custom", "mlx-community/DeepSeek-V4-Flash", cfg) == "text"
+
     def test_explicit_text_overrides_everything(self):
         cfg = {"agent": {"image_input_mode": "text"}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
@@ -97,11 +158,14 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
-    def test_auto_respects_aux_vision_override_even_for_vision_model(self):
-        """If the user configured a dedicated vision backend, don't bypass it."""
+    def test_nonexo_aux_vision_override_is_ignored_for_routing(self):
+        """A non-exo aux vision backend (e.g. OpenRouter Gemini) no longer
+        forces text mode. A native-capable main model attaches natively; the
+        exo-only delegate scoping means a non-exo aux backend doesn't reroute
+        a vision-capable model through the text pipeline."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
-            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
@@ -279,15 +343,27 @@ class TestAutoModeRespectsOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "unknown", {}) == "text"
 
-    def test_explicit_aux_vision_override_still_wins(self):
-        # If the user has configured a dedicated vision aux backend, respect
-        # it even when supports_vision: true is also set.
+    def test_vision_capable_model_attaches_natively_despite_nonexo_aux(self):
+        # Native capability is now checked FIRST: a model declared
+        # supports_vision: true attaches natively even when a (non-exo) aux
+        # vision backend is configured. The aux delegate is reserved for
+        # models that can't see, and only when the provider is exo.
         cfg = {
             "model": {"supports_vision": True},
             "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
         }
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
-            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "text"
+            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
+
+    def test_nonvision_custom_model_with_nonexo_aux_does_not_delegate(self):
+        # Non-vision model, but the aux backend is NOT exo → don't route to it;
+        # native-attach instead (exo-only delegate scoping).
+        cfg = {
+            "model": {"supports_vision": False},
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", "some-text-only", cfg) == "native"
 
 
 # ─── build_native_content_parts ──────────────────────────────────────────────

@@ -16,14 +16,20 @@ The decision is made once per message turn by :func:`decide_image_input_mode`.
 It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
 | ``text``, default ``auto``) and the active model's capability metadata.
 
-In ``auto`` mode:
-  - If the user has explicitly configured ``auxiliary.vision.provider``
-    (i.e. not ``auto`` and not empty), we assume they want the text pipeline
-    regardless of the main model — they've opted in to a specific vision
-    backend for a reason (cost, quality, local-only, etc.).
-  - Otherwise, if the active model reports ``supports_vision=True`` in its
-    models.dev metadata, we attach natively.
-  - Otherwise (non-vision model, no explicit override), we fall back to text.
+In ``auto`` mode (native capability is checked FIRST):
+  - If the active model reports ``supports_vision=True`` (config override or
+    models.dev metadata), we attach natively — a model that can see the
+    pixels directly always beats a lossy text summary, even when a dedicated
+    auxiliary vision backend is configured.
+  - Otherwise the main model cannot see. If the user has explicitly
+    configured an ``auxiliary.vision`` backend AND the active provider is the
+    local exo cluster, we use the text pipeline (delegate the image to the
+    exo-hosted vision model, e.g. DeepSeek-V4-Flash → Qwen3.6). The exo
+    vision delegate is deliberately scoped to exo sessions — a non-exo,
+    non-vision model native-attaches instead so we never silently pull the
+    exo cluster into an unrelated provider's request.
+  - Otherwise (non-vision model, no explicit override), we fall back to text
+    with provider auto-detection (the pre-existing behaviour).
 
 This keeps ``vision_analyze`` surfaced as a tool in every session — skills
 and agent flows that chain it (browser screenshots, deeper inspection of
@@ -286,6 +292,53 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     return True
 
 
+# Provider-name forms that identify the local exo cluster across both of
+# Adam's machines: work declares it as ``providers.exo`` (active provider
+# string ``exo``), personal declares it under ``custom_providers`` (active
+# provider string ``custom:exo``). A bare ``custom`` runtime is matched by
+# cross-checking the active main ``base_url`` against the exo provider entry.
+_EXO_PROVIDER_NAMES = frozenset({"exo", "custom:exo"})
+
+
+def _provider_is_exo(provider: Optional[str], cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """True when the active main provider is the local exo cluster.
+
+    Vision delegation to the exo-hosted vision model must fire ONLY when the
+    main model is itself served by exo — we never want a non-exo session
+    (Claude, OpenRouter, etc.) to silently route its images into the cluster.
+    """
+    p = (provider or "").strip().lower()
+    if p in _EXO_PROVIDER_NAMES:
+        return True
+
+    # Bare "custom" runtime: identify exo by matching the active main
+    # base_url against the configured exo provider's base_url.
+    if p == "custom" and isinstance(cfg, dict):
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        main_base = str((model_cfg or {}).get("base_url") or "").strip().lower()
+        if not main_base:
+            return False
+
+        exo_base = ""
+        providers_cfg = cfg.get("providers")
+        if isinstance(providers_cfg, dict) and isinstance(providers_cfg.get("exo"), dict):
+            exo_base = str(providers_cfg["exo"].get("base_url") or "").strip().lower()
+        if not exo_base:
+            custom_providers = cfg.get("custom_providers")
+            if isinstance(custom_providers, list):
+                for entry in custom_providers:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = str(entry.get("name") or "").strip().lower()
+                    if name in _EXO_PROVIDER_NAMES:
+                        exo_base = str(entry.get("base_url") or "").strip().lower()
+                        break
+        if main_base and exo_base and main_base == exo_base:
+            return True
+
+    return False
+
+
 def _lookup_supports_vision(
     provider: str,
     model: str,
@@ -337,12 +390,32 @@ def decide_image_input_mode(
         return "text"
 
     # auto
-    if _explicit_aux_vision_override(cfg):
-        return "text"
-
+    #
+    # Native capability is checked FIRST: a vision-capable main model
+    # (Claude, Gemini, a VL model, etc.) sees the pixels directly, which is
+    # always higher fidelity than a lossy text summary. An explicit
+    # auxiliary.vision backend must NOT suppress native vision on a model
+    # that can already see — that was the old bug (every image, even on
+    # Claude, got shipped to the aux vision model).
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+
+    # The main model cannot see natively (supports is False or None).
+    if _explicit_aux_vision_override(cfg):
+        # A dedicated auxiliary vision backend is configured. Delegate to it
+        # ONLY when the active provider is the local exo cluster — that keeps
+        # the exo-hosted vision delegate scoped to exo sessions
+        # (e.g. DeepSeek-V4-Flash → Qwen3.6). For a non-exo, non-vision main
+        # model we deliberately do NOT pull the exo cluster into the request;
+        # we native-attach instead and let that provider accept or reject the
+        # image. (Adam's explicit scoping: vision delegation is exo-only.)
+        if _provider_is_exo(provider, cfg):
+            return "text"
+        return "native"
+
+    # No explicit aux backend configured: preserve the historical default —
+    # text pipeline via vision_analyze provider auto-detection.
     return "text"
 
 
