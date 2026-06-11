@@ -220,3 +220,177 @@ class TestBuildAnthropicKwargsNativeWebSearch:
         ws = [t for t in kwargs["tools"] if t.get("name") == "web_search"]
         assert len(ws) == 1
         assert ws[0]["type"] == _NATIVE_TYPE
+
+
+# ── wire-shape orphan pairing for web_search_tool_result ─────────────────────
+#
+# Regression for HTTP 400:
+#   messages.N.content.M: unexpected `tool_use_id` found in
+#   `web_search_tool_result` blocks: srvtoolu_...
+#   Each `web_search_tool_result` block must have a corresponding
+#   `server_tool_use` block before it.
+#
+# Anthropic's native web_search requires the server_tool_use and the
+# web_search_tool_result to be in the SAME assistant message, with the
+# use immediately before the result. The orphan-stripping pass in
+# convert_messages_to_anthropic previously only registered result IDs
+# from tool_search_tool_*_tool_result blocks, so a server_tool_use
+# paired with a web_search_tool_result looked orphaned and was dropped,
+# stranding the result and 400ing the next request.
+
+
+def _server_tool_use(tu_id: str, name: str = "web_search"):
+    return {
+        "type": "server_tool_use",
+        "id": tu_id,
+        "name": name,
+        "input": {"query": "x"},
+    }
+
+
+def _web_search_result(tu_id: str):
+    return {
+        "type": "web_search_tool_result",
+        "tool_use_id": tu_id,
+        "content": [
+            {
+                "type": "web_search_result",
+                "url": "https://example.com/",
+                "title": "x",
+                "page_age": None,
+                "encrypted_content": "enc",
+            }
+        ],
+    }
+
+
+class TestWebSearchWireShapeOrphanPairing:
+    def test_paired_use_and_result_in_same_message_survive(self):
+        """The exact shape Anthropic returns for native web_search must
+        round-trip through convert_messages_to_anthropic unmodified —
+        otherwise the next API call gets a 400 'web_search_tool_result
+        must have a corresponding server_tool_use block before it'."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "search for X"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": [
+                    {"type": "text", "text": "Searching."},
+                    _server_tool_use("srvtoolu_paired"),
+                    _web_search_result("srvtoolu_paired"),
+                    {"type": "text", "text": "Done."},
+                ],
+            },
+            {"role": "user", "content": "thanks"},
+        ]
+        _, out = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in out if m["role"] == "assistant")
+        types = [b.get("type") for b in assistant["content"]]
+        assert "server_tool_use" in types
+        assert "web_search_tool_result" in types
+        stu_idx = types.index("server_tool_use")
+        # API requires immediate-before pairing.
+        assert assistant["content"][stu_idx + 1]["type"] == "web_search_tool_result"
+        assert assistant["content"][stu_idx + 1]["tool_use_id"] == "srvtoolu_paired"
+
+    def test_orphan_result_without_use_in_same_message_is_stripped(self):
+        """If a web_search_tool_result somehow lands without its
+        server_tool_use in the same message (compaction artefact, etc.),
+        strip the result so the API doesn't 400."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": [
+                    {"type": "text", "text": "Answer."},
+                    _web_search_result("srvtoolu_orphan"),
+                ],
+            },
+        ]
+        _, out = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in out if m["role"] == "assistant")
+        types = [b.get("type") for b in assistant["content"]]
+        assert "web_search_tool_result" not in types
+
+    def test_orphan_use_without_result_in_same_message_is_stripped(self):
+        """A native-web_search server_tool_use without its result in the
+        same message would 400 too — strip it."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": [
+                    {"type": "text", "text": "Searching."},
+                    _server_tool_use("srvtoolu_lonely"),
+                ],
+            },
+        ]
+        _, out = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in out if m["role"] == "assistant")
+        types = [b.get("type") for b in assistant["content"]]
+        assert "server_tool_use" not in types
+
+    def test_split_pair_across_messages_both_halves_stripped(self):
+        """If a pair gets split across assistant messages, both halves
+        are orphans and both must be stripped — neither alone is valid."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": [
+                    _server_tool_use("srvtoolu_split"),
+                ],
+            },
+            {"role": "user", "content": "?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": [
+                    _web_search_result("srvtoolu_split"),
+                    {"type": "text", "text": "done"},
+                ],
+            },
+        ]
+        _, out = convert_messages_to_anthropic(messages)
+        all_types = [
+            b.get("type")
+            for m in out
+            if m["role"] == "assistant" and isinstance(m["content"], list)
+            for b in m["content"]
+        ]
+        assert "server_tool_use" not in all_types
+        assert "web_search_tool_result" not in all_types
+
+    def test_tool_search_server_tool_use_still_stripped_when_unpaired(self):
+        """Don't regress the original tool_search orphan-drop: a
+        tool_search server_tool_use with no matching result anywhere
+        must still be stripped."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": [
+                    _server_tool_use("srvtoolu_ts", name="tool_search_tool_regex"),
+                    {"type": "text", "text": "answer"},
+                ],
+            },
+        ]
+        _, out = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in out if m["role"] == "assistant")
+        types = [b.get("type") for b in assistant["content"]]
+        assert "server_tool_use" not in types
