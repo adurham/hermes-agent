@@ -2064,6 +2064,42 @@ def _strip_markdown_syntax(text: str) -> str:
     return plain.strip("\n")
 
 
+# Special-token control markup that some open-weight backends can leak into the
+# assistant *content* stream when their tool-call parser fails on a malformed
+# block. These are model control tokens, never meant to reach the user:
+#   - DeepSeek V3.2 / V4 DSML: ``<｜DSML｜tool_calls>``, ``<｜DSML｜invoke …>``,
+#     ``<｜DSML｜parameter …>`` (fullwidth-bar ｜ = U+FF5C). Seen leaking via
+#     exo's OpenAI-compatible endpoint when DSv4 parrots a prior tool result
+#     inside a tool_calls wrapper.
+# The owning backend (exo) is the primary fix site; this is a display-side
+# safety net so a leak from ANY backend never paints raw control tokens.
+_DSML_BAR = "\uff5c"  # ｜ U+FF5C FULLWIDTH VERTICAL LINE
+# Well-formed DSML tag: <｜DSML｜name ...> or </｜DSML｜name>. Name is word-like
+# so a stray ``<｜DSML｜`` glued to prose is left to the orphan pass below.
+_LEAKED_DSML_TAG_RE = re.compile(
+    rf"</?{re.escape(_DSML_BAR)}DSML{re.escape(_DSML_BAR)}\w+(?:\s+[^>]*)?>"
+)
+# Orphaned DSML sentinel (optional leading '<' / '</') with no valid tag.
+_LEAKED_DSML_ORPHAN_RE = re.compile(
+    rf"(?:<\s*/?\s*)?{re.escape(_DSML_BAR)}DSML{re.escape(_DSML_BAR)}"
+)
+
+
+def _strip_special_token_markup(text: str) -> str:
+    """Strip leaked model control-token markup from display text.
+
+    Defense-in-depth: if a backend's tool-call parser fails and leaks raw
+    control tokens (e.g. DeepSeek ``<｜DSML｜…>``) into the content stream,
+    remove them here so they never render in the response box. Surrounding
+    prose is preserved — only the special-token markup is removed.
+    """
+    if not text or _DSML_BAR not in text:
+        return text
+    text = _LEAKED_DSML_TAG_RE.sub("", text)
+    text = _LEAKED_DSML_ORPHAN_RE.sub("", text)
+    return text
+
+
 _WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(
     r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*"
 )
@@ -4971,6 +5007,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _tc = getattr(self, "_stream_text_ansi", "")
 
         def _emit_one(printed_line: str) -> None:
+            # Safety net: strip any leaked model control-token markup (e.g.
+            # DeepSeek ``<｜DSML｜…>``) so a backend tool-call-parser leak never
+            # paints raw special tokens into the response box.
+            printed_line = _strip_special_token_markup(printed_line)
             _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
 
         def _flush_table_buf() -> None:
@@ -5053,10 +5093,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 joined = _strip_markdown_syntax(joined)
             block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
+                ln = _strip_special_token_markup(ln)
                 _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
 
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
+            line = _strip_special_token_markup(line)
             _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
             self._stream_buf = ""
 
