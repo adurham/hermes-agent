@@ -2184,6 +2184,32 @@ _OUTPUT_HISTORY_SUPPRESSED = False
 _OUTPUT_HISTORY_MAX_LINES = 200
 _OUTPUT_HISTORY = deque(maxlen=_OUTPUT_HISTORY_MAX_LINES)
 
+# ── Cross-thread streaming coalescer ─────────────────────────────────────
+# When _cprint is called from a non-loop thread (the agent worker thread that
+# drives token streaming, or the process_loop), it cannot print directly —
+# it must hop to the app's event loop via ``run_in_terminal``.  That helper
+# is heavyweight and *strictly serialized*: each call chains on the previous
+# one (prompt_toolkit's ``in_terminal`` awaits ``app._running_in_terminal_f``),
+# waits for a cursor-position report (a full terminal round-trip — costly over
+# SSH), and erases+redraws the whole app region.  Scheduling one per streamed
+# line means that under a fast token stream the coroutines queue faster than
+# they drain; the reasoning block appears to truncate mid-sentence and then
+# floods in one burst the moment the model pauses (tool-call build / next
+# request), while the elapsed timer keeps ticking because it repaints on the
+# app's own render loop — a separate path.  (Same root cause class as the
+# resize-replay batching at ``_replay_output_history``.)
+#
+# Fix: buffer cross-thread lines and drain the whole pending batch through a
+# SINGLE ``run_in_terminal`` per loop service.  ``print_formatted_text``
+# appends a trailing newline, so emitting N lines joined by "\n" in one call
+# is visually identical to N separate calls — but collapses N CPR/erase/redraw
+# cycles into one, so streamed output flows continuously regardless of rate.
+# One global FIFO keeps every cross-thread emission in submission order
+# (box frames, reasoning lines, response lines all share it).
+_CPRINT_COALESCE_LOCK = threading.Lock()
+_CPRINT_COALESCE_BUF: list[str] = []
+_CPRINT_COALESCE_PENDING = False
+
 
 def _coerce_output_history_limit(value) -> int:
     try:
@@ -2334,37 +2360,65 @@ def _cprint(text: str):
         _pt_print(_PT_ANSI(text))
         return
 
-    # Cross-thread emission: ask the app's event loop to schedule a
-    # ``run_in_terminal`` that wraps ``_pt_print``.  This hides the
-    # prompt, prints, and redraws.  Fire-and-forget — if scheduling
-    # fails we fall back to a direct print so the line isn't lost.
-    def _schedule():
+    # Cross-thread emission: buffer the line and ask the app's event loop
+    # to schedule a single ``run_in_terminal`` drain.  ``run_in_terminal``
+    # hides the prompt, prints, and redraws — and is strictly serialized
+    # with a per-call cursor-position round-trip (see the coalescer note by
+    # the module globals).  Scheduling one per streamed line stalls fast
+    # token streams; instead, every line that arrives before the drain runs
+    # rides the SAME run_in_terminal as one joined payload.  Fire-and-forget
+    # — if scheduling fails we flush directly so no line is lost.
+    global _CPRINT_COALESCE_PENDING
+    schedule = False
+    with _CPRINT_COALESCE_LOCK:
+        _CPRINT_COALESCE_BUF.append(text)
+        if not _CPRINT_COALESCE_PENDING:
+            _CPRINT_COALESCE_PENDING = True
+            schedule = True
+    if not schedule:
+        # A drain is already queued; this line joins its batch.
+        return
+
+    def _drain():
+        # Pull everything buffered so far and emit as one payload.
+        global _CPRINT_COALESCE_PENDING
+        with _CPRINT_COALESCE_LOCK:
+            pending = list(_CPRINT_COALESCE_BUF)
+            _CPRINT_COALESCE_BUF.clear()
+            _CPRINT_COALESCE_PENDING = False
+        if not pending:
+            return
+        block = "\n".join(pending)
         # run_in_terminal() may return either:
         #   • a coroutine / Future (prompt_toolkit ≥ 3.0) — must be scheduled
         #     via ensure_future so the coroutine is actually awaited; calling
         #     it bare would leave it unawaited and silently drop the output
         #     (fixes #23185 Bug A).
-        #   • None (some mocks / older PT builds) — just call the inner
-        #     function directly since PT already executed it synchronously.
+        #   • None (some mocks / older PT builds) — PT already executed it
+        #     synchronously, so nothing more to do.
         # Do NOT fall back to a bare _pt_print when ensure_future raises,
         # because run_in_terminal already invoked the lambda in that case
-        # (the mock path), which would double-print the line.
+        # (the mock path), which would double-print the block.
         try:
             import asyncio as _aio
             import inspect as _inspect
-            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(block)))
             if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
                 _aio.ensure_future(coro)
-            # else: run_in_terminal ran the lambda synchronously; nothing more
-            # to do (double-scheduling would print twice).
         except Exception:
-            pass  # best-effort; the line may already have been printed
+            pass  # best-effort; the block may already have been printed
 
     try:
-        loop.call_soon_threadsafe(_schedule)
+        loop.call_soon_threadsafe(_drain)
     except Exception:
+        # Loop unreachable — flush whatever we buffered directly so no line
+        # is lost, and clear the pending flag so future calls re-arm.
+        with _CPRINT_COALESCE_LOCK:
+            pending = list(_CPRINT_COALESCE_BUF)
+            _CPRINT_COALESCE_BUF.clear()
+            _CPRINT_COALESCE_PENDING = False
         try:
-            _pt_print(_PT_ANSI(text))
+            _pt_print(_PT_ANSI("\n".join(pending)))
         except Exception:
             pass
 
