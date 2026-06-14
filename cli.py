@@ -4937,6 +4937,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         inner = self._stream_prefilt[:idx]
                         if inner:
                             self._stream_reasoning_delta(inner)
+                    # Close the reasoning box NOW — content after the close
+                    # tag should not be deferred while the box is still open.
+                    # _close_reasoning_box() flushes _reasoning_buf, closes
+                    # the box frame, and drains _deferred_content so reply
+                    # tokens flow straight to _emit_stream_text.
+                    self._close_reasoning_box()
                     after = self._stream_prefilt[idx + len(tag):]
                     self._stream_prefilt = ""
                     # Process remaining text after close tag through full
