@@ -4791,11 +4791,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Emit complete lines, and force-flush long partial lines so
         # reasoning is visible in real-time even without newlines.
+        # Indent by _STREAM_PAD so reasoning text sits inside the box frame,
+        # matching the response box (which pads content the same way) instead
+        # of rendering flush against the left border.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
+            _cprint(f"{_STREAM_PAD}{_DIM}{line}{_RST}")
         if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            _cprint(f"{_STREAM_PAD}{_DIM}{self._reasoning_buf}{_RST}")
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
@@ -4804,7 +4807,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
-                _cprint(f"{_DIM}{buf}{_RST}")
+                _cprint(f"{_STREAM_PAD}{_DIM}{buf}{_RST}")
                 self._reasoning_buf = ""
             w = self._scrollback_box_width()
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
@@ -14896,7 +14899,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if not self._app:
                     time.sleep(0.1)
                     continue
-                if self._command_running:
+                if self._command_running or self._agent_running:
+                    # Repaint during a slash command OR an active agent turn so
+                    # the status bar reflects live state — notably the context
+                    # token counter, which steps up as each tool-cycle API call
+                    # returns (update_from_response). Without a periodic repaint
+                    # the new count is computed but not shown until some other
+                    # event invalidates, so the counter looked frozen until the
+                    # turn ended. Safe here because the turn is already painting
+                    # streamed output; the idle-viewport concern below applies
+                    # only when nothing else is repainting.
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:
