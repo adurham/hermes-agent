@@ -24,7 +24,16 @@ import cli
 @pytest.fixture(autouse=True)
 def reset_output_history():
     cli._configure_output_history(False, 200)
+    # Reset the cross-thread coalescer between tests — it's module-global
+    # state (buffer + pending flag) and a test that schedules a drain but
+    # never runs it would otherwise leak a stale pending flag into the next.
+    with cli._CPRINT_COALESCE_LOCK:
+        cli._CPRINT_COALESCE_BUF.clear()
+        cli._CPRINT_COALESCE_PENDING = False
     yield
+    with cli._CPRINT_COALESCE_LOCK:
+        cli._CPRINT_COALESCE_BUF.clear()
+        cli._CPRINT_COALESCE_PENDING = False
     cli._configure_output_history(True, 200)
 
 
@@ -118,6 +127,148 @@ def test_cprint_bg_thread_schedules_on_app_loop(monkeypatch):
 
     # And run_in_terminal's inner func should have emitted a pt_print.
     assert direct_prints == ["💾 Self-improvement review: Skill updated"]
+
+
+def test_cprint_bg_thread_coalesces_burst_into_single_drain(monkeypatch):
+    """A burst of cross-thread lines before the drain runs → ONE drain
+    scheduled, ONE run_in_terminal, lines joined into one payload.
+
+    This is the streaming-stall fix: each line must NOT pay its own
+    serialized run_in_terminal (cursor-position round-trip + erase/redraw).
+    """
+    scheduled = []
+    direct_prints = []
+
+    monkeypatch.setattr(cli, "_pt_print", lambda x: direct_prints.append(x))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *args):
+            scheduled.append(cb)
+
+    fake_loop = FakeLoop()
+    fake_current_loop = SimpleNamespace(is_running=lambda: True)
+    fake_asyncio = types.ModuleType("asyncio")
+
+    class _Policy:
+        def get_event_loop(self):
+            return fake_current_loop  # NOT the app loop → cross-thread
+
+    fake_asyncio.get_event_loop_policy = lambda: _Policy()
+    monkeypatch.setitem(sys.modules, "asyncio", fake_asyncio)
+
+    fake_app = SimpleNamespace(_is_running=True, loop=fake_loop)
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: fake_app
+
+    run_in_terminal_calls = []
+
+    def _fake_run_in_terminal(func, **kw):
+        run_in_terminal_calls.append(func)
+        func()
+        return None
+
+    fake_pt_app.run_in_terminal = _fake_run_in_terminal
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    # Three lines arrive back-to-back BEFORE the loop services the drain.
+    cli._cprint("line-1")
+    cli._cprint("line-2")
+    cli._cprint("line-3")
+
+    # Only the first call arms a drain; the other two ride its batch.
+    assert len(scheduled) == 1
+    assert run_in_terminal_calls == []  # not drained until the loop ticks
+
+    # Loop services the single scheduled drain.
+    scheduled[0]()
+
+    # ONE run_in_terminal, ONE joined payload — not three.
+    assert len(run_in_terminal_calls) == 1
+    assert direct_prints == ["line-1\nline-2\nline-3"]
+
+
+def test_cprint_bg_thread_rearms_after_drain(monkeypatch):
+    """After a drain completes, a later line arms a fresh drain (the
+    pending flag is cleared so streaming keeps flowing turn after turn)."""
+    scheduled = []
+    direct_prints = []
+
+    monkeypatch.setattr(cli, "_pt_print", lambda x: direct_prints.append(x))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *args):
+            scheduled.append(cb)
+
+    fake_loop = FakeLoop()
+    fake_current_loop = SimpleNamespace(is_running=lambda: True)
+    fake_asyncio = types.ModuleType("asyncio")
+
+    class _Policy:
+        def get_event_loop(self):
+            return fake_current_loop
+
+    fake_asyncio.get_event_loop_policy = lambda: _Policy()
+    monkeypatch.setitem(sys.modules, "asyncio", fake_asyncio)
+
+    fake_app = SimpleNamespace(_is_running=True, loop=fake_loop)
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: fake_app
+    fake_pt_app.run_in_terminal = lambda func, **kw: (func(), None)[1]
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    cli._cprint("a")
+    scheduled[0]()  # drain batch 1
+    cli._cprint("b")  # should re-arm a NEW drain
+    assert len(scheduled) == 2
+    scheduled[1]()  # drain batch 2
+
+    assert direct_prints == ["a", "b"]
+
+
+def test_cprint_bg_thread_loop_unreachable_flushes_buffer(monkeypatch):
+    """call_soon_threadsafe raising → buffered lines are flushed directly
+    so nothing is lost, and the pending flag is cleared."""
+    direct_prints = []
+
+    monkeypatch.setattr(cli, "_pt_print", lambda x: direct_prints.append(x))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *args):
+            raise RuntimeError("loop gone")
+
+    fake_loop = FakeLoop()
+    fake_current_loop = SimpleNamespace(is_running=lambda: True)
+    fake_asyncio = types.ModuleType("asyncio")
+
+    class _Policy:
+        def get_event_loop(self):
+            return fake_current_loop
+
+    fake_asyncio.get_event_loop_policy = lambda: _Policy()
+    monkeypatch.setitem(sys.modules, "asyncio", fake_asyncio)
+
+    fake_app = SimpleNamespace(_is_running=True, loop=fake_loop)
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: fake_app
+    fake_pt_app.run_in_terminal = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    cli._cprint("dont-lose-me")
+
+    assert direct_prints == ["dont-lose-me"]
+    assert cli._CPRINT_COALESCE_PENDING is False
 
 
 def test_cprint_same_thread_as_app_loop_direct_print(monkeypatch):
