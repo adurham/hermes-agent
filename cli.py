@@ -4961,14 +4961,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not text:
             return
 
-        # When show_reasoning is on and reasoning is still rendering,
-        # defer content until the reasoning box closes.  This ensures the
-        # reasoning block always appears BEFORE the response in the terminal.
-        if self.show_reasoning and getattr(self, "_reasoning_box_opened", False):
-            self._deferred_content = getattr(self, "_deferred_content", "") + text
-            return
-
-        # Close the live reasoning box before opening the response box
+        # The arrival of content text is the signal that reasoning is done.
+        # Close the live reasoning box now — this flushes the trailing partial
+        # reasoning line, draws the box closer, and drains any deferred
+        # content — then fall through to stream this content live.
+        #
+        # Previously content was buffered into _deferred_content while the
+        # reasoning box stayed open, relying on a later </think> close tag (or
+        # end-of-stream) to close the box and flush. That works for tag-based
+        # reasoning but NOT for providers that stream reasoning as structured
+        # reasoning_content (e.g. DeepSeek V4 via exo): there is no close tag,
+        # so the box stayed open and every content token was deferred until
+        # _flush_stream — the last reasoning line and the entire response then
+        # printed together at end-of-stream (the 2nd-to-last-line hang).
+        # _stream_reasoning_delta already suppresses any late reasoning once
+        # the response box is open, so closing on first content is safe.
         self._close_reasoning_box()
 
         # Open the response box header on the very first visible text
