@@ -29,6 +29,10 @@ def _make_cli_stub():
     cli._reasoning_line_open = False
     cli._reasoning_col = 0
     cli._reasoning_last_partial_flush = 0.0
+    import threading
+    cli._reasoning_lock = threading.Lock()
+    cli._reasoning_last_delta_ts = 0.0
+    cli._reasoning_idle_flush_secs = 0.25
     cli._deferred_content = ""
     return cli
 

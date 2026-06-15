@@ -3478,6 +3478,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Mid-line state for intra-line reasoning streaming.
         self._reasoning_line_open = False      # are we mid-logical-line?
         self._reasoning_last_partial_flush = 0.0  # monotonic ts of last partial flush
+        # Idle-flush of the reasoning trailing partial. Reasoning lines flush
+        # on a newline; a trailing partial (no newline) normally waits for the
+        # box to close (content token or turn boundary). But some providers
+        # (exo/DeepSeek-V4) go silent for ~1s+ between the last reasoning token
+        # and the tool-call chunk — during which the partial sits unflushed and
+        # looks hung ("2nd-to-last line sits there before a tool call"). The
+        # agent poll loop calls _maybe_idle_flush_reasoning() to push the
+        # partial once reasoning has been quiet past this threshold. _reasoning_lock
+        # guards the buffer since the worker thread writes it while the poll
+        # thread may flush it.
+        self._reasoning_lock = threading.Lock()
+        self._reasoning_last_delta_ts = 0.0    # monotonic ts of last reasoning delta
+        self._reasoning_idle_flush_secs = 0.25
 
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
@@ -4964,33 +4977,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if getattr(self, "_stream_box_opened", False):
             return
 
-        # Open reasoning box on first reasoning token
-        if not getattr(self, "_reasoning_box_opened", False):
-            self._reasoning_box_opened = True
-            self._reasoning_line_open = False
-            w = self._scrollback_box_width()
-            r_label = " Reasoning "
-            r_fill = w - 2 - len(r_label)
-            _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+        lock = getattr(self, "_reasoning_lock", None)
+        if lock is not None:
+            lock.acquire()
+        try:
+            # Record arrival so the poll loop can detect a reasoning stall
+            # (e.g. the silent gap before an exo/DSML tool-call chunk) and
+            # idle-flush the trailing partial instead of leaving it hung.
+            self._reasoning_last_delta_ts = time.monotonic()
 
-        self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
+            # Open reasoning box on first reasoning token
+            if not getattr(self, "_reasoning_box_opened", False):
+                self._reasoning_box_opened = True
+                self._reasoning_line_open = False
+                w = self._scrollback_box_width()
+                r_label = " Reasoning "
+                r_fill = w - 2 - len(r_label)
+                _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
 
-        if getattr(self, "intraline_streaming", True):
-            self._stream_reasoning_intraline()
-            return
+            self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
-        # ── Legacy line-at-a-time path (intraline_streaming disabled) ──
-        # Emit complete lines, and force-flush long partial lines so
-        # reasoning is visible in real-time even without newlines.
-        # Indent by _STREAM_PAD so reasoning text sits inside the box frame,
-        # matching the response box (which pads content the same way) instead
-        # of rendering flush against the left border.
-        while "\n" in self._reasoning_buf:
-            line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_STREAM_PAD}{_DIM}{line}{_RST}")
-        if len(self._reasoning_buf) > 80:
-            _cprint(f"{_STREAM_PAD}{_DIM}{self._reasoning_buf}{_RST}")
-            self._reasoning_buf = ""
+            if getattr(self, "intraline_streaming", True):
+                self._stream_reasoning_intraline()
+                return
+
+            # ── Legacy line-at-a-time path (intraline_streaming disabled) ──
+            # Emit complete lines, and force-flush long partial lines so
+            # reasoning is visible in real-time even without newlines.
+            # Indent by _STREAM_PAD so reasoning text sits inside the box frame,
+            # matching the response box (which pads content the same way) instead
+            # of rendering flush against the left border.
+            while "\n" in self._reasoning_buf:
+                line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+                _cprint(f"{_STREAM_PAD}{_DIM}{line}{_RST}")
+            if len(self._reasoning_buf) > 80:
+                _cprint(f"{_STREAM_PAD}{_DIM}{self._reasoning_buf}{_RST}")
+                self._reasoning_buf = ""
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _stream_reasoning_intraline(self) -> None:
         """Intra-line reasoning streaming: emit new text as it arrives so the
@@ -5111,6 +5136,49 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if deferred:
                 self._deferred_content = ""
                 self._emit_stream_text(deferred)
+
+    def _maybe_idle_flush_reasoning(self) -> None:
+        """Push the reasoning trailing partial if reasoning has gone quiet.
+
+        Called from the agent poll loop (~10x/sec).  During active streaming,
+        deltas arrive every few tens of ms so this never fires.  But when a
+        provider stalls between the last reasoning token and the next event —
+        notably exo/DeepSeek-V4's ~1s+ silent gap before it emits the
+        tool-call chunk as a single unit — the trailing partial line would
+        otherwise sit unflushed and look hung ("2nd-to-last line sits there
+        before a tool call").  Flushing it on idle makes the full thinking
+        text visible immediately while we wait, without abandoning the
+        line-at-a-time model (we only flush a line that has stopped growing).
+
+        Thread-safety: the worker thread writes _reasoning_buf under
+        _reasoning_lock; we take the same lock so a flush can't interleave
+        with an in-progress delta emit.
+        """
+        lock = getattr(self, "_reasoning_lock", None)
+        if lock is None or not lock.acquire(blocking=False):
+            # If the worker holds the lock it's actively emitting — not idle.
+            return
+        try:
+            if not getattr(self, "_reasoning_box_opened", False):
+                return
+            buf = getattr(self, "_reasoning_buf", "")
+            if not buf:
+                return
+            idle = time.monotonic() - getattr(self, "_reasoning_last_delta_ts", 0.0)
+            if idle < getattr(self, "_reasoning_idle_flush_secs", 0.25):
+                return
+            # Flush the pending tail without closing the box (more reasoning
+            # may still arrive; if not, the box closes normally later).
+            if getattr(self, "intraline_streaming", True):
+                col = getattr(self, "_reasoning_col", 0)
+                w = max(20, self._scrollback_box_width() - len(_STREAM_PAD) - 1)
+                self._reasoning_col = self._emit_reasoning_segment(buf, col, w, final=False)
+                self._reasoning_buf = ""
+            else:
+                _cprint(f"{_STREAM_PAD}{_DIM}{buf}{_RST}")
+                self._reasoning_buf = ""
+        finally:
+            lock.release()
 
     def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.
@@ -5555,6 +5623,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._reasoning_line_open = False
         self._reasoning_col = 0
         self._reasoning_last_partial_flush = 0.0
+        self._reasoning_last_delta_ts = 0.0
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False
@@ -12330,6 +12399,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 pass
                             break
                     except queue.Empty:
+                        # Push the reasoning trailing partial if reasoning has
+                        # gone idle (e.g. the silent gap before an exo/DSML
+                        # tool-call chunk) so the last thinking line doesn't sit
+                        # unflushed and look hung.
+                        try:
+                            self._maybe_idle_flush_reasoning()
+                        except Exception:
+                            pass
                         # Force prompt_toolkit to flush any pending stdout
                         # output from the agent thread.  Without this, the
                         # StdoutProxy buffer only flushes on renderer passes
