@@ -462,6 +462,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_skip_tool_only": True,
             "show_reasoning": False,
             "streaming": True,
+            "stream_wrap_width": 80,
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
@@ -1696,13 +1697,7 @@ _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — f
 _BOLD = "\033[1m"
 _RST = "\033[0m"
 _STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
-# Streamed PROSE wraps/flushes at this width (capped by the terminal) rather
-# than the full terminal width. exo streams prose as ~5-char fragments with
-# almost no newlines, so flushing only at full width meant a wide terminal
-# waited ~2s per line ("chunky" output). 80 cols flushes every ~0.8s — the
-# same readable cadence as the reasoning box (which flushes its partial at 80).
-# Tables are exempt: they still realign at full terminal width.
-_STREAM_PROSE_WRAP = 80
+_STREAM_WRAP_FALLBACK = 80  # used only if config is unreadable
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
@@ -2147,15 +2142,38 @@ def _terminal_width_for_streaming() -> int:
     return max(20, cols - len(_STREAM_PAD) - 2)
 
 
-def _prose_wrap_width_for_streaming() -> int:
-    """Wrap width for streamed PROSE lines (not tables).
+def _configured_stream_wrap_cap() -> int:
+    """The ``display.stream_wrap_width`` config value (readable column cap for
+    BOTH the reasoning box and the response body).
 
-    Capped at ``_STREAM_PROSE_WRAP`` so prose flushes at a smooth, readable
-    cadence on wide terminals instead of waiting for a full-width line, but
-    never wider than the terminal actually allows (narrow terminals still
-    fit). Tables keep using ``_terminal_width_for_streaming`` (full width).
+    Returns the raw cap: a positive int, or 0 meaning "no cap" (wrap at the
+    full terminal width). Read live so a config edit applies without code
+    changes; falls back to 80 if config is unreadable.
     """
-    return min(_STREAM_PROSE_WRAP, _terminal_width_for_streaming())
+    try:
+        val = CLI_CONFIG["display"].get("stream_wrap_width", _STREAM_WRAP_FALLBACK)
+        val = int(val)
+        return val if val >= 0 else _STREAM_WRAP_FALLBACK
+    except Exception:
+        return _STREAM_WRAP_FALLBACK
+
+
+def _stream_wrap_width() -> int:
+    """Effective wrap width for streamed text (reasoning + response prose).
+
+    Always terminal-aware: the readable cap from ``display.stream_wrap_width``
+    intersected with the live terminal width, recomputed each call so it
+    follows window resizes. A cap of 0 means "use the full terminal width".
+    Tables are exempt — they realign at ``_terminal_width_for_streaming``.
+    """
+    term = _terminal_width_for_streaming()
+    cap = _configured_stream_wrap_cap()
+    return term if cap == 0 else min(cap, term)
+
+
+# Back-compat alias: prose and reasoning now share one width.
+def _prose_wrap_width_for_streaming() -> int:
+    return _stream_wrap_width()
 
 
 def _render_final_assistant_content(text: str, mode: str = "render"):
@@ -5033,12 +5051,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Indent by _STREAM_PAD so reasoning text sits inside the box frame,
             # matching the response box (which pads content the same way) instead
             # of rendering flush against the left border.
+            rw = _stream_wrap_width()
             while "\n" in self._reasoning_buf:
                 line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-                _cprint(f"{_STREAM_PAD}{_DIM}{line}{_RST}")
-            if len(self._reasoning_buf) > 80:
-                _cprint(f"{_STREAM_PAD}{_DIM}{self._reasoning_buf}{_RST}")
-                self._reasoning_buf = ""
+                for seg in HermesCLI._wrap_stream_line(line, rw):
+                    _cprint(f"{_STREAM_PAD}{_DIM}{seg}{_RST}")
+            # Force-flush the over-long partial's complete wrapped segments at
+            # the shared stream width; keep the in-progress tail buffered.
+            if len(self._reasoning_buf) > rw:
+                segs = HermesCLI._wrap_stream_line(self._reasoning_buf, rw)
+                for seg in segs[:-1]:
+                    _cprint(f"{_STREAM_PAD}{_DIM}{seg}{_RST}")
+                self._reasoning_buf = segs[-1]
         finally:
             if lock is not None:
                 lock.release()
@@ -5057,7 +5081,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         token — the smoothness comes from frequent small appends, not from
         one-redraw-per-character.
         """
-        w = max(20, self._scrollback_box_width() - len(_STREAM_PAD) - 1)
+        w = _stream_wrap_width()
         col = getattr(self, "_reasoning_col", 0)
 
         # Process all complete lines first.
@@ -5143,7 +5167,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # Drain any un-emitted tail of the current line, then close it.
                 if buf:
                     col = getattr(self, "_reasoning_col", 0)
-                    w = max(20, self._scrollback_box_width() - len(_STREAM_PAD) - 1)
+                    w = _stream_wrap_width()
                     self._emit_reasoning_segment(buf, col, w, final=True)
                     self._reasoning_buf = ""
                 if getattr(self, "_reasoning_line_open", False):
@@ -5197,7 +5221,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # may still arrive; if not, the box closes normally later).
             if getattr(self, "intraline_streaming", True):
                 col = getattr(self, "_reasoning_col", 0)
-                w = max(20, self._scrollback_box_width() - len(_STREAM_PAD) - 1)
+                w = _stream_wrap_width()
                 self._reasoning_col = self._emit_reasoning_segment(buf, col, w, final=False)
                 self._reasoning_buf = ""
             else:

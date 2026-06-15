@@ -106,17 +106,15 @@ def test_intraline_soft_wraps_and_reindents():
 
     cli = _make_cli_stub()
     partials = []
-    # Narrow box so wrapping engages.
-    with patch.object(type(cli), "_scrollback_box_width", lambda self, *a: 24), \
+    inner = 19  # narrow wrap width so wrapping engages
+    # Reasoning + response now share the configurable _stream_wrap_width().
+    with patch("cli._stream_wrap_width", return_value=inner), \
          patch("cli._cprint", side_effect=lambda s="": None), \
          patch("cli._cprint_partial", side_effect=lambda t, newline=False: partials.append((t, newline))), \
          patch("cli.time.monotonic", side_effect=[i * 1.0 for i in range(500)]):
         cli._stream_reasoning_delta("aaaa bbbb cccc dddd eeee ffff gggg\n")
 
     vis = _visible_text(partials)
-    # Visible content lines (between newlines) must each fit the inner width
-    # (box 24 - pad 4 - 1 = 19).
-    inner = max(20 - 1, 24 - len(_STREAM_PAD) - 1)
     content_lines = [ln for ln in vis.split("\n") if ln.strip()]
     assert len(content_lines) > 1, f"long line should wrap: {content_lines!r}"
     for ln in content_lines:

@@ -1479,6 +1479,14 @@ DEFAULT_CONFIG = {
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels
         "final_response_markdown": "strip",  # render | strip | raw
+        # Max readable column width for streamed text (BOTH the reasoning box
+        # and the response body). Always terminal-aware: the effective width is
+        # min(stream_wrap_width, terminal_width), recomputed live on every emit
+        # so it follows window resizes. Caps line length on wide terminals so
+        # output flushes at a smooth, readable cadence instead of waiting for a
+        # full-width line. Set to 0 to disable the cap and wrap at the full
+        # terminal width. Tables always realign at full terminal width.
+        "stream_wrap_width": 80,
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator
         # behaves badly with replayed scrollback.
