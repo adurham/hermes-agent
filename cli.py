@@ -1696,6 +1696,13 @@ _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — f
 _BOLD = "\033[1m"
 _RST = "\033[0m"
 _STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
+# Streamed PROSE wraps/flushes at this width (capped by the terminal) rather
+# than the full terminal width. exo streams prose as ~5-char fragments with
+# almost no newlines, so flushing only at full width meant a wide terminal
+# waited ~2s per line ("chunky" output). 80 cols flushes every ~0.8s — the
+# same readable cadence as the reasoning box (which flushes its partial at 80).
+# Tables are exempt: they still realign at full terminal width.
+_STREAM_PROSE_WRAP = 80
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
@@ -2138,6 +2145,17 @@ def _terminal_width_for_streaming() -> int:
     except Exception:
         cols = 80
     return max(20, cols - len(_STREAM_PAD) - 2)
+
+
+def _prose_wrap_width_for_streaming() -> int:
+    """Wrap width for streamed PROSE lines (not tables).
+
+    Capped at ``_STREAM_PROSE_WRAP`` so prose flushes at a smooth, readable
+    cadence on wide terminals instead of waiting for a full-width line, but
+    never wider than the terminal actually allows (narrow terminals still
+    fit). Tables keep using ``_terminal_width_for_streaming`` (full width).
+    """
+    return min(_STREAM_PROSE_WRAP, _terminal_width_for_streaming())
 
 
 def _render_final_assistant_content(text: str, mode: str = "render"):
@@ -3490,7 +3508,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # thread may flush it.
         self._reasoning_lock = threading.Lock()
         self._reasoning_last_delta_ts = 0.0    # monotonic ts of last reasoning delta
-        self._reasoning_idle_flush_secs = 0.25
+        self._reasoning_idle_flush_secs = 0.25  # push trailing partial after this idle
+        # Response-body idle flush (parity with reasoning): the response
+        # trailing partial otherwise waits for a newline / width force-flush /
+        # box close, so a stall (exo going quiet before a tool call, or a slow
+        # final sentence) leaves the last line hanging. Same lock+timestamp
+        # pattern; the worker writes _stream_buf, the poll thread may flush it.
+        self._stream_lock = threading.RLock()
+        self._stream_last_delta_ts = 0.0
+        self._stream_idle_flush_secs = 0.25
 
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
@@ -5180,6 +5206,60 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         finally:
             lock.release()
 
+    def _maybe_idle_flush_response(self) -> None:
+        """Push the response trailing partial if the stream has gone quiet.
+
+        Parity with _maybe_idle_flush_reasoning, for the response body. exo
+        streams prose as tiny word-fragments with almost no newlines, so a
+        partial line normally only appears once it exceeds the prose wrap width
+        or the box closes. If the stream stalls before that (provider goes
+        quiet before a tool-call chunk, or a slow final sentence), the last
+        line would hang. Flushing the complete wrapped segments on idle keeps
+        the in-progress tail buffered for the next delta.
+
+        Skips while inside a table block (those must stay buffered for
+        whole-block realignment) and only flushes whole wrapped segments, so a
+        word mid-token is never split.
+        """
+        lock = getattr(self, "_stream_lock", None)
+        if lock is None or not lock.acquire(blocking=False):
+            return
+        try:
+            if not getattr(self, "_stream_box_opened", False):
+                return
+            buf = getattr(self, "_stream_buf", "")
+            if not buf:
+                return
+            if getattr(self, "_in_stream_table", False) or looks_like_table_row(buf):
+                return
+            idle = time.monotonic() - getattr(self, "_stream_last_delta_ts", 0.0)
+            if idle < getattr(self, "_stream_idle_flush_secs", 0.25):
+                return
+            _tc = getattr(self, "_stream_text_ansi", "")
+            w = _prose_wrap_width_for_streaming()
+            segs = HermesCLI._wrap_stream_line(buf, w)
+            # Flush all complete segments; keep the last (in-progress) segment
+            # only if no newline-completing event has finished it. We treat the
+            # final segment as still-in-progress and leave it buffered, matching
+            # the mid-stream force-flush, UNLESS it already fits and the stream
+            # is idle — in which case emit it too so nothing lingers.
+            emit_segs = segs[:-1] if len(segs) > 1 else []
+            for seg in emit_segs:
+                out = _strip_markdown_syntax(seg) if self.final_response_markdown == "strip" else seg
+                out = _strip_special_token_markup(out)
+                _cprint(f"{_STREAM_PAD}{_tc}{out}{_RST}" if _tc else f"{_STREAM_PAD}{out}")
+            if emit_segs:
+                self._stream_buf = segs[-1]
+            else:
+                # Single segment that fits: flush it whole so the last line
+                # doesn't hang through the stall, then clear.
+                out = _strip_markdown_syntax(buf) if self.final_response_markdown == "strip" else buf
+                out = _strip_special_token_markup(out)
+                _cprint(f"{_STREAM_PAD}{_tc}{out}{_RST}" if _tc else f"{_STREAM_PAD}{out}")
+                self._stream_buf = ""
+        finally:
+            lock.release()
+
     def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.
 
@@ -5409,9 +5489,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
-        self._stream_buf += text
-
-        # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
 
         def _emit_one(printed_line: str) -> None:
@@ -5439,55 +5516,72 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             for ln in block.split("\n"):
                 _emit_one(ln)
 
-        while "\n" in self._stream_buf:
-            line, self._stream_buf = self._stream_buf.split("\n", 1)
+        # Hold the buffer lock for the whole drain so the poll-thread idle
+        # flush (_maybe_idle_flush_response) can't read/clear _stream_buf while
+        # we're mutating it.
+        lock = getattr(self, "_stream_lock", None)
+        if lock is not None:
+            lock.acquire()
+        try:
+            self._stream_buf += text
+            # Record arrival so the poll loop can idle-flush the response
+            # trailing partial during a stall (parity with reasoning) — e.g.
+            # exo going quiet before a tool-call chunk, or a slow final sentence.
+            self._stream_last_delta_ts = time.monotonic()
 
-            # Hold table-shaped lines in a side-buffer so we can re-pad
-            # the whole block once it ends.  Streaming line-by-line, we
-            # cannot re-align mid-table without reflowing already-printed
-            # rows; the cost is that the user sees the table appear in a
-            # single batch when the block closes instead of row-by-row.
-            if self._in_stream_table:
-                if looks_like_table_row(line) or is_table_divider(line):
+            while "\n" in self._stream_buf:
+                line, self._stream_buf = self._stream_buf.split("\n", 1)
+
+                # Hold table-shaped lines in a side-buffer so we can re-pad
+                # the whole block once it ends.  Streaming line-by-line, we
+                # cannot re-align mid-table without reflowing already-printed
+                # rows; the cost is that the user sees the table appear in a
+                # single batch when the block closes instead of row-by-row.
+                if self._in_stream_table:
+                    if looks_like_table_row(line) or is_table_divider(line):
+                        self._stream_table_buf.append(line)
+                        continue
+                    # Block ended — flush the realigned table, then fall
+                    # through to print the current (non-table) line.
+                    _flush_table_buf()
+                elif looks_like_table_row(line):
                     self._stream_table_buf.append(line)
+                    self._in_stream_table = True
                     continue
-                # Block ended — flush the realigned table, then fall
-                # through to print the current (non-table) line.
-                _flush_table_buf()
-            elif looks_like_table_row(line):
-                self._stream_table_buf.append(line)
-                self._in_stream_table = True
-                continue
 
-            if self.final_response_markdown == "strip":
-                line = _strip_markdown_syntax(line)
-            # Wrap prose lines to the box width so a long line breaks at a
-            # clean boundary with the _STREAM_PAD indent preserved on every
-            # segment, instead of relying on the terminal's soft-wrap (which
-            # restarts the wrapped portion at column 0, losing the indent).
-            for seg in HermesCLI._wrap_stream_line(line, _terminal_width_for_streaming()):
-                _emit_one(seg)
+                if self.final_response_markdown == "strip":
+                    line = _strip_markdown_syntax(line)
+                # Wrap prose lines to the prose width (capped readable width,
+                # not full terminal) so a long line breaks at a clean boundary
+                # with the _STREAM_PAD indent preserved on every segment,
+                # instead of relying on the terminal's soft-wrap (which restarts
+                # the wrapped portion at column 0, losing the indent).
+                for seg in HermesCLI._wrap_stream_line(line, _prose_wrap_width_for_streaming()):
+                    _emit_one(seg)
 
-        # Force-flush an over-long *partial* line (no trailing newline yet) so
-        # a long final sentence doesn't sit invisible in the buffer until
-        # end-of-stream — the "2nd-to-last line hangs, then pops" symptom.
-        # Mirrors the reasoning box's long-line flush.  Skip while a table
-        # block is open or the partial looks like a table row, since those
-        # must stay buffered for whole-block realignment.  Emit only the
-        # complete wrapped segments; keep the in-progress tail (raw, so strip
-        # mode isn't applied twice) buffered for the next delta.
-        if (
-            self._stream_buf
-            and not self._in_stream_table
-            and not looks_like_table_row(self._stream_buf)
-        ):
-            w = _terminal_width_for_streaming()
-            if len(self._stream_buf) > w:
-                segs = HermesCLI._wrap_stream_line(self._stream_buf, w)
-                for seg in segs[:-1]:
-                    out = _strip_markdown_syntax(seg) if self.final_response_markdown == "strip" else seg
-                    _emit_one(out)
-                self._stream_buf = segs[-1]
+            # Force-flush an over-long *partial* line (no trailing newline yet)
+            # so a long final sentence doesn't sit invisible in the buffer until
+            # end-of-stream — the "2nd-to-last line hangs, then pops" symptom.
+            # Mirrors the reasoning box's long-line flush.  Skip while a table
+            # block is open or the partial looks like a table row, since those
+            # must stay buffered for whole-block realignment.  Emit only the
+            # complete wrapped segments; keep the in-progress tail (raw, so
+            # strip mode isn't applied twice) buffered for the next delta.
+            if (
+                self._stream_buf
+                and not self._in_stream_table
+                and not looks_like_table_row(self._stream_buf)
+            ):
+                w = _prose_wrap_width_for_streaming()
+                if len(self._stream_buf) > w:
+                    segs = HermesCLI._wrap_stream_line(self._stream_buf, w)
+                    for seg in segs[:-1]:
+                        out = _strip_markdown_syntax(seg) if self.final_response_markdown == "strip" else seg
+                        _emit_one(out)
+                    self._stream_buf = segs[-1]
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -5533,8 +5627,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             # Wrap the final partial line the same way streamed lines are
-            # wrapped, so the indent is preserved on continuation segments.
-            for seg in HermesCLI._wrap_stream_line(line, _terminal_width_for_streaming()):
+            # wrapped (prose width), so the indent is preserved on continuation
+            # segments and the cadence matches mid-stream output.
+            for seg in HermesCLI._wrap_stream_line(line, _prose_wrap_width_for_streaming()):
                 seg = _strip_special_token_markup(seg)
                 _cprint(f"{_STREAM_PAD}{_tc}{seg}{_RST}" if _tc else f"{_STREAM_PAD}{seg}")
             self._stream_buf = ""
@@ -5624,6 +5719,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._reasoning_col = 0
         self._reasoning_last_partial_flush = 0.0
         self._reasoning_last_delta_ts = 0.0
+        self._stream_last_delta_ts = 0.0
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False
@@ -12420,12 +12516,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 pass
                             break
                     except queue.Empty:
-                        # Push the reasoning trailing partial if reasoning has
-                        # gone idle (e.g. the silent gap before an exo/DSML
-                        # tool-call chunk) so the last thinking line doesn't sit
+                        # Push the reasoning/response trailing partial if the
+                        # stream has gone idle (e.g. the silent gap before an
+                        # exo/DSML tool-call chunk) so the last line doesn't sit
                         # unflushed and look hung.
                         try:
                             self._maybe_idle_flush_reasoning()
+                            self._maybe_idle_flush_response()
                         except Exception:
                             pass
                         # Force prompt_toolkit to flush any pending stdout
