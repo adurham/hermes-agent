@@ -4092,6 +4092,10 @@ class AIAgent(ForkForwardersMixin):
                         pass
                 self._record_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
+        # Re-arm the content-started signal for the next model call so each
+        # round of a tool-calling turn closes its own reasoning box at the
+        # reasoning→content transition.
+        self._content_started_fired = False
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks."""
@@ -4134,6 +4138,24 @@ class AIAgent(ForkForwardersMixin):
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        # Fire the "content started" signal on the FIRST content delta of the
+        # turn, before any whitespace stripping below. This is the
+        # deterministic reasoning→content transition marker: providers like
+        # exo/DeepSeek-V4 emit a "\n\n" content delta the instant reasoning
+        # ends (≈1s before the tool-call chunk). The lstrip further down
+        # reduces that delta to "" and returns early, so it never reaches the
+        # display — which left the reasoning box open until the tool call
+        # fired. Firing a dedicated signal here lets the display close the
+        # reasoning box at the true transition without printing blank text,
+        # and without widening what flows to the gateway/TTS delta path.
+        if isinstance(text, str) and text and not getattr(self, "_content_started_fired", False):
+            self._content_started_fired = True
+            cb = getattr(self, "content_started_callback", None)
+            if cb is not None:
+                try:
+                    cb()
+                except Exception:
+                    pass
         # If a tool iteration set the break flag, prepend a single paragraph
         # break before the first real text delta.  This prevents the original
         # problem (text concatenation across tool boundaries) without stacking

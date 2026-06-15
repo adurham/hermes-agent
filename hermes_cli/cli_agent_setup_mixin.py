@@ -394,6 +394,11 @@ class CLIAgentSetupMixin:
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
             _active_agent_ref = self.agent
+            # Close the reasoning box at the deterministic reasoning→content
+            # transition (gateway/TTS don't set this hook, so only the CLI
+            # gets the box-close signal). See _on_content_started.
+            if self.streaming_enabled and hasattr(self, "_on_content_started"):
+                self.agent.content_started_callback = self._on_content_started
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
