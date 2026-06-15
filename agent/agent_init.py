@@ -622,13 +622,6 @@ def init_agent(
     # Deferred paragraph break flag — set after tool iterations so a
     # single "\n\n" is prepended to the next real text delta.
     agent._stream_needs_break = False
-    # Fired-once-per-model-call guard for the content_started_callback (the
-    # reasoning→content transition signal); re-armed in the stream finalizer.
-    agent._content_started_fired = False
-    # Optional display hook: invoked on the first content delta of each model
-    # call (before whitespace stripping) so the CLI can close the reasoning
-    # box at the true transition. Unset by default (gateway/TTS don't use it).
-    agent.content_started_callback = getattr(agent, "content_started_callback", None)
     # Stateful scrubber for <memory-context> spans split across stream
     # deltas (#5719).  sanitize_context() alone can't survive chunk
     # boundaries because the block regex needs both tags in one string.
