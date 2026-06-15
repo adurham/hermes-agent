@@ -44,14 +44,25 @@ def _body(printed):
 
 def test_prose_width_caps_below_wide_terminal():
     import cli
+    cap = cli._configured_stream_wrap_cap()
     with patch("cli._terminal_width_for_streaming", return_value=200):
-        assert cli._prose_wrap_width_for_streaming() == cli._STREAM_PROSE_WRAP
+        # Wide terminal → capped at the configured readable width.
+        assert cli._stream_wrap_width() == (200 if cap == 0 else cap)
+        assert cli._prose_wrap_width_for_streaming() == cli._stream_wrap_width()
 
 
 def test_prose_width_follows_narrow_terminal():
     import cli
     with patch("cli._terminal_width_for_streaming", return_value=50):
-        assert cli._prose_wrap_width_for_streaming() == 50
+        # Narrow terminal → follows the terminal (auto-detected), below cap.
+        assert cli._stream_wrap_width() == 50
+
+
+def test_stream_wrap_width_zero_cap_uses_full_terminal():
+    import cli
+    with patch("cli._configured_stream_wrap_cap", return_value=0), \
+         patch("cli._terminal_width_for_streaming", return_value=200):
+        assert cli._stream_wrap_width() == 200
 
 
 def test_long_line_flushes_at_prose_width_not_terminal_width():
@@ -72,9 +83,11 @@ def test_long_line_flushes_at_prose_width_not_terminal_width():
     # it's ~4 — assert we wrapped tighter than the terminal would.
     assert len(body) >= 4, f"expected prose-width wrapping (~80), got {len(body)} segs"
     import re
+    with patch("cli._terminal_width_for_streaming", return_value=200):
+        cap = climod._stream_wrap_width()
     for seg in body:
         vis = re.sub(r"\x1b\[[0-9;]*m", "", seg)[len(_STREAM_PAD):]
-        assert len(vis) <= climod._STREAM_PROSE_WRAP, f"segment exceeds prose cap: {vis!r}"
+        assert len(vis) <= cap, f"segment exceeds stream wrap width: {vis!r}"
 
 
 # ── response idle flush ──────────────────────────────────────────────────
