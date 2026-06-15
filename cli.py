@@ -5059,6 +5059,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
             return
 
+    @staticmethod
+    def _wrap_stream_line(line: str, width: int) -> list[str]:
+        """Break a line into <=width segments for the streamed response box.
+
+        Content-preserving: unlike ``textwrap`` we do NOT collapse or
+        normalise whitespace, so code indentation and intentional spacing
+        survive.  Prefers to break at the last space within the width budget;
+        falls back to a hard break for an unbroken run longer than the width.
+        A single break-space is dropped so it doesn't lead the next segment.
+
+        Width is measured in characters (matching the reasoning box's
+        long-line flush).  Wide (CJK) glyphs can therefore wrap a cell or two
+        early — acceptable for streamed scrollback; the realigner handles
+        tables separately.
+        """
+        if width <= 0 or len(line) <= width:
+            return [line]
+        segments: list[str] = []
+        rest = line
+        while len(rest) > width:
+            cut = rest.rfind(" ", 0, width + 1)
+            if cut <= 0:
+                cut = width  # no space to break on — hard break
+            segments.append(rest[:cut])
+            rest = rest[cut:]
+            if rest.startswith(" "):
+                rest = rest[1:]
+        if rest:
+            segments.append(rest)
+        return segments
+
     def _emit_stream_text(self, text: str) -> None:
         """Emit filtered text to the streaming display."""
         if not text:
@@ -5163,7 +5194,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             if self.final_response_markdown == "strip":
                 line = _strip_markdown_syntax(line)
-            _emit_one(line)
+            # Wrap prose lines to the box width so a long line breaks at a
+            # clean boundary with the _STREAM_PAD indent preserved on every
+            # segment, instead of relying on the terminal's soft-wrap (which
+            # restarts the wrapped portion at column 0, losing the indent).
+            for seg in HermesCLI._wrap_stream_line(line, _terminal_width_for_streaming()):
+                _emit_one(seg)
+
+        # Force-flush an over-long *partial* line (no trailing newline yet) so
+        # a long final sentence doesn't sit invisible in the buffer until
+        # end-of-stream — the "2nd-to-last line hangs, then pops" symptom.
+        # Mirrors the reasoning box's long-line flush.  Skip while a table
+        # block is open or the partial looks like a table row, since those
+        # must stay buffered for whole-block realignment.  Emit only the
+        # complete wrapped segments; keep the in-progress tail (raw, so strip
+        # mode isn't applied twice) buffered for the next delta.
+        if (
+            self._stream_buf
+            and not self._in_stream_table
+            and not looks_like_table_row(self._stream_buf)
+        ):
+            w = _terminal_width_for_streaming()
+            if len(self._stream_buf) > w:
+                segs = HermesCLI._wrap_stream_line(self._stream_buf, w)
+                for seg in segs[:-1]:
+                    out = _strip_markdown_syntax(seg) if self.final_response_markdown == "strip" else seg
+                    _emit_one(out)
+                self._stream_buf = segs[-1]
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -5208,8 +5265,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            line = _strip_special_token_markup(line)
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+            # Wrap the final partial line the same way streamed lines are
+            # wrapped, so the indent is preserved on continuation segments.
+            for seg in HermesCLI._wrap_stream_line(line, _terminal_width_for_streaming()):
+                seg = _strip_special_token_markup(seg)
+                _cprint(f"{_STREAM_PAD}{_tc}{seg}{_RST}" if _tc else f"{_STREAM_PAD}{seg}")
             self._stream_buf = ""
 
         # Close the response box.  Note: _stream_box_opened stays True
