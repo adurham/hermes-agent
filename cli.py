@@ -5912,6 +5912,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
             _active_agent_ref = self.agent
+            # Close the reasoning box at the deterministic reasoning→content
+            # transition (not constructor-plumbed; gateway/TTS don't set this,
+            # so only the CLI gets the box-close signal).
+            if self.streaming_enabled:
+                self.agent.content_started_callback = self._on_content_started
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
@@ -10882,6 +10887,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     # ====================================================================
     # Tool-call generation indicator (shown during streaming)
     # ====================================================================
+
+    def _on_content_started(self) -> None:
+        """Called on the first content delta of a model call (the deterministic
+        reasoning→content transition).
+
+        Closes the reasoning box immediately so its bottom border is drawn at
+        the true transition, rather than lingering until a tool call fires.
+        Providers like exo/DeepSeek-V4 emit a whitespace-only ("\\n\\n") content
+        delta the instant reasoning ends — that delta is stripped to empty
+        before it reaches the display, so without this signal the box stayed
+        open through the ~1s gap before the tool-call chunk.
+        """
+        try:
+            self._close_reasoning_box()
+        except Exception:
+            pass
 
     def _on_tool_gen_start(self, tool_name: str) -> None:
         """Called when the model begins generating tool-call arguments.
