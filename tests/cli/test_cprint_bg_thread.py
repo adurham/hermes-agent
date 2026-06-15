@@ -191,6 +191,115 @@ def test_cprint_bg_thread_coalesces_burst_into_single_drain(monkeypatch):
     assert direct_prints == ["line-1\nline-2\nline-3"]
 
 
+def test_cprint_bg_thread_frame_paces_flood(monkeypatch):
+    """A flood larger than the per-frame cap drains in bounded batches,
+    re-arming via call_later — not one giant paint.  This is the smoothness
+    layer: floods scroll out at ~frame rate instead of clumping.
+    """
+    scheduled = []        # call_soon_threadsafe callbacks
+    deferred = []         # (delay, cb) from call_later
+    direct_prints = []
+
+    monkeypatch.setattr(cli, "_pt_print", lambda x: direct_prints.append(x))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+    # Keep the cap deterministic regardless of future tuning.
+    monkeypatch.setattr(cli, "_CPRINT_MAX_LINES_PER_FRAME", 3)
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *args):
+            scheduled.append(cb)
+
+        def call_later(self, delay, cb, *args):
+            deferred.append((delay, cb))
+
+    fake_loop = FakeLoop()
+    fake_current_loop = SimpleNamespace(is_running=lambda: True)
+    fake_asyncio = types.ModuleType("asyncio")
+
+    class _Policy:
+        def get_event_loop(self):
+            return fake_current_loop
+
+    fake_asyncio.get_event_loop_policy = lambda: _Policy()
+    monkeypatch.setitem(sys.modules, "asyncio", fake_asyncio)
+
+    fake_app = SimpleNamespace(_is_running=True, loop=fake_loop)
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: fake_app
+    fake_pt_app.run_in_terminal = lambda func, **kw: (func(), None)[1]
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    # 7 lines, cap 3 → frame 1 emits 3, then re-arms; frame 2 emits 3,
+    # re-arms; frame 3 emits 1, done.
+    for i in range(7):
+        cli._cprint(f"line-{i}")
+
+    assert len(scheduled) == 1  # only one initial drain armed
+    scheduled[0]()              # frame 1
+    assert direct_prints == ["line-0\nline-1\nline-2"]
+    assert len(deferred) == 1   # backlog → one re-arm
+
+    deferred[0][1]()            # frame 2
+    assert direct_prints[-1] == "line-3\nline-4\nline-5"
+    assert len(deferred) == 2
+
+    deferred[1][1]()            # frame 3 (remainder)
+    assert direct_prints[-1] == "line-6"
+    # No further re-arm once the buffer is empty.
+    assert len(deferred) == 2
+    assert cli._CPRINT_COALESCE_PENDING is False
+
+
+def test_cprint_bg_thread_frame_pacing_fallback_when_call_later_unavailable(monkeypatch):
+    """If call_later raises (loop can't pace), the remaining backlog is
+    flushed immediately so nothing is stranded and the flag is cleared."""
+    scheduled = []
+    direct_prints = []
+
+    monkeypatch.setattr(cli, "_pt_print", lambda x: direct_prints.append(x))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+    monkeypatch.setattr(cli, "_CPRINT_MAX_LINES_PER_FRAME", 2)
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *args):
+            scheduled.append(cb)
+
+        def call_later(self, delay, cb, *args):
+            raise RuntimeError("no pacing")
+
+    fake_loop = FakeLoop()
+    fake_current_loop = SimpleNamespace(is_running=lambda: True)
+    fake_asyncio = types.ModuleType("asyncio")
+
+    class _Policy:
+        def get_event_loop(self):
+            return fake_current_loop
+
+    fake_asyncio.get_event_loop_policy = lambda: _Policy()
+    monkeypatch.setitem(sys.modules, "asyncio", fake_asyncio)
+
+    fake_app = SimpleNamespace(_is_running=True, loop=fake_loop)
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: fake_app
+    fake_pt_app.run_in_terminal = lambda func, **kw: (func(), None)[1]
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    for i in range(5):  # cap 2 → first frame emits 2, backlog 3
+        cli._cprint(f"line-{i}")
+
+    scheduled[0]()  # frame 1 emits 2, then call_later raises → flush remainder
+
+    # First paint = capped batch; second paint = the whole remainder.
+    assert direct_prints == ["line-0\nline-1", "line-2\nline-3\nline-4"]
+    assert cli._CPRINT_COALESCE_PENDING is False
+
+
 def test_cprint_bg_thread_rearms_after_drain(monkeypatch):
     """After a drain completes, a later line arms a fresh drain (the
     pending flag is cleared so streaming keeps flowing turn after turn)."""
