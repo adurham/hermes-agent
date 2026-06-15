@@ -2463,6 +2463,82 @@ def _cprint(text: str):
             pass
 
 
+def _cprint_partial(text: str, *, newline: bool = False):
+    """Emit ``text`` continuing the current logical terminal line (no leading
+    newline), used for intra-line streaming of reasoning tokens.
+
+    Unlike ``_cprint`` (which prints a whole block that scrolls above the
+    prompt), this prints with ``end=""`` so successive fragments accrue on the
+    same visual line — a typewriter cadence.  Pass ``newline=True`` to finish
+    the current line.  The fragment is recorded into output history WITHOUT a
+    trailing newline so resize-replay reconstructs the joined line.
+
+    Like ``_cprint``, cross-thread calls hop to the app loop via
+    ``run_in_terminal``.  Callers must rate-limit (see
+    ``_stream_reasoning_delta``'s cadence gate) so this is not invoked per
+    token — each call still costs one redraw/CPR cycle.
+    """
+    payload = text + ("\n" if newline else "")
+    _record_output_history(payload)
+
+    try:
+        from prompt_toolkit.application import get_app_or_none, run_in_terminal
+    except Exception:
+        _pt_print(_PT_ANSI(payload), end="")
+        return
+
+    app = None
+    try:
+        app = get_app_or_none()
+    except Exception:
+        app = None
+    if app is None or not getattr(app, "_is_running", False):
+        try:
+            _pt_print(_PT_ANSI(payload), end="")
+        except Exception:
+            try:
+                sys.stdout.write(payload)
+                sys.stdout.flush()
+            except Exception:
+                pass
+        return
+
+    try:
+        loop = app.loop  # type: ignore[attr-defined]
+    except Exception:
+        loop = None
+    if loop is None:
+        _pt_print(_PT_ANSI(payload), end="")
+        return
+
+    import asyncio as _asyncio
+    try:
+        current_loop = _asyncio.get_running_loop()
+    except (RuntimeError, Exception):
+        current_loop = None
+    if current_loop is loop and loop.is_running():
+        _pt_print(_PT_ANSI(payload), end="")
+        return
+
+    def _go():
+        try:
+            import asyncio as _aio
+            import inspect as _inspect
+            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(payload), end=""))
+            if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
+                _aio.ensure_future(coro)
+        except Exception:
+            pass
+
+    try:
+        loop.call_soon_threadsafe(_go)
+    except Exception:
+        try:
+            _pt_print(_PT_ANSI(payload), end="")
+        except Exception:
+            pass
+
+
 def _prepend_note_to_message(message, note: str):
     """Prepend a one-shot system-style note to a user message.
 
@@ -3387,6 +3463,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ).strip().lower() or "strip"
         if self.final_response_markdown not in {"render", "strip", "raw"}:
             self.final_response_markdown = "strip"
+        # intraline_streaming: render streamed reasoning sub-line (typewriter
+        # cadence) instead of one whole line at a time, so a model that emits
+        # a complete line only every few hundred ms doesn't visibly "step".
+        # Applies to the reasoning box only — it's plain dim text with no
+        # markdown stripping or table realignment, so partial-line emission is
+        # safe. The response body still renders line-at-a-time because
+        # markdown-strip mode needs whole lines (a marker can't be stripped
+        # until its closing token arrives). Default on; set
+        # display.intraline_streaming: false to revert to line-at-a-time.
+        self.intraline_streaming = bool(
+            CLI_CONFIG["display"].get("intraline_streaming", True)
+        )
+        # Mid-line state for intra-line reasoning streaming.
+        self._reasoning_line_open = False      # are we mid-logical-line?
+        self._reasoning_last_partial_flush = 0.0  # monotonic ts of last partial flush
 
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
@@ -4876,6 +4967,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Open reasoning box on first reasoning token
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
+            self._reasoning_line_open = False
             w = self._scrollback_box_width()
             r_label = " Reasoning "
             r_fill = w - 2 - len(r_label)
@@ -4883,6 +4975,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
+        if getattr(self, "intraline_streaming", True):
+            self._stream_reasoning_intraline()
+            return
+
+        # ── Legacy line-at-a-time path (intraline_streaming disabled) ──
         # Emit complete lines, and force-flush long partial lines so
         # reasoning is visible in real-time even without newlines.
         # Indent by _STREAM_PAD so reasoning text sits inside the box frame,
@@ -4895,12 +4992,114 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"{_STREAM_PAD}{_DIM}{self._reasoning_buf}{_RST}")
             self._reasoning_buf = ""
 
+    def _stream_reasoning_intraline(self) -> None:
+        """Intra-line reasoning streaming: emit new text as it arrives so the
+        thinking block flows like a typewriter instead of stepping one full
+        line at a time.
+
+        ``_reasoning_buf`` holds the un-emitted tail of the CURRENT logical
+        line (everything already painted for this line has been removed).
+        ``_reasoning_col`` tracks how many visible chars are on the current
+        line so we can soft-wrap at the box width and re-indent continuation
+        lines.  Partial (no-newline) flushes are rate-limited to one per
+        ``_CPRINT_FRAME_INTERVAL`` so we never schedule a run_in_terminal per
+        token — the smoothness comes from frequent small appends, not from
+        one-redraw-per-character.
+        """
+        w = max(20, self._scrollback_box_width() - len(_STREAM_PAD) - 1)
+        col = getattr(self, "_reasoning_col", 0)
+
+        # Process all complete lines first.
+        while "\n" in self._reasoning_buf:
+            seg, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+            # Wrap-and-emit the complete segment, honouring current column.
+            col = self._emit_reasoning_segment(seg, col, w, final=True)
+            # Terminate the logical line.
+            if self._reasoning_line_open:
+                _cprint_partial(f"{_RST}", newline=True)
+            else:
+                _cprint(f"{_STREAM_PAD}{_DIM}{_RST}")
+            self._reasoning_line_open = False
+            col = 0
+
+        # Now the trailing partial (no newline). Flush new chars on a cadence
+        # gate so output stays sub-line-smooth without per-token redraws.
+        now = time.monotonic()
+        gate = now - getattr(self, "_reasoning_last_partial_flush", 0.0)
+        if self._reasoning_buf and gate >= _CPRINT_FRAME_INTERVAL:
+            col = self._emit_reasoning_segment(self._reasoning_buf, col, w, final=False)
+            self._reasoning_buf = ""
+            self._reasoning_last_partial_flush = now
+        self._reasoning_col = col
+
+    def _emit_reasoning_segment(self, seg: str, col: int, width: int, *, final: bool) -> int:
+        """Emit ``seg`` as continuation of the current reasoning line, soft-
+        wrapping at ``width`` visible chars and re-indenting wrapped rows.
+        Returns the new visible column.  ``final`` is unused for output but
+        documents that the caller will terminate the line afterwards.
+        """
+        if not seg:
+            return col
+        for ch_run in self._reasoning_wrap_runs(seg, col, width):
+            kind, payload = ch_run
+            if kind == "wrap":
+                # End current visual row and indent the next.
+                if self._reasoning_line_open:
+                    _cprint_partial(f"{_RST}", newline=True)
+                _cprint_partial(f"{_STREAM_PAD}{_DIM}")
+                self._reasoning_line_open = True
+                col = 0
+            else:
+                if not self._reasoning_line_open:
+                    _cprint_partial(f"{_STREAM_PAD}{_DIM}")
+                    self._reasoning_line_open = True
+                _cprint_partial(payload)
+                col += len(payload)
+        return col
+
+    @staticmethod
+    def _reasoning_wrap_runs(seg: str, col: int, width: int):
+        """Yield ("text", chunk) / ("wrap", "") events to lay ``seg`` out
+        within ``width`` visible columns, starting at ``col``.  Breaks on the
+        last space before the boundary; hard-breaks an unbroken run."""
+        i = 0
+        n = len(seg)
+        while i < n:
+            room = width - col
+            if room <= 0:
+                yield ("wrap", "")
+                col = 0
+                room = width
+            chunk = seg[i:i + room]
+            if i + room < n:
+                # More to come on this row's worth — prefer a space break.
+                sp = chunk.rfind(" ")
+                if sp > 0:
+                    chunk = chunk[:sp + 1]
+            yield ("text", chunk)
+            col += len(chunk)
+            i += len(chunk)
+            if i < n and col >= width:
+                yield ("wrap", "")
+                col = 0
+
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open."""
         if getattr(self, "_reasoning_box_opened", False):
             # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
-            if buf:
+            if getattr(self, "intraline_streaming", True):
+                # Drain any un-emitted tail of the current line, then close it.
+                if buf:
+                    col = getattr(self, "_reasoning_col", 0)
+                    w = max(20, self._scrollback_box_width() - len(_STREAM_PAD) - 1)
+                    self._emit_reasoning_segment(buf, col, w, final=True)
+                    self._reasoning_buf = ""
+                if getattr(self, "_reasoning_line_open", False):
+                    _cprint_partial(f"{_RST}", newline=True)
+                    self._reasoning_line_open = False
+                self._reasoning_col = 0
+            elif buf:
                 _cprint(f"{_STREAM_PAD}{_DIM}{buf}{_RST}")
                 self._reasoning_buf = ""
             w = self._scrollback_box_width()
@@ -5353,6 +5552,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
+        self._reasoning_line_open = False
+        self._reasoning_col = 0
+        self._reasoning_last_partial_flush = 0.0
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False

@@ -22,6 +22,7 @@ def _make_cli_stub():
 
     cli = HermesCLI.__new__(HermesCLI)
     cli.show_reasoning = True
+    cli.intraline_streaming = False      # legacy line-at-a-time path under test
     cli._stream_buf = ""
     cli._stream_started = False
     cli._stream_box_opened = False
