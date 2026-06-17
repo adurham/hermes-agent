@@ -1538,12 +1538,41 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
+                    # Reasoning-channel exhaustion: some models (DeepSeek-V4,
+                    # Moonshot) stream their chain-of-thought in the SEPARATE
+                    # ``reasoning_content``/``reasoning`` field, not inline
+                    # <think> tags in ``content``.  When such a model burns its
+                    # whole output budget there it returns finish_reason='length'
+                    # with substantial reasoning but empty/no content and no tool
+                    # calls — the inline-tag check above never sees it, so the
+                    # turn would fall through to 3 pointless continuation retries
+                    # (each re-sending the same prompt and exhausting again).
+                    # Treat a length-truncated turn carrying real reasoning but
+                    # no usable content/tool-call as exhaustion too.
+                    _trunc_reasoning = (
+                        getattr(_trunc_msg, "reasoning_content", None)
+                        or getattr(_trunc_msg, "reasoning", None)
+                    ) if _trunc_msg else None
+                    _has_reasoning_channel = bool(
+                        _trunc_reasoning and str(_trunc_reasoning).strip()
+                    )
+                    _content_is_blank = not (_trunc_content and _trunc_content.strip())
+                    _reasoning_channel_exhausted = (
+                        not _trunc_has_tool_calls
+                        and _has_reasoning_channel
+                        and _content_is_blank
+                    )
                     _thinking_exhausted = (
                         not _trunc_has_tool_calls
-                        and _has_think_tags
                         and (
-                            (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
-                            or _trunc_content is None
+                            (
+                                _has_think_tags
+                                and (
+                                    (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
+                                    or _trunc_content is None
+                                )
+                            )
+                            or _reasoning_channel_exhausted
                         )
                     )
 
