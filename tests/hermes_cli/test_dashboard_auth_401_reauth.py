@@ -282,6 +282,7 @@ class TestHtmlRedirectNext:
         assert r.status_code == 200
 
 
+
 # ---------------------------------------------------------------------------
 # Gate middleware: auto-SSO redirect + one-shot loop guard (Phase 1)
 # ---------------------------------------------------------------------------
@@ -346,6 +347,27 @@ class TestAutoSsoRedirect:
         assert "/auth/login" not in second.headers["location"]
 
 
+    def test_login_page_prefixed_urls_behind_proxy(self, gated_app):
+        """When X-Forwarded-Prefix is set, the login page must render
+        all auth URLs with the prefix so the flow works behind a
+        reverse proxy that mounts the dashboard at a sub-path."""
+        r = gated_app.get(
+            "/login",
+            headers={"X-Forwarded-Prefix": "/hermes"},
+        )
+        assert r.status_code == 200
+        html = r.text
+        assert 'href="/hermes/auth/login?provider=' in html
+        assert 'data-prefix="/hermes"' in html
+
+    def test_login_page_bare_urls_without_proxy_header(self, gated_app):
+        """Without X-Forwarded-Prefix the login page must use
+        root-relative URLs (no prefix injection)."""
+        r = gated_app.get("/login")
+        assert r.status_code == 200
+        html = r.text
+        assert 'href="/auth/login?provider=' in html
+        assert "data-prefix" not in html
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +635,38 @@ class TestRenderLoginHtmlNext:
         html_out = render_login_html(next_path='/x"injected')
         assert '"injected' not in html_out
         assert "%22injected" in html_out
+
+    def test_prefix_prepended_to_provider_button_href(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="/hermes")
+        assert 'href="/hermes/auth/login?provider=stub"' in html_out
+
+    def test_prefix_with_next_threaded(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(next_path="/sessions", prefix="/hermes")
+        assert 'href="/hermes/auth/login?provider=stub' in html_out
+        assert "next=" in html_out
+
+    def test_empty_prefix_produces_bare_root_urls(self):
+        """Explicitly passing prefix='' (the default) must NOT inject a
+        ``data-prefix`` attribute or alter the hrefs."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="")
+        assert 'href="/auth/login?provider=stub"' in html_out
+        assert "data-prefix" not in html_out
+
+    def test_prefix_injected_as_data_attribute(self):
+        """The <main> element must carry data-prefix so the password-login
+        JS can read it."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="/hermes")
+        assert 'data-prefix="/hermes"' in html_out
+
+    def test_prefix_does_not_appear_without_explicit_prefix(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html()
+        assert "<main>" in html_out
+        assert "data-prefix" not in html_out
 
 
 # ---------------------------------------------------------------------------
