@@ -351,6 +351,32 @@ When per-capability keys are empty, both fall through to `web.backend`. When `we
 2. `web.backend` (shared fallback)
 3. Auto-detect from environment variables
 
+### Failover chain
+
+Set an ordered list of search providers; when the first fails (rate limit,
+429, network error, unavailable, etc.) the dispatcher falls through to the
+next, returning the first successful response. Useful for staying resilient
+when a free-tier provider hits its quota:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_chain:
+    - brave-free     # tried first
+    - ddgs           # fallthrough on 429 / failure
+```
+
+When `web.search_chain` is set, it takes precedence over `web.search_backend`
+/ `web.backend` for `web_search`. When unset or empty, the single-provider
+path above runs unchanged. `web_extract` is unaffected (it uses
+`web.extract_backend` / `web.backend` as before).
+
+Provider names are the same identifiers used by `web.search_backend` (e.g.
+`brave-free`, `ddgs`, `searxng`, `exa`, `tavily`, `parallel`, `firecrawl`,
+`xai`). Providers that are not registered, don't support search, or aren't
+available (missing credentials) are skipped with a log line and the walk
+continues. If every provider fails, the last error is returned.
+
 ### Auto-detection
 
 If no backend is explicitly configured, Hermes picks the first available one based on which credentials are set:
