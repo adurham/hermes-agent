@@ -16,7 +16,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 
-
 # ── Text aux tasks — _resolve_auto ──────────────────────────────────────────
 
 
@@ -411,3 +410,93 @@ def test_aggregator_providers_constant_removed():
         "treating aggregators specially. If you re-added it, the main-first "
         "policy may have regressed."
     )
+
+
+# ── Exo-scoped auxiliary delegation (_resolve_task_provider_model) ────────────
+
+
+class TestExoScopedAuxDelegation:
+    """When ``auxiliary.<task>`` is configured to target the exo cluster
+    (``provider: exo`` / ``custom:exo`` / matching ``base_url``), that
+    override is honored ONLY when the active main provider is itself exo.
+    Non-exo sessions (Claude, OpenRouter, Ollama, ...) drop it and fall
+    through to ``"auto"`` so aux tasks follow the main provider instead
+    of pulling the cluster into the request.
+
+    Mirrors the exo-only delegate scoping in ``agent/image_routing.py``
+    (``_provider_is_exo``).
+    """
+
+    def test_exo_main_honors_exo_aux_override(self):
+        """Main=exo + ``auxiliary.compression.provider=exo`` -> returns
+        (``"exo"``, ``qwen_model``) -- the override is forwarded to
+        ``resolve_provider_client``."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="exo",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="mlx-community/DeepSeek-V4-Flash",
+        ), patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={
+                "provider": "exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+                "api_key": "not-needed",
+            },
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "mlx-community/Qwen3.6-35B-A3B-8bit")
+
+            from agent.auxiliary_client import _resolve_task_provider_model
+
+            provider, model, base_url, api_key, api_mode = (
+                _resolve_task_provider_model(task="compression")
+            )
+
+        # When both base_url + api_key are configured, the resolver returns
+        # ``"custom"`` with the endpoint inlined (see the cfg_base_url +
+        # cfg_api_key branch).  That's the correct, working path -- the
+        # caller (get_text_auxiliary_client / resolve_vision_provider_client)
+        # hands (provider, model, base_url, api_key) to
+        # resolve_provider_client, which builds the OpenAI client against the
+        # exo base_url.  The key invariant is that we did NOT fall through to
+        # ``"auto"`` (which would route aux to the main DeepSeek-V4-Flash
+        # model instead of Qwen3.6).
+        assert provider == "custom"
+        assert model == "mlx-community/Qwen3.6-35B-A3B-8bit"
+        assert base_url == "http://192.168.86.201:52415/v1"
+        assert api_key == "not-needed"
+
+    def test_non_exo_main_drops_exo_aux_override(self):
+        """Anthropic main + ``auxiliary.compression.provider=exo`` -> guard
+        drops the override and falls through to ``"auto"``."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="anthropic",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="claude-sonnet-4-6",
+        ), patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={
+                "provider": "exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+                "api_key": "not-needed",
+            },
+        ):
+            from agent.auxiliary_client import _resolve_task_provider_model
+
+            provider, model, base_url, api_key, api_mode = (
+                _resolve_task_provider_model(task="compression")
+            )
+
+        assert provider == "auto", (
+            f"expected 'auto' for non-exo main with exo-configured aux, "
+            f"got {provider!r}"
+        )
+        assert model is None
+        assert base_url is None
+        assert api_key is None

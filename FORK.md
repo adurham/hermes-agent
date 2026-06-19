@@ -49,6 +49,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/tool_executor.py` | +111 / -29 | Skill-recall hook callsites (`_record_loaded_skill`, `_maybe_skill_recall_hint`) in both sequential + concurrent paths, plus hermes_load_tools and swarm_run dispatch. |
 | `agent/system_prompt.py` | +17 / -23 | Date-only timestamp restored (upstream's prompt-cache fix), grok added to OPENAI_MODEL_EXECUTION_GUIDANCE gate. |
 | `agent/turn_context.py` | (new upstream file, fork-patched) | Upstream (2026-06-08) extracted the per-turn prologue out of `conversation_loop.py` into this new `build_turn_context()` module. Carries 3 PORTED fork-only prologue steps: `memory_auto_feedback` session bind, `_last_user_message` capture (feeds `agent/fork/memory_recall.py`), `_recent_tool_args` reset. On conflict: keep those 3, the rest is upstream-shared; do NOT re-inline the prologue into `conversation_loop.py`. |
+| `agent/auxiliary_client.py` | +~70 / -0 | Exo-scoped auxiliary delegation (2026-06-18): new `_aux_override_targets_exo` helper + guard inside `_resolve_task_provider_model` that drops exo-targeted `auxiliary.<task>` overrides when the active main provider is not exo. Inert without `auxiliary.*.provider: exo` in config. See "Fork-only feature — 2026-06-18" below. On conflict: port the helper + guard block as a unit. |
 
 Plus 165 commits of fork-only history. See `git log upstream/main..main`.
 
@@ -379,6 +380,70 @@ boundary), the orphan-stripping passes must be ported across as a unit (drop
 one without the other and you re-introduce this 400).
 
 
+### Fork-only feature — 2026-06-18 (exo-scoped auxiliary delegation)
+
+The local exo cluster runs DeepSeek-V4-Flash as the big chat model and
+Qwen3.6-35B-A3B-8bit as a smaller sidekick. The desired routing: when the main
+session is on exo/DeepSeek-V4-Flash, all auxiliary tasks (vision, compression,
+memory_extraction, session_search, title_generation, curator, mcp, approval,
+kanban_decomposer, profile_describer, triage_specifier, tts_audio_tags,
+web_extract, models, skills_hub) should offload to Qwen3.6 on the same cluster,
+freeing the big model for main reasoning. When the main session is NOT on exo
+(Claude, OpenRouter, Ollama, etc.), aux tasks should follow whatever main
+provider is active — the exo cluster must not get pulled into non-exo sessions.
+
+The existing `auxiliary.<task>.provider` config override is unconditional: set
+it to `exo` and every session routes its side tasks to the cluster, even when
+the user switched main to Claude. So this needed a code change, not just config.
+
+Fix (`agent/auxiliary_client.py`, soft-fork — single shared file): added an
+exo-scoping guard inside `_resolve_task_provider_model`. New helper
+`_aux_override_targets_exo(provider, base_url, cfg)` returns True when an
+auxiliary override targets the exo cluster (by provider name `exo` /
+`custom:exo`, or by a `base_url` matching `providers.exo.base_url`). When the
+override targets exo AND the active main provider is itself exo (checked via
+the existing `agent.image_routing._provider_is_exo`), the override is honored.
+When the override targets exo but the main provider is NOT exo, the override is
+dropped and the resolver falls through to `"auto"` (which follows the main
+provider via Step-1 of `_resolve_auto`). This mirrors the exo-only delegate
+scoping already used for vision in `agent/image_routing.py::decide_image_input_mode`.
+
+The guard is purely additive — it only fires when the user has configured an
+exo-targeted aux override. Users who never set `auxiliary.*.provider: exo` see
+zero behavior change. Non-exo aux overrides (e.g. `provider: openrouter`) are
+unaffected and pass through as before.
+
+Config companion (not part of this diff — lives in `~/.hermes/config.yaml`):
+`model.provider: exo`, `model.default: mlx-community/DeepSeek-V4-Flash`, and
+every `auxiliary.<task>` block set to `provider: exo`, `model:
+mlx-community/Qwen3.6-35B-A3B-8bit`, `base_url:
+http://192.168.86.201:52415/v1`, `api_key: not-needed`.
+
+Tests: 2 new in `tests/agent/test_auxiliary_main_first.py`
+(`TestExoScopedAuxDelegation`):
+- `test_exo_main_honors_exo_aux_override`: main=exo + exo aux config → override
+  honored, returns the exo endpoint + Qwen model (does not fall through to
+  `"auto"`).
+- `test_non_exo_main_drops_exo_aux_override`: main=anthropic + exo aux config →
+  override dropped, returns `("auto", None, None, None, None)` so aux follows
+  the main provider.
+Full file: 11 passed, 6 skipped. Broader sweep (auxiliary_client +
+auxiliary_main_first + image_routing + vision_routing_31179 +
+set_runtime_main_custom_provider): 329 passed, 9 skipped. The one failure
+(`test_openrouter_main_vision_uses_main_model`) is the documented pre-existing
+global-state-pollution flake — reproduced on clean `main` with this patch
+stashed.
+
+**Merge note:** the guard lives inside `_resolve_task_provider_model`, a
+shared upstream function. If a future sync rewrites that function, the
+`_aux_override_targets_exo` helper + the `if _aux_override_targets_exo(...)`
+block must be ported across as a unit. The helper itself is fork-only (new,
+self-contained); the only upstream surface it touches is the
+`_resolve_task_provider_model` body. Config-driven: the feature is inert
+without `auxiliary.<task>.provider: exo` in `config.yaml`, so upstream users
+who never set it see no change.
+
+
 ### Upstream sync — 2026-06-10 (187 commits, 12 conflicts)
 
 Merge-base was 2026-06-08; pulled 187 upstream commits on branch
@@ -586,6 +651,10 @@ The fork adds these test files:
 * `tests/run_agent/test_rate_limit_observability.py` (6 tests, fork-only feature)
 * `tests/run_agent/test_anthropic_stream_phase_classifier.py` (16 tests, exercises `_classify_anthropic_stream_phase`)
 * `tests/run_agent/test_repair_tool_call_name.py` (CC alias coverage)
+
+Plus fork additions to shared upstream test files:
+
+* `tests/agent/test_auxiliary_main_first.py` — `TestExoScopedAuxDelegation` (2 tests, 2026-06-18 exo-scoped aux delegation guard).
 
 All other tests come from upstream.
 

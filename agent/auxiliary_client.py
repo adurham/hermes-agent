@@ -4719,6 +4719,40 @@ _AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
 }
 
 
+def _aux_override_targets_exo(
+    provider: Optional[str],
+    base_url: Optional[str],
+    cfg: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True when an ``auxiliary.<task>`` override targets the local exo cluster.
+
+    Matches by provider name (``exo`` / ``custom:exo``) or by a ``base_url``
+    that equals the configured ``providers.exo.base_url``.  Used to scope
+    exo-hosted auxiliary delegation (e.g. DeepSeek-V4-Flash main →
+    Qwen3.6-35B-A3B aux) to sessions whose main provider is itself exo.
+    """
+    p = (provider or "").strip().lower()
+    if p in {"exo", "custom:exo"}:
+        return True
+    if not base_url:
+        return False
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+        except Exception:
+            return False
+    if not isinstance(cfg, dict):
+        return False
+    providers_cfg = cfg.get("providers")
+    if not (isinstance(providers_cfg, dict) and isinstance(providers_cfg.get("exo"), dict)):
+        return False
+    exo_base = str(providers_cfg["exo"].get("base_url") or "").strip().lower().rstrip("/")
+    if not exo_base:
+        return False
+    return base_url.strip().lower().rstrip("/") == exo_base
+
+
 def _resolve_task_provider_model(
     task: str = None,
     provider: str = None,
@@ -4737,6 +4771,15 @@ def _resolve_task_provider_model(
     be None (use provider default). When base_url is set, provider is forced
     to "custom" and the task uses that direct endpoint. api_mode is one of
     "chat_completions", "codex_responses", or None (auto-detect).
+
+    Exo-scoped delegation: when ``auxiliary.<task>`` is configured to target
+    the local exo cluster (``provider: exo`` / ``custom:exo`` / matching
+    base_url), that override is honored ONLY when the active main provider is
+    itself exo.  For non-exo sessions (Claude, OpenRouter, Ollama, ...) the
+    override is dropped so aux tasks follow the main provider via "auto"
+    instead of pulling the exo cluster into the request.  Mirrors the
+    exo-only delegate scoping already used for vision in
+    ``agent/image_routing.py`` (``_provider_is_exo``).
     """
     cfg_provider = None
     cfg_model = None
@@ -4751,6 +4794,33 @@ def _resolve_task_provider_model(
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
+
+        # ── Exo-scoped auxiliary delegation ────────────────────────────
+        # Drop the exo-targeted override when the active main provider is
+        # not exo, so non-exo sessions don't route side tasks into the
+        # cluster.  See function docstring.
+        if _aux_override_targets_exo(cfg_provider, cfg_base_url):
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _cfg = _load_cfg()
+            except Exception:
+                _cfg = None
+            _main_prov = _read_main_provider()
+            try:
+                from agent.image_routing import _provider_is_exo
+            except ImportError:
+                _provider_is_exo = None  # type: ignore[assignment]
+            if _provider_is_exo is None or not _provider_is_exo(_main_prov, _cfg):
+                logger.debug(
+                    "Auxiliary task %r: exo override dropped — main provider "
+                    "%r is not exo; falling back to auto",
+                    task, _main_prov or "(none)",
+                )
+                cfg_provider = None
+                cfg_model = None
+                cfg_base_url = None
+                cfg_api_key = None
+                cfg_api_mode = None
 
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
