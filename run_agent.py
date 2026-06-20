@@ -986,6 +986,44 @@ class AIAgent(ForkForwardersMixin):
         message = str(error).strip().lower()
         return "expected ident at line" in message
 
+    def _is_upstream_toolcall_clean_fail(self, error: BaseException) -> bool:
+        """Return True for an upstream server that DELIBERATELY failed a turn
+        because the model emitted a tool-call block it could not parse.
+
+        exo's DSv4 output parser cleanly fails such a turn with
+        ``finish_reason="error"`` (-> 500 / APIError) rather than leaking the
+        garbled tool-call innards as content or silently dropping the call. The
+        error text always ends with "Failing the turn so it can be retried."
+        These are SAFE to silently retry even though no partial tool *name* was
+        parsed (so the normal ``_partial_tool_in_flight`` gate misses them):
+
+          * The failure happens server-side BEFORE any tool executes — the call
+            never parsed, so there is no side-effect to duplicate.
+          * The only "partial delivery" is a preamble; the garbled tool-call
+            text is intentionally never surfaced, so there is no useful content
+            to preserve. Re-streaming a fresh draw is strictly better than
+            returning a dead length-truncated stub.
+
+        Without this, an unterminated/malformed tool-call clean-fail that lands
+        after some preamble text was streamed hits the "not retrying" branch and
+        becomes a dead turn (observed 2026-06-20 09:46: "unterminated invoke"
+        -> 0-char stub).
+        """
+        message = str(error).strip().lower()
+        if "failing the turn so it can be retried" not in message:
+            return False
+        # Guard to the known tool-call clean-fail shapes so an unrelated error
+        # that happens to echo the phrase can't widen the retry surface.
+        return any(
+            sig in message
+            for sig in (
+                "malformed tool-call block",
+                "unterminated invoke",
+                "tool call without the",  # sentinel-less wrong-dialect block
+                "tool_calls wrapper was present",
+            )
+        )
+
     def _log_stream_retry(
         self,
         *,

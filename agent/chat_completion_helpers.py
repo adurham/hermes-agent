@@ -2712,9 +2712,23 @@ def interruptible_streaming_api_call(
                             or _is_sse_conn_err_preview
                             or _is_stream_parse_err
                         )
+                        # An upstream server that DELIBERATELY failed the turn on
+                        # an unparseable tool-call block is independently
+                        # retryable: no tool executed (the call never parsed) and
+                        # the garbled innards are intentionally never surfaced, so
+                        # re-streaming is side-effect-safe and strictly better
+                        # than a dead length-truncated stub — even though no
+                        # partial tool *name* was parsed.  (Fixes the
+                        # "unterminated invoke -> not retrying -> 0-char stub"
+                        # dead turn.)
+                        _is_toolcall_clean_fail = (
+                            agent._is_upstream_toolcall_clean_fail(e)
+                        )
                         _can_silent_retry = (
-                            _partial_tool_in_flight
-                            and _is_transient
+                            (
+                                (_partial_tool_in_flight and _is_transient)
+                                or _is_toolcall_clean_fail
+                            )
                             and _stream_attempt < _max_stream_retries
                         )
                         if not _can_silent_retry:
