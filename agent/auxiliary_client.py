@@ -298,6 +298,15 @@ def _get_aux_model_for_provider(provider_id: str) -> str:
     return _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
 
 
+# When the active main provider is Anthropic and no per-task model override
+# is present, all auxiliary tasks (compression, title generation, session
+# search, etc.) use this model instead of mirroring the main Opus model or
+# falling back to Haiku.  build_anthropic_client gates the 1M-context beta on
+# _model_supports_1m_context, and claude-sonnet-4-6 is in that allowlist, so
+# compression automatically gets the 1M window it needs.  Per-task explicit
+# auxiliary.<task>.model overrides still win over this constant.
+_ANTHROPIC_DEFAULT_AUX_MODEL = "claude-sonnet-4-6"
+
 # Fallback for providers not yet migrated to ProviderProfile.default_aux_model,
 # plus providers we intentionally keep pinned here (e.g. Anthropic predates
 # profiles). New providers should set default_aux_model on their profile instead.
@@ -308,7 +317,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "stepfun": "step-3.5-flash",
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview",
-    "anthropic": "claude-haiku-4-5-20251001",
+    "anthropic": _ANTHROPIC_DEFAULT_AUX_MODEL,
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
@@ -2138,6 +2147,16 @@ def _try_azure_foundry(
 
 
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+    # Reject foreign-provider placeholder keys (e.g. "not-needed" from an exo
+    # config leaking into the Anthropic path via set_runtime_main when the user
+    # hot-swaps from exo to anthropic mid-session). Genuine Anthropic credentials
+    # always start with "sk-ant-"; anything else is a placeholder from a different
+    # provider and must be discarded so the function falls through to
+    # resolve_anthropic_token(), which reads the real OAuth cred from
+    # ~/.claude/.credentials.json.
+    if explicit_api_key and not explicit_api_key.strip().lower().startswith("sk-ant-"):
+        explicit_api_key = None
+
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
@@ -3210,17 +3229,27 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
         if main_chain_label and _is_provider_unhealthy(main_chain_label):
             _log_skip_unhealthy(main_chain_label)
         else:
+            # For Anthropic main sessions, use the dedicated aux model
+            # (claude-sonnet-4-6) rather than mirroring the main Opus model.
+            # Per-task explicit overrides still win: they propagate through the
+            # outer resolve_provider_client(model=per_task_model) call, which
+            # takes precedence over the resolved model we return here.
+            step1_model = (
+                _ANTHROPIC_DEFAULT_AUX_MODEL
+                if resolved_provider == "anthropic"
+                else main_model
+            )
             client, resolved = resolve_provider_client(
                 resolved_provider,
-                main_model,
+                step1_model,
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                            main_provider, resolved or main_model)
-                return client, resolved or main_model
+                            main_provider, resolved or step1_model)
+                return client, resolved or step1_model
 
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
@@ -3409,6 +3438,12 @@ def resolve_provider_client(
     # main_model also empty), the branches still hit their own
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
+    # Capture the caller-supplied model BEFORE the auto-fill fallback so the
+    # auto branch can distinguish "caller explicitly asked for X" from "we
+    # filled in the main model as a fallback".  Only an explicitly-supplied
+    # model should override the provider-matched substitution that
+    # _resolve_auto returns (e.g. sonnet-4-6 for anthropic-main sessions).
+    caller_model = model
     if not model:
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
@@ -3470,12 +3505,17 @@ def resolve_provider_client(
         # local server), an OpenRouter-formatted model override like
         # "google/gemini-3-flash-preview" won't work.  Drop it and use
         # the provider's own default model instead.
-        if model and "/" in model and resolved and "/" not in resolved:
+        if caller_model and "/" in caller_model and resolved and "/" not in resolved:
             logger.debug(
                 "Dropping OpenRouter-format model %r for non-OpenRouter "
-                "auxiliary provider (using %r instead)", model, resolved)
-            model = None
-        final_model = model or resolved
+                "auxiliary provider (using %r instead)", caller_model, resolved)
+            caller_model = None
+        # Use caller_model (not the auto-filled `model`) so that a main-model
+        # fallback (e.g. "claude-opus-4-8" filled in from _read_main_model)
+        # does NOT override the provider-matched model that _resolve_auto
+        # already chose (e.g. "claude-sonnet-4-6" for an anthropic-main
+        # session).  Only an explicitly caller-supplied model wins here.
+        final_model = caller_model or resolved
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
