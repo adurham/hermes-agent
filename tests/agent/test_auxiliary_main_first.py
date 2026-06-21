@@ -135,7 +135,12 @@ class TestResolveAutoMainFirst:
         assert client is chain_client
 
     def test_runtime_override_wins_over_config(self, monkeypatch):
-        """main_runtime kwarg overrides config-read main provider/model."""
+        """main_runtime kwarg overrides config-read main provider (anthropic wins
+        over the config-read openrouter provider).  For Anthropic specifically,
+        the aux MODEL is claude-sonnet-4-6 — not the runtime main model — because
+        provider-matched aux substitution applies to anthropic sessions."""
+        from agent.auxiliary_client import _ANTHROPIC_DEFAULT_AUX_MODEL
+
         with patch(
             "agent.auxiliary_client._read_main_provider",
             return_value="openrouter",
@@ -144,21 +149,22 @@ class TestResolveAutoMainFirst:
         ), patch(
             "agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve:
-            mock_resolve.return_value = (MagicMock(), "runtime-model")
+            mock_resolve.return_value = (MagicMock(), _ANTHROPIC_DEFAULT_AUX_MODEL)
 
             from agent.auxiliary_client import _resolve_auto
 
             _resolve_auto(main_runtime={
                 "provider": "anthropic",
-                "model": "runtime-model",
+                "model": "claude-opus-4-8",
                 "base_url": "",
                 "api_key": "",
                 "api_mode": "",
             })
 
-        # Runtime override wins
+        # Runtime provider override wins (anthropic, not config-read openrouter).
         assert mock_resolve.call_args.args[0] == "anthropic"
-        assert mock_resolve.call_args.args[1] == "runtime-model"
+        # Aux model is sonnet-4-6, not the main runtime opus model.
+        assert mock_resolve.call_args.args[1] == _ANTHROPIC_DEFAULT_AUX_MODEL
 
 
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
@@ -500,3 +506,260 @@ class TestExoScopedAuxDelegation:
         assert model is None
         assert base_url is None
         assert api_key is None
+
+
+# ── Anthropic 401 fix + provider-matched sonnet-4-6 aux ──────────────────────
+
+
+class TestAnthropicAuxModel:
+    """When the main provider is Anthropic, auxiliary tasks must use
+    claude-sonnet-4-6 (not the main Opus model, not Haiku) and must not be
+    poisoned by a foreign placeholder key like "not-needed".
+
+    Fork-only feature — 2026-06-21.
+    """
+
+    def test_anthropic_main_aux_ignores_foreign_placeholder_key(self):
+        """main=anthropic, runtime api_key="not-needed" → resolved aux client
+        uses the real OAuth token, NOT "not-needed"."""
+        real_token = "sk-ant-oat01-" + "x" * 88
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="anthropic",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="claude-opus-4-8",
+        ), patch(
+            "agent.auxiliary_client._select_pool_entry",
+            return_value=(False, None),
+        ), patch(
+            # resolve_anthropic_token is lazily imported inside _try_anthropic
+            # from agent.anthropic_adapter, so patch it at the source module.
+            "agent.anthropic_adapter.resolve_anthropic_token",
+            return_value=real_token,
+        ) as mock_resolve_token, patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+        ) as mock_build:
+            mock_real_client = MagicMock()
+            mock_build.return_value = mock_real_client
+
+            from agent.auxiliary_client import _try_anthropic
+
+            client, model = _try_anthropic(explicit_api_key="not-needed")
+
+        # The placeholder key must have been discarded; resolve_anthropic_token
+        # must have been consulted for the real credential.
+        mock_resolve_token.assert_called_once()
+        # build_anthropic_client must have been called with the real token, NOT
+        # with "not-needed".
+        assert mock_build.call_args is not None
+        called_api_key = mock_build.call_args[0][0]  # first positional arg
+        assert called_api_key == real_token, (
+            f"Expected real token, got {called_api_key!r}"
+        )
+        assert client is not None
+
+    def test_anthropic_main_aux_uses_sonnet_not_opus(self):
+        """main=anthropic/claude-opus-4-8, empty auxiliary.compression →
+        resolved aux model is claude-sonnet-4-6, not the main opus model."""
+        from agent.auxiliary_client import _ANTHROPIC_DEFAULT_AUX_MODEL
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="anthropic",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="claude-opus-4-8",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, _ANTHROPIC_DEFAULT_AUX_MODEL)
+
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto()
+
+        assert client is mock_client
+        assert model == _ANTHROPIC_DEFAULT_AUX_MODEL, (
+            f"Expected {_ANTHROPIC_DEFAULT_AUX_MODEL!r}, got {model!r}"
+        )
+        # Verify resolve_provider_client was asked for sonnet, NOT for opus.
+        mock_resolve.assert_called_once()
+        called_model_arg = mock_resolve.call_args[0][1]  # second positional arg
+        assert called_model_arg == _ANTHROPIC_DEFAULT_AUX_MODEL, (
+            f"_resolve_auto Step-1 should request {_ANTHROPIC_DEFAULT_AUX_MODEL!r} "
+            f"for anthropic aux, got {called_model_arg!r}"
+        )
+
+    def test_anthropic_per_task_model_override_wins(self):
+        """auxiliary.compression.model set explicitly → that model is used,
+        NOT claude-sonnet-4-6."""
+        from agent.auxiliary_client import _ANTHROPIC_DEFAULT_AUX_MODEL
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="anthropic",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="claude-opus-4-8",
+        ), patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"model": "claude-haiku-4-5-20251001"},
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            # _resolve_auto returns sonnet; the per-task model is applied at the
+            # outer resolve_provider_client("auto") layer.
+            mock_resolve.return_value = (mock_client, _ANTHROPIC_DEFAULT_AUX_MODEL)
+
+            from agent.auxiliary_client import _resolve_task_provider_model
+
+            provider, model, base_url, api_key, api_mode = (
+                _resolve_task_provider_model(task="compression")
+            )
+
+        # Provider should be "auto" (no explicit provider in the task config).
+        assert provider == "auto"
+        # The per-task model override must survive as the returned model so the
+        # outer caller can apply it.
+        assert model == "claude-haiku-4-5-20251001", (
+            f"Per-task model override should be preserved, got {model!r}"
+        )
+
+    def test_non_anthropic_main_unaffected(self):
+        """main=exo → no sonnet-4-6 substitution; Step-1 still uses the
+        configured exo main model (existing exo-scoping behavior intact)."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="exo",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="mlx-community/DeepSeek-V4-Flash",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "mlx-community/DeepSeek-V4-Flash")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto()
+
+        assert client is mock_client
+        # The exo main model must be forwarded unchanged — no sonnet substitution.
+        mock_resolve.assert_called_once()
+        called_model_arg = mock_resolve.call_args[0][1]
+        assert called_model_arg == "mlx-community/DeepSeek-V4-Flash", (
+            f"Non-anthropic providers must pass their main model unchanged, "
+            f"got {called_model_arg!r}"
+        )
+
+    def test_anthropic_aux_client_carries_1m_context_beta(self):
+        """_try_anthropic() with the default aux model (sonnet-4-6) must build
+        a client that has the 1M-context beta in its request headers.
+
+        build_anthropic_client gates the beta on _model_supports_1m_context,
+        and claude-sonnet-4-6 is in that allowlist, so the beta must be present
+        when the aux model is sonnet-4-6.
+        """
+        from agent.auxiliary_client import _ANTHROPIC_DEFAULT_AUX_MODEL
+        from agent.anthropic_adapter import _model_supports_1m_context, _CONTEXT_1M_BETA
+
+        # Verify the constant itself qualifies for 1M context.
+        assert _model_supports_1m_context(_ANTHROPIC_DEFAULT_AUX_MODEL), (
+            f"{_ANTHROPIC_DEFAULT_AUX_MODEL!r} must be in _model_supports_1m_context "
+            f"allowlist so the compression aux client gets the 1M-context beta"
+        )
+
+        captured_kwargs: dict = {}
+
+        def fake_build(api_key, base_url=None, timeout=None, *, drop_context_1m_beta=False, model=None):
+            from agent.anthropic_adapter import _common_betas_for_base_url
+            betas = _common_betas_for_base_url(
+                base_url, drop_context_1m_beta=drop_context_1m_beta, model=model,
+            )
+            captured_kwargs["betas"] = betas
+            captured_kwargs["model"] = model
+            return MagicMock()
+
+        real_token = "sk-ant-oat01-" + "x" * 88
+
+        with patch(
+            "agent.auxiliary_client._select_pool_entry",
+            return_value=(False, None),
+        ), patch(
+            "agent.anthropic_adapter.resolve_anthropic_token",
+            return_value=real_token,
+        ), patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            side_effect=fake_build,
+        ):
+            from agent.auxiliary_client import _try_anthropic
+
+            _try_anthropic()
+
+        assert captured_kwargs.get("model") == _ANTHROPIC_DEFAULT_AUX_MODEL
+        assert _CONTEXT_1M_BETA in captured_kwargs.get("betas", []), (
+            f"Expected {_CONTEXT_1M_BETA!r} in beta headers for "
+            f"{_ANTHROPIC_DEFAULT_AUX_MODEL!r} aux client, got {captured_kwargs.get('betas')}"
+        )
+
+    def test_compression_task_anthropic_main_resolves_sonnet_e2e(self):
+        """Canonical regression: set_runtime_main(anthropic, opus-4-8, not-needed) →
+        resolve_provider_client(*_resolve_task_provider_model('compression')) returns
+        claude-sonnet-4-6 with an OAuth token and 1M-context beta support.
+
+        This exercises the REAL resolve_provider_client path — resolve_provider_client
+        is NOT mocked — so the `caller_model` fix is validated end-to-end.  This is
+        the test that would have caught the bypass where the auto-fill fallback
+        (model = _read_main_model() = 'claude-opus-4-8') won over the
+        provider-matched model returned by _resolve_auto.
+        """
+        from agent.auxiliary_client import (
+            set_runtime_main,
+            clear_runtime_main,
+            _resolve_task_provider_model,
+            resolve_provider_client,
+            _ANTHROPIC_DEFAULT_AUX_MODEL,
+        )
+        from agent.anthropic_adapter import _model_supports_1m_context
+
+        real_token = "sk-ant-oat01-" + "x" * 88
+        mock_built_client = MagicMock()
+
+        try:
+            set_runtime_main("anthropic", "claude-opus-4-8", api_key="not-needed")
+
+            with patch(
+                "agent.auxiliary_client._select_pool_entry",
+                return_value=(False, None),
+            ), patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={},
+            ), patch(
+                # Patched at source so the lazy import inside _try_anthropic picks it up.
+                "agent.anthropic_adapter.resolve_anthropic_token",
+                return_value=real_token,
+            ), patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=mock_built_client,
+            ) as mock_build:
+                prov, model, *_ = _resolve_task_provider_model(task="compression")
+                client, resolved = resolve_provider_client(prov, model)
+
+            assert resolved == _ANTHROPIC_DEFAULT_AUX_MODEL, (
+                f"Expected {_ANTHROPIC_DEFAULT_AUX_MODEL!r}, got {resolved!r} — "
+                "resolve_provider_client auto-fill must not override the "
+                "provider-matched model returned by _resolve_auto"
+            )
+            # build_anthropic_client must have been called with the real OAuth
+            # token, not the 'not-needed' placeholder.
+            assert mock_build.call_count >= 1
+            called_token = mock_build.call_args_list[-1][0][0]
+            assert called_token == real_token, (
+                f"Expected real OAuth token, got {called_token!r}"
+            )
+            assert _model_supports_1m_context(resolved), (
+                f"{resolved!r} must qualify for the 1M-context beta"
+            )
+        finally:
+            clear_runtime_main()

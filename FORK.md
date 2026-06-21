@@ -49,7 +49,8 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/tool_executor.py` | +111 / -29 | Skill-recall hook callsites (`_record_loaded_skill`, `_maybe_skill_recall_hint`) in both sequential + concurrent paths, plus hermes_load_tools and swarm_run dispatch. |
 | `agent/system_prompt.py` | +17 / -23 | Date-only timestamp restored (upstream's prompt-cache fix), grok added to OPENAI_MODEL_EXECUTION_GUIDANCE gate. |
 | `agent/turn_context.py` | (new upstream file, fork-patched) | Upstream (2026-06-08) extracted the per-turn prologue out of `conversation_loop.py` into this new `build_turn_context()` module. Carries 3 PORTED fork-only prologue steps: `memory_auto_feedback` session bind, `_last_user_message` capture (feeds `agent/fork/memory_recall.py`), `_recent_tool_args` reset. On conflict: keep those 3, the rest is upstream-shared; do NOT re-inline the prologue into `conversation_loop.py`. |
-| `agent/auxiliary_client.py` | +~70 / -0 | Exo-scoped auxiliary delegation (2026-06-18): new `_aux_override_targets_exo` helper + guard inside `_resolve_task_provider_model` that drops exo-targeted `auxiliary.<task>` overrides when the active main provider is not exo. Inert without `auxiliary.*.provider: exo` in config. See "Fork-only feature — 2026-06-18" below. On conflict: port the helper + guard block as a unit. |
+| `agent/auxiliary_client.py` | +~130 / -2 | Exo-scoped auxiliary delegation (2026-06-18): new `_aux_override_targets_exo` helper + guard inside `_resolve_task_provider_model`. Anthropic aux 401 fix + provider-matched sonnet-4-6 (2026-06-21): `_try_anthropic` foreign-placeholder-key guard; `_ANTHROPIC_DEFAULT_AUX_MODEL` constant; sonnet substitution in `_resolve_auto` Step-1; `caller_model` choke-point fix in `resolve_provider_client` so auto-fill cannot override the provider-matched model. See dated entries below. |
+| `plugins/model-providers/anthropic/__init__.py` | +1 / -1 | `default_aux_model` updated from haiku to sonnet-4-6 (2026-06-21, see "Fork-only fix — 2026-06-21" below). |
 
 Plus 165 commits of fork-only history. See `git log upstream/main..main`.
 
@@ -442,6 +443,149 @@ self-contained); the only upstream surface it touches is the
 `_resolve_task_provider_model` body. Config-driven: the feature is inert
 without `auxiliary.<task>.provider: exo` in `config.yaml`, so upstream users
 who never set it see no change.
+
+
+### Fork-only fix — 2026-06-21 (Anthropic aux 401 fix + provider-matched sonnet-4-6)
+
+Two related issues surfaced when the user hot-swapped from an exo main session
+to `anthropic/claude-opus-4-8` mid-session: `/compress` 401'd immediately, and
+even when the credentials would have resolved correctly, every aux task used the
+main Opus model rather than a dedicated, cost-efficient aux model.
+
+**Part 1 — Anthropic auxiliary 401 (credential leak fix)**
+
+Root cause: `set_runtime_main()` records the live main credentials verbatim.
+When the main was previously exo (`api_key: not-needed`), `_RUNTIME_MAIN_API_KEY
+= "not-needed"`. After hot-swapping to Anthropic, `_resolve_auto` Step-1
+threaded this stale `explicit_api_key="not-needed"` through to
+`_try_anthropic()`. Inside `_try_anthropic`, the line
+`token = explicit_api_key or resolve_anthropic_token()` returned `"not-needed"`
+(truthy), which was then sent as the Anthropic Bearer token → guaranteed 401.
+
+Fix (`agent/auxiliary_client.py::_try_anthropic`): at the top of the function,
+sanitize `explicit_api_key` — if it does not start with `"sk-ant-"` it is a
+foreign-provider placeholder and is silently discarded so the function falls
+through to `resolve_anthropic_token()` (which reads the real OAuth credential
+from `~/.claude/.credentials.json`). The guard is a single `if` that fires only
+when an invalid key would otherwise have been used. Upstream users who never
+configure an exo `api_key: not-needed` see zero behavior change; the only
+callers that pass a non-"sk-ant-" value are exactly the broken exo paths this
+fixes.
+
+**Part 2 — Provider-matched auxiliary model: main=anthropic → sonnet-4-6**
+
+Desired routing (user's words): "When I'm on an Anthropic model, ALL aux items
+go to claude-sonnet-4-6, UNLESS specifically stated otherwise."
+
+Previously, `_resolve_auto` Step-1 forwarded the main Opus model as the aux
+model for every side task (compression, title generation, session search, etc.),
+which both wastes quota and uses a 200K-context model for tasks that fit in 8K.
+The `_API_KEY_PROVIDER_AUX_MODELS_FALLBACK["anthropic"]` haiku fallback was also
+never reachable in the common case because Step-1 always won with the Opus model.
+
+Fix: three co-ordinated changes:
+
+1. New constant `_ANTHROPIC_DEFAULT_AUX_MODEL = "claude-sonnet-4-6"` in
+   `agent/auxiliary_client.py` — the single place to update if the preferred aux
+   model ever changes.
+
+2. `_API_KEY_PROVIDER_AUX_MODELS_FALLBACK["anthropic"]` updated to reference
+   the constant (was `"claude-haiku-4-5-20251001"`). This covers the explicit
+   `auxiliary.<task>.provider: anthropic` (no model override) path.
+
+3. `plugins/model-providers/anthropic/__init__.py` — `default_aux_model`
+   updated from `"claude-haiku-4-5-20251001"` to `"claude-sonnet-4-6"`. The
+   `ProviderProfile.default_aux_model` takes priority over the fallback dict in
+   `_get_aux_model_for_provider`, so this is the load-bearing change for all
+   `resolve_provider_client("anthropic")` callers.
+
+4. `_resolve_auto` Step-1: when `resolved_provider == "anthropic"`, the model
+   forwarded to `resolve_provider_client` is now `_ANTHROPIC_DEFAULT_AUX_MODEL`
+   instead of `main_model`. Per-task explicit overrides (`auxiliary.<task>.model`
+   in `config.yaml`) still win: they propagate as the `model=` kwarg of the outer
+   `resolve_provider_client("auto", model=per_task_model)` call, which overrides
+   the `resolved` model returned by `_resolve_auto`.
+
+5. **Choke-point fix in `resolve_provider_client` (follow-up — same date):**
+   The Step-1 substitution was undermined by a universal model-resolution fallback
+   near the top of `resolve_provider_client`:
+   ```python
+   if not model:
+       model = _get_aux_model_for_provider(provider) or _read_main_model() or model
+   ```
+   For `provider="auto"` the provider-catalog lookup returns `""`, so `model`
+   becomes `_read_main_model()` = `"claude-opus-4-8"`. Later, the auto branch
+   computes `final_model = model or resolved` — and since `model` is now the
+   truthy `"claude-opus-4-8"`, it overwrote the `"claude-sonnet-4-6"` that
+   `_resolve_auto` returned.
+
+   Fix: capture `caller_model = model` immediately before the `if not model:`
+   fallback. In the auto branch, use `final_model = caller_model or resolved`
+   instead of `model or resolved`. Now:
+   - Caller-supplied model (explicit `model=` arg, incl. per-task overrides) →
+     `caller_model` is non-empty → wins, per-task overrides intact.
+   - No model supplied (typical aux call) → `caller_model` is None → `resolved`
+     from `_resolve_auto` wins → sonnet-4-6 for anthropic-main sessions.
+   - Non-anthropic auto sessions → `_resolve_auto` returns their main model as
+     `resolved`; `caller_model` is None → behavior unchanged.
+
+**1M-context beta on compression (automatic — no extra wiring needed):**
+`build_anthropic_client` gates `context-1m-2025-08-07` via
+`_model_supports_1m_context`. `claude-sonnet-4-6` is in that allowlist and
+`_base_url_needs_context_1m_beta(None)` (native Anthropic) returns True, so the
+1M beta is automatically included in every aux Anthropic client built with
+sonnet-4-6 — no changes to `anthropic_adapter.py` required.
+
+These changes affect ONLY anthropic-main sessions. Exo, OpenRouter, Ollama, and
+all other providers are byte-for-byte unchanged (the substitution in Step-1 is
+guarded on `resolved_provider == "anthropic"`).
+
+Tests: 6 new in `tests/agent/test_auxiliary_main_first.py`
+(`TestAnthropicAuxModel`):
+- `test_anthropic_main_aux_ignores_foreign_placeholder_key`: `"not-needed"`
+  passed as explicit_api_key → sanitized to None → real OAuth token used, NOT
+  the placeholder.
+- `test_anthropic_main_aux_uses_sonnet_not_opus`: main=anthropic/opus → Step-1
+  forwards sonnet-4-6, not opus, to `resolve_provider_client`.
+- `test_anthropic_per_task_model_override_wins`: `auxiliary.compression.model`
+  explicit override → that model is returned by `_resolve_task_provider_model`,
+  not sonnet-4-6.
+- `test_non_anthropic_main_unaffected`: main=exo → main model forwarded
+  unchanged, no sonnet substitution.
+- `test_anthropic_aux_client_carries_1m_context_beta`: sonnet-4-6 is in
+  `_model_supports_1m_context` allowlist → 1M beta present in beta list.
+- `test_compression_task_anthropic_main_resolves_sonnet_e2e` **(canonical
+  regression — choke-point fix)**: `set_runtime_main(anthropic, opus-4-8,
+  not-needed)` → `_resolve_task_provider_model('compression')` →
+  `resolve_provider_client(prov, model)` — exercising the REAL path with no
+  mock on `resolve_provider_client` itself. Asserts resolved model ==
+  sonnet-4-6, `build_anthropic_client` called with the real OAuth token (not
+  "not-needed"), and `_model_supports_1m_context(resolved)` is True.  This
+  test would have caught the Step-1 bypass before the choke-point fix landed.
+
+4 existing tests updated to match new behavior (model assertions haiku →
+sonnet-4-6; explicit api key tests updated to use `sk-ant-*`-prefixed keys
+reflecting that real Anthropic credentials always start with that prefix).
+
+Full file: 17 passed, 6 skipped. Broader sweep (auxiliary or aux or anthropic or
+vision or routing): 905 passed, 14 skipped. The one failure
+(`test_openrouter_main_vision_uses_main_model`) is the documented pre-existing
+global-state-pollution flake — passes in isolation.
+
+**Merge note:** the changes touch three files:
+- `agent/auxiliary_client.py` — three surgical edits: (1) the `_try_anthropic`
+  sanitization guard; (2) the `_resolve_auto` Step-1 substitution; (3) the
+  `caller_model = model` capture + `final_model = caller_model or resolved` in
+  the auto branch of `resolve_provider_client`. On conflict: keep all three. The
+  `caller_model` capture must appear immediately before the `if not model:` auto-
+  fill block. The `final_model` line must use `caller_model`, not `model`.
+- `plugins/model-providers/anthropic/__init__.py` — `default_aux_model` change.
+  On conflict: always use the constant `_ANTHROPIC_DEFAULT_AUX_MODEL` value
+  (`"claude-sonnet-4-6"` as of this writing); do not revert to haiku.
+- `tests/agent/test_auxiliary_client.py` — 4 existing test fixes (model
+  assertions + api key format). On conflict: keep `== "claude-sonnet-4-6"` in
+  both model assertions and keep `sk-ant-*`-prefixed keys in the explicit-key
+  tests.
 
 
 ### Upstream sync — 2026-06-10 (187 commits, 12 conflicts)

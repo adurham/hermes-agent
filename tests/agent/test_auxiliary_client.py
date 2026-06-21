@@ -417,7 +417,7 @@ class TestAnthropicOAuthFlag:
             client, model = _try_anthropic()
 
         assert client is not None
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == "claude-sonnet-4-6"
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
@@ -947,7 +947,7 @@ class TestVisionClientFallback:
 
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == "claude-sonnet-4-6"
 
 
 class TestAuxiliaryPoolAwareness:
@@ -3591,15 +3591,21 @@ class TestAnthropicExplicitApiKey:
     """
 
     def test_try_anthropic_uses_explicit_api_key_over_env(self):
-        """_try_anthropic(explicit_api_key) must use the supplied key, not the env fallback."""
+        """_try_anthropic(explicit_api_key) must use the supplied key, not the env fallback.
+
+        The explicit key must start with "sk-ant-" to be accepted as a genuine
+        Anthropic credential (non-"sk-ant-" values are treated as foreign-provider
+        placeholders and discarded so the real OAuth token is used instead).
+        """
+        explicit_key = "sk-ant-api03-explicit-pool-key-" + "x" * 40
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic
-            client, model = _try_anthropic("explicit-pool-key")
+            client, model = _try_anthropic(explicit_key)
         assert client is not None
-        assert mock_build.call_args.args[0] == "explicit-pool-key", (
+        assert mock_build.call_args.args[0] == explicit_key, (
             f"Expected explicit_api_key to be passed, got: {mock_build.call_args.args[0]}"
         )
         assert mock_build.call_args.args[0] != "env-fallback-key"
@@ -3616,17 +3622,23 @@ class TestAnthropicExplicitApiKey:
         assert mock_build.call_args.args[0] == "env-fallback-key"
 
     def test_resolve_provider_client_passes_explicit_api_key_to_anthropic(self):
-        """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate the key."""
+        """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate
+        a genuine Anthropic credential (sk-ant-* prefix) to _try_anthropic().
+
+        Non-"sk-ant-" values are treated as foreign-provider placeholders and are
+        discarded by _try_anthropic so the real OAuth token is used instead.
+        """
+        explicit_key = "sk-ant-api03-explicit-fallback-" + "x" * 40
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-key"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             client, model = resolve_provider_client(
                 provider="anthropic",
-                explicit_api_key="explicit-fallback-key",
+                explicit_api_key=explicit_key,
             )
         assert client is not None
-        assert mock_build.call_args.args[0] == "explicit-fallback-key", (
+        assert mock_build.call_args.args[0] == explicit_key, (
             "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
         )
 
