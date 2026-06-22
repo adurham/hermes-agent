@@ -78,6 +78,9 @@ tools:
     threshold_pct: 10   # percentage of context — only used in auto mode
     search_default_limit: 5
     max_search_limit: 20
+    defer_toolsets: []    # FORK: core toolsets to lazy-load (see below)
+    defer_tools: []       # FORK: individual tools to lazy-load
+    keep_eager_tools: []  # FORK: individual tools to keep always-loaded
 ```
 
 | Key | Default | Meaning |
@@ -86,6 +89,40 @@ tools:
 | `threshold_pct` | `10` | Percentage of context length at which `auto` mode kicks in. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
+| `defer_toolsets` | `[]` | **(fork)** Toolset names whose tools lazy-load behind the bridge even though they're normally always-loaded core tools (e.g. `browser`, `homeassistant`, `tts`, `vision`, `cronjob`). |
+| `defer_tools` | `[]` | **(fork)** Individual tool names to force-defer — finer-grained than `defer_toolsets` (e.g. defer `swarm_run` without touching the rest of its toolset). |
+| `keep_eager_tools` | `[]` | **(fork)** Individual tool names that must stay always-loaded, overriding `defer_toolsets` (e.g. keep `delegate_task` eager while deferring its sibling `swarm_run`). |
+
+### Deferring normally-core toolsets (fork)
+
+By default, only MCP and non-core plugin tools are eligible for deferral —
+the always-on core toolsets (terminal, file, browser, Home Assistant, etc.)
+never defer. The `defer_toolsets` / `defer_tools` / `keep_eager_tools` keys
+let you opt specific core surfaces into lazy loading. This is genuinely
+dynamic: a deferred tool drops out of the per-turn tool schemas entirely and
+is pulled back in on demand via the `tool_search` → `tool_describe` →
+`tool_call` bridge the first time a task needs it (and stays loaded for the
+rest of that session).
+
+Precedence (highest first): bridge tools never defer → `keep_eager_tools` →
+`defer_tools` → `defer_toolsets` → the default rule. Setting any defer list
+also activates tool search regardless of `threshold_pct` (but `enabled: off`
+still disables everything).
+
+Example — keep your everyday coding tools hot, lazy-load the rest:
+
+```yaml
+tools:
+  tool_search:
+    enabled: on
+    defer_toolsets: [browser, homeassistant, tts, vision, cronjob]
+    defer_tools: [swarm_run]
+    keep_eager_tools: [delegate_task]
+```
+
+The trade-off: the first use of a deferred tool in a session costs one extra
+round trip (and a one-time prompt-cache break). It's a clear win for sessions
+that never touch those toolsets, and roughly neutral for ones that do.
 
 You can also flip the legacy boolean shape:
 
