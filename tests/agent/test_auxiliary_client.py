@@ -1612,6 +1612,11 @@ class TestAuxiliaryFallbackLayering:
         exc.status_code = 402
         return exc
 
+    def _make_429_rate_limit_error(self, msg="Rate limit exceeded, try again in 60 seconds"):
+        exc = Exception(msg)
+        exc.status_code = 429
+        return exc
+
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
         """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -1669,6 +1674,77 @@ class TestAuxiliaryFallbackLayering:
             )
 
         assert main_client.chat.completions.create.called
+
+    def test_auto_task_with_cheap_pin_falls_back_to_main_model(self, monkeypatch):
+        """Auto task pinned to a cheap model (e.g. Haiku via fallback_model) must
+        fall back to the CURRENT main agent model when the third-party chain is
+        empty — the single-provider (Anthropic-only) safety net.
+
+        Regression: previously the auto path called only _try_payment_fallback
+        (third-party chain). With no third-party providers configured, a
+        rate-limited Haiku aux call had nowhere to go and the task failed,
+        despite the user's main Opus creds being available on the same provider.
+        """
+        # Cheap pinned aux model (resolved_provider='auto', model=Haiku),
+        # main model is Opus — they differ, so main-model fallback applies.
+        cheap_client = MagicMock()
+        cheap_client.chat.completions.create.side_effect = self._make_429_rate_limit_error()
+
+        main_client = MagicMock()
+        main_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from main opus"))
+        ])
+
+        with patch("agent.auxiliary_client._read_main_model",
+                   return_value="claude-opus-4-8"), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(cheap_client, "claude-haiku-4-5-20251001")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "claude-haiku-4-5-20251001", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(main_client, "claude-opus-4-8", "main-agent(anthropic)")) as main_fb:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=20,
+            )
+
+        # The auto path must consult the main-agent fallback after the empty
+        # third-party chain, and the main model must serve the request.
+        main_fb.assert_called_once()
+        assert main_client.chat.completions.create.called
+        assert result.choices[0].message.content == "from main opus"
+
+    def test_auto_task_no_cheap_pin_skips_redundant_main_fallback(self, monkeypatch):
+        """When the aux task already resolves to the SAME model as main (no cheap
+        pin), the auto path must NOT add a redundant same-model main fallback —
+        retrying the identical model against the same rate-limited backend is
+        pointless. The third-party chain remains the only auto fallback."""
+        same_client = MagicMock()
+        same_client.chat.completions.create.side_effect = self._make_429_rate_limit_error()
+
+        with patch("agent.auxiliary_client._read_main_model",
+                   return_value="claude-opus-4-8"), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(same_client, "claude-opus-4-8")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "claude-opus-4-8", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(MagicMock(), "claude-opus-4-8", "main-agent(anthropic)")) as main_fb:
+            with pytest.raises(Exception):
+                call_llm(
+                    task="title_generation",
+                    messages=[{"role": "user", "content": "hi"}],
+                    max_tokens=20,
+                )
+
+        # final_model == main model → the same-model guard must skip the
+        # redundant main-agent fallback entirely.
+        main_fb.assert_not_called()
 
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
