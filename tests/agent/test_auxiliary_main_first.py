@@ -763,3 +763,109 @@ class TestAnthropicAuxModel:
             )
         finally:
             clear_runtime_main()
+
+    def test_exo_pinned_task_with_fallback_model_uses_haiku_on_anthropic_main(self):
+        """A task pinned to exo with fallback_model=haiku: exo-main keeps Qwen,
+        anthropic-main drops the exo pin and uses the fallback (Haiku), NOT the
+        global Sonnet default.
+
+        This is the cost-saving path — trivial aux tasks (title, mcp, etc.) run
+        free on the local exo cluster when main=exo, and on cheap Haiku (3x under
+        Sonnet) when an Anthropic session follows main.
+        """
+        from agent.auxiliary_client import (
+            set_runtime_main,
+            clear_runtime_main,
+            _resolve_task_provider_model,
+        )
+
+        EXO_URL = "http://192.168.86.201:52415/v1"
+        QWEN = "mlx-community/Qwen3.6-35B-A3B-8bit"
+        cheap_cfg = {
+            "provider": "exo",
+            "base_url": EXO_URL,
+            "api_key": "x",
+            "model": QWEN,
+            "fallback_model": "claude-haiku-4-5-20251001",
+        }
+
+        # main=exo → exo pin honored, Qwen unchanged.
+        try:
+            set_runtime_main("exo", QWEN, api_key="not-needed", base_url=EXO_URL)
+            with patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value=dict(cheap_cfg),
+            ):
+                prov, model, base_url, _ak, _am = _resolve_task_provider_model(
+                    task="title_generation"
+                )
+            assert prov == "exo" or base_url == EXO_URL, (
+                f"exo-main must keep the exo pin, got provider={prov!r} base_url={base_url!r}"
+            )
+            assert model == QWEN, (
+                f"exo-main must keep the configured exo model, got {model!r}"
+            )
+        finally:
+            clear_runtime_main()
+
+        # main=anthropic → exo pin dropped, fallback_model (Haiku) selected.
+        try:
+            set_runtime_main("anthropic", "claude-opus-4-8", api_key="not-needed")
+            with patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value=dict(cheap_cfg),
+            ):
+                prov, model, base_url, _ak, _am = _resolve_task_provider_model(
+                    task="title_generation"
+                )
+            assert prov == "auto", (
+                f"anthropic-main must drop the exo pin to auto, got {prov!r}"
+            )
+            assert base_url is None, (
+                f"anthropic-main must drop the exo base_url, got {base_url!r}"
+            )
+            assert model == "claude-haiku-4-5-20251001", (
+                f"anthropic-main must use fallback_model (Haiku), got {model!r}"
+            )
+        finally:
+            clear_runtime_main()
+
+    def test_exo_pinned_task_without_fallback_model_uses_sonnet_on_anthropic_main(self):
+        """A task pinned to exo with NO fallback_model: anthropic-main drops the
+        exo pin and clears the model so the provider-default aux model (Sonnet)
+        applies — the unchanged behavior for quality-critical tasks like
+        compression/vision/curator/memory_extraction.
+        """
+        from agent.auxiliary_client import (
+            set_runtime_main,
+            clear_runtime_main,
+            _resolve_task_provider_model,
+        )
+
+        EXO_URL = "http://192.168.86.201:52415/v1"
+        QWEN = "mlx-community/Qwen3.6-35B-A3B-8bit"
+        quality_cfg = {
+            "provider": "exo",
+            "base_url": EXO_URL,
+            "api_key": "x",
+            "model": QWEN,
+        }
+
+        try:
+            set_runtime_main("anthropic", "claude-opus-4-8", api_key="not-needed")
+            with patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value=dict(quality_cfg),
+            ):
+                prov, model, base_url, _ak, _am = _resolve_task_provider_model(
+                    task="compression"
+                )
+            assert prov == "auto", f"expected auto, got {prov!r}"
+            assert base_url is None, f"exo base_url must be dropped, got {base_url!r}"
+            # No fallback_model → model cleared → provider-default (Sonnet) applies
+            # downstream in resolve_provider_client.
+            assert model is None, (
+                f"without fallback_model the model must be cleared, got {model!r}"
+            )
+        finally:
+            clear_runtime_main()
