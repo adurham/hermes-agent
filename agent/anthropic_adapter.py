@@ -4273,7 +4273,18 @@ def create_anthropic_message(
     """
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
-    messages_api = getattr(client, "messages", None)
+    # FORK: prefer the ``.beta.messages`` namespace when the client exposes it.
+    # The fork's Claude-Code-mimicry path attaches beta-ONLY *body* fields
+    # (``context_management``, ``output_config``, ``thinking`` with the CC
+    # 2.1.x shape) that the plain ``.messages.create()/.stream()`` reject with
+    # ``TypeError: ... got an unexpected keyword argument 'context_management'``
+    # (the betas ride in ``default_headers`` from build_anthropic_client, but
+    # the typed body kwargs only exist on ``client.beta.messages.*``). Routing
+    # through ``.beta.messages`` accepts them AND keeps upstream's SSE-only
+    # stream aggregation. Falls back to ``.messages`` for clients without a
+    # ``.beta`` namespace (mocks, non-Anthropic-SDK clients).
+    _beta = getattr(client, "beta", None)
+    messages_api = getattr(_beta, "messages", None) or getattr(client, "messages", None)
     stream_fn = getattr(messages_api, "stream", None)
     if prefer_stream and callable(stream_fn):
         stream_kwargs = dict(api_kwargs)
