@@ -5695,11 +5695,26 @@ def call_llm(
             #   2. Main agent model (last-resort safety net)
             # For auto users (no explicit aux provider), use the full
             # auto-detection chain instead — its Step 1 IS the main agent
-            # model, so users on `auto` already get main-model fallback.
+            # model.  NOTE: that Step-1 equivalence only holds when the task
+            # has no cheap per-task model pin.  When a ``fallback_model`` (or
+            # any explicit per-task model) selects, say, Haiku while the main
+            # model is Opus, ``_try_payment_fallback`` walks ONLY the
+            # third-party chain (openrouter/nous/local/api-key) and never
+            # re-tries the main provider — so a single-provider (e.g.
+            # Anthropic-only) user gets NO fallback at all.  Add the main
+            # agent model as the final safety net for the auto path too, so a
+            # rate-limited Haiku aux call falls back to the current main model
+            # (e.g. Opus) on the same provider/creds rather than failing.  The
+            # main-model client differs from the just-failed cheap model, so
+            # this is a genuine different-model retry, not a doomed same-model
+            # one; guard the degenerate same-model case explicitly.
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_payment_fallback(
                     resolved_provider, task, reason=reason)
+                if fb_client is None and (final_model or "") != (_read_main_model() or ""):
+                    fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
+                        resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)

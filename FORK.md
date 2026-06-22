@@ -753,6 +753,57 @@ signature + its anthropic `step1_model` branch, `_try_anthropic` signature + its
 `resolve_provider_client`. With all three None, behavior is identical to before.
 
 
+### Fork-only fix — 2026-06-22 (auto aux + cheap pin gets main-model fallback on single-provider setups)
+
+**Symptom:** On an Anthropic-only setup (Max subscription, no third-party aux
+keys), once cheap per-task models are pinned (`fallback_model`→Haiku for
+title_generation / skills_hub / mcp / web_extract / vision), a rate-limit / 402 /
+connection error on the cheap aux model made the task **fail outright** — there
+was no second model to catch it.
+
+**Root cause:** In `call_llm`'s capacity-error failover, the `is_auto` branch
+called ONLY `_try_payment_fallback`, which walks the third-party provider chain
+(`openrouter → nous → local/custom → api-key`). The in-code comment claimed
+"Step 1 IS the main agent model, so users on `auto` already get main-model
+fallback" — but that equivalence only holds when the task has NO per-task model
+pin. With a cheap `fallback_model` pin, the *initial* attempt uses Haiku and the
+failover walks only the (empty, for this user) third-party chain — the main
+provider is never re-tried. The `_try_main_agent_model_fallback` safety net
+existed but was wired ONLY into the explicit-provider `else` branch, not `auto`.
+
+**Fix (`agent/auxiliary_client.py`, one branch):** in the `is_auto` path, after
+`_try_payment_fallback` returns nothing, also call
+`_try_main_agent_model_fallback` — guarded by
+`(final_model or "") != (_read_main_model() or "")` so a task that already
+resolves to the main model doesn't pointlessly retry the same model against the
+same rate-limited backend. Net: a rate-limited Haiku aux call now falls back to
+the *current* main model (e.g. Opus) on the same provider/creds and completes,
+instead of failing. Multi-provider `auto` users are unaffected (the third-party
+chain still runs first); tasks whose model == main model are unaffected (guard
+skips the redundant retry).
+
+**Why "stay within Anthropic / use the current main model" falls out for free:**
+`_try_main_agent_model_fallback` resolves `_read_main_provider()` +
+`_read_main_model()` live at failover time, so the fallback is always whatever
+main model is selected in the moment (Anthropic→Anthropic). No separate config.
+
+**Verification:** RED/GREEN confirmed — the new
+`test_auto_task_with_cheap_pin_falls_back_to_main_model` FAILS on pre-fix code
+("all fallbacks exhausted", raises) and PASSES after; the guard test
+`test_auto_task_no_cheap_pin_skips_redundant_main_fallback` asserts the
+same-model case skips the redundant fallback. Live unmocked
+`_try_main_agent_model_fallback('auto', …)` resolves `claude-opus-4-8` /
+`main-agent(anthropic)`. Full aux suite green except the one long-documented
+vision global-state ordering flake (`test_openrouter_main_vision_uses_main_model`
+— fails identically on clean pre-change code, passes in isolation).
+
+**Merge note:** single additive branch in `call_llm`'s `is_auto` failover. On
+conflict, keep the two added lines (the `if fb_client is None and (final_model
+or "") != (_read_main_model() or ""):` guard + the
+`_try_main_agent_model_fallback` call) inside the `if is_auto:` block. Behavior
+for multi-provider auto users and same-model tasks is unchanged.
+
+
 ### Upstream sync — 2026-06-10 (187 commits, 12 conflicts)
 
 Merge-base was 2026-06-08; pulled 187 upstream commits on branch
