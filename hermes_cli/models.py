@@ -2557,6 +2557,27 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
+    # Config-level endpoint override (config.yaml ``model.base_url`` /
+    # ``model.api_key``). ``provider_model_ids`` honors these inline fields
+    # when the main ``model.provider`` matches this slug (see the anthropic
+    # branch), fetching /v1/models from that endpoint. If we leave them out
+    # of the fingerprint, a stale base_url that gets corrected on disk (e.g.
+    # an exo URL left under provider=anthropic, then blanked) does NOT bust
+    # the cache — so a poisoned catalog (exo's MLX models cached under the
+    # anthropic key) survives across sessions. Fold in the SAME fields under
+    # the SAME provider-match condition the fetch uses, so the fingerprint
+    # honestly tracks the endpoint the next fetch would actually hit.
+    try:
+        model_cfg = _get_model_config_dict()
+        cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
+        if cfg_provider and cfg_provider == provider:
+            cfg_base_url = str(model_cfg.get("base_url", "") or "").strip()
+            cfg_api_key = str(model_cfg.get("api_key", "") or "").strip()
+            parts.append(f"cfg.base_url={cfg_base_url}")
+            parts.append(f"cfg.api_key={cfg_api_key}")
+    except Exception:
+        pass
+
     # OAuth / external-file mtimes that change on re-auth
     try:
         from hermes_constants import get_hermes_home
