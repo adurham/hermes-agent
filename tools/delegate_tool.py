@@ -397,38 +397,78 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
-def _get_child_timeout() -> float:
+_DEFAULT_MAX_ASYNC_CHILDREN = 3
+
+
+def _get_max_async_children() -> int:
+    """Read delegation.max_async_children from config (floor 1, no ceiling).
+
+    Caps how many background (``background=true``) subagents can run at once.
+    When at capacity, a new async dispatch is REJECTED (not queued) so a
+    runaway model can't pile up unbounded background work. Separate from
+    max_concurrent_children, which bounds a single synchronous batch.
+    """
+    cfg = _load_config()
+    val = cfg.get("max_async_children")
+    if val is not None:
+        try:
+            return max(1, int(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_async_children=%r is not a valid integer; "
+                "using default %d",
+                val, _DEFAULT_MAX_ASYNC_CHILDREN,
+            )
+            return _DEFAULT_MAX_ASYNC_CHILDREN
+    env_val = os.getenv("DELEGATION_MAX_ASYNC_CHILDREN")
+    if env_val:
+        try:
+            return max(1, int(env_val))
+        except (TypeError, ValueError):
+            return _DEFAULT_MAX_ASYNC_CHILDREN
+    return _DEFAULT_MAX_ASYNC_CHILDREN
+
+
+def _get_child_timeout() -> Optional[float]:
     """Read delegation.child_timeout_seconds from config.
 
-    Semantics: maximum time the child can be IDLE (no activity-tracker
-    updates) before being killed.  Activity is touched on each stream chunk,
-    tool execution, and iteration boundary in run_agent — so a child making
-    real progress (steady tool calls, even on slow API responses) never
-    trips this.  Only a genuinely stuck child (hung tool, dead socket the
-    stream watchdog couldn't recover) does.
+    Returns the number of seconds a single child agent is allowed to run
+    before being cut off, or ``None`` when no wall-clock cap applies.
 
-    Default: 600 s (10 minutes of zero activity).  This was previously a
-    wall-clock cap, which killed productive children mid-fan-out.
+    Default: ``None`` (no timeout). Subagents doing legitimate heavy work
+    (deep code review, large research fan-outs, slow reasoning models) were
+    routinely killed mid-task by the old blanket cap even though they were
+    making steady progress. Failures should come from what the child is
+    actually doing — API errors, tool errors, iteration budget — not from a
+    generic delegation-level stopwatch. Stuck-child protection is handled
+    separately by the heartbeat staleness monitor, which stops refreshing
+    parent activity so the gateway inactivity timeout can fire.
+
+    Set ``delegation.child_timeout_seconds`` to a positive number to opt back
+    in to a hard cap (floor 30 s); ``0`` or a negative value means disabled.
     """
     cfg = _load_config()
     val = cfg.get("child_timeout_seconds")
     if val is not None:
         try:
-            return max(30.0, float(val))
+            parsed = float(val)
         except (TypeError, ValueError):
             logger.warning(
                 "delegation.child_timeout_seconds=%r is not a valid number; "
-                "using default %d",
+                "using default (no timeout)",
                 val,
-                DEFAULT_CHILD_TIMEOUT,
             )
+        else:
+            return None if parsed <= 0 else max(30.0, parsed)
     env_val = os.getenv("DELEGATION_CHILD_TIMEOUT_SECONDS")
     if env_val:
         try:
-            return max(30.0, float(env_val))
+            parsed = float(env_val)
         except (TypeError, ValueError):
             pass
-    return float(DEFAULT_CHILD_TIMEOUT)
+        else:
+            return None if parsed <= 0 else max(30.0, parsed)
+    return DEFAULT_CHILD_TIMEOUT
 
 
 def _get_child_max_runtime() -> float:
@@ -577,7 +617,12 @@ def _preserve_parent_mcp_toolsets(
 
 
 DEFAULT_MAX_ITERATIONS = 50
-DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+# No default wall-clock cap on child agents: legitimate heavy subagent work
+# (deep reviews, research fan-outs, slow reasoning models) was being killed
+# mid-task. Errors should come from what the child actually does; stuck-child
+# detection lives in the heartbeat staleness monitor below. Users can opt back
+# in via delegation.child_timeout_seconds.
+DEFAULT_CHILD_TIMEOUT: Optional[float] = None
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
@@ -585,7 +630,8 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 #     operation (terminal command, web fetch, large file read)
 # The idle ceiling stays tight so genuinely stuck children don't mask the gateway
 # timeout. The in-tool ceiling is much higher so legit long-running tools get
-# time to finish; child_timeout_seconds (default 600s) is still the hard cap.
+# time to finish; delegation.child_timeout_seconds (off by default) remains an
+# optional hard cap for users who want one.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -849,6 +895,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    session_ref: Optional[Dict[str, Any]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -919,6 +966,11 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        # The child's own session id — filled into the shared ref once the
+        # child agent exists (the callback is built first), so every relayed
+        # event lets UIs open/inspect the subagent's session directly.
+        if session_ref and session_ref.get("session_id"):
+            kw["child_session_id"] = str(session_ref["session_id"])
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -994,6 +1046,13 @@ def _build_child_progress_callback(
                 except Exception as e:
                     logger.debug("Swarm board update failed: %s", e)
             _relay("subagent.finalizing", preview=preview, **kwargs)
+        if event_type == "subagent.text":
+            # Streamed assistant reply text from the child. Relay verbatim so a
+            # gateway watch window can mirror the child "talking" as it streams.
+            # No spinner echo — the CLI shows the child via the tree, and the
+            # CLI/TUI progress handlers ignore non-tool event types, so this is
+            # inert there; only a gateway watch window consumes it.
+            _relay("subagent.text", preview=preview)
             return
 
         # Normalise legacy strings, new-style "delegate.*" strings, and
@@ -1245,6 +1304,7 @@ def _build_child_agent(
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
     # TUI can reconstruct the spawn tree and route per-branch controls.
+    child_session_ref: Dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index,
         goal,
@@ -1255,6 +1315,7 @@ def _build_child_agent(
         depth=tui_depth,
         model=effective_model_for_cb,
         toolsets=child_toolsets,
+        session_ref=child_session_ref,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -1378,7 +1439,7 @@ def _build_child_agent(
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
-        platform=parent_agent.platform,
+        platform="subagent",
         skip_context_files=True,
         skip_memory=True,
         clarify_callback=None,
@@ -1405,6 +1466,9 @@ def _build_child_agent(
     # providers).
     if getattr(parent_agent, "_oauth_1m_beta_disabled", False):
         child._oauth_1m_beta_disabled = True
+    # Now the child exists, its session id can ride on every relayed event
+    # (including the spawn_requested below — first emit happens after this).
+    child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the
@@ -1421,6 +1485,13 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    # Stable sidebar marker: delegate subagent sessions must stay out of
+    # session pickers even when a parent delete orphans them (parent_session_id
+    # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
+    # ``list_sessions_rich`` child-exclusion clause.
+    parent_sid = getattr(parent_agent, "session_id", None)
+    if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
+        child._session_init_model_config["_delegate_from"] = parent_sid
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1847,8 +1918,9 @@ def _run_single_child(
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
         )
 
-        # Run child with a hard timeout to prevent indefinite blocking
-        # when the child's API call or tool-level HTTP request hangs.
+        # Run child with an optional hard timeout (off by default —
+        # result(timeout=None) blocks until the child finishes). Stuck-child
+        # protection comes from the heartbeat staleness monitor instead.
         child_timeout = _get_child_timeout()
         _timeout_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -1863,11 +1935,23 @@ def _run_single_child(
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).
         _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
 
+        def _relay_child_text(delta: str) -> None:
+            # Forward the child's streamed reply text up the progress relay so
+            # gateway watch windows mirror it live (subagent.text → message.delta).
+            # Inert under CLI/TUI: their progress handlers ignore non-tool events.
+            if not delta or not child_progress_cb:
+                return
+            try:
+                child_progress_cb("subagent.text", preview=delta)
+            except Exception as e:
+                logger.debug("Child text relay failed: %s", e)
+
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             return child.run_conversation(
                 user_message=goal,
                 task_id=child_task_id,
+                stream_callback=_relay_child_text,
             )
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
@@ -1881,6 +1965,12 @@ def _run_single_child(
         result = None
         _timeout_exc: Optional[BaseException] = None
         try:
+            # FORK: idle-based stuck-child detection — poll the child's
+            # activity tracker rather than relying on a single wall-clock
+            # result(timeout=...). A child making steady progress runs as long
+            # as it needs; only a genuinely idle/stuck child (or one exceeding
+            # the max-runtime backstop) trips the timeout. Compatible with
+            # upstream's None-default (child_timeout None → idle check skipped).
             while True:
                 try:
                     result = _child_future.result(timeout=5.0)
@@ -1895,7 +1985,8 @@ def _run_single_child(
                     except Exception:
                         _idle_secs = 0.0
                     _runtime_secs = time.monotonic() - child_start
-                    if _idle_secs > child_timeout:
+                    # child_timeout None = no idle cap (upstream default).
+                    if child_timeout is not None and _idle_secs > child_timeout:
                         _timeout_exc = FuturesTimeoutError(
                             f"Child idle for {_idle_secs:.0f}s "
                             f"(limit {child_timeout:.0f}s)"
@@ -1950,7 +2041,7 @@ def _run_single_child(
                     diagnostic_path = _dump_subagent_timeout_diagnostic(
                         child=child,
                         task_index=task_index,
-                        timeout_seconds=float(child_timeout),
+                        timeout_seconds=float(child_timeout or child_max_runtime or 0.0),
                         duration_seconds=float(duration),
                         worker_thread=_worker_thread_holder.get("t"),
                         goal=goal,
@@ -2412,6 +2503,7 @@ def delegate_task(
     role: Optional[str] = None,
     model: Optional[str] = None,
     agent_type: Optional[str] = None,
+    background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2442,6 +2534,13 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+
+    # Background (async) delegation now applies to BOTH single tasks and
+    # batches. A batch simply becomes N independent async dispatches: each
+    # child runs on the daemon executor and re-enters the conversation via
+    # the completion queue on its own, carrying its own handle. There's no
+    # combined "wait for all" — fan-out is exactly N background subagents.
+    background = is_truthy_value(background, default=False) if background is not None else False
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -2627,138 +2726,185 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
-    if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
-        _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
-        results.append(result)
-    else:
-        # Batch -- run in parallel with per-task progress lines.
-        # When 2+ children and stdout is a TTY, we render a single live
-        # multi-row board above the parent's spinner instead of letting
-        # each child print its chatter directly.  Errors and final
-        # summaries still flow up to stdout above the board.
-        from tools.swarm_board import SwarmBoard, make_child_print_fn
+    def _execute_and_aggregate() -> dict:
+        """Run all built children (1 or N), join on them, aggregate results,
+        fire subagent_stop hooks + cost rollup, and return the combined result
+        dict. Used by BOTH the synchronous path and the background runner. In
+        the background case this whole function runs on the daemon executor, so
+        the parent turn isn't blocked — but the batch still JOINS on itself
+        here (all children must finish) before producing ONE consolidated
+        results block. That is the contract: fan-out runs in the background,
+        waits on each other, and returns together.
+        """
+        if n_tasks == 1:
+            # Single task -- run directly (no thread pool overhead)
+            _i, _t, child = children[0]
+            result = _run_single_child(0, _t["goal"], child, parent_agent)
+            results.append(result)
+        else:
+            # Batch -- run in parallel with per-task progress lines.
+            # When 2+ children and stdout is a TTY, we render a single live
+            # multi-row board above the parent's spinner instead of letting
+            # each child print its chatter directly.  Errors and final
+            # summaries still flow up to stdout above the board.
+            from tools.swarm_board import SwarmBoard, make_child_print_fn
 
-        completed_count = 0
-        spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
+            completed_count = 0
+            spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-        with SwarmBoard.maybe_start(parent_agent, n_tasks) as _swarm_board:
-            # Pre-register every child as a row so the board paints
-            # immediately (otherwise rows pop in as the children fire
-            # their first event, which looks janky).
-            parent_print_fn = getattr(parent_agent, "_print_fn", None) or print
-            # Initial status is "queued" — children sit in the executor's
-            # queue until a worker slot frees up.  The first child whose
-            # _run_single_child fires transitions to "running" via the
-            # subagent.start handler.  Without this distinction, batches
-            # larger than max_concurrent_children look identical to running
-            # children stuck on tool 0 (just "starting · 0 tools" forever).
-            for i, t, child in children:
-                sid = getattr(child, "_subagent_id", None) or f"subagent-{i}"
-                _swarm_board.register(
-                    sid,
-                    model=getattr(child, "model", "") or "",
-                    goal=(t.get("goal") or "")[:60],
-                    status="queued",
-                )
-                # Patch the child's _print_fn so its chatter goes to its
-                # row's note slot instead of stdout.  No-op when the
-                # board is the no-op variant.
-                child._print_fn = make_child_print_fn(
-                    _swarm_board, sid, fallback=parent_print_fn
-                )
-                # Stash the board on the child so the progress callback
-                # closure (built in _build_child_progress_callback) can
-                # find it via parent_agent's chain.
-                child._swarm_board = _swarm_board
-            # Also stash on the parent so the progress relay can update
-            # rows from the parent thread.
-            parent_agent._swarm_board = _swarm_board
-
-            with ThreadPoolExecutor(max_workers=max_children) as executor:
-                futures = {}
-                _children_list = list(children)
-
-                def _submit_child(idx_t_child):
-                    _i, _t, _child = idx_t_child
-                    return executor.submit(
-                        _run_single_child,
-                        task_index=_i,
-                        goal=_t["goal"],
-                        child=_child,
-                        parent_agent=parent_agent,
+            with SwarmBoard.maybe_start(parent_agent, n_tasks) as _swarm_board:
+                # Pre-register every child as a row so the board paints
+                # immediately (otherwise rows pop in as the children fire
+                # their first event, which looks janky).
+                parent_print_fn = getattr(parent_agent, "_print_fn", None) or print
+                # Initial status is "queued" — children sit in the executor's
+                # queue until a worker slot frees up.  The first child whose
+                # _run_single_child fires transitions to "running" via the
+                # subagent.start handler.  Without this distinction, batches
+                # larger than max_concurrent_children look identical to running
+                # children stuck on tool 0 (just "starting · 0 tools" forever).
+                for i, t, child in children:
+                    sid = getattr(child, "_subagent_id", None) or f"subagent-{i}"
+                    _swarm_board.register(
+                        sid,
+                        model=getattr(child, "model", "") or "",
+                        goal=(t.get("goal") or "")[:60],
+                        status="queued",
                     )
+                    # Patch the child's _print_fn so its chatter goes to its
+                    # row's note slot instead of stdout.  No-op when the
+                    # board is the no-op variant.
+                    child._print_fn = make_child_print_fn(
+                        _swarm_board, sid, fallback=parent_print_fn
+                    )
+                    # Stash the board on the child so the progress callback
+                    # closure (built in _build_child_progress_callback) can
+                    # find it via parent_agent's chain.
+                    child._swarm_board = _swarm_board
+                # Also stash on the parent so the progress relay can update
+                # rows from the parent thread.
+                parent_agent._swarm_board = _swarm_board
 
-                # Stagger child submission so a single child populates the
-                # Anthropic prompt cache (system prompt + tools array) before
-                # siblings fire.  Without this, parallel children all
-                # cache-miss simultaneously and each pays the full cold-start
-                # cost (~3-5 min on large tool lists), instead of the first
-                # one writing the cache and the rest hitting in seconds.
-                # See memory note "Anthropic SDK silently drops SSE pings"
-                # → "Swarm amplification" for context.  Falls back to
-                # parallel submission after _STAGGER_MAX_WAIT if the lead
-                # child hasn't completed its first API call by then.
-                if len(_children_list) > 1:
-                    lead = _children_list[0]
-                    _lead_future = _submit_child(lead)
-                    futures[_lead_future] = lead[0]
+                with ThreadPoolExecutor(max_workers=max_children) as executor:
+                    futures = {}
+                    _children_list = list(children)
 
-                    _STAGGER_MAX_WAIT = 120.0
-                    _stagger_start = time.monotonic()
-                    _lead_child = lead[2]
-                    while time.monotonic() - _stagger_start < _STAGGER_MAX_WAIT:
-                        if getattr(parent_agent, "_interrupt_requested", False) is True:
-                            break
-                        # Lead already finished?  Then cache (if any) is
-                        # written and there's no point waiting further —
-                        # release the rest immediately.  This also keeps
-                        # mocked-child tests (where _run_single_child is
-                        # patched and returns instantly) from spinning here.
-                        if _lead_future.done():
-                            break
-                        try:
-                            _lead_calls = int(
-                                _lead_child.get_activity_summary().get(
-                                    "api_call_count", 0
-                                ) or 0
-                            )
-                        except Exception:
-                            break  # can't read state, give up staggering
-                        if _lead_calls >= 1:
-                            # Lead has completed at least one API call —
-                            # the prompt cache prefix is now populated.
-                            break
-                        time.sleep(1.0)
+                    def _submit_child(idx_t_child):
+                        _i, _t, _child = idx_t_child
+                        return executor.submit(
+                            _run_single_child,
+                            task_index=_i,
+                            goal=_t["goal"],
+                            child=_child,
+                            parent_agent=parent_agent,
+                        )
 
-                    for entry in _children_list[1:]:
-                        futures[_submit_child(entry)] = entry[0]
-                else:
-                    for entry in _children_list:
-                        futures[_submit_child(entry)] = entry[0]
+                    # Stagger child submission so a single child populates the
+                    # Anthropic prompt cache (system prompt + tools array) before
+                    # siblings fire.  Without this, parallel children all
+                    # cache-miss simultaneously and each pays the full cold-start
+                    # cost (~3-5 min on large tool lists), instead of the first
+                    # one writing the cache and the rest hitting in seconds.
+                    # See memory note "Anthropic SDK silently drops SSE pings"
+                    # → "Swarm amplification" for context.  Falls back to
+                    # parallel submission after _STAGGER_MAX_WAIT if the lead
+                    # child hasn't completed its first API call by then.
+                    if len(_children_list) > 1:
+                        lead = _children_list[0]
+                        _lead_future = _submit_child(lead)
+                        futures[_lead_future] = lead[0]
 
-            # Poll futures with interrupt checking.  as_completed() blocks
-            # until ALL futures finish — if a child agent gets stuck,
-            # the parent blocks forever even after interrupt propagation.
-            # Instead, use wait() with a short timeout so we can bail
-            # when the parent is interrupted.
-            # Map task_index -> child agent, so fabricated entries for
-            # still-pending futures can carry the correct _delegate_role.
-            _child_by_index = {i: child for (i, _, child) in children}
-
-            pending = set(futures.keys())
-            while pending:
-                if getattr(parent_agent, "_interrupt_requested", False) is True:
-                    # Parent interrupted — collect whatever finished and
-                    # abandon the rest.  Children already received the
-                    # interrupt signal; we just can't wait forever.
-                    for f in pending:
-                        idx = futures[f]
-                        if f.done():
+                        _STAGGER_MAX_WAIT = 120.0
+                        _stagger_start = time.monotonic()
+                        _lead_child = lead[2]
+                        while time.monotonic() - _stagger_start < _STAGGER_MAX_WAIT:
+                            if getattr(parent_agent, "_interrupt_requested", False) is True:
+                                break
+                            # Lead already finished?  Then cache (if any) is
+                            # written and there's no point waiting further —
+                            # release the rest immediately.  This also keeps
+                            # mocked-child tests (where _run_single_child is
+                            # patched and returns instantly) from spinning here.
+                            if _lead_future.done():
+                                break
                             try:
-                                entry = f.result()
+                                _lead_calls = int(
+                                    _lead_child.get_activity_summary().get(
+                                        "api_call_count", 0
+                                    ) or 0
+                                )
+                            except Exception:
+                                break  # can't read state, give up staggering
+                            if _lead_calls >= 1:
+                                # Lead has completed at least one API call —
+                                # the prompt cache prefix is now populated.
+                                break
+                            time.sleep(1.0)
+
+                        for entry in _children_list[1:]:
+                            futures[_submit_child(entry)] = entry[0]
+                    else:
+                        for entry in _children_list:
+                            futures[_submit_child(entry)] = entry[0]
+
+                    # Poll futures with interrupt checking.  as_completed() blocks
+                    # until ALL futures finish — if a child agent gets stuck,
+                    # the parent blocks forever even after interrupt propagation.
+                    # Instead, use wait() with a short timeout so we can bail
+                    # when the parent is interrupted.
+                    # Map task_index -> child agent, so fabricated entries for
+                    # still-pending futures can carry the correct _delegate_role.
+                    _child_by_index = {i: child for (i, _, child) in children}
+
+                    pending = set(futures.keys())
+                    while pending:
+                        if getattr(parent_agent, "_interrupt_requested", False) is True:
+                            # Parent interrupted — collect whatever finished and
+                            # abandon the rest.  Children already received the
+                            # interrupt signal; we just can't wait forever.
+                            for f in pending:
+                                idx = futures[f]
+                                if f.done():
+                                    try:
+                                        entry = f.result()
+                                    except Exception as exc:
+                                        entry = {
+                                            "task_index": idx,
+                                            "status": "error",
+                                            "summary": None,
+                                            "error": str(exc),
+                                            "api_calls": 0,
+                                            "duration_seconds": 0,
+                                            "_child_role": getattr(
+                                                _child_by_index.get(idx), "_delegate_role", None
+                                            ),
+                                        }
+                                else:
+                                    entry = {
+                                        "task_index": idx,
+                                        "status": "interrupted",
+                                        "summary": None,
+                                        "error": "Parent agent interrupted — child did not finish in time",
+                                        "api_calls": 0,
+                                        "duration_seconds": 0,
+                                        "_child_role": getattr(
+                                            _child_by_index.get(idx), "_delegate_role", None
+                                        ),
+                                    }
+                                results.append(entry)
+                                completed_count += 1
+                            break
+
+                        from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
+
+                        done, pending = _cf_wait(
+                            pending, timeout=0.5, return_when=FIRST_COMPLETED
+                        )
+                        for future in done:
+                            try:
+                                entry = future.result()
                             except Exception as exc:
+                                idx = futures[future]
                                 entry = {
                                     "task_index": idx,
                                     "status": "error",
@@ -2770,222 +2916,302 @@ def delegate_task(
                                         _child_by_index.get(idx), "_delegate_role", None
                                     ),
                                 }
-                        else:
-                            entry = {
-                                "task_index": idx,
-                                "status": "interrupted",
-                                "summary": None,
-                                "error": "Parent agent interrupted — child did not finish in time",
-                                "api_calls": 0,
-                                "duration_seconds": 0,
-                                "_child_role": getattr(
-                                    _child_by_index.get(idx), "_delegate_role", None
-                                ),
-                            }
-                        results.append(entry)
-                        completed_count += 1
-                    break
+                            results.append(entry)
+                            completed_count += 1
 
-                from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
-
-                done, pending = _cf_wait(
-                    pending, timeout=0.5, return_when=FIRST_COMPLETED
-                )
-                for future in done:
-                    try:
-                        entry = future.result()
-                    except Exception as exc:
-                        idx = futures[future]
-                        entry = {
-                            "task_index": idx,
-                            "status": "error",
-                            "summary": None,
-                            "error": str(exc),
-                            "api_calls": 0,
-                            "duration_seconds": 0,
-                            "_child_role": getattr(
-                                _child_by_index.get(idx), "_delegate_role", None
-                            ),
-                        }
-                    results.append(entry)
-                    completed_count += 1
-
-                    # Print per-task completion line above the spinner
-                    idx = entry["task_index"]
-                    label = (
-                        task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                    )
-                    dur = entry.get("duration_seconds", 0)
-                    status = entry.get("status", "?")
-                    icon = "✓" if status == "completed" else "✗"
-                    remaining = n_tasks - completed_count
-                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                    if spinner_ref:
-                        try:
-                            spinner_ref.print_above(completion_line)
-                        except Exception:
-                            print(f"  {completion_line}")
-                    else:
-                        print(f"  {completion_line}")
-
-                    # Update spinner text to show remaining count
-                    if spinner_ref and remaining > 0:
-                        try:
-                            spinner_ref.update_text(
-                                f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                            # Print per-task completion line above the spinner
+                            idx = entry["task_index"]
+                            label = (
+                                task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
                             )
-                        except Exception as e:
-                            logger.debug("Spinner update_text failed: %s", e)
+                            dur = entry.get("duration_seconds", 0)
+                            status = entry.get("status", "?")
+                            icon = "✓" if status == "completed" else "✗"
+                            remaining = n_tasks - completed_count
+                            completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                            if spinner_ref:
+                                try:
+                                    spinner_ref.print_above(completion_line)
+                                except Exception:
+                                    print(f"  {completion_line}")
+                            else:
+                                print(f"  {completion_line}")
 
-        # Sort by task_index so results match input order
-        results.sort(key=lambda r: r["task_index"])
+                            # Update spinner text to show remaining count
+                            if spinner_ref and remaining > 0:
+                                try:
+                                    spinner_ref.update_text(
+                                        f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                                    )
+                                except Exception as e:
+                                    logger.debug("Spinner update_text failed: %s", e)
 
-    # Notify parent's memory provider of delegation outcomes
-    if (
-        parent_agent
-        and hasattr(parent_agent, "_memory_manager")
-        and parent_agent._memory_manager
-    ):
+                # Sort by task_index so results match input order
+                results.sort(key=lambda r: r["task_index"])
+
+            # Notify parent's memory provider of delegation outcomes
+            if (
+                parent_agent
+                and hasattr(parent_agent, "_memory_manager")
+                and parent_agent._memory_manager
+            ):
+                for entry in results:
+                    try:
+                        _task_goal = (
+                            task_list[entry["task_index"]]["goal"]
+                            if entry["task_index"] < len(task_list)
+                            else ""
+                        )
+                        parent_agent._memory_manager.on_delegation(
+                            task=_task_goal,
+                            result=entry.get("summary", "") or "",
+                            child_session_id=(
+                                getattr(children[entry["task_index"]][2], "session_id", "")
+                                if entry["task_index"] < len(children)
+                                else ""
+                            ),
+                        )
+                    except Exception:
+                        pass
+
+        # Fire subagent_stop hooks once per child, serialised on the parent thread.
+        # This keeps Python-plugin and shell-hook callbacks off of the worker threads
+        # that ran the children, so hook authors don't need to reason about
+        # concurrent invocation.  Role was captured into the entry dict in
+        # _run_single_child (or the fabricated-entry branches above) before the
+        # child was closed.
+        _parent_session_id = getattr(parent_agent, "session_id", None)
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+        except Exception:
+            _invoke_hook = None
+        # Aggregate child spend here so the parent's footer/UI reflect the true
+        # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
+        # child's cost was captured in _run_single_child before its AIAgent was
+        # closed; we fold them into the parent in one pass alongside the
+        # subagent_stop hook loop so we don't walk `results` twice.
+        _children_cost_total = 0.0
         for entry in results:
+            child_role = entry.pop("_child_role", None)
+            child_cost = entry.pop("_child_cost_usd", 0.0)
             try:
-                _task_goal = (
-                    task_list[entry["task_index"]]["goal"]
-                    if entry["task_index"] < len(task_list)
-                    else ""
-                )
-                parent_agent._memory_manager.on_delegation(
-                    task=_task_goal,
-                    result=entry.get("summary", "") or "",
-                    child_session_id=(
-                        getattr(children[entry["task_index"]][2], "session_id", "")
-                        if entry["task_index"] < len(children)
-                        else ""
-                    ),
-                )
-            except Exception:
+                if child_cost:
+                    _children_cost_total += float(child_cost)
+            except (TypeError, ValueError):
                 pass
-
-    # Fire subagent_stop hooks once per child, serialised on the parent thread.
-    # This keeps Python-plugin and shell-hook callbacks off of the worker threads
-    # that ran the children, so hook authors don't need to reason about
-    # concurrent invocation.  Role was captured into the entry dict in
-    # _run_single_child (or the fabricated-entry branches above) before the
-    # child was closed.
-    _parent_session_id = getattr(parent_agent, "session_id", None)
-    try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-    except Exception:
-        _invoke_hook = None
-    # Aggregate child spend here so the parent's footer/UI reflect the true
-    # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
-    # child's cost was captured in _run_single_child before its AIAgent was
-    # closed; we fold them into the parent in one pass alongside the
-    # subagent_stop hook loop so we don't walk `results` twice.
-    _children_cost_total = 0.0
-    for entry in results:
-        child_role = entry.pop("_child_role", None)
-        child_cost = entry.pop("_child_cost_usd", 0.0)
-        try:
-            if child_cost:
-                _children_cost_total += float(child_cost)
-        except (TypeError, ValueError):
-            pass
-        if _invoke_hook is None:
-            continue
-        try:
-            _child_index = entry.get("task_index", -1)
-            _child_agent = (
-                children[_child_index][2]
-                if isinstance(_child_index, int) and 0 <= _child_index < len(children)
-                else None
-            )
-            _invoke_hook(
-                "subagent_stop",
-                parent_session_id=_parent_session_id,
-                parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
-                child_session_id=getattr(_child_agent, "session_id", None),
-                child_role=child_role,
-                child_summary=entry.get("summary"),
-                child_status=entry.get("status"),
-                duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
-            )
-        except Exception:
-            logger.debug("subagent_stop hook invocation failed", exc_info=True)
-
-    # Fold the aggregated child cost into the parent's session total.  This is
-    # additive — each delegate_task call contributes its own children — so
-    # nested orchestrator→worker trees roll up naturally: each layer's own
-    # delegate_task() folds its direct children in, and when the orchestrator
-    # itself finishes, its parent folds the orchestrator's now-inflated total
-    # on top.  Degrades silently if the parent lacks the counter (older test
-    # fixtures, etc.).
-    if _children_cost_total > 0.0:
-        try:
-            current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
-            parent_agent.session_estimated_cost_usd = current + _children_cost_total
-            # Also track subagent-only spend on a separate counter so /usage
-            # and the exit summary can break out "parent vs children" without
-            # double-counting.  Additive across delegate_task() calls in the
-            # same session (matches session_estimated_cost_usd's semantics).
+            if _invoke_hook is None:
+                continue
             try:
-                prior_sub = float(
-                    getattr(parent_agent, "session_subagent_cost_usd", 0.0) or 0.0
+                _child_index = entry.get("task_index", -1)
+                _child_agent = (
+                    children[_child_index][2]
+                    if isinstance(_child_index, int) and 0 <= _child_index < len(children)
+                    else None
                 )
-                parent_agent.session_subagent_cost_usd = (
-                    prior_sub + _children_cost_total
+                _invoke_hook(
+                    "subagent_stop",
+                    parent_session_id=_parent_session_id,
+                    parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+                    child_session_id=getattr(_child_agent, "session_id", None),
+                    child_role=child_role,
+                    child_summary=entry.get("summary"),
+                    child_status=entry.get("status"),
+                    duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
                 )
             except Exception:
-                logger.debug("Subagent-cost counter update failed", exc_info=True)
-            # Track total tokens from children too, broken out so we can
-            # show input/output split in /usage.  Children's own session_*
-            # counters were captured before AIAgent.close() in
-            # _run_single_child via the entry["tokens"] dict — re-walk
-            # results here to roll those up too.
+                logger.debug("subagent_stop hook invocation failed", exc_info=True)
+
+        # Fold the aggregated child cost into the parent's session total.  This is
+        # additive — each delegate_task call contributes its own children — so
+        # nested orchestrator→worker trees roll up naturally: each layer's own
+        # delegate_task() folds its direct children in, and when the orchestrator
+        # itself finishes, its parent folds the orchestrator's now-inflated total
+        # on top.  Degrades silently if the parent lacks the counter (older test
+        # fixtures, etc.).
+        if _children_cost_total > 0.0:
             try:
-                prior_in = int(
-                    getattr(parent_agent, "session_subagent_input_tokens", 0) or 0
-                )
-                prior_out = int(
-                    getattr(parent_agent, "session_subagent_output_tokens", 0) or 0
-                )
-                add_in = sum(
-                    int((r.get("tokens") or {}).get("input", 0) or 0)
-                    for r in results
-                )
-                add_out = sum(
-                    int((r.get("tokens") or {}).get("output", 0) or 0)
-                    for r in results
-                )
-                parent_agent.session_subagent_input_tokens = prior_in + add_in
-                parent_agent.session_subagent_output_tokens = prior_out + add_out
-                # Count of children spawned this session (across all
-                # delegate_task() calls) — useful in /usage breakdown.
-                prior_n = int(
-                    getattr(parent_agent, "session_subagent_count", 0) or 0
-                )
-                parent_agent.session_subagent_count = prior_n + len(results)
+                current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
+                parent_agent.session_estimated_cost_usd = current + _children_cost_total
+                # Also track subagent-only spend on a separate counter so /usage
+                # and the exit summary can break out "parent vs children" without
+                # double-counting.  Additive across delegate_task() calls in the
+                # same session (matches session_estimated_cost_usd's semantics).
+                try:
+                    prior_sub = float(
+                        getattr(parent_agent, "session_subagent_cost_usd", 0.0) or 0.0
+                    )
+                    parent_agent.session_subagent_cost_usd = (
+                        prior_sub + _children_cost_total
+                    )
+                except Exception:
+                    logger.debug("Subagent-cost counter update failed", exc_info=True)
+                # Track total tokens from children too, broken out so we can
+                # show input/output split in /usage.  Children's own session_*
+                # counters were captured before AIAgent.close() in
+                # _run_single_child via the entry["tokens"] dict — re-walk
+                # results here to roll those up too.
+                try:
+                    prior_in = int(
+                        getattr(parent_agent, "session_subagent_input_tokens", 0) or 0
+                    )
+                    prior_out = int(
+                        getattr(parent_agent, "session_subagent_output_tokens", 0) or 0
+                    )
+                    add_in = sum(
+                        int((r.get("tokens") or {}).get("input", 0) or 0)
+                        for r in results
+                    )
+                    add_out = sum(
+                        int((r.get("tokens") or {}).get("output", 0) or 0)
+                        for r in results
+                    )
+                    parent_agent.session_subagent_input_tokens = prior_in + add_in
+                    parent_agent.session_subagent_output_tokens = prior_out + add_out
+                    # Count of children spawned this session (across all
+                    # delegate_task() calls) — useful in /usage breakdown.
+                    prior_n = int(
+                        getattr(parent_agent, "session_subagent_count", 0) or 0
+                    )
+                    parent_agent.session_subagent_count = prior_n + len(results)
+                except Exception:
+                    logger.debug("Subagent-token counters update failed", exc_info=True)
+                # Upgrade the cost_source so the UI doesn't label a partially-real
+                # total as "none" when the parent itself hadn't billed any calls
+                # yet (rare but possible when the parent's only action this turn
+                # was delegate_task).
+                if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
+                    parent_agent.session_cost_source = "subagent"
+                if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
+                    parent_agent.session_cost_status = "estimated"
             except Exception:
-                logger.debug("Subagent-token counters update failed", exc_info=True)
-            # Upgrade the cost_source so the UI doesn't label a partially-real
-            # total as "none" when the parent itself hadn't billed any calls
-            # yet (rare but possible when the parent's only action this turn
-            # was delegate_task).
-            if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
-                parent_agent.session_cost_source = "subagent"
-            if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
-                parent_agent.session_cost_status = "estimated"
-        except Exception:
-            logger.debug("Subagent cost rollup failed", exc_info=True)
+                logger.debug("Subagent cost rollup failed", exc_info=True)
 
-    total_duration = round(time.monotonic() - overall_start, 2)
+        total_duration = round(time.monotonic() - overall_start, 2)
 
-    return json.dumps(
-        {
+        return {
             "results": results,
             "total_duration_seconds": total_duration,
-        },
-        ensure_ascii=False,
-    )
+        }
+
+    # ----- Background dispatch: run the WHOLE batch as one async unit -----
+    # When background is true, the entire fan-out runs on the daemon executor
+    # via a single async delegation. _execute_and_aggregate() joins on every
+    # child and produces ONE consolidated results block, which re-enters the
+    # conversation as a single message when ALL children finish. The chat is
+    # not blocked in the meantime. This is the contract: dispatch N subagents,
+    # keep chatting, get the combined summaries back together at the end.
+    if background:
+        from tools.async_delegation import dispatch_async_delegation_batch
+        from tools.approval import get_current_session_key
+
+        # Stateless request/response sessions (the API server / WebUI path)
+        # cannot route a detached subagent result back to the agent after the
+        # turn ends — there is no persistent channel and the adapter's send()
+        # is a no-op, so a background dispatch would silently never re-enter the
+        # conversation (issue #10760). Fall back to SYNCHRONOUS execution: the
+        # work still runs and its result returns in this same response, which is
+        # strictly better than a handle that never resolves. Mirrors the
+        # pool-at-capacity inline fallback below.
+        try:
+            from gateway.session_context import async_delivery_supported
+            _async_ok = async_delivery_supported()
+        except Exception:
+            _async_ok = True
+        if not _async_ok:
+            logger.info(
+                "delegate_task: async delivery unsupported on this session "
+                "(stateless HTTP API); running the batch synchronously instead."
+            )
+            _sync_result = _execute_and_aggregate()
+            if isinstance(_sync_result, dict):
+                _sync_result["note"] = (
+                    "background=true is not available on this endpoint (stateless "
+                    "HTTP API — no channel to deliver a detached subagent result "
+                    "after the turn ends), so the subagent(s) ran SYNCHRONOUSLY and "
+                    "the result is included above."
+                )
+            return json.dumps(_sync_result, ensure_ascii=False)
+
+        _session_key = get_current_session_key(default="")
+        _child_agents = [c for (_, _, c) in children]
+
+        # Detach every child from the parent's interrupt-propagation list — the
+        # batch's lifecycle is owned by the async registry now, not the parent
+        # turn. _build_child_agent attached them (correct for sync runs).
+        if hasattr(parent_agent, "_active_children"):
+            _ac_lock = getattr(parent_agent, "_active_children_lock", None)
+            for _c in _child_agents:
+                try:
+                    if _ac_lock:
+                        with _ac_lock:
+                            parent_agent._active_children.remove(_c)
+                    else:
+                        parent_agent._active_children.remove(_c)
+                except ValueError:
+                    pass
+
+        def _batch_runner():
+            return _execute_and_aggregate()
+
+        def _batch_interrupt():
+            for _c in _child_agents:
+                try:
+                    if hasattr(_c, "interrupt"):
+                        _c.interrupt("Async delegation cancelled")
+                    elif hasattr(_c, "_interrupt_requested"):
+                        _c._interrupt_requested = True
+                except Exception:
+                    pass
+
+        _goals = [t["goal"] for t in task_list]
+        dispatch = dispatch_async_delegation_batch(
+            goals=_goals,
+            context=context,
+            toolsets=toolsets,
+            role=top_role,
+            model=creds["model"],
+            session_key=_session_key,
+            runner=_batch_runner,
+            interrupt_fn=_batch_interrupt,
+            max_async_children=_get_max_async_children(),
+        )
+
+        if dispatch.get("status") == "dispatched":
+            n = len(_goals)
+            note = (
+                "Subagent is running in the background. You and the user can "
+                "keep working; its full result re-enters the conversation as a "
+                "new message when it finishes. Do not wait or poll — just "
+                "continue."
+                if n == 1 else
+                f"{n} subagents are running in parallel in the background. You "
+                f"and the user can keep working; they wait on each other and "
+                f"their consolidated results re-enter the conversation as a "
+                f"single message once ALL of them finish. Do not wait or poll "
+                f"— just continue."
+            )
+            payload = {
+                "status": "dispatched",
+                "mode": "background",
+                "count": n,
+                "delegation_id": dispatch["delegation_id"],
+                "goals": _goals,
+                "note": note,
+            }
+            return json.dumps(payload, ensure_ascii=False)
+
+        # Pool at capacity / schedule failure — children are still attached
+        # (we detach above only on the parent list, but the async unit was
+        # never accepted, so re-attaching isn't needed: we just run inline).
+        logger.info(
+            "delegate_task: async pool at capacity (%s); running the whole "
+            "batch synchronously instead.",
+            dispatch.get("error", "rejected"),
+        )
+        return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
+
+    # ----- Synchronous path -----
+    return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
 
 
 def _resolve_child_credential_pool(
@@ -3267,12 +3493,17 @@ def _build_top_level_description() -> str:
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        f"2. Batch (parallel): provide 'tasks' array, up to {_get_max_concurrent_children()} "
-        f"run concurrently (delegation.max_concurrent_children, configurable via config.yaml); "
-        "extras queue and start as slots free up. Submit as many tasks as you actually need. "
-        "Results are returned together when all complete. Nested delegation requires role='orchestrator' "
-        "and delegation.max_spawn_depth >= 2.\n\n"
+        "1. Single task: provide 'goal' (+ optional context, toolsets).\n"
+        f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
+        f"items concurrently for this user (configured via "
+        f"delegation.max_concurrent_children in config.yaml); extras queue and "
+        f"start as slots free up. {nesting_clause}\n\n"
+        "BOTH MODES RUN IN THE BACKGROUND. delegate_task returns immediately — "
+        "you and the user keep working, and each subagent's full result "
+        "re-enters the conversation as its own new message when it finishes. A "
+        "batch is just N independent background subagents (N handles, each "
+        "completes on its own). Do NOT wait or poll; just continue with other "
+        "work after dispatching.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -3283,11 +3514,10 @@ def _build_top_level_description() -> str:
         "- Tasks needing user interaction -> subagents cannot use clarify\n"
         "- Durable long-running work that must outlive the current turn -> "
         "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
-        "inside the parent turn: if the parent is interrupted (user sends a "
-        "new message, /stop, /new) the child is cancelled with status="
-        "'interrupted' and its work is discarded. Children cannot continue "
-        "in the background.\n\n"
+        "notify_on_complete=True) instead. Background delegations are NOT "
+        "durable: if the parent session is closed (/new) or the process exits "
+        "before a subagent finishes, that subagent's work is discarded, and "
+        "/stop cancels every running background subagent.\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
@@ -3311,6 +3541,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
+        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task.\n"
         "- MODEL SELECTION: pass 'model' (top-level for all children, or per-task in 'tasks[].model') "
@@ -3543,6 +3774,18 @@ DELEGATE_TASK_SCHEMA = {
                     "agent types and assign default models per-role."
                 ),
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "DEPRECATED / IGNORED. Single-task delegations always run "
+                    "in the background automatically — you do not need to (and "
+                    "cannot) opt in or out. The result re-enters the "
+                    "conversation as a new message when the subagent finishes; "
+                    "just continue working in the meantime. Setting this has no "
+                    "effect; the parameter remains only for backward "
+                    "compatibility."
+                ),
+            },
             "acp_command": {
                 "type": "string",
                 "description": (
@@ -3574,6 +3817,23 @@ DELEGATE_TASK_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
+
+def _model_background_value(args: dict, parent_agent=None) -> bool:
+    """Background flag for the MODEL-facing dispatch path (registry fallback).
+
+    Delegations from the top-level agent always run in the background — the
+    model does not choose. This applies to both a single task and a fan-out
+    batch (each task becomes its own independent background subagent). The one
+    exception is a delegation from an orchestrator subagent (depth > 0), which
+    needs its workers' results within its own turn. The live path is
+    ``run_agent._dispatch_delegate_task``; this lambda mirrors it for the rare
+    case the intercept is bypassed. Direct Python callers of ``delegate_task``
+    keep the historical synchronous default.
+    """
+    is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
+    return not is_subagent
+
+
 registry.register(
     name="delegate_task",
     toolset="delegation",
@@ -3589,6 +3849,7 @@ registry.register(
         role=args.get("role"),
         model=args.get("model"),
         agent_type=args.get("agent_type"),
+        background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

@@ -330,6 +330,7 @@ class TestCheckWebApiKey:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         assert web_tools.check_web_api_key() is False
 
 

@@ -139,6 +139,15 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,extended-cache-ttl-2025-04-11,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24"
             }
 
+    def test_custom_base_url_strips_trailing_v1(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-ant-api03-x",
+                base_url="https://proxy.example.com/anthropic/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://proxy.example.com/anthropic"
+
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(
@@ -1217,35 +1226,22 @@ class TestBuildAnthropicKwargs:
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
     def test_oauth_path_does_not_double_prefix_mcp_tools(self):
-        """OAuth path no longer single-underscore-prefixes tool names.
+        """OAuth path normalizes every tool name to double-underscore ``mcp__``.
 
-        Earlier versions prefixed every tool with single-underscore ``mcp_``
-        in an attempt to make Claude route the calls through its MCP-tool
-        path.  Two problems showed up in practice and both have been fixed
-        by removing the rewrite step entirely (see
-        ``agent/anthropic_adapter.py::build_anthropic_kwargs``):
+        FORK NOTE (2026-06-22 upstream sync): the fork previously passed tool
+        names through bare on the OAuth wire. Converged to upstream's GH-25255
+        ``mcp__`` normalization this sync (live Max-subscription billing
+        verification: a single-underscore ``mcp_`` name flips the request to
+        the extra-usage lane; ``mcp__`` is accepted). ``normalize_response``
+        reverses the wire name back to the registered name so dispatch still
+        resolves originals.
 
-        1. Real Claude Code's built-in tools (Read, Write, Bash, …) do NOT
-           carry an ``mcp_`` prefix — only MCP-sourced tools do.  Prefixing
-           every Hermes built-in (``read_file`` → ``mcp_read_file``) made
-           them look like MCP tools that didn't exist on any MCP server,
-           which confused the model into stripping the prefix on every
-           call.
-        2. The single-underscore separator (``mcp_<server>_<tool>``) is
-           ambiguous.  Real Claude Code MCP tools use double underscores
-           (``mcp__<server>__<tool>``).  Single-underscore names didn't
-           match Claude's training and the model routinely stripped the
-           prefix entirely.
-
-        Hermes' MCP tools are now registered with the canonical
-        ``mcp__<server>__<tool>`` form by ``tools/mcp_tool.py``, so the
-        OAuth-path adapter doesn't need to re-prefix them. Hermes built-in
-        names that have a Claude Code canonical equivalent get aliased
-        (see ``agent/cc_aliases.py``), but un-aliased names pass through.
+        The invariant: NOTHING reaches the OAuth wire with a single-underscore
+        ``mcp_`` prefix, and an already-``mcp__`` name is never double-prefixed.
         """
         tools = [
-            # MCP-sourced tools — already in the canonical double-underscore
-            # form from _convert_mcp_schema; must pass through unchanged.
+            # Single-underscore MCP-server names must be promoted to ``mcp__``
+            # (the gap the bare->mcp__ constant swap left open).
             {"type": "function", "function": {"name": "slack_slack_search_public", "description": "x"}},
             {"type": "function", "function": {"name": "hermes_swarm_swarm_update_agent", "description": "x"}},
         ]
@@ -1258,15 +1254,16 @@ class TestBuildAnthropicKwargs:
             is_oauth=True,
         )
         names = [t["name"] for t in kwargs["tools"]]
-        assert "slack_slack_search_public" in names, "MCP tool name must not be rewritten"
-        assert "hermes_swarm_swarm_update_agent" in names, "MCP tool name must not be rewritten"
-        # Hard guard against the regression to the legacy single-underscore
-        # OAuth-prefix step or the doubled ``mcp_mcp_*`` form.
+        # Bare names land on the double-underscore form.
+        assert "mcp__slack_slack_search_public" in names, names
+        assert "mcp__hermes_swarm_swarm_update_agent" in names, names
+        # The core invariant: NOTHING single-underscore reaches the wire, and
+        # no name is double-prefixed (``mcp__mcp__``).
         for n in names:
-            assert not n.startswith("mcp_mcp_"), f"tool name double-prefixed: {names}"
-            assert n != "mcp_read_file", (
-                f"built-in tool incorrectly carries the legacy mcp_ prefix: {names}"
+            assert not (n.startswith("mcp_") and not n.startswith("mcp__")), (
+                f"single-underscore mcp_ reached the OAuth wire: {names}"
             )
+            assert not n.startswith("mcp__mcp__"), f"tool name double-prefixed: {names}"
 
     def test_fast_mode_oauth_default_keeps_context_1m_beta(self, monkeypatch):
         """OAuth fast-mode requests carry context-1m-2025-08-07 when the

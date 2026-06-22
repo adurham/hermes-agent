@@ -102,6 +102,27 @@ def convert_messages_to_anthropic(
             # post-processing as recomposed ones.
             raw_blocks = m.get("anthropic_content_blocks")
             if isinstance(raw_blocks, list) and raw_blocks:
+                # Security (upstream #19798 ported to the fork's verbatim-replay
+                # path): the raw captured blocks carry the LIVE tool_use input
+                # (un-redacted, as Anthropic returned it). The stored
+                # ``tool_calls`` arguments, by contrast, were already run
+                # through credential redaction before persistence. Re-source
+                # each tool_use's ``input`` from that redacted map (keyed by id)
+                # so a secret never leaks back onto the wire via this fast path.
+                # Falls back to the raw input only when no redacted entry exists.
+                _redacted_input_by_id: Dict[str, Any] = {}
+                for _tc in m.get("tool_calls", []) or []:
+                    if not isinstance(_tc, dict):
+                        continue
+                    _tc_id = _sanitize_tool_id(_tc.get("id", ""))
+                    _fn = _tc.get("function", {}) or {}
+                    _args = _fn.get("arguments", "{}")
+                    try:
+                        _redacted_input_by_id[_tc_id] = (
+                            json.loads(_args) if isinstance(_args, str) else _args
+                        )
+                    except (json.JSONDecodeError, ValueError):
+                        _redacted_input_by_id[_tc_id] = {}
                 rebuilt: List[Dict[str, Any]] = []
                 for b in copy.deepcopy(raw_blocks):
                     if not isinstance(b, dict):
@@ -123,7 +144,16 @@ def convert_messages_to_anthropic(
                         # from structured output, or any future response-side
                         # field Anthropic adds).  Block position and the
                         # signed payload are preserved.
-                        rebuilt.append(_sanitize_block_for_anthropic_input(b))
+                        _clean = _sanitize_block_for_anthropic_input(b)
+                        # Overlay the redacted input for tool_use blocks.
+                        if (
+                            isinstance(_clean, dict)
+                            and _clean.get("type") == "tool_use"
+                        ):
+                            _bid = _sanitize_tool_id(_clean.get("id", ""))
+                            if _bid in _redacted_input_by_id:
+                                _clean["input"] = _redacted_input_by_id[_bid]
+                        rebuilt.append(_clean)
                 if not rebuilt:
                     rebuilt = [{"type": "text", "text": "(empty)"}]
                 result.append({"role": "assistant", "content": rebuilt})
