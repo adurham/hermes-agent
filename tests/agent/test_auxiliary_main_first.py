@@ -869,3 +869,93 @@ class TestAnthropicAuxModel:
             )
         finally:
             clear_runtime_main()
+
+    def test_haiku_fallback_client_does_not_carry_1m_beta_e2e(self):
+        """Regression for the HTTP 400 "long context beta is not yet available
+        for this subscription" bug (2026-06-22).
+
+        A cheap aux task with fallback_model=Haiku resolves to
+        provider='auto', model='claude-haiku-4-5...' on an anthropic-main
+        session. The bug: _resolve_auto Step 1 built the Anthropic SDK client
+        for the per-provider aux DEFAULT (Sonnet, 1M-capable), which baked the
+        context-1m-2025-08-07 beta into the client's default headers; the
+        request was then sent as Haiku (no 1M tier) → Anthropic 400.
+
+        The fix threads the caller's per-task model through _resolve_auto →
+        _try_anthropic → build_anthropic_client so the client is built for the
+        model that actually serves the request. This exercises the REAL
+        resolve_provider_client + real build_anthropic_client path (only the
+        SDK constructor and token are stubbed) and asserts the baked betas
+        match the request model: Haiku → no context-1m, Sonnet → context-1m.
+
+        All 8 cheap fallback_model tasks share this single code path, so this
+        one test guards the whole class of them.
+        """
+        from agent.auxiliary_client import (
+            set_runtime_main,
+            clear_runtime_main,
+            resolve_provider_client,
+        )
+        from agent.anthropic_adapter import _CONTEXT_1M_BETA
+
+        captured: list = []
+
+        def fake_build(api_key, base_url=None, timeout=None, *, drop_context_1m_beta=False, model=None):
+            # Reproduce the real beta-baking decision without an SDK/network call.
+            from agent.anthropic_adapter import _common_betas_for_base_url
+            betas = _common_betas_for_base_url(
+                base_url, drop_context_1m_beta=drop_context_1m_beta, model=model,
+            )
+            captured.append({"model": model, "betas": list(betas)})
+            return MagicMock()
+
+        real_token = "***" + "x" * 88
+
+        try:
+            set_runtime_main("anthropic", "claude-opus-4-8", api_key="not-needed")
+            with patch(
+                "agent.auxiliary_client._select_pool_entry",
+                return_value=(False, None),
+            ), patch(
+                "agent.anthropic_adapter.resolve_anthropic_token",
+                return_value=real_token,
+            ), patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                side_effect=fake_build,
+            ):
+                # Cheap task path: explicit Haiku model (what fallback_model
+                # produces). Client MUST be built for Haiku and MUST NOT carry
+                # the context-1m beta.
+                captured.clear()
+                _client, resolved = resolve_provider_client(
+                    "auto", "claude-haiku-4-5-20251001",
+                )
+                assert resolved == "claude-haiku-4-5-20251001", (
+                    f"expected Haiku to serve the request, got {resolved!r}"
+                )
+                assert captured, "build_anthropic_client was never called"
+                haiku_build = captured[-1]
+                assert haiku_build["model"] == "claude-haiku-4-5-20251001", (
+                    "client must be built for the request model (Haiku), got "
+                    f"{haiku_build['model']!r} — the model/client mismatch is the bug"
+                )
+                assert _CONTEXT_1M_BETA not in haiku_build["betas"], (
+                    f"Haiku client must NOT carry {_CONTEXT_1M_BETA!r} (no 1M tier) — "
+                    f"this is the HTTP 400 cause. Got betas={haiku_build['betas']}"
+                )
+
+                # Quality task path: no explicit model → provider-default Sonnet,
+                # which DOES have a 1M tier and must keep the beta.
+                captured.clear()
+                _client2, resolved2 = resolve_provider_client("auto", None)
+                assert resolved2 == "claude-sonnet-4-6", (
+                    f"expected Sonnet aux default, got {resolved2!r}"
+                )
+                sonnet_build = captured[-1]
+                assert sonnet_build["model"] == "claude-sonnet-4-6"
+                assert _CONTEXT_1M_BETA in sonnet_build["betas"], (
+                    f"Sonnet client must keep {_CONTEXT_1M_BETA!r} (has 1M tier). "
+                    f"Got betas={sonnet_build['betas']}"
+                )
+        finally:
+            clear_runtime_main()

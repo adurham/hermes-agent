@@ -2160,7 +2160,7 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic(explicit_api_key: str = None, model_override: str = None) -> Tuple[Optional[Any], Optional[str]]:
     # Reject foreign-provider placeholder keys (e.g. "not-needed" from an exo
     # config leaking into the Anthropic path via set_runtime_main when the user
     # hot-swaps from exo to anthropic mid-session). Genuine Anthropic credentials
@@ -2206,7 +2206,13 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
     from agent.anthropic_adapter import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    # ``model_override`` (the caller's explicit per-task model, e.g. a Haiku
+    # fallback_model) takes precedence over the generic per-provider aux
+    # default. The model passed here is baked into the SDK client's beta
+    # headers at construction (see build_anthropic_client → _model_supports_1m_context):
+    # building for Sonnet then sending Haiku attaches context-1m-2025-08-07 to a
+    # model with no 1M tier → HTTP 400 "long context beta is not yet available".
+    model = model_override or _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
         real_client = build_anthropic_client(token, base_url, model=model)
@@ -3157,7 +3163,10 @@ def _resolve_single_provider(
     )
     return client
 
-def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_auto(
+    main_runtime: Optional[Dict[str, Any]] = None,
+    preferred_model: Optional[str] = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
 
     Priority:
@@ -3170,6 +3179,19 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
          switches to a cheap fallback model for side tasks.
       2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
          chain, only used when the main provider has no working client).
+
+    ``preferred_model`` is the caller's explicit per-task model (e.g. a Haiku
+    fallback_model for a cheap aux task on an Anthropic-main session). When
+    set, Step 1 builds the provider client for THAT model instead of the
+    generic per-provider aux default. This matters for Anthropic: the SDK
+    client bakes beta headers (notably ``context-1m-2025-08-07``) into its
+    default headers at construction based on the model it's told it will
+    serve. If the client is built for Sonnet (1M-capable) but the request is
+    later sent as Haiku (no 1M tier), Anthropic 400s with "The long context
+    beta is not yet available for this subscription". Threading the real
+    request model in keeps the baked betas consistent with the model actually
+    used. See FORK.md (2026-06-22 fallback_model entry) for the resolution
+    chain this rides on.
     """
     global auxiliary_is_nous, _stale_base_url_warned
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
@@ -3248,11 +3270,20 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             # Per-task explicit overrides still win: they propagate through the
             # outer resolve_provider_client(model=per_task_model) call, which
             # takes precedence over the resolved model we return here.
-            step1_model = (
-                _ANTHROPIC_DEFAULT_AUX_MODEL
-                if resolved_provider == "anthropic"
-                else main_model
-            )
+            #
+            # When the caller supplied an explicit per-task model
+            # (``preferred_model`` — e.g. a Haiku fallback_model), build the
+            # client for THAT model. Otherwise the client would be constructed
+            # for Sonnet (1M-capable) and bake the ``context-1m-2025-08-07``
+            # beta into its default headers, then the request would go out as
+            # Haiku (no 1M tier) → HTTP 400 "long context beta is not yet
+            # available for this subscription". The model that builds the
+            # client must match the model that serves the request so the baked
+            # betas are correct.
+            if resolved_provider == "anthropic":
+                step1_model = preferred_model or _ANTHROPIC_DEFAULT_AUX_MODEL
+            else:
+                step1_model = main_model
             client, resolved = resolve_provider_client(
                 resolved_provider,
                 step1_model,
@@ -3512,7 +3543,15 @@ def resolve_provider_client(
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
-        client, resolved = _resolve_auto(main_runtime=main_runtime)
+        # Pass the caller's explicit per-task model so Step 1 builds the
+        # provider client for the model that will actually serve the request.
+        # Critical for Anthropic: the client bakes beta headers at construction
+        # from the model it's given, and a mismatch (client built for Sonnet,
+        # request sent as Haiku) attaches the Sonnet-only context-1m beta to a
+        # Haiku call → HTTP 400 "long context beta is not yet available".
+        client, resolved = _resolve_auto(
+            main_runtime=main_runtime, preferred_model=caller_model,
+        )
         if client is None:
             return None, None
         # When auto-detection lands on a non-OpenRouter provider (e.g. a
@@ -3855,7 +3894,14 @@ def resolve_provider_client(
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
-            client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
+            # Thread the requested model into the client builder so the SDK
+            # client bakes the correct beta headers for it (a Haiku request
+            # must not carry the Sonnet-only context-1m beta → HTTP 400). The
+            # caller-supplied model wins; falls back to the per-provider aux
+            # default inside _try_anthropic when None.
+            client, default_model = _try_anthropic(
+                explicit_api_key=explicit_api_key, model_override=model,
+            )
             if client is None:
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None
