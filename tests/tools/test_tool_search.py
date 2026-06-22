@@ -82,6 +82,46 @@ class TestConfigParsing:
         assert cfg.max_search_limit == 50
         assert cfg.search_default_limit <= cfg.max_search_limit
 
+    # FORK: defer_toolsets / defer_tools / keep_eager_tools parsing.
+    def test_defer_lists_default_empty(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(None)
+        assert cfg.defer_toolsets == frozenset()
+        assert cfg.defer_tools == frozenset()
+        assert cfg.keep_eager_tools == frozenset()
+
+    def test_defer_lists_parsed_from_list(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({
+            "defer_toolsets": ["browser", "homeassistant"],
+            "defer_tools": ["swarm_run"],
+            "keep_eager_tools": ["delegate_task"],
+        })
+        assert cfg.defer_toolsets == frozenset({"browser", "homeassistant"})
+        assert cfg.defer_tools == frozenset({"swarm_run"})
+        assert cfg.keep_eager_tools == frozenset({"delegate_task"})
+
+    def test_defer_lists_parsed_from_comma_string(self):
+        """A comma-separated string is accepted as well as a list."""
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": "browser, tts ,vision"})
+        assert cfg.defer_toolsets == frozenset({"browser", "tts", "vision"})
+
+    def test_defer_lists_ignore_garbage(self):
+        """A non-list/str value yields an empty frozenset, never raises."""
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": 12345})
+        assert cfg.defer_toolsets == frozenset()
+
+    def test_bool_shape_has_empty_defer_lists(self):
+        """Legacy bool config carries no defer lists."""
+        from tools.tool_search import ToolSearchConfig
+        for raw in (True, False):
+            cfg = ToolSearchConfig.from_raw(raw)
+            assert cfg.defer_toolsets == frozenset()
+            assert cfg.defer_tools == frozenset()
+            assert cfg.keep_eager_tools == frozenset()
+
 
 # ---------------------------------------------------------------------------
 # Classification — the hard invariant: core tools NEVER defer.
@@ -126,6 +166,130 @@ class TestClassification:
         names = {(td.get("function") or {}).get("name") for td in visible}
         assert "xx_unknown_tool" in names
         assert deferrable == []
+
+
+# ---------------------------------------------------------------------------
+# FORK: opt-in deferral of normally-core toolsets/tools
+# ---------------------------------------------------------------------------
+
+
+class _FakeEntry:
+    def __init__(self, toolset: str):
+        self.toolset = toolset
+
+
+class TestForkDeferToolsets:
+    """defer_toolsets / defer_tools / keep_eager_tools override the
+    'core tools never defer' base rule with explicit user intent.
+    """
+
+    def _patch_registry(self, monkeypatch, mapping):
+        """Make registry.get_entry resolve names -> _FakeEntry(toolset)."""
+        import tools.registry as _reg
+
+        def _fake_get_entry(name):
+            ts = mapping.get(name)
+            return _FakeEntry(ts) if ts is not None else None
+
+        monkeypatch.setattr(_reg.registry, "get_entry", _fake_get_entry)
+
+    def test_defer_toolsets_defers_a_core_tool(self, monkeypatch):
+        """A core tool whose toolset is in defer_toolsets becomes deferrable."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {"browser_navigate": "browser"})
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": ["browser"]})
+        # browser_navigate is in _HERMES_CORE_TOOLS, so without the override
+        # it would never defer.
+        assert is_deferrable_tool_name("browser_navigate", cfg) is True
+
+    def test_no_override_keeps_core_eager(self, monkeypatch):
+        """Without defer_toolsets, a core tool stays eager (upstream rule)."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {"browser_navigate": "browser"})
+        cfg = ToolSearchConfig.from_raw(None)
+        assert is_deferrable_tool_name("browser_navigate", cfg) is False
+
+    def test_defer_tools_defers_single_core_tool(self, monkeypatch):
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {"swarm_run": "delegation"})
+        cfg = ToolSearchConfig.from_raw({"defer_tools": ["swarm_run"]})
+        assert is_deferrable_tool_name("swarm_run", cfg) is True
+
+    def test_keep_eager_overrides_defer_toolsets(self, monkeypatch):
+        """keep_eager_tools wins: defer the toolset but keep one sibling eager."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {
+            "delegate_task": "delegation",
+            "swarm_run": "delegation",
+        })
+        cfg = ToolSearchConfig.from_raw({
+            "defer_toolsets": ["delegation"],
+            "keep_eager_tools": ["delegate_task"],
+        })
+        assert is_deferrable_tool_name("delegate_task", cfg) is False
+        assert is_deferrable_tool_name("swarm_run", cfg) is True
+
+    def test_keep_eager_overrides_defer_tools(self, monkeypatch):
+        """keep_eager_tools beats defer_tools for the same name (eager wins)."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {"vision_analyze": "vision"})
+        cfg = ToolSearchConfig.from_raw({
+            "defer_tools": ["vision_analyze"],
+            "keep_eager_tools": ["vision_analyze"],
+        })
+        assert is_deferrable_tool_name("vision_analyze", cfg) is False
+
+    def test_bridge_tools_never_defer_even_with_override(self, monkeypatch):
+        from tools.tool_search import (
+            ToolSearchConfig, is_deferrable_tool_name, BRIDGE_TOOL_NAMES,
+        )
+        cfg = ToolSearchConfig.from_raw({
+            "defer_tools": list(BRIDGE_TOOL_NAMES),
+            "defer_toolsets": ["anything"],
+        })
+        for name in BRIDGE_TOOL_NAMES:
+            assert is_deferrable_tool_name(name, cfg) is False
+
+    def test_classify_tools_defers_overridden_core(self, monkeypatch):
+        """End-to-end through classify_tools: core tool lands in deferrable."""
+        from tools.tool_search import ToolSearchConfig, classify_tools
+        self._patch_registry(monkeypatch, {
+            "browser_navigate": "browser",
+            "terminal": "terminal",
+        })
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": ["browser"]})
+        defs = [_td("browser_navigate", "Navigate"), _td("terminal", "Shell")]
+        visible, deferrable = classify_tools(defs, cfg)
+        vis_names = {(t.get("function") or {}).get("name") for t in visible}
+        def_names = {(t.get("function") or {}).get("name") for t in deferrable}
+        assert "browser_navigate" in def_names
+        assert "terminal" in vis_names  # not in defer_toolsets → stays eager
+
+
+class TestForkActivationIntent:
+    """Explicit defer lists activate tool search even below auto threshold."""
+
+    def test_defer_toolsets_activates_below_threshold(self):
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto", "threshold_pct": 10, "defer_toolsets": ["browser"],
+        })
+        # 5K tokens is far below 10% of 200K (20K) — but explicit intent wins.
+        assert should_activate(cfg, deferrable_tokens=5_000, context_length=200_000)
+
+    def test_off_still_wins_over_defer_lists(self):
+        """The global off switch beats explicit defer lists."""
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "off", "defer_toolsets": ["browser"],
+        })
+        assert not should_activate(cfg, deferrable_tokens=5_000, context_length=200_000)
+
+    def test_no_defer_lists_respects_auto_threshold(self):
+        """Without explicit defer lists, auto threshold behavior is unchanged."""
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+        assert not should_activate(cfg, deferrable_tokens=5_000, context_length=200_000)
 
 
 # ---------------------------------------------------------------------------

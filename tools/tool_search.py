@@ -68,6 +68,23 @@ class ToolSearchConfig:
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
     search_default_limit: int
     max_search_limit: int
+    # FORK: opt normally-core toolsets / tools into lazy loading. Empty by
+    # default (upstream behavior: only MCP + non-core plugin tools defer).
+    #   defer_toolsets  — registry toolset names (e.g. "browser",
+    #                     "homeassistant") whose tools defer behind the
+    #                     tool_search/describe/call bridge even though they
+    #                     are listed in toolsets._HERMES_CORE_TOOLS.
+    #   defer_tools     — individual tool names to force-defer, for granular
+    #                     control when a toolset mixes keep-eager and
+    #                     defer tools (e.g. defer "swarm_run" but not the
+    #                     rest of the "delegation" toolset).
+    #   keep_eager_tools— individual tool names that must NEVER defer, even
+    #                     when their toolset is in defer_toolsets. Wins over
+    #                     everything (e.g. keep "delegate_task" eager while
+    #                     deferring its "delegation" sibling "swarm_run").
+    defer_toolsets: frozenset = field(default_factory=frozenset)
+    defer_tools: frozenset = field(default_factory=frozenset)
+    keep_eager_tools: frozenset = field(default_factory=frozenset)
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -111,6 +128,9 @@ class ToolSearchConfig:
             threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
+            defer_toolsets=_str_frozenset(raw.get("defer_toolsets")),
+            defer_tools=_str_frozenset(raw.get("defer_tools")),
+            keep_eager_tools=_str_frozenset(raw.get("keep_eager_tools")),
         )
 
 
@@ -119,6 +139,24 @@ def _safe_int(value: Any, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _str_frozenset(value: Any) -> frozenset:
+    """Coerce a config value into a frozenset of non-empty strings.
+
+    Accepts a list/tuple/set of strings, a single comma-separated string,
+    or None. Anything unparseable yields an empty frozenset rather than
+    raising — a typo in user config must never break tool loading.
+    """
+    if not value:
+        return frozenset()
+    if isinstance(value, str):
+        items = [p.strip() for p in value.split(",")]
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        items = [str(p).strip() for p in value]
+    else:
+        return frozenset()
+    return frozenset(p for p in items if p)
 
 
 def _safe_float(value: Any, fallback: float) -> float:
@@ -160,22 +198,62 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-def is_deferrable_tool_name(name: str) -> bool:
+def is_deferrable_tool_name(name: str, config: Optional["ToolSearchConfig"] = None) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
-    A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    Base rule (upstream): a tool is deferrable iff it is registered with an
+    MCP toolset prefix OR it is not in ``_HERMES_CORE_TOOLS``. Core tools
+    are never deferred even when their toolset is technically
+    plugin-provided (this protects against accidental shadowing).
+
+    FORK override (precedence, highest first):
+      1. Bridge tools never defer.
+      2. ``keep_eager_tools`` — name listed here never defers, full stop.
+         Lets you keep one tool eager while deferring its toolset siblings
+         (e.g. keep ``delegate_task`` while deferring ``swarm_run``).
+      3. ``defer_tools`` — name listed here always defers, even if core.
+      4. ``defer_toolsets`` — tool whose registry toolset is listed here
+         always defers, even if core (e.g. defer the whole ``browser``
+         toolset). This is what lets normally-always-loaded toolsets become
+         lazy-loaded behind the bridge.
+      5. Fall through to the upstream base rule.
+
+    ``config`` is loaded lazily when not provided so every existing caller
+    keeps working; hot paths (``classify_tools``) pass it once to avoid a
+    per-tool config load.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
+
+    if config is None:
+        config = load_config()
+
+    # (2) explicit keep-eager wins over everything below.
+    if name in config.keep_eager_tools:
+        return False
+    # (3) explicit per-tool force-defer (overrides core status).
+    if name in config.defer_tools:
+        return True
+
+    # (4) toolset-level force-defer (overrides core status). Needs the
+    # registry entry to resolve the tool's toolset.
+    entry = None
+    if config.defer_toolsets:
+        try:
+            from tools.registry import registry
+            entry = registry.get_entry(name)
+        except Exception:
+            entry = None
+        if entry is not None and entry.toolset in config.defer_toolsets:
+            return True
+
+    # (5) upstream base rule.
     if name in _core_tool_names():
         return False
-    # Check registry toolset for MCP prefix.
     try:
         from tools.registry import registry
-        entry = registry.get_entry(name)
+        if entry is None:
+            entry = registry.get_entry(name)
         if entry is None:
             return False
         if entry.toolset.startswith("mcp-"):
@@ -186,13 +264,22 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(
+    tool_defs: List[Dict[str, Any]],
+    config: Optional["ToolSearchConfig"] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
     every core tool, plus any tool we can't classify. ``deferrable`` is the
     candidate set for catalog entry.
+
+    ``config`` is loaded once here and threaded into each
+    ``is_deferrable_tool_name`` call so the FORK defer_toolsets/defer_tools/
+    keep_eager_tools lists are honored without a per-tool config reload.
     """
+    if config is None:
+        config = load_config()
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
     for td in tool_defs:
@@ -202,7 +289,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if is_deferrable_tool_name(name, config):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -242,12 +329,22 @@ def should_activate(
     (as long as there is at least one deferrable tool — there's no point
     swapping a no-op). ``"auto"`` activates when the deferrable schemas
     would consume ``threshold_pct`` of context or more.
+
+    FORK: when the user has explicitly opted toolsets/tools into deferral
+    via defer_toolsets/defer_tools, that intent overrides the auto
+    threshold — they've asked for these specific tools to be lazy-loaded,
+    so honor it even if the total is under threshold_pct. ``"off"`` still
+    wins (a global kill switch must stay absolute).
     """
     if config.enabled == "off":
         return False
     if deferrable_tokens <= 0:
         return False
     if config.enabled == "on":
+        return True
+    # FORK: explicit opt-in defer lists express direct user intent — activate
+    # regardless of the auto threshold (but not when globally off, handled above).
+    if config.defer_toolsets or config.defer_tools:
         return True
     # auto
     if not context_length or context_length <= 0:
@@ -551,7 +648,7 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(incoming, config)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 

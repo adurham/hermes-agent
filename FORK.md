@@ -53,6 +53,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/auxiliary_client.py` | +270 / -20 | Exo-scoped auxiliary delegation (2026-06-18): new `_aux_override_targets_exo` helper + guard inside `_resolve_task_provider_model`. Anthropic aux 401 fix + provider-matched sonnet-4-6 (2026-06-21): `_try_anthropic` foreign-placeholder-key guard; `_ANTHROPIC_DEFAULT_AUX_MODEL` constant; sonnet substitution in `_resolve_auto` Step-1; `caller_model` choke-point fix in `resolve_provider_client` so auto-fill cannot override the provider-matched model. Per-task `fallback_model` + single-provider main-model fallback (2026-06-22). See dated entries below. |
 | `plugins/model-providers/anthropic/__init__.py` | +1 / -1 | `default_aux_model` updated from haiku to sonnet-4-6 (2026-06-21, see "Fork-only fix — 2026-06-21" below). |
 | `tools/web_tools.py` | +186 / -27 | Multi-provider search failover chain (2026-06-22, `a244f1e3c`): `web_search` walks an ordered list of providers, failing over on error/empty. Also the provider-aware native-Anthropic search swap (comment + wiring). Config: `web.search_chain` (ordered provider list), `web.anthropic_native_search`. Tests: `tests/tools/test_web_search_chain.py`. |
+| `tools/tool_search.py` | (soft-fork) | Opt-in deferral of normally-core toolsets/tools (2026-06-22): `tools.tool_search.defer_toolsets` / `defer_tools` / `keep_eager_tools` let core surfaces (browser, homeassistant, tts, vision, cronjob, swarm_run) lazy-load behind the tool_search/describe/call bridge. Default empty = upstream behavior. See dated entry below. Tests: `tests/tools/test_tool_search.py`. |
 | `hermes_cli/models.py` | +92 / -8 | Gemini flash slug catalog (fork-kept `google-gemini-cli`). 2026-06-22 (`59b2d6021`): folded the per-model config `base_url`/endpoint override into the provider-client cache fingerprint so a `/model --global` provider switch can't reuse a stale cached client. Tests: `tests/.../test_credential_fingerprint_base_url.py`. |
 | `cli.py` / `gateway/slash_commands.py` | +2478 / -196, +12 / -0 | Large soft-fork surface (cancel-ladder keybindings, session-finalize, memory wiring). 2026-06-22 (`c0f7baaee`): `/model --global` provider switch now clears stale endpoint creds so the new provider doesn't inherit the old one's base_url/api_key. Tests: `tests/hermes_cli/test_cli_model_switch_persist.py`. |
 
@@ -807,6 +808,66 @@ conflict, keep the two added lines (the `if fb_client is None and (final_model
 or "") != (_read_main_model() or ""):` guard + the
 `_try_main_agent_model_fallback` call) inside the `if is_auto:` block. Behavior
 for multi-provider auto users and same-model tasks is unchanged.
+
+
+### Fork-only feature — 2026-06-22 (opt-in deferral of core toolsets via tool_search)
+
+**Problem.** The progressive-disclosure tool-search system (`tools/tool_search.py`)
+only ever deferred MCP + non-core plugin tools: `is_deferrable_tool_name` hard-
+refused to defer anything listed in `toolsets._HERMES_CORE_TOOLS`. That core list
+includes the entire `browser` (10 tools), `homeassistant` (4), `cronjob`,
+`swarm_run`, `text_to_speech`, and `vision_analyze` surfaces — ~21KB / ~5.3K
+tokens of schema shipped on **every** request even in sessions that never touch
+them. There was no config lever to lazy-load them; the only alternative was
+disabling the toolset entirely (static, not dynamic).
+
+Note this is a DIFFERENT system from `agent/fork/tool_search_lazy.py` /
+`_apply_tool_search` (the `tool_search.additional_deferred` path). That one only
+shrinks the Anthropic wire payload at request-build time and is invisible to
+`agent.tools`, so it moves neither `hermes prompt-size` nor the CLI context
+read-out, and its stubs route through `hermes_load_tools` which isn't always in
+the visible list. The system patched here (`get_tool_definitions` →
+`assemble_tool_defs`) physically removes deferred tools from `agent.tools` and
+replaces them with the `tool_search`/`tool_describe`/`tool_call` bridge — so the
+saving shows up in both the prompt-size report and the live context counter, and
+recovery goes through the bridge that's already in the visible list.
+
+**Change.** Added three optional config keys under `tools.tool_search`
+(all default empty → upstream behavior byte-for-byte unchanged):
+
+* `defer_toolsets` — registry toolset names (e.g. `browser`, `homeassistant`,
+  `tts`, `vision`, `cronjob`) whose tools defer even though they're core.
+* `defer_tools` — individual tool names to force-defer (e.g. `swarm_run` without
+  deferring the rest of its `delegation` toolset).
+* `keep_eager_tools` — individual names that must NEVER defer, overriding the
+  above (e.g. keep `delegate_task` eager while deferring its sibling `swarm_run`).
+
+Precedence in `is_deferrable_tool_name(name, config)` (highest first): bridge
+tools → keep_eager_tools → defer_tools → defer_toolsets → upstream base rule.
+`classify_tools` loads the config once and threads it through. `should_activate`
+gained an explicit-intent branch: a non-empty defer list activates tool search
+regardless of the `auto` threshold (but `enabled: off` still wins as a global
+kill switch).
+
+**Files.** `tools/tool_search.py` (soft-fork: dataclass fields +
+`_str_frozenset` helper + `is_deferrable_tool_name`/`classify_tools`/
+`should_activate`), `hermes_cli/config.py` (3 default keys under
+`tools.tool_search`). Tests: `tests/tools/test_tool_search.py`
+(`TestForkDeferToolsets`, `TestForkActivationIntent`, plus config-parse cases).
+
+**Result.** With `defer_toolsets: [browser, homeassistant, tts, vision, cronjob]`,
+`defer_tools: [swarm_run]`, `keep_eager_tools: [delegate_task]`:
+`hermes prompt-size` drops from 39 tools / 70.5KB to 21 tools / 49.4KB
+(~21KB / ~5.3K tokens off every turn that doesn't use those tools). Deferred
+tools remain fully reachable via the bridge (`tool_search` → `tool_describe` →
+`tool_call`), verified end-to-end. One-time cache-break + bridge round-trip the
+first time a deferred tool is used in a session.
+
+**Merge note.** `tools/tool_search.py` becomes a soft-fork file. On conflict,
+keep the FORK precedence block in `is_deferrable_tool_name`, the `config` param
+on `classify_tools`, the explicit-intent branch in `should_activate`, and the
+three dataclass fields. The base-rule tail must stay last so upstream's
+core-protection still applies to everything not explicitly opted in.
 
 
 ### Upstream sync — 2026-06-10 (187 commits, 12 conflicts)

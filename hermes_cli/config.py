@@ -2544,6 +2544,20 @@ DEFAULT_CONFIG = {
             "search_default_limit": 5,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
+            # FORK: opt normally-always-loaded toolsets/tools into lazy
+            # loading behind the tool_search/describe/call bridge. Empty by
+            # default (upstream behavior preserved). See tools/tool_search.py
+            # is_deferrable_tool_name for precedence. Names are registry
+            # toolset names / tool names; accept a list or comma-string.
+            #   defer_toolsets:   toolset names to lazy-load even though core
+            #                     (e.g. ["browser", "homeassistant", "tts"]).
+            #   defer_tools:      individual tool names to force-defer.
+            #   keep_eager_tools: individual tool names that must stay eager,
+            #                     overriding defer_toolsets (e.g. keep
+            #                     "delegate_task" while deferring "swarm_run").
+            "defer_toolsets": [],
+            "defer_tools": [],
+            "keep_eager_tools": [],
         },
     },
 
