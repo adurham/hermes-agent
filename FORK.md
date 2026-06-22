@@ -991,12 +991,19 @@ indirection). Distinguish from genuine fork FEATURES with no upstream equivalent
 (Claude Code OAuth, MCP disk-cache, claude-code web backend, memory/skill-recall) —
 those stay.
 
+**Target the latest RELEASE TAG, not `upstream/main`** (user preference, locked
+2026-06-22). NousResearch `main` carries unreleased bleeding-edge commits; sync
+to the highest published `v2026.*` release tag instead. Only merge
+`upstream/main` directly if the user explicitly asks for latest-main.
+
 Per merge:
 
 ```bash
-git fetch upstream && git checkout -b sync/upstream-$(date +%F)
+git fetch upstream --tags && git checkout -b sync/upstream-$(date +%F)
+SYNC_TARGET=$(git tag -l 'v2026.*' --sort=-version:refname | head -1)
+echo "Syncing to $SYNC_TARGET"       # confirm with the user before merging
 python scripts/fork-merge-plan.py    # predicts conflict files before you touch anything
-git merge upstream/main
+git merge "$SYNC_TARGET"             # release tag, NOT upstream/main
 ```
 
 Work on a `sync/upstream-*` branch (never merge directly to `main`), resolve,
