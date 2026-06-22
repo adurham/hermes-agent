@@ -3425,6 +3425,32 @@ def save_config_value(key_path: str, value: any) -> bool:
         return False
 
 
+def _persist_global_model_switch(result) -> None:
+    """Persist a ``/model --global`` switch to config.yaml, reconciling the
+    endpoint credential fields when the provider changed.
+
+    Writing only ``model.default`` + ``model.provider`` (the historical
+    behavior) leaves the PREVIOUS provider's ``model.base_url`` /
+    ``model.api_key`` behind. Switching e.g. exo → anthropic then left an
+    anthropic provider pointed at the exo ``base_url`` with a dummy key —
+    the main model still worked via OAuth (which hardcodes Anthropic's URL),
+    but auxiliary tasks honor the literal base_url and 404'd against the exo
+    box ("No instance found for model claude-haiku-4-5..."). This mirrors the
+    ``_model_flow_anthropic`` path in model_setup_flows.py, which already
+    clears these fields on a provider switch.
+
+    When the new provider supplies an explicit endpoint (switch TO a custom
+    endpoint), we persist those values; otherwise we blank them so built-in
+    providers resolve credentials from OAuth / env / the credential pool.
+    """
+    save_config_value("model.default", result.new_model)
+    if getattr(result, "provider_changed", False):
+        save_config_value("model.provider", result.target_provider)
+        # Reconcile inline endpoint fields so the new provider doesn't inherit
+        # the previous provider's base_url/api_key/api_mode.
+        save_config_value("model.base_url", getattr(result, "base_url", "") or "")
+        save_config_value("model.api_key", getattr(result, "api_key", "") or "")
+        save_config_value("model.api_mode", getattr(result, "api_mode", "") or "")
 
 
 # ============================================================================
@@ -7645,9 +7671,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
+            _persist_global_model_switch(result)
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
@@ -7958,9 +7982,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Persistence
         if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
+            _persist_global_model_switch(result)
             _cprint("    Saved to config.yaml")
         else:
             _cprint("    (session only — add --global to persist)")
