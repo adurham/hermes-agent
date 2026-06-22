@@ -1033,19 +1033,33 @@ class _AnthropicCompletionsAdapter:
             elif choice_type in {"auto", "required", "none"}:
                 normalized_tool_choice = choice_type
 
+        # Auxiliary calls are one-shot utility completions (title gen,
+        # compression summaries, vision, session search) — never extended
+        # reasoning. Explicitly DISABLE thinking: build_anthropic_kwargs
+        # otherwise defaults reasoning_config=None to adaptive thinking on
+        # 4.6+ models (mirroring the main conversational wire shape). With
+        # thinking on, Anthropic requires temperature==1 and 400s on the
+        # deterministic temperatures these tasks pass (e.g. title gen's 0.3) —
+        # "temperature may only be set to 1 when thinking is enabled". Passing
+        # enabled=False keeps the historical thinking-less behavior these tasks
+        # always had under haiku, honors the caller's temperature, and is
+        # faster/cheaper for utility work.
         anthropic_kwargs = build_anthropic_kwargs(
             model=model,
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
-            reasoning_config=None,
+            reasoning_config={"enabled": False},
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
         )
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
         # temperature for models that still accept it. build_anthropic_kwargs
         # additionally strips these keys as a safety net — keep both layers.
-        if temperature is not None:
+        # Final guard: never attach temperature when thinking ended up enabled
+        # (would 400 with "temperature may only be set to 1 when thinking is
+        # enabled"); thinking-on calls must use the server default temperature.
+        if temperature is not None and "thinking" not in anthropic_kwargs:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
