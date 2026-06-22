@@ -896,9 +896,17 @@ driver (`uvlock-ours`) was registered on this clone first
   ladder keep-both (fork v13 api_calls + upstream v16 delegate-tag).
 * **`auxiliary_client.py` — adopted upstream's `create_anthropic_message()`
   helper** (SSE-only-gateway stream aggregation) over the fork's
-  `.beta.messages.create()`. SAFE because `build_anthropic_client` bakes the
-  `anthropic-beta` header into `default_headers` at construction, so betas ride
-  every request regardless of `.messages` vs `.beta.messages`. Also: kept the
+  `.beta.messages.create()`. The `anthropic-beta` HEADER rides in
+  `default_headers` from `build_anthropic_client` regardless of namespace — BUT
+  the fork's CC-mimicry also attaches beta-ONLY *body* kwargs
+  (`context_management`, `output_config`, `thinking` in the CC 2.1.x shape) that
+  ONLY `client.beta.messages.*` accepts. Plain `.messages.create()` 400s/TypeErrors
+  with `unexpected keyword argument 'context_management'`. **Follow-up fix
+  9440019ff:** `create_anthropic_message` now prefers the `.beta.messages`
+  namespace when present (falls back to `.messages` for non-Anthropic-SDK clients
+  / mocks), so it keeps upstream's stream aggregation AND accepts the fork body
+  fields. MERGE-NOTE: keep that `getattr(client, "beta", ...).messages or
+  client.messages` selection on conflict. Also: kept the
   fork's `_try_main_agent_model_fallback` safety net for single-provider auto
   setups, layered after upstream's new `_try_configured_fallback_chain` +
   `_try_main_fallback_chain` (upstream's chains SKIP the main provider, so the
