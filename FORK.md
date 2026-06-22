@@ -639,6 +639,66 @@ isolation).
 anthropic_kwargs` guard on the temperature re-attach.
 
 
+### Fork-only fix — 2026-06-22 (per-task `fallback_model` — cheap Haiku for trivial aux on Anthropic-main)
+
+**Motivation:** Cost control. With aux tasks now resolving to `claude-sonnet-4-6`
+on Anthropic-main sessions (2026-06-21 change), every side task — including
+trivial ones like title generation and TTS-tag rewriting — burned Sonnet-tier
+quota ($3/$15 per MTok). Haiku 4.5 ($1/$5) is 3x cheaper and more than adequate
+for low-stakes utility work. The user works in Opus + 1M context on Anthropic;
+only `compression` genuinely needs the 1M window, and a handful of tasks
+(`vision`, `curator`, `memory_extraction`, `approval`, `session_search`) want
+Sonnet-tier quality. The rest can drop to Haiku.
+
+**Constraint (hard requirement):** Main provider is sacred — `main=exo` keeps ALL
+aux on the local exo cluster (Qwen, free); `main=anthropic` keeps all aux on
+Anthropic. Aux follows main, never crosses providers. The cost lever must only
+change *which Anthropic model* a task uses when an Anthropic session follows
+main — it must not pull Anthropic into exo sessions or vice-versa.
+
+**Why config alone couldn't do it:** Every aux task in the user's config is
+pinned to exo (`provider: exo` + cluster `base_url`). The existing exo-scoped
+delegation guard (`_resolve_task_provider_model`, ~line 4856) drops that pin when
+`main != exo` AND wipes the model field, so on Anthropic-main the task fell
+through to the single global `_ANTHROPIC_DEFAULT_AUX_MODEL` (Sonnet). The shared
+`model` field can't encode both "Qwen on exo" and "Haiku on Anthropic" — and
+`provider: auto` / `provider: anthropic` shapes either break exo-main (cluster
+asked for a Claude model it can't serve) or force Anthropic into exo sessions.
+Verified empirically across all four shape×main combinations before coding.
+
+**Fix (`agent/auxiliary_client.py`, in `_resolve_task_provider_model`):** Read an
+optional per-task `auxiliary.<task>.fallback_model`. When the exo pin is dropped
+because `main != exo`, set `cfg_model = cfg_fallback_model` instead of clearing
+it to `None`. So:
+- `main=exo`  → exo pin honored → Qwen (unchanged, free, local).
+- `main=anthropic`, task HAS `fallback_model` → that model (Haiku) on the
+  main-following `auto` provider, with real OAuth creds.
+- `main=anthropic`, task has NO `fallback_model` → model cleared → provider
+  default (Sonnet) applies. Unchanged behavior for quality-critical tasks.
+
+**Config applied** (`fallback_model: claude-haiku-4-5-20251001` on 8 tasks):
+`title_generation`, `tts_audio_tags`, `profile_describer`, `triage_specifier`,
+`kanban_decomposer`, `skills_hub`, `mcp`, `web_extract`. Left on Sonnet (no
+fallback): `compression` (needs 1M), `vision`, `curator`, `memory_extraction`,
+`approval`, `session_search`.
+
+**Verification:** End-to-end against the real on-disk config (no mocks), both
+mains. Anthropic-main: 8 cheap tasks → Haiku (oauth=True), 6 quality tasks →
+Sonnet (oauth=True, 1M-ctx where applicable). Exo-main: all 14 tasks → exo
+cluster (Qwen). 3 new regression tests in
+`tests/agent/test_auxiliary_main_first.py` (exo-main keeps Qwen; anthropic-main
+with fallback → Haiku; anthropic-main without fallback → model cleared → Sonnet).
+Aux sweep green except the two documented pre-existing global-state ordering
+flakes (`test_openrouter_main_vision_uses_main_model`,
+`test_kimi_coding_skipped_falls_through_to_openrouter`), both pass in isolation
+and fail identically on clean `main` with changes stashed.
+
+**Merge note:** single-file core change in `agent/auxiliary_client.py` inside the
+exo-scoped delegation guard. On conflict: keep the `cfg_fallback_model` read and
+`cfg_model = cfg_fallback_model` (NOT `cfg_model = None`) in the pin-drop branch.
+`fallback_model` is purely additive config — absent = old behavior.
+
+
 ### Upstream sync — 2026-06-10 (187 commits, 12 conflicts)
 
 Merge-base was 2026-06-08; pulled 187 upstream commits on branch

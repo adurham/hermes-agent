@@ -4848,6 +4848,7 @@ def _resolve_task_provider_model(
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        cfg_fallback_model = str(task_config.get("fallback_model", "")).strip() or None
 
         # ── Exo-scoped auxiliary delegation ────────────────────────────
         # Drop the exo-targeted override when the active main provider is
@@ -4867,11 +4868,18 @@ def _resolve_task_provider_model(
             if _provider_is_exo is None or not _provider_is_exo(_main_prov, _cfg):
                 logger.debug(
                     "Auxiliary task %r: exo override dropped — main provider "
-                    "%r is not exo; falling back to auto",
+                    "%r is not exo; falling back to auto%s",
                     task, _main_prov or "(none)",
+                    f" with fallback_model {cfg_fallback_model!r}" if cfg_fallback_model else "",
                 )
                 cfg_provider = None
-                cfg_model = None
+                # When the exo pin is dropped because main isn't exo, an
+                # optional per-task ``fallback_model`` selects the model used
+                # on the (now main-following) provider — e.g. a cheaper Haiku
+                # for trivial tasks while an Anthropic-main session still uses
+                # its real OAuth creds.  Without it, the model is cleared so
+                # the provider-default aux model applies (Sonnet on Anthropic).
+                cfg_model = cfg_fallback_model
                 cfg_base_url = None
                 cfg_api_key = None
                 cfg_api_mode = None
