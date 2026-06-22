@@ -699,6 +699,60 @@ exo-scoped delegation guard. On conflict: keep the `cfg_fallback_model` read and
 `fallback_model` is purely additive config — absent = old behavior.
 
 
+### Fork-only fix — 2026-06-22 (Anthropic aux 400: Haiku request carries Sonnet-only context-1m beta)
+
+**Symptom:** With the `fallback_model`→Haiku change live, the first aux task to
+fire (title generation) failed with `HTTP 400: The long context beta is not yet
+available for this subscription`. Reproduced on every one of the 8 cheap Haiku
+tasks — they share one resolution path, title-gen just fires first.
+
+**Root cause:** The Anthropic SDK client bakes its `anthropic-beta` headers into
+`default_headers` *at construction*, based on the model it's told it will serve
+(`build_anthropic_client(..., model=...)` → `_model_supports_1m_context`). The
+aux `auto` path built the client for the WRONG model:
+
+1. `_resolve_task_provider_model` returns `provider='auto', model='claude-haiku-…'`.
+2. `resolve_provider_client('auto', haiku)` → `_resolve_auto` Step 1, which
+   built the Anthropic client for `step1_model = _ANTHROPIC_DEFAULT_AUX_MODEL`
+   (`claude-sonnet-4-6`). Sonnet IS in the 1M allowlist, so the client baked
+   `context-1m-2025-08-07` into its headers.
+3. Back in `resolve_provider_client`, `final_model = caller_model` (Haiku) — so
+   the request went out as Haiku against a client carrying the Sonnet-only 1M
+   beta. Haiku has no 1M tier → 400.
+
+The per-task model never reached the client builder; the model-gate
+(`_model_supports_1m_context`) was correct but was being fed Sonnet, not Haiku.
+
+**Fix (`agent/auxiliary_client.py`, three threaded params):**
+- `_resolve_auto(..., preferred_model=None)` — Step 1 uses
+  `preferred_model or _ANTHROPIC_DEFAULT_AUX_MODEL` for the Anthropic branch
+  instead of always the Sonnet default.
+- `_try_anthropic(..., model_override=None)` — builds the client for
+  `model_override or _get_aux_model_for_provider('anthropic')`.
+- `resolve_provider_client`'s `anthropic` branch passes the requested `model`
+  into `_try_anthropic(model_override=model)`; the `auto` branch passes the
+  caller's `caller_model` as `preferred_model`.
+
+Net: the client is always built for the model that actually serves the request,
+so the baked betas match. Haiku → no context-1m (400 gone); Sonnet/quality
+tasks → context-1m preserved (unchanged).
+
+**Verification:** Live Haiku title-gen call against real OAuth creds returns
+generated text with no 400. Baked-beta audit across all 14 aux tasks vs the real
+config: 8 Haiku → context-1m absent, 6 Sonnet → context-1m present, 0
+mismatches. Exo-main unchanged (all tasks still resolve to the cluster). New
+regression test `test_haiku_fallback_client_does_not_carry_1m_beta_e2e` exercises
+the real `resolve_provider_client` + real `build_anthropic_client` path; verified
+RED on pre-fix code (client built for Sonnet) and GREEN after. Full aux suite
+green except the two documented pre-existing global-state ordering flakes.
+
+**Merge note:** additive params only (`preferred_model`, `model_override`, both
+default `None`). On conflict, keep all three threading points: `_resolve_auto`
+signature + its anthropic `step1_model` branch, `_try_anthropic` signature + its
+`model = model_override or …` line, and the two call sites in
+`resolve_provider_client`. With all three None, behavior is identical to before.
+
+
 ### Upstream sync — 2026-06-10 (187 commits, 12 conflicts)
 
 Merge-base was 2026-06-08; pulled 187 upstream commits on branch
