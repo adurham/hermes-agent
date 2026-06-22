@@ -588,6 +588,57 @@ global-state-pollution flake — passes in isolation.
   tests.
 
 
+### Fork-only fix — 2026-06-22 (Anthropic aux 400: thinking + temperature collision)
+
+**Symptom:** `⚠ Auxiliary title generation failed: HTTP 400: temperature may
+only be set to 1 when thinking is enabled or in adaptive mode.` Hit on
+anthropic-main sessions once auxiliary tasks started resolving to
+`claude-sonnet-4-6` (the 2026-06-21 provider-matched change above). Title gen,
+and any aux task passing a non-1 temperature, 400'd.
+
+**Root cause:** A two-layer collision in the native `AnthropicAuxiliaryClient`
+path (`agent/auxiliary_client.py`, the `build_anthropic_kwargs` call site
+~line 1036):
+1. `build_anthropic_kwargs` defaults `reasoning_config=None` → **adaptive
+   thinking enabled** on every 4.6+ Claude model (the line-~3489 "mirror Claude
+   Code 2.1.119 wire shape" default). This was designed for the main
+   conversational session, but the aux client passed `reasoning_config=None`,
+   so it leaked onto one-shot utility calls too.
+2. The aux client then re-attached the caller's `temperature` (title gen sends
+   `0.3`), gated only on `_forbids_sampling_params(model)` — which is **False**
+   for the 4.6 family. So `thinking={type:"adaptive"}` and `temperature=0.3`
+   went out together. Anthropic rejects temperature≠1 under thinking → 400.
+
+The bug was dormant while aux ran on haiku (haiku doesn't support thinking, so
+no thinking block was added). It surfaced the moment aux moved to sonnet-4-6.
+`call_llm` has no `reasoning_config` parameter at all, confirming no auxiliary
+caller ever intends thinking — these are deterministic utility completions.
+
+**Fix (single choke point, the one aux `build_anthropic_kwargs` call site):**
+1. Pass `reasoning_config={"enabled": False}` instead of `None`, explicitly
+   disabling thinking on the aux path. Restores the historical thinking-less
+   behavior these tasks always had under haiku; faster + cheaper for utility
+   work; honors the caller's temperature.
+2. Belt-and-suspenders: the temperature re-attach is now also gated on
+   `"thinking" not in anthropic_kwargs`, so if thinking is ever (re)enabled for
+   an aux call, temperature is left at the server default rather than 400-ing.
+
+**Verification:** `build_anthropic_kwargs` with `reasoning_config={"enabled":
+False}` produces no `thinking` key and honors `temperature=0.3` for sonnet-4-6
+/ haiku (and correctly strips it for opus-4-8 via `_forbids_sampling_params`).
+Live end-to-end: `generate_title(...)` on an anthropic-main session (exo
+`not-needed` placeholder, hot-swapped to anthropic) returns a clean title with
+no 400. Test sweep (auxiliary or aux or anthropic or title or vision): 849
+passed, 14 skipped; the lone failure is the documented pre-existing
+`test_openrouter_main_vision_uses_main_model` global-state flake (passes in
+isolation).
+
+**Merge note:** single-file change in `agent/auxiliary_client.py` at the
+`AnthropicAuxiliaryClient` `build_anthropic_kwargs` call site. On conflict: keep
+`reasoning_config={"enabled": False}` (NOT `None`) and the `"thinking" not in
+anthropic_kwargs` guard on the temperature re-attach.
+
+
 ### Upstream sync — 2026-06-10 (187 commits, 12 conflicts)
 
 Merge-base was 2026-06-08; pulled 187 upstream commits on branch
