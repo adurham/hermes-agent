@@ -1274,6 +1274,13 @@ class GatewaySlashCommandsMixin:
                                 if result.base_url:
                                     _persist_model_cfg["base_url"] = result.base_url
                                 if str(result.target_provider or "").strip().lower() != "custom":
+                                    # Built-in providers resolve their own endpoint
+                                    # (OAuth / hardcoded URL). Drop any stale base_url
+                                    # the PREVIOUS provider left behind, or the new
+                                    # provider inherits e.g. an exo URL and aux tasks
+                                    # 404 against the wrong box.
+                                    if not result.base_url:
+                                        _persist_model_cfg.pop("base_url", None)
                                     clear_model_endpoint_credentials(_persist_model_cfg)
                                 from hermes_cli.config import save_config
                                 save_config(_persist_cfg)
@@ -1497,6 +1504,11 @@ class GatewaySlashCommandsMixin:
                     if result.base_url:
                         model_cfg["base_url"] = result.base_url
                     if str(result.target_provider or "").strip().lower() != "custom":
+                        # Built-in providers resolve their own endpoint; drop any
+                        # stale base_url the previous provider left behind so aux
+                        # tasks don't inherit the wrong (e.g. exo) URL.
+                        if not result.base_url:
+                            model_cfg.pop("base_url", None)
                         clear_model_endpoint_credentials(model_cfg)
                     from hermes_cli.config import save_config
                     save_config(cfg)
