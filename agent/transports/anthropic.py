@@ -98,11 +98,11 @@ class AnthropicTransport(ProviderTransport):
         to OpenAI finish_reason, and collects reasoning_details in provider_data.
         """
         import json
-        from agent.anthropic_adapter import _to_plain_data
+        from agent.anthropic_adapter import _to_plain_data, _sanitize_replay_block
         from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        _MCP_PREFIX = "mcp_"
+        _MCP_PREFIX = "mcp__"
 
         text_parts = []
         reasoning_parts = []
@@ -116,31 +116,65 @@ class AnthropicTransport(ProviderTransport):
         # they survive into the next turn's history (Anthropic requires
         # the tool_result blocks to be present when re-submitting prior
         # assistant turns that reference them) and so the UI can show a
-        # search citation panel.
+        # search citation panel. (FORK: native web-search feature.)
         server_tool_blocks: list[dict] = []
+        # Verbatim, order-preserving copy of every content block in the turn.
+        # Anthropic signs each thinking block against the turn content that
+        # PRECEDES it at its position; when a turn interleaves thinking and
+        # tool_use (adaptive/interleaved thinking, Claude 4.6+), the parallel
+        # reasoning_details + tool_calls lists below lose that cross-type
+        # ordering. Replaying the latest assistant message in the wrong order
+        # invalidates the signatures -> HTTP 400 "thinking ... blocks in the
+        # latest assistant message cannot be modified". Preserve the exact
+        # block sequence here so the adapter can replay it unchanged. See
+        # tests/agent/test_anthropic_thinking_block_order.py.
+        ordered_blocks = []
 
         for block in response.content:
+            block_dict = _to_plain_data(block)
+            clean_block = None
+            if isinstance(block_dict, dict):
+                # Sanitize at capture so output-only SDK fields (parsed_output,
+                # caller, citations=None, …) never persist to state.db and leak
+                # back as request input on replay → HTTP 400 "Extra inputs are
+                # not permitted". Defence-in-depth with the replay-side sanitize.
+                clean_block = _sanitize_replay_block(block_dict)
+                if clean_block is not None:
+                    ordered_blocks.append(clean_block)
             if block.type == "text":
                 text_parts.append(block.text)
-            elif block.type == "thinking":
-                reasoning_parts.append(block.thinking)
-                block_dict = _to_plain_data(block)
-                if isinstance(block_dict, dict):
+            elif block.type in ("thinking", "redacted_thinking"):
+                if block.type == "thinking":
+                    reasoning_parts.append(block.thinking)
+                # Use the sanitized block (clean_block) for reasoning_details too,
+                # since _extract_preserved_thinking_blocks replays these on the
+                # non-ordered path. Falls back to raw only if sanitize dropped it.
+                if isinstance(clean_block, dict):
+                    reasoning_details.append(clean_block)
+                elif isinstance(block_dict, dict):
                     reasoning_details.append(block_dict)
             elif block.type == "tool_use":
                 name = block.name
                 if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    stripped = name[len(_MCP_PREFIX):]
-                    # Only strip the mcp_ prefix for OAuth-injected tools
-                    # (where Hermes adds the prefix when sending to Anthropic
-                    # and must remove it on the way back).  Native MCP server
-                    # tools (from mcp_servers: in config.yaml) are registered
-                    # in the tool registry under their FULL mcp_<server>_<tool>
-                    # name and must NOT be stripped.  GH-25255.
+                    # On the OAuth wire every tool carries a double-underscore
+                    # ``mcp__`` prefix (added in build_anthropic_kwargs to avoid
+                    # Anthropic's single-underscore third-party classifier).
+                    # Reverse it back to the name the registry/dispatcher knows.
+                    # Two original forms map onto the same ``mcp__`` wire name:
+                    #   ``mcp__read_file``       <- bare native tool ``read_file``
+                    #   ``mcp__linear_get_issue`` <- MCP server tool
+                    #                                ``mcp_linear_get_issue``
+                    # Resolve by registry lookup, preferring whichever original
+                    # is actually registered; never rewrite a name the LLM used
+                    # that already resolves natively. GH-25255.
                     from tools.registry import registry as _tool_registry
-                    if (_tool_registry.get_entry(stripped)
-                            and not _tool_registry.get_entry(name)):
-                        name = stripped
+                    if not _tool_registry.get_entry(name):
+                        bare = name[len(_MCP_PREFIX):]            # read_file
+                        single = "mcp_" + bare                    # mcp_read_file / mcp_linear_get_issue
+                        if _tool_registry.get_entry(single):
+                            name = single
+                        elif _tool_registry.get_entry(bare):
+                            name = bare
                 tool_calls.append(
                     ToolCall(
                         id=block.id,
@@ -194,13 +228,28 @@ class AnthropicTransport(ProviderTransport):
         # relative position of thinking blocks among text/tool_use blocks;
         # interleaved-thinking-2025-05-14 + clear_thinking_20251015 require
         # those positions to round-trip exactly or the API rejects the next
-        # turn ("thinking blocks ... cannot be modified").  Captured here in
-        # original order so convert_messages_to_anthropic can replay it
-        # without recomposing.
-        anthropic_content_blocks = _to_plain_data(response.content)
-        if isinstance(anthropic_content_blocks, list) and anthropic_content_blocks:
-            _canonicalize_tool_search_result_types(anthropic_content_blocks)
-            provider_data["anthropic_content_blocks"] = anthropic_content_blocks
+        # turn ("thinking blocks ... cannot be modified").
+        #
+        # Upstream gates this channel on the only shape the parallel lists
+        # reconstruct incorrectly: a turn that actually interleaves SIGNED
+        # thinking with tool_use. Pure-text turns, or thinking-then-tools with
+        # a single leading thinking block, replay correctly without it. The
+        # ordered_blocks list was captured in-loop already sanitized
+        # (_sanitize_replay_block) and canonicalized, so use it directly.
+        _has_signed_thinking = any(
+            isinstance(b, dict)
+            and b.get("type") in ("thinking", "redacted_thinking")
+            and (b.get("signature") or b.get("data"))
+            for b in ordered_blocks
+        )
+        _has_tool_use = any(
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            for b in ordered_blocks
+        )
+        if _has_signed_thinking and _has_tool_use:
+            if isinstance(ordered_blocks, list) and ordered_blocks:
+                _canonicalize_tool_search_result_types(ordered_blocks)
+            provider_data["anthropic_content_blocks"] = ordered_blocks
         # Structured stop_details (Anthropic SDK 0.88+, propagated through
         # streaming in 0.98+).  Today only refusal stops carry detail
         # (category=cyber|bio + human-readable explanation); future stop
@@ -222,17 +271,24 @@ class AnthropicTransport(ProviderTransport):
     def validate_response(self, response: Any) -> bool:
         """Check Anthropic response structure is valid.
 
-        An empty content list is legitimate when ``stop_reason == "end_turn"``
-        — the model's canonical way of signalling "nothing more to add" after
-        a tool turn that already delivered the user-facing text. Treating it
-        as invalid falsely retries a completed response.
+        An empty content list is legitimate for terminal stop reasons that
+        carry no text payload:
 
-        ``pause_turn`` always fails validation here — the caller's retry loop
-        detects it via ``stop_reason`` and handles it separately (resume with
-        reduced effort).  Non-empty content with ``pause_turn`` could in
-        principle be usable partial output, but allowing it through would
-        surface an incomplete response to the user without triggering
-        continuation logic, which is worse than retrying.
+        - ``end_turn`` — the model's canonical "nothing more to add" after a
+          tool turn that already delivered the user-facing text.
+        - ``refusal`` — the model declined to respond (Claude 4.5+). The
+          Messages API returns an empty ``content`` list with this stop
+          reason. Treating it as invalid sends a deterministic refusal into
+          the invalid-response retry loop, which reproduces the refusal on
+          every attempt and surfaces a misleading "rate limited / invalid
+          response" error instead of the refusal. ``normalize_response`` maps
+          ``refusal`` → ``content_filter`` so the agent loop's refusal handler
+          can surface it.
+
+        Treating either as invalid falsely retries a completed response.
+
+        (``pause_turn`` is not accepted here — the caller's retry loop detects
+        it via ``stop_reason`` and resumes separately with reduced effort.)
         """
         if response is None:
             return False
@@ -240,7 +296,7 @@ class AnthropicTransport(ProviderTransport):
         if not isinstance(content_blocks, list):
             return False
         if not content_blocks:
-            return getattr(response, "stop_reason", None) == "end_turn"
+            return getattr(response, "stop_reason", None) in {"end_turn", "refusal"}
         return True
 
     def extract_cache_stats(self, response: Any) -> Optional[Dict[str, int]]:

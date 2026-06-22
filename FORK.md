@@ -860,6 +860,92 @@ Verification: `tests/agent/` + `tests/run_agent/` = 5900 passed, 10 failed (all
 the pre-existing flakes above), 38 skipped. Boot smoke clean.
 
 
+### Upstream sync — 2026-06-22 (1193 commits, 24 conflicts)
+
+Merge-base was 2026-06-10; pulled 1193 upstream commits on branch
+`sync/upstream-2026-06-22` (tag `pre-upstream-sync-2026-06-22` at ada09d3b2).
+Largest sync to date. 24 conflict files, all resolved. The `uv.lock` merge
+driver (`uvlock-ours`) was registered on this clone first
+(`./scripts/setup-merge-drivers.sh`). Notable points:
+
+* **HEADLINE — the two-billing-mechanisms collision (`anthropic_adapter.py`
+  `build_anthropic_kwargs`).** The fork's CC-alias mimicry (renames the 5
+  builtins `terminal`→`Bash`, `read_file`→`Read`, `patch`→`Edit`,
+  `write_file`→`Write`, `search_files`→`Grep` via `cc_aliases.HERMES_TO_CC` +
+  the `x-anthropic-billing-header` block) and upstream's GH-25255 `mcp__`
+  normalization (everything→`mcp__`, with a `normalize_response` reverse-map in
+  `transports/anthropic.py`) BOTH rewrite the same OAuth builtin tool names for
+  the same plan-billing goal — incompatibly. A tool can be `Bash` OR
+  `mcp__terminal`, not both, and applying `mcp__` first silently DEFEATS the CC
+  mimicry. **Resolved to keep BOTH signals** (user decision: "port correctly /
+  lose nothing"): `_to_oauth_wire_name` carries a skip-set of CC-aliased builtins
+  + their CC-canonical targets (`HERMES_TO_CC` keys|values) + `web_search`, which
+  pass through untouched so the later `replace_with_cc_canonical` step owns them;
+  `mcp__` normalization applies ONLY to genuine MCP/other tools (`slack_*`,
+  `mcp_*`, `session_search`, …). **MERGE-NOTE for future syncs: keep the skip-set.
+  `web_search` MUST stay in it** — `apply_native_web_search` matches the literal
+  name to swap in Anthropic's native server-side tool; prefixing it first breaks
+  native search. Updated the two fork adapter tests + the two upstream
+  `mcp_prefix_strip` tests (their `read_file`/`terminal` examples are CC-aliased
+  here, swapped to `session_search`).
+* **`hermes_state.py` shared-helper fork-column loss.** Upstream extracted message
+  insertion into a NEW shared `_insert_message_rows()` (used by `replace_messages`
+  + `archive_and_compact`) that omitted the fork's `anthropic_content_blocks`
+  column. Threaded the column THROUGH the helper so all paths preserve thinking-
+  signature blocks. SCHEMA_VERSION → 18 (max(fork 17, upstream 16)+1). Migration
+  ladder keep-both (fork v13 api_calls + upstream v16 delegate-tag).
+* **`auxiliary_client.py` — adopted upstream's `create_anthropic_message()`
+  helper** (SSE-only-gateway stream aggregation) over the fork's
+  `.beta.messages.create()`. SAFE because `build_anthropic_client` bakes the
+  `anthropic-beta` header into `default_headers` at construction, so betas ride
+  every request regardless of `.messages` vs `.beta.messages`. Also: kept the
+  fork's `_try_main_agent_model_fallback` safety net for single-provider auto
+  setups, layered after upstream's new `_try_configured_fallback_chain` +
+  `_try_main_fallback_chain` (upstream's chains SKIP the main provider, so the
+  fork net is still needed for Anthropic-only users with a cheap pin); threaded
+  both `preferred_model` (fork) and `task` (upstream) into `_resolve_auto`.
+* **`agent/fork/anthropic_messages.py` — ported upstream's #19798 security fix.**
+  The verbatim `anthropic_content_blocks` replay carried the LIVE (un-redacted)
+  tool_use input; re-source each tool_use's `input` from the already-redacted
+  `tool_calls` map (keyed by id) so secrets can't leak back on the fast path.
+* **`tools/delegate_tool.py` — background-model port (10 hunks).** Adopted
+  upstream's background-by-default delegation (`_execute_and_aggregate()` wrapper,
+  `subagent.text` events, `child_timeout` default None, `background` param
+  deprecated/ignored) and ported the fork's synchronous SwarmBoard stack (live
+  board, prompt-cache stagger, 1M-beta latch, detailed cost/token rollup) INTO it.
+  Guard added: `if child_timeout is not None and _idle_secs > child_timeout` (None
+  is now the default). Cost-rollup block must sit at function-body indent (after
+  the if/else), not inside the batch `else:` — else the single-task path skips it.
+* **keep-both / converged elsewhere:** `system_prompt.py` (fork sentinel cache-
+  split + upstream truncation-warning drain + new `_resolve_platform_hint`);
+  `credential_pool.py` (took upstream's `_is_prunable` superset; kept fork
+  keychain-longlived branch); `context_compressor.py` (took upstream prose
+  wholesale — fork never customized it; credential-paraphrase instruction lives
+  elsewhere, verified intact); `hermes_cli/models.py` (kept fork `google-gemini-cli`
+  branding + upstream's NEW `google-antigravity` provider); `hermes_constants.py`
+  (kept fork "max" reasoning-effort + upstream's home-helper functions);
+  `cli.py`/`hermes_cli/config.py` (independent-function keep-both); the memory
+  dispatch in `agent_runtime_helpers.py`/`tool_executor.py` (fork warm-tier
+  `raw_target` + upstream batch `operations`); `agent_init.py` import + state
+  init keep-both.
+* **Post-merge triage:** full `tests/agent/` showed 87 failed vs the ~11
+  documented-flake baseline. Baselined at the pre-sync tag (worktree run: 11
+  failed / 4250 passed) vs post-merge (4604 passed) — the jump tracked upstream's
+  +354 new tests amplifying a pre-existing in-memory model-catalog cache ordering
+  weakness (the hermetic conftest isolates disk/HERMES_HOME but not in-process
+  module globals). Per-file isolated runs: all passed 100% except ONE genuine
+  failure (auxiliary_client `.beta` mock), which was fixed. The pollution values
+  are real model context lengths (256000/1000000), not garbage — the tell.
+
+Soft-fork divergence vs `upstream/main` after this sync (refreshed line counts):
+`anthropic_adapter.py` +1783/-680, `chat_completion_helpers.py` +797/-213,
+`conversation_loop.py` +466/-355, `auxiliary_client.py` +291/-220,
+`credential_pool.py` +124/-94, `hermes_state.py` +372/-553, `run_agent.py`
++254/-243, `system_prompt.py` +52/-150, `tool_executor.py` +172/-82,
+`agent_runtime_helpers.py` +202/-249, `tools/delegate_tool.py` +977/-559,
+`tools/memory_tool.py` +548/-285. Plus 244 commits of fork-only history.
+
+
 ## Why a fork
 
 Adam closed PR #25234 upstream in early 2026 — it included ~28K LOC of fork
