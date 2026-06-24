@@ -1513,7 +1513,19 @@ if _config_path.exists():
                 pass
 
             for _task_key in _aux_bridged_keys:
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
+                # Resolve through the schema-aware flattener so this works for
+                # BOTH the legacy task-first config AND the provider-first
+                # schema (fork, 2026-06-24). For provider-first, reading
+                # ``_auxiliary_cfg.get(_task_key)`` directly would only see the
+                # inert task-key pollution injected by the DEFAULT_CONFIG merge
+                # (provider=auto, model=''); the flattener instead selects the
+                # block matching the active main provider. Falls back to the
+                # raw dict if the resolver is unavailable.
+                try:
+                    from agent.auxiliary_client import _get_auxiliary_task_config
+                    _task_cfg = _get_auxiliary_task_config(_task_key)
+                except Exception:
+                    _task_cfg = _auxiliary_cfg.get(_task_key, {})
                 if not isinstance(_task_cfg, dict):
                     continue
                 _prov = str(_task_cfg.get("provider", "")).strip()

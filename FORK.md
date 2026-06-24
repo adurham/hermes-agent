@@ -752,6 +752,95 @@ scoped→scalar→clear resolution order. The scalar path is preserved underneat
 so this strictly supersets the prior entry.
 
 
+### Fork-only feature — 2026-06-24 (provider-first `auxiliary` config schema)
+
+**Supersedes** the `fallback_models` map entry above as the *config shape* (the
+resolver mechanics it relies on — exo pin-drop, 1M-beta model matching — are
+unchanged). Both schemas are read; this is the preferred authoring shape.
+
+**Motivation:** The task-first schema (`auxiliary.<task>.{provider,model,
+fallback_models}`) buried the provider dimension inside each task and forced the
+exo-scoping gymnastics (pin to exo, drop pin when `main != exo`, dig through
+`fallback_models`). The user wanted the inverse grouping so each provider's aux
+routing is visible in one place: "when we are in the exo provider we have CLEAR
+distinction of what the aux tasks point to."
+
+**Schema (provider-first):**
+```
+auxiliary:
+  defaults:                      # per-task, provider-INDEPENDENT settings
+    vision: {timeout: 120, download_timeout: 30}
+    curator: {timeout: 600}
+  exo:                           # provider block — keys are task→model
+    provider: custom:exo
+    base_url: http://…/v1
+    api_key: not-needed
+    api_mode: chat_completions
+    default: <qwen>              # model for any task not listed in this block
+    compression: <deepseek>      # per-task override
+  anthropic:
+    default: claude-haiku-4-5    # cheap default for unlisted tasks
+    vision: claude-sonnet-4-6    # heavier tasks bumped up
+    compression: claude-sonnet-4-6
+    curator: claude-sonnet-4-6
+    memory_extraction: claude-sonnet-4-6
+```
+Resolution for (task T, active main provider P): model = `auxiliary.P.T` →
+`auxiliary.P.default` → provider catalog default; connection = block-level
+`base_url/api_key/api_mode/provider` (model-only blocks like `anthropic` emit
+`provider=auto` so the main-provider auto path + family-matched aux model +
+baked betas behave exactly as before); per-task settings = `auxiliary.defaults.T`.
+
+**Implementation (`agent/auxiliary_client.py`):** one choke-point. The schema is
+detected and flattened in `_get_auxiliary_task_config` — the single function all
+accessors (`_resolve_task_provider_model`, `_get_task_timeout`,
+`_get_task_extra_body`, the gateway env-bridge) already funnel through.
+`_aux_flatten_provider_first` emits the SAME flat `{provider,model,base_url,…}`
+dict the task-first path produced, so the entire downstream resolver (incl. the
+exo-scoping guard and 1M-beta matching) is untouched. New helpers:
+`_aux_schema_is_provider_first` (pollution-robust detector — see merge note),
+`_aux_select_provider_block`, `_aux_flatten_provider_first`,
+`_BUILTIN_AUX_TASK_KEYS`.
+
+**Migration (`hermes_cli/config.py`):** `convert_auxiliary_to_provider_first()`
+collapses task-first → provider-first (most-common model per provider becomes
+the block `default`, minority tasks get explicit entries, `fallback_models[p]`
+→ provider `p`'s block, legacy `fallback_model` scalar → `anthropic` block,
+per-task settings → `defaults`). Wired as config **v30 → v31** migration step.
+Idempotent. `get_missing_config_fields()` skips the `auxiliary` subtree when the
+user's config is provider-first, else the task-first DEFAULT_CONFIG re-injects
+all 15 `auxiliary.<task>` blocks as `{provider:auto,model:''}` pollution on every
+migrate.
+
+**DEFAULT_CONFIG stays task-first** (both copies: `hermes_cli/config.py` +
+`cli.py`) — deliberately, to avoid perturbing fresh installs / upstream shape
+and minimize merge surface. Provider-first is purely a *user-config* shape the
+reader understands.
+
+**Verification:** 12 tests in `tests/agent/test_auxiliary_provider_first.py`
+(detector incl. pollution-survival, anthropic/exo resolution, defaults-timeout
+preservation, block-default fallback, unit flatten, converter collapse +
+idempotency). **Behavior-preserving proof:** Adam's real config resolved for all
+15 tasks × {anthropic-main, exo-main} BEFORE conversion == AFTER (30/30 exact,
+provider+model+base_url+api_mode). Live config migrated on the corp Mac (v31),
+re-migrate is a clean no-op (aux keys = `[anthropic, defaults, exo]`, no
+re-pollution). Broad sweep: 602 passed across aux/config/curator/vision/kanban
+suites; the lone `test_openrouter_main_vision_uses_main_model` flake is the
+documented pre-existing cross-file global-state issue (mocks
+`_resolve_task_provider_model`, so upstream of this change; passes in isolation
++ on clean `main`).
+
+**Merge note:** core changes in `agent/auxiliary_client.py` (one rewritten
+function + 4 new helpers, all additive below `_DEFAULT_AUX_TIMEOUT`),
+`hermes_cli/config.py` (converter + v31 step + `get_missing_config_fields`
+guard + version bump to 31), `gateway/run.py` (env-bridge routed through the
+flattener). On conflict: the flattener is the load-bearing piece — keep
+`_get_auxiliary_task_config` dispatching on `_aux_schema_is_provider_first`. The
+detector MUST treat task-key presence as a non-signal (the DEFAULT_CONFIG merge
+always injects them); positive markers are a `defaults` key or a known
+provider-id key only.
+
+
 ### Fork-only fix — 2026-06-22 (Anthropic aux 400: Haiku request carries Sonnet-only context-1m beta)
 
 **Symptom:** With the `fallback_model`→Haiku change live, the first aux task to
