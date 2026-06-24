@@ -5180,17 +5180,261 @@ def _resolve_task_provider_model(
 _DEFAULT_AUX_TIMEOUT = 30.0
 
 
+# Built-in auxiliary task keys. Used by the schema detector to distinguish a
+# legacy *task-first* ``auxiliary`` map (top-level keys are task names) from a
+# *provider-first* map (top-level keys are provider ids + ``defaults``). The two
+# namespaces are disjoint — no provider is named "vision", no task is named
+# "anthropic" — so the presence of any of these at the top level unambiguously
+# marks a task-first config. Kept in sync with DEFAULT_CONFIG["auxiliary"].
+_BUILTIN_AUX_TASK_KEYS = frozenset({
+    "vision", "web_extract", "compression", "skills_hub", "approval", "mcp",
+    "title_generation", "tts_audio_tags", "triage_specifier",
+    "kanban_decomposer", "profile_describer", "curator", "monitor",
+    "session_search", "memory_extraction",
+})
+
+# Reserved provider-first key holding per-task *settings* (timeout, extra_body,
+# language, token budgets, …) that are provider-independent. Looked up by task
+# regardless of which provider block serves the model.
+_AUX_DEFAULTS_KEY = "defaults"
+
+# Reserved keys inside a provider block that are block-level routing fields
+# rather than per-task model entries.
+_AUX_BLOCK_ROUTING_KEYS = frozenset({
+    "provider", "base_url", "api_key", "api_mode",
+})
+# Reserved per-block key naming the model used for any task NOT explicitly
+# listed in that provider block ("assume from the main aux config").
+_AUX_BLOCK_DEFAULT_MODEL_KEY = "default"
+
+
+def _aux_known_task_keys() -> frozenset:
+    """Built-in aux task keys plus any plugin-registered ones.
+
+    Plugin tasks must count as task-first markers too, otherwise a legacy
+    config that only configures a plugin task would be misread as
+    provider-first. Discovery failure degrades to the built-in set.
+    """
+    keys = set(_BUILTIN_AUX_TASK_KEYS)
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        for _entry in get_plugin_auxiliary_tasks():
+            k = _entry.get("key")
+            if isinstance(k, str) and k:
+                keys.add(k)
+    except Exception:
+        pass
+    return frozenset(keys)
+
+
+def _aux_schema_is_provider_first(aux: Dict[str, Any]) -> bool:
+    """Classify an ``auxiliary`` config map as provider-first or task-first.
+
+    Provider-first (fork schema, 2026-06-24)::
+
+        auxiliary:
+          defaults:        # per-task settings (timeout, extra_body, …)
+            vision: {timeout: 120}
+          exo:             # provider block — keys are task names → model
+            provider: custom:exo
+            base_url: http://…/v1
+            default: <qwen>
+            compression: <deepseek>
+          anthropic:
+            default: claude-haiku-4-5
+            vision: claude-sonnet-4-6
+
+    Task-first (legacy / upstream)::
+
+        auxiliary:
+          vision: {provider: auto, model: …, timeout: 120}
+          compression: {…}
+
+    Detection must survive ``load_config()``'s deep-merge against the
+    task-first ``DEFAULT_CONFIG``: that merge re-injects EVERY built-in task
+    key (``vision``, ``compression``, …) as inert ``{provider: auto, model:
+    ''}`` pollution on top of a user's provider-first config. So task-key
+    presence is NOT a usable signal — it's always there. The reliable positive
+    markers are the ones that never appear in a legacy task-first config:
+
+      * a ``defaults`` top-level key, or
+      * a top-level key that is a known provider id / exo / custom: alias.
+
+    Either marker ⇒ provider-first. Neither ⇒ task-first (legacy default; an
+    all-pollution or empty map behaves identically either way). The flattener
+    reads only the provider blocks + ``defaults`` and ignores the task-key
+    pollution, so a positive classification is safe.
+    """
+    if not isinstance(aux, dict) or not aux:
+        return False
+    keys = {str(k).strip().lower() for k in aux}
+    if _AUX_DEFAULTS_KEY in keys:
+        return True
+    # Known provider id (or exo/custom alias) at the top level → provider-first.
+    known_providers: set = set()
+    try:
+        from providers import list_providers
+        for _p in list_providers():
+            _name = getattr(_p, "name", None)
+            if isinstance(_name, str) and _name:
+                known_providers.add(_name.strip().lower())
+    except Exception:
+        known_providers = set()
+    # Exclude task keys from the provider scan so a legacy task-first config
+    # (whose keys are ALL task names) can never be misread as provider-first.
+    task_keys = _aux_known_task_keys()
+    for k in keys:
+        if k in task_keys:
+            continue
+        if k in known_providers or k in {"exo", "custom", "auto"} or k.startswith("custom:"):
+            return True
+    return False
+
+
+def _aux_select_provider_block(
+    aux: Dict[str, Any],
+    main_provider: str,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return the provider block matching the active *main* provider.
+
+    Resolution order:
+      1. exo alias (``exo`` / ``custom:exo``) when the main provider is the
+         local exo cluster (``_provider_is_exo``);
+      2. exact case-insensitive match on the main provider id;
+      3. ``custom:`` prefix stripped (``custom:exo`` → ``exo``);
+      4. empty block ⇒ caller falls through to the per-provider catalog
+         default ("assume from the main aux config").
+    """
+    if not isinstance(aux, dict):
+        return {}
+    # Build a case-insensitive view of provider blocks (skip the defaults key).
+    blocks = {
+        str(k).strip().lower(): v
+        for k, v in aux.items()
+        if k != _AUX_DEFAULTS_KEY and isinstance(v, dict)
+    }
+    mp = (main_provider or "").strip().lower()
+
+    # (1) exo cluster — prefer an explicit ``exo`` block.
+    try:
+        from agent.image_routing import _provider_is_exo
+        is_exo = _provider_is_exo(mp, cfg)
+    except Exception:
+        is_exo = mp in {"exo", "custom:exo"}
+    if is_exo:
+        for alias in ("exo", "custom:exo"):
+            if alias in blocks:
+                return blocks[alias]
+
+    # (2) exact match.
+    if mp in blocks:
+        return blocks[mp]
+    # (3) custom: prefix stripped.
+    if mp.startswith("custom:") and mp.split(":", 1)[1] in blocks:
+        return blocks[mp.split(":", 1)[1]]
+    return {}
+
+
+def _aux_flatten_provider_first(
+    task: str,
+    aux: Dict[str, Any],
+    main_provider: str,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Flatten a provider-first ``auxiliary`` map to the legacy task-config dict.
+
+    Returns the same flat ``{provider, model, base_url, api_key, api_mode,
+    timeout, extra_body, …}`` shape that the task-first path produced, so the
+    entire downstream resolver (``_resolve_task_provider_model``, the 1M-beta
+    header matching, the exo-scoping guard, ``_get_task_timeout`` /
+    ``_get_task_extra_body``) consumes it unchanged.
+
+    Model resolution within the selected provider block:
+        block[task]              # str → model, dict → routing/setting overrides
+        → block["default"]       # provider-wide default model
+        → "" (use main model / provider catalog default)
+
+    Routing emission:
+      * Block carries an explicit ``base_url`` or a non-auto ``provider``
+        (exo-style) → emit that explicit override so the request targets the
+        block's endpoint (and the exo-scoping guard keeps it when main==exo).
+      * Block is model-only (anthropic-style) → emit ``provider="auto"`` so the
+        main-provider auto-detect path runs exactly as before (preserving the
+        provider-matched aux model + baked betas for that family).
+    """
+    # (a) Per-task settings from the shared ``defaults`` block.
+    flat: Dict[str, Any] = {}
+    defaults_block = aux.get(_AUX_DEFAULTS_KEY)
+    if isinstance(defaults_block, dict):
+        task_defaults = defaults_block.get(task)
+        if isinstance(task_defaults, dict):
+            flat.update(task_defaults)
+
+    # (b) Provider block + model resolution.
+    block = _aux_select_provider_block(aux, main_provider, cfg)
+    task_entry = block.get(task) if isinstance(block, dict) else None
+    per_task_overrides: Dict[str, Any] = {}
+    resolved_model: Optional[str] = None
+    if isinstance(task_entry, str):
+        resolved_model = task_entry.strip() or None
+    elif isinstance(task_entry, dict):
+        per_task_overrides = dict(task_entry)
+        _m = per_task_overrides.pop("model", None)
+        resolved_model = str(_m).strip() or None if _m is not None else None
+    if resolved_model is None:
+        _default_model = block.get(_AUX_BLOCK_DEFAULT_MODEL_KEY) if isinstance(block, dict) else None
+        if isinstance(_default_model, str) and _default_model.strip():
+            resolved_model = _default_model.strip()
+
+    # (c) Block-level routing fields (base_url/api_key/api_mode/provider).
+    block_provider = str(block.get("provider", "")).strip() if isinstance(block, dict) else ""
+    block_base_url = str(block.get("base_url", "")).strip() if isinstance(block, dict) else ""
+    block_api_key = str(block.get("api_key", "")).strip() if isinstance(block, dict) else ""
+    block_api_mode = str(block.get("api_mode", "")).strip() if isinstance(block, dict) else ""
+
+    has_explicit_endpoint = bool(block_base_url) or (block_provider and block_provider != "auto")
+    if has_explicit_endpoint:
+        flat["provider"] = block_provider or "custom"
+        if block_base_url:
+            flat["base_url"] = block_base_url
+        if block_api_key:
+            flat["api_key"] = block_api_key
+        if block_api_mode:
+            flat["api_mode"] = block_api_mode
+    else:
+        # Model-only block (e.g. anthropic): defer to the main-provider auto
+        # path so family-matched aux model + baked betas behave as before.
+        flat["provider"] = "auto"
+
+    if resolved_model is not None:
+        flat["model"] = resolved_model
+
+    # (d) Per-task dict overrides win over block-level + defaults.
+    per_task_overrides.pop(_AUX_BLOCK_DEFAULT_MODEL_KEY, None)
+    flat.update(per_task_overrides)
+    return flat
+
+
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
-    """Return the config dict for auxiliary.<task>, or {} when unavailable.
+    """Return the flat config dict for an auxiliary *task*, or {} when unavailable.
+
+    Supports two ``auxiliary`` schemas transparently and always returns the same
+    flat ``{provider, model, base_url, …}`` shape:
+
+      * **provider-first** (fork schema): top-level keys are provider ids +
+        ``defaults``; the model a task uses is selected from the block matching
+        the active main provider. Flattened via
+        :func:`_aux_flatten_provider_first`.
+      * **task-first** (legacy / upstream): top-level keys are task names whose
+        values are the flat routing dict directly.
 
     For plugin-registered auxiliary tasks (see
     :meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`) the
-    plugin's declared *defaults* are layered underneath the user's config
-    so an unconfigured plugin task still works:
+    plugin's declared *defaults* are layered underneath the user's config so an
+    unconfigured plugin task still works:
 
-        plugin defaults  ←  config.yaml auxiliary.<task>  (user wins)
-
-    Built-in tasks ignore this path (their defaults live in DEFAULT_CONFIG).
+        plugin defaults  ←  resolved task config  (user wins)
     """
     if not task:
         return {}
@@ -5200,9 +5444,16 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     except ImportError:
         return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
-    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    if not isinstance(task_config, dict):
-        task_config = {}
+    if not isinstance(aux, dict):
+        aux = {}
+
+    if _aux_schema_is_provider_first(aux):
+        main_provider = _read_main_provider()
+        task_config = _aux_flatten_provider_first(task, aux, main_provider, config)
+    else:
+        task_config = aux.get(task, {})
+        if not isinstance(task_config, dict):
+            task_config = {}
 
     # Layer plugin-declared defaults underneath user config so
     # ctx.register_auxiliary_task(defaults={...}) takes effect without

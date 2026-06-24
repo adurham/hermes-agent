@@ -2925,7 +2925,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 31,
 }
 
 # =============================================================================
@@ -4220,11 +4220,29 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
     config = load_config()
     missing = []
 
+    # When the user's ``auxiliary`` config uses the provider-first schema
+    # (per-provider blocks + ``defaults``), DEFAULT_CONFIG's task-first
+    # ``auxiliary.<task>`` keys are NOT missing — they're a different schema for
+    # the same data. Descending would re-inject every task block as inert
+    # ``{provider: auto, model: ''}`` pollution on top of the provider-first
+    # config (and recur on every migrate). Detect and skip the auxiliary
+    # subtree in that case; the resolver reads provider-first natively.
+    _aux = config.get("auxiliary")
+    _skip_auxiliary = False
+    if isinstance(_aux, dict) and _aux:
+        try:
+            from agent.auxiliary_client import _aux_schema_is_provider_first
+            _skip_auxiliary = _aux_schema_is_provider_first(_aux)
+        except Exception:
+            _skip_auxiliary = "defaults" in _aux
+
     def _check(defaults: dict, current: dict, prefix: str = ""):
         for key, default_value in defaults.items():
             if key.startswith('_'):
                 continue
             full_key = key if not prefix else f"{prefix}.{key}"
+            if _skip_auxiliary and full_key == "auxiliary":
+                continue
             if key not in current:
                 missing.append({
                     "key": full_key,
@@ -5421,6 +5439,32 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "(LLM consolidation is now opt-in; pruning stays on)"
                 )
 
+    # ── Version 30 → 31: convert auxiliary config to provider-first schema ──
+    # Legacy task-first ``auxiliary.<task>`` blocks (with per-task
+    # provider/model + fallback_models maps) are converted to the
+    # provider-first shape: one block per provider (``exo``, ``anthropic``, …)
+    # keyed by task→model, plus a shared ``defaults`` block for per-task
+    # settings. The auxiliary_client resolver reads both schemas, so this is a
+    # readability/maintenance migration — it is provably resolve-equivalent
+    # (see tests/agent/test_auxiliary_provider_first.py). Only runs when the
+    # user actually has task-first aux blocks; no-op for fresh/empty configs.
+    if current_ver < 31:
+        config = read_raw_config()
+        raw_aux = config.get("auxiliary")
+        if isinstance(raw_aux, dict) and raw_aux:
+            converted = convert_auxiliary_to_provider_first(copy.deepcopy(raw_aux))
+            if converted is not raw_aux and converted != raw_aux:
+                config["auxiliary"] = converted
+                save_config(config)
+                results["config_added"].append(
+                    "auxiliary → provider-first schema (per-provider blocks)"
+                )
+                if not quiet:
+                    print(
+                        "  ✓ Converted auxiliary config to provider-first schema "
+                        "(per-provider blocks + shared defaults)"
+                    )
+
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a
     # malicious entry. Preserve the stanza for auditability but mark it
@@ -5603,6 +5647,153 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             print("  Set later with: hermes config set <key> <value>")
 
     return results
+
+
+# Built-in auxiliary task keys whose presence (with routing values) at the top
+# level of an ``auxiliary`` map marks a legacy *task-first* config. Mirrors
+# ``agent.auxiliary_client._BUILTIN_AUX_TASK_KEYS`` — kept local to avoid a
+# config→agent import cycle.
+_AUX_TASK_FIRST_KEYS = frozenset({
+    "vision", "web_extract", "compression", "skills_hub", "approval", "mcp",
+    "title_generation", "tts_audio_tags", "triage_specifier",
+    "kanban_decomposer", "profile_describer", "curator", "monitor",
+    "session_search", "memory_extraction",
+})
+# Per-task setting keys that are provider-independent and belong in the shared
+# provider-first ``defaults`` block (NOT a model/routing field).
+_AUX_SETTING_KEYS = frozenset({
+    "timeout", "extra_body", "download_timeout", "language",
+    "max_concurrency", "max_tokens_per_turn", "max_tokens_session_end",
+    "include_pre_compress", "auto_commit_session_end", "fallback_chain",
+})
+# Routing keys handled explicitly during conversion (not copied as settings).
+_AUX_ROUTING_KEYS = frozenset({
+    "provider", "model", "base_url", "api_key", "api_mode",
+    "fallback_model", "fallback_models",
+})
+
+
+def convert_auxiliary_to_provider_first(aux: dict) -> dict:
+    """Convert a legacy *task-first* ``auxiliary`` map to *provider-first*.
+
+    Task-first input (one block per task)::
+
+        vision:      {provider: custom:exo, model: <qwen>, base_url: …,
+                      timeout: 120, fallback_models: {anthropic: claude-sonnet-4-6}}
+        compression: {provider: custom:exo, model: <deepseek>, …,
+                      fallback_models: {anthropic: claude-sonnet-4-6}}
+
+    Provider-first output (one block per provider + shared per-task settings)::
+
+        defaults:
+          vision: {timeout: 120}
+        exo:
+          provider: custom:exo
+          base_url: …
+          default: <qwen>          # most-common model across tasks
+          compression: <deepseek>  # task that differs from default
+        anthropic:
+          default: claude-haiku-4-5  # most-common fallback across tasks
+          vision: claude-sonnet-4-6  # tasks that differ
+
+    The conversion is intentionally *behavior-preserving* against the
+    auxiliary_client resolver:
+      * The task's primary ``provider``/``model``/``base_url`` becomes an entry
+        in the matching provider block (exo pin → ``exo`` block; ``auto``/none
+        → no explicit block, the resolver's provider-catalog default applies).
+      * Each ``fallback_models[<prov>]`` entry becomes a task entry in that
+        provider's block.
+      * A legacy ``fallback_model`` scalar (assumed anthropic, per the old
+        resolver) becomes an ``anthropic`` block entry.
+      * Per-task settings (timeout, extra_body, …) move to ``defaults``.
+
+    Idempotent: an already provider-first map (has a ``defaults`` key or no
+    task-first keys) is returned unchanged.
+    """
+    if not isinstance(aux, dict) or not aux:
+        return aux
+    # Idempotency / already-provider-first guard: if there are no task-first
+    # keys carrying routing values, assume it's already converted.
+    task_keys_present = [
+        k for k in aux
+        if k in _AUX_TASK_FIRST_KEYS and isinstance(aux.get(k), dict)
+    ]
+    if not task_keys_present or "defaults" in aux:
+        return aux
+
+    # provider id → {task → model}; plus per-block routing (base_url/api_key/…).
+    provider_models: dict = {}
+    provider_routing: dict = {}
+    defaults_block: dict = {}
+
+    def _block(prov: str) -> dict:
+        return provider_models.setdefault(prov, {})
+
+    for task in task_keys_present:
+        tcfg = aux[task]
+        prov = str(tcfg.get("provider", "")).strip()
+        model = str(tcfg.get("model", "")).strip()
+        base_url = str(tcfg.get("base_url", "")).strip()
+        api_key = str(tcfg.get("api_key", "")).strip()
+        api_mode = str(tcfg.get("api_mode", "")).strip()
+
+        # Primary pin → provider block (skip 'auto'/empty: resolver default).
+        if prov and prov != "auto":
+            # Normalise custom:exo → exo block name for readability.
+            block_name = prov.split(":", 1)[1] if prov.startswith("custom:") else prov
+            if model:
+                _block(block_name)[task] = model
+            routing = provider_routing.setdefault(block_name, {})
+            # Record block-level routing once (consistent across tasks by design).
+            if prov.startswith("custom:") or base_url:
+                routing.setdefault("provider", prov)
+            if base_url:
+                routing.setdefault("base_url", base_url)
+            if api_key:
+                routing.setdefault("api_key", api_key)
+            if api_mode:
+                routing.setdefault("api_mode", api_mode)
+
+        # Provider-scoped fallbacks → each provider's block.
+        fbm = tcfg.get("fallback_models")
+        if isinstance(fbm, dict):
+            for fb_prov, fb_model in fbm.items():
+                fb_prov = str(fb_prov).strip().lower()
+                fb_model = str(fb_model).strip()
+                if fb_prov and fb_model:
+                    _block(fb_prov)[task] = fb_model
+        # Legacy scalar fallback_model → anthropic (old resolver assumption).
+        fb_scalar = str(tcfg.get("fallback_model", "")).strip()
+        if fb_scalar:
+            _block("anthropic").setdefault(task, fb_scalar)
+
+        # Per-task settings → defaults block.
+        settings = {
+            k: v for k, v in tcfg.items()
+            if k in _AUX_SETTING_KEYS and k not in _AUX_ROUTING_KEYS
+        }
+        if settings:
+            defaults_block[task] = settings
+
+    # Collapse each provider block to a per-block ``default`` (most common
+    # model) + explicit overrides for the minority.
+    out: dict = {}
+    if defaults_block:
+        out["defaults"] = defaults_block
+    for prov, task_model in provider_models.items():
+        if not task_model:
+            continue
+        block: dict = {}
+        block.update(provider_routing.get(prov, {}))
+        # Most-common model becomes the block default.
+        from collections import Counter
+        most_common, _count = Counter(task_model.values()).most_common(1)[0]
+        block["default"] = most_common
+        for task, model in task_model.items():
+            if model != most_common:
+                block[task] = model
+        out[prov] = block
+    return out
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
