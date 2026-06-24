@@ -265,3 +265,100 @@ def test_converter_idempotent():
         "anthropic": {"default": "claude-haiku-4-5"},
     }
     assert convert_auxiliary_to_provider_first(dict(provider_first)) == provider_first
+
+
+# ── save_config pollution stripping ──────────────────────────────────
+
+def test_save_strips_provider_first_task_pollution():
+    """A provider-first config carrying DEFAULT_CONFIG task-key pollution must
+    be cleaned on save — no write path may persist stale auxiliary.<task>."""
+    from hermes_cli.config import _strip_provider_first_aux_pollution
+    polluted = {
+        "auxiliary": {
+            "defaults": {"vision": {"timeout": 120}},
+            "exo": {"provider": "custom:exo", "default": _QWEN},
+            "anthropic": {"default": "claude-haiku-4-5", "vision": "claude-sonnet-4-6"},
+            # Pollution injected by the DEFAULT_CONFIG deep-merge:
+            "vision": {"provider": "auto", "model": ""},
+            "compression": {"provider": "auto", "model": ""},
+            "mcp": {"provider": "auto", "model": ""},
+        }
+    }
+    out = _strip_provider_first_aux_pollution(polluted)
+    assert sorted(out["auxiliary"].keys()) == ["anthropic", "defaults", "exo"]
+
+
+def test_save_strip_noop_on_task_first():
+    """A genuine task-first config must be left untouched (not detected as
+    provider-first, so its task blocks survive)."""
+    from hermes_cli.config import _strip_provider_first_aux_pollution
+    task_first = {
+        "auxiliary": {
+            "vision": {"provider": "auto", "model": "", "timeout": 120},
+            "compression": {"provider": "auto", "model": "claude-sonnet-4-6"},
+        }
+    }
+    before = {k: dict(v) for k, v in task_first["auxiliary"].items()}
+    out = _strip_provider_first_aux_pollution(task_first)
+    assert out["auxiliary"] == before
+
+
+def test_first_migrate_to_v31_leaves_no_pollution(tmp_path, monkeypatch):
+    """A single migrate of a fresh v<31 task-first config must produce a clean
+    provider-first config — no leftover task-key pollution (regression for the
+    DEFAULT_CONFIG re-merge that the first migrate originally persisted)."""
+    import textwrap as _tw
+    cfg = _tw.dedent(f"""\
+        _config_version: 29
+        model:
+          provider: anthropic
+          model: claude-opus-4-8
+        providers:
+          exo:
+            base_url: {_EXO_BASE}
+        auxiliary:
+          vision:
+            provider: custom:exo
+            model: {_QWEN}
+            base_url: {_EXO_BASE}
+            api_key: not-needed
+            api_mode: chat_completions
+            timeout: 120
+            fallback_models: {{anthropic: claude-sonnet-4-6}}
+          compression:
+            provider: custom:exo
+            model: {_DEEPSEEK}
+            base_url: {_EXO_BASE}
+            api_key: not-needed
+            api_mode: chat_completions
+            timeout: 120
+            fallback_models: {{anthropic: claude-sonnet-4-6}}
+          mcp:
+            provider: custom:exo
+            model: {_QWEN}
+            base_url: {_EXO_BASE}
+            api_key: not-needed
+            api_mode: chat_completions
+            timeout: 30
+            fallback_models: {{anthropic: claude-haiku-4-5}}
+    """)
+    (tmp_path / "config.yaml").write_text(cfg)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    try:
+        from hermes_cli import config as _cfg
+        if hasattr(_cfg, "_LOAD_CONFIG_CACHE"):
+            _cfg._LOAD_CONFIG_CACHE.clear()
+        if hasattr(_cfg, "_RAW_CONFIG_CACHE"):
+            _cfg._RAW_CONFIG_CACHE.clear()
+    except Exception:
+        pass
+
+    from hermes_cli.config import migrate_config, read_raw_config
+    migrate_config(interactive=False, quiet=True)
+    aux = read_raw_config().get("auxiliary", {})
+    assert sorted(aux.keys()) == ["anthropic", "defaults", "exo"], sorted(aux.keys())
+    # conversion correctness
+    assert aux["exo"]["default"] == _QWEN
+    assert aux["exo"]["compression"] == _DEEPSEEK
+    assert aux["anthropic"]["default"] == "claude-sonnet-4-6"
+    assert aux["anthropic"]["mcp"] == "claude-haiku-4-5"

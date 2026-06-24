@@ -5796,6 +5796,54 @@ def convert_auxiliary_to_provider_first(aux: dict) -> dict:
     return out
 
 
+def _auxiliary_is_provider_first(aux: Any) -> bool:
+    """Local provider-first detector (mirrors agent.auxiliary_client's, but
+    kept here to avoid a config→agent import in the save path).
+
+    Provider-first markers (never present in a legacy task-first config):
+      * a top-level ``defaults`` key, or
+      * a top-level key that is NOT a known task name and whose value is a dict
+        carrying a ``default`` model / ``provider`` / ``base_url`` (a provider
+        block).
+    """
+    if not isinstance(aux, dict) or not aux:
+        return False
+    if "defaults" in aux:
+        return True
+    for k, v in aux.items():
+        if k in _AUX_TASK_FIRST_KEYS:
+            continue
+        if isinstance(v, dict) and (
+            "default" in v or "provider" in v or "base_url" in v
+        ):
+            return True
+    return False
+
+
+def _strip_provider_first_aux_pollution(config: dict) -> dict:
+    """Remove task-key pollution from a provider-first ``auxiliary`` block.
+
+    ``load_config()`` deep-merges the task-first ``DEFAULT_CONFIG`` over the
+    user's config, re-injecting all 15 ``auxiliary.<task>`` blocks as inert
+    ``{provider: auto, model: ''}`` entries on top of a provider-first config.
+    Any ``save_config`` of such a merged dict would persist that pollution
+    (this is exactly how the first ``hermes config migrate`` to v31 left stale
+    task keys behind). Stripping here — at the single choke point all writes
+    flow through — guarantees no code path can ever persist it.
+
+    No-op for a genuine task-first config (its keys are all task names, so it
+    is not detected as provider-first) and for configs with no ``auxiliary``.
+    Mutates and returns *config*.
+    """
+    aux = config.get("auxiliary")
+    if not isinstance(aux, dict) or not _auxiliary_is_provider_first(aux):
+        return config
+    for k in list(aux.keys()):
+        if k in _AUX_TASK_FIRST_KEYS:
+            del aux[k]
+    return config
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge *override* into *base*, preserving nested defaults.
 
@@ -6416,6 +6464,12 @@ def save_config(config: Dict[str, Any]):
         ensure_hermes_home()
         config_path = get_config_path()
         current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        # Drop task-key pollution that the DEFAULT_CONFIG deep-merge injects on
+        # top of a provider-first ``auxiliary`` block, so no write path (migrate,
+        # wizard, programmatic save) can persist stale ``auxiliary.<task>``
+        # entries. No-op for legacy task-first configs. See
+        # _strip_provider_first_aux_pollution.
+        current_normalized = _strip_provider_first_aux_pollution(current_normalized)
         normalized = current_normalized
         raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
         if raw_existing:
