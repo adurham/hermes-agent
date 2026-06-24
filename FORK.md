@@ -705,6 +705,53 @@ exo-scoped delegation guard. On conflict: keep the `cfg_fallback_model` read and
 `fallback_model` is purely additive config — absent = old behavior.
 
 
+### Fork-only feature — 2026-06-24 (provider-scoped aux fallback: `fallback_models` map)
+
+**Motivation:** The 2026-06-22 `fallback_model` scalar fixed cost on
+Anthropic-main but is structurally under-designed: it is a single model string
+with no provider dimension. The pin-drop branch fires whenever `main != exo`
+(not specifically `main == anthropic`), so the scalar silently assumes the
+non-exo provider is always Anthropic. If `main` were ever OpenRouter / Ollama /
+any third provider, that bare `claude-*` scalar would be handed to the wrong
+provider and break or mis-resolve. The user correctly flagged that the config
+"should be provider-scoped."
+
+**Fix (`agent/auxiliary_client.py`, `_resolve_task_provider_model`):** Added an
+optional per-task `auxiliary.<task>.fallback_models` map of `{provider: model}`
+keyed by the active *main* provider id. On exo-pin-drop the aux model is chosen:
+1. provider-scoped `fallback_models[<main_provider>]` (case-insensitive key match)
+2. legacy `fallback_model` scalar (backward compat)
+3. cleared → provider-default aux model (e.g. Sonnet on Anthropic).
+A non-dict `fallback_models` is ignored (falls through to scalar). Fully
+backward compatible: absent map ⇒ identical to the 2026-06-22 scalar behavior.
+The exo→Qwen side stays expressed by the existing pin (`provider`/`model`/
+`base_url`); the map is only consulted once that pin is dropped, so an `exo:`
+key would be dead — only non-exo mains (e.g. `anthropic:`) belong in the map.
+
+**Config applied** (both Macs — corp + personal — `fallback_models.anthropic`
+set, redundant `fallback_model` scalar nulled): SONNET (`vision`, `compression`,
+`memory_extraction`, `curator`); HAIKU (`web_extract`, `skills_hub`, `approval`,
+`mcp`, `title_generation`, `tts_audio_tags`, `triage_specifier`,
+`kanban_decomposer`, `profile_describer`, `session_search`). Note this also
+moved `approval`+`session_search` from Sonnet→Haiku vs the 2026-06-22 list, per
+the user's "everything except vision+compression(+memory_extraction+curator) to
+Haiku" decision.
+
+**Verification:** 7 new tests in `TestProviderScopedFallbackModels`
+(`tests/agent/test_auxiliary_main_first.py`): per-provider selection,
+scoped-wins-over-scalar, scalar-fallback-when-provider-absent, clear-when-no-
+match-no-scalar, exo-main-ignores-map, case-insensitive key, malformed-map.
+Live resolver verified on both Macs (main=anthropic → the split above). Aux
+sweep: 251 passed; the one `test_openrouter_main_vision_uses_main_model` failure
+is the documented pre-existing cross-file global-state flake (fails identically
+on clean `main` with changes stashed; passes in isolation).
+
+**Merge note:** additive change in the same pin-drop branch as the 2026-06-22
+scalar. On conflict: keep both the `cfg_fallback_models` dict read and the
+scoped→scalar→clear resolution order. The scalar path is preserved underneath,
+so this strictly supersets the prior entry.
+
+
 ### Fork-only fix — 2026-06-22 (Anthropic aux 400: Haiku request carries Sonnet-only context-1m beta)
 
 **Symptom:** With the `fallback_model`→Haiku change live, the first aux task to

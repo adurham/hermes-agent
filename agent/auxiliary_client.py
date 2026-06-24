@@ -5050,6 +5050,16 @@ def _resolve_task_provider_model(
     instead of pulling the exo cluster into the request.  Mirrors the
     exo-only delegate scoping already used for vision in
     ``agent/image_routing.py`` (``_provider_is_exo``).
+
+    Provider-scoped fallback (fork feature, 2026-06-24): when the exo pin is
+    dropped, the aux model is chosen from
+    ``auxiliary.<task>.fallback_models`` — a ``{provider: model}`` map keyed
+    by the active *main* provider id — falling back to the legacy
+    ``auxiliary.<task>.fallback_model`` scalar, then to cleared (provider
+    default). This lets one task declare different aux models per main
+    provider (``exo`` pin for exo-main, ``anthropic: claude-sonnet-4-6`` for
+    Anthropic-main, etc.) rather than a scalar that assumes the non-exo
+    provider is always Anthropic. Backward compatible: absent map ⇒ scalar.
     """
     cfg_provider = None
     cfg_model = None
@@ -5065,6 +5075,18 @@ def _resolve_task_provider_model(
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
         cfg_fallback_model = str(task_config.get("fallback_model", "")).strip() or None
+        # Provider-scoped fallback map (fork feature, 2026-06-24): an optional
+        # ``auxiliary.<task>.fallback_models`` dict maps a *main-provider id*
+        # to the aux model to use when the exo pin is dropped (main != exo).
+        # This lets a single task carry a per-provider preferred aux model
+        # (e.g. ``exo: <qwen>``, ``anthropic: claude-sonnet-4-6``) instead of
+        # a lone ``fallback_model`` scalar that silently assumes the non-exo
+        # provider is Anthropic. Resolution order on drop: provider-scoped
+        # entry → legacy ``fallback_model`` scalar → cleared (provider default).
+        # Fully backward compatible: absent map ⇒ old scalar behavior.
+        cfg_fallback_models = task_config.get("fallback_models")
+        if not isinstance(cfg_fallback_models, dict):
+            cfg_fallback_models = {}
 
         # ── Exo-scoped auxiliary delegation ────────────────────────────
         # Drop the exo-targeted override when the active main provider is
@@ -5089,13 +5111,23 @@ def _resolve_task_provider_model(
                     f" with fallback_model {cfg_fallback_model!r}" if cfg_fallback_model else "",
                 )
                 cfg_provider = None
-                # When the exo pin is dropped because main isn't exo, an
-                # optional per-task ``fallback_model`` selects the model used
-                # on the (now main-following) provider — e.g. a cheaper Haiku
-                # for trivial tasks while an Anthropic-main session still uses
-                # its real OAuth creds.  Without it, the model is cleared so
-                # the provider-default aux model applies (Sonnet on Anthropic).
-                cfg_model = cfg_fallback_model
+                # When the exo pin is dropped because main isn't exo, choose
+                # the model for the now-main-following provider in this order:
+                #   1. provider-scoped ``fallback_models[<main_provider>]``
+                #   2. legacy ``fallback_model`` scalar
+                #   3. cleared → provider-default aux model (e.g. Sonnet on
+                #      Anthropic) applies.
+                # (1) lets one task carry distinct aux models per main provider
+                # — e.g. a cheap Haiku on Anthropic-main while a different model
+                # is used if main were OpenRouter/Ollama — instead of a single
+                # scalar that assumes the non-exo provider is always Anthropic.
+                _scoped_model = None
+                if isinstance(cfg_fallback_models, dict) and _main_prov:
+                    for _k, _v in cfg_fallback_models.items():
+                        if str(_k).strip().lower() == _main_prov:
+                            _scoped_model = str(_v).strip() or None
+                            break
+                cfg_model = _scoped_model or cfg_fallback_model
                 cfg_base_url = None
                 cfg_api_key = None
                 cfg_api_mode = None
