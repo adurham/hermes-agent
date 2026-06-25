@@ -141,6 +141,23 @@ def _login_success(request: Request, session: Session, provider: str) -> None:
            email=session.email, org_id=session.org_id)
 
 
+def _externalize_post_login_target(target: str, prefix: str) -> str:
+    """Prepend *prefix* to *target* when behind a reverse proxy.
+
+    When the dashboard is mounted at a sub-path (e.g. ``/hermes``) via
+    ``X-Forwarded-Prefix``, a bare ``/`` landing must become ``/hermes/``
+    so the browser stays inside the mount. Paths that already carry the
+    prefix are returned unchanged; the native loopback redirect (an
+    absolute ``http://127.0.0.1...`` URL) never matches and is untouched.
+    """
+    prefix = prefix.rstrip("/")
+    if not target or not prefix:
+        return target
+    if target == prefix or target.startswith(f"{prefix}/"):
+        return target
+    return f"{prefix}{target}"
+
+
 def _complete_login(request: Request, provider: str, session: Session, *, broker_state: str,
                     next_raw: str) -> tuple:
     """Shared tail of the callback + password routes after credentials verified: audit success,
@@ -150,7 +167,8 @@ def _complete_login(request: Request, provider: str, session: Session, *, broker
     if broker_state:
         return _finish_native_login(
             request, broker_state=broker_state, session=session, provider=provider), True
-    return _validate_post_login_target(next_raw) or "/", False
+    landing = _validate_post_login_target(next_raw) or "/"
+    return _externalize_post_login_target(landing, _prefix(request)), False
 
 
 def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkce: dict[str, str]):
