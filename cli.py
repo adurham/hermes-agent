@@ -237,7 +237,7 @@ def _strip_reasoning_tags(text: str) -> str:
         )
     # Tool-call XML blocks (openclaw/openclaw#67318).
     for tc_tag in ("tool_call", "tool_calls", "tool_result",
-                   "function_call", "function_calls"):
+                   "function_call", "function_calls", "invoke", "parameter"):
         cleaned = re.sub(
             rf"<{tc_tag}\b[^>]*>.*?</{tc_tag}>\s*",
             "",
@@ -255,7 +255,7 @@ def _strip_reasoning_tags(text: str) -> str:
     )
     # Stray tool-call close tags.
     cleaned = re.sub(
-        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
+        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function|invoke|parameter)>\s*',
         '',
         cleaned,
         flags=re.IGNORECASE,
@@ -3766,6 +3766,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._prompt_start_time: Optional[float] = None  # time.time() when turn started
         self._prompt_duration: float = 0.0  # frozen duration of last completed turn
         self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
+        # Per-turn context delta: context_tokens captured at the start of the
+        # current turn so the status bar can show how much the prompt grew this
+        # turn (and whether the growth is genuinely-new content vs. a cache
+        # refresh after idle). None until the first turn establishes a baseline.
+        self._turn_start_context_tokens: Optional[int] = None
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
         self._session_db_unavailable = False
@@ -4417,7 +4422,63 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+            # Per-turn context delta + cause classification. The user observes
+            # the context counter jumping 20K+ on a follow-up; this surfaces
+            # *why*. From real session logs there are two mechanisms:
+            #   1. New content this turn — a fat tool result (big file read,
+            #      web_extract, verbose stdout). Shows up as cache_write
+            #      (freshly-written tokens) on top of a flat cached prefix.
+            #   2. Post-idle cache refresh — the prompt cache expired during a
+            #      gap, so the same prefix re-accounts as full-price input
+            #      instead of cache_read. Total is correct; only the
+            #      cached/new split changed. cache_write stays small while
+            #      input balloons.
+            # Heuristic: if the jump is mostly cache_write -> "new"; if it's
+            # mostly fresh input with little cache_write -> "cache" (refresh).
+            base = getattr(self, "_turn_start_context_tokens", None)
+            if base is not None and context_tokens:
+                delta = context_tokens - base
+                snapshot["context_delta"] = delta
+                if delta >= 2000:
+                    cw = snapshot.get("context_cache_write_tokens", 0) or 0
+                    inp = snapshot.get("context_input_tokens", 0) or 0
+                    # Cause = the dominant contributor to the *current* prompt:
+                    #   - cache refresh: the prefix wasn't cached this turn, so
+                    #     it was re-charged as fresh ``input``. Tell-tale is a
+                    #     large input share of the total (cache_read collapsed).
+                    #     Real logs show ~55% input/total on a cold-cache turn
+                    #     vs. ~0% (input==2) on a warm one.
+                    #   - new content: prefix stayed cached (input tiny), and
+                    #     the growth shows up as freshly-written ``cache_write``.
+                    if inp >= context_tokens * 0.40:
+                        snapshot["context_delta_cause"] = "cache"
+                    elif cw >= delta * 0.5:
+                        snapshot["context_delta_cause"] = "new"
+                    else:
+                        snapshot["context_delta_cause"] = "new"
+
         return snapshot
+
+    @staticmethod
+    def _format_context_delta(snapshot: dict) -> Optional[str]:
+        """Format the per-turn context delta segment, or None to omit it.
+
+        Only shown for meaningful growth (>=2K), so a steady stream of small
+        turns doesn't clutter the bar. The cause tag tells the two mechanisms
+        apart at a glance:
+          ``Δ+23K new``   — fat tool result / genuinely new content this turn
+          ``Δ+89K cache`` — prompt cache expired during idle; prefix re-charged
+        """
+        delta = snapshot.get("context_delta")
+        if delta is None or delta < 2000:
+            return None
+        cause = snapshot.get("context_delta_cause")
+        amount = format_token_count_compact(delta)
+        if cause == "cache":
+            return f"Δ+{amount} cache"
+        if cause == "new":
+            return f"Δ+{amount} new"
+        return f"Δ+{amount}"
 
     @staticmethod
     def _status_bar_display_width(text: str) -> int:
@@ -4696,6 +4757,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             parts = [f"{_glyph} {snapshot['model_short']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
+            delta_label = self._format_context_delta(snapshot)
+            if delta_label:
+                parts.append(delta_label)
             bg_count = snapshot.get("active_background_tasks", 0)
             if bg_count:
                 parts.append(f"▶ {bg_count}")
@@ -4816,6 +4880,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                    delta_label = self._format_context_delta(snapshot)
+                    if delta_label:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", delta_label))
                     if bg_count:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
@@ -13262,6 +13330,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # finishes; reset on the next turn.
             self._prompt_start_time = time.time()
             self._prompt_duration = 0.0
+            # Snapshot the context size at the start of this turn so the status
+            # bar can show a signed per-turn delta (how much the prompt grew,
+            # and whether it's new content or a post-idle cache refresh). Read
+            # the compressor's last real prompt count; clamp the -1 sentinel
+            # (parked right after a compression) to 0.
+            try:
+                _comp = getattr(self.agent, "context_compressor", None)
+                _base = getattr(_comp, "last_prompt_tokens", None) if _comp else None
+                self._turn_start_context_tokens = max(0, _base) if isinstance(_base, int) else None
+            except Exception:
+                self._turn_start_context_tokens = None
             agent_thread = threading.Thread(target=run_agent, daemon=True)
             agent_thread.start()
 
