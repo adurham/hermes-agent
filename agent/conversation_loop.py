@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -69,6 +70,114 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
+
+# ── Sentinel-less / bare-XML tool-call recovery ─────────────────────────────
+#
+# Some open-weight backends (notably DSv4-Flash on exo, at temperature=1.0)
+# intermittently emit a tool call as bare Claude-style XML in the *content*
+# stream instead of via structured ``tool_calls`` — e.g. (observed live
+# 2026-06-29, the read_file call dropped + leaked as text):
+#
+#     <tool_call>
+#     <invoke name="read_file">
+#     <parameter name="limit" string="false">15</parameter>
+#     <parameter name="path" string="true">~/.hermes/config.yaml</parameter>
+#     </invoke>
+#
+# The backend's own tool-call parser is the primary fix site (exo recovers this
+# into a real structured call). This is the client-side safety net: if a leak
+# still reaches us as content with NO structured tool_calls, recover the call
+# here so the tool actually RUNS rather than the XML painting as a final answer
+# (and the action silently dropping). Handles both DSv4's
+# ``string="true|false"``-annotated parameters and the attribute-less
+# Claude/minimax form.
+#
+# Gating is strict to avoid recovering prose that merely *quotes* tool-call
+# syntax: we require a real ``<invoke name="...">...</invoke>`` block that
+# itself contains at least one ``<parameter name="...">`` tag. A model
+# discussing tool-call XML in prose won't form that exact closed structure.
+
+_RECOVER_INVOKE_RE = re.compile(
+    r"<invoke\s+name=\"([^\"]+)\">(.*?)</invoke>",
+    re.DOTALL,
+)
+_RECOVER_PARAM_TYPED_RE = re.compile(
+    r"<parameter\s+name=\"([^\"]+)\"\s+string=\"(true|false)\"\s*>(.*?)</parameter>",
+    re.DOTALL,
+)
+_RECOVER_PARAM_PLAIN_RE = re.compile(
+    r"<parameter\s+name=\"([^\"]+)\"\s*>(.*?)</parameter>",
+    re.DOTALL,
+)
+
+
+def _coerce_recovered_param(raw: str, *, force_string: bool) -> Any:
+    """Coerce a recovered parameter value — verbatim text when the model marked
+    it ``string="true"``, else JSON-decoded (so ``15`` → int) with a raw-string
+    fallback for non-JSON values like file paths."""
+    if force_string:
+        return raw
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
+def _recover_bare_tool_calls_from_content(content: Optional[str]) -> list[Any]:
+    """Recover leaked bare-XML tool calls from assistant content.
+
+    Returns a list of OpenAI-shaped tool-call namespaces (``.id``, ``.type``,
+    ``.function.name``, ``.function.arguments``) for each well-formed
+    ``<invoke>`` block that contains at least one ``<parameter>`` tag. Returns
+    an empty list when nothing matches (the common case — zero hot-path cost
+    beyond one regex scan). Never matches DSML sentinel-bearing tags (those are
+    the backend parser's job); a leak that still carries ``｜DSML｜`` is left
+    alone here.
+    """
+    if not content or "<invoke" not in content or "<parameter" not in content:
+        return []
+    if "\uff5cDSML\uff5c" in content:
+        return []  # sentinel-bearing — owned by the backend parser, not us
+
+    recovered: list[Any] = []
+    for invoke_match in _RECOVER_INVOKE_RE.finditer(content):
+        func_name = invoke_match.group(1).strip()
+        if not func_name:
+            continue
+        body = invoke_match.group(2)
+
+        args: dict[str, Any] = {}
+        typed_spans: list[tuple[int, int]] = []
+        for pm in _RECOVER_PARAM_TYPED_RE.finditer(body):
+            typed_spans.append(pm.span())
+            args[pm.group(1)] = _coerce_recovered_param(
+                pm.group(3), force_string=(pm.group(2) == "true")
+            )
+        for pm in _RECOVER_PARAM_PLAIN_RE.finditer(body):
+            if any(s <= pm.start() < e for s, e in typed_spans):
+                continue
+            if pm.group(1) in args:
+                continue
+            args[pm.group(1)] = _coerce_recovered_param(pm.group(2), force_string=False)
+
+        if not args:
+            # An invoke with no parseable parameters is too weak a signal —
+            # skip it rather than fire a tool with empty args from prose.
+            continue
+
+        call_id = f"recovered_call_{len(recovered) + 1}_{uuid.uuid4().hex[:8]}"
+        recovered.append(
+            SimpleNamespace(
+                id=call_id,
+                type="function",
+                function=SimpleNamespace(
+                    name=func_name,
+                    arguments=json.dumps(args, ensure_ascii=False),
+                ),
+            )
+        )
+    return recovered
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -4151,7 +4260,37 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
-            
+
+            # ── Bare-XML tool-call recovery (client-side safety net) ─────────
+            # If the model leaked a tool call as bare <invoke>/<parameter> XML
+            # in content but produced NO structured tool_calls, recover it so
+            # the tool actually runs instead of the XML painting as a final
+            # answer (and the action silently dropping). Backend parsers (e.g.
+            # exo's DSv4 recovery) are the primary fix site; this catches any
+            # leak that still slips through. Only fires when the model returned
+            # no structured calls — never overrides a real tool_calls payload.
+            if not assistant_message.tool_calls:
+                _leaked_content = getattr(assistant_message, "content", None)
+                if isinstance(_leaked_content, str):
+                    _recovered_calls = _recover_bare_tool_calls_from_content(_leaked_content)
+                    if _recovered_calls:
+                        agent._vprint(
+                            f"{agent.log_prefix}🔧 Recovered {len(_recovered_calls)} "
+                            f"leaked tool call(s) from content "
+                            f"({', '.join(c.function.name for c in _recovered_calls)}) "
+                            f"— executing instead of leaking as text"
+                        )
+                        logger.info(
+                            "Recovered %d bare-XML tool call(s) from leaked content: %s",
+                            len(_recovered_calls),
+                            [c.function.name for c in _recovered_calls],
+                        )
+                        assistant_message.tool_calls = _recovered_calls
+                        # Drop the leaked XML from the stored content so the raw
+                        # tags never persist into conversation history (which
+                        # would re-prime the model to leak again next turn).
+                        assistant_message.content = None
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
