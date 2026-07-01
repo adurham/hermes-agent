@@ -2192,6 +2192,16 @@ def interruptible_streaming_api_call(
         for chunk in stream:
             last_chunk_time["t"] = time.time()
             first_event_seen["yes"] = True
+            # This path (chat_completions / exo / DeepSeek / OpenAI-compat) has
+            # no SSE ping hook — the ping monkey-patch is Anthropic-native only
+            # (see note near ping_seen init).  Every chunk here IS a content
+            # chunk, so advancing last_content_time on each one makes the
+            # heartbeat's content_silence counter reflect TRUE token silence.
+            # Without this, last_content_time stays frozen at request-start and
+            # content_silence == total-elapsed-since-request — which is why the
+            # heartbeat showed an ever-climbing "Ns elapsed" while reasoning
+            # tokens were streaming continuously.
+            last_content_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
 
             # Update per-attempt diagnostic counters.  Best-effort —
@@ -2231,12 +2241,23 @@ def interruptible_streaming_api_call(
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
+                # Mirror the Anthropic-native handler's thinking-heartbeat
+                # wiring: mark the thinking phase active and advance the
+                # streamed-char progress counter.  The phase classifier then
+                # reports "thinking (N chars streamed)" instead of falling
+                # through to the generic "thinking (server-side)" fallback.
+                thinking_active["yes"] = True
+                thinking_chars["n"] += len(reasoning_text)
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
                 content_parts.append(delta.content)
+                # Real answer tokens are flowing: the thinking phase is over.
+                # Clear the flag so the heartbeat switches to the content-silence
+                # regime (warn only on true output stalls, not during thinking).
+                thinking_active["yes"] = False
                 if not tool_calls_acc:
                     _fire_first_delta()
                     agent._fire_stream_delta(delta.content)
@@ -2864,9 +2885,22 @@ def interruptible_streaming_api_call(
                             )
                         except Exception:
                             pass
-                        agent._emit_status("🔄 Reconnected — resuming…")
+                        if _is_toolcall_clean_fail:
+                            # Not a connection event — the provider (exo/DSv4)
+                            # deliberately failed the turn because the model
+                            # emitted a tool-call block it could not parse
+                            # (degenerate generation).  Re-drawing a fresh
+                            # completion, connection was never lost.
+                            agent._emit_status(
+                                "🔁 Provider rejected the generation "
+                                "(malformed tool-call) — re-drawing…"
+                            )
+                        else:
+                            agent._emit_status(
+                                "🔄 Reconnected after a dropped stream — resuming…"
+                            )
                         if agent._interrupt_requested:
-                            agent._emit_status("⏹  Interrupt received during reconnect — aborting retry.")
+                            agent._emit_status("⏹  Interrupt received during retry — aborting.")
                             result["error"] = e
                             return
                         continue
@@ -2930,9 +2964,18 @@ def interruptible_streaming_api_call(
                                 )
                             except Exception:
                                 pass
-                            agent._emit_status("🔄 Reconnected — resuming…")
+                            if _is_stream_parse_err:
+                                agent._emit_status(
+                                    "🔁 Provider sent a malformed stream frame "
+                                    "— retrying…"
+                                )
+                            else:
+                                agent._emit_status(
+                                    "🔄 Connection dropped before any output "
+                                    "— reconnecting…"
+                                )
                             if agent._interrupt_requested:
-                                agent._emit_status("⏹  Interrupt received during reconnect — aborting retry.")
+                                agent._emit_status("⏹  Interrupt received during retry — aborting.")
                                 result["error"] = e
                                 return
                             continue
@@ -3057,6 +3100,13 @@ def interruptible_streaming_api_call(
     t.start()
     _last_heartbeat = _request_started
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # Thinking-progress tracker: snapshot of thinking_chars at the last
+    # heartbeat emit.  Lets the heartbeat distinguish "model is actively
+    # streaming reasoning tokens right now" (chars advanced since last tick)
+    # from "genuinely stalled / waiting" (chars frozen).  Only the latter
+    # deserves the "⏳ Still waiting on provider" framing — during active
+    # thinking we emit a progress pulse instead.
+    _last_hb_thinking_chars = 0
     # Track consecutive stale-stream kills with no chunk progress in between.
     # If close() fails to unblock the streaming thread (e.g. httpx blocked on
     # a TLS read that ignores socket close), the loop would otherwise spin
@@ -3228,10 +3278,27 @@ def interruptible_streaming_api_call(
                         ping_seen=ping_seen["yes"],
                         user_elapsed=_user_elapsed,
                     )
-                    agent._emit_status(
-                        f"⏳ Still waiting on provider — {_user_elapsed}s elapsed "
-                        f"(model: {_model_name}{_model_label_extra}, {_phase}){_diag}"
-                    )
+                    # Progress-vs-stall framing.  If thinking chars advanced
+                    # since the last heartbeat, the model is actively streaming
+                    # reasoning RIGHT NOW — "Still waiting on provider" is a lie
+                    # (the user is watching tokens flow).  Emit a progress pulse
+                    # instead, keyed off char delta, not elapsed time.  Only a
+                    # genuine freeze (no new chars, or no thinking at all) keeps
+                    # the "waiting" framing.
+                    _thinking_delta_chars = thinking_chars["n"] - _last_hb_thinking_chars
+                    _last_hb_thinking_chars = thinking_chars["n"]
+                    if thinking_active["yes"] and _thinking_delta_chars > 0:
+                        agent._emit_status(
+                            f"🧠 Thinking — {thinking_chars['n']:,} chars "
+                            f"(+{_thinking_delta_chars:,} in last "
+                            f"{int(_HEARTBEAT_INTERVAL)}s) "
+                            f"(model: {_model_name}{_model_label_extra}){_diag}"
+                        )
+                    else:
+                        agent._emit_status(
+                            f"⏳ Still waiting on provider — {_user_elapsed}s elapsed "
+                            f"(model: {_model_name}{_model_label_extra}, {_phase}){_diag}"
+                        )
                 except Exception:
                     pass
 
