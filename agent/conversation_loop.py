@@ -180,6 +180,23 @@ def _recover_bare_tool_calls_from_content(content: Optional[str]) -> list[Any]:
     return recovered
 
 
+def _strip_cache_control(payload: Any) -> None:
+    """Remove all cache_control keys from a nested dict/list payload in-place.
+
+    Used by the overloaded-error recovery path: when a provider returns an
+    ``overloaded_error`` and ``strip_cache_on_overload`` is enabled, the retry
+    request is re-sent with every ``cache_control`` breakpoint stripped so a
+    poisoned/oversized cache write can't re-trigger the same failure.
+    """
+    if isinstance(payload, dict):
+        payload.pop("cache_control", None)
+        for value in payload.values():
+            _strip_cache_control(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            _strip_cache_control(item)
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
