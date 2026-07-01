@@ -63,6 +63,7 @@ class TestFailoverReason:
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
+            "internal_code_error",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}
@@ -90,6 +91,60 @@ class TestClassifiedError:
         assert e.should_fallback is False
         assert e.status_code is None
         assert e.message == ""
+
+
+# ── Test: Internal code-bug detection (fail fast, not retry) ───────────
+
+class TestInternalCodeError:
+    """A Python builtin exception from a bug in our own code path must be
+    classified non-retryable so the retry loop fails fast instead of
+    re-running the identical broken code (regression: a missing import raised
+    NameError on every attempt and killed the session with 0 tool calls)."""
+
+    def test_nameerror_is_non_retryable_internal(self):
+        result = classify_api_error(
+            NameError("name 'logging' is not defined"),
+            provider="custom", model="mlx-community/DeepSeek-V4-Flash",
+        )
+        assert result.reason is FailoverReason.internal_code_error
+        assert result.retryable is False
+        assert result.should_compress is False
+
+    def test_import_and_subclass_errors_are_internal(self):
+        for exc in (
+            ImportError("bad import"),
+            ModuleNotFoundError("no module"),   # subclass of ImportError
+            UnboundLocalError("used before assignment"),  # subclass of NameError
+            NotImplementedError("stub reached"),
+        ):
+            result = classify_api_error(exc, provider="custom", model="m")
+            assert result.reason is FailoverReason.internal_code_error, type(exc).__name__
+            assert result.retryable is False, type(exc).__name__
+
+    def test_transport_builtins_still_retryable_timeout(self):
+        # These are builtins too, but genuine transport failures — they must
+        # keep their retryable timeout classification (checked before the
+        # internal-code-error branch).
+        for exc in (TimeoutError("t"), ConnectionError("c"), OSError("o")):
+            result = classify_api_error(exc, provider="custom", model="m")
+            assert result.reason is FailoverReason.timeout, type(exc).__name__
+            assert result.retryable is True, type(exc).__name__
+
+    def test_content_shaped_builtins_stay_retryable_unknown(self):
+        # KeyError/AttributeError/TypeError/etc. can come from not defensively
+        # handling a *malformed provider response*, where a retry may yield a
+        # valid response — so they are deliberately NOT swept into the
+        # non-retryable internal bucket.
+        for exc in (KeyError("choices"), AttributeError("x"), TypeError("t"),
+                    IndexError("i"), ValueError("v")):
+            result = classify_api_error(exc, provider="custom", model="m")
+            assert result.reason is FailoverReason.unknown, type(exc).__name__
+            assert result.retryable is True, type(exc).__name__
+
+    def test_generic_exception_still_unknown_retryable(self):
+        result = classify_api_error(Exception("weird"), provider="custom", model="m")
+        assert result.reason is FailoverReason.unknown
+        assert result.retryable is True
 
 
 # ── Test: Status code extraction ───────────────────────────────────────
