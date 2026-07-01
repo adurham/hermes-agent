@@ -30,6 +30,9 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    last_input_tokens: int = 0,
+    last_cache_read_tokens: int = 0,
+    last_cache_write_tokens: int = 0,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
@@ -48,6 +51,9 @@ def _attach_agent(
             last_prompt_tokens=context_tokens,
             context_length=context_length,
             compression_count=compressions,
+            last_input_tokens=last_input_tokens,
+            last_cache_read_tokens=last_cache_read_tokens,
+            last_cache_write_tokens=last_cache_write_tokens,
         ),
     )
     return cli_obj
@@ -497,6 +503,109 @@ class TestCLIStatusBar:
         compact = cli_obj._get_voice_status_fragments(width=50)
 
         assert compact == [("class:voice-status", " 🎤 Ctrl+B ")]
+
+
+class TestContextDeltaSegment:
+    """Per-turn context delta segment (Δ) on the status bar.
+
+    Surfaces *why* the context counter jumps on a follow-up: genuinely-new
+    content this turn (a fat tool result -> ``new``) vs. a prompt-cache
+    refresh after idle (prefix re-charged as full-price input -> ``cache``).
+    """
+
+    def test_no_segment_without_turn_baseline(self):
+        # base is None until the first turn establishes a baseline; no Δ shown.
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=50_000,
+            completion_tokens=2_000,
+            total_tokens=52_000,
+            api_calls=7,
+            context_tokens=50_000,
+            context_length=200_000,
+        )
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert "context_delta" not in snapshot
+        assert cli_obj._format_context_delta(snapshot) is None
+
+    def test_small_growth_omits_segment(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=50_900,
+            completion_tokens=300,
+            total_tokens=51_200,
+            api_calls=7,
+            context_tokens=50_900,
+            context_length=200_000,
+            last_input_tokens=2,
+            last_cache_read_tokens=50_898,
+        )
+        cli_obj._turn_start_context_tokens = 50_000  # +900, under the 2K floor
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["context_delta"] == 900
+        assert cli_obj._format_context_delta(snapshot) is None
+
+    def test_new_content_jump_tagged_new(self):
+        # Real case: a fat tool result lands on a warm cache. The growth is
+        # freshly-written cache_write on top of a flat cached prefix.
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=252_493,
+            completion_tokens=2_656,
+            total_tokens=255_149,
+            api_calls=131,
+            context_tokens=252_493,
+            context_length=400_000,
+            last_input_tokens=2,
+            last_cache_read_tokens=229_478,
+            last_cache_write_tokens=23_013,
+        )
+        cli_obj._turn_start_context_tokens = 229_480  # +23,013
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["context_delta"] == 23_013
+        assert snapshot["context_delta_cause"] == "new"
+        label = cli_obj._format_context_delta(snapshot)
+        assert label is not None and label.startswith("Δ+") and label.endswith("new")
+
+    def test_cache_refresh_jump_tagged_cache(self):
+        # Real case: prompt cache expired during idle. The same prefix
+        # re-accounts as full-price input (cache_read collapsed), so input is
+        # a large share of the total even though no new content arrived.
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=59_692,
+            completion_tokens=400,
+            total_tokens=60_092,
+            api_calls=29,
+            context_tokens=59_692,
+            context_length=200_000,
+            last_input_tokens=33_077,
+            last_cache_read_tokens=26_615,
+            last_cache_write_tokens=0,
+        )
+        cli_obj._turn_start_context_tokens = 33_077  # +26,615
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["context_delta"] == 26_615
+        assert snapshot["context_delta_cause"] == "cache"
+        label = cli_obj._format_context_delta(snapshot)
+        assert label is not None and label.endswith("cache")
+
+    def test_segment_rendered_in_wide_status_bar(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=252_493,
+            completion_tokens=2_656,
+            total_tokens=255_149,
+            api_calls=131,
+            context_tokens=252_493,
+            context_length=400_000,
+            last_input_tokens=2,
+            last_cache_read_tokens=229_478,
+            last_cache_write_tokens=23_013,
+        )
+        cli_obj._turn_start_context_tokens = 229_480
+        text = cli_obj._build_status_bar_text(width=160)
+        assert "Δ+" in text and "new" in text
 
 
 class TestCLIUsageReport:

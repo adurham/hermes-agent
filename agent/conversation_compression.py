@@ -757,6 +757,11 @@ def compress_context(agent, messages: list, system_message: str, *, approx_token
     )
     agent.context_compressor.last_compression_rough_tokens = _compressed_est
     agent.context_compressor.last_prompt_tokens = -1
+    # Also park the real-usage field (read by the status bar via
+    # display_prompt_tokens) so the one transitional turn after compression
+    # shows an empty context instead of the stale pre-compression count until
+    # the next real API response lands. Readers already guard <= 0.
+    agent.context_compressor.last_real_prompt_tokens = -1
     agent.context_compressor.last_completion_tokens = 0
     agent.context_compressor.awaiting_real_usage_after_compression = True
 

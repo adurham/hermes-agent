@@ -865,6 +865,28 @@ class ContextCompressor(ContextEngine):
                 self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
+    def display_prompt_tokens(self) -> int:
+        """Return the last *real* provider prompt-token count for display.
+
+        ``last_prompt_tokens`` is a dual-purpose field: preflight compression
+        ratchets it UP to the rough char/4 estimate (turn_context.py) so the
+        pre-send compression check can fire before the provider sees the
+        payload. That estimate overcounts schema-heavy / cached requests, so
+        reading ``last_prompt_tokens`` for the status bar makes the context
+        counter (and the Δ segment) spike to the estimate mid-turn, then snap
+        back to the real number once ``update_from_response`` records actual
+        provider usage. The user sees a phantom balloon that never happened.
+
+        ``last_real_prompt_tokens`` is written ONLY from real API usage
+        (never from the preflight estimate), so it is the honest number to
+        display. It is reset to -1 at compression (awaiting the next real
+        usage), which we clamp to 0 for the one transitional turn.
+        """
+        real = self.last_real_prompt_tokens
+        if not isinstance(real, int) or real <= 0:
+            return 0
+        return real
+
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
 
