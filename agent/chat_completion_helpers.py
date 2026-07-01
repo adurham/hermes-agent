@@ -1609,12 +1609,12 @@ def cleanup_task_resources(agent, task_id: str) -> None:
                     f"idle reaper will handle it."
                 )
         else:
-            cleanup_vm(task_id)
+            _ra().cleanup_vm(task_id)
     except Exception as e:
         if agent.verbose_logging:
             logger.warning(f"Failed to cleanup VM for task {task_id}: {e}")
     try:
-        cleanup_browser(task_id)
+        _ra().cleanup_browser(task_id)
     except Exception as e:
         if agent.verbose_logging:
             logger.warning(f"Failed to cleanup browser for task {task_id}: {e}")
@@ -3218,7 +3218,7 @@ def interruptible_streaming_api_call(
                         pass  # Never let display formatting break the heartbeat.
                     _diag = (" [" + " · ".join(_diag_bits) + "]") if _diag_bits else ""
 
-                    _phase = _classify_anthropic_stream_phase(
+                    _phase = _ra()._classify_anthropic_stream_phase(
                         thinking_active=thinking_active["yes"],
                         thinking_chars=thinking_chars["n"],
                         first_event_seen=first_event_seen["yes"],

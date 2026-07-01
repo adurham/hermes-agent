@@ -3959,7 +3959,7 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base, model=final_model_str)
+                        real_client = build_anthropic_client(custom_key, custom_base, model=final_model)
                     except ImportError:
                         logger.warning(
                             "Named custom provider %r declares api_mode="

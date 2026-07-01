@@ -12,6 +12,7 @@ hits at scale (300+ MCP tools = 100K+ tokens of schemas per turn).
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 
