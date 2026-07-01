@@ -19,7 +19,9 @@ features that don't fit elsewhere:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 from datetime import datetime
 
 
