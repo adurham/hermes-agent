@@ -313,11 +313,31 @@ def _provider_is_exo(provider: Optional[str], cfg: Optional[Dict[str, Any]] = No
 
     # Bare "custom" runtime: identify exo by matching the active main
     # base_url against the configured exo provider's base_url.
-    if p == "custom" and isinstance(cfg, dict):
-        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-        main_base = str((model_cfg or {}).get("base_url") or "").strip().lower()
+    if p == "custom":
+        # Prefer the LIVE runtime base_url recorded for this turn over the
+        # static ``config.model.base_url``. A ``--provider exo`` / ``hermes
+        # model`` switch to the local cluster leaves the saved config default
+        # (e.g. Anthropic) untouched, so comparing against it would never match
+        # and every aux task in an exo session would cross over to another
+        # provider's model pointed at the exo endpoint (404). The runtime value
+        # reflects what is ACTUALLY being used this turn.
+        main_base = ""
+        try:
+            from agent.auxiliary_client import get_runtime_main_base_url
+            main_base = (get_runtime_main_base_url() or "").strip().lower()
+        except Exception:
+            main_base = ""
+        if not main_base and isinstance(cfg, dict):
+            model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+            main_base = str((model_cfg or {}).get("base_url") or "").strip().lower()
         if not main_base:
             return False
+        if not isinstance(cfg, dict):
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                cfg = _load_cfg()
+            except Exception:
+                return False
 
         exo_base = ""
         providers_cfg = cfg.get("providers")

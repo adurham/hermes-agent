@@ -1864,6 +1864,20 @@ def set_runtime_main(
     _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
 
 
+def get_runtime_main_base_url() -> str:
+    """Return the live main base_url recorded for this turn (or "").
+
+    Exposed so exo-detection (``agent.image_routing._provider_is_exo``) can
+    identify a bare ``custom`` runtime by its ACTUAL live endpoint, rather
+    than the static ``config.model.base_url`` — which is the saved default
+    (e.g. Anthropic) and does not reflect a ``--provider exo`` / ``hermes
+    model`` switch to the local cluster. Without this, aux tasks in an exo
+    session fail to select the exo provider block and cross over to another
+    provider's model pointed at the exo endpoint (404).
+    """
+    return _RUNTIME_MAIN_BASE_URL
+
+
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
