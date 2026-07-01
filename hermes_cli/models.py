@@ -1936,6 +1936,61 @@ def detect_static_provider_for_model(
     return None
 
 
+def _detect_config_provider_for_model(
+    model_name: str,
+    current_provider: str,
+) -> Optional[tuple[str, str]]:
+    """Match a model against user-declared ``providers.<name>.models`` in config.
+
+    Returns ``(provider_id, model_name)`` when the model is listed under some
+    configured provider that is NOT already the current provider, else None.
+
+    Handles both provider ``models`` shapes:
+      * list form  — ``models: ["glm-5.2:cloud", "deepseek-v4-flash:cloud"]``
+      * dict form  — ``models: {"mlx-community/DeepSeek-V4-Flash": {...}}``
+
+    Matching is case-insensitive on the full model id. The current provider is
+    skipped so we never propose a no-op switch (and the caller's existing
+    catalog checks still handle the same-provider case). When multiple providers
+    declare the same id, the first configured match wins — deterministic and,
+    in practice, unambiguous because model ids are provider-specific.
+    """
+    name_lower = (model_name or "").strip().lower()
+    if not name_lower:
+        return None
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    providers_cfg = cfg.get("providers")
+    if not isinstance(providers_cfg, dict):
+        return None
+
+    current_keys = _provider_keys(current_provider)
+    for pid, pconf in providers_cfg.items():
+        if not isinstance(pid, str) or not isinstance(pconf, dict):
+            continue
+        if pid.strip().lower() in current_keys:
+            continue  # already on this provider — not a switch
+        models = pconf.get("models")
+        model_ids_here: list[str] = []
+        if isinstance(models, dict):
+            model_ids_here = [str(k) for k in models]
+        elif isinstance(models, list):
+            model_ids_here = [str(m) for m in models]
+        else:
+            continue
+        for mid in model_ids_here:
+            if mid.strip().lower() == name_lower:
+                # Return the model id exactly as the user declared it, so the
+                # downstream request uses the canonical name the endpoint expects.
+                return (pid, mid)
+    return None
+
+
 def detect_provider_for_model(
     model_name: str,
     current_provider: str,
@@ -1954,6 +2009,21 @@ def detect_provider_for_model(
     name = (model_name or "").strip()
     if not name:
         return None
+
+    # --- Step 0.5: user-declared providers in config.yaml ---
+    # Before the static/OpenRouter catalogs, honor a model the user explicitly
+    # declared under ``providers.<name>.models`` (e.g. an exo cluster model, an
+    # ollama-cloud tag). Without this, a bare ``/model <name>`` for such a model
+    # falls through to None and switch_model keeps the CURRENT provider — so a
+    # cold-start session on Anthropic that switches to an exo model gets stamped
+    # provider='anthropic'. That mislabel then cascades: every auxiliary task
+    # (title_generation, vision, …) resolves against the anthropic block and a
+    # Claude model name gets shipped to the exo endpoint → recurring 404.
+    # Consulting the user's own provider→models map fixes the whole class and
+    # makes bare ``/model`` match the explicit ``--provider`` form.
+    cfg_match = _detect_config_provider_for_model(name, current_provider)
+    if cfg_match:
+        return cfg_match
 
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
