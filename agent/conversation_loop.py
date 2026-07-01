@@ -3714,6 +3714,49 @@ def run_conversation(
                 ) and not is_context_length_error
 
                 if is_client_error:
+                    # Internal code bug (NameError/ImportError/…): a provider
+                    # switch can't fix a bug in our own code path, and the
+                    # error carries no HTTP status.  Surface it accurately and
+                    # abort immediately rather than announcing a misleading
+                    # "HTTP None" provider error or wasting a fallback attempt.
+                    # Return the same failed-result shape the other terminal
+                    # client-error paths use (never raise — the caller expects
+                    # a structured result), but log the full traceback so the
+                    # underlying bug is diagnosable.
+                    if classified.reason == FailoverReason.internal_code_error:
+                        if api_kwargs is not None:
+                            agent._dump_api_request_debug(
+                                api_kwargs, reason="internal_code_error", error=api_error,
+                            )
+                        agent._flush_status_buffer()
+                        _internal_summary = agent._summarize_api_error(api_error)
+                        agent._emit_status(
+                            f"❌ Internal error ({type(api_error).__name__}): "
+                            f"{_internal_summary}"
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}❌ Internal code error "
+                            f"({type(api_error).__name__}) in the API call path — "
+                            f"not retryable (retrying re-runs the same bug). Aborting.",
+                            force=True,
+                        )
+                        logger.error(
+                            "Internal code error in API call path (non-retryable): "
+                            "%s: %s | provider=%s model=%s",
+                            type(api_error).__name__, api_error,
+                            _provider, _model,
+                            exc_info=api_error,
+                        )
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": f"Internal error ({type(api_error).__name__}): {_internal_summary}",
+                        }
+
                     # Try fallback before aborting — a different provider may
                     # not have the same issue (rate limit, auth, etc.). Only
                     # announce the attempt when a fallback chain actually
