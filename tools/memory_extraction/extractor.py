@@ -73,11 +73,51 @@ def is_enabled() -> bool:
 
 
 def _get_extraction_config() -> Dict[str, Any]:
-    """Read auxiliary.memory_extraction.* config with defaults."""
+    """Read auxiliary.memory_extraction.* config with defaults.
+
+    Two ``auxiliary`` schemas are supported:
+
+      * **task-first** (legacy): ``auxiliary.memory_extraction.{model,
+        provider, timeout, …}`` carries the model directly, so read it here.
+      * **provider-first** (fork schema): the model is selected from the
+        provider block matching the active main provider (e.g. ``auxiliary.exo
+        .default`` → Qwen when main is exo). In that case we must NOT inject a
+        model/provider here — doing so passes an explicit ``model`` to
+        ``call_llm`` that OVERRIDES the provider-first resolution in
+        ``_resolve_task_provider_model`` and forces the wrong model (the
+        stale ``claude-haiku-4-5`` default) at whatever endpoint the block
+        selected → 404 on the exo cluster. Returning ``model=None`` /
+        ``provider=None`` lets ``call_llm(task="memory_extraction")`` resolve
+        both correctly. Per-task *settings* (timeouts, token budgets) still
+        come from the shared ``auxiliary.defaults.memory_extraction`` block.
+    """
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        aux = (cfg.get("auxiliary", {}) or {}).get("memory_extraction", {}) or {}
+        aux_root = cfg.get("auxiliary", {}) or {}
+
+        provider_first = False
+        try:
+            from agent.auxiliary_client import _aux_schema_is_provider_first
+            provider_first = _aux_schema_is_provider_first(aux_root)
+        except Exception:
+            provider_first = False
+
+        if provider_first:
+            # Model/provider are resolved by call_llm via the task; settings
+            # come from the shared defaults block.
+            settings = (aux_root.get("defaults", {}) or {}).get("memory_extraction", {}) or {}
+            return {
+                "model": None,
+                "provider": None,
+                "timeout": settings.get("timeout", 30),
+                "max_tokens_per_turn": settings.get("max_tokens_per_turn", 1024),
+                "max_tokens_session_end": settings.get("max_tokens_session_end", 2048),
+                "include_pre_compress": settings.get("include_pre_compress", True),
+                "auto_commit_session_end": settings.get("auto_commit_session_end", False),
+            }
+
+        aux = aux_root.get("memory_extraction", {}) or {}
         return {
             "model": aux.get("model", _DEFAULT_MODEL),
             "provider": aux.get("provider"),
