@@ -50,7 +50,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/tool_executor.py` | +155 / -23 | Skill-recall hook callsites (`_record_loaded_skill`, `_maybe_skill_recall_hint`) in both sequential + concurrent paths, plus hermes_load_tools and swarm_run dispatch. |
 | `agent/system_prompt.py` | +52 / -23 | Date-only timestamp restored (upstream's prompt-cache fix), grok added to OPENAI_MODEL_EXECUTION_GUIDANCE gate. |
 | `agent/turn_context.py` | (new upstream file, fork-patched) | Upstream (2026-06-08) extracted the per-turn prologue out of `conversation_loop.py` into this new `build_turn_context()` module. Carries 3 PORTED fork-only prologue steps: `memory_auto_feedback` session bind, `_last_user_message` capture (feeds `agent/fork/memory_recall.py`), `_recent_tool_args` reset. On conflict: keep those 3, the rest is upstream-shared; do NOT re-inline the prologue into `conversation_loop.py`. |
-| `agent/auxiliary_client.py` | +270 / -20 | Exo-scoped auxiliary delegation (2026-06-18): new `_aux_override_targets_exo` helper + guard inside `_resolve_task_provider_model`. Anthropic aux 401 fix + provider-matched sonnet-4-6 (2026-06-21): `_try_anthropic` foreign-placeholder-key guard; `_ANTHROPIC_DEFAULT_AUX_MODEL` constant; sonnet substitution in `_resolve_auto` Step-1; `caller_model` choke-point fix in `resolve_provider_client` so auto-fill cannot override the provider-matched model. Per-task `fallback_model` + single-provider main-model fallback (2026-06-22). See dated entries below. |
+| `agent/auxiliary_client.py` | +270 / -20 | Exo-scoped auxiliary delegation (2026-06-18): new `_aux_override_targets_exo` helper + guard inside `_resolve_task_provider_model`. Anthropic aux 401 fix + provider-matched sonnet-4-6 (2026-06-21): `_try_anthropic` foreign-placeholder-key guard; `_ANTHROPIC_DEFAULT_AUX_MODEL` constant; sonnet substitution in `_resolve_auto` Step-1; `caller_model` choke-point fix in `resolve_provider_client` so auto-fill cannot override the provider-matched model. Per-task `fallback_model` + single-provider main-model fallback (2026-06-22). **2026-07-01 (`89ab0ca37`)**: `get_runtime_main_base_url()` accessor so `image_routing._provider_is_exo` detects a bare-`custom` exo runtime by its LIVE base_url (not stale `config.model.base_url`) — fixes aux tasks crossing to Anthropic models on the exo endpoint (404). **2026-07-01 (`efa0472954`)**: `build_anthropic_client(model=final_model)` var-name fix. See dated entries below. |
 | `plugins/model-providers/anthropic/__init__.py` | +1 / -1 | `default_aux_model` updated from haiku to sonnet-4-6 (2026-06-21, see "Fork-only fix — 2026-06-21" below). |
 | `tools/web_tools.py` | +186 / -27 | Multi-provider search failover chain (2026-06-22, `a244f1e3c`): `web_search` walks an ordered list of providers, failing over on error/empty. Also the provider-aware native-Anthropic search swap (comment + wiring). Config: `web.search_chain` (ordered provider list), `web.anthropic_native_search`. Tests: `tests/tools/test_web_search_chain.py`. |
 | `tools/tool_search.py` | (soft-fork) | Opt-in deferral of normally-core toolsets/tools (2026-06-22): `tools.tool_search.defer_toolsets` / `defer_tools` / `keep_eager_tools` let core surfaces (browser, homeassistant, tts, vision, cronjob, swarm_run) lazy-load behind the tool_search/describe/call bridge. Default empty = upstream behavior. See dated entry below. Tests: `tests/tools/test_tool_search.py`. |
@@ -1154,6 +1154,107 @@ Soft-fork divergence vs `upstream/main` after this sync (refreshed line counts):
 +254/-243, `system_prompt.py` +52/-150, `tool_executor.py` +172/-82,
 `agent_runtime_helpers.py` +202/-249, `tools/delegate_tool.py` +977/-559,
 `tools/memory_tool.py` +548/-285. Plus 244 commits of fork-only history.
+
+
+### Fork-only fixes — 2026-07-01 (DSv4-local reliability sweep + aux/status-bar bugs)
+
+A run of bugs that made local DSv4 (exo) sessions feel broken, plus a
+systematic audit that turned up siblings. All root-cause fixes, no mitigations.
+
+* **`agent/fork/diagnostics.py` missing imports (`79650d1de`)** — the module
+  used `logging` (except handler in `record_usage_history`) and `hashlib`
+  (`tools_signature`) but imported only `json` + `datetime`.
+  `record_usage_history()` runs every completed turn → `_tools_signature()`
+  → `hashlib` NameError → the except handler then hit `logging` NameError,
+  which escaped and killed the whole API turn. Misclassified retryable, so it
+  burned 3 retries then killed the session with 0 tool calls — presenting as
+  flaky DSv4/exo behavior when model + server were fine. Verified with a real
+  `hermes chat` on exo: before = died turn 1, Messages:1, 0 tools; after =
+  Messages:18, 8 tool calls, finish_reason=stop. This was invisible to raw
+  endpoint probes / ollama-cloud comparison because those never exercise the
+  fork's response-handling path — only driving an actual `hermes` session
+  reproduced it.
+
+* **7 more undefined-name NameErrors from a pyflakes+AST audit (`efa0472954`)**
+  — same bug class in executable (non-annotation) code:
+  `conversation_loop.py` `_strip_cache_control()` was called on the
+  overloaded-retry path but never defined (lost in a refactor port; restored
+  from orig commit `bc44a94f20`); `chat_completion_helpers.py` called
+  `cleanup_vm`/`cleanup_browser`/`_classify_anthropic_stream_phase` bare
+  instead of via the `_ra()` lazy run_agent accessor; `auxiliary_client.py`
+  `build_anthropic_client(model=final_model_str)` referenced a nonexistent var
+  (should be `final_model`); missing `import re` in `agent/fork/tool_search_lazy.py`
+  and `plugins/platforms/sms/adapter.py`; `plugins/google_meet/cli.py` nested
+  closure referenced except-var `e` after the handler scope cleared it.
+  Type-only undefined names in lazy annotations (future-annotations / quoted /
+  TYPE_CHECKING) were left as-is. Audit technique: `pyflakes` + AST triage
+  (SAFE = annotation/TYPE_CHECKING context; DANGEROUS = runtime statement).
+
+* **`agent/error_classifier.py` fail-fast on internal code bugs (`8263a4c5c`)**
+  — a Python builtin exception from a bug in our own API-call path (NameError,
+  ImportError, …) had no status/body/message pattern, so it fell through to
+  `FailoverReason.unknown` (retryable=True). The retry loop re-ran the identical
+  broken code, reproduced the identical exception, and burned every retry —
+  which is exactly what masked the diagnostics NameError above. Added
+  `FailoverReason.internal_code_error` + `_INTERNAL_CODE_ERROR_TYPES` frozenset
+  (NameError/UnboundLocalError/ImportError/ModuleNotFoundError/
+  NotImplementedError/SyntaxError/IndentationError), matched by exact type name
+  AND isinstance, checked AFTER the transport heuristic (so OSError/
+  ConnectionError/TimeoutError stay retryable). Deliberately EXCLUDES
+  AttributeError/TypeError/KeyError/IndexError/ValueError (can arise from a
+  malformed provider response a retry may fix). `conversation_loop.py` aborts
+  internal errors immediately with an accurate message + full traceback
+  (`exc_info`), no wasted fallback, returns the standard failed-result dict.
+  Tests: `TestInternalCodeError` in `tests/agent/test_error_classifier.py`.
+
+* **`agent/auxiliary_client.py` + `agent/image_routing.py` — exo main detected by
+  runtime base_url (`89ab0ca37`)** — launching on exo via `--provider exo`
+  normalizes `agent.provider` to bare `custom`; the live endpoint is recorded in
+  the runtime-main state, but `config.model.base_url` still holds the saved
+  default (e.g. Anthropic). `_provider_is_exo("custom")` compared against that
+  STALE config base_url, never matched, so the aux resolver failed to select the
+  exo provider block and every aux task (memory_extraction, curator,
+  title_generation, …) crossed over to another provider's model pointed AT the
+  exo endpoint — e.g. `claude-haiku-4-5` → `http://<exo>/v1` → 404, silently
+  killing memory extraction + curator on every exo session. Added
+  `get_runtime_main_base_url()` accessor; `_provider_is_exo` now prefers the
+  LIVE runtime base_url for a bare-`custom` runtime. Verified: aux tasks resolve
+  to `custom:exo` (Qwen3.6 / DSv4). NOTE: this also fixed **vision** — it routes
+  to `custom:exo` Qwen3.6-35B-A3B-8bit (which IS vision-capable; exo reports the
+  `vision` capability) with no separate vision model needed.
+
+* **`tools/memory_extraction/extractor.py` — don't force the stale default model
+  under provider-first aux schema (`8191519242`)** — `_get_extraction_config`
+  always read `auxiliary.memory_extraction.model` (the legacy task-first key)
+  and fell back to `_DEFAULT_MODEL="claude-haiku-4-5"` when absent. Under the
+  provider-first schema that key never exists, so the extractor passed an
+  explicit `model="claude-haiku-4-5"` to `call_llm` — OVERRIDING the
+  provider-first resolution and sending an Anthropic model name to the exo
+  endpoint → 404 on every extraction. Fix: detect provider-first via
+  `_aux_schema_is_provider_first` and return `model=None`/`provider=None` so
+  `call_llm(task="memory_extraction")` resolves correctly (exo → Qwen3.6);
+  per-task settings still come from `auxiliary.defaults.memory_extraction`.
+  Verified end-to-end: extraction resolves to `custom:exo (Qwen3.6-35B-A3B-8bit)`,
+  zero 404s, real proposals extracted and buffered. (Companion exo change: JIT
+  enabled so Qwen auto-loads for aux — see the exo repo.)
+
+* **`cli.py` + `agent/context_compressor.py` — status bar shows real provider
+  tokens, not the preflight estimate (`da796e6bd`)** — the context counter
+  (X/1M) and the Δ segment spiked mid-turn then snapped back to a smaller number
+  on the SAME prompt (e.g. `528K / Δ+57.5K new` → `475K / Δ+4.62K new`). Not a
+  real balloon: the bar read `compressor.last_prompt_tokens`, which
+  `turn_context.py` ratchets UP to the rough char/4 preflight estimate
+  (`estimate_request_tokens_rough` over messages+system+tools) so preflight
+  compression can fire before send. That estimate overcounts schema-heavy /
+  heavily-cached requests (real usage: input=2, cache_read≈485K/turn), so the
+  displayed size jumped to the estimate then `update_from_response` overwrote it
+  with the true provider count. Added `ContextCompressor.display_prompt_tokens()`
+  returning `last_real_prompt_tokens` (written ONLY from real API usage, clamped
+  0 for the post-compression transitional turn); pointed all three display sites
+  (status bar, Δ baseline, `/usage` summary) at it; parked
+  `last_real_prompt_tokens=-1` at compression. Preflight compression logic
+  unchanged. Tests: `TestDisplayPromptTokens` in `test_context_compressor.py`;
+  committed the previously-uncommitted context-delta status-bar tests too.
 
 
 ## Why a fork
