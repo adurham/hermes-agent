@@ -4397,12 +4397,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
-            # last_prompt_tokens is parked at the -1 sentinel right after a
-            # compression, until the next real API call reports a prompt count
-            # (awaiting_real_usage_after_compression). The status bar must not
-            # render that sentinel verbatim — it produced "-1/200K" / "-1%".
-            # Clamp it to 0 so the one transitional turn reads as empty context.
-            context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+            # Show the last REAL provider prompt count, not last_prompt_tokens
+            # — the latter is ratcheted up to the rough preflight estimate by
+            # turn_context.py so preflight compression can fire, which made the
+            # bar spike to the (over)estimate mid-turn then snap back to the
+            # real number (the phantom "Δ+57K new" balloon). display_prompt_tokens()
+            # returns the honest count and clamps the post-compression -1
+            # sentinel to 0 for the one transitional turn.
+            if hasattr(compressor, "display_prompt_tokens"):
+                context_tokens = compressor.display_prompt_tokens()
+            else:
+                context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
             if context_tokens < 0:
                 context_tokens = 0
             context_length = getattr(compressor, "context_length", 0) or 0
@@ -10494,7 +10499,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         total = agent.session_total_tokens
 
         compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens
+        # Real provider count for display (not the preflight-inflated
+        # last_prompt_tokens). See ContextCompressor.display_prompt_tokens.
+        if hasattr(compressor, "display_prompt_tokens"):
+            last_prompt = compressor.display_prompt_tokens()
+        else:
+            last_prompt = compressor.last_prompt_tokens
         ctx_len = compressor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         compressions = compressor.compression_count
@@ -13337,7 +13347,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # (parked right after a compression) to 0.
             try:
                 _comp = getattr(self.agent, "context_compressor", None)
-                _base = getattr(_comp, "last_prompt_tokens", None) if _comp else None
+                # Baseline off the last REAL provider count (same source the
+                # status bar now displays) so the Δ segment compares like with
+                # like. Using last_prompt_tokens here mixed a real baseline
+                # against a preflight-estimate current value, producing the
+                # inflated phantom delta.
+                if _comp is not None and hasattr(_comp, "display_prompt_tokens"):
+                    _base = _comp.display_prompt_tokens()
+                else:
+                    _base = getattr(_comp, "last_prompt_tokens", None) if _comp else None
                 self._turn_start_context_tokens = max(0, _base) if isinstance(_base, int) else None
             except Exception:
                 self._turn_start_context_tokens = None
