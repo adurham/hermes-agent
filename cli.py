@@ -343,6 +343,26 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     return result
 
 
+def _resolve_reasoning_for_model(
+    model: str,
+    by_model_map: dict | None,
+    global_effort: str,
+) -> dict | None:
+    """Resolve reasoning config for a specific model, checking per-model map first.
+
+    ``by_model_map`` is a dict of model name → effort string (e.g.
+    ``{"deepseek-v4-flash": "xhigh", "claude-sonnet-4-6": "high"}``).
+    Model names are matched case-insensitively. Falls back to ``global_effort``
+    when no per-model entry exists.
+    """
+    if by_model_map and model:
+        model_lower = model.strip().lower()
+        for saved_model, saved_effort in by_model_map.items():
+            if saved_model.strip().lower() == model_lower:
+                return _parse_reasoning_config(str(saved_effort))
+    return _parse_reasoning_config(global_effort)
+
+
 def _parse_service_tier_config(raw: str) -> str | None:
     """Parse a persisted service-tier preference into a Responses API value."""
     value = str(raw or "").strip().lower()
@@ -423,6 +443,7 @@ def load_cli_config() -> Dict[str, Any]:
             "system_prompt": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
+            "reasoning_effort_by_model": {},
             "service_tier": "",
             # Interleaved thinking: Claude reasons between tool calls
             # (Think-Act-Think-Act loop) rather than only at turn start.
@@ -3706,8 +3727,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+        self._reasoning_effort_by_model: dict = (
+            CLI_CONFIG["agent"].get("reasoning_effort_by_model", {}) or {}
+        )
+        self.reasoning_config = _resolve_reasoning_for_model(
+            self.model or "",
+            self._reasoning_effort_by_model,
+            CLI_CONFIG["agent"].get("reasoning_effort", ""),
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
@@ -5079,6 +5105,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         it's a no-op for rendering — kept so the agent's clear callback is bound
         symmetrically with the show callback (and so future REPL UIs can hook it)."""
         return
+
+    # ── Per-model reasoning effort ────────────────────────────────────────
+
+    def _apply_reasoning_for_new_model(self, new_model: str) -> None:
+        """When switching to a new model, look up its saved per-model reasoning
+        effort and apply it. Falls back to the global ``agent.reasoning_effort``
+        when no per-model entry exists.
+        """
+        resolved = _resolve_reasoning_for_model(
+            new_model,
+            self._reasoning_effort_by_model,
+            CLI_CONFIG["agent"].get("reasoning_effort", ""),
+        )
+        if resolved != self.reasoning_config:
+            self.reasoning_config = resolved
+            self.agent = None  # Force agent re-init
 
     # ── Streaming display ────────────────────────────────────────────────
 
@@ -7678,6 +7720,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if result.api_mode:
             self.api_mode = result.api_mode
 
+        # Apply per-model reasoning effort for the new model
+        self._apply_reasoning_for_new_model(result.new_model)
+
         if self.agent is not None:
             try:
                 self.agent.switch_model(
@@ -7983,6 +8028,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+
+        # Apply per-model reasoning effort for the new model
+        self._apply_reasoning_for_new_model(result.new_model)
 
         # Apply to running agent (in-place swap)
         if self.agent is not None:
@@ -9436,7 +9484,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
-        if save_config_value("agent.reasoning_effort", arg):
+
+        # Save to global config
+        saved_global = save_config_value("agent.reasoning_effort", arg)
+
+        # Also save per-model so switching back to this model restores it
+        current_model = (self.model or "").strip()
+        if current_model:
+            by_model = dict(self._reasoning_effort_by_model)
+            by_model[current_model] = arg
+            save_config_value("agent.reasoning_effort_by_model", by_model)
+            self._reasoning_effort_by_model = by_model
+
+        if saved_global:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
