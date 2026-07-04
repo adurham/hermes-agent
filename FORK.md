@@ -20,6 +20,7 @@ will never touch them.
 | `agent/fork/rate_limit_tracker.py` | Rate-limit observability — one-shot INFO on first header capture, WARN on 90% bucket transitions with 80% hysteresis |
 | `agent/fork/anthropic_recovery.py` | Refusal retry sanitization (strip credential-extraction shell patterns from historical context) + CC alias arg translation + `is_anthropic_refusal` detection predicate (T2.3) |
 | `agent/fork/anthropic_messages.py` | The fork's ~540-line `convert_messages_to_anthropic` OpenAI→Anthropic converter (T2.2). Moved out of `anthropic_adapter.py` so upstream's converter refactors can't tangle with it. |
+| `agent/fork/stream_recovery.py` | Cold-start stale-timeout computation (`effective_stale_timeout`) — the fork's grace window before the first stream event (T2.3). |
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
 | `agent/fork/diagnostics.py` | Per-turn usage history + tools-signature hash + xAI 403 entitlement hint |
 | `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. |
@@ -39,7 +40,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | File | Adds / Dels | Why |
 |---|---|---|
 | `agent/anthropic_adapter.py` | +1809 / -92 | Claude Code OAuth mimicry (wire format, betas, metadata, 1M-context gate). This is the headline fork feature and is intentionally never going upstream. **T2.2**: the 540-line `convert_messages_to_anthropic` converter moved to `agent/fork/anthropic_messages.py` (thin forwarder remains). **2026-07-04**: upstream has absorbed the core OAuth credential support, `claude-code-20250219` beta, Claude Code identity headers, `_CONTEXT_1M_BETA`, and `drop_context_1m_beta`. The fork's +1901 diff likely has redundant portions worth rebasing away. |
-| `agent/chat_completion_helpers.py` | +793 / -106 | Streaming reliability: SDK monkey-patch hook for SSE events, heartbeat ticks, stream-drop reconnect, cold-start detection. **2026-07-04**: upstream has absorbed stream-drop reconnect logic, TTFB/idle-watchdog reconnects, cold-start vs mid-stream stale-timeout distinction, and user-visible heartbeat ticks with thinking progress tracking. The fork's `effective_stale_timeout` helper (`agent/fork/stream_recovery.py`) was converged away — upstream's native `first_event_seen` + `_stale_kill_count` + `_MAX_STALE_KILLS` approach is more comprehensive. SSE monkey-patch and heartbeat ticks remain fork-only. |
+| `agent/chat_completion_helpers.py` | +793 / -106 | Streaming reliability: SDK monkey-patch hook for SSE events, heartbeat ticks, stream-drop reconnect, cold-start detection. **T2.3**: cold-start stale-timeout calc moved to `agent/fork/stream_recovery.py`. **2026-07-04**: upstream has absorbed stream-drop reconnect logic and TTFB/idle-watchdog reconnects. SSE monkey-patch, heartbeat ticks, and cold-start detection remain fork-only. |
 | `agent/conversation_loop.py` | +439 / -12 | Per-turn callouts to fork modules (rate-limit capture, usage history, refusal handler). **T2.3**: refusal *detection* moved to `agent/fork/anthropic_recovery.is_anthropic_refusal`; the recovery ladder stays inline (control-flow-coupled). **2026-06**: the truncated tool-call recovery block was CONVERGED to upstream verbatim (upstream caught up with the same `_ephemeral_max_output_tokens` boost the fork added in cb293a90f) — that block is now byte-identical to upstream and won't conflict again. **2026-06-22**: added reasoning-channel budget-exhaustion detection for DeepSeek-V4 (`f5677f8cc`) — recognizes when the model burns its entire output budget in the reasoning channel and emits no content. **2026-06-30 (`3af8e5b89`)**: client-side bare-XML tool-call recovery — `_recover_bare_tool_calls_from_content()` + wire-in before the tool-call branch. When an assistant message has no structured `tool_calls` but its content contains a closed `<invoke name=…>` block with ≥1 `<parameter>` (the sentinel-less dialect open backends like DSv4 leak), recover it into real OpenAI-shaped tool calls so the tool RUNS instead of the XML painting as a final answer + the action dropping. Strict gating (closed invoke+parameter, no `｜DSML｜` sentinel) avoids firing on prose that quotes tool syntax; leaked XML is dropped from stored content so it can't re-prime next turn. Backend parsers (exo) are the primary fix site; this is the client net. Also widened `_strip_reasoning_tags` to strip stray `invoke`/`parameter` tags. Tests: `tests/run_agent/test_bare_toolcall_recovery.py`. |
 | `hermes_cli/banner.py` | (reduced by T2.5) | Branding + git-state subsystem moved to `hermes_cli/fork_banner.py`; banner.py keeps thin forwarders + the patchable git plumbing/caches. |
 | `hermes_state.py` | (reduced by T2.1/T2.4) | Fork-only `api_calls` table → `FORK_SCHEMA_SQL`; fork column `anthropic_content_blocks` → `FORK_TABLE_COLUMNS` (reconciler-added). SCHEMA_SQL is now pure-upstream shape. |
@@ -1427,23 +1428,18 @@ All other tests come from upstream.
 
 * New fork feature lands → add to the "Hard-fork boundaries" table.
 * Upstream merge changes the file-level divergence numbers significantly →
-* Fork feature converged away (upstream now has equivalent) → remove from hard-fork table, update soft-fork entry, add dated entry below.
+  update "Soft-fork edits" numbers.
+* Fork feature converged away (upstream now has equivalent) → remove from
+  hard-fork table, update soft-fork entry, add dated entry below.
+* The "Why a fork" rules change → update them, but always document the reason.
+
+Don't let this file go stale. If `git log --oneline | head -20` shows fork
+commits but FORK.md doesn't reflect them, fix that.
 
 ### Upstream sync — 2026-07-04 (v2026.7.1, 1,760 commits, 32 conflicts)
 
 Merge-base was v2026.6.19; pulled 1,760 upstream commits on branch
 `sync/v2026.7.1` (tag `v2026.7.1`). 32 conflict files, all resolved.
-
-**Converged away (upstream now has equivalent):**
-
-* **`agent/fork/stream_recovery.py`** — deleted. Upstream's
-  `interruptible_streaming_api_call` now has native cold-start vs mid-stream
-  stale-timeout distinction (`first_event_seen` flag), stale-kill counters with
-  max retry limits (`_stale_kill_count`, `_MAX_STALE_KILLS`), and user-visible
-  heartbeat ticks with thinking progress tracking. All more comprehensive than
-  the fork's `effective_stale_timeout` helper. The import + call site in
-  `chat_completion_helpers.py` was reverted to upstream's `_stream_stale_timeout`
-  directly. Test file `tests/agent/fork/test_stream_recovery.py` also deleted.
 
 **New fork features this sync:**
 
@@ -1471,6 +1467,7 @@ Merge-base was v2026.6.19; pulled 1,760 upstream commits on branch
 * Tool search deferral (lazy MCP loading)
 * Per-model reasoning effort isolation
 * SSE monkey-patch + heartbeat ticks (streaming)
+* Cold-start stale-timeout grace window (`agent/fork/stream_recovery.py`)
 
 **Upstream features adopted (additive, not replacements):**
 
@@ -1488,15 +1485,3 @@ Merge-base was v2026.6.19; pulled 1,760 upstream commits on branch
 
 Verification: 347 fork-specific tests pass (8 skipped — pre-existing macOS
 `/tmp` vs `/private/tmp` symlink issue).
-
-## When to update this doc
-
-* New fork feature lands → add to the "Hard-fork boundaries" table.
-* Upstream merge changes the file-level divergence numbers significantly →
-  update "Soft-fork edits" numbers.
-* Fork feature converged away (upstream now has equivalent) → remove from
-  hard-fork table, update soft-fork entry, add dated entry above.
-* The "Why a fork" rules change → update them, but always document the reason.
-
-Don't let this file go stale. If `git log --oneline | head -20` shows fork
-commits but FORK.md doesn't reflect them, fix that.
