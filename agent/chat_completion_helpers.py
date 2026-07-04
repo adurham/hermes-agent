@@ -3523,11 +3523,7 @@ def interruptible_streaming_api_call(
         # flips, any further silence is a real stall — kill at the
         # configured (shorter) threshold.
         _stale_elapsed = time.time() - last_chunk_time["t"]
-        # Fork-only cold-start grace window lives in agent/fork/stream_recovery.py
-        # so upstream edits to this watchdog block don't collide with it.
-        from agent.fork.stream_recovery import effective_stale_timeout as _eff_timeout
-        _effective_stale_timeout = _eff_timeout(first_event_seen["yes"], _stream_stale_timeout)
-        if _stale_elapsed > _effective_stale_timeout:
+        if _stale_elapsed > _stream_stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             # If a previous kill didn't produce any new chunks, the inner
             # thread is hung on a socket that ignored close().  Count
@@ -3540,7 +3536,7 @@ def interruptible_streaming_api_call(
             logger.warning(
                 "Stream stale for %.0fs (threshold %.0fs, %s) — no chunks received. "
                 "model=%s context=~%s tokens. Kill attempt %d/%d.",
-                _stale_elapsed, _effective_stale_timeout,
+                _stale_elapsed, _stream_stale_timeout,
                 "mid-stream" if first_event_seen["yes"] else "cold-start",
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
                 _stale_kill_count, _MAX_STALE_KILLS + 1,
