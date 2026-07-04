@@ -852,41 +852,20 @@ def compress_context(
         except Exception as _me_err:
             logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 
-    # Keep the post-compression rough estimate for diagnostics, but do not
-    # treat it as provider-reported prompt usage. Schema-heavy rough estimates
-    # can remain above threshold even after the next real API request fits.
-    # (Tool schemas ARE included — with 50+ tools enabled, schemas alone can add
-    # 20-30K tokens, and omitting them delays the next compression cycle far past
-    # the configured threshold; see issue #14695.)
-    _compressed_est = estimate_request_tokens_rough(
-        compressed,
-        system_prompt=new_system_prompt or "",
-        tools=agent.tools or None,
-    )
-    agent.context_compressor.last_compression_rough_tokens = _compressed_est
-    agent.context_compressor.last_prompt_tokens = -1
-    # Also park the real-usage field (read by the status bar via
-    # display_prompt_tokens) so the one transitional turn after compression
-    # shows an empty context instead of the stale pre-compression count until
-    # the next real API response lands. Readers already guard <= 0.
-    agent.context_compressor.last_real_prompt_tokens = -1
-    agent.context_compressor.last_completion_tokens = 0
-    agent.context_compressor.awaiting_real_usage_after_compression = True
-
-    # Warn on repeated compressions (quality degrades with each pass).
-    # Route through _emit_status (like the other compression warnings above)
-    # so the warning reaches the TUI / Telegram / Discord via status_callback,
-    # not just CLI stdout. _emit_status still _vprints for the CLI, and
-    # storing it on _compression_warning lets replay_compression_warning
-    # re-deliver it once a late-bound gateway status_callback is wired (#36908).
-    _cc = agent.context_compressor.compression_count
-    if _cc >= 2:
-        _cc_msg = (
-            f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
-            f"accuracy may degrade. Consider /new to start fresh."
-        )
-        agent._compression_warning = _cc_msg
-        agent._emit_status(_cc_msg)
+        # Warn on repeated compressions (quality degrades with each pass).
+        # Route through _emit_status (like the other compression warnings above)
+        # so the warning reaches the TUI / Telegram / Discord via status_callback,
+        # not just CLI stdout. _emit_status still _vprints for the CLI, and
+        # storing it on _compression_warning lets replay_compression_warning
+        # re-deliver it once a late-bound gateway status_callback is wired (#36908).
+        _cc = agent.context_compressor.compression_count
+        if _cc >= 2:
+            _cc_msg = (
+                f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
+                f"accuracy may degrade. Consider /new to start fresh."
+            )
+            agent._compression_warning = _cc_msg
+            agent._emit_status(_cc_msg)
 
         # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
         # the completed old session before its details are lost. In in-place mode

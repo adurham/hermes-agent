@@ -3116,7 +3116,7 @@ def test_keychain_longlived_absence_falls_back_to_claude_code(tmp_path, monkeypa
     pool = load_pool("anthropic")
     sources = {entry.source for entry in pool.entries()}
 
-    assert sources == {"claude_code"}
+    assert sources == {"claude_code", "hermes_pkce"}
 
 
 def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
