@@ -39,7 +39,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 
 | File | Adds / Dels | Why |
 |---|---|---|
-| `agent/anthropic_adapter.py` | +1809 / -92 | Claude Code OAuth mimicry (wire format, betas, metadata, 1M-context gate). This is the headline fork feature and is intentionally never going upstream. **T2.2**: the 540-line `convert_messages_to_anthropic` converter moved to `agent/fork/anthropic_messages.py` (thin forwarder remains). **2026-07-04**: upstream has absorbed the core OAuth credential support, `claude-code-20250219` beta, Claude Code identity headers, `_CONTEXT_1M_BETA`, and `drop_context_1m_beta`. **2026-07-04**: fork's `_read_longlived_claude_token_from_keychain` removed — upstream's credential pool handles `ANTHROPIC_TOKEN` / `ANTHROPIC_API_KEY` env vars via `_seed_from_env`. The keychain token should be exported as `ANTHROPIC_TOKEN` in `~/.hermes/.env` instead. |
+| `agent/anthropic_adapter.py` | +1781 / -93 | Claude Code wire-shape parity: CC alias translation (Bash/Read/Edit/Write/Grep), `metadata.user_id` identity blob (`device_id`/`account_uuid`/`session_id`), `x-anthropic-billing-header`, SSE monkey-patch for ping visibility, `.beta.messages` namespace targeting. **T2.2**: the 540-line `convert_messages_to_anthropic` converter moved to `agent/fork/anthropic_messages.py` (thin forwarder remains). **2026-07-04**: upstream absorbed OAuth credential pool, `claude-code-20250219` beta, identity headers, `_CONTEXT_1M_BETA`, and `drop_context_1m_beta`. The OAuth path is no longer fork-only. |
 | `agent/chat_completion_helpers.py` | +793 / -106 | Streaming reliability: SDK monkey-patch hook for SSE events, heartbeat ticks, stream-drop reconnect, cold-start detection. **T2.3**: cold-start stale-timeout calc moved to `agent/fork/stream_recovery.py`. **2026-07-04**: upstream has absorbed stream-drop reconnect logic and TTFB/idle-watchdog reconnects. SSE monkey-patch, heartbeat ticks, and cold-start detection remain fork-only. |
 | `agent/conversation_loop.py` | +439 / -12 | Per-turn callouts to fork modules (rate-limit capture, usage history, refusal handler). **T2.3**: refusal *detection* moved to `agent/fork/anthropic_recovery.is_anthropic_refusal`; the recovery ladder stays inline (control-flow-coupled). **2026-06**: the truncated tool-call recovery block was CONVERGED to upstream verbatim (upstream caught up with the same `_ephemeral_max_output_tokens` boost the fork added in cb293a90f) — that block is now byte-identical to upstream and won't conflict again. **2026-06-22**: added reasoning-channel budget-exhaustion detection for DeepSeek-V4 (`f5677f8cc`) — recognizes when the model burns its entire output budget in the reasoning channel and emits no content. **2026-06-30 (`3af8e5b89`)**: client-side bare-XML tool-call recovery — `_recover_bare_tool_calls_from_content()` + wire-in before the tool-call branch. When an assistant message has no structured `tool_calls` but its content contains a closed `<invoke name=…>` block with ≥1 `<parameter>` (the sentinel-less dialect open backends like DSv4 leak), recover it into real OpenAI-shaped tool calls so the tool RUNS instead of the XML painting as a final answer + the action dropping. Strict gating (closed invoke+parameter, no `｜DSML｜` sentinel) avoids firing on prose that quotes tool syntax; leaked XML is dropped from stored content so it can't re-prime next turn. Backend parsers (exo) are the primary fix site; this is the client net. Also widened `_strip_reasoning_tags` to strip stray `invoke`/`parameter` tags. Tests: `tests/run_agent/test_bare_toolcall_recovery.py`. |
 | `hermes_cli/banner.py` | (reduced by T2.5) | Branding + git-state subsystem moved to `hermes_cli/fork_banner.py`; banner.py keeps thin forwarders + the patchable git plumbing/caches. |
@@ -271,8 +271,8 @@ upstream's prefix match would re-break fork MCP parallelism.
 The CLI kept emitting **"Web search isn't configured"** on a plain Anthropic
 setup with no third-party search key. Root cause was a half-built capability,
 not a config mistake. **Not sent upstream** (personal fork; same stance as the
-rest of this file — and it leans on the Claude Code OAuth machinery, which is
-the headline never-upstream feature).
+rest of this file — it leans on the fork's CC wire-shape parity path, which
+is the fork-only surface that enables first-party-Anthropic detection).
 
 Root cause:
 - Hermes' `web_search` is a **client tool** (`tools/web_tools.py`) that the
@@ -310,7 +310,7 @@ Fix — provider-aware priority (Claude → native, everything else → client):
    analog is a separate `web_fetch` server tool).
 2. **`agent/anthropic_adapter.py::build_anthropic_kwargs` (soft-fork, ~3 lines).**
    A thin forwarder calls `apply_native_web_search(anthropic_tools, base_url)`
-   right after the OAuth cc-aliasing and before `_apply_tool_search`. This is
+   right after the CC alias block and before `_apply_tool_search`). This is
    the only edit to an upstream-shared file.
 3. **`hermes_cli/config.py` (soft-fork).** Two `web:` keys —
    `anthropic_native_search` (default `True`) and
@@ -328,11 +328,10 @@ pairing for `web_search_tool_result` blocks, see follow-up below). Regression:
 **Merge note:** the logic is isolated in `agent/fork/` (never conflicts). The
 only upstream-shared touch is the 3-line forwarder in `build_anthropic_kwargs`
 — on conflict keep ours (the `apply_native_web_search(...)` call must stay
-between the OAuth cc-alias block and `_apply_tool_search`). If upstream ever
+between the CC alias block and `_apply_tool_search`). If upstream ever
 implements native web search natively, converge per the "when upstream catches
 up, take upstream" rule and drop this module + its forwarder + test. Until
-then it stays — it depends on the fork-only first-party-Anthropic / OAuth
-surface and is not upstream-bound.
+then it stays — it depends on the fork-only first-party-Anthropic detection and CC wire-shape path and is not upstream-bound.
 
 
 ### Fork-only fix — 2026-06-10 (native web_search wire-shape orphan pairing)
@@ -1268,7 +1267,7 @@ looks generally useful.
 
 Specific things that **must never** be sent upstream:
 
-* Claude Code OAuth mimicry (`anthropic_adapter.py`)
+* Claude Code wire-shape parity (`anthropic_adapter.py` — CC alias translation, metadata identity blob, billing header, SSE observer, `.beta.messages` targeting)
 * `_decorate_xai_entitlement_error` (xAI billing hint UX)
 * Anything in `agent/fork/`
 
@@ -1293,7 +1292,7 @@ orphans. Done 2026-06 for: the truncated tool-call recovery block in
 `conversation_loop.py` (now byte-identical to upstream), and the
 `conversation_compression.py` estimator call (dropped the `_ra()` test-patch
 indirection). Distinguish from genuine fork FEATURES with no upstream equivalent
-(Claude Code OAuth, MCP disk-cache, claude-code web backend, memory/skill-recall) —
+(Claude Code wire-shape parity, MCP disk-cache, claude-code web backend, memory/skill-recall) —
 those stay.
 
 **Target the latest RELEASE TAG, not `upstream/main`** (user preference, locked
@@ -1353,7 +1352,7 @@ just take either side and run `uv lock`.
   conflict, take-ours on the forwarder. The block/tool/content helpers stay in the
   adapter (some upstream-shared); the fork converter binds them via a lazy
   `from agent import anthropic_adapter` import (also breaks the circular dep).
-  Still take "ours" for OAuth-path edits. Tool naming: the fork DELIBERATELY does
+  Still take "ours" for CC wire-shape edits (alias translation, metadata blob, billing header, SSE observer). Tool naming: the fork DELIBERATELY does
   NOT prepend `mcp_` to bare tool names (registers MCP tools as `mcp__server__tool`);
   upstream re-adds single-underscore prefixing every few syncs — take ours, drop
   upstream's prefix loop + its 2 outgoing-prefix tests.
