@@ -3047,68 +3047,22 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
     assert tokens.get("refresh_token") == "old-refresh-token"
 
 
-def test_keychain_longlived_suppresses_claude_code_seed(tmp_path, monkeypatch):
+def test_anthropic_token_env_var_seeds_pool(tmp_path, monkeypatch):
+    """The upstream credential pool seeds from ANTHROPIC_TOKEN env var.
+    This replaces the fork's keychain_longlived path."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat-longlived-token")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
     monkeypatch.setattr(
         "agent.anthropic_adapter.read_hermes_oauth_credentials",
-        lambda: {
-            "accessToken": "pkce-token",
-            "refreshToken": "pkce-refresh",
-            "expiresAt": 1711234999000,
-        },
+        lambda: None,
     )
     monkeypatch.setattr(
         "agent.anthropic_adapter.read_claude_code_credentials",
-        lambda: {
-            "accessToken": "cc-session-token",
-            "refreshToken": "cc-refresh",
-            "expiresAt": 1711234999000,
-        },
-    )
-    monkeypatch.setattr(
-        "agent.anthropic_adapter._read_longlived_claude_token_from_keychain",
-        lambda: "sk-ant...oken",
-    )
-
-    from agent.credential_pool import load_pool
-    pool = load_pool("anthropic")
-    sources = {entry.source for entry in pool.entries()}
-
-    assert sources == {"keychain_longlived"}
-
-
-def test_keychain_longlived_absence_falls_back_to_claude_code(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
-    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
-
-    monkeypatch.setattr(
-        "agent.anthropic_adapter.read_hermes_oauth_credentials",
-        lambda: {
-            "accessToken": "pkce-token",
-            "refreshToken": "pkce-refresh",
-            "expiresAt": 1711234999000,
-        },
-    )
-    monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
-        lambda: {
-            "accessToken": "cc-session-token",
-            "refreshToken": "cc-refresh",
-            "expiresAt": 1711234999000,
-        },
-    )
-    monkeypatch.setattr(
-        "agent.anthropic_adapter._read_longlived_claude_token_from_keychain",
         lambda: None,
     )
 
@@ -3116,7 +3070,43 @@ def test_keychain_longlived_absence_falls_back_to_claude_code(tmp_path, monkeypa
     pool = load_pool("anthropic")
     sources = {entry.source for entry in pool.entries()}
 
-    assert sources == {"claude_code", "hermes_pkce"}
+    assert "env:ANTHROPIC_TOKEN" in sources
+
+
+def test_anthropic_api_key_env_var_suppresses_oauth_seeding(tmp_path, monkeypatch):
+    """When ANTHROPIC_API_KEY is set without OAuth env vars, claude_code
+    and hermes_pkce should not be seeded."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-longlived-key")
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        lambda: {
+            "accessToken": "pkce-token",
+            "refreshToken": "pkce-refresh",
+            "expiresAt": 1711234999000,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "cc-session-token",
+            "refreshToken": "cc-refresh",
+            "expiresAt": 1711234999000,
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+    sources = {entry.source for entry in pool.entries()}
+
+    # ANTHROPIC_API_KEY should be the only source — claude_code and hermes_pkce
+    # are suppressed because the user explicitly set an API key without OAuth.
+    assert sources == {"env:ANTHROPIC_API_KEY"}
 
 
 def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
