@@ -59,8 +59,8 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `cli.py` / `gateway/run.py` / `gateway/slash_commands.py` | +114 / -11 | **2026-07-04 (`47c4903af`)**: per-model reasoning effort isolation. New `agent.reasoning_effort_by_model` config map (dict of model name → effort level). `/reasoning <level>` saves to both global and per-model; `/model` switch auto-applies the saved per-model effort. Case-insensitive matching. Falls back to global `agent.reasoning_effort` when no per-model entry exists. |
 | `tools/delegate_tool.py` | +27 / -0 | **2026-07-04 (`a1d405903`)**: provider-scoped delegation config via `delegation.by_provider`. When the active main provider matches a key in the map, that block's config is used. When no match, falls back to the top-level `delegation.provider`/`delegation.model` (legacy behavior). Config shape: `delegation.by_provider.anthropic: {model, provider}`, `delegation.by_provider.ollama-launch: {}` (inherit from parent). |
 
-Plus 251 commits of fork-only history (vs `upstream/main`, refreshed
-2026-06-22 post-sync). See `git log upstream/main..main`.
+Plus 282 commits of fork-only history (vs `upstream/main`, refreshed
+2026-07-04 post-sync). See `git log upstream/main..main`.
 
 ### Fork-only fixes — 2026-06-02 (prompt-cache cost work)
 
