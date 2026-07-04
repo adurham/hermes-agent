@@ -1180,7 +1180,7 @@ class TestAnthropicStreamCallbacks:
         response = agent._interruptible_streaming_api_call({})
 
         assert response is final_message
-        assert agent._anthropic_client.messages.stream.call_count == 2
+        assert agent._anthropic_client.beta.messages.stream.call_count == 2
         # Anthropic-native cleanup: close + rebuild the Anthropic client, never
         # the OpenAI primary client.
         assert mock_replace.call_count == 0
