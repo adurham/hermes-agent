@@ -23,9 +23,27 @@ will never touch them.
 | `agent/fork/stream_recovery.py` | Cold-start stale-timeout computation (`effective_stale_timeout`) — the fork's grace window before the first stream event (T2.3). |
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
 | `agent/fork/diagnostics.py` | Per-turn usage history + tools-signature hash + xAI 403 entitlement hint |
-| `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. |
-| `hermes_cli/fork_banner.py` | The fork's banner branding + git-state subsystem (carried/upstream-behind line, fork-aware agent name, HEAD-date label, fork-tree release URLs) (T2.5). Moved out of `banner.py`. |
-| `FORK.md` | This file |
+|| `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. |
+|| `agent/cc_aliases.py` | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility — maps Hermes built-in tool names to their Claude Code canonical equivalents so OAuth traffic counts as CC-API usage for billing. |
+|| `agent/gemini_cloudcode_adapter.py` | Gemini → Cloud Code adapter for Gemini provider OAuth path. |
+|| `agent/google_oauth.py` | Google OAuth credential handling for Gemini provider. |
+|| `hermes_cli/fork_banner.py` | The fork's banner branding + git-state subsystem (carried/upstream-behind line, fork-aware agent name, HEAD-date label, fork-tree release URLs) (T2.5). Moved out of `banner.py`. |
+|| `hermes_cli/delegation_stats.py` | Fork-only delegation statistics display (`/delegation` stats readout). |
+|| `hermes_cli/keyboard_protocol.py` | Fork keyboard protocol for CLI interaction patterns. |
+|| `hermes_cli/memory_confirm.py` | Memory confirmation dialogs (warm-tier memory verify-before-save). |
+|| `hermes_cli/personas.py` | Fork-only persona management (`/persona` slash command). |
+|| `hermes_cli/ruflo_agents.py` | Fork-only ruflo agent type catalog. |
+|| `hermes_cli/submit.py` | Fork-only CLI submit flow for interactive proposal confirmation. |
+|| `plugins/model-providers/exo/` | First-class exo provider profile (`custom:exo` provider type). |
+|| `plugins/web/claude_code/` | Claude Code web backend for the Hermes web interface. |
+|| `tools/bridges/` | Fork-only tool bridges (CC proxy MCP bridge). |
+|| `tools/swarm_board.py` | Live SwarmBoard display for multi-agent task progress. |
+|| `tools/swarm_tool.py` | Swarm orchestration tool — multi-agent parallel task execution with live board, cost tracking. |
+|| `tools/hermes_load_tools.py` | Fork tool loading bridge — loads fork-only tools into agent runtime. |
+|| `tools/memory_warm.py` | Warm-tier memory tool — search/recall/pin/unpin warm facts. |
+|| `tools/memory_extraction/` | Memory extraction system (extractor, buffer, conflict, prompts). |
+|| `tools/memory_auto_feedback/` | Memory auto-feedback module (audit and learning-ledger). |
+|| `FORK.md` | This file |
 | `scripts/fork-merge-plan.py` | Pre-merge analyzer (see "Future upstream merges" below) |
 | `scripts/setup-merge-drivers.sh` | One-time-per-clone registration of the uv.lock merge driver |
 
@@ -85,7 +103,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/conversation_compression.py` | +12 / -16 | Post-merge cleanup. Minimal diff. |
 | `plugins/model-providers/anthropic/__init__.py` | +2 / -2 | `default_aux_model` updated from haiku to sonnet-4-6. |
 
-Plus 282 commits of fork-only history (vs `upstream/main`, refreshed
+Plus 285 commits of fork-only history (vs `upstream/main`, refreshed
 2026-07-04 post-sync). See `git log upstream/main..main`.
 
 ### Fork-only fixes — 2026-06-02 (prompt-cache cost work)
