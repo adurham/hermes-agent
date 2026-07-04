@@ -3835,15 +3835,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
 
     @staticmethod
-    def _load_reasoning_config() -> dict | None:
+    def _load_reasoning_config(model: str = "") -> dict | None:
         """Load reasoning effort from config.yaml.
 
-        Reads agent.reasoning_effort from config.yaml. Valid: "none",
-        "minimal", "low", "medium", "high", "xhigh". Returns None to use
-        default (medium).
+        Reads agent.reasoning_effort from config.yaml. When ``model`` is
+        provided, also checks ``agent.reasoning_effort_by_model`` for a
+        per-model entry (matched case-insensitively). Falls back to the
+        global ``agent.reasoning_effort`` when no per-model entry exists.
+        Valid: "none", "minimal", "low", "medium", "high", "xhigh".
+        Returns None to use default (medium).
         """
         from hermes_constants import parse_reasoning_effort
         cfg = _load_gateway_runtime_config()
+
+        # Check per-model map first
+        if model:
+            by_model = cfg_get(cfg, "agent", "reasoning_effort_by_model", default={}) or {}
+            if isinstance(by_model, dict):
+                model_lower = model.strip().lower()
+                for saved_model, saved_effort in by_model.items():
+                    if saved_model.strip().lower() == model_lower:
+                        effort = str(saved_effort or "").strip()
+                        result = parse_reasoning_effort(effort)
+                        if result is not None:
+                            return result
+
         effort = str(cfg_get(cfg, "agent", "reasoning_effort", default="") or "").strip()
         result = parse_reasoning_effort(effort)
         if effort and effort.strip() and result is None:
@@ -3881,8 +3897,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
+        model: str = "",
     ) -> dict | None:
-        """Resolve reasoning effort for a session, honoring session overrides."""
+        """Resolve reasoning effort for a session, honoring session overrides.
+
+        When ``model`` is provided, checks ``agent.reasoning_effort_by_model``
+        for a per-model entry (via ``_load_reasoning_config(model)``) before
+        falling back to the global effort.
+        """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
             try:
@@ -3893,7 +3915,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
-        return self._load_reasoning_config()
+        return self._load_reasoning_config(model=model)
 
     def _set_session_reasoning_override(
         self,
@@ -11188,7 +11210,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
-            reasoning_config = self._resolve_session_reasoning_config(source=source)
+            reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
@@ -15291,6 +15313,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
                 session_key=session_key,
+                model=model,
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
