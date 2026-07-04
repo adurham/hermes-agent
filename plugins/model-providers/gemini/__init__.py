@@ -1,11 +1,9 @@
 """Google Gemini provider profiles.
 
 gemini:            Google AI Studio (API key) — uses GeminiNativeClient
-google-gemini-cli: Google Cloud Code Assist (OAuth) — uses GeminiCloudCodeClient
-google-antigravity: Google Antigravity Code Assist (OAuth) — uses AntigravityCloudCodeClient
 
-Both report api_mode="chat_completions" but use custom native clients
-that bypass the standard OpenAI transport. The profile captures auth
+Reports api_mode="chat_completions" but uses a custom native client
+that bypasses the standard OpenAI transport. The profile captures auth
 and endpoint metadata for auth.py / runtime_provider.py migration, and
 carries the thinking_config translation hook so the transport's profile
 path produces the same extra_body shape the legacy flag path did.

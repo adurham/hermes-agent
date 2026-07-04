@@ -485,10 +485,6 @@ class ChatCompletionsTransport(ProviderTransport):
                     extra_body["extra_body"] = openai_compat_extra
             elif raw_thinking_config:
                 extra_body["thinking_config"] = raw_thinking_config
-        elif provider_name in {"google-gemini-cli", "google-antigravity"}:
-            thinking_config = _build_gemini_thinking_config(model, reasoning_config)
-            if thinking_config:
-                extra_body["thinking_config"] = thinking_config
 
         # Merge any pre-built extra_body additions
         additions = params.get("extra_body_additions")
@@ -671,7 +667,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 tc_provider_data: dict[str, Any] = {}
                 extra = getattr(tc, "extra_content", None)
                 if extra is None and hasattr(tc, "model_extra"):
-                    extra = (tc.model_extra or {}).get("extra_content")
+                    extra = (tc.model_extra if isinstance(tc.model_extra, dict) else {}).get("extra_content")
                 if extra is not None:
                     if hasattr(extra, "model_dump"):
                         try:
