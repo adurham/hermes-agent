@@ -3302,6 +3302,23 @@ def _resolve_child_credential_pool(
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
+    Supports provider-scoped delegation config via ``delegation.by_provider``::
+
+        delegation:
+          by_provider:
+            ollama-launch:
+              # inherit from parent (no provider/model set)
+            anthropic:
+              model: claude-fable-5
+              provider: anthropic
+            exo:
+              model: mlx-community/DeepSeek-V4-Flash
+              provider: custom:exo
+
+    When the active main provider matches a key in ``by_provider``, that
+    block's config is used. When no match, falls back to the top-level
+    ``delegation.provider`` / ``delegation.model`` (legacy behavior).
+
     If ``delegation.base_url`` is configured, subagents use that direct
     OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
     omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
@@ -3320,6 +3337,16 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     Raises ValueError with a user-friendly message on credential failure.
     """
+    # Resolve provider-scoped config first (delegation.by_provider.<main_provider>)
+    by_provider = cfg.get("by_provider") or {}
+    if isinstance(by_provider, dict) and by_provider:
+        main_provider = getattr(parent_agent, "provider", None) or ""
+        mp_lower = main_provider.strip().lower()
+        for key, block in by_provider.items():
+            if key.strip().lower() == mp_lower and isinstance(block, dict):
+                cfg = block
+                break
+
     configured_model = str(cfg.get("model") or "").strip() or None
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
