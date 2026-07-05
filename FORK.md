@@ -58,13 +58,13 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | File | Adds / Dels | Why |
 |---|---|---|
 | `cli.py` | +2653 / -143 | Cancel-ladder keybindings, session-finalize, memory wiring, `/model --global` provider switch clears stale endpoint creds, per-model reasoning effort isolation. |
-| `agent/anthropic_adapter.py` | +1781 / -93 | CC wire-shape parity: alias translation (Bash/Read/Edit/Write/Grep), `metadata.user_id` identity blob, billing header, SSE ping observer, `.beta.messages` namespace. Upstream v2026.7.1 absorbed OAuth creds, beta headers, 1M-context gate. The OAuth path is no longer fork-only. |
+| `agent/anthropic_adapter.py` | +1784 / -93 | CC wire-shape parity: alias translation (Bash/Read/Edit/Write/Grep), `metadata.user_id` identity blob, billing header, SSE ping observer, `.beta.messages` namespace. Upstream v2026.7.1 absorbed OAuth creds, beta headers, 1M-context gate. The OAuth path is no longer fork-only. |
 | `tools/delegate_tool.py` | +888 / -158 | Background-by-default delegation (adopted upstream's model), SwarmBoard, prompt-cache stagger, 1M-beta latch, cost/token rollup, `delegation.by_provider` provider-scoped config. |
 | `agent/chat_completion_helpers.py` | +858 / -114 | Streaming reliability: SDK monkey-patch for SSE events, heartbeat ticks, stream-drop reconnect, cold-start detection. |
 | `tools/swarm_tool.py` | +860 / -1 | Swarm orchestration: multi-agent parallel task execution with live board, cost tracking, prompt-cache management. |
 | `tools/mcp_tool.py` | +743 / -98 | MCP tool registration (no `mcp_` prefix — exact server provenance map), parallel-safety fix, disk cache. |
 | `agent/conversation_loop.py` | +640 / -14 | Per-turn callouts to fork modules, reasoning-channel budget-exhaustion detection, bare-XML tool-call recovery, 413 shrink-before-compress. |
-| `agent/auxiliary_client.py` | +580 / -34 | Exo-scoped aux delegation, Anthropic aux 401/400 fixes, provider-matched aux model (sonnet-4-6), per-task fallback_model, provider-first aux config schema, 1M-beta baked-client fix, single-provider auto failover. |
+| `agent/auxiliary_client.py` | +580 / -34 | Exo-scoped aux delegation, Anthropic aux 401/400 fixes, provider-matched aux model (sonnet-5), per-task fallback_model, provider-first aux config schema, 1M-beta baked-client fix, single-provider auto failover. |
 | `tools/memory_tool.py` | +563 / -38 | Warm-tier memory (recall/pin/unpin), auto-feedback, session pin, skill-recall reminders. |
 | `hermes_cli/config.py` | +513 / -14 | Config keys for fork features: `delegation.by_provider`, `web.by_provider`, `agent.reasoning_effort_by_model`, `auxiliary.<provider>` schema, `tools.tool_search.defer_*`, v31 migration, `get_missing_config_fields` guard. |
 | `tools/swarm_board.py` | +467 / -1 | Live SwarmBoard display for multi-agent task progress. |
@@ -73,13 +73,13 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `hermes_state.py` | +257 / -7 | `FORK_SCHEMA_SQL` (`api_calls` table), `FORK_TABLE_COLUMNS` (`anthropic_content_blocks`), `SCHEMA_VERSION` 18. |
 | `run_agent.py` | +230 / -17 | 12 forwarder methods (now `ForkForwardersMixin`), `_classify_anthropic_stream_phase`, fork-state initialization. |
 | `tools/skills_tool.py` | +224 / -1 | Skill management with lazy listing support. |
-| `agent/model_metadata.py` | +209 / -10 | Per-model reasoning effort, model metadata overrides. |
+| `agent/model_metadata.py` | +210 / -10 | Per-model reasoning effort, model metadata overrides, `claude-sonnet-5` context length. |
 | `hermes_cli/main.py` | +194 / -20 | CLI entry point changes for fork features (model switch, session management). |
 | `tools/hermes_load_tools.py` | +195 / -1 | Fork tool loading bridge. |
 | `agent/image_routing.py` | +193 / -18 | Proactive image downscaling (4 MB ceiling), exo main detection via runtime base_url. |
 | `tools/web_tools.py` | +187 / -28 | Multi-provider search failover chain (`web.search_chain`), native Anthropic search swap. |
 | `agent/prompt_caching.py` | +167 / -18 | System prompt cache split (stable/volatile), `split_system_for_cache` / `strip_volatile_sentinel`. |
-| `agent/usage_pricing.py` | +144 / -7 | Fork cost tracking (cache tiers, API-call level pricing). |
+| `agent/usage_pricing.py` | +160 / -7 | Fork cost tracking (cache tiers, API-call level pricing), `claude-sonnet-5` pricing entry. |
 | `agent/agent_init.py` | +146 / -7 | Fork instance state initialization (delegated to `fork.<module>.init_state`). |
 | `agent/agent_runtime_helpers.py` | +141 / -23 | CC alias support in `repair_tool_call`, switch_model 1M-beta latch, swarm_run handling. |
 | `agent/title_generator.py` | +133 / -41 | Title generation fixes, thinking block stripping. |
@@ -87,7 +87,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `hermes_cli/banner.py` | +117 / -107 | Thin forwarders to `fork_banner.py`; git-state plumbing, `_skin_branding`, `_resolve_repo_dir`. |
 | `tools/tool_search.py` | +108 / -11 | Core toolset deferral (`defer_toolsets`/`defer_tools`/`keep_eager_tools`), explicit-intent activation. |
 | `agent/insights.py` | +101 / -4 | Fork insights (account billing, usage stats). |
-| `hermes_cli/models.py` | +94 / -1 | Provider-client cache fingerprint fix, bare `/model` config provider resolution. |
+| `hermes_cli/models.py` | +95 / -1 | Provider-client cache fingerprint fix, bare `/model` config provider resolution, `claude-sonnet-5` in model catalog. |
 | `agent/transports/anthropic.py` | +88 / -8 | Transport-level Anthropic wire format adjustments. |
 | `tools/file_tools.py` | +70 / -5 | File tool CC alias slip-through guards. |
 | `agent/account_usage.py` | +65 / -2 | Account usage tracking. |
@@ -101,7 +101,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/turn_context.py` | +29 / -1 | 3 ported fork-only prologue steps: memory_auto_feedback bind, `_last_user_message` capture, `_recent_tool_args` reset. |
 | `agent/credential_sources.py` | +26 / -1 | `keychain_longlived` credential source. |
 | `agent/conversation_compression.py` | +12 / -16 | Post-merge cleanup. Minimal diff. |
-| `plugins/model-providers/anthropic/__init__.py` | +2 / -2 | `default_aux_model` updated from haiku to sonnet-4-6. |
+| `plugins/model-providers/anthropic/__init__.py` | +2 / -2 | `default_aux_model` updated from haiku to sonnet-5. |
 
 Plus 285 commits of fork-only history (vs `upstream/main`, refreshed
 2026-07-04 post-sync). See `git log upstream/main..main`.
