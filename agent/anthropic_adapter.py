@@ -299,6 +299,8 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     # are keyed on it. Override per-call via max_tokens kwarg when needed.
     # Mythos-class named models (claude-fable-5, …) — 1M context, reasoning
     "claude-fable":      128_000,
+    # Claude Sonnet 5
+    "claude-sonnet-5":   128_000,
     # Claude 4.8
     "claude-opus-4-8":   128_000,
     # Claude 4.7
@@ -555,6 +557,7 @@ def _model_supports_1m_context(model: str | None) -> bool:
         "claude-opus-4-7", "claude-opus-4.7",
         "claude-opus-4-6", "claude-opus-4.6",
         "claude-sonnet-4-6", "claude-sonnet-4.6",
+        "claude-sonnet-5",
     )
     return any(needle in m for needle in _SUPPORTS_1M)
 

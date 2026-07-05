@@ -385,7 +385,7 @@ def _get_aux_model_for_provider(provider_id: str) -> str:
 # _model_supports_1m_context, and claude-sonnet-4-6 is in that allowlist, so
 # compression automatically gets the 1M window it needs.  Per-task explicit
 # auxiliary.<task>.model overrides still win over this constant.
-_ANTHROPIC_DEFAULT_AUX_MODEL = "claude-sonnet-4-6"
+_ANTHROPIC_DEFAULT_AUX_MODEL = "claude-sonnet-5"
 
 # Fallback for providers not yet migrated to ProviderProfile.default_aux_model,
 # plus providers we intentionally keep pinned here (e.g. Anthropic predates

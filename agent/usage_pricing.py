@@ -253,6 +253,22 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
     ),
+    # ── Anthropic Claude Sonnet 5 ──────────────────────────────────────
+    # Intro pricing $2/$10 through Aug 31, 2026; standard $3/$15 after.
+    (
+        "anthropic",
+        "claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        cache_write_cost_per_million=Decimal("2.50"),
+        cache_write_5m_cost_per_million=Decimal("2.50"),
+        cache_write_1h_cost_per_million=Decimal("4.00"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-07",
+    ),
     # ── Anthropic Claude 4.5 ─────────────────────────────────────────────
     (
         "anthropic",
