@@ -11,7 +11,7 @@ approval:
   choose_short:    "      [o]uair amháin  |  [s]eisiún  |  [d]iúltaigh"
   prompt_long:     "      Rogha [o/s/a/D]: "
   prompt_short:    "      Rogha [o/s/D]: "
-  timeout:         "      ⏱ Am istigh — ag diúltú don ordú"
+  timeout:         "      ⏱ Am istigh — níor ritheadh an t-ordú (gan freagra)"
   allowed_once:    "      ✓ Ceadaithe uair amháin"
   allowed_session: "      ✓ Ceadaithe don seisiún seo"
   allowed_always:  "      ✓ Curtha leis an liosta ceadaithe buan"

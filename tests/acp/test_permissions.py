@@ -144,7 +144,10 @@ class TestApprovalBridge:
         assert denied_result == "deny"
         assert unknown_result == "deny"
 
-    def test_timeout_returns_deny_and_cancels_future(self):
+    def test_timeout_returns_timeout_and_cancels_future(self):
+        """An unanswered ACP permission request reports 'timeout', not 'deny' —
+        the user never made a decision, so the model must not be told they
+        explicitly denied it. The command still does not run (fail closed)."""
         loop = MagicMock(spec=asyncio.AbstractEventLoop)
         request_permission = AsyncMock(name="request_permission")
         future = MagicMock(spec=Future)
@@ -163,7 +166,7 @@ class TestApprovalBridge:
 
         scheduled["coro"].close()
 
-        assert result == "deny"
+        assert result == "timeout"
         assert scheduled["loop"] is loop
         assert future.cancel.call_count == 1
 

@@ -7,7 +7,7 @@ approval:
   choose_short:    "      [o]今回のみ  |  [s]セッション中  |  [d]拒否"
   prompt_long:     "      選択 [o/s/a/D]: "
   prompt_short:    "      選択 [o/s/D]: "
-  timeout:         "      ⏱ タイムアウト — コマンドを拒否しました"
+  timeout:         "      ⏱ タイムアウト — コマンドは実行されませんでした（応答なし）"
   allowed_once:    "      ✓ 今回のみ許可"
   allowed_session: "      ✓ このセッション中は許可"
   allowed_always:  "      ✓ 永続的な許可リストに追加"

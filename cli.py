@@ -13507,8 +13507,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._approval_state = None
             self._approval_deadline = 0
             self._paint_now()
-            _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
-            return "deny"
+            _cprint(f"\n{_DIM}  ⏱ Timeout — command not run (no response){_RST}")
+            self._persist_prompt_summary("⚠", "Approval", command, "timed out (unanswered)")
+            return "timeout"
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True) -> list[str]:
         """Return approval choices for a dangerous command prompt."""

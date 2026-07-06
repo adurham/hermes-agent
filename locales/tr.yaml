@@ -7,7 +7,7 @@ approval:
   choose_short:    "      [b]ir kez  |  [o]turum  |  [r]eddet"
   prompt_long:     "      Seçim [b/o/h/R]: "
   prompt_short:    "      Seçim [b/o/R]: "
-  timeout:         "      ⏱ Zaman aşımı — komut reddedildi"
+  timeout:         "      ⏱ Zaman aşımı — komut çalıştırılmadı (yanıt yok)"
   allowed_once:    "      ✓ Bir kez izin verildi"
   allowed_session: "      ✓ Bu oturum için izin verildi"
   allowed_always:  "      ✓ Kalıcı izin listesine eklendi"

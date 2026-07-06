@@ -7,7 +7,7 @@ approval:
   choose_short:    "      [o]ne fois  |  [s]ession  |  [r]efuser"
   prompt_long:     "      Choix [o/s/t/R] : "
   prompt_short:    "      Choix [o/s/R] : "
-  timeout:         "      ⏱ Délai dépassé — commande refusée"
+  timeout:         "      ⏱ Délai dépassé — commande non exécutée (sans réponse)"
   allowed_once:    "      ✓ Autorisé une fois"
   allowed_session: "      ✓ Autorisé pour cette session"
   allowed_always:  "      ✓ Ajouté à la liste d'autorisation permanente"

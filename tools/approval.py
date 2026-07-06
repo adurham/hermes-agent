@@ -1601,7 +1601,7 @@ def save_permanent_allowlist(patterns: set):
 # =========================================================================
 
 def prompt_dangerous_approval(command: str, description: str,
-                              timeout_seconds: int | None = None,
+                              timeout_seconds: float | None = None,
                               allow_permanent: bool = True,
                               approval_callback=None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
@@ -1614,7 +1614,10 @@ def prompt_dangerous_approval(command: str, description: str,
             prompt_toolkit integration. Signature:
             (command, description, *, allow_permanent=True) -> str.
 
-    Returns: 'once', 'session', 'always', or 'deny'
+    Returns: 'once', 'session', 'always', 'deny', or 'timeout'.
+    'timeout' means the prompt expired with NO user response — callers must
+    still fail closed (do not run the command) but must NOT present it to
+    the model as an explicit user denial (the user never answered).
     """
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
@@ -1694,7 +1697,7 @@ def prompt_dangerous_approval(command: str, description: str,
 
             if thread.is_alive():
                 print("\n" + t("approval.timeout"))
-                return "deny"
+                return "timeout"
 
             choice = result["choice"]
             if choice in {'o', 'once'}:
@@ -2041,6 +2044,24 @@ def check_dangerous_command(command: str, env_type: str,
 
     choice = prompt_dangerous_approval(command, description,
                                        approval_callback=approval_callback)
+
+    if choice == "timeout":
+        # The prompt expired with no user response. Fail closed, but do NOT
+        # claim the user denied it — they never saw or never answered it.
+        return {
+            "approved": False,
+            "message": (
+                f"NOT RUN: The approval prompt for this command ({description}) "
+                f"timed out with no response from the user — this is NOT a denial; "
+                f"the user may simply not have seen it. The command was not "
+                f"executed. You may re-request approval for it later in the "
+                f"conversation (e.g. after the user is active again), or continue "
+                f"with other non-destructive work in the meantime."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "timeout",
+        }
 
     if choice == "deny":
         return {
@@ -2481,34 +2502,47 @@ def check_all_command_guards(command: str, env_type: str,
             resolved = decision["resolved"]
             choice = decision["choice"]
 
-            if not resolved or choice is None or choice == "deny":
-                # Consent contract: silence is NOT consent, and an explicit
-                # deny is also a hard halt — both produce a BLOCKED outcome
-                # that names the agent's most common evasion paths (retry,
-                # rephrase, achieve the same outcome via a different command).
-                # See issue #24912 for the original incident.
-                if not resolved:
-                    reason = "timed out without user response"
-                    timeout_addendum = " Silence is not consent."
-                    outcome = "timeout"
-                else:
-                    reason = "denied by user"
-                    timeout_addendum = ""
-                    outcome = "denied"
+            if not resolved or choice is None or choice == "timeout":
+                # Timed out with NO user response. Fail closed, but do not
+                # frame it as a user decision — the user never answered
+                # (they may be away, or the prompt may have gone unseen).
+                # See issue #24912: silence is not consent — but it is not
+                # an explicit denial either.
                 return {
                     "approved": False,
                     "message": (
-                        f"BLOCKED: Command {reason}. The user has NOT consented "
-                        f"to this action. Do NOT retry this command, do NOT "
-                        f"rephrase it, and do NOT attempt the same outcome via "
-                        f"a different command. Stop the current workflow and "
-                        f"wait for the user to respond before taking any "
-                        f"further destructive or irreversible action."
-                        f"{timeout_addendum}"
+                        "NOT RUN: The approval request timed out with no "
+                        "response from the user — this is NOT a denial; the "
+                        "user may simply not have seen it. The command was "
+                        "not executed. Silence is not consent: do not run "
+                        "this or any equivalent command without approval. "
+                        "You may re-request approval later (e.g. once the "
+                        "user is active again), or continue with other "
+                        "non-destructive work in the meantime."
                     ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
-                    "outcome": outcome,
+                    "outcome": "timeout",
+                    "user_consent": False,
+                }
+            if choice == "deny":
+                # Explicit denial — a hard halt that names the agent's most
+                # common evasion paths (retry, rephrase, achieve the same
+                # outcome via a different command). See issue #24912.
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: Command denied by user. The user has NOT "
+                        "consented to this action. Do NOT retry this command, "
+                        "do NOT rephrase it, and do NOT attempt the same "
+                        "outcome via a different command. Stop the current "
+                        "workflow and wait for the user to respond before "
+                        "taking any further destructive or irreversible "
+                        "action."
+                    ),
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                    "outcome": "denied",
                     "user_consent": False,
                 }
 
@@ -2575,6 +2609,26 @@ def check_all_command_guards(command: str, env_type: str,
         surface="cli",
         choice=choice,
     )
+
+    if choice == "timeout":
+        # Prompt expired with no user response. Fail closed, but do NOT
+        # frame it as a user decision — the user never answered.
+        return {
+            "approved": False,
+            "message": (
+                "NOT RUN: The approval prompt timed out with no response "
+                "from the user — this is NOT a denial; the user may simply "
+                "not have seen it. The command was not executed. Silence is "
+                "not consent: do not run this or any equivalent command "
+                "without approval. You may re-request approval later (e.g. "
+                "once the user is active again), or continue with other "
+                "non-destructive work in the meantime."
+            ),
+            "pattern_key": primary_key,
+            "description": combined_desc,
+            "outcome": "timeout",
+            "user_consent": False,
+        }
 
     if choice == "deny":
         return {
@@ -2774,20 +2828,36 @@ def check_execute_code_guard(code: str, env_type: str,
     resolved = decision["resolved"]
     choice = decision["choice"]
 
-    if not resolved or choice is None or choice == "deny":
-        reason = "timed out without user response" if not resolved else "denied by user"
-        addendum = " Silence is not consent." if not resolved else ""
+    if not resolved or choice is None or choice == "timeout":
+        # Timed out with no user response — fail closed, but don't call it
+        # a denial: the user never answered.
         return {
             "approved": False,
             "message": (
-                f"BLOCKED: execute_code script {reason}. The user has NOT "
-                f"consented to running this code. Do NOT retry, do NOT rephrase "
-                f"the script, and do NOT attempt the same outcome via a "
-                f"different tool.{addendum}"
+                "NOT RUN: The execute_code approval request timed out with "
+                "no response from the user — this is NOT a denial; the user "
+                "may simply not have seen it. The script was not executed. "
+                "Silence is not consent: do not run this or equivalent code "
+                "without approval. You may re-request approval later, or "
+                "continue with other non-destructive work in the meantime."
             ),
             "pattern_key": pattern_key,
             "description": description,
-            "outcome": "timeout" if not resolved else "denied",
+            "outcome": "timeout",
+            "user_consent": False,
+        }
+    if choice == "deny":
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: execute_code script denied by user. The user has NOT "
+                "consented to running this code. Do NOT retry, do NOT rephrase "
+                "the script, and do NOT attempt the same outcome via a "
+                "different tool."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "denied",
             "user_consent": False,
         }
 
@@ -2888,6 +2958,10 @@ def request_elicitation_consent(
 
     if choice in ("once", "session", "always"):
         return "accept"
+    if choice == "timeout":
+        # No user response — per the MCP elicitation spec, "cancel" means the
+        # request went unanswered/dismissed, vs "decline" = explicit refusal.
+        return "cancel"
     return "decline"
 
 
