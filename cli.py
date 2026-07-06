@@ -4963,8 +4963,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if elapsed >= 60:
                 _m, _s = int(elapsed // 60), int(elapsed % 60)
                 # Fixed-width timer to avoid status-line wrap jitter while
-                # scrolling/repainting (e.g. 01m05s, 12m09s).
-                elapsed_str = f"{_m:02d}m{_s:02d}s"
+                # scrolling/repainting (e.g. 1m05s, 12m09s).
+                # Minutes are NOT zero-padded — "02m" looks wrong (#user-feedback).
+                elapsed_str = f"{_m}m{_s:02d}s"
             else:
                 # Keep width stable before the 60s rollover as well.
                 elapsed_str = f"{elapsed:5.1f}s"
