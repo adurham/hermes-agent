@@ -1251,6 +1251,7 @@ def init_agent(
     from agent.fork import rate_limit_tracker as _fork_rl
     from agent.fork import tool_search_lazy as _fork_ts
     from agent.fork import diagnostics as _fork_diag
+    from agent.fork import consult_nudge as _fork_consult
     for _fork_mod in (
         _fork_skill_recall,
         _fork_memory_recall,
@@ -1258,6 +1259,7 @@ def init_agent(
         _fork_rl,
         _fork_ts,
         _fork_diag,
+        _fork_consult,
     ):
         _fork_mod.init_state(agent)
 
@@ -1433,6 +1435,19 @@ def init_agent(
         )
     except Exception:
         # Defaults already set by init_state; keep them on bad config.
+        pass
+
+    # Consult-nudge interval (see ``agent.fork.consult_nudge`` for
+    # semantics). Reads ``consult.nudge_interval``. 0 disables the nudge;
+    # the ``consult`` tool itself remains available regardless.
+    try:
+        _consult_cfg = _agent_cfg.get("consult", {})
+        if not isinstance(_consult_cfg, dict):
+            _consult_cfg = {}
+        agent._consult_nudge_interval = max(
+            0, int(_consult_cfg.get("nudge_interval", 8))
+        )
+    except Exception:
         pass
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded

@@ -1715,6 +1715,25 @@ DEFAULT_CONFIG = {
             "timeout": 900,
             "extra_body": {},
         },
+        # Consult — second-opinion tool (fork feature). "auto" (default)
+        # routes through the same auto-detection chain as every other
+        # auxiliary task (OpenRouter -> Nous Portal -> main endpoint), which
+        # is USUALLY the wrong choice for consult: the whole point is asking
+        # a DIFFERENT, typically smarter/more expensive model than your main
+        # driver. Point this at a frontier model that's too
+        # slow/expensive/refusal-prone to be a main model but valuable as an
+        # occasional second opinion (e.g. provider: anthropic,
+        # model: claude-fable-5). Refusals/empty responses from the consult
+        # model are expected and handled gracefully by the tool (returns
+        # unavailable=true) -- no fallback_model needed.
+        "consult": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 180,
+            "extra_body": {},
+        },
     },
     
     "display": {
@@ -2329,6 +2348,16 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+    },
+
+    # Second-opinion nudge (fork feature) — periodic reminder pointing the
+    # agent at the `consult` tool. Mirrors agent.fork.memory_recall /
+    # agent.fork.skill_recall: fires on risky tool calls, not on a flat turn
+    # count, so it doesn't nag during routine reads/searches.
+    "consult": {
+        # Risky tool calls between reminders. 0 disables the nudge entirely
+        # (the `consult` tool itself remains available either way).
+        "nudge_interval": 8,
     },
 
     # Curator — background skill maintenance.
@@ -5080,7 +5109,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "sessions", "streaming", "updates", "mcp_servers", "consult",
 }
 
 # Valid fields inside a custom_providers list entry
