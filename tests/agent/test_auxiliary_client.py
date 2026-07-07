@@ -35,6 +35,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _ANTHROPIC_DEFAULT_AUX_MODEL,
 )
 
 
@@ -549,7 +550,7 @@ class TestAnthropicOAuthFlag:
             client, model = _try_anthropic()
 
         assert client is not None
-        assert model == "claude-sonnet-4-6"
+        assert model == _ANTHROPIC_DEFAULT_AUX_MODEL
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
@@ -1108,7 +1109,7 @@ class TestVisionClientFallback:
 
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-sonnet-4-6"
+        assert model == _ANTHROPIC_DEFAULT_AUX_MODEL
 
     def test_anthropic_auxiliary_client_aggregates_stream_response(self):
         from agent.auxiliary_client import AnthropicAuxiliaryClient
