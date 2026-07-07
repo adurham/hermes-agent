@@ -2783,8 +2783,8 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, role)
+      - Batch:  provide tasks array [{goal, context, role}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -2877,7 +2877,6 @@ def delegate_task(
             {
                 "goal": goal,
                 "context": context,
-                "toolsets": toolsets,
                 "role": top_role,
                 "model": model,
                 "agent_type": agent_type,
@@ -2948,7 +2947,11 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
+                # Subagents always inherit the parent's toolsets; the model
+                # cannot choose or narrow them (no model-facing toolsets arg
+                # — see ba0bc01d1 upstream). _build_child_agent resolves
+                # pure parent inheritance when toolsets=None.
+                toolsets=None,
                 model=effective_task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
