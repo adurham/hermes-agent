@@ -4997,7 +4997,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # Fixed-width timer to avoid status-line wrap jitter while
                 # scrolling/repainting (e.g. 1m05s, 12m09s).
                 # Minutes are NOT zero-padded — "02m" looks wrong (#user-feedback).
-                elapsed_str = f"{_m}m{_s:02d}s"
+                # Left-pad to the same 6-char width as the <60s branch below
+                # so the exact 60s rollover (e.g. "59.9s" -> "1m00s") doesn't
+                # itself cause a one-character width jitter — the single-digit
+                # minute case ("1m05s", 5 chars) was falling one char short.
+                elapsed_str = f"{_m}m{_s:02d}s".rjust(6)
             else:
                 # Keep width stable before the 60s rollover as well.
                 elapsed_str = f"{elapsed:5.1f}s"
