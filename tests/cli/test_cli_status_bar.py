@@ -3,8 +3,33 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import cli as cli_mod
 from cli import HermesCLI
+
+
+@pytest.fixture(autouse=True)
+def _reset_active_skin():
+    """Force the "default" skin (status_glyph "⚕") for every test here.
+
+    cli.py runs ``init_skin_from_config(CLI_CONFIG)`` at import time, which
+    reads the OPERATOR's real ``~/.hermes/config.yaml`` and sets the
+    module-level ``_active_skin`` singleton in hermes_cli/skin_engine.py.
+    On any machine with a non-default ``display.skin`` configured (e.g. a
+    custom branded skin overriding ``status_glyph``), every status-bar test
+    in this file that asserts the literal default glyph fails -- not
+    because of a code bug, but because the test suite is silently coupled
+    to whatever skin happens to be active on the machine running pytest.
+    Reset to "default" before each test and restore afterward so the suite
+    is deterministic regardless of the operator's local skin config.
+    """
+    from hermes_cli.skin_engine import get_active_skin_name, set_active_skin
+
+    original = get_active_skin_name()
+    set_active_skin("default")
+    yield
+    set_active_skin(original)
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -616,7 +641,15 @@ class TestContextDeltaSegment:
 
 
 class TestCLIUsageReport:
-    def test_show_usage_omits_cost_reporting(self, capsys):
+    def test_show_usage_includes_cost_reporting(self, capsys):
+        """This fork intentionally diverges from upstream's fd2a35b16
+        (which removed cost reporting from /usage everywhere, citing
+        misleading estimates on providers without cache-token reporting).
+        Adam's fork keeps a `display.show_cost` opt-in and per-session cost
+        lines in _show_usage() -- see feat(cli): show session cost in exit
+        summary (680b32655) and its follow-ups. Cache read/write token
+        LINES were never reintroduced, so those stay asserted absent.
+        """
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=10_230,
@@ -639,10 +672,11 @@ class TestCLIUsageReport:
         assert "Total tokens:" in output
         assert "Session duration:" in output
         assert "Compressions:" in output
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "Total cost:" not in output
-        assert "Cost status:" not in output
-        assert "Cost source:" not in output
+        # Cost reporting is a deliberate fork feature -- present, not omitted.
+        assert "Total cost:" in output
+        assert "Cost status:" in output
+        assert "Cost source:" in output
+        # Cache-hit token LINES were never reintroduced after fd2a35b16.
         assert "Cache read tokens:" not in output
         assert "Cache write tokens:" not in output
 
