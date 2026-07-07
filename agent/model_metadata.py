@@ -2283,6 +2283,19 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     the cause of the preflight estimator running ahead of the provider's
     actual ``prompt_tokens`` by 30-50 %.  Treat blocks (when present) as
     the authoritative source of size and skip the ``content`` duplicate.
+
+    Same duplication applies to ``reasoning`` / ``reasoning_content`` /
+    ``reasoning_details``: when ``anthropic_content_blocks`` is a non-empty
+    list, ``_convert_assistant_message``'s interleaved-thinking fast path
+    (agent/anthropic_adapter.py) replays ``ordered_blocks`` verbatim and
+    NEVER reads any of those three fields — they are pure leftover
+    duplicates of the same thinking text already inside
+    ``anthropic_content_blocks``. With ``interleaved_thinking: true`` and
+    high reasoning effort, every assistant turn carries a thinking block in
+    all four places, so counting them quadruples the estimate for that
+    block alone — the dominant driver of a preflight estimate running far
+    ahead of the real provider ``prompt_tokens`` (observed: ~600K rough vs
+    ~284K real on a single session).
     """
     if not isinstance(msg, dict):
         return len(str(msg))
@@ -2300,6 +2313,13 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
                 shadow["anthropic_content_blocks"] = cleaned
             else:
                 shadow[k] = v
+            continue
+        if k in ("reasoning", "reasoning_content", "reasoning_details"):
+            # Skip the reasoning-field duplicates when blocks already
+            # carry the same thinking text for the provider (see docstring).
+            if has_anthropic_blocks:
+                continue
+            shadow[k] = v
             continue
         if k == "content":
             # Skip the text-extracted duplicate when blocks already
@@ -2411,12 +2431,25 @@ def _count_message_chars_with_image_token_credit(
     sessions, because every ``web_search_tool_result`` and ``thinking``
     block got walked twice.  When the stash is present we strip the
     duplicated ``content`` from the sanitized message before counting.
+
+    Same applies to ``reasoning`` / ``reasoning_content`` /
+    ``reasoning_details``: when blocks are present, Anthropic's
+    interleaved-thinking replay path (``_convert_assistant_message`` in
+    agent/anthropic_adapter.py) uses ``anthropic_content_blocks`` alone
+    and never reads those three fields — they duplicate the same thinking
+    text already inside the blocks. Left uncounted-for, a single thinking
+    block gets counted up to 4x (reasoning, reasoning_content,
+    reasoning_details, and inside anthropic_content_blocks), which is the
+    dominant driver of the preflight estimate running far ahead of the
+    provider's real prompt_tokens on sessions with interleaved_thinking
+    enabled (observed: ~600K rough vs ~284K real on a single session).
     """
     if not isinstance(msg, dict):
         return len(str(msg)), 0
 
     blocks = msg.get("anthropic_content_blocks")
     has_blocks = bool(blocks)
+    _DUPLICATE_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details")
 
     content = msg.get("content")
     if not isinstance(content, list):
@@ -2425,6 +2458,8 @@ def _count_message_chars_with_image_token_credit(
         if has_blocks:
             sanitized_msg = dict(msg)
             sanitized_msg.pop("content", None)
+            for _k in _DUPLICATE_REASONING_KEYS:
+                sanitized_msg.pop(_k, None)
             # Strip raw image bytes that may live inside blocks.
             sanitized_msg["anthropic_content_blocks"] = _strip_image_data_from_blocks(blocks)
             # Image credit for any images in blocks (no list content path
@@ -2442,10 +2477,13 @@ def _count_message_chars_with_image_token_credit(
         else:
             sanitized_parts.append(part)
 
-    # Blocks duplicate: strip ``content`` from the sanitized view.
+    # Blocks duplicate: strip ``content`` (and the reasoning-field
+    # duplicates) from the sanitized view.
     if has_blocks:
         sanitized_msg = dict(msg)
         sanitized_msg.pop("content", None)
+        for _k in _DUPLICATE_REASONING_KEYS:
+            sanitized_msg.pop(_k, None)
         sanitized_msg["anthropic_content_blocks"] = _strip_image_data_from_blocks(blocks)
         image_count += _count_images_in_blocks(blocks)
         return len(str(sanitized_msg)), image_count * _IMAGE_TOKEN_COST
