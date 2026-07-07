@@ -10,6 +10,7 @@ The real implementations live in the sibling modules:
 
   ``agent.fork.skill_recall``        — skill-recall reminder
   ``agent.fork.memory_recall``       — memory-recall reminder (warm tier)
+  ``agent.fork.consult_nudge``       — second-opinion (consult tool) reminder
   ``agent.fork.rate_limit_tracker``  — rate-limit observability
   ``agent.fork.anthropic_recovery``  — refusal retry + CC alias translation
   ``agent.fork.tool_search_lazy``    — lazy MCP tool gating
@@ -118,3 +119,13 @@ class ForkForwardersMixin:
         """Forwarder — see ``agent.fork.memory_recall.record_voluntary_recall``."""
         from agent.fork.memory_recall import record_voluntary_recall
         return record_voluntary_recall(self)
+
+    def _maybe_consult_nudge(self, function_name: str) -> Optional[str]:
+        """Forwarder — see ``agent.fork.consult_nudge.maybe_consult_nudge``."""
+        from agent.fork.consult_nudge import maybe_consult_nudge
+        return maybe_consult_nudge(self, function_name)
+
+    def _record_voluntary_consult(self) -> None:
+        """Forwarder — see ``agent.fork.consult_nudge.record_voluntary_consult``."""
+        from agent.fork.consult_nudge import record_voluntary_consult
+        return record_voluntary_consult(self)

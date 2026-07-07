@@ -951,6 +951,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             else:
                 function_result += _mem_hint
 
+        # ── Consult nudge hook ────────────────────────────────────────
+        # Points the agent at the `consult` tool (second opinion from a
+        # configurable reference model) after a run of risky tool calls.
+        # Resets when the agent calls consult on its own. Best-effort;
+        # never breaks tool execution.
+        if name == "consult":
+            agent._record_voluntary_consult()
+        _consult_hint = agent._maybe_consult_nudge(name)
+        if _consult_hint:
+            if _is_multimodal_tool_result(function_result):
+                _append_subdir_hint_to_multimodal(function_result, _consult_hint)  # type: ignore[arg-type]
+            else:
+                function_result += _consult_hint
+
         # Maintain the sliding window of recent tool args used by the
         # memory-recall reminder for query-candidate extraction. Cap at
         # 3 so we only look back a few tool calls.
@@ -1689,6 +1703,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _append_subdir_hint_to_multimodal(function_result, _mem_hint)  # type: ignore[arg-type]
             else:
                 function_result += _mem_hint
+
+        # ── Consult nudge hook (mirrors concurrent path) ─────────────
+        if function_name == "consult":
+            agent._record_voluntary_consult()
+        _consult_hint = agent._maybe_consult_nudge(function_name)
+        if _consult_hint:
+            if _is_multimodal_tool_result(function_result):
+                _append_subdir_hint_to_multimodal(function_result, _consult_hint)  # type: ignore[arg-type]
+            else:
+                function_result += _consult_hint
 
         # Maintain sliding window of recent tool args (3-deep) for the
         # memory-recall query-candidate extractor.

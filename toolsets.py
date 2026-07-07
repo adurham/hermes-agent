@@ -61,6 +61,8 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # Second opinion from a configurable reference model (fork feature)
+    "consult",
     # Code execution + delegation
     "execute_code", "delegate_task", "swarm_run",
     # Cronjob management
@@ -233,6 +235,16 @@ TOOLSETS = {
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],
+        "includes": []
+    },
+    
+    "consult": {
+        "description": (
+            "Get a second opinion from a configurable reference model "
+            "(auxiliary.consult in config.yaml) before a risky or uncertain "
+            "decision. Available to both the main agent and subagents."
+        ),
+        "tools": ["consult"],
         "includes": []
     },
     
