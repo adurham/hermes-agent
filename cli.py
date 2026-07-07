@@ -4843,6 +4843,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return "".join(out).rstrip() + ellipsis
 
     @staticmethod
+    def _panel_cwidth(text: str) -> int:
+        """Terminal cell width of ``text`` — see ``_panel_ljust`` docstring
+        for why plain ``len()`` undercounts wide glyphs in panel sizing."""
+        try:
+            from prompt_toolkit.utils import get_cwidth
+            return get_cwidth(text or "")
+        except Exception:
+            return len(text or "")
+
+    @staticmethod
+    def _panel_ljust(text: str, inner_width: int) -> str:
+        """Pad ``text`` with trailing spaces to fill ``inner_width`` terminal
+        cells (display width), not Python codepoints.
+
+        ``str.ljust()`` pads by character COUNT, which undercounts wide
+        glyphs (emoji, CJK, box-drawing) that render as 2 terminal cells but
+        are 1 Python character. Modal panels (clarify / approval / sudo /
+        secret) that mix such glyphs into otherwise-ASCII rows — e.g. a tool
+        emoji, an arrow prefix, a CJK question forwarded from a
+        non-English-speaking user, or Fable-5-style unicode-heavy prose via
+        the `consult` tool — under-pad by the glyph's extra cell(s). The
+        panel's right border then lands one or more columns short of where
+        the top/bottom border rules were drawn, visually shifting/clipping
+        that row relative to its neighbors — the "garbled/truncated clarify
+        panel" symptom. Mirrors ``_status_bar_display_width``'s use of
+        ``get_cwidth`` for the same reason.
+        """
+        current = HermesCLI._panel_cwidth(text)
+        pad = max(0, inner_width - current)
+        return text + (" " * pad)
+
+    @staticmethod
     def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
         """Return the live prompt_toolkit width, falling back to ``shutil``.
 
@@ -8127,7 +8159,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 56, max_width: int = 86) -> int:
             term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title_text)] + [len(line) for line in content_lines] + [min_width - 4])
+            longest = max([HermesCLI._panel_cwidth(title_text)] + [HermesCLI._panel_cwidth(line) for line in content_lines] + [min_width - 4])
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2
 
@@ -8144,7 +8176,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
             lines.append((border_style, "│ "))
-            lines.append((content_style, text.ljust(inner_width)))
+            lines.append((content_style, HermesCLI._panel_ljust(text, inner_width)))
             lines.append((border_style, " │\n"))
 
         def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
@@ -13581,7 +13613,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
             term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title_text)] + [len(line) for line in content_lines] + [min_width - 4])
+            longest = max([HermesCLI._panel_cwidth(title_text)] + [HermesCLI._panel_cwidth(line) for line in content_lines] + [min_width - 4])
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2
 
@@ -13598,7 +13630,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
             lines.append((border_style, "│ "))
-            lines.append((content_style, text.ljust(inner_width)))
+            lines.append((content_style, HermesCLI._panel_ljust(text, inner_width)))
             lines.append((border_style, " │\n"))
 
         def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
@@ -16601,7 +16633,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
             """Choose a stable panel width wide enough for the title and content."""
             term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
+            longest = max([HermesCLI._panel_cwidth(title)] + [HermesCLI._panel_cwidth(line) for line in content_lines] + [min_width - 4])
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2  # account for the single leading/trailing spaces inside borders
 
@@ -16618,7 +16650,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
             lines.append((border_style, "│ "))
-            lines.append((content_style, text.ljust(inner_width)))
+            lines.append((content_style, HermesCLI._panel_ljust(text, inner_width)))
             lines.append((border_style, " │\n"))
 
         def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
