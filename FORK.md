@@ -101,6 +101,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/turn_context.py` | +29 / -1 | 3 ported fork-only prologue steps: memory_auto_feedback bind, `_last_user_message` capture, `_recent_tool_args` reset. |
 | `agent/credential_sources.py` | +26 / -1 | `keychain_longlived` credential source. |
 | `agent/conversation_compression.py` | +12 / -16 | Post-merge cleanup. Minimal diff. |
+| `agent/tool_guardrails.py` | +11 / -4 | `hard_stop_enabled` default `False→True` — tool-call loop guardrails now block/halt instead of just warning. See "Fork-only fix — 2026-07-07" below. |
 | `plugins/model-providers/anthropic/__init__.py` | +2 / -2 | `default_aux_model` updated from haiku to sonnet-5. |
 
 Plus 285 commits of fork-only history (vs `upstream/main`, refreshed
@@ -1525,6 +1526,34 @@ Merge-base was v2026.6.19; pulled 1,760 upstream commits on branch
 * `_sync_anthropic_entry_from_credentials_file` tests
 * Petdex mascot animation
 * `_config_version: 32`
+
+
+### Fork-only fix — 2026-07-07 (tool-call loop guardrails now block by default)
+
+The guardrail system in `agent/tool_guardrails.py` already had all the logic
+to detect and block tool-call loops — tracking exact-failure counts, same-tool
+failure streaks, and idempotent no-progress repetition — but
+`hard_stop_enabled` defaulted to `False`, so it only ever appended warning
+text to tool results. The model could (and did) ignore the warning and keep
+retrying the same failing call.
+
+**Change:** `hard_stop_enabled` default `False → True` (one line).
+
+**Effect:**
+- **5 identical failed calls** → `before_call()` returns `action="block"`,
+  synthetic error injected, tool never executes
+- **8 same-tool failures** (even with different args) → `after_call()` returns
+  `action="halt"`, turn stops
+- **5 identical idempotent results** (read_file, search_files, etc.) →
+  `before_call()` returns `action="block"`, synthetic error injected
+
+**Opt-out:** `tool_loop_guardrails.hard_stop_enabled: false` in config.yaml
+restores the old warn-only behavior.
+
+**Merge note:** this is a single-line default change in an upstream-shared
+file. If a future sync reverts it to `False`, the fork's intent is to keep
+`True` — the guardrails are useless without enforcement. The docstring and
+4 tests were also updated to match the new default.
 
 Verification: 347 fork-specific tests pass (8 skipped — pre-existing macOS
 `/tmp` vs `/private/tmp` symlink issue).
