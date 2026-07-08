@@ -621,6 +621,12 @@ class AssemblyResult:
     deferred_count: int = 0
     deferred_tokens: int = 0
     threshold_tokens: int = 0
+    # FORK: True when this assembly activated (or stayed activated) purely
+    # because sticky_active=True was passed in, i.e. the live deferrable-
+    # token total no longer clears should_activate() on its own.
+    # Observability field so callers/logs can distinguish "activated
+    # because sticky" from "activated because still over threshold".
+    sticky_forced: bool = False
 
 
 def assemble_tool_defs(
@@ -628,6 +634,7 @@ def assemble_tool_defs(
     *,
     context_length: Optional[int] = None,
     config: Optional[ToolSearchConfig] = None,
+    sticky_active: bool = False,
 ) -> AssemblyResult:
     """Return the tool-defs list the model should actually see.
 
@@ -639,6 +646,31 @@ def assemble_tool_defs(
     Idempotent: calling with bridge tools already in the input is a no-op
     (they classify as non-core/non-deferrable but their names are reserved,
     so they are filtered out of the deferrable set).
+
+    ``sticky_active`` (FORK): the *catalog* (which tools are deferrable and
+    their live schemas) is always rebuilt fresh from ``tool_defs`` on every
+    call — this function never caches that. But the boolean activate/
+    deactivate decision is NOT safe to recompute from scratch every call
+    within one ongoing conversation: ``classify_tools`` walks the live,
+    global ``tools/registry.py`` singleton, so an unrelated MCP reconnect
+    or a concurrent subagent loading tools can shift the deferrable-token
+    total across the ``threshold_pct`` boundary between two API calls of
+    the *same* conversation. When that flips activation from on to off,
+    the bridge tool names (tool_search/tool_describe/tool_call) disappear
+    from the wire tools array for that turn, and Anthropic's API rejects
+    any previous-turn tool_use block referencing them — which
+    ``_strip_unknown_tool_blocks`` (agent/anthropic_adapter.py) then
+    rewrites into inert text breadcrumbs, corrupting tool-call history
+    mid-conversation even though the model successfully used those tools
+    moments earlier. Passing ``sticky_active=True`` (the caller's
+    per-conversation "have we ever activated" flag) forces activation to
+    stay on once it was ever on, without touching what's actually in the
+    catalog. This is a ONE-WAY latch: off->on still requires clearing the
+    normal threshold; only on->off is suppressed. See
+    ``agent/fork/tool_search_lazy.py`` for the analogous
+    ``agent._promoted_tools`` per-agent persistent-state pattern this
+    mirrors, and callers in model_tools.py / agent_init.py / tools/mcp_tool.py
+    for where the flag is threaded from the agent object.
     """
     if config is None:
         config = load_config()
@@ -653,7 +685,9 @@ def assemble_tool_defs(
         return AssemblyResult(tool_defs=incoming, activated=False)
 
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
-    if not should_activate(config, deferrable_tokens, context_length):
+    naturally_active = should_activate(config, deferrable_tokens, context_length)
+    sticky_forced = bool(sticky_active) and not naturally_active
+    if not naturally_active and not sticky_forced:
         return AssemblyResult(
             tool_defs=incoming,
             activated=False,
@@ -666,10 +700,20 @@ def assemble_tool_defs(
     result = visible + bridge
     threshold_tokens = int((context_length or 0) * (config.threshold_pct / 100.0))
 
-    logger.info(
-        "tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
-        len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
-    )
+    if sticky_forced:
+        logger.info(
+            "tool_search stays activated (sticky): %d core/visible tools kept, "
+            "%d deferred (~%d tokens, threshold ~%d) — live total now below "
+            "threshold but this conversation already activated tool_search, "
+            "so we keep bridge tools present to avoid corrupting tool-call "
+            "history (see assemble_tool_defs sticky_active docs).",
+            len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
+        )
+    else:
+        logger.info(
+            "tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
+            len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
+        )
 
     return AssemblyResult(
         tool_defs=result,
@@ -677,6 +721,7 @@ def assemble_tool_defs(
         deferred_count=len(deferrable),
         deferred_tokens=deferrable_tokens,
         threshold_tokens=threshold_tokens,
+        sticky_forced=sticky_forced,
     )
 
 
@@ -687,6 +732,24 @@ def assemble_tool_defs(
 
 def is_bridge_tool(name: str) -> bool:
     return name in BRIDGE_TOOL_NAMES
+
+
+def tool_defs_show_bridge(tool_defs: Optional[List[Dict[str, Any]]]) -> bool:
+    """Return True if any bridge tool name is present in a tool-defs list.
+
+    FORK. Cheap way for callers (agent_init, refresh_agent_mcp_tools) to
+    detect whether an assembled tools array activated progressive
+    disclosure, without threading AssemblyResult through every call site —
+    ``get_tool_definitions`` returns a plain list, not an AssemblyResult.
+    Used to set/update the caller's sticky "ever activated" flag.
+    """
+    if not tool_defs:
+        return False
+    for td in tool_defs:
+        name = (td.get("function") or {}).get("name")
+        if name in BRIDGE_TOOL_NAMES:
+            return True
+    return False
 
 
 def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:

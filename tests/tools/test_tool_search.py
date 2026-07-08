@@ -444,6 +444,169 @@ class TestAssembly:
 
 
 # ---------------------------------------------------------------------------
+# Sticky activation — the flap regression this bug report targets.
+#
+# The real bug: classify_tools() walks the LIVE global registry singleton
+# every call. If the total deferrable-token count for a conversation drifts
+# across the threshold boundary between two consecutive assemblies of the
+# SAME conversation (MCP reconnect, subagent loading tools, etc.),
+# should_activate() flips its answer turn-to-turn. When it flips
+# activated -> not-activated, bridge tool names vanish from the wire tools
+# array and Anthropic hard-rejects prior tool_use blocks referencing them,
+# which _strip_unknown_tool_blocks then rewrites into inert breadcrumbs —
+# corrupting tool-call history mid-conversation.
+# ---------------------------------------------------------------------------
+
+
+class TestStickyActivation:
+    def _big_deferrable_defs(self, n: int = 40) -> List[Dict[str, Any]]:
+        """A pile of mcp-toolset tools big enough to clear a low
+        threshold_pct with a small context_length. Named with an ``mcp_``
+        prefix and paired with ``_patch_mcp_registry`` below so
+        ``classify_tools`` resolves them to a real deferrable ``mcp-``
+        toolset via the registry, instead of falling into the "unknown
+        tool -> stays visible" defensive path."""
+        return [
+            _td(f"mcp_tool_{i}", "x" * 200, {"arg": {"type": "string"}})
+            for i in range(n)
+        ]
+
+    def _patch_mcp_registry(self, monkeypatch):
+        """Make every ``mcp_tool_*`` name resolve to an ``mcp-fake``
+        toolset entry, so ``is_deferrable_tool_name`` classifies them as
+        deferrable via the upstream base rule (mcp- prefixed toolset)."""
+        import tools.registry as _reg
+
+        def _fake_get_entry(name):
+            if name.startswith("mcp_tool_"):
+                return _FakeEntry("mcp-fake")
+            return None
+
+        monkeypatch.setattr(_reg.registry, "get_entry", _fake_get_entry)
+
+    def test_flap_without_sticky_flag_deactivates(self, monkeypatch):
+        """Baseline: without sticky_active, a shrinking registry between two
+        calls of the same conversation flips activation off — this is the
+        exact bug, reproduced directly against assemble_tool_defs."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        self._patch_mcp_registry(monkeypatch)
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+
+        # Call 1: large deferrable surface crosses threshold -> activates.
+        call1 = assemble_tool_defs(
+            self._big_deferrable_defs(40), context_length=20_000, config=cfg,
+        )
+        assert call1.activated
+        names1 = {(t.get("function") or {}).get("name") for t in call1.tool_defs}
+        assert BRIDGE_TOOL_NAMES <= names1
+
+        # Call 2 (same conversation): registry shrank (e.g. an MCP server
+        # dropped tools), now under threshold -> flips OFF without the fix.
+        call2 = assemble_tool_defs(
+            self._big_deferrable_defs(2), context_length=20_000, config=cfg,
+        )
+        assert not call2.activated
+        names2 = {(t.get("function") or {}).get("name") for t in call2.tool_defs}
+        assert not (BRIDGE_TOOL_NAMES & names2)
+
+    def test_sticky_flag_keeps_bridge_tools_present(self, monkeypatch):
+        """The fix: once activated=True on call 1, passing
+        sticky_active=True (the caller's per-conversation latch) on call 2
+        keeps bridge tools present even though the live total dropped
+        under threshold again."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        self._patch_mcp_registry(monkeypatch)
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+
+        call1 = assemble_tool_defs(
+            self._big_deferrable_defs(40), context_length=20_000, config=cfg,
+            sticky_active=False,
+        )
+        assert call1.activated
+        assert not call1.sticky_forced
+
+        # Same conversation, second assembly: shrunk registry, but the
+        # caller now passes sticky_active=True because it activated once.
+        call2 = assemble_tool_defs(
+            self._big_deferrable_defs(2), context_length=20_000, config=cfg,
+            sticky_active=True,
+        )
+        assert call2.activated
+        assert call2.sticky_forced
+        names2 = {(t.get("function") or {}).get("name") for t in call2.tool_defs}
+        assert BRIDGE_TOOL_NAMES <= names2
+
+    def test_sticky_flag_trusts_caller_latch_when_deferrable_exist(self, monkeypatch):
+        """``assemble_tool_defs`` itself is stateless and has no memory of
+        prior calls — it trusts ``sticky_active`` as the caller's word that
+        this conversation activated before. So passing sticky_active=True
+        with any deferrable tools present forces activation on, even on a
+        function call that looks "cold" in isolation. This is safe in
+        practice because real callers (agent_init.py, mcp_tool.py,
+        acp_adapter/server.py) only ever pass True once
+        ``agent._tool_search_ever_activated`` was actually set True by a
+        prior call that showed bridge tools — see ``tool_defs_show_bridge``.
+        This test documents that contract at the assemble_tool_defs layer;
+        the "don't force from a cold conversation" guarantee lives one layer
+        up, in how callers set/thread the flag (asserted in
+        test_sticky_flag_keeps_bridge_tools_present)."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        self._patch_mcp_registry(monkeypatch)
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+
+        result = assemble_tool_defs(
+            self._big_deferrable_defs(2), context_length=200_000, config=cfg,
+            sticky_active=True,
+        )
+        assert result.activated
+        assert result.sticky_forced
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert BRIDGE_TOOL_NAMES <= names
+
+    def test_sticky_flag_noop_when_no_deferrable_tools(self):
+        """sticky_active=True must not conjure bridge tools out of thin air
+        when there is nothing deferrable to hide behind them."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+        defs = [_td("terminal", "Run shell"), _td("read_file", "Read a file")]
+        result = assemble_tool_defs(
+            defs, context_length=200_000, config=cfg, sticky_active=True,
+        )
+        assert not result.activated
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert not (BRIDGE_TOOL_NAMES & names)
+
+    def test_catalog_rebuilt_fresh_even_when_sticky(self, monkeypatch):
+        """Sticky must only hold the boolean decision open — the actual
+        catalog contents (which tools/schemas are deferrable) must still be
+        rebuilt fresh every call, never cached stale. This guards against
+        reintroducing the OpenClaw session-keyed-catalog regression."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+
+        self._patch_mcp_registry(monkeypatch)
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+        call1 = assemble_tool_defs(
+            self._big_deferrable_defs(40), context_length=20_000, config=cfg,
+        )
+        assert call1.activated
+        assert call1.deferred_count == 40
+
+        call2 = assemble_tool_defs(
+            self._big_deferrable_defs(2), context_length=20_000, config=cfg,
+            sticky_active=True,
+        )
+        assert call2.activated
+        assert call2.sticky_forced
+        # The catalog size reflects the CURRENT (shrunk) live tool set, not
+        # a cached snapshot from call 1.
+        assert call2.deferred_count == 2
+
+
+# ---------------------------------------------------------------------------
 # Bridge dispatch
 # ---------------------------------------------------------------------------
 

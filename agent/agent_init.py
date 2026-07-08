@@ -1095,11 +1095,27 @@ def init_agent(
         agent._tool_snapshot_generation = _snapshot_registry._generation
     except Exception:
         agent._tool_snapshot_generation = 0
+    # FORK: sticky tool_search activation flag, read BEFORE the first
+    # get_tool_definitions() call so it defaults to False/not-yet-sticky
+    # here (init is the very first assembly of this agent's lifetime).
+    # See tools/tool_search.py::assemble_tool_defs docstring for the full
+    # rationale — once activated, stays activated for the life of this
+    # agent/conversation, so an unrelated live-registry token shift never
+    # flips bridge tools out of the wire array mid-conversation and
+    # corrupts tool-call history via _strip_unknown_tool_blocks.
+    agent._tool_search_ever_activated = False
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        sticky_active=agent._tool_search_ever_activated,
     )
+    try:
+        from tools.tool_search import tool_defs_show_bridge as _ts_show_bridge
+        if _ts_show_bridge(agent.tools):
+            agent._tool_search_ever_activated = True
+    except Exception:
+        pass
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()

@@ -5341,10 +5341,23 @@ def refresh_agent_mcp_tools(
             enabled_toolsets=enabled,
             disabled_toolsets=disabled,
             quiet_mode=quiet_mode,
+            sticky_active=bool(getattr(agent, "_tool_search_ever_activated", False)),
         )
         or []
     )
     new_names = {t["function"]["name"] for t in new_defs}
+    # FORK: latch the sticky tool_search flag the moment this rebuild's
+    # tool-defs show bridge tools, BEFORE the atomic publish below, so a
+    # concurrent caller reading the flag right after publish sees it set.
+    # One-way: never cleared back to False once True (see
+    # tools/tool_search.py::assemble_tool_defs docstring).
+    if not getattr(agent, "_tool_search_ever_activated", False):
+        try:
+            from tools.tool_search import tool_defs_show_bridge as _ts_show_bridge
+            if _ts_show_bridge(new_defs):
+                agent._tool_search_ever_activated = True
+        except Exception:
+            pass
 
     # Re-append the post-build injected families that get_tool_definitions does
     # NOT reproduce, so a refresh never strips them (memory-provider + context-
