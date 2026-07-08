@@ -1734,6 +1734,22 @@ DEFAULT_CONFIG = {
             "timeout": 180,
             "extra_body": {},
         },
+        # Delegation router — classifies each delegate_task task into a
+        # capability tier (light/standard/deep) so the child runs on the
+        # right-sized model without the caller having to set agent_type. Used
+        # by tools/delegation_router.py, gated by delegation.auto_route.enabled.
+        # Point this at a cheap, fast model (the default "auto" chain lands on
+        # the provider's cheap default, e.g. claude-haiku): the job is a short
+        # one-shot JSON classification, so a big model is wasted here. Fails
+        # open — if this model is unavailable, tasks inherit the normal default.
+        "delegation_router": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 20,
+            "extra_body": {},
+        },
     },
     
     "display": {
@@ -2195,6 +2211,34 @@ DEFAULT_CONFIG = {
         # per-task `model` arg > per-role map (this dict) > top-level `model`
         # arg > delegation.model > parent's model.
         "model_by_role": {},
+        # Auto-route (fork feature): when a delegate_task task sets NEITHER an
+        # explicit `model` NOR an `agent_type`, a cheap classifier
+        # (auxiliary.delegation_router) sorts it into a capability tier and
+        # maps tier → role → model via model_by_role above. Lets a cheap main
+        # chat model fan work out onto the right tier automatically instead of
+        # every child silently inheriting the (cheap) parent model. Precedence:
+        # per-task `model` > per-task `agent_type` role-map > auto-route (this) >
+        # delegation.model > parent's model. Fail-open: any classifier failure
+        # leaves the task on the normal default, never worse than today.
+        "auto_route": {
+            # Master switch. On by default; set false to disable entirely.
+            "enabled": True,
+            # Only auto-route when the child's provider is in this list —
+            # model_by_role values are provider-specific model slugs (usually
+            # claude-*), so routing them onto exo/ollama/openrouter would 404.
+            "providers": ["anthropic"],
+            # tier → ruflo role. The role resolves to a model via model_by_role;
+            # if a tier's role has no model_by_role entry, that tier fails open.
+            "tier_roles": {
+                "light": "researcher",
+                "standard": "coder",
+                "deep": "system-architect",
+            },
+            # Max chars of each task's goal+context sent to the classifier.
+            "max_chars": 1500,
+            # Classifier call timeout (seconds). Short — it's a one-shot.
+            "timeout": 20,
+        },
         # Path to the ruflo install for /delegation's agent discovery. Empty
         # = use ~/repos/ruflo. Override via this setting or RUFLO_PATH env.
         "ruflo_path": "",
@@ -6137,7 +6181,7 @@ _AUX_TASK_FIRST_KEYS = frozenset({
     "vision", "web_extract", "compression", "skills_hub", "approval", "mcp",
     "title_generation", "tts_audio_tags", "triage_specifier",
     "kanban_decomposer", "profile_describer", "curator", "monitor",
-    "session_search", "memory_extraction",
+    "session_search", "memory_extraction", "delegation_router",
 })
 # Per-task setting keys that are provider-independent and belong in the shared
 # provider-first ``defaults`` block (NOT a model/routing field).
