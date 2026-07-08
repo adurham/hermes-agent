@@ -209,6 +209,70 @@ class TestAnthropicMcpPrefixStrip:
         assert len(tool_use_blocks) == 1
         assert tool_use_blocks[0]["name"] == "clarify"
 
+    def test_bridge_tool_names_resolve_even_when_not_in_registry(self):
+        """Regression: tool_search/tool_describe/tool_call are NEVER in
+        tools/registry.py — they are dynamically synthesized bridge tools
+        (tools/tool_search.py) dispatched by a name-check in
+        agent/tool_executor.py, not registered ToolRegistry entries.
+
+        Bug reproduced live 2026-07-07 22:53-23:15 (session
+        20260707_225321_554b40), AFTER the mcp__/ordered_blocks sync fix
+        (e80d8c73f) had already landed: agent.log showed
+        ``rewrote N tool_use/result block(s) for tools no longer
+        available: ['mcp__tool_call', 'mcp__tool_search']`` climbing 1->20
+        over ~20 minutes in a single ongoing conversation. Root cause: the
+        registry-lookup reversal in this file always misses for bridge
+        tools (neither ``get_entry(name)`` nor the bare/single fallbacks
+        ever find them, since they're not registered), so ``name`` fell
+        through unresolved and ``clean_block["name"]`` stayed
+        ``mcp__tool_call``/``mcp__tool_search`` forever in the replay
+        history — even though ``tool_calls[0].name`` was separately
+        (and correctly) reversed by the UNRELATED fuzzy-match repair path
+        in agent_runtime_helpers.py::repair_tool_call (which matches
+        against agent.valid_tool_names, not the registry, and only fixes
+        the dispatch copy, never the replay copy this test checks).
+        """
+        transport = self._get_transport()
+        block = _make_tool_use_block("mcp__tool_call", block_id="tc_1")
+        response = _make_response(block)
+
+        # Registry deliberately does NOT contain any bridge tool names —
+        # this mirrors production exactly (see tools/registry.py, which
+        # never registers tool_search/tool_describe/tool_call).
+        registry = _FakeRegistry({"read_file", "terminal"})
+        with patch("tools.registry.registry", registry):
+            result = transport.normalize_response(response, strip_tool_prefix=True)
+
+        assert result.tool_calls[0].name == "tool_call"
+        # No thinking block in this response, so ordered_blocks is not
+        # promoted to provider_data (only happens when signed thinking +
+        # tool_use interleave) — the dispatch-name assertion above is the
+        # full check for this shape; the thinking-interleaved shape (the
+        # one that actually corrupted history in production) is covered
+        # by the next test.
+
+    def test_bridge_tool_name_synced_into_replay_history_with_thinking(self):
+        """Same as above but WITH a signed thinking block, so ordered_blocks
+        is actually promoted into provider_data["anthropic_content_blocks"]
+        (the exact shape that corrupted history in production — every
+        clarify/tool_search call in that session interleaved signed
+        thinking with tool_use).
+        """
+        transport = self._get_transport()
+        thinking = _make_thinking_block()
+        tool_use = _make_tool_use_block("mcp__tool_search", block_id="tc_1")
+        response = _make_response(thinking, tool_use)
+
+        registry = _FakeRegistry({"read_file", "terminal"})
+        with patch("tools.registry.registry", registry):
+            result = transport.normalize_response(response, strip_tool_prefix=True)
+
+        assert result.tool_calls[0].name == "tool_search"
+        ordered_blocks = result.provider_data["anthropic_content_blocks"]
+        tool_use_blocks = [b for b in ordered_blocks if b.get("type") == "tool_use"]
+        assert len(tool_use_blocks) == 1
+        assert tool_use_blocks[0]["name"] == "tool_search"
+
 
 # ---------------------------------------------------------------------------
 # Request side: registry name -> mcp__ wire name (no single-underscore leaks)

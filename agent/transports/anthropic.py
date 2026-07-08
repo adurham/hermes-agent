@@ -175,6 +175,30 @@ class AnthropicTransport(ProviderTransport):
                             name = single
                         elif _tool_registry.get_entry(bare):
                             name = bare
+                        else:
+                            # FORK: the tool_search/tool_describe/tool_call
+                            # bridge tools (tools/tool_search.py) are
+                            # dynamically synthesized and dispatched by a
+                            # name-check in agent/tool_executor.py — they
+                            # are NEVER registered in tools/registry.py, so
+                            # both lookups above always miss for them and
+                            # ``name`` falls through unresolved as
+                            # ``mcp__tool_call`` forever. That's exactly the
+                            # gap this whole reversal exists to close (see
+                            # the sticky_active fix in
+                            # tools/tool_search.py::assemble_tool_defs):
+                            # the live ordered_blocks copy stayed stale
+                            # even after e80d8c73f synced ``tool_calls``
+                            # via the separate agent_runtime_helpers.py
+                            # ``repair_tool_call`` fuzzy-match path (which
+                            # matches against agent.valid_tool_names, not
+                            # the registry, and only fixes the dispatch
+                            # copy — not this replay copy). Recognize the
+                            # fixed bridge-tool name set explicitly so the
+                            # replay copy resolves them too.
+                            from tools.tool_search import BRIDGE_TOOL_NAMES as _bridge_names
+                            if bare in _bridge_names:
+                                name = bare
                     # Keep the verbatim replay copy (``ordered_blocks``,
                     # persisted as provider_data["anthropic_content_blocks"])
                     # in sync with the resolved name. Without this, the
