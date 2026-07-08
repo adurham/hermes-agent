@@ -43,6 +43,11 @@ def _make_response(*blocks, stop_reason="end_turn"):
     )
 
 
+def _make_thinking_block(signature: str = "sig123"):
+    """Create a fake signed Anthropic thinking content block."""
+    return SimpleNamespace(type="thinking", thinking="reasoning...", signature=signature)
+
+
 class _FakeRegistry:
     """Minimal fake tool registry for testing prefix round-trip logic."""
 
@@ -170,6 +175,39 @@ class TestAnthropicMcpPrefixStrip:
 
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].name == "mcp__foo"
+
+    def test_ordered_blocks_name_matches_resolved_tool_call_name(self):
+        """Regression: the verbatim replay copy (``anthropic_content_blocks``)
+        must carry the SAME resolved name as ``tool_calls``, not the raw
+        OAuth wire name.
+
+        Bug reproduced 2026-07-07: a ``clarify`` call round-tripped through
+        OAuth as ``mcp__clarify``. ``tool_calls[0].name`` was correctly
+        reversed to ``clarify``, but the parallel ``ordered_blocks`` list
+        (persisted into provider_data["anthropic_content_blocks"] whenever a
+        turn interleaves signed thinking with tool_use) kept the raw
+        ``mcp__clarify`` wire name forever. On the NEXT turn,
+        ``_strip_unknown_tool_blocks`` compared that stale wire name against
+        the live (bare) tool name set, found no match, and silently rewrote
+        the historical clarify question/answer into a lossy 400-char-
+        truncated "tool no longer available" breadcrumb — corrupting the
+        model's view of its own prior turn (it read the truncated stub and
+        told the user their message "got cut off").
+        """
+        transport = self._get_transport()
+        thinking = _make_thinking_block()
+        tool_use = _make_tool_use_block("mcp__clarify", block_id="tc_1")
+        response = _make_response(thinking, tool_use)
+
+        registry = _FakeRegistry({"clarify"})
+        with patch("tools.registry.registry", registry):
+            result = transport.normalize_response(response, strip_tool_prefix=True)
+
+        assert result.tool_calls[0].name == "clarify"
+        ordered_blocks = result.provider_data["anthropic_content_blocks"]
+        tool_use_blocks = [b for b in ordered_blocks if b.get("type") == "tool_use"]
+        assert len(tool_use_blocks) == 1
+        assert tool_use_blocks[0]["name"] == "clarify"
 
 
 # ---------------------------------------------------------------------------

@@ -175,6 +175,24 @@ class AnthropicTransport(ProviderTransport):
                             name = single
                         elif _tool_registry.get_entry(bare):
                             name = bare
+                    # Keep the verbatim replay copy (``ordered_blocks``,
+                    # persisted as provider_data["anthropic_content_blocks"])
+                    # in sync with the resolved name. Without this, the
+                    # replay copy permanently retains the raw OAuth wire
+                    # name (``mcp__clarify``) while ``tool_calls`` gets the
+                    # reversed name (``clarify``). On the NEXT turn,
+                    # _strip_unknown_tool_blocks() compares the stale wire
+                    # name in the replayed history against the current
+                    # turn's live (bare) tool names, finds no match, and
+                    # rewrites the historical tool_use/tool_result into a
+                    # lossy 400-char-truncated "tool no longer available"
+                    # text breadcrumb — silently discarding the real
+                    # clarify question/answer and corrupting the model's
+                    # view of its own prior turn (reproduced: a clarify
+                    # exchange's answer was truncated mid-sentence and the
+                    # model concluded the user's message "got cut off").
+                    if isinstance(clean_block, dict) and clean_block.get("type") == "tool_use":
+                        clean_block["name"] = name
                 tool_calls.append(
                     ToolCall(
                         id=block.id,
