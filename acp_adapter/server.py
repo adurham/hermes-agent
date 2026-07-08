@@ -836,14 +836,28 @@ class HermesACPAgent(acp.Agent):
             )
             state.agent.enabled_toolsets = enabled_toolsets
             disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
+            # FORK: this rebuild happens mid-conversation (ACP MCP server
+            # registration on an already-running session), so it must honor
+            # and update the sticky tool_search activation latch the same
+            # way refresh_agent_mcp_tools does — otherwise a shrinking live
+            # registry here could flip bridge tools off and corrupt
+            # tool-call history via _strip_unknown_tool_blocks. See
+            # tools/tool_search.py::assemble_tool_defs docstring.
             state.agent.tools = get_tool_definitions(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
                 quiet_mode=True,
+                sticky_active=bool(getattr(state.agent, "_tool_search_ever_activated", False)),
             )
             state.agent.valid_tool_names = {
                 tool["function"]["name"] for tool in state.agent.tools or []
             }
+            try:
+                from tools.tool_search import tool_defs_show_bridge as _ts_show_bridge
+                if _ts_show_bridge(state.agent.tools):
+                    state.agent._tool_search_ever_activated = True
+            except Exception:
+                pass
             inject_memory_provider_tools(state.agent)
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):

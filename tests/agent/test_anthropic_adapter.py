@@ -3333,3 +3333,115 @@ class TestThinkingBlockOrderRoundTrip:
         ]
         assert assistant_blocks[0]["data"] == "encrypted_payload_A"
         assert assistant_blocks[2]["data"] == "encrypted_payload_B"
+
+
+# ---------------------------------------------------------------------------
+# FORK regression: sticky tool_search activation must prevent
+# _strip_unknown_tool_blocks from firing for the bridge tool names across
+# consecutive turns of the same conversation. See tools/tool_search.py
+# assemble_tool_defs docstring + tests/tools/test_tool_search.py
+# TestStickyActivation for the full bug writeup.
+# ---------------------------------------------------------------------------
+
+
+class TestStickyActivationPreservesToolHistory:
+    def _turn_messages(self, tool_name: str, turn: int) -> list:
+        """A minimal assistant tool_use + tool_result pair, as they'd appear
+        in stored conversation history after turn ``turn``."""
+        return [
+            {"role": "user", "content": f"do thing {turn}"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": f"tu_{turn}",
+                        "name": tool_name,
+                        "input": {"query": "x"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": f"tu_{turn}",
+                        "content": "ok",
+                    }
+                ],
+            },
+        ]
+
+    def test_bridge_tool_history_survives_when_sticky_keeps_bridge_present(self):
+        """Simulate 2 turns where turn 1 uses ``tool_search`` while bridge
+        tools are active, and turn 2's live tools array (post sticky-fix)
+        still includes the bridge names even though the underlying
+        deferrable total dropped under threshold. Across both turns,
+        _strip_unknown_tool_blocks must never rewrite the tool_search
+        tool_use/tool_result into breadcrumbs, because the sticky flag kept
+        it in ``available_tool_names``.
+        """
+        from agent.anthropic_adapter import _strip_unknown_tool_blocks
+        from tools.tool_search import BRIDGE_TOOL_NAMES
+
+        history = []
+        history += self._turn_messages("tool_search", 1)
+
+        # Turn 1: bridge tools were active (sticky not yet needed).
+        available_turn1 = {"terminal", "read_file"} | BRIDGE_TOOL_NAMES
+        result_turn1 = _strip_unknown_tool_blocks(history, available_turn1)
+        assistant_blocks_1 = next(
+            m for m in result_turn1 if m.get("role") == "assistant"
+        )["content"]
+        assert assistant_blocks_1[0]["type"] == "tool_use"
+        assert assistant_blocks_1[0]["name"] == "tool_search"
+
+        # Turn 2: caller's assembled tools array — WITH the sticky fix,
+        # bridge names remain present (sticky_active=True held activation
+        # open) even though the live deferrable total shrank under
+        # threshold. History from turn 1 plus a new tool_search call.
+        history += self._turn_messages("tool_search", 2)
+        available_turn2 = {"terminal", "read_file"} | BRIDGE_TOOL_NAMES
+        result_turn2 = _strip_unknown_tool_blocks(history, available_turn2)
+
+        assistant_msgs = [m for m in result_turn2 if m.get("role") == "assistant"]
+        assert len(assistant_msgs) == 2
+        for msg in assistant_msgs:
+            block = msg["content"][0]
+            assert block["type"] == "tool_use", (
+                "sticky activation should have kept tool_search in "
+                "available_tool_names, so its history must NOT be rewritten "
+                "into a breadcrumb"
+            )
+            assert block["name"] == "tool_search"
+
+        # No breadcrumb text should appear anywhere.
+        for msg in result_turn2:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        assert "no longer available in this turn" not in block.get("text", "")
+
+    def test_without_sticky_bridge_tool_history_gets_rewritten(self):
+        """Baseline/contrast: WITHOUT the sticky fix (bridge names absent
+        from turn 2's tools array because the live total dropped under
+        threshold), _strip_unknown_tool_blocks correctly (and, pre-fix,
+        harmfully) rewrites the turn-1 tool_search call into a breadcrumb —
+        this is the exact corruption the sticky fix prevents.
+        """
+        from agent.anthropic_adapter import _strip_unknown_tool_blocks
+
+        history = self._turn_messages("tool_search", 1)
+
+        # Turn 2: bridge tools vanished from the wire array (the flap bug).
+        available_turn2 = {"terminal", "read_file"}
+        result = _strip_unknown_tool_blocks(history, available_turn2)
+
+        assistant_block = next(
+            m for m in result if m.get("role") == "assistant"
+        )["content"][0]
+        assert assistant_block["type"] == "text"
+        assert "tool_search" in assistant_block["text"]
+        assert "no longer available in this turn" in assistant_block["text"]
