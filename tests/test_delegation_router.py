@@ -103,6 +103,53 @@ def test_router_never_raises_on_internal_error():
         assert route([{"goal": "x"}]) == {}
 
 
+# -- Persona classification --
+
+
+def test_persona_pick_flows_through_when_valid():
+    with patch.object(
+        dr, "_persona_catalog", return_value=[("security-architect", "architecture", "auth work")]
+    ):
+        with patch.object(
+            dr, "_classify", return_value={0: ("deep", "auth surface", "security-architect")}
+        ):
+            out = route([{"goal": "add session cookie auth"}])
+    assert out[0]["agent_type"] == "security-architect"
+    assert out[0]["tier"] == "deep"
+    assert out[0]["model"] == "claude-opus-4-7"
+
+
+def test_hallucinated_persona_dropped_falls_back_to_tier():
+    with patch.object(
+        dr, "_persona_catalog", return_value=[("coder", "core", "generic coding")]
+    ):
+        with patch.object(
+            dr, "_classify", return_value={0: ("standard", "bounded fix", "not-a-real-persona")}
+        ):
+            out = route([{"goal": "fix bug"}])
+    assert "agent_type" not in out[0]
+    assert out[0]["model"] == "claude-sonnet-4-6"
+
+
+def test_classify_persona_false_disables_persona_but_keeps_model_routing():
+    cfg = {"auto_route": {"classify_persona": False}}
+    with patch.object(dr, "_persona_catalog") as mock_catalog:
+        with patch.object(dr, "_classify", return_value={0: ("standard", "x", "")}):
+            out = route([{"goal": "x"}], cfg=cfg)
+    mock_catalog.assert_not_called()
+    assert "agent_type" not in out[0]
+    assert out[0]["model"] == "claude-sonnet-4-6"
+
+
+def test_empty_persona_pick_is_valid_and_omitted():
+    with patch.object(
+        dr, "_persona_catalog", return_value=[("coder", "core", "generic coding")]
+    ):
+        with patch.object(dr, "_classify", return_value={0: ("standard", "x", "")}):
+            out = route([{"goal": "x"}])
+    assert "agent_type" not in out[0]
+
+
 # -- Classifier reply parser --
 
 

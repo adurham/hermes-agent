@@ -2468,12 +2468,12 @@ def _run_single_child(
                 ),
             },
             "tool_trace": tool_trace,
-            # Auto-route decision (tier/role/model/reason) when the router
-            # picked this child's model — surfaced in the result so a routing
-            # choice is always visible and auditable, never silent.  None when
-            # the caller stated model/agent_type explicitly or the router
-            # failed open. isinstance-guarded so a test's MagicMock child
-            # doesn't yield an unserialisable auto-vivified attribute.
+            # Auto-route decision (tier/role/model/reason/agent_type) when the
+            # router picked this child's model — surfaced in the result so a
+            # routing choice is always visible and auditable, never silent.
+            # None when the caller stated model/agent_type explicitly or the
+            # router failed open. isinstance-guarded so a test's MagicMock
+            # child doesn't yield an unserialisable auto-vivified attribute.
             "auto_route": (
                 _ar_info
                 if isinstance((_ar_info := getattr(child, "_auto_route_info", None)), dict)
@@ -2632,7 +2632,10 @@ def _run_single_child(
                 # invisible substitution.
                 _ar = getattr(child, "_auto_route_info", None)
                 _route_str = (
-                    f" | ⇄ auto:{_ar.get('tier')}" if isinstance(_ar, dict) and _ar.get("tier") else ""
+                    f" | ⇄ auto:{_ar.get('tier')}"
+                    + (f"→{_ar.get('agent_type')}" if isinstance(_ar, dict) and _ar.get("agent_type") else "")
+                    if isinstance(_ar, dict) and _ar.get("tier")
+                    else ""
                 )
                 emit(
                     f"  ┊ {_icon} subagent [{task_index}] {_model_str} · "
@@ -2977,10 +2980,21 @@ def delegate_task(
             # auto-route (classifier) → top-level model → delegation.model
             # config (creds["model"]) → parent's model.
             task_model_explicit = (t.get("model") or "").strip() or None
+            _route = _auto_routes.get(i)
+            # Auto-route persona pick: when the task didn't state agent_type
+            # explicitly, a confident classifier persona match feeds into
+            # the SAME task_agent_type variable, so it fires both existing
+            # agent_type effects below (persona-prompt injection via
+            # _build_child_system_prompt, and per-role model resolution via
+            # _role_model_map) with no duplicated logic. Explicit agent_type
+            # always wins — a stated choice is intent.
+            if task_agent_type is None and _route:
+                _auto_agent_type = (_route.get("agent_type") or "").strip() or None
+                if _auto_agent_type:
+                    task_agent_type = _auto_agent_type
             role_map_model = (
                 _role_model_map.get(task_agent_type) if task_agent_type else None
             )
-            _route = _auto_routes.get(i)
             _auto_route_model = _route.get("model") if _route else None
             effective_task_model = (
                 task_model_explicit
@@ -3027,6 +3041,7 @@ def delegate_task(
                     "role": _route.get("role"),
                     "model": _route.get("model"),
                     "reason": _route.get("reason"),
+                    "agent_type": _route.get("agent_type"),
                 }
             # If swarm_tool seeded swarm coordinates onto the task, patch the
             # child's hermes-agent session_id onto the swarm.agents row so
