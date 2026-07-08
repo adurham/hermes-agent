@@ -2238,6 +2238,18 @@ DEFAULT_CONFIG = {
             "max_chars": 1500,
             # Classifier call timeout (seconds). Short — it's a one-shot.
             "timeout": 20,
+            # Persona classification (fork feature): the SAME classifier call
+            # above may also pick a ruflo persona (agent_type) for a task,
+            # when one is a clearly better fit than the generic tier role.
+            # A confident pick feeds into the same `agent_type` precedence
+            # used by an explicit caller-supplied agent_type, so it gets
+            # BOTH persona-prompt injection and per-role model resolution
+            # for free. Only personas with a model_by_role entry are ever
+            # offered to the classifier (unroutable picks are useless), and
+            # any hallucinated/unrecognized name is dropped, never applied.
+            # Set false to keep tier-based model routing but disable
+            # automatic persona/prompt injection (cost/behavior-stability).
+            "classify_persona": True,
         },
         # Path to the ruflo install for /delegation's agent discovery. Empty
         # = use ~/repos/ruflo. Override via this setting or RUFLO_PATH env.

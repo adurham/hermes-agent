@@ -33,10 +33,37 @@ i.e. exactly the behavior before this module existed.  A routing decision is
 never worse than the status quo, and every decision (including fallbacks) is
 surfaced in the delegation result metadata so silent misrouting can't hide.
 
-Classification is intentionally NOT persona injection: auto-route sets the
-child's *model only*.  Ruflo persona prompts stay opt-in via an explicit
-``agent_type`` from the caller — this module is model economics, not
-behavior modification.
+Classification also optionally picks a ruflo persona (``agent_type``) for a
+task, using the SAME single aux call — no second LLM round-trip. When the
+classifier confidently matches a task to a discovered persona (name
+validated against the real catalog; hallucinated/unknown names are dropped),
+this module returns that ``agent_type`` alongside the tier/role/model. The
+caller (``tools/delegate_tool.py``) feeds it into the same ``task_agent_type``
+variable used for an explicit, caller-supplied ``agent_type`` — so it gets
+BOTH pre-existing effects of that variable for free: ruflo persona-prompt
+injection (``_build_child_system_prompt``) AND per-role model resolution
+(``_role_model_map``/``delegation.model_by_role``), without duplicating
+either mechanism here. This module never injects prompts itself and never
+picks a model outside ``model_by_role`` — it only supplies the *label*.
+
+Persona classification is a strict refinement of tier classification, not a
+separate pass: the persona pick, when present, sits in front of the tier→
+role→model fallback the same way an explicit ``agent_type`` sits in front of
+auto-route today, i.e. the precedence chain becomes: explicit ``model`` →
+explicit ``agent_type`` role-map → auto-route persona pick (this module) →
+auto-route tier→role→model (this module) → ``delegation.model`` → parent's
+model. Persona classification is independently toggleable via
+``delegation.auto_route.classify_persona`` (default True) so a user can keep
+tier-based model routing while disabling automatic persona/prompt injection
+for cost or behavior-stability reasons; disabling it degrades exactly to the
+pre-persona auto-route behavior, never worse.
+
+Only personas that already resolve to a model via ``delegation.model_by_role``
+are offered to the classifier — an unroutable persona pick would be a no-op
+at best and a confusing partial match at worst, so the catalog is trimmed to
+the working set the rest of the system can actually act on. The persona
+catalog is discovered from disk once per process (``discover_personas()`` is
+a filesystem walk) and cached at module scope.
 """
 
 from __future__ import annotations
@@ -75,16 +102,65 @@ DEFAULT_PROVIDERS = ("anthropic",)
 _MAX_TASK_CHARS_DEFAULT = 1500
 _TIMEOUT_DEFAULT = 20
 
-_SYSTEM_PROMPT = """You are a dispatcher classifying delegated agent tasks by the model capability they need. For each task, pick exactly one tier:
+# Per-persona description excerpt length in the catalog sent to the
+# classifier -- keeps the prompt bounded even with ~90 personas.
+_PERSONA_DESC_CHARS = 100
+
+_BASE_SYSTEM_PROMPT = """You are a dispatcher classifying delegated agent tasks by the model capability they need. For each task, pick exactly one tier:
 
 - "light": retrieval, lookup, grep/search, summarizing documents, extracting data, simple triage. No novel reasoning.
 - "standard": bounded code changes that follow existing patterns in a codebase, code review, writing tests, debugging with a clear reproducer, focused analysis with clear success criteria (tests/typecheck).
 - "deep": designing NEW architecture or subsystem plumbing that doesn't already exist, anything touching auth/session/cookie/security/data-integrity surfaces, work whose correctness can NOT be verified by automated tests, or genuinely open-ended/ambiguous design work.
 
-Escalate to "deep" if ANY deep criterion applies, even when the task otherwise looks like standard coding. When genuinely uncertain between two tiers, pick the higher one.
+Escalate to "deep" if ANY deep criterion applies, even when the task otherwise looks like standard coding. When genuinely uncertain between two tiers, pick the higher one."""
+
+_TIER_ONLY_SUFFIX = """
 
 Respond with ONLY a JSON array, no prose, one entry per task:
 [{"index": <int>, "tier": "light"|"standard"|"deep", "reason": "<one short clause>"}]"""
+
+_PERSONA_SUFFIX_TEMPLATE = """
+
+You may ALSO pick a specialist persona from this catalog if -- and only if --
+one is a clearly, specifically better fit than the generic tier role. When
+uncertain, or when no persona stands out, leave "agent_type" empty; a bad
+persona match is worse than no match.
+
+PERSONA CATALOG (name -- category -- description):
+{catalog}
+
+Respond with ONLY a JSON array, no prose, one entry per task:
+[{{"index": <int>, "tier": "light"|"standard"|"deep", "agent_type": "<persona-name-or-empty>", "reason": "<one short clause>"}}]"""
+
+
+_PERSONA_CATALOG_CACHE: Optional[List[Tuple[str, str, str]]] = None
+
+
+def _persona_catalog(role_model_map: Dict[str, str]) -> List[Tuple[str, str, str]]:
+    """Return ``(name, category, description)`` tuples for classifiable personas.
+
+    Discovered once per process (filesystem walk) and cached at module scope.
+    Trimmed to personas whose name already resolves to a model via
+    ``delegation.model_by_role`` — a persona pick that can't resolve to a
+    model would be a confusing partial routing decision, so it's excluded
+    from the catalog offered to the classifier entirely.
+    """
+    global _PERSONA_CATALOG_CACHE
+    if _PERSONA_CATALOG_CACHE is None:
+        try:
+            from hermes_cli.personas import discover_personas
+
+            personas = discover_personas()
+        except Exception:
+            personas = []
+        _PERSONA_CATALOG_CACHE = [
+            (p.name, p.category, (p.description or "")[:_PERSONA_DESC_CHARS])
+            for p in personas
+        ]
+    if not role_model_map:
+        return []
+    routable = set(role_model_map.keys())
+    return [entry for entry in _PERSONA_CATALOG_CACHE if entry[0] in routable]
 
 
 def _excerpt(task: Dict[str, Any], max_chars: int) -> str:
@@ -133,7 +209,7 @@ def route_task_models(
     delegation_cfg: dict,
     active_provider: Optional[str],
 ) -> Dict[int, Dict[str, str]]:
-    """Classify unrouted tasks and return per-index model routing.
+    """Classify unrouted tasks and return per-index model/persona routing.
 
     Args:
         task_list: the normalized delegate_task task dicts (goal/context/
@@ -145,10 +221,13 @@ def route_task_models(
             (delegation override if set, else the parent's provider).
 
     Returns:
-        ``{task_index: {"model": ..., "tier": ..., "role": ..., "reason": ...}}``
-        for every task the router confidently routed.  Tasks absent from the
-        map fall through to the existing precedence chain (fail-open).  Never
-        raises.
+        ``{task_index: {"model": ..., "tier": ..., "role": ..., "reason": ...,
+        "agent_type": ...}}`` for every task the router confidently routed.
+        ``agent_type`` is present (non-empty) only when the classifier
+        confidently matched a discovered, model-routable persona; absent
+        otherwise, in which case the caller should treat the entry as
+        tier/model-only routing. Tasks absent from the map fall through to
+        the existing precedence chain (fail-open). Never raises.
     """
     try:
         ar = _auto_route_cfg(delegation_cfg)
@@ -200,15 +279,28 @@ def route_task_models(
             timeout if isinstance(timeout, (int, float)) and timeout > 0 else _TIMEOUT_DEFAULT
         )
 
-        tiers = _classify(
+        classify_persona = bool(ar.get("classify_persona", True))
+        persona_catalog = _persona_catalog(role_model_map) if classify_persona else []
+        persona_names = {name for name, _cat, _desc in persona_catalog}
+
+        results = _classify(
             [(i, _excerpt(task_list[i], max_chars)) for i in pending],
             timeout=float(timeout),
+            persona_catalog=persona_catalog,
         )
-        if not tiers:
+        if not results:
             return {}
 
         routes: Dict[int, Dict[str, str]] = {}
-        for idx, (tier, reason) in tiers.items():
+        for idx, result in results.items():
+            # Tolerate legacy 2-tuple (tier, reason) results — e.g. tests or
+            # callers that monkeypatch _classify pre-persona-support — as
+            # well as the current 3-tuple (tier, reason, agent_type).
+            if len(result) == 3:
+                tier, reason, agent_type = result
+            else:
+                tier, reason = result
+                agent_type = ""
             if idx not in pending:  # classifier hallucinated an index
                 continue
             role = tier_roles.get(tier, "")
@@ -221,12 +313,24 @@ def route_task_models(
                     idx, tier, role,
                 )
                 continue
-            routes[idx] = {
+            route: Dict[str, str] = {
                 "model": model,
                 "tier": tier,
                 "role": role,
                 "reason": reason,
             }
+            # Validate the persona pick against the actual catalog offered —
+            # a hallucinated/unrecognized name is dropped, never passed
+            # through blindly (falls back to tier/model-only routing).
+            if agent_type and agent_type in persona_names:
+                route["agent_type"] = agent_type
+            elif agent_type:
+                logger.debug(
+                    "delegation auto-route: task %s classifier picked unknown "
+                    "persona %r; dropping (tier/model routing still applies)",
+                    idx, agent_type,
+                )
+            routes[idx] = route
         return routes
     except Exception:
         # Absolute fail-open: a router bug must never break delegation itself.
@@ -235,11 +339,15 @@ def route_task_models(
 
 
 def _classify(
-    pending: List[Tuple[int, str]], *, timeout: float
-) -> Dict[int, Tuple[str, str]]:
+    pending: List[Tuple[int, str]],
+    *,
+    timeout: float,
+    persona_catalog: Optional[List[Tuple[str, str, str]]] = None,
+) -> Dict[int, Tuple[str, str, str]]:
     """One auxiliary LLM call classifying every pending task.
 
-    Returns ``{index: (tier, reason)}``; empty dict on any failure.
+    Returns ``{index: (tier, reason, agent_type)}``; ``agent_type`` is ""
+    when no persona was picked. Empty dict on any failure.
     """
     try:
         from agent.auxiliary_client import get_text_auxiliary_client
@@ -254,14 +362,26 @@ def _classify(
 
     lines = [f"Task {i}:\n{text}" for i, text in pending]
     user_msg = "\n\n---\n\n".join(lines)
+
+    if persona_catalog:
+        catalog_lines = "\n".join(
+            f"- {name} ({category}): {desc}" if desc else f"- {name} ({category})"
+            for name, category, desc in persona_catalog
+        )
+        system_prompt = _BASE_SYSTEM_PROMPT + _PERSONA_SUFFIX_TEMPLATE.format(
+            catalog=catalog_lines
+        )
+    else:
+        system_prompt = _BASE_SYSTEM_PROMPT + _TIER_ONLY_SUFFIX
+
     try:
         resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg},
             ],
-            max_tokens=100 + 60 * len(pending),
+            max_tokens=100 + 80 * len(pending),
             temperature=0,
             timeout=timeout,
         )
@@ -275,12 +395,14 @@ def _classify(
         logger.debug("delegation auto-route: unparsable classifier reply: %.200s", text)
         return {}
 
-    out: Dict[int, Tuple[str, str]] = {}
+    out: Dict[int, Tuple[str, str, str]] = {}
     for item in parsed:
         if not isinstance(item, dict):
             continue
         idx = item.get("index")
         tier = str(item.get("tier") or "").strip().lower()
         if isinstance(idx, int) and tier in TIERS:
-            out[idx] = (tier, str(item.get("reason") or "").strip()[:200])
+            agent_type = str(item.get("agent_type") or "").strip()
+            out[idx] = (tier, str(item.get("reason") or "").strip()[:200], agent_type)
     return out
+
