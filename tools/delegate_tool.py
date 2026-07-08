@@ -2468,6 +2468,17 @@ def _run_single_child(
                 ),
             },
             "tool_trace": tool_trace,
+            # Auto-route decision (tier/role/model/reason) when the router
+            # picked this child's model — surfaced in the result so a routing
+            # choice is always visible and auditable, never silent.  None when
+            # the caller stated model/agent_type explicitly or the router
+            # failed open. isinstance-guarded so a test's MagicMock child
+            # doesn't yield an unserialisable auto-vivified attribute.
+            "auto_route": (
+                _ar_info
+                if isinstance((_ar_info := getattr(child, "_auto_route_info", None)), dict)
+                else None
+            ),
             # Captured before the finally block calls child.close() so the
             # parent thread can fire subagent_stop with the correct role.
             # Stripped before the dict is serialised back to the model.
@@ -2616,9 +2627,16 @@ def _run_single_child(
                 _icon = "✅" if status == "completed" else (
                     "⏹" if status == "interrupted" else "❌"
                 )
+                # Surface the auto-route decision inline so the user sees the
+                # router picked this model (and why) rather than it being an
+                # invisible substitution.
+                _ar = getattr(child, "_auto_route_info", None)
+                _route_str = (
+                    f" | ⇄ auto:{_ar.get('tier')}" if isinstance(_ar, dict) and _ar.get("tier") else ""
+                )
                 emit(
                     f"  ┊ {_icon} subagent [{task_index}] {_model_str} · "
-                    f"{status} in {duration:.1f}s{_tok_str}{_cost_str}"
+                    f"{status} in {duration:.1f}s{_tok_str}{_cost_str}{_route_str}"
                 )
         except Exception:
             logger.debug("delegate completion emit failed", exc_info=True)
@@ -2925,6 +2943,27 @@ def delegate_task(
     except Exception:
         _role_model_map = {}
 
+    # Auto-route: for tasks that state NEITHER an explicit model NOR an
+    # agent_type, a cheap classifier picks a capability tier → role → model
+    # (via the same model_by_role map above), so a cheap main model can fan
+    # work out onto the right tier without the caller having to remember to
+    # set agent_type.  Fail-open: on any failure this returns {} and every
+    # task falls through to the pre-existing precedence chain unchanged. The
+    # child's provider is creds["provider"] when delegation.provider is set,
+    # else the parent's provider (auto-route is provider-guarded on that).
+    try:
+        from tools.delegation_router import route_task_models
+
+        _auto_route_provider = (creds.get("provider") or "").strip() or getattr(
+            parent_agent, "provider", None
+        )
+        _auto_routes = route_task_models(
+            task_list, _role_model_map, cfg, _auto_route_provider
+        )
+    except Exception:
+        logger.debug("delegate_task: auto-route dispatch failed", exc_info=True)
+        _auto_routes = {}
+
     try:
         for i, t in enumerate(task_list):
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
@@ -2934,14 +2973,20 @@ def delegate_task(
             # Per-task agent_type (ruflo persona) — when set, looks up a
             # per-role model override AND injects ruflo's persona prompt.
             task_agent_type = (t.get("agent_type") or "").strip() or None
-            # Model precedence: per-task model → per-task role-map → top-level
-            # model → delegation.model config (creds["model"]) → parent's model.
+            # Model precedence: per-task model → per-task role-map →
+            # auto-route (classifier) → top-level model → delegation.model
+            # config (creds["model"]) → parent's model.
             task_model_explicit = (t.get("model") or "").strip() or None
             role_map_model = (
                 _role_model_map.get(task_agent_type) if task_agent_type else None
             )
+            _route = _auto_routes.get(i)
+            _auto_route_model = _route.get("model") if _route else None
             effective_task_model = (
-                task_model_explicit or role_map_model or creds["model"]
+                task_model_explicit
+                or role_map_model
+                or _auto_route_model
+                or creds["model"]
             )
             child = _build_child_agent(
                 task_index=i,
@@ -2973,6 +3018,16 @@ def delegate_task(
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            # Stash the auto-route decision (if any) so _run_single_child can
+            # surface it in the result metadata — makes silent misrouting
+            # impossible to hide (a routing choice is always visible/auditable).
+            if _route:
+                child._auto_route_info = {
+                    "tier": _route.get("tier"),
+                    "role": _route.get("role"),
+                    "model": _route.get("model"),
+                    "reason": _route.get("reason"),
+                }
             # If swarm_tool seeded swarm coordinates onto the task, patch the
             # child's hermes-agent session_id onto the swarm.agents row so
             # stats queries can join onto per-session token usage. Best-
