@@ -24,6 +24,7 @@ Design notes:
     judgment to fall back on.
 """
 
+import difflib
 import json
 from typing import Optional
 
@@ -32,6 +33,47 @@ from typing import Optional
 # window or turn one "consult" call into a de-facto full-transcript replay.
 MAX_QUESTION_CHARS = 4000
 MAX_CONTEXT_CHARS = 40000
+
+# Chat-template sentinel (U+FF5C fullwidth bar) as used in DSML tool-call
+# markup (``<｜DSML｜invoke ...>``). A consult answer carrying this is leaked
+# template/control text from the aux model, not an opinion.
+_DSML_SENTINEL = "｜DSML｜"
+
+
+def _degenerate_answer_reason(
+    answer: str, question: str, context: str
+) -> Optional[str]:
+    """Return a reason string when *answer* is template garbage or an echo
+    of the request, else None.
+
+    Observed failure (2026-07-09): a local aux model returned the consult
+    REQUEST itself, wrapped in raw DSML tool-call markup, as its "answer";
+    the calling agent then paraphrased its own words as the reference
+    model's opinion. Both failure shapes are cheap to detect:
+
+      * leaked tool-call/template markup — the DSML sentinel with tool-call
+        structure around it, or the answer *opening* with a control tag;
+      * echo — the bulk of the answer is one contiguous block of the
+        request text.
+    """
+    stripped = answer.strip()
+    if _DSML_SENTINEL in answer and (
+        "tool_calls" in answer or "invoke name=" in answer
+        or "parameter name=" in answer
+    ):
+        return "leaked tool-call markup (DSML block) instead of an answer"
+    if stripped.startswith(("<｜", "<|im_", "<|start")):
+        return "leaked chat-template control tokens instead of an answer"
+
+    request = " ".join(f"{question} {context}".split())
+    normalized = " ".join(stripped.split())
+    if len(normalized) >= 120 and request:
+        match = difflib.SequenceMatcher(
+            None, normalized, request, autojunk=False
+        ).find_longest_match(0, len(normalized), 0, len(request))
+        if match.size / len(normalized) > 0.7:
+            return "echoed the consult request back instead of answering it"
+    return None
 
 _CONSULT_SYSTEM_PROMPT = (
     "You are acting as an independent second opinion for another AI agent that "
@@ -126,6 +168,23 @@ def consult_tool(question: str, context: Optional[str] = None) -> str:
                     "(safety refusal, filtered response, or empty output). "
                     "No second opinion available this time -- proceed using "
                     "your own judgment rather than retrying."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    degenerate = _degenerate_answer_reason(answer, question, context)
+    if degenerate:
+        return json.dumps(
+            {
+                "unavailable": True,
+                "answer": None,
+                "reason": (
+                    f"The consult model's response was unusable: {degenerate}. "
+                    "Treat this as NO second opinion -- do not paraphrase, "
+                    "reconstruct, or attribute an answer to the reference "
+                    "model. Proceed on your own judgment, and tell the user "
+                    "the consult failed if they asked for it."
                 ),
             },
             ensure_ascii=False,
