@@ -362,3 +362,67 @@ def test_first_migrate_to_v31_leaves_no_pollution(tmp_path, monkeypatch):
     assert aux["exo"]["compression"] == _DEEPSEEK
     assert aux["anthropic"]["default"] == "claude-sonnet-4-6"
     assert aux["anthropic"]["mcp"] == "claude-haiku-4-5"
+
+
+# ── Explicit top-level task pins (fork fix, 2026-07-11) ───────────────
+
+CONSULT_PIN_CONFIG = PROVIDER_FIRST_CONFIG + (
+    "  consult:\n"
+    "    provider: anthropic\n"
+    "    model: claude-fable-5\n"
+    "    timeout: 300\n"
+)
+
+
+@pytest.fixture
+def hermes_home_consult_pin(tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text(CONSULT_PIN_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    try:
+        from hermes_cli import config as _cfg
+        if hasattr(_cfg, "_LOAD_CONFIG_CACHE"):
+            _cfg._LOAD_CONFIG_CACHE.clear()
+        if hasattr(_cfg, "_RAW_CONFIG_CACHE"):
+            _cfg._RAW_CONFIG_CACHE.clear()
+    except Exception:
+        pass
+    yield tmp_path
+    ac.clear_runtime_main()
+
+
+def test_task_pin_wins_over_provider_first_exo_main(hermes_home_consult_pin):
+    """An explicit ``auxiliary.consult`` pin must be honored even in a
+    provider-first schema — previously it was parsed as a provider block
+    named "consult" that nothing selected, so consult silently resolved to
+    the exo block's default model (Qwen answering as the "Fable" consult)."""
+    ac.set_runtime_main(
+        "custom:exo", _DEEPSEEK,
+        base_url=_EXO_BASE, api_key="not-needed", api_mode="chat_completions",
+    )
+    prov, model, base_url, _key, _mode = ac._resolve_task_provider_model("consult")
+    assert prov == "anthropic", (prov, model)
+    assert model == "claude-fable-5", (prov, model)
+    # The exo block's base_url must NOT leak under the pin's provider —
+    # a leaked base_url would force the provider to "custom" downstream.
+    assert not base_url, base_url
+    assert ac._get_task_timeout("consult") == 300.0
+
+
+def test_task_pin_wins_over_provider_first_anthropic_main(hermes_home_consult_pin):
+    ac.set_runtime_main("anthropic", "claude-opus-4-8")
+    prov, model, _b, _k, _m = ac._resolve_task_provider_model("consult")
+    assert prov == "anthropic", (prov, model)
+    assert model == "claude-fable-5", (prov, model)
+
+
+def test_pollution_task_key_is_not_a_pin(hermes_home_pf):
+    """The deep-merge's inert ``{provider: auto, model: ''}`` task keys must
+    NOT be treated as pins — block resolution still applies."""
+    ac.set_runtime_main(
+        "custom:exo", _DEEPSEEK,
+        base_url=_EXO_BASE, api_key="not-needed", api_mode="chat_completions",
+    )
+    # 'mcp' has no real pin; exo-main should still resolve it to the exo block.
+    prov, model, base_url, _k, _m = ac._resolve_task_provider_model("mcp")
+    assert model == _QWEN, (prov, model)
+    assert base_url == _EXO_BASE, base_url
