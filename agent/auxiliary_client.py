@@ -5959,6 +5959,21 @@ def _aux_flatten_provider_first(
     return flat
 
 
+def _aux_task_pin_is_explicit(pin: Dict[str, Any]) -> bool:
+    """True when a top-level ``auxiliary.<task>`` dict carries REAL user
+    routing rather than the inert ``{provider: auto, model: ''}`` pollution
+    that ``load_config()``'s deep-merge against the task-first
+    ``DEFAULT_CONFIG`` injects into every provider-first config (see the
+    detection caveats on ``_aux_schema_is_provider_first``). Explicit means a
+    concrete provider (not empty/"auto"), a non-empty model, or a direct
+    base_url — none of which the merge pollution ever carries.
+    """
+    provider = str(pin.get("provider", "")).strip().lower()
+    model = str(pin.get("model", "")).strip()
+    base_url = str(pin.get("base_url", "")).strip()
+    return bool(base_url or model or (provider and provider != "auto"))
+
+
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     """Return the flat config dict for an auxiliary *task*, or {} when unavailable.
 
@@ -5993,6 +6008,28 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     if _aux_schema_is_provider_first(aux):
         main_provider = _read_main_provider()
         task_config = _aux_flatten_provider_first(task, aux, main_provider, config)
+        # Fork fix (2026-07-11): a top-level ``auxiliary.<task>`` block that
+        # carries explicit routing is a TASK PIN, not a provider block —
+        # honor it over the provider-first flattening. Without this the pin
+        # is dead config in a provider-first schema: it is never selected by
+        # ``_aux_select_provider_block`` (no main provider is named after a
+        # task), so the task silently resolves to the main provider's block
+        # default (observed: ``auxiliary.consult: {provider: anthropic,
+        # model: claude-fable-5}`` ignored — consult answered by exo/Qwen on
+        # exo-main and gemma on ollama-main). The pin's routing replaces the
+        # block's routing WHOLESALE (routing keys and model dropped first) so
+        # a block ``base_url`` can't leak under the pin's provider and force
+        # the downstream base_url→custom coercion in
+        # ``_resolve_task_provider_model``.
+        pin = aux.get(task)
+        if isinstance(pin, dict) and _aux_task_pin_is_explicit(pin):
+            for _routing_key in _AUX_BLOCK_ROUTING_KEYS | {"model"}:
+                task_config.pop(_routing_key, None)
+            task_config.update({
+                _k: _v for _k, _v in pin.items()
+                if _v is not None
+                and not (isinstance(_v, str) and not _v.strip())
+            })
     else:
         task_config = aux.get(task, {})
         if not isinstance(task_config, dict):
