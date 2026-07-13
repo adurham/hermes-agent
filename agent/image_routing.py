@@ -191,7 +191,8 @@ def _supports_vision_override(
       2. ``providers.<provider>.models.<model>.supports_vision``
          (named custom providers — ``provider`` may be the runtime-resolved
          value ``"custom"`` and/or the user-declared name under
-         ``model.provider``; both are tried)
+         ``model.provider``; both are tried. For ``custom:<name>`` syntax,
+         the stripped ``<name>`` is also tried as a provider key.)
 
     Returns None when no override is set, so the caller falls through to
     models.dev. Returns False explicitly only when the user wrote a
@@ -211,11 +212,16 @@ def _supports_vision_override(
     # get rewritten to provider="custom" at runtime
     # (hermes_cli/runtime_provider.py:_resolve_named_custom_runtime), so the
     # config still holds the user-declared name under model.provider. Try
-    # both as candidate provider keys.
+    # both as candidate provider keys, plus the stripped suffix from
+    # "custom:<name>" (where <name> is the key under providers:).
     config_provider = str(model_cfg.get("provider") or "").strip()
+    # Extract the stripped name from "custom:<name>" if present
+    stripped_suffix = ""
+    if config_provider.startswith("custom:"):
+        stripped_suffix = config_provider[len("custom:"):]
     providers_raw = cfg.get("providers")
     providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
-    for p in dict.fromkeys(filter(None, (provider, config_provider))):
+    for p in dict.fromkeys(filter(None, (provider, config_provider, stripped_suffix))):
         entry_raw = providers_cfg.get(p)
         entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
         models_raw = entry.get("models")
@@ -342,8 +348,10 @@ def _coerce_mode(raw: Any) -> str:
 def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     """True when the user configured a specific auxiliary vision backend.
 
-    An explicit override means the user *wants* the text pipeline (they're
-    paying for a dedicated vision model), so we don't silently bypass it.
+    An explicit override means the user has a dedicated vision backend
+    available; it's used as a *fallback* when the main model can't take
+    images natively. In ``auto`` mode, native vision on a vision-capable
+    main model still wins over this fallback — see issue #29135.
     """
     if not isinstance(cfg, dict):
         return False
@@ -746,6 +754,17 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     caller reports those paths in ``skipped`` and the rest of the turn
     proceeds.
     """
+    try:
+        from agent.file_safety import raise_if_read_blocked
+
+        raise_if_read_blocked(str(path))
+    except ValueError as exc:
+        logger.warning("image_routing: blocked local image attachment %s -- %s", path, exc)
+        return None
+    except Exception:
+        # Keep attachment routing best-effort if the guard itself is unavailable.
+        pass
+
     try:
         raw = path.read_bytes()
     except Exception as exc:
