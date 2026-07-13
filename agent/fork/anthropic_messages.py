@@ -156,6 +156,15 @@ def convert_messages_to_anthropic(
                         rebuilt.append(_clean)
                 if not rebuilt:
                     rebuilt = [{"type": "text", "text": "(empty)"}]
+                # Propagate top-level cache_control onto the last content
+                # block — Anthropic's cache_control lives on content blocks,
+                # not on the message dict.  The verbatim-replay path bypasses
+                # the recomposition path that handles this below.
+                _msg_cc = m.get("cache_control")
+                if isinstance(_msg_cc, dict) and rebuilt:
+                    _last = rebuilt[-1]
+                    if isinstance(_last, dict) and "cache_control" not in _last:
+                        _last["cache_control"] = dict(_msg_cc)
                 result.append({"role": "assistant", "content": rebuilt})
                 continue
 
@@ -234,6 +243,15 @@ def convert_messages_to_anthropic(
             effective = blocks or content
             if not effective or effective == "":
                 effective = [{"type": "text", "text": "(empty)"}]
+            # Propagate top-level cache_control (applied by
+            # apply_anthropic_cache_control on the OpenAI-format message)
+            # onto the last content block — Anthropic's cache_control
+            # lives on content blocks, not on the message dict.
+            _msg_cc = m.get("cache_control")
+            if isinstance(_msg_cc, dict) and isinstance(effective, list) and effective:
+                _last = effective[-1]
+                if isinstance(_last, dict) and "cache_control" not in _last:
+                    _last["cache_control"] = dict(_msg_cc)
             result.append({"role": "assistant", "content": effective})
             continue
 
@@ -303,36 +321,53 @@ def convert_messages_to_anthropic(
                 content = "(empty message)"
             result.append({"role": "user", "content": content})
 
-    # Strip orphaned tool_use blocks (no matching tool_result follows)
-    tool_result_ids = set()
-    for m in result:
-        if m["role"] == "user" and isinstance(m["content"], list):
-            for block in m["content"]:
-                if block.get("type") == "tool_result":
-                    tool_result_ids.add(block.get("tool_use_id"))
-    for m in result:
-        if m["role"] == "assistant" and isinstance(m["content"], list):
-            kept = [
-                b
-                for b in m["content"]
-                if b.get("type") != "tool_use" or b.get("id") in tool_result_ids
-            ]
-            # If stripping an orphaned tool_use mutated a turn that also carries a
-            # signed thinking block, that block's Anthropic signature was computed
-            # against the ORIGINAL (un-stripped) turn content and is now invalid.
-            # Anthropic rejects the replayed turn with HTTP 400 "thinking blocks in
-            # the latest assistant message cannot be modified". Flag the turn so the
-            # thinking-signature pass below can demote the dead signature instead of
-            # replaying it verbatim. See hermes-agent: extended-thinking + parallel
-            # tool batch interrupted mid-flight → non-retryable 400 crash-loop.
-            if len(kept) != len(m["content"]) and any(
-                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
-                for b in m["content"]
-            ):
-                m["_thinking_signature_invalidated"] = True
-            m["content"] = kept
-            if not m["content"]:
-                m["content"] = [{"type": "text", "text": "(tool call removed)"}]
+    # Strip non-adjacent tool_use blocks — each tool_use must have a matching
+    # tool_result in the IMMEDIATELY FOLLOWING user message.  A global ID match
+    # is not enough: Anthropic rejects non-adjacent pairs with HTTP 400 even
+    # when the IDs match somewhere later in the conversation (#52145).
+    for i, m in enumerate(result):
+        if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+            continue
+        tool_use_ids_in_turn = {
+            b.get("id")
+            for b in m["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        }
+        if not tool_use_ids_in_turn:
+            continue
+
+        # Collect result IDs from the immediately following user message only.
+        adjacent_result_ids: set = set()
+        if i + 1 < len(result):
+            nxt = result[i + 1]
+            if nxt.get("role") == "user" and isinstance(nxt.get("content"), list):
+                for block in nxt["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        adjacent_result_ids.add(block.get("tool_use_id"))
+
+        orphaned = tool_use_ids_in_turn - adjacent_result_ids
+        if not orphaned:
+            continue
+
+        kept = [
+            b
+            for b in m["content"]
+            if not (isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in orphaned)
+        ]
+        # If stripping an orphaned tool_use mutated a turn that also carries a
+        # signed thinking block, that block's Anthropic signature was computed
+        # against the ORIGINAL (un-stripped) turn content and is now invalid.
+        # Anthropic rejects the replayed turn with HTTP 400 "thinking blocks in
+        # the latest assistant message cannot be modified". Flag the turn so the
+        # thinking-signature pass below can demote the dead signature instead of
+        # replaying it verbatim. See hermes-agent: extended-thinking + parallel
+        # tool batch interrupted mid-flight → non-retryable 400 crash-loop.
+        if len(kept) != len(m["content"]) and any(
+            isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+            for b in m["content"]
+        ):
+            m["_thinking_signature_invalidated"] = True
+        m["content"] = kept if kept else [{"type": "text", "text": "(tool call removed)"}]
 
     # Strip orphaned tool_result blocks (no matching tool_use precedes them).
     # This is the mirror of the above: context compression or session truncation
