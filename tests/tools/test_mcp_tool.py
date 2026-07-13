@@ -623,6 +623,7 @@ class TestCheckFunction:
         from tools.mcp_tool import _make_check_fn, _servers
 
         server = _make_mock_server("test_server", session=None)
+        server._is_cache_shell = True  # simulate a disk-cached shell
         _servers["test_server"] = server
         try:
             check = _make_check_fn("test_server")
@@ -2706,6 +2707,7 @@ class TestUtilityToolRegistration:
         # still return True so the banner / tool-availability reporting
         # keeps showing these tools; lazy-spawn handles reconnection on use.
         _servers["chk"].session = None
+        _servers["chk"]._is_cache_shell = True  # emulate cache-shell state
         assert entry.check_fn() is True
 
         # Remove the server entirely — only NOW should check_fn report False.
