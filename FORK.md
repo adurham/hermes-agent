@@ -107,8 +107,8 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/tool_guardrails.py` | +11 / -4 | `hard_stop_enabled` default `False→True` — tool-call loop guardrails now block/halt instead of just warning. See "Fork-only fix — 2026-07-07" below. |
 | `plugins/model-providers/anthropic/__init__.py` | +2 / -2 | `default_aux_model` updated from haiku to sonnet-5. |
 
-Plus 310 commits of fork-only history (vs `upstream/main`, refreshed
-2026-07-11 post-sync). See `git log upstream/main..main`.
+Plus 314 commits of fork-only history (vs `upstream/main`, refreshed
+2026-07-12 post v2026.7.7.2 sync). See `git log upstream/main..main`.
 
 ### Fork-only fixes — 2026-06-02 (prompt-cache cost work)
 
@@ -1882,3 +1882,124 @@ emits it, which is a genuine signal regardless of display mode.
 **Merge note:** single conditional wrapper around an existing
 `_emit_status` call in an already-soft-fork file. On conflict keep ours
 and re-verify the `agent.reasoning_callback is None` guard is intact.
+
+
+### Upstream sync — 2026-07-12 (v2026.7.7.2, 405 commits, 18 conflicts)
+
+Merge-base was `v2026.7.1` (2026-07-04); pulled 405 upstream commits on
+branch `sync/v2026.7.7.2` (tag `v2026.7.7.2`). 18 conflict files, all
+resolved. Safety tag: `pre-upstream-sync-2026-07-12`.
+
+**Conflict resolution summary (18 files, 84 blocks):**
+
+- `agent/auxiliary_client.py` — kept fork's `caller_model` capture
+  (needed for provider-matched substitution) + adopted upstream's
+  `provider != "auto"` guard (prevents stale-model/fallback-provider
+  pairing).
+- `agent/conversation_compression.py` — adopted upstream's new
+  `_compress_context_via_codex_app_server` (additive, Codex thread
+  compaction).
+- `agent/image_routing.py` — kept fork's exo-scoped vision delegation
+  (fork-only: non-exo aux backends don't reroute vision-capable models).
+- `agent/prompt_caching.py` — kept fork's system-split helpers
+  (`_system_text`/`_strip_system_sentinel`/`_apply_split_system_marker`)
+  + adopted upstream's `_can_carry_marker` carrier check (skips empty
+  messages that would waste cache breakpoints).
+- `agent/transports/chat_completions.py` — kept fork's custom-provider
+  reasoning handling (exo `enable_thinking`, Nous tags, Ollama
+  `num_ctx`, Qwen portal `vl_high_resolution_images`).
+- `agent/web_search_registry.py` — kept fork's `_read_web_config_key`
+  (`web.by_provider` routing) + adopted upstream's
+  `_disabled_web_plugin_for` helper (diagnoses disabled-plugin case).
+- `gateway/run.py` — kept fork's per-model reasoning effort map +
+  adopted upstream's `or ""` removal fix (YAML `false` no longer
+  coerced to `""`, silently re-enabling thinking).
+- `hermes_cli/config.py` — kept fork's `interrupt_key`/`bell_on_prompt`/
+  `notify_on_prompt` + adopted upstream's `busy_steer_ack_enabled`/
+  `deny` rules + v32→v33 delegation concurrency migration
+  (`max_async_children` folded into `max_concurrent_children`).
+- `hermes_state.py` — `SCHEMA_VERSION` 18→19 (upstream bumped). Kept
+  fork's v13 migration (api_calls CASCADE recreate). Merged
+  `anthropic_content_blocks` (fork) + `active` (upstream) into the
+  messages INSERT column list (18 columns, 18 placeholders).
+- `tools/approval.py` — adopted upstream's converged timeout/deny
+  handling (unified `outcome` field + `deny_reason` relay). The fork's
+  separate `choice == "timeout"` branch was a divergent reimplementation
+  of the same feature; upstream's version is the superset.
+- `tools/delegate_tool.py` — kept fork's SwarmBoard pre-register +
+  adopted upstream's `DaemonThreadPoolExecutor` (replaces
+  `ThreadPoolExecutor` so abandoned workers don't block interpreter
+  exit on parent interrupt).
+- `tools/file_tools.py` — adopted upstream's container-path handling
+  via `_expand_tilde` (supersedes fork's `RuntimeError` guard —
+  `_expand_tilde` uses `os.path.expanduser` internally, which already
+  handles the `HOME`-unset case safely).
+- `tools/mcp_tool.py` — kept fork's no-`mcp_`-prefix naming convention
+  (`sanitize_mcp_name_component`, fork-only MCP parallel-safety fix) +
+  adopted upstream's `_is_recycled_stdio()` check for the check fn.
+  Added `_is_cache_shell` slot/flag to `MCPServerTask` to distinguish
+  disk-cached shells (True) from parked servers (False) — this unifies
+  the fork's cache-shell invariant (check=True for cache shells) with
+  upstream's parked-server handling (check=False after failed
+  reconnect). Added recycled-stdio reconnect path to
+  `_resolve_live_server` and the tool handler (was only in upstream's
+  `_get_connected_server_for_call`, which the fork doesn't use).
+- `tools/memory_tool.py` — kept fork's warm-tier dispatch + adopted
+  upstream's `target: null` clarification (strict providers fill
+  optional schema fields with JSON null).
+- `tools/web_tools.py` — kept fork's search-chain failover
+  (`_get_search_chain`/`_run_search_chain`) + adopted upstream's
+  `_LEGACY_WEB_BACKENDS`/`_registered_web_provider`/`_disabled_web_plugin_for`
+  diagnostics. `check_web_api_key` returns the configured backend's
+  availability directly (early return) when a backend is explicitly
+  configured, preventing the Anthropic-native fallback from masking a
+  misconfigured backend.
+- `tests/agent/test_image_routing.py` — kept fork's exo-scoped tests.
+- `tests/tools/test_mcp_dynamic_discovery.py` — kept fork's MCP naming
+  (`my_srv_my_tool`, no `mcp__` prefix).
+- `tests/tools/test_mcp_tool.py` — kept fork's MCP naming. Updated
+  cache-shell emulations to set `_is_cache_shell = True` (the
+  check fn now uses this flag rather than the permissive
+  `server is not None`).
+
+**Fork features preserved (no upstream equivalent):**
+
+- Provider-scoped delegation (`delegation.by_provider`)
+- Provider-scoped web routing (`web.by_provider`)
+- Exo provider profile + exo-scoped auxiliary delegation
+- Exo-scoped vision delegation (image_routing)
+- Native Anthropic web search swap
+- System prompt cache split (stable/volatile)
+- Image ingestion ceiling (proactive resize)
+- MCP parallel-safety (no `mcp_` prefix) + cache-shell invariant
+- CC alias arg slip-through guards
+- Skill recall / memory recall reminders
+- Per-model reasoning effort isolation
+- SSE monkey-patch + heartbeat ticks (streaming)
+- Cold-start stale-timeout grace window
+- Search-chain failover (`web.search_chain`)
+- Thinking-progress overlay suppression (reasoning-callback gate)
+- Consult tool + degenerate-answer guard
+- Delegation auto-router (model tier + persona)
+- Tool_search sticky activation
+
+**Converged to upstream (when upstream catches up, take upstream):**
+
+- `tools/file_tools.py` — fork's `RuntimeError` guard for
+  `Path.expanduser()` superseded by upstream's `_expand_tilde()`
+  (uses `os.path.expanduser` internally, same safe fallback).
+- `tools/approval.py` — fork's separate `choice == "timeout"` branch
+  superseded by upstream's unified timeout/deny handling with `outcome`
+  field + `deny_reason` relay.
+
+**Post-merge test fixes:**
+
+- `tests/tools/test_approval.py` — updated timeout-message assertion to
+  match the converged "BLOCKED: Command timed out" format (same
+  fail-closed + no-consent invariant, different prefix).
+- `tests/tools/test_mcp_tool.py` — set `_is_cache_shell = True` on mock
+  servers that emulate the cache-shell state.
+
+**Verification:** 520/520 MCP + approval + dynamic-discovery tests pass
+(1 skipped — pre-existing macOS `/tmp` vs `/private/tmp` symlink issue
+in `test_edit_approval`). All 18 conflict files syntax-OK.
