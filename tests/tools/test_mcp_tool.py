@@ -172,6 +172,56 @@ class TestMCPStatus:
         assert statuses["disabled"]["disabled"] is True
 
 
+class TestLifecycleConfig:
+    def test_get_lifecycle_seconds_accepts_top_level_and_nested_values(self):
+        from tools.mcp_tool import _get_lifecycle_seconds
+
+        assert (
+            _get_lifecycle_seconds(
+                {"idle_timeout_seconds": "3.5"},
+                "idle_timeout_seconds",
+            )
+            == 3.5
+        )
+        assert _get_lifecycle_seconds(
+            {"lifecycle": {"max_lifetime_seconds": 42}},
+            "max_lifetime_seconds",
+        ) == 42.0
+
+    def test_get_lifecycle_seconds_treats_zero_as_disabled(self):
+        from tools.mcp_tool import _get_lifecycle_seconds
+
+        assert (
+            _get_lifecycle_seconds(
+                {"idle_timeout_seconds": 0},
+                "idle_timeout_seconds",
+            )
+            is None
+        )
+
+    def test_get_lifecycle_seconds_ignores_invalid_values(self, caplog):
+        from tools.mcp_tool import _get_lifecycle_seconds
+
+        assert (
+            _get_lifecycle_seconds(
+                {"idle_timeout_seconds": "soon"},
+                "idle_timeout_seconds",
+            )
+            is None
+        )
+        assert (
+            _get_lifecycle_seconds(
+                {"idle_timeout_seconds": -1},
+                "idle_timeout_seconds",
+            )
+            is None
+        )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("must be a number of seconds" in msg for msg in messages)
+        assert any("must be positive" in msg for msg in messages)
+
+
 # ---------------------------------------------------------------------------
 # Schema conversion
 # ---------------------------------------------------------------------------
@@ -580,6 +630,19 @@ class TestCheckFunction:
         finally:
             _servers.pop("test_server", None)
 
+    def test_recycled_stdio_server_remains_available_for_lazy_reconnect(self):
+        from tools.mcp_tool import _make_check_fn, _servers
+
+        server = _make_mock_server("test_server", session=None)
+        server._config = {"command": "npx"}
+        server._recycled_reason = "idle_timeout_seconds"
+        _servers["test_server"] = server
+        try:
+            check = _make_check_fn("test_server")
+            assert check() is True
+        finally:
+            _servers.pop("test_server", None)
+
 
 # ---------------------------------------------------------------------------
 # MCP loop runner
@@ -751,6 +814,36 @@ class TestToolHandler:
             ):
                 result = json.loads(handler({}))
             assert result == {"error": "MCP call interrupted: user sent a new message"}
+        finally:
+            _servers.pop("test_srv", None)
+
+    def test_recycled_stdio_server_reconnects_lazily_on_tool_call(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("reconnected", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=None)
+        server._config = {"command": "npx"}
+        server._recycled_reason = "idle_timeout_seconds"
+        _servers["test_srv"] = server
+
+        def fake_lazy_reconnect(server_name, srv):
+            assert server_name == "test_srv"
+            assert srv is server
+            srv.session = mock_session
+            srv._recycled_reason = None
+            return True
+
+        try:
+            handler = _make_tool_handler("test_srv", "greet", 120)
+            with patch("tools.mcp_tool._request_lazy_reconnect", side_effect=fake_lazy_reconnect) as reconnect, \
+                 self._patch_mcp_loop():
+                result = json.loads(handler({"name": "world"}))
+            assert result["result"] == "reconnected"
+            reconnect.assert_called_once()
+            mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
         finally:
             _servers.pop("test_srv", None)
 
@@ -1157,6 +1250,52 @@ class TestMCPServerTask:
 
                 assert server.session is None
                 assert server._task.done()
+
+        asyncio.run(_test())
+
+    def test_wait_for_lifecycle_event_recycles_idle_stdio_server(self):
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server._config = {"command": "npx"}
+            server.session = MagicMock()
+            server._idle_timeout_seconds = 0.01
+            server._last_tool_call_at = time.monotonic() - 1.0
+
+            reason = await server._wait_for_lifecycle_event()
+
+            assert reason == "recycle"
+            assert server._recycled_reason == "idle_timeout_seconds"
+            assert server.session is None
+
+        asyncio.run(_test())
+
+    def test_stdio_recycle_reason_uses_max_lifetime(self):
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server._config = {"command": "npx"}
+            server._max_lifetime_seconds = 0.01
+            server._lifecycle_started_at = time.monotonic() - 1.0
+
+            assert server._stdio_recycle_reason() == "max_lifetime_seconds"
+
+        asyncio.run(_test())
+
+    def test_stdio_recycle_deadline_pauses_while_rpc_active(self):
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server._config = {"command": "npx"}
+            server._idle_timeout_seconds = 0.01
+            server._last_tool_call_at = time.monotonic() - 1.0
+
+            async with server._rpc_lock:
+                assert server._stdio_recycle_reason() is None
+                assert server._next_stdio_recycle_deadline() is None
 
         asyncio.run(_test())
 
@@ -1888,12 +2027,19 @@ class TestReconnection:
 
             with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
-                await server.run({"command": "test"})
+                task = asyncio.ensure_future(server.run({"command": "test"}))
+                await server._ready.wait()
 
-            # Now retries up to _MAX_INITIAL_CONNECT_RETRIES before giving up
-            assert run_count == _MAX_INITIAL_CONNECT_RETRIES + 1
-            assert server._error is not None
-            assert "cannot connect" in str(server._error)
+                # Now retries up to _MAX_INITIAL_CONNECT_RETRIES, then PARKS
+                # (keeps the task alive for later revival) instead of exiting.
+                assert run_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+                assert server._error is not None
+                assert "cannot connect" in str(server._error)
+                assert not task.done(), "run task should park, not exit"
+
+                server._shutdown_event.set()
+                server._reconnect_event.set()
+                await asyncio.wait_for(task, timeout=5)
 
         asyncio.run(_test())
 
@@ -2002,6 +2148,55 @@ class TestReconnection:
 
             # Probe skipped because _ready was already set.
             assert probe.await_count == 0
+
+        asyncio.run(_test())
+
+    def test_failed_recycle_reconnect_no_longer_checks_available(self):
+        """A failed lazy reconnect should not leave recycled availability true."""
+        from tools.mcp_tool import (
+            MCPServerTask,
+            _MAX_INITIAL_CONNECT_RETRIES,
+            _make_check_fn,
+            _servers,
+        )
+
+        run_count = 0
+        target_server = None
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            # After the final retry, run() parks in
+            # _wait_for_reconnect_or_shutdown(timeout=_PARKED_RETRY_INTERVAL)
+            # (a real asyncio.wait — the patched asyncio.sleep doesn't cover
+            # it). Signal shutdown so the park exits immediately instead of
+            # blocking the test for the 300s self-probe interval.
+            if run_count > _MAX_INITIAL_CONNECT_RETRIES:
+                self_srv._shutdown_event.set()
+            raise ConnectionError("recycle reconnect failed")
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+            server._config = {"command": "test"}
+            server._ready.clear()
+            server._recycled_reason = "idle_timeout_seconds"
+            _servers["test_srv"] = server
+            try:
+                with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                     patch("asyncio.sleep", new_callable=AsyncMock):
+                    await server.run({"command": "test"})
+
+                assert run_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+                assert server._recycled_reason is None
+                assert _make_check_fn("test_srv")() is False
+            finally:
+                _servers.pop("test_srv", None)
 
         asyncio.run(_test())
 
@@ -3510,7 +3705,7 @@ class TestDiscoveryFailedCount:
         with patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._discover_and_register_server", side_effect=selective_register), \
              patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp_ok1_t", "mcp_ok2_t"]):
+             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__ok1__t", "mcp__ok2__t"]):
             _ensure_mcp_loop()
 
             with patch("tools.mcp_tool.logger") as mock_logger:
@@ -4016,9 +4211,9 @@ class TestRegisterMcpServers:
 
         try:
             with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-                 patch("tools.mcp_tool._existing_tool_names", return_value=["mcp_existing_tool"]):
+                 patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__existing__tool"]):
                 result = register_mcp_servers({"existing": {"command": "test"}})
-            assert result == ["mcp_existing_tool"]
+            assert result == ["mcp__existing__tool"]
         finally:
             _servers.pop("existing", None)
 
@@ -4104,7 +4299,7 @@ class TestMcpParallelToolCalls:
         with _lock:
             _parallel_safe_servers.clear()
             _mcp_tool_server_names.clear()
-        assert is_mcp_tool_parallel_safe("mcp_docs_search") is False
+        assert is_mcp_tool_parallel_safe("mcp__docs__search") is False
 
     def test_is_mcp_tool_parallel_safe_with_flag(self):
         """MCP tool from a parallel-safe server returns True."""
@@ -4114,20 +4309,20 @@ class TestMcpParallelToolCalls:
         )
         with _lock:
             _parallel_safe_servers.add("docs")
-            _mcp_tool_server_names["mcp_docs_search"] = "docs"
-            _mcp_tool_server_names["mcp_docs_read_file"] = "docs"
-            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
+            _mcp_tool_server_names["mcp__docs__search"] = "docs"
+            _mcp_tool_server_names["mcp__docs__read_file"] = "docs"
+            _mcp_tool_server_names["mcp__github__list_repos"] = "github"
         try:
-            assert is_mcp_tool_parallel_safe("mcp_docs_search") is True
-            assert is_mcp_tool_parallel_safe("mcp_docs_read_file") is True
+            assert is_mcp_tool_parallel_safe("mcp__docs__search") is True
+            assert is_mcp_tool_parallel_safe("mcp__docs__read_file") is True
             # Different server should be False
-            assert is_mcp_tool_parallel_safe("mcp_github_list_repos") is False
+            assert is_mcp_tool_parallel_safe("mcp__github__list_repos") is False
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")
-                _mcp_tool_server_names.pop("mcp_docs_search", None)
-                _mcp_tool_server_names.pop("mcp_docs_read_file", None)
-                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
+                _mcp_tool_server_names.pop("mcp__docs__search", None)
+                _mcp_tool_server_names.pop("mcp__docs__read_file", None)
+                _mcp_tool_server_names.pop("mcp__github__list_repos", None)
 
     def test_is_mcp_tool_parallel_safe_server_with_underscores(self):
         """Server names containing underscores are correctly matched."""
@@ -4137,13 +4332,13 @@ class TestMcpParallelToolCalls:
         )
         with _lock:
             _parallel_safe_servers.add("my_server")
-            _mcp_tool_server_names["mcp_my_server_query"] = "my_server"
+            _mcp_tool_server_names["mcp__my_server__query"] = "my_server"
         try:
-            assert is_mcp_tool_parallel_safe("mcp_my_server_query") is True
+            assert is_mcp_tool_parallel_safe("mcp__my_server__query") is True
         finally:
             with _lock:
                 _parallel_safe_servers.discard("my_server")
-                _mcp_tool_server_names.pop("mcp_my_server_query", None)
+                _mcp_tool_server_names.pop("mcp__my_server__query", None)
 
     def test_is_mcp_tool_parallel_safe_uses_exact_registered_server(self):
         """Ambiguous MCP names must not match a shorter parallel-safe prefix."""
@@ -4153,16 +4348,16 @@ class TestMcpParallelToolCalls:
         )
         with _lock:
             _parallel_safe_servers.add("a")
-            _mcp_tool_server_names["mcp_a_search"] = "a"
-            _mcp_tool_server_names["mcp_a_b_tool"] = "a_b"
+            _mcp_tool_server_names["mcp__a__search"] = "a"
+            _mcp_tool_server_names["mcp__a_b__tool"] = "a_b"
         try:
-            assert is_mcp_tool_parallel_safe("mcp_a_search") is True
-            assert is_mcp_tool_parallel_safe("mcp_a_b_tool") is False
+            assert is_mcp_tool_parallel_safe("mcp__a__search") is True
+            assert is_mcp_tool_parallel_safe("mcp__a_b__tool") is False
         finally:
             with _lock:
                 _parallel_safe_servers.discard("a")
-                _mcp_tool_server_names.pop("mcp_a_search", None)
-                _mcp_tool_server_names.pop("mcp_a_b_tool", None)
+                _mcp_tool_server_names.pop("mcp__a__search", None)
+                _mcp_tool_server_names.pop("mcp__a_b__tool", None)
 
     def test_registered_tool_provenance_prevents_prefix_collision(self):
         """Registration records exact server ownership for ambiguous names.
@@ -4214,12 +4409,12 @@ class TestMcpParallelToolCalls:
         with _lock:
             _parallel_safe_servers.add("docs")
             _mcp_tool_server_names.pop("mcp_docs", None)
-            _mcp_tool_server_names.pop("mcp_docs_", None)
+            _mcp_tool_server_names.pop("mcp__docs__", None)
         try:
             # "mcp_docs" has no tool part after the server name
             assert is_mcp_tool_parallel_safe("mcp_docs") is False
             # "mcp_docs_" has empty tool part
-            assert is_mcp_tool_parallel_safe("mcp_docs_") is False
+            assert is_mcp_tool_parallel_safe("mcp__docs__") is False
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")

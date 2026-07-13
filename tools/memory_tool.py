@@ -1388,6 +1388,9 @@ def memory_tool(
     # Default target for hot-tier ops is 'memory' (the personal-notes file).
     # The warm path handles its own target resolution (None means "not
     # specified" — see _handle_warm_action's promote/demote branches).
+    # Some strict providers fill optional schema fields with JSON null rather
+    # than omitting them.  Treat ``target: null`` as omitted so memory writes
+    # still use the documented default store instead of failing validation.
     if target is None:
         target = "memory"
     if target not in {"memory", "user"}:
