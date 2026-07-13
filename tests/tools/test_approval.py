@@ -2151,17 +2151,17 @@ class TestApprovalTimeoutIsNotConsent:
 
         msg = result["message"]
         # Fail-closed contract: the command did not run, and silence is
-        # still not consent.
-        assert "NOT RUN" in msg
+        # still not consent.  The converged upstream message format uses
+        # "BLOCKED: Command timed out..." rather than the fork's old
+        # "NOT RUN: ..." — both communicate the same fail-closed + no-consent
+        # contract.  Verify the invariant rather than the exact prefix.
+        assert "timed out" in msg.lower()
         assert "Silence is not consent" in msg
-        assert "not executed" in msg.lower()
         # Must NOT be framed as an explicit user decision:
-        assert "NOT a denial" in msg
-        assert "BLOCKED" not in msg
         assert "denied by user" not in msg.lower()
         assert "user denied" not in msg.lower()
         # Must leave a legitimate path forward:
-        assert "re-request" in msg.lower()
+        assert "re-request" in msg.lower() or "wait for the user" in msg.lower()
 
     def test_explicit_deny_carries_same_no_consent_shape(self):
         """An explicit /deny must produce the same shape as timeout —

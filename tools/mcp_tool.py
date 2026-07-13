@@ -1528,6 +1528,7 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries",
+        "_is_cache_shell",
     )
 
     def __init__(self, name: str):
@@ -1576,6 +1577,7 @@ class MCPServerTask:
         self._idle_timeout_seconds: Optional[float] = None
         self._max_lifetime_seconds: Optional[float] = None
         self._recycled_reason: Optional[str] = None
+        self._is_cache_shell: bool = False
         # Captures the ``InitializeResult`` returned by
         # ``await session.initialize()`` so downstream code can inspect the
         # server's real advertised capabilities (``.capabilities.resources``,
@@ -4099,6 +4101,7 @@ def _make_cached_server_shell(name: str, config: dict, spec: dict) -> "MCPServer
     server._tools = list(spec["tools"])
     server.initialize_result = _CachedInitializeResult(spec["capabilities"])
     server._config = config
+    server._is_cache_shell = True
     return server
 
 
@@ -4205,6 +4208,18 @@ def _resolve_live_server(server_name: str, tool_label: str):
             "error": f"MCP server '{server_name}' is not connected"
         }, ensure_ascii=False)
     if server.session is None:
+        # Recycled-stdio servers reconnect via the lazy-reconnect path rather
+        # than the full _ensure_server_connected spawn (the process is still
+        # alive, just the session was torn down on idle timeout).
+        if getattr(server, "_is_recycled_stdio", lambda: False)():
+            _request_lazy_reconnect(server_name, server)
+            with _lock:
+                server = _servers.get(server_name)
+            if server is not None and server.session is not None:
+                return server, None
+            return None, json.dumps({
+                "error": f"MCP server '{server_name}' is not connected"
+            }, ensure_ascii=False)
         err = _ensure_server_connected(server_name, tool_label=tool_label)
         if err is not None:
             return None, err
@@ -4341,21 +4356,36 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
         if server.session is None:
-            err = _ensure_server_connected(
-                server_name,
-                tool_label=f"tools/call {tool_name}",
-            )
-            if err is not None:
-                # _ensure_server_connected already bumped the breaker on
-                # failure paths, so don't double-count here.
-                return err
-            with _lock:
-                server = _servers.get(server_name)
-            if server is None or server.session is None:
-                _bump_server_error(server_name)
-                return json.dumps({
-                    "error": f"MCP server '{server_name}' is not connected"
-                }, ensure_ascii=False)
+            # Recycled-stdio servers reconnect via the lazy-reconnect path
+            # rather than the full _ensure_server_connected spawn.
+            if getattr(server, "_is_recycled_stdio", lambda: False)():
+                _request_lazy_reconnect(server_name, server)
+                with _lock:
+                    server = _servers.get(server_name)
+                if server is not None and server.session is not None:
+                    # Reconnect succeeded — fall through to the call below.
+                    pass
+                else:
+                    _bump_server_error(server_name)
+                    return json.dumps({
+                        "error": f"MCP server '{server_name}' is not connected"
+                    }, ensure_ascii=False)
+            else:
+                err = _ensure_server_connected(
+                    server_name,
+                    tool_label=f"tools/call {tool_name}",
+                )
+                if err is not None:
+                    # _ensure_server_connected already bumped the breaker on
+                    # failure paths, so don't double-count here.
+                    return err
+                with _lock:
+                    server = _servers.get(server_name)
+                if server is None or server.session is None:
+                    _bump_server_error(server_name)
+                    return json.dumps({
+                        "error": f"MCP server '{server_name}' is not connected"
+                    }, ensure_ascii=False)
 
         if not server.session:
             # No live session. A reconnect may already be completing (the
@@ -4760,10 +4790,21 @@ def _make_check_fn(server_name: str):
     def _check() -> bool:
         with _lock:
             server = _servers.get(server_name)
-        return (
-            server is not None
-            and (server.session is not None or server._is_recycled_stdio())
-        )
+        # Check: True when the server has a live session, is a disk-cached
+        # shell (tools registered from cache, session deferred to first use),
+        # or is a recycled-stdio server awaiting lazy reconnect.  False when
+        # the server doesn't exist or has been parked (reconnect budget
+        # exhausted, tools deregistered).  This unifies the fork's cache-shell
+        # invariant with upstream's recycled-stdio + parked-server handling.
+        if server is None:
+            return False
+        if server.session is not None:
+            return True
+        if getattr(server, "_is_cache_shell", False):
+            return True
+        if getattr(server, "_is_recycled_stdio", lambda: False)():
+            return True
+        return False
 
     return _check
 
@@ -4993,6 +5034,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
     Returns a list of (schema, handler_factory_name) tuples encoded as dicts
     with keys: schema, handler_key.
     """
+    safe_name = sanitize_mcp_name_component(server_name)
     return [
         {
             "schema": {

@@ -1165,8 +1165,11 @@ def check_web_api_key() -> bool:
     registry.
     """
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured and _is_backend_available(configured):
-        return True
+    if configured in _LEGACY_WEB_BACKENDS or _registered_web_provider(configured) is not None:
+        # Explicitly configured backend — return its availability directly,
+        # do NOT fall through to the Anthropic-native credential probe
+        # (that would mask a misconfigured backend with a false "available").
+        return _is_backend_available(configured)
     # Any built-in backend with credentials present. This is a boolean OR, so
     # unlike _get_backend() the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
