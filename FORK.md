@@ -45,7 +45,8 @@ will never touch them.
 || `tools/memory_extraction/` | Memory extraction system (extractor, buffer, conflict, prompts). |
 || `tools/memory_auto_feedback/` | Memory auto-feedback module (audit and learning-ledger). |
 | `tools/consult_tool.py` | Second-opinion tool — asks a configurable reference model (`auxiliary.consult`) for a review before a risky/uncertain decision; refusals/empty responses degrade gracefully to `unavailable: true` rather than erroring. Available to main agent + subagents (not in `DELEGATE_BLOCKED_TOOLS`). |
-|| `FORK.md` | This file |
+| `tools/delegation_router.py` | Cheap classifier that sorts a delegate_task goal (no explicit model/agent_type) into a capability tier (light/standard/deep) and optionally a ruflo persona, then maps tier→role→model through `delegation.model_by_role`. Fail-open everywhere. Config: `delegation.auto_route.*`, `auxiliary.delegation_router`. |
+| `FORK.md` | This file |
 | `scripts/fork-merge-plan.py` | Pre-merge analyzer (see "Future upstream merges" below) |
 | `scripts/setup-merge-drivers.sh` | One-time-per-clone registration of the uv.lock merge driver |
 
@@ -106,8 +107,8 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/tool_guardrails.py` | +11 / -4 | `hard_stop_enabled` default `False→True` — tool-call loop guardrails now block/halt instead of just warning. See "Fork-only fix — 2026-07-07" below. |
 | `plugins/model-providers/anthropic/__init__.py` | +2 / -2 | `default_aux_model` updated from haiku to sonnet-5. |
 
-Plus 285 commits of fork-only history (vs `upstream/main`, refreshed
-2026-07-04 post-sync). See `git log upstream/main..main`.
+Plus 310 commits of fork-only history (vs `upstream/main`, refreshed
+2026-07-11 post-sync). See `git log upstream/main..main`.
 
 ### Fork-only fixes — 2026-06-02 (prompt-cache cost work)
 
@@ -1530,6 +1531,39 @@ Merge-base was v2026.6.19; pulled 1,760 upstream commits on branch
 * `_config_version: 32`
 
 
+### Fork-only fixes — 2026-07-06 (status-bar timer + approval timeout semantics)
+
+1. **`0285cf60c` — status-bar timer no longer zero-pads minutes.**
+   `cli.py` status-bar timer formatted `{_m:02d}m` so 2m19s rendered as
+   `02m19s`. Changed to `{_m}m` (seconds keep `:02d` for width stability:
+   `2m05s`). Same commit also fixed vision auto-detect in
+   `agent/auxiliary_client.py` — `_resolve_vision_provider_client_impl`
+   was falling back to `main_model` (DSv4-Flash, text-only) for the
+   vision-support check, ignoring the configured
+   `auxiliary.ollama-cloud.vision` model (gemma4:31b). The check failed
+   and fell through to the aggregator chain (OpenRouter/Nous) which had
+   no keys. Now `resolved_model` (from config) takes priority, so the
+   configured vision model is used for the support check.
+
+2. **`ecf9d12bb` — approval timeout no longer reported to model as "user
+   denied."** `tools/approval.py` + `acp_adapter/permissions.py` +
+   `agent/transports/codex_app_server_session.py` + `cli.py`. An approval
+   prompt that times out was reported to the model as "BLOCKED: User
+   denied this command / the user has explicitly rejected it." That is
+   false — the user never answered (AFK, prompt unseen) — and it poisons
+   the rest of the conversation: the model then refuses legitimate later
+   re-requests for the same action because it believes the user already
+   said no. Timeouts still fail closed (command NEVER runs), but the
+   model-facing message now says what happened: "NOT RUN: ... timed out
+   with no response — this is NOT a denial", keeps the #24912 contract
+   ("Silence is not consent: do not run this or any equivalent command
+   without approval"), and explicitly permits re-requesting approval
+   later. `prompt_dangerous_approval()` returns a new `'timeout'` value
+   on expiry (distinct from `'denied'`). Localized across all 15
+   `locales/*.yaml`. Tests: `tests/acp/test_permissions.py`,
+   `tests/tools/test_approval.py`.
+
+
 ### Fork-only fix — 2026-07-07 (tool-call loop guardrails now block by default)
 
 The guardrail system in `agent/tool_guardrails.py` already had all the logic
@@ -1559,3 +1593,292 @@ file. If a future sync reverts it to `False`, the fork's intent is to keep
 
 Verification: 347 fork-specific tests pass (8 skipped — pre-existing macOS
 `/tmp` vs `/private/tmp` symlink issue).
+
+
+### Fork-only feature — 2026-07-07 (consult tool + periodic nudge)
+
+**`c5bb78547` — `tools/consult_tool.py` + `agent/fork/consult_nudge.py`.**
+
+New `consult(question, context)` tool lets the agent (main or delegated
+subagent) get a second opinion from a configurable reference model
+(`auxiliary.consult` in config.yaml) before a risky or uncertain
+decision. Routes through the shared `agent.auxiliary_client.call_llm`
+plumbing. Refusals, empty responses, and content-filter stops from the
+reference model degrade gracefully to `{"unavailable": true, "reason":
+"..."}` instead of raising — expensive frontier models used as
+reviewers (e.g. Fable-class) refuse often enough that this has to be a
+first-class outcome, not an error path.
+
+- Registered in the `"consult"` toolset, added to `_HERMES_CORE_TOOLS`
+  (available to main agent by default), NOT added to
+  `DELEGATE_BLOCKED_TOOLS` so subagents inherit it.
+- `agent/fork/consult_nudge.py` — periodic reminder that nudges the
+  agent to call `consult(...)` after N risky tool calls (reuses
+  `skill_recall`'s risky-tool set). Config: `consult.nudge_interval`.
+
+Tests: `tests/tools/test_consult_tool.py`, `tests/test_consult_nudge_reminder.py`.
+
+
+### Fork-only fixes — 2026-07-07 (clarify/approval panel rendering + /usage + estimator + spinner)
+
+1. **`1052432ea` — clarify/approval/sudo panels garbled on wide-glyph
+   content.** `cli.py`. The modal panel renderers (clarify, approval,
+   sudo, secret) padded row content with `str.ljust()`, which counts
+   Python codepoints, not terminal display cells. Wide glyphs (emoji,
+   CJK, box-drawing) render as 2 terminal cells but are 1 Python
+   character, so any row containing one under-padded relative to the
+   panel's border width (computed independently via
+   `_panel_box_width`). The row's right border landed one or more
+   columns short of the top/bottom border rules, visually shifting/
+   clipping that row relative to its neighbors. Most common trigger:
+   LLM-emitted emoji in clarify choices (✅ Yes / ❌ No), or a CJK
+   question forwarded from a non-English user. Tests:
+   `tests/cli/test_cli_approval_ui.py`, `tests/cli/test_panel_cwidth_padding.py`.
+
+2. **`a026c8a74` — NameError in /usage cost reporting.** `cli.py`.
+   `_show_usage()` referenced `cache_read_tokens` and
+   `cache_write_tokens` when building the `CanonicalUsage` for cost
+   estimation, but never defined them — only `input_tokens` /
+   `output_tokens` / `reasoning_tokens` were pulled from the agent. Every
+   `/usage` call and session-end exit-summary cost line crashed with
+   `NameError`. Pull both from the agent's
+   `session_cache_read_tokens` / `session_cache_write_tokens` counters,
+   matching the existing pattern for the other token buckets.
+
+3. **`ab9c74ee4` — estimator quadruple-counted Anthropic thinking
+   blocks.** `agent/model_metadata.py`. When an assistant message
+   carries `anthropic_content_blocks` (the interleaved-thinking replay
+   channel), the `reasoning` / `reasoning_content` / `reasoning_details`
+   fields are pure duplicates of the same thinking text already inside
+   `anthropic_content_blocks` — the API replay path
+   (`_convert_assistant_message` in `agent/anthropic_adapter.py`) reads
+   `anthropic_content_blocks` alone for these turns and never touches
+   the other three. Both rough-estimate char counters
+   (`_estimate_message_chars` and
+   `_count_message_chars_with_image_token_credit`) were walking all
+   four copies, so every thinking block was counted ~4x. With
+   interleaved thinking + high reasoning effort this inflated the
+   preflight compression estimate far past the real provider-reported
+   `prompt_tokens`, firing compaction the status bar gave no indication
+   was imminent.
+
+4. **`e6ffabb15` — spinner elapsed timer not fixed-width past 60s.**
+   `cli.py`. `_render_spinner_text()`'s ≥60s branch formatted
+   `"{m}m{s:02d}s"` with no padding, so single-digit minute counts (e.g.
+   `1m05s`, 5 chars) were one character shorter than every other value
+   in that branch and shorter than the <60s branch's fixed
+   `"{elapsed:5.1f}s"` (6 chars). The comment claimed fixed width to
+   avoid status-line wrap jitter while scrolling/repainting, but the
+   single-digit-minute case (the first ~9 minutes of every long-running
+   tool call) violated it. `rjust(6)` closes the gap without
+   reintroducing the zero-padded-minutes look the comment explicitly
+   rejected.
+
+5. **`f0adbbf8f` — dangling `toolsets` references after upstream removal.**
+   `tools/delegate_tool.py`. Upstream (`ba0bc01d1`) removed the
+   model-facing `toolsets` arg from `delegate_task()` — subagents always
+   inherit the parent's toolsets, not have them chosen by the model.
+   That merge left two stale references to the now-undefined local
+   `toolsets` name, both crashing the single-task delegate_task path
+   with `NameError: name 'toolsets' is not defined`: the task-list
+   construction (single-goal path) still built `{"toolsets": toolsets,
+   ...}` and the per-task `_build_child_agent` call still passed
+   `toolsets=t.get("toolsets") or toolsets`. Both now pass
+   `toolsets=None`, matching upstream's fix and `_build_child_agent`'s
+   documented behavior (`None` → pure parent inheritance).
+
+
+### Fork-only test fixes — 2026-07-07 (deterministic suite, no behavior change)
+
+1. **`e046afdd3` — isolate status-bar tests from operator's local skin
+   config.** `tests/cli/test_cli_status_bar.py`. `cli.py` runs
+   `init_skin_from_config(CLI_CONFIG)` at import time, which reads the
+   real `~/.hermes/config.yaml` on whatever machine runs pytest and sets
+   the module-level `_active_skin` singleton in
+   `hermes_cli/skin_engine.py`. Any operator with a non-default
+   `display.skin` (this machine has a custom skin overriding
+   `status_glyph`) had two status-bar tests fail purely because of
+   their local environment. Autouse fixture pins the `"default"` skin
+   for the duration of the test file and restores whatever was active
+   afterward. Also updates `test_show_usage_omits_cost_reporting`,
+   which encoded upstream's `fd2a35b16` removal of all `/usage` cost
+   reporting — this fork deliberately diverges from that commit
+   (`680b32655` and follow-ups keep a `display.show_cost` opt-in and
+   per-session cost lines in `_show_usage()`).
+
+2. **`a730d5dc6` — stop hardcoding stale Anthropic model literal.**
+   `tests/agent/test_auxiliary_client.py`. Two tests asserted
+   `model == "claude-sonnet-4-6"` but the fork's aux-model default
+   (`_ANTHROPIC_DEFAULT_AUX_MODEL`) has since moved to
+   `"claude-sonnet-5"`. Import and assert against the constant instead
+   of a frozen literal.
+
+3. **`2f882c9bf` — flaky race in modal-paint repaint assertion.**
+   `tests/cli/test_cli_approval_ui.py`. `TestModalPaintNow._drive()`
+   asserted `app.invalidate()` had been called immediately after the
+   modal state dict appeared, but the background callback thread sets
+   state several statements before actually calling `_paint_now()` —
+   `_fire_attention_signals()` runs in between and does real
+   synchronous work (stdout write/flush, and on darwin a real
+   `subprocess.Popen` for `osascript`). The assertion could win that race
+   against any of the three modal types (approval/clarify/sudo),
+   reproduced failing nondeterministically across repeated runs. Poll
+   for the actual paint within the existing 2s deadline instead of
+   asserting on the first state-dict sighting.
+
+
+### Fork-only fixes — 2026-07-07 (tool_search sticky activation + anthropic replay name sync)
+
+1. **`908ff9f25` — make progressive-disclosure activation sticky per
+   conversation.** `tools/tool_search.py` + `model_tools.py` +
+   `agent/agent_init.py` + `acp_adapter/server.py` + `tools/mcp_tool.py`.
+   `tools/tool_search.py` recomputed the activate/deactivate decision
+   for the tool_search/tool_describe/tool_call bridge fresh on every
+   API call by walking the live, global tool registry singleton. When
+   the deferrable-token total shifts across the threshold
+   mid-conversation (MCP reconnect, a subagent loading tools, etc.),
+   activation can flip from on to off between turns of the SAME
+   conversation. When it flips off, the bridge tool names vanish from
+   the wire tools array, and Anthropic rejects prior-turn `tool_use`
+   blocks referencing them — `_strip_unknown_tool_blocks` then rewrites
+   those blocks into inert text breadcrumbs, corrupting tool-call
+   history even when the model successfully used the tool moments
+   earlier. Confirmed live via `agent.log`: the same session
+   accumulated 4 → 18 → 34 rewritten blocks over ~10 minutes as
+   tool_search flapped on and off. Added a one-way sticky latch: once
+   bridge tools are ever shown to an agent, they stay shown for the rest
+   of that conversation. Tests: `tests/tools/test_tool_search.py`,
+   `tests/agent/test_anthropic_adapter.py`.
+
+2. **`e80d8c73f` — keep replayed tool_use name in sync with resolved
+   dispatch name.** `agent/transports/anthropic.py`.
+   `normalize_response()` captured OAuth-wire `tool_use` blocks twice:
+   once into `tool_calls` (name correctly reversed from `mcp__<name>`
+   back to the registry name) and once into `ordered_blocks`, the
+   verbatim replay copy persisted as
+   `provider_data["anthropic_content_blocks"]` whenever a turn
+   interleaves signed thinking with tool_use (e.g. every clarify call).
+   The reversal was never mirrored onto `ordered_blocks`, so the
+   replayed history kept the raw `mcp__<name>` wire name forever. On the
+   next turn, `_strip_unknown_tool_blocks()` compared that stale wire
+   name against the live (bare) tool set, found no match, and rewrote
+   the historical `tool_use`/`tool_result` pair into a lossy
+   400-char-truncated "tool no longer available" breadcrumb — silently
+   mangling the user's real answer and corrupting the model's view of
+   its own prior turn. Tests: `tests/agent/test_anthropic_mcp_prefix_strip.py`.
+
+3. **`61a1b8d6f` — resolve mcp__-prefixed bridge tool names in replay
+   history.** `agent/transports/anthropic.py`. `e80d8c73f` synced the
+   resolved dispatch name onto the `ordered_blocks` replay copy, but
+   the resolution itself only checked `tools/registry.py` — which never
+   contains `tool_search`/`tool_describe`/`tool_call`. Those three are
+   dynamically synthesized bridge tools (`tools/tool_search.py`)
+   dispatched by a name-check in `agent/tool_executor.py`, not
+   registered `ToolRegistry` entries, so the registry lookup (and its
+   bare/single-underscore fallbacks) always missed for them and `name`
+   fell through unresolved. Reproduced live 2026-07-07 22:53-23:15
+   (session `20260707_225321_554b40`), AFTER `e80d8c73f` had already
+   landed: `agent.log` showed "rewrote N tool_use/result block(s) for
+   tools no longer available: ['mcp__tool_call', 'mcp__tool_search']"
+   climbing 1→20 over ~20 minutes in one ongoing conversation. The fix
+   extends the resolver to recognize the three bridge tool names. Tests:
+   `tests/agent/test_anthropic_mcp_prefix_strip.py`.
+
+
+### Fork-only features — 2026-07-07 (delegate auto-route to model tier + persona)
+
+1. **`b713432ab` — auto-route delegated tasks to the right model tier.**
+   `tools/delegation_router.py` + `tools/delegate_tool.py` +
+   `agent/auxiliary_client.py` + `hermes_cli/config.py`. When a
+   `delegate_task` task states NEITHER an explicit model NOR an
+   `agent_type`, a cheap classifier (`auxiliary.delegation_router`) sorts
+   it into a capability tier (light/standard/deep), which maps
+   tier→role→model through the existing `delegation.model_by_role` map.
+   Lets a cheap main chat model fan work out onto the right-sized model
+   automatically instead of every child silently inheriting the (cheap)
+   parent model. Precedence: per-task `model` > `agent_type` role-map >
+   auto-route > `delegation.model` > parent's model. Fail-open
+   everywhere (classifier down, timeout, bad output, unmapped role,
+   non-Anthropic provider) → task falls through to today's behavior,
+   never worse than status quo. Every routing decision is surfaced in
+   the result metadata + the per-subagent completion line so a routing
+   choice is always visible, never a silent substitution. Tests:
+   `tests/test_delegation_router.py`.
+
+2. **`aeb00d7ae` — auto-route can also pick a ruflo persona
+   (agent_type).** Extends the tier-only auto-router: the same single
+   classifier call may now also pick a persona when it's a clearly
+   better fit than the generic tier role, restricted to personas that
+   already resolve to a model via `delegation.model_by_role`. A
+   confident pick feeds into the same `task_agent_type` variable an
+   explicit caller-supplied `agent_type` uses, so it gets both existing
+   effects for free (persona-prompt injection + per-role model
+   resolution) with no duplicated logic. Hallucinated/unknown names are
+   validated against the real catalog and dropped. New
+   `delegation.auto_route.classify_persona` config gate (default `True`)
+   disables persona picks while keeping tier/model routing. Fail-open
+   and precedence rules unchanged. 19/19 router tests pass, 266
+   passed / 0 failed across the broader delegate-related suite.
+
+
+### Fork-only fix — 2026-07-10 (consult: reject degenerate reference-model answers)
+
+**`0f60943f7` — `tools/consult_tool.py`.** A local aux model answered a
+consult with the consult request itself wrapped in raw DSML tool-call
+markup; the orchestrator then paraphrased its own words as the
+reference model's opinion and the user acted on a fabricated
+consultation. Detect both failure shapes and return
+`unavailable: true` with an explicit do-not-paraphrase reason instead:
+
+- DSML sentinel with tool-call structure, or a leading chat-template
+  control token.
+- >70%-contiguous echo of the submitted question+context.
+
+Regression tests include the observed garbage verbatim. Tests:
+`tests/tools/test_consult_degenerate_guard.py`.
+
+
+### Fork-only fix — 2026-07-11 (auxiliary: honor explicit top-level task pins in provider-first schema)
+
+**`0f81be857` — `agent/auxiliary_client.py`.** An `auxiliary.<task>`
+block carrying explicit routing (concrete provider, model, or
+`base_url`) is a TASK PIN, not a provider block. Previously in a
+provider-first config it was never selected
+(`_aux_select_provider_block` only matches main-provider ids), so the
+pin was dead config and the task silently resolved to the main
+provider's block default. Observed: `auxiliary.consult {provider:
+anthropic, model: claude-fable-5}` ignored — consult answered by
+exo/Qwen3.6 on exo-main sessions and ollama gemma4 on ollama-main
+(`agent.log` 2026-07-09), i.e. a local aux model impersonating the
+configured Fable 5 reference. The inert `{provider: auto, model: ''}`
+deep-merge pollution is explicitly NOT a pin (test covers this). Pin
+routing replaces block routing wholesale (routing keys + model dropped
+before merge) so a block `base_url` can't leak under the pin's provider
+and trigger the downstream `base_url`→custom coercion. Tests:
+`tests/agent/test_auxiliary_provider_first.py`.
+
+
+### Fork-only fix — 2026-07-12 (suppress thinking-progress overlay when reasoning is streaming)
+
+**Uncommitted — `agent/chat_completion_helpers.py` (lines ~3487-3510).**
+
+The "🧠 Thinking — N chars (+M in last 30s)" heartbeat pulse fired every
+30s (`_HEARTBEAT_INTERVAL`) precisely when `_thinking_delta_chars > 0`
+— i.e. while reasoning text is actively streaming to the display via
+`agent._fire_reasoning_delta()` → `agent.reasoning_callback` →
+`_stream_reasoning_delta`. The streamed reasoning IS the progress
+signal; the overlay landed on top of the text the user was reading,
+breaking the flow of the output.
+
+Fix: gated the progress pulse on `agent.reasoning_callback is None`.
+When reasoning is visible (CLI with `show_reasoning: true`, or any
+driver with a live reasoning box), the callback is set — overlay
+suppressed, reasoning text flows uninterrupted. When reasoning is NOT
+shown (gateway with reasoning off, batch, quiet), the callback is
+`None` and the pulse stays as the only progress signal. The "⏳ Still
+waiting on provider" stall path is untouched — a zero-char delta still
+emits it, which is a genuine signal regardless of display mode.
+
+**Merge note:** single conditional wrapper around an existing
+`_emit_status` call in an already-soft-fork file. On conflict keep ours
+and re-verify the `agent.reasoning_callback is None` guard is intact.

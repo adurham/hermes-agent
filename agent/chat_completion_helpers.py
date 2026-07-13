@@ -3491,15 +3491,28 @@ def interruptible_streaming_api_call(
                     # instead, keyed off char delta, not elapsed time.  Only a
                     # genuine freeze (no new chars, or no thinking at all) keeps
                     # the "waiting" framing.
+                    #
+                    # Suppress the progress pulse when reasoning is already being
+                    # streamed to a display consumer (agent.reasoning_callback is
+                    # set — CLI with show_reasoning=true, or any driver wiring a
+                    # live reasoning box).  The streamed reasoning text IS the
+                    # progress signal in that mode; an overlay on top of it just
+                    # breaks the flow of the output the user is reading.  When the
+                    # callback is unset (gateway with reasoning off, batch, quiet),
+                    # the pulse is the only progress signal — keep it.  The
+                    # stall/waiting pulse below is always emitted: a zero-char
+                    # delta means nothing was returned this window, which is a
+                    # genuine signal regardless of display mode.
                     _thinking_delta_chars = thinking_chars["n"] - _last_hb_thinking_chars
                     _last_hb_thinking_chars = thinking_chars["n"]
                     if thinking_active["yes"] and _thinking_delta_chars > 0:
-                        agent._emit_status(
-                            f"🧠 Thinking — {thinking_chars['n']:,} chars "
-                            f"(+{_thinking_delta_chars:,} in last "
-                            f"{int(_HEARTBEAT_INTERVAL)}s) "
-                            f"(model: {_model_name}{_model_label_extra}){_diag}"
-                        )
+                        if agent.reasoning_callback is None:
+                            agent._emit_status(
+                                f"🧠 Thinking — {thinking_chars['n']:,} chars "
+                                f"(+{_thinking_delta_chars:,} in last "
+                                f"{int(_HEARTBEAT_INTERVAL)}s) "
+                                f"(model: {_model_name}{_model_label_extra}){_diag}"
+                            )
                     else:
                         agent._emit_status(
                             f"⏳ Still waiting on provider — {_user_elapsed}s elapsed "
