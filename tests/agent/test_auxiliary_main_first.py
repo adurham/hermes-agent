@@ -1095,11 +1095,11 @@ class TestAnthropicAuxModel:
                 # which DOES have a 1M tier and must keep the beta.
                 captured.clear()
                 _client2, resolved2 = resolve_provider_client("auto", None)
-                assert resolved2 == "claude-sonnet-4-6", (
+                assert resolved2 == "claude-sonnet-5", (
                     f"expected Sonnet aux default, got {resolved2!r}"
                 )
                 sonnet_build = captured[-1]
-                assert sonnet_build["model"] == "claude-sonnet-4-6"
+                assert sonnet_build["model"] == "claude-sonnet-5"
                 assert _CONTEXT_1M_BETA in sonnet_build["betas"], (
                     f"Sonnet client must keep {_CONTEXT_1M_BETA!r} (has 1M tier). "
                     f"Got betas={sonnet_build['betas']}"
