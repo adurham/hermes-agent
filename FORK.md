@@ -2338,3 +2338,54 @@ malformed JSON, non-list body). `maybe_run_curator` hook tests updated for
 the new `consolidate` kwarg plus a new test asserting `consolidate=True`
 propagates through to the hot-tier audit call.
 
+### Fork-only fix — 2026-07-14 (exit watchdog swallows cost report / resume hint)
+
+**Problem:** On interactive-mode exit (`/exit` or Ctrl+D), `cli.py`'s
+`run()` finally-block called `_run_cleanup()` then
+`self._print_exit_summary()` — cleanup first, summary second.
+`_run_cleanup()` includes the fork-only Phase 2 memory-confirm step
+(`hermes_cli/memory_confirm.py::confirm_and_commit()` →
+`tools.memory_extraction.extractor.on_session_end()`), which fires an LLM
+call with its own timeout (`auxiliary.memory_extraction.timeout`, default
+30s), plus `shutdown_mcp_servers()` (up to 15s). Both run inside
+`_run_cleanup()`, which is guarded by `_arm_exit_watchdog()` — a daemon
+thread that force-exits the process via `os._exit(0)` after
+`HERMES_EXIT_WATCHDOG_S` seconds (was 30s) if cleanup hasn't returned.
+Worst case (45s: 15s MCP + 30s memory-extraction) comfortably exceeded
+the 30s watchdog budget, so the watchdog would fire mid-`_run_cleanup()`
+and `os._exit(0)` the process before `_print_exit_summary()` — printed
+*after* cleanup in source order — ever ran. User-visible symptom:
+`agent.log` shows `"Memory: reviewing proposals from this session..."`
+printed with nothing after it, then `"Exit watchdog fired after 30s —
+forcing process exit"` — no cost report, no `--resume <session_id>` hint,
+no error shown to the user.
+
+**Fix:**
+- Reordered both interactive-exit call sites (the stdin-unavailable
+  early-return path near the top of `run()`, and the main exit path in
+  `run()`'s finally block) to call `self._print_exit_summary()` **before**
+  `_run_cleanup()`. The single-query path (`hermes chat -q`) was already
+  correctly ordered and untouched.
+- Bumped `_arm_exit_watchdog()`'s default from 30s to 60s
+  (`HERMES_EXIT_WATCHDOG_S` env var override unchanged) so the
+  15s-MCP + 30s-memory-extraction worst case has real headroom instead of
+  being right at the guillotine line.
+- Both changes are complementary, not redundant: the reorder guarantees
+  the cost report/resume hint print even if a *future* slow step exceeds
+  any watchdog budget; the timeout bump reduces how often cleanup gets
+  cut off at all (letting memory review actually finish instead of being
+  routinely truncated).
+
+**Tests:** `tests/cli/test_exit_summary_before_cleanup_ordering.py` (new) —
+statically asserts every bare `_run_cleanup()` call statement in `cli.py`
+is preceded by a `self._print_exit_summary()` call within the same local
+block; verified it fails against the pre-fix ordering by reverting locally
+and re-running before committing the actual fix. Existing
+`tests/cli/test_cli_shutdown_memory_messages.py`,
+`test_session_boundary_hooks.py`, `test_single_query_session_finalize.py`,
+`test_cli_active_agent_ref_wiring.py`, `test_tui_terminal_reset_on_exit.py`
+all still pass (32 tests). `test_exit_summary_resume_hint.py`'s 5 failures
+are pre-existing (a `sys.argv[0]` → `__main__.py` resolution quirk under
+this test runner, unrelated to this change) — confirmed via `git stash`
+against unmodified `main`.
+
