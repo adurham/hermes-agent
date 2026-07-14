@@ -2102,3 +2102,71 @@ be suppressed by passing `api_key=None` (None triggers the env read).
 environment, `build_anthropic_client(resolve_anthropic_token())` now has
 `api_key=None` and a live `messages.create` succeeds. 218
 adapter/keychain/oauth-flow tests pass.
+
+
+### Fork-only fix — 2026-07-14 (content-filter trigger patterns weren't scrubbed from tool results, only from compaction/refusal-retry)
+
+**`tools/content_filter_scrub.py` (new) + `agent/fork/anthropic_recovery.py` +
+`tools/tool_result_storage.py`.**
+
+**Symptom:** session `20260714_081201_7539dd` hit a real Anthropic
+`stop_reason="refusal"` (`agent.log`: `finish_reason=content_filter`,
+confirmed genuine via the 1:1 mapping at `agent/transports/anthropic.py:361`,
+not a hermes misclassification) on an otherwise ordinary conversation — no
+shell commands, no sensitive topic in the live turn. It then would not clear:
+every subsequent turn re-refused (`Repaired 1 message-alternation violations
+before request` logged on each one — a refusal leaves an empty assistant turn
+that breaks role alternation), surviving both a manual model switch
+(sonnet-5 → opus-4-8) and a `/compact` (38 → 25 messages).
+
+**Root cause:** the refusal fired immediately after several `session_search`
+tool calls returned huge raw excerpts of old session files (up to 194K chars
+inline, before truncation — old sessions run 1–14 MB). The existing
+credential-extraction/pg_dump/S3/SQLConnectionString/upload_stream sanitizer
+(`sanitize_messages_for_refusal_retry`, originally in
+`agent/fork/anthropic_recovery.py`) only ran in two places: inside the
+`/compact` summarizer's paraphrase step, and on an explicit refusal-retry that
+never actually fired this session (no fallback provider configured, so the
+recovery chain had nothing to try — no "Refusal sanitize retry" line in the
+log). **Raw tool output was never scrubbed.** If an old session surfaced by
+`session_search` contains one of the known trigger patterns verbatim, it
+poisons live context with zero protection, and — since the poisoning is now
+baked into message *content*, not just the compaction summary — no amount of
+model-switching or re-compacting removes it.
+
+**Fix:**
+1. **`tools/content_filter_scrub.py` (new).** Moved the `TRIGGER_PATTERNS`
+   regex list out of `anthropic_recovery.py` into one shared module —
+   `scrub_trigger_patterns(text)` (plain string) and `scrub_message_content
+   (content)` (handles both string and multi-part list content). Single
+   source of truth; both call sites below import from here instead of
+   maintaining copies that drift.
+2. **`agent/fork/anthropic_recovery.py`** — `sanitize_messages_for_refusal_retry`
+   now delegates to `scrub_message_content` instead of a local copy. Same
+   behavior (most recent user message left untouched), zero duplication.
+3. **`tools/tool_result_storage.py::maybe_persist_tool_result` — the actual
+   fix.** This is the universal Layer-2 choke point every non-multimodal tool
+   result passes through (`agent/tool_executor.py:918`, unconditionally,
+   before the result reaches context) — not a `session_search`-specific
+   patch. Added `scrub_trigger_patterns(content)` at the very top, before the
+   size-threshold check, so it fires regardless of tool name or size — this
+   also covers `read_file` (pinned `threshold=inf`, previously untouched by
+   any scrub path) and any other tool (`grep`, `bash`, etc.) that might
+   surface the same patterns from a local file or command output, not just
+   old session transcripts.
+
+**Merge note:** `tools/content_filter_scrub.py` is a new hard-fork file
+(never conflicts). `anthropic_recovery.py` is already fork-only. The one
+upstream-adjacent-risk file is `tools/tool_result_storage.py` — on conflict,
+keep the `scrub_trigger_patterns(content)` call at the top of
+`maybe_persist_tool_result`, before `effective_threshold` is computed, so it
+runs unconditionally rather than only on the persist-to-disk branch.
+
+**Verification:** 66 new/updated tests pass —
+`tests/tools/test_content_filter_scrub.py` (new, 13 tests: pattern-level +
+message-content-shape coverage) and additions to
+`tests/tools/test_tool_result_storage.py` (3 new: below-threshold scrub,
+tool-agnostic scrub incl. `read_file`'s inf threshold, scrub-before-persist-
+to-disk) alongside the pre-existing 52/52 in that file. Manual sanity check:
+`sanitize_messages_for_refusal_retry` still scrubs historical messages via
+the shared module and still leaves the active user turn untouched.

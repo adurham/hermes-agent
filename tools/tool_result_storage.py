@@ -34,6 +34,7 @@ from tools.budget_config import (
     BudgetConfig,
     DEFAULT_BUDGET,
 )
+from tools.content_filter_scrub import scrub_trigger_patterns
 
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
@@ -166,6 +167,13 @@ def maybe_persist_tool_result(
     Returns:
         Original content if small, or <persisted-output> replacement.
     """
+    content, _scrubbed = scrub_trigger_patterns(content)
+    if _scrubbed:
+        logger.info(
+            "Scrubbed content-filter trigger pattern(s) from tool result: %s (%s)",
+            tool_name, tool_use_id,
+        )
+
     effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
 
     if effective_threshold == float("inf"):
