@@ -24,7 +24,8 @@ import logging
 logger = logging.getLogger("run_agent")
 
 import json
-import re
+
+from tools.content_filter_scrub import scrub_message_content
 
 
 def sanitize_messages_for_refusal_retry(agent, messages: list) -> tuple:
@@ -36,55 +37,14 @@ def sanitize_messages_for_refusal_retry(agent, messages: list) -> tuple:
     etc.).  Only touches historical messages; the most recent user message
     is left intact so the user's actual request is preserved.
 
+    Pattern list lives in ``tools.content_filter_scrub`` — shared with the
+    tool-result persistence layer (``tools/tool_result_storage.py``), which
+    scrubs the same patterns out of raw tool output (e.g. ``session_search``
+    hits pulling old session text verbatim into live context) before this
+    retry path ever gets a chance to run.
+
     Returns (sanitized_messages, was_modified).
     """
-    _TRIGGER_PATTERNS = [
-        # PGPASSWORD= with inline subshell credential extraction + pg_dump
-        (re.compile(
-            r'PGPASSWORD\s*=\s*[`\'"`]?[^`\'";\n]{0,300}[`\'"`]?\s+pg_dump\b[^\n]*',
-            re.IGNORECASE),
-         '[pg_dump DB export — command paraphrased for content continuity]'),
-        # Standalone PGPASSWORD assignment line
-        (re.compile(r'PGPASSWORD\s*=\s*\S[^\n]*', re.IGNORECASE),
-         '[PGPASSWORD assignment — paraphrased for content continuity]'),
-        # pg_dump invocation with flags
-        (re.compile(r'\bpg_dump\s+-[^\n]+', re.IGNORECASE),
-         '[pg_dump invocation — command paraphrased for content continuity]'),
-        # aws s3 presign / cp / put-object / sync
-        (re.compile(r'\baws\s+s3\s+(?:presign|cp|put-object|sync)\s+[^\n]+', re.IGNORECASE),
-         '[AWS S3 operation — command paraphrased for content continuity]'),
-        # TaniumServer config get SQLConnectionString extraction pipeline
-        (re.compile(r'TaniumServer\s+config\s+get\s+SQLConnectionString[^\n]*', re.IGNORECASE),
-         '[SQLConnectionString retrieval — paraphrased for content continuity]'),
-        # upload_stream.sh / upload_file invocations
-        (re.compile(r'(?:upload_stream\.sh|upload_file)\s+[^\n]+', re.IGNORECASE),
-         '[file upload command — paraphrased for content continuity]'),
-    ]
-
-    def _scrub(text: str) -> tuple:
-        changed = False
-        for pattern, note in _TRIGGER_PATTERNS:
-            new_text, n = pattern.subn(note, text)
-            if n:
-                text = new_text
-                changed = True
-        return text, changed
-
-    def _scrub_content(content) -> tuple:
-        if isinstance(content, str):
-            return _scrub(content)
-        if isinstance(content, list):
-            out, changed = [], False
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    new_t, c = _scrub(part.get("text", ""))
-                    if c:
-                        part = {**part, "text": new_t}
-                        changed = True
-                out.append(part)
-            return out, changed
-        return content, False
-
     # Leave the most recent user message untouched — it's the active request.
     last_user_idx = -1
     for i in range(len(messages) - 1, -1, -1):
@@ -97,7 +57,7 @@ def sanitize_messages_for_refusal_retry(agent, messages: list) -> tuple:
         if i == last_user_idx:
             sanitized.append(msg)
             continue
-        new_content, changed = _scrub_content(msg.get("content"))
+        new_content, changed = scrub_message_content(msg.get("content"))
         if changed:
             msg = {**msg, "content": new_content}
             any_changed = True
