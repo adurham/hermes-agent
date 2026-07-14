@@ -1579,6 +1579,88 @@ def _write_claude_code_credentials(
     except (OSError, IOError) as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 
+    keychain_oauth: Dict[str, Any] = {
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
+        "expiresAt": expires_at_ms,
+    }
+    if scopes is not None:
+        keychain_oauth["scopes"] = scopes
+    _sync_claude_code_credentials_to_keychain(keychain_oauth)
+
+
+def _sync_claude_code_credentials_to_keychain(oauth_data: Dict[str, Any]) -> None:
+    """Mirror refreshed OAuth credentials into the macOS Keychain entry.
+
+    Claude Code >=2.1.114 on macOS reads its credential from the Keychain
+    ("Claude Code-credentials"), not the JSON file. Anthropic's OAuth refresh
+    rotates the refresh token (single-use), so a Hermes refresh that only
+    updates ~/.claude/.credentials.json strands the Keychain copy: Claude
+    Code's next launch retries the rotated refresh token, Anthropic's reuse
+    detection revokes the whole token family, and both apps 401 until the
+    user re-runs /login. Keeping the Keychain entry in sync keeps Claude Code
+    and Hermes on one shared token family.
+
+    Only updates an entry that already exists — never creates one. On hosts
+    where the Keychain entry was deliberately removed so the JSON file is the
+    single credential source (e.g. headless/SSH-only machines), this stays a
+    no-op.
+    """
+    if platform.system() != "Darwin":
+        return
+    try:
+        read = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+        if read.returncode != 0:
+            logger.debug("Keychain sync: no existing entry — skipping")
+            return
+        try:
+            existing = json.loads(read.stdout.strip())
+        except (json.JSONDecodeError, ValueError):
+            existing = {}
+        merged = dict(existing.get("claudeAiOauth", {}))
+        merged.update(oauth_data)
+        existing["claudeAiOauth"] = merged
+
+        meta = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", "Claude Code-credentials"],
+            capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+        account = ""
+        for line in meta.stdout.splitlines():
+            line = line.strip()
+            if line.startswith('"acct"'):
+                account = line.split("=", 1)[1].strip().strip('"')
+                break
+        if not account:
+            logger.debug("Keychain sync: could not determine account — skipping")
+            return
+
+        # Drive `security` in interactive mode so the token payload travels
+        # over stdin rather than argv, where it would be visible in `ps`.
+        payload = json.dumps(existing)
+        escaped = payload.replace("\\", "\\\\").replace('"', '\\"')
+        command = (
+            f'add-generic-password -U -a "{account}" '
+            f'-s "Claude Code-credentials" -w "{escaped}"\n'
+        )
+        write = subprocess.run(
+            ["security", "-i"],
+            input=command, capture_output=True, text=True, timeout=10,
+        )
+        if write.returncode != 0:
+            logger.debug("Keychain sync: write failed: %s", write.stderr.strip())
+        else:
+            logger.debug("Keychain sync: mirrored refreshed OAuth credentials")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.debug("Keychain sync: %s", e)
+
 
 def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Resolve a token from Claude Code credential files, refreshing if needed."""
