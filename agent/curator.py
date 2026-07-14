@@ -1995,17 +1995,31 @@ def maybe_run_curator(
             if idle_for_seconds < min_idle_s:
                 return None
         result = run_curator_review(on_summary=on_summary)
+        # Same config value run_curator_review() just used for its own
+        # `consolidate is None` branch — re-read here (cheap, config is
+        # cached) so the hot-tier audit call below stays in lockstep with
+        # the skill pass without run_curator_review needing to return it.
+        consolidate = get_consolidate()
 
         # Hot-tier audit: opt-in, dry-run-first pass over MEMORY.md/USER.md
-        # for stale-path candidates. Runs after the existing skill-curation
-        # logic above and folds its summary into the same result dict rather
-        # than writing a separate report file. See
+        # for stale-path candidates, optionally upgraded to LLM
+        # keep/demote/stale/dead classification. Runs after the existing
+        # skill-curation logic above. Its own report is written to a
+        # separate file (see hot_tier_audit._hot_tier_reports_root's
+        # docstring for why — a race with the skill curator's async report
+        # write rules out sharing one file) but its summary is still
+        # folded into this function's result dict. See
         # docs/plans/2026-07-14-hot-tier-audit.md.
         if get_hot_tier_audit():
             try:
                 from agent import hot_tier_audit
+                # Pass consolidate explicitly (same value the skill pass
+                # above was gated on) rather than letting hot_tier_audit
+                # re-read config itself — one config read per maybe_run_
+                # curator() call, and the two passes stay in lockstep.
                 audit_summary = hot_tier_audit.run_hot_tier_audit(
-                    dry_run=get_hot_tier_audit_dry_run()
+                    dry_run=get_hot_tier_audit_dry_run(),
+                    consolidate=consolidate,
                 )
                 if isinstance(result, dict):
                     result["hot_tier_audit"] = audit_summary
@@ -2013,9 +2027,17 @@ def maybe_run_curator(
                     try:
                         n_checked = audit_summary.get("entries_checked", 0)
                         n_stale = len(audit_summary.get("stale_path_candidates", []) or [])
+                        llm_info = audit_summary.get("llm_classification") or {}
+                        llm_bit = ""
+                        if llm_info.get("ran"):
+                            llm_bit = (
+                                "; llm classification ok"
+                                if llm_info.get("succeeded")
+                                else "; llm classification failed (no mutation)"
+                            )
                         on_summary(
                             f"curator: hot-tier audit checked {n_checked} "
-                            f"entries, {n_stale} stale-path candidate(s)"
+                            f"entries, {n_stale} stale-path candidate(s){llm_bit}"
                         )
                     except Exception:
                         pass

@@ -24,7 +24,7 @@ will never touch them.
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
 | `agent/fork/diagnostics.py` | Per-turn usage history + tools-signature hash + xAI 403 entitlement hint |
 | `agent/fork/consult_nudge.py` | Second-opinion (consult tool) reminder — nudges the agent to call `consult(question, context)` for a review from a configurable reference model after N risky tool calls; reuses `skill_recall`'s risky-tool set. Config: `consult.nudge_interval`. |
-| `agent/hot_tier_audit.py` | Hot-tier audit — dry-run-only MVP. On a real curator pass, reads `MEMORY.md`/`USER.md` and flags entries whose extracted filesystem paths no longer exist on disk. Deterministic/heuristic-only (no LLM review yet); live mutation (`dry_run=False`) explicitly raises `NotImplementedError` pending a follow-up. Opt-in via `curator.hot_tier_audit` (default off), `curator.hot_tier_audit_dry_run` (default on). See `docs/plans/2026-07-14-hot-tier-audit.md`. |
+| `agent/hot_tier_audit.py` | Hot-tier audit — heuristic stale-path detection + opt-in LLM keep/demote/stale/dead classification. On a real curator pass, reads `MEMORY.md`/`USER.md`; heuristic-only mode (default) flags/demotes entries whose extracted filesystem paths no longer exist on disk. `curator.consolidate: true` upgrades to an LLM classification pass (reuses the skill curator's aux-model binding) whose `demote` verdicts move to warm tier and `stale`/`dead` verdicts hard-delete only when `curator.prune_builtins` is also on; an LLM failure or a sanity-cap trip aborts with zero mutation rather than falling back to the heuristic. Opt-in via `curator.hot_tier_audit` (default off), `curator.hot_tier_audit_dry_run` (default on). See `docs/plans/2026-07-14-hot-tier-audit.md`. |
 || `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. |
 || `agent/cc_aliases.py` | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility — maps Hermes built-in tool names to their Claude Code canonical equivalents so OAuth traffic counts as CC-API usage for billing. |
 || `agent/gemini_cloudcode_adapter.py` | Gemini → Cloud Code adapter for Gemini provider OAuth path. |
@@ -2249,3 +2249,92 @@ Tests: `tests/agent/test_hot_tier_audit.py` grew to 18 (added 6 live-mode
 tests: snapshot-before-mutate ordering, snapshot-failure abort, stale-entry
 demotion + hot-tier removal, non-stale entries left alone, no-op when zero
 stale candidates, and cross-file provenance for MEMORY.md vs USER.md).
+
+
+### Fork-only feature — 2026-07-14 (hot-tier audit LLM classification)
+
+`agent/hot_tier_audit.py` implements design doc §2.1 step 2 — the
+keep/demote/stale/dead LLM classification pass deferred by both passes
+above. `run_hot_tier_audit()` gains a `consolidate` parameter (defaults to
+`agent.curator.get_consolidate()` — the same flag the skill curator's own
+LLM pass is gated behind, not a new one).
+
+**What it does:**
+- `consolidate=False` (default): behavior is byte-for-byte unchanged from
+  the heuristic-only live-mutation pass above. No LLM call is ever made.
+- `consolidate=True`: every hot-tier entry (not just heuristic-flagged
+  ones) is sent in one prompt to `_llm_classify_entries()`, which calls
+  `agent.auxiliary_client.call_llm()` directly — a single structured-output
+  classification call, not a forked tool-using `AIAgent` (classification
+  needs no tools). Reuses `agent.curator._resolve_review_runtime()` for
+  provider/model/credential resolution so there's one aux-model binding
+  path, not two. The system prompt explicitly instructs the model to
+  treat in-entry text as data to classify, never as instructions to obey
+  (memory entries are user-authored but semi-untrusted input to this
+  pass).
+- The LLM's response must be a fenced `\`\`\`json` array, one object per
+  entry (`{"id", "classification", "reason"}`), covering every id exactly
+  once with a label in `{keep, demote, stale, dead}`. Any deviation
+  (malformed JSON, non-list, invalid label, duplicate/missing/out-of-range
+  id) fails the WHOLE parse — `_parse_llm_classification()` returns `None`
+  rather than accepting a partially-trustworthy response.
+- Live mode: `demote` → warm tier (identical write path to the heuristic
+  pass's demotion). `stale`/`dead` → hard-deleted (removed from the
+  hot-tier file, no warm-tier write) **only** when
+  `agent.curator.get_prune_builtins()` is also `True` — reusing that flag
+  per the design doc rather than adding a new one; otherwise left in place
+  and merely flagged in the report. `keep` → always untouched.
+- Sanity cap: if the LLM classifies more than `max(3, 50% of entries)` as
+  demote/stale/dead in one pass, live mode aborts with `RuntimeError` and
+  zero mutation — guards against a degenerate or adversarial
+  classification wiping most of the hot tier in one run.
+- Failure handling is asymmetric by design: if the LLM call fails, its
+  response fails validation, or the sanity cap trips, live mode raises
+  `RuntimeError` with **zero mutation**. It never silently falls back to
+  the more aggressive heuristic-only demote-everything-flagged path — a
+  caller who opted into the smarter LLM-informed pass and hit a failure
+  there must see that failure, not get downgraded quietly to a blunter
+  live mutation they didn't ask for on this call.
+- Dry-run + `consolidate=True` runs the LLM pass and reports what it WOULD
+  do (verdict + reason per entry) with zero mutation, same "preview
+  first" posture as the skill curator's own dry-run.
+- Snapshot ordering unchanged: `snapshot_memory()` still runs before the
+  LLM call and before any file touch, in both live sub-paths.
+- `maybe_run_curator()` now resolves `consolidate` once and passes it
+  explicitly into `run_hot_tier_audit()`, so the hot-tier pass and the
+  skill-curation LLM pass it runs alongside always agree on
+  heuristic-only vs LLM-classification mode for a given curator cycle.
+
+**Report file — deliberate deviation from the design doc:** §2.1 step 5
+asks for a "## Hot-tier audit" section appended to the same
+`REPORT.md`/`run.json` the skill curator writes
+(`agent.curator._write_run_report`). That curator report is written
+asynchronously from a background daemon thread, while
+`run_hot_tier_audit()` runs synchronously right after
+`run_curator_review()` *returns* — before that thread finishes — so
+appending to the same file would race the skill curator's own write.
+Instead `agent/hot_tier_audit.py` writes its own sibling report
+(`run.json` + `REPORT.md`, listing per-entry classification + reason) to
+`$HERMES_HOME/logs/curator/hot_tier_audit/<timestamp>/`, under the same
+parent logs directory. Flagged here for visibility since it diverges from
+the plan doc's stated preference.
+
+**Config:** unchanged — `curator.consolidate: true` (already the skill
+curator's own consolidation gate) turns on the LLM classification step for
+the hot-tier pass too; `curator.prune_builtins` (already the skill
+curator's built-in-pruning gate) additionally gates hard-delete of
+stale/dead entries.
+
+Tests: `tests/agent/test_hot_tier_audit.py` grew to 35 — 17 new tests
+covering: consolidate=False never invokes the LLM path; dry-run +
+consolidate=True previews without mutating; LLM overriding a heuristic
+false-positive; demote → warm-tier write; dead → hard-delete gated on
+`prune_builtins` true/false; LLM failure aborts with zero mutation (no
+heuristic fallback); sanity-cap trip aborts with zero mutation; the
+`call_llm` plumbing (provider/model binding, prompt content, response
+parsing) end-to-end with a mocked `call_llm`; and `_parse_llm_classification`
+validation (valid response, missing ids, invalid label, duplicate ids,
+malformed JSON, non-list body). `maybe_run_curator` hook tests updated for
+the new `consolidate` kwarg plus a new test asserting `consolidate=True`
+propagates through to the hot-tier audit call.
+
