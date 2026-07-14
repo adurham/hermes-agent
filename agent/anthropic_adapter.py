@@ -1044,7 +1044,12 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    return _anthropic_sdk.Anthropic(**kwargs)
+    client = _anthropic_sdk.Anthropic(**kwargs)
+    # Same env-leak guard as build_anthropic_client: with auth_token set and
+    # api_key unset, the SDK auto-reads ANTHROPIC_API_KEY from the environment
+    # and sends it as x-api-key alongside the Bearer hook's Authorization.
+    client.api_key = None
+    return client
 
 
 def build_anthropic_client(
@@ -1212,7 +1217,18 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    return _anthropic_sdk.Anthropic(**kwargs)
+    client = _anthropic_sdk.Anthropic(**kwargs)
+    if "auth_token" in kwargs and "api_key" not in kwargs:
+        # Bearer-auth paths (OAuth / bearer-only endpoints) pass auth_token
+        # and leave api_key unset — but the SDK constructor then auto-reads
+        # ANTHROPIC_API_KEY from the environment and sends it as an x-api-key
+        # header ALONGSIDE the Authorization: Bearer header. A stale token in
+        # the shell environment (e.g. inherited by every terminal tab from a
+        # long-dead export) makes the server reject the whole request with
+        # 401 "invalid x-api-key" even though the Bearer credential is valid.
+        # Bearer-auth requests must never carry x-api-key.
+        client.api_key = None
+    return client
 
 
 def build_anthropic_bedrock_client(region: str):
