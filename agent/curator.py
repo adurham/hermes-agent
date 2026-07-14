@@ -203,6 +203,30 @@ def get_consolidate() -> bool:
     return bool(cfg.get("consolidate", DEFAULT_CONSOLIDATE))
 
 
+def get_hot_tier_audit() -> bool:
+    """Whether the curator runs a hot-tier (MEMORY.md/USER.md) audit pass.
+
+    OFF by default. When on, a real (non-dry) curator run also reviews
+    hot-tier memory entries for staleness (e.g. dead file paths) after the
+    existing skill-curation logic. Set ``curator.hot_tier_audit: true`` to
+    opt in. See ``docs/plans/2026-07-14-hot-tier-audit.md``.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("hot_tier_audit", False))
+
+
+def get_hot_tier_audit_dry_run() -> bool:
+    """Whether the hot-tier audit pass only reports (never mutates).
+
+    ON by default. When on, the hot-tier audit produces a report only — no
+    hot-tier file mutation, no warm-tier writes. Set
+    ``curator.hot_tier_audit_dry_run: false`` to opt into live mutation once
+    dry-run reports have been reviewed and trusted.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("hot_tier_audit_dry_run", True))
+
+
 # ---------------------------------------------------------------------------
 # Idle / interval check
 # ---------------------------------------------------------------------------
@@ -1970,7 +1994,35 @@ def maybe_run_curator(
             min_idle_s = get_min_idle_hours() * 3600.0
             if idle_for_seconds < min_idle_s:
                 return None
-        return run_curator_review(on_summary=on_summary)
+        result = run_curator_review(on_summary=on_summary)
+
+        # Hot-tier audit: opt-in, dry-run-first pass over MEMORY.md/USER.md
+        # for stale-path candidates. Runs after the existing skill-curation
+        # logic above and folds its summary into the same result dict rather
+        # than writing a separate report file. See
+        # docs/plans/2026-07-14-hot-tier-audit.md.
+        if get_hot_tier_audit():
+            try:
+                from agent import hot_tier_audit
+                audit_summary = hot_tier_audit.run_hot_tier_audit(
+                    dry_run=get_hot_tier_audit_dry_run()
+                )
+                if isinstance(result, dict):
+                    result["hot_tier_audit"] = audit_summary
+                if on_summary:
+                    try:
+                        n_checked = audit_summary.get("entries_checked", 0)
+                        n_stale = len(audit_summary.get("stale_path_candidates", []) or [])
+                        on_summary(
+                            f"curator: hot-tier audit checked {n_checked} "
+                            f"entries, {n_stale} stale-path candidate(s)"
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug("Hot-tier audit pass failed: %s", e, exc_info=True)
+
+        return result
     except Exception as e:
         logger.debug("maybe_run_curator failed: %s", e, exc_info=True)
         return None
