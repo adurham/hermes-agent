@@ -545,6 +545,22 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
 
 
 @pytest.fixture(autouse=True)
+def _keychain_write_guard(monkeypatch):
+    """Never let tests write the real macOS Keychain credential entry.
+
+    ``_write_claude_code_credentials`` mirrors refreshed OAuth credentials
+    into the live "Claude Code-credentials" Keychain item via ``security``.
+    Tests exercise the file-write path against tmp dirs (monkeypatched
+    Path.home), but the Keychain sync targets the real Keychain regardless
+    of cwd/home — a test run must never clobber the user's live credential.
+    """
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._sync_claude_code_credentials_to_keychain",
+        lambda oauth_data: None,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _live_system_guard(request, monkeypatch):
     """Block real os.kill / systemctl / gateway-pid scans during tests.
 

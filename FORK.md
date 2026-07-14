@@ -2003,3 +2003,63 @@ resolved. Safety tag: `pre-upstream-sync-2026-07-12`.
 **Verification:** 520/520 MCP + approval + dynamic-discovery tests pass
 (1 skipped — pre-existing macOS `/tmp` vs `/private/tmp` symlink issue
 in `test_edit_approval`). All 18 conflict files syntax-OK.
+
+
+### Fork-only fix — 2026-07-14 (Claude Code Keychain write-back on OAuth refresh)
+
+**`20fb2e005` — `agent/anthropic_adapter.py` + `tests/conftest.py`.**
+
+**Symptom:** on macOS with Hermes in Claude-Code-credentials mode (both
+`ANTHROPIC_TOKEN` and `ANTHROPIC_API_KEY` empty), Hermes intermittently
+401'd ("invalid x-api-key") on tokens that had not expired, AND Claude
+Code itself demanded `/login` at every launch. Both symptoms, one cause.
+
+**Root cause:** Anthropic's OAuth refresh rotates the refresh token
+(single-use). Claude Code >=2.1.114 on macOS reads/writes its credential
+in the Keychain ("Claude Code-credentials"); Hermes's refresh path
+(`_write_claude_code_credentials`) wrote the rotated credential only to
+`~/.claude/.credentials.json`. Every Hermes refresh therefore stranded
+the Keychain's refresh token. Claude Code's next launch retried the
+stranded token, Anthropic's reuse detection revoked the **whole token
+family**, and both consumers died at once. Each `/login` seeded a new
+family; `read_claude_code_credentials()` prefers the fresher store, so
+Hermes adopted it and broke it again ~1h later. Permanent loop.
+
+**Fix:** new `_sync_claude_code_credentials_to_keychain()`, called at the
+end of `_write_claude_code_credentials`. Mirrors the refreshed
+`claudeAiOauth` payload into the Keychain entry so both consumers stay on
+one shared token family.
+
+- **Update-only, never creates the entry.** On hosts where the Keychain
+  entry was deliberately deleted so the JSON file is the single source
+  (headless/SSH-only machines — e.g. the macbook-m4 setup), this stays a
+  no-op.
+- Payload travels to `security -i` over **stdin**, not argv, so the token
+  never appears in `ps`.
+- Merges into the existing Keychain JSON (scopes/extra fields preserved
+  when the refresh response omits them).
+- All failures degrade to `logger.debug` — credential refresh never
+  breaks because the Keychain write did.
+
+**Test-suite guard (learned the hard way):** the first test run after the
+patch clobbered the real Keychain entry with fixture data —
+`test_anthropic_adapter.py` calls `_write_claude_code_credentials()`
+directly with a tmp `Path.home()`, but the Keychain sync targets the real
+Keychain regardless of home. Added autouse fixture `_keychain_write_guard`
+in `tests/conftest.py` that no-ops the sync for every test. Any future
+test that wants to exercise the sync must monkeypatch it back in
+explicitly.
+
+**Merge note:** upstream absorbed the OAuth credential read path in
+v2026.7.1 but still writes refreshes file-only. If a future sync rewrites
+`_write_claude_code_credentials`, re-attach the
+`_sync_claude_code_credentials_to_keychain()` call at its tail — without
+it the /login-every-launch loop returns on any macOS host running both
+Hermes and Claude Code.
+
+**Verification:** forced a live refresh through `_refresh_oauth_token` —
+Keychain and file converge on identical access+refresh tokens, scopes
+preserved; live API call authenticates (429 rate-limit, not 401). 309
+adapter/keychain/oauth-flow/credential-pool tests pass (2 pre-existing
+`test_credential_pool.py` disk-merge failures also fail on `main`);
+Keychain verified untouched after the run.
