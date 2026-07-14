@@ -1054,9 +1054,21 @@ def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
     """
     if timeout_s is None:
         try:
-            timeout_s = float(os.getenv("HERMES_EXIT_WATCHDOG_S", "30"))
+            # Default budget must exceed the worst-case sum of cleanup
+            # steps between arming and the process actually exiting:
+            # shutdown_mcp_servers() alone can block up to 15s
+            # (future.result(timeout=15)), and confirm_and_commit()'s
+            # memory-extraction LLM call defaults to a 30s timeout
+            # (auxiliary.memory_extraction.timeout / _get_extraction_config).
+            # 15 + 30 = 45s worst case before shutdown_memory_provider() even
+            # runs, so a 30s watchdog guillotined that combination outright,
+            # killing the process via os._exit(0) before _print_exit_summary()
+            # (cost report + --resume hint) or the memory confirm UI itself
+            # ever printed anything. 60s gives real headroom above that
+            # worst case while still bounding a truly wedged process.
+            timeout_s = float(os.getenv("HERMES_EXIT_WATCHDOG_S", "60"))
         except (TypeError, ValueError):
-            timeout_s = 30.0
+            timeout_s = 60.0
     if timeout_s <= 0:
         return
     # Never arm under pytest: tests invoke _run_cleanup() directly and a
@@ -17930,8 +17942,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
                 "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
             )
-            _run_cleanup()
+            # Print the exit summary BEFORE cleanup: _run_cleanup() can block
+            # for tens of seconds (memory-confirm LLM call, MCP/browser
+            # teardown) and is guillotined by the exit watchdog (see
+            # _arm_exit_watchdog) — if that watchdog fires mid-cleanup the
+            # process os._exit()s before ever reaching code after
+            # _run_cleanup(), silently swallowing the cost report + resume
+            # hint. Printing first guarantees the user always sees them.
             self._print_exit_summary()
+            _run_cleanup()
             return
 
         # On macOS with uv-managed Python, kqueue's selector cannot register
@@ -18108,8 +18127,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
                 except Exception:
                     pass
-            _run_cleanup()
+            # Print the exit summary BEFORE cleanup: _run_cleanup() can block
+            # for tens of seconds (memory-confirm LLM call, MCP/browser
+            # teardown) and is guillotined by the exit watchdog (see
+            # _arm_exit_watchdog) — if that watchdog fires mid-cleanup the
+            # process os._exit()s before ever reaching code after
+            # _run_cleanup(), silently swallowing the cost report + resume
+            # hint. Printing first guarantees the user always sees them,
+            # even when memory review / MCP teardown gets cut off.
             self._print_exit_summary()
+            _run_cleanup()
             self._release_active_session()
 
         # Deferred relaunch: /update sets _pending_relaunch so the exec
