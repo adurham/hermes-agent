@@ -75,6 +75,14 @@ def _skills_dir() -> Path:
     return get_hermes_home() / "skills"
 
 
+def _memories_backups_dir() -> Path:
+    return get_hermes_home() / "memories" / ".curator_backups"
+
+
+def _memories_dir() -> Path:
+    return get_hermes_home() / "memories"
+
+
 def _cron_jobs_file() -> Path:
     """Source path for the live cron jobs store (``~/.hermes/cron/jobs.json``)."""
     return get_hermes_home() / "cron" / "jobs.json"
@@ -325,6 +333,114 @@ def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
             shutil.rmtree(path)
         except OSError as e:
             logger.debug("Failed to clean stale staging dir %s: %s", path, e)
+    return deleted
+
+
+def _count_memory_files(base: Path) -> int:
+    try:
+        return sum(1 for name in ("MEMORY.md", "USER.md") if (base / name).exists())
+    except OSError:
+        return 0
+
+
+def _write_memory_manifest(dest: Path, reason: str, archive_path: Path,
+                            files_counted: int) -> None:
+    manifest = {
+        "id": dest.name,
+        "reason": reason,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "archive": archive_path.name,
+        "archive_bytes": archive_path.stat().st_size,
+        "memory_files": files_counted,
+    }
+    (dest / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+
+def snapshot_memory(reason: str = "manual") -> Optional[Path]:
+    """Create a tar.gz snapshot of ``~/.hermes/memories/`` and prune old ones.
+
+    Mirrors ``snapshot_skills()``'s pattern (same tar.gz approach, same
+    backup-directory convention with a companion ``manifest.json``) but
+    targets ``~/.hermes/memories/`` instead of ``~/.hermes/skills/``.
+
+    Returns the snapshot directory path, or ``None`` if the snapshot was
+    skipped (backup disabled, memories dir missing, or an IO error
+    occurred — logged at debug, never raises so callers can decide how to
+    react to a failed backup).
+    """
+    if not is_enabled():
+        logger.debug("Curator backup disabled by config; skipping memory snapshot")
+        return None
+
+    memories = _memories_dir()
+    if not memories.exists():
+        logger.debug("No ~/.hermes/memories/ directory — nothing to back up")
+        return None
+
+    backups = _memories_backups_dir()
+    try:
+        backups.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.debug("Failed to create memory backups dir %s: %s", backups, e)
+        return None
+
+    base_id = _utc_id()
+    snap_id = base_id
+    counter = 1
+    while (backups / snap_id).exists():
+        snap_id = f"{base_id}-{counter:02d}"
+        counter += 1
+
+    dest = backups / snap_id
+    try:
+        dest.mkdir(parents=True, exist_ok=False)
+    except OSError as e:
+        logger.debug("Failed to create memory snapshot dir %s: %s", dest, e)
+        return None
+
+    archive = dest / "memories.tar.gz"
+    try:
+        with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
+            for entry in sorted(memories.iterdir()):
+                if entry.name == ".curator_backups":
+                    continue
+                tf.add(str(entry), arcname=entry.name, recursive=True)
+        _write_memory_manifest(dest, reason, archive, _count_memory_files(memories))
+    except (OSError, tarfile.TarError) as e:
+        logger.debug("Curator memory snapshot failed: %s", e, exc_info=True)
+        try:
+            shutil.rmtree(dest, ignore_errors=True)
+        except OSError:
+            pass
+        return None
+
+    _prune_old_memory(keep=get_keep())
+    logger.info("Curator memory snapshot created: %s (%s)", snap_id, reason)
+    return dest
+
+
+def _prune_old_memory(keep: int) -> List[str]:
+    """Delete regular memory snapshots beyond the newest *keep*. Mirrors
+    ``_prune_old()`` but operates on the memories backup directory."""
+    backups = _memories_backups_dir()
+    if not backups.exists():
+        return []
+    entries: List[Tuple[str, Path]] = []
+    for child in backups.iterdir():
+        if not child.is_dir():
+            continue
+        if _ID_RE.match(child.name):
+            entries.append((child.name, child))
+    entries.sort(key=lambda t: t[0], reverse=True)
+    deleted: List[str] = []
+    for _, path in entries[keep:]:
+        try:
+            shutil.rmtree(path)
+            deleted.append(path.name)
+        except OSError as e:
+            logger.debug("Failed to prune memory snapshot %s: %s", path, e)
     return deleted
 
 
