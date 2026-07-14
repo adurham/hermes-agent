@@ -2063,3 +2063,42 @@ preserved; live API call authenticates (429 rate-limit, not 401). 309
 adapter/keychain/oauth-flow/credential-pool tests pass (2 pre-existing
 `test_credential_pool.py` disk-merge failures also fail on `main`);
 Keychain verified untouched after the run.
+
+
+### Fork-only fix — 2026-07-14 (Bearer clients no longer leak env ANTHROPIC_API_KEY as x-api-key)
+
+**`agent/anthropic_adapter.py` — `build_anthropic_client` + the Entra ID
+bearer-hook builder.**
+
+**Symptom:** hermes 401'd ("invalid x-api-key") on Anthropic even though
+`resolve_anthropic_token()` resolved a perfectly valid Claude Code OAuth
+credential, `~/.hermes/.env` was clean, and the same token worked via
+curl. Error banner said "Auth method: Bearer (OAuth/setup-token)" — which
+was true, and misleading.
+
+**Root cause:** the OAuth/bearer branches set `kwargs["auth_token"]` and
+leave `api_key` unset. The Anthropic SDK constructor then auto-reads
+`ANTHROPIC_API_KEY` from `os.environ` and sends it as an `x-api-key`
+header **alongside** `Authorization: Bearer`. The server evaluates the
+x-api-key header and rejects the whole request. Trigger was a long-dead
+OAuth token exported as `ANTHROPIC_API_KEY` in the kitty terminal
+process's environment — inherited by every tab, invisible to `.env`
+resolution, and shadowing nothing until the SDK picked it up. Reproduced
+directly: valid Bearer + stale x-api-key → 401 "invalid x-api-key";
+Bearer alone → 200.
+
+**Fix:** after constructing the client on a bearer path (auth_token set,
+api_key not passed), null out `client.api_key` so the SDK cannot attach
+x-api-key. Applied to both `build_anthropic_client` and the Entra ID
+bearer-hook builder (whose Authorization is rewritten per-request by an
+httpx hook, but which had the same silent x-api-key leak).
+
+**Merge note:** if upstream rewrites the client builders, re-apply the
+`client.api_key = None` guard on every path that authenticates via
+`auth_token`. The SDK's env auto-read is constructor behavior and cannot
+be suppressed by passing `api_key=None` (None triggers the env read).
+
+**Verification:** with `ANTHROPIC_API_KEY=<dead token>` poisoned into the
+environment, `build_anthropic_client(resolve_anthropic_token())` now has
+`api_key=None` and a live `messages.create` succeeds. 218
+adapter/keychain/oauth-flow tests pass.
