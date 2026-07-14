@@ -2193,26 +2193,59 @@ months, etc.).
   (`entries_checked`, `stale_path_candidates`, ...) folded into the existing
   curator run-report/`on_summary` callback. No file mutation, no warm-tier
   writes.
-- `dry_run=False` (live mutation — actually demoting/removing flagged
-  entries) is explicitly **out of scope** for this pass and raises
-  `NotImplementedError`. Ships only once dry-run reports have been reviewed
-  against real hot-tier content over a few real curator cycles.
 - Hooked into `maybe_run_curator()` after the existing skill-curation pass,
   wrapped in try/except so an audit failure can never break the existing
   curator flow.
 
 Design doc: `docs/plans/2026-07-14-hot-tier-audit.md` (full design, including
-the deferred LLM-classification step and live-mutation follow-up — this
-landed pass implements only its heuristic-only, dry-run-only MVP subset).
+the still-deferred LLM-classification step — this landed pass implements
+the heuristic-only stale-path subset, both dry-run and live mutation).
 
 **Config:**
 ```yaml
 curator:
-  hot_tier_audit: true        # default false
-  hot_tier_audit_dry_run: true # default true — set false only once live
-                                # mutation ships in a follow-up
+  hot_tier_audit: true         # default false
+  hot_tier_audit_dry_run: true # default true — set false for live mutation
 ```
 
 Tests: `tests/agent/test_hot_tier_audit.py` (13 tests — config defaults,
 stale/non-stale path classification, dry-run non-mutation guarantee,
-`NotImplementedError` on live mode, curator-hook wiring).
+curator-hook wiring).
+
+
+### Fork-only feature — 2026-07-14 (hot-tier audit live mutation)
+
+`agent/hot_tier_audit.py` (`84cbae4e3`) implements `dry_run=False`,
+replacing the `NotImplementedError` placeholder from the dry-run MVP
+above. Still heuristic-only — no LLM-based classification; this pass only
+automates what `classify_entries()`'s stale-path check already flags.
+
+**What it does:**
+- Snapshot-first: calls new `agent.curator_backup.snapshot_memory(reason=...)`
+  (mirrors `snapshot_skills()`'s tar.gz + `manifest.json` pattern, targets
+  `~/.hermes/memories/` instead of `~/.hermes/skills/`, respects the same
+  `curator.backup.enabled`/`curator.backup.keep` config and prunes old
+  snapshots the same way). If the snapshot fails or returns `None`, live
+  mutation aborts with `RuntimeError` — never mutates without a backup.
+- Every entry flagged `is_stale_path_candidate=True` is demoted to the warm
+  tier via `tools.memory_warm.get_warm_store().add(content=..., category=
+  "demoted-stale-path", tags="hot-tier-audit,auto-demoted")`, then removed
+  from its source hot-tier file (`MEMORY.md` or `USER.md` — provenance
+  tracked per-file, so a stale entry in `USER.md` never gets removed from
+  `MEMORY.md`). Warm-tier write happens before the hot-tier removal (a
+  failure there loses nothing from hot tier).
+- Non-stale entries are left untouched, in original order. A hot-tier file
+  is only rewritten when its content actually changed — zero stale
+  candidates in a file means no rewrite (avoids reformatting untouched
+  files, still takes the snapshot for predictability).
+- Summary dict gains `demoted_count` and `snapshot_path` alongside the
+  existing `entries_checked`/`stale_path_candidates` keys.
+
+**Config:** unchanged from the dry-run MVP above — flip
+`curator.hot_tier_audit_dry_run: false` to enable live mutation once dry-run
+reports are trusted (staged rollout per the design doc).
+
+Tests: `tests/agent/test_hot_tier_audit.py` grew to 18 (added 6 live-mode
+tests: snapshot-before-mutate ordering, snapshot-failure abort, stale-entry
+demotion + hot-tier removal, non-stale entries left alone, no-op when zero
+stale candidates, and cross-file provenance for MEMORY.md vs USER.md).
