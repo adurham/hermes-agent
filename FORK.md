@@ -24,6 +24,7 @@ will never touch them.
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
 | `agent/fork/diagnostics.py` | Per-turn usage history + tools-signature hash + xAI 403 entitlement hint |
 | `agent/fork/consult_nudge.py` | Second-opinion (consult tool) reminder — nudges the agent to call `consult(question, context)` for a review from a configurable reference model after N risky tool calls; reuses `skill_recall`'s risky-tool set. Config: `consult.nudge_interval`. |
+| `agent/hot_tier_audit.py` | Hot-tier audit — dry-run-only MVP. On a real curator pass, reads `MEMORY.md`/`USER.md` and flags entries whose extracted filesystem paths no longer exist on disk. Deterministic/heuristic-only (no LLM review yet); live mutation (`dry_run=False`) explicitly raises `NotImplementedError` pending a follow-up. Opt-in via `curator.hot_tier_audit` (default off), `curator.hot_tier_audit_dry_run` (default on). See `docs/plans/2026-07-14-hot-tier-audit.md`. |
 || `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. |
 || `agent/cc_aliases.py` | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility — maps Hermes built-in tool names to their Claude Code canonical equivalents so OAuth traffic counts as CC-API usage for billing. |
 || `agent/gemini_cloudcode_adapter.py` | Gemini → Cloud Code adapter for Gemini provider OAuth path. |
@@ -2170,3 +2171,48 @@ tool-agnostic scrub incl. `read_file`'s inf threshold, scrub-before-persist-
 to-disk) alongside the pre-existing 52/52 in that file. Manual sanity check:
 `sanitize_messages_for_refusal_retry` still scrubs historical messages via
 the shared module and still leaves the active user turn untouched.
+
+
+### Fork-only feature — 2026-07-14 (hot-tier audit, dry-run MVP)
+
+New `agent/hot_tier_audit.py` (`ea0aef879`). Addresses a real gap noticed in
+usage: hot-tier `MEMORY.md`/`USER.md` only get manually reviewed when a write
+is rejected for exceeding the char cap — nothing periodically re-checks
+existing entries for staleness (a dead file path sitting unnoticed for
+months, etc.).
+
+**What it does (this pass — deliberately narrow):**
+- On a real (non-dry) curator run, if `curator.hot_tier_audit: true`, reads
+  `MEMORY.md`/`USER.md` entries (same `ENTRY_DELIMITER` split
+  `tools/memory_tool.py` already uses) and regex-extracts path-shaped tokens
+  (`~/...`, `/Users/...`) from each entry.
+- Flags an entry as a stale-path candidate if any extracted path fails
+  `Path.exists()` after `expanduser()`.
+- `run_hot_tier_audit(dry_run=True)` (the default —
+  `curator.hot_tier_audit_dry_run` defaults on) only produces a summary dict
+  (`entries_checked`, `stale_path_candidates`, ...) folded into the existing
+  curator run-report/`on_summary` callback. No file mutation, no warm-tier
+  writes.
+- `dry_run=False` (live mutation — actually demoting/removing flagged
+  entries) is explicitly **out of scope** for this pass and raises
+  `NotImplementedError`. Ships only once dry-run reports have been reviewed
+  against real hot-tier content over a few real curator cycles.
+- Hooked into `maybe_run_curator()` after the existing skill-curation pass,
+  wrapped in try/except so an audit failure can never break the existing
+  curator flow.
+
+Design doc: `docs/plans/2026-07-14-hot-tier-audit.md` (full design, including
+the deferred LLM-classification step and live-mutation follow-up — this
+landed pass implements only its heuristic-only, dry-run-only MVP subset).
+
+**Config:**
+```yaml
+curator:
+  hot_tier_audit: true        # default false
+  hot_tier_audit_dry_run: true # default true — set false only once live
+                                # mutation ships in a follow-up
+```
+
+Tests: `tests/agent/test_hot_tier_audit.py` (13 tests — config defaults,
+stale/non-stale path classification, dry-run non-mutation guarantee,
+`NotImplementedError` on live mode, curator-hook wiring).
