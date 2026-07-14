@@ -2389,3 +2389,53 @@ are pre-existing (a `sys.argv[0]` → `__main__.py` resolution quirk under
 this test runner, unrelated to this change) — confirmed via `git stash`
 against unmodified `main`.
 
+### Fork-only feature — 2026-07-14 (Ctrl+C to skip the exit-cleanup wait)
+
+**Follow-up to the watchdog fix above.** Bumping the exit watchdog to 60s
+(from 30s) fixed the summary-swallowing bug, but it also means a user who
+exits with `/exit` now potentially sits through up to 45s of legitimate
+cleanup (memory-confirm LLM call + MCP teardown) with only two options:
+wait it out, or `kill -9` the process from another terminal. Neither is
+great — the second loses the graceful teardown (session persistence,
+memory commit) the wait exists to let finish.
+
+**What it does:** `_install_cleanup_skip_handler()` installs a temporary
+SIGINT handler for the duration of `_run_cleanup()` (renamed body:
+`_run_cleanup_body()`) that calls `os._exit(0)` directly on a Ctrl+C press,
+rather than raising `KeyboardInterrupt` — cleanup steps are wrapped in
+bare `except Exception` blocks that would otherwise swallow the interrupt
+and keep running anyway, defeating the point. A one-line hint
+(`(cleaning up — press Ctrl+C to quit immediately)`) prints alongside the
+existing "Shutting down…" message so the option is visible, not hidden.
+The previous SIGINT handler is restored via the caller's `finally` block
+regardless of how cleanup exits (normal return, raise, or the existing
+`except BaseException` around MCP shutdown), so a signal after cleanup
+completes behaves normally again.
+
+Safe to install unconditionally: by the time `_run_cleanup()` runs,
+`app.run()` has already returned, so prompt_toolkit's own TUI-level Ctrl+C
+binding (see the Windows SIGINT-absorb handler earlier in the file) is
+no longer live — this is a later phase of shutdown, not a competing
+handler for the same keypress. Skipped entirely under
+`PYTEST_CURRENT_TEST` (mirrors `_arm_exit_watchdog`'s own guard) and
+degrades to a no-op restore if `signal.signal()` fails (off-main-thread
+call, or a platform without the expected SIGINT semantics) — the 60s
+watchdog remains the backstop either way.
+
+Net effect: three ways to end up exited — cleanup finishes on its own
+(the common case, now fast-summary-first per the fix above), the user
+Ctrl+C's for an instant exit, or the 60s watchdog catches a genuinely
+wedged process. The cost report / resume hint is unaffected either way
+since it already prints before cleanup starts.
+
+**Tests:** `tests/cli/test_exit_cleanup_skip_handler.py` (new, 7 tests) —
+pytest no-op guard, install/restore round-trip, handler calls `os._exit`
+directly (not raise), graceful degradation when `signal.signal()` raises
+(non-main-thread), `_run_cleanup` installs-then-restores around the split
+`_run_cleanup_body()` including on a raising body, and the
+`notify_session_finalize` kwarg still threads through the split
+correctly (this was the actual regression risk introduced by the split —
+verified explicitly, not just assumed). Full existing `tests/cli/` exit/
+cleanup suite (31 pre-existing tests across 6 files) re-run clean
+alongside the new file (38 total).
+

@@ -1050,7 +1050,10 @@ def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
     Daemon threads keep running through ``Py_FinalizeEx``'s thread joins,
     so the timer fires even when the main thread is stuck in teardown.
 
-    Tune with ``HERMES_EXIT_WATCHDOG_S`` (seconds); ``0`` disables.
+    Tune with ``HERMES_EXIT_WATCHDOG_S`` (seconds); ``0`` disables. An
+    impatient user isn't stuck waiting for this full timeout either — see
+    ``_install_cleanup_skip_handler``, which lets a Ctrl+C pressed during
+    ``_run_cleanup`` exit immediately instead.
     """
     if timeout_s is None:
         try:
@@ -1107,6 +1110,61 @@ def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
         pass  # best-effort — never block shutdown on watchdog setup
 
 
+def _install_cleanup_skip_handler():
+    """Let an impatient user Ctrl+C past a slow ``_run_cleanup()`` instead
+    of sitting through the full ``HERMES_EXIT_WATCHDOG_S`` wait (default
+    60s — memory-confirm LLM call + MCP teardown can legitimately take
+    that long). Returns a zero-arg restore callback; call it once cleanup
+    finishes normally (a no-op restore is returned when installation is
+    skipped or fails, so callers never need to branch).
+
+    Safe to install unconditionally during ``_run_cleanup()``: by the time
+    it runs, ``app.run()`` has already returned, so prompt_toolkit's own
+    TUI-level Ctrl+C binding (see the Windows SIGINT-absorb handler
+    earlier in this file) is no longer live — this is a different phase
+    of shutdown, not a competing handler for the same keypress.
+
+    The pressed-Ctrl+C path calls ``os._exit(0)`` directly rather than
+    letting a raised ``KeyboardInterrupt`` unwind — cleanup steps are
+    littered with bare ``except Exception`` blocks that would likely
+    swallow it and keep going anyway, defeating the point of a fast exit.
+    Skipped entirely under pytest (mirrors ``_arm_exit_watchdog``'s own
+    guard) so test runs never have their SIGINT handling hijacked.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return lambda: None
+    try:
+        import signal as _signal
+    except Exception:
+        return lambda: None
+
+    def _skip_wait(signum, frame):
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        os._exit(0)
+
+    try:
+        _previous_handler = _signal.getsignal(_signal.SIGINT)
+        _signal.signal(_signal.SIGINT, _skip_wait)
+    except (ValueError, OSError, AttributeError):
+        # ValueError: not the main thread. OSError/AttributeError: platform
+        # doesn't support this signal the way we expect. Either way, fall
+        # back to "no skip available" rather than risk a half-installed
+        # handler — the watchdog is still the safety net.
+        return lambda: None
+
+    def _restore():
+        try:
+            _signal.signal(_signal.SIGINT, _previous_handler)
+        except Exception:
+            pass
+
+    return _restore
+
+
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done
@@ -1119,6 +1177,31 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     # leaving a zombie CLI holding the terminal for minutes.
     _arm_exit_watchdog()
 
+    # Give an impatient user a fast way out of the watchdog's full wait
+    # (default 60s) rather than only the option of sitting through it —
+    # a second Ctrl+C here exits immediately. Restored in the finally
+    # block below so a signal pressed after cleanup completes behaves
+    # normally again (no stray handler left installed).
+    _restore_sigint = _install_cleanup_skip_handler()
+    try:
+        print(
+            f"{_DIM}(cleaning up — press Ctrl+C to quit immediately){_RST}",
+            flush=True,
+        )
+    except Exception:
+        pass
+
+    try:
+        _run_cleanup_body(notify_session_finalize=notify_session_finalize)
+    finally:
+        _restore_sigint()
+
+
+def _run_cleanup_body(*, notify_session_finalize: bool = True):
+    """The actual cleanup steps, split out of ``_run_cleanup`` so the
+    Ctrl+C-skip handler installed there always gets restored via a
+    ``finally``, regardless of how this body exits (normal return,
+    exception, or the ``BaseException`` catch around MCP shutdown)."""
     # Reset terminal input modes first, before the slower resource teardown
     # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
     # user's terminal becomes usable immediately, and a later step raising
