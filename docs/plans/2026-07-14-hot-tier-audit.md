@@ -1,10 +1,21 @@
 # Hot-Tier Audit (curator-driven trim + flush)
 
-> **Status:** SCOPED, not started. Addendum to
+> **Status:** LLM classification (§2.1 step 2) landed. Addendum to
 > `2026-05-19-memory-recall-reminder-and-session-pin.md`, whose Feature A
 > (recall reminder) and Feature B (session-pin) both landed. This picks up
 > the explicit non-goal from that doc: "Hot-tier rotation (auto-swap stale
 > hot for high-retrieval warm). Too magical for v1."
+>
+> Progress: heuristic-only dry-run MVP (step 1/5/6 subset) landed in
+> `ea0aef879`; heuristic-only live mutation landed in `84cbae4e3`; the LLM
+> keep/demote/stale/dead classification pass (step 2) landed gated behind
+> `curator.consolidate` (reused, not a new flag), with hard-delete of
+> `stale`/`dead` additionally gated behind `curator.prune_builtins` per
+> step 3's original spec. See `FORK.md` for the landed implementation
+> details, including one deliberate deviation from step 5 (separate report
+> file instead of a shared section — a background-thread write race with
+> the skill curator's own report made sharing one file unsafe).
+>
 >
 > Trigger: Adam noticed his hot-tier `MEMORY.md` had a stale repo path
 > (`~/repos/claude-code` — the actual clone is `~/repos/hermes-agent`) sitting
