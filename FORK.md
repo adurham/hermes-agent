@@ -2624,4 +2624,33 @@ block waiting for it.
   explicitly deselected (1069 passed, 44 skipped, 8 deselected, exit 0)
   — zero new failures introduced.
 
+### Fork-only follow-up — 2026-07-14 (end-of-session ordering: curator, then memory-confirm, then cost summary)
+
+**User request:** the fast, non-blocking curator cost check should run
+BEFORE the (potentially slower, interactive) memory-confirm UI, not
+after — so a user about to sit through the confirm UI's countdown/review
+prompt already knows the curator's status, and the two calls read in the
+"natural" chronological sense (curator kicked off first, at startup;
+memory extraction is what actually happened during the just-ended
+conversation; then the summary of both).
+
+**Fix:** swapped the call order at all four `_fold_curator_cost_before_
+exit()` / `_run_memory_confirm_before_exit()` pairings in `cli.py` (the
+three explicit exit call sites plus `_run_cleanup_body`'s safety-net
+invocation) — curator now called first, memory-confirm second, in every
+case. Pure reordering; neither function's own behavior changed.
+
+**Tests:** `tests/cli/test_exit_summary_before_cleanup_ordering.py` — new
+`test_curator_fold_precedes_memory_confirm_at_every_exit_site` pins the
+new relative order (curator fold call site count must equal memory-
+confirm call site count — they're always paired — and each memory-confirm
+call must be preceded by a curator-fold call within the same local
+block). Complements (doesn't replace) the two existing tests that each
+independently pin "precedes the exit summary" for the two functions.
+
+Full regression sweep re-run: targeted files 242 passed / 1 skipped
+(exit 0); full `tests/cli/` suite with the same 8 pre-existing failures
+deselected — 1070 passed / 44 skipped / 8 deselected (exit 0). Zero new
+failures.
+
 
