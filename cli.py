@@ -982,6 +982,10 @@ _tui_input_modes_active = False
 # _run_cleanup_body's fallback invocation for paths that skip the explicit
 # pre-summary call.
 _memory_confirm_attempted = False
+# Same idempotency guard, for the background skill-curator cost fold-in
+# (see _fold_curator_cost_before_exit) — separate flag since the two run
+# independently and one being attempted says nothing about the other.
+_curator_fold_attempted = False
 
 
 def _mark_tui_input_modes_active() -> None:
@@ -1258,6 +1262,54 @@ def _run_memory_confirm_before_exit() -> None:
         pass
 
 
+def _fold_curator_cost_before_exit() -> None:
+    """Fold any COMPLETED background skill-curator review's LLM cost into
+    ``session_estimated_cost_usd``, once. Never blocks.
+
+    ``maybe_run_curator`` (kicked off at CLI/session startup, see
+    ``show_banner``) spawns a forked ``AIAgent`` in a daemon thread
+    (``agent.curator.run_curator_review``'s ``_llm_pass``) that can
+    legitimately run for minutes — its own docstring: "50-100 API calls
+    against hundreds of candidate skills". Exit must NEVER wait on that
+    thread the way ``_run_memory_confirm_before_exit`` waits on the
+    (bounded, ~30s) memory-extraction call. Instead:
+      - If the pass already finished, its cost is sitting in
+        ``agent.curator``'s ledger — drain it and fold it in, same pattern
+        as the memory-extraction cost above.
+      - If it's still running, print a one-line note so the cost total
+        isn't silently wrong — the user sees that a real, uncounted spend
+        is still in flight rather than assuming the printed total is
+        complete. That spend surfaces later via ``hermes curator status``.
+    Fork-only — no upstream equivalent (upstream has no curator subsystem).
+    """
+    global _curator_fold_attempted
+    if _curator_fold_attempted:
+        return
+    _curator_fold_attempted = True
+    if not _active_agent_ref:
+        return
+    try:
+        from agent.curator import get_and_reset_curator_cost_usd, is_curator_running
+        _curator_cost = get_and_reset_curator_cost_usd()
+        if _curator_cost:
+            _active_agent_ref.session_estimated_cost_usd = (
+                float(getattr(_active_agent_ref, "session_estimated_cost_usd", 0.0) or 0.0)
+                + _curator_cost
+            )
+        elif is_curator_running():
+            try:
+                print(
+                    f"{_DIM}(background skill curator still running — its "
+                    f"cost isn't included above; check `hermes curator "
+                    f"status` after it finishes){_RST}"
+                )
+            except Exception:
+                pass
+    except Exception:
+        # Never block exit on curator cost bookkeeping issues
+        pass
+
+
 def _run_cleanup_body(*, notify_session_finalize: bool = True):
     """The actual cleanup steps, split out of ``_run_cleanup`` so the
     Ctrl+C-skip handler installed there always gets restored via a
@@ -1321,6 +1373,10 @@ def _run_cleanup_body(*, notify_session_finalize: bool = True):
     # module-level guard makes it a no-op on the common path where it
     # already ran.
     _run_memory_confirm_before_exit()
+    # Same safety-net pattern for the background skill-curator's cost —
+    # non-blocking (see its docstring): folds in cost if the pass already
+    # finished, otherwise leaves a visible note that it's still running.
+    _fold_curator_cost_before_exit()
 
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
@@ -18086,6 +18142,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # the cost report would be missing that spend. Explained in
             # _run_memory_confirm_before_exit's docstring.
             _run_memory_confirm_before_exit()
+            # Same for the background skill-curator's cost, non-blocking.
+            _fold_curator_cost_before_exit()
             # Print the exit summary BEFORE cleanup: _run_cleanup() can block
             # for tens of seconds (memory-confirm LLM call, MCP/browser
             # teardown) and is guillotined by the exit watchdog (see
@@ -18278,6 +18336,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # the rest of cleanup. See _run_memory_confirm_before_exit's
             # docstring for the full history of why this ordering matters.
             _run_memory_confirm_before_exit()
+            # Same for the background skill-curator's cost, non-blocking.
+            _fold_curator_cost_before_exit()
             # Print the exit summary BEFORE cleanup: _run_cleanup() can block
             # for tens of seconds (memory-confirm LLM call, MCP/browser
             # teardown) and is guillotined by the exit watchdog (see
@@ -18903,6 +18963,8 @@ def main(
                 # summary, so a single-query run's cost report also reflects
                 # that spend instead of only the conversation turn itself.
                 _run_memory_confirm_before_exit()
+                # Same for the background skill-curator's cost, non-blocking.
+                _fold_curator_cost_before_exit()
                 cli._print_exit_summary()
         finally:
             _finalize_single_query(cli)

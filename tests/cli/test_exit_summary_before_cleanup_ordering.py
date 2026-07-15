@@ -54,6 +54,21 @@ def _find_all(pattern: str, text: str) -> list[int]:
     return [m.start() for m in re.finditer(re.escape(pattern), text)]
 
 
+def _bare_call_positions(call_text: str, src: str) -> list[int]:
+    """Offsets of lines that are ONLY ``call_text`` (a bare statement),
+    excluding occurrences inside comments/docstrings that merely mention
+    the call by name (e.g. a docstring explaining why some other function
+    must run before/after it).
+    """
+    positions = []
+    offset = 0
+    for line in src.splitlines(keepends=True):
+        if line.strip() == call_text:
+            positions.append(offset)
+        offset += len(line)
+    return positions
+
+
 def test_print_exit_summary_precedes_run_cleanup_on_every_interactive_exit_site():
     """Every bare ``_run_cleanup()`` call in cli.py's interactive exit
     paths must be preceded (not followed) by a ``self._print_exit_summary()``
@@ -117,16 +132,15 @@ def test_memory_confirm_precedes_print_exit_summary_on_every_exit_site():
     """
     src = CLI_PY.read_text(encoding="utf-8")
 
-    summary_call_positions = _find_all("self._print_exit_summary()", src) + _find_all(
-        "cli._print_exit_summary()", src
-    )
-    confirm_positions = _find_all("_run_memory_confirm_before_exit()", src)
+    summary_call_positions = _bare_call_positions(
+        "self._print_exit_summary()", src
+    ) + _bare_call_positions("cli._print_exit_summary()", src)
+    confirm_positions = _bare_call_positions("_run_memory_confirm_before_exit()", src)
 
-    # Definition + call sites: expect at least 1 def + 3 call sites = 4.
-    assert len(confirm_positions) >= 4, (
-        "Expected _run_memory_confirm_before_exit() to appear at least 4 "
-        "times in cli.py (its def, plus 3 call sites: stdin-unavailable "
-        f"exit, main run() exit, single-query exit); found {len(confirm_positions)}."
+    assert len(confirm_positions) >= 3, (
+        "Expected _run_memory_confirm_before_exit() to appear as a bare "
+        "call at least 3 times in cli.py (stdin-unavailable exit, main "
+        f"run() exit, single-query exit); found {len(confirm_positions)}."
     )
 
     assert len(summary_call_positions) >= 3, (
@@ -148,6 +162,45 @@ def test_memory_confirm_precedes_print_exit_summary_on_every_exit_site():
         assert gap < 800, (
             f"_print_exit_summary() at offset {summary_pos} is preceded by "
             f"_run_memory_confirm_before_exit() but {gap} chars earlier -- "
+            "too far to confidently be the paired call for this exit site. "
+            "Verify manually that ordering is still correct here."
+        )
+
+
+def test_curator_cost_fold_precedes_print_exit_summary_on_every_exit_site():
+    """Every exit-summary call site must also be preceded by a
+    `_fold_curator_cost_before_exit()` call, so a completed background
+    skill-curator review's LLM cost is folded in the same way the
+    memory-confirm cost is (see `test_memory_confirm_precedes_print_
+    exit_summary_on_every_exit_site` above for the memory-confirm half
+    of this pairing).
+    """
+    src = CLI_PY.read_text(encoding="utf-8")
+
+    summary_call_positions = _bare_call_positions(
+        "self._print_exit_summary()", src
+    ) + _bare_call_positions("cli._print_exit_summary()", src)
+    fold_positions = _bare_call_positions("_fold_curator_cost_before_exit()", src)
+
+    assert len(fold_positions) >= 3, (
+        "Expected _fold_curator_cost_before_exit() to appear as a bare "
+        "call at least 3 times in cli.py (stdin-unavailable exit, main "
+        f"run() exit, single-query exit); found {len(fold_positions)}."
+    )
+
+    for summary_pos in summary_call_positions:
+        preceding = [p for p in fold_positions if p < summary_pos]
+        assert preceding, (
+            f"_print_exit_summary() call at offset {summary_pos} has no "
+            "preceding _fold_curator_cost_before_exit() call anywhere "
+            "earlier in the file. A completed background curator review's "
+            "cost must be folded in BEFORE the exit summary is printed."
+        )
+        nearest_preceding = max(preceding)
+        gap = summary_pos - nearest_preceding
+        assert gap < 800, (
+            f"_print_exit_summary() at offset {summary_pos} is preceded by "
+            f"_fold_curator_cost_before_exit() but {gap} chars earlier -- "
             "too far to confidently be the paired call for this exit site. "
             "Verify manually that ordering is still correct here."
         )

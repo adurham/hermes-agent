@@ -2539,3 +2539,89 @@ step's real work was invisible to two different things).**
   and `test_resume_quiet_stderr.py`) were confirmed pre-existing via
   `git stash` against unmodified `main` before this fix.
 
+### Fork-only follow-up — 2026-07-14 (background skill-curator's own LLM cost was also uncounted)
+
+**Problem:** the memory-confirm cost fix above only covers ONE of two
+background LLM-calling subsystems that fire around CLI exit. The other —
+`agent/curator.py`'s skill curator (`maybe_run_curator`, kicked off in a
+daemon thread from `show_banner()` at CLI/session startup, not at exit)
+— spawns a forked `AIAgent` (`run_curator_review`'s `_llm_pass` →
+`_run_llm_review`) that reviews/prunes/consolidates agent-created skills.
+That fork accumulates real cost on its own `session_estimated_cost_usd`,
+but nothing ever surfaced it anywhere — not in the curator's own state
+file (`hermes curator status`), not in the CLI's exit-summary cost
+report. User-visible symptom: exiting mid-curation showed a
+`⚡ skill_man github-pr-review-and-merge` line (the curator's forked
+agent actively mid-tool-call) printed AFTER the "Cost: $X.XX (estimated)"
+line — visible proof of in-flight spend the total never counted.
+
+Architecturally different from the memory-extraction fix: the curator's
+review pass is unbounded and can legitimately run for minutes (its own
+docstring: "50-100 API calls against hundreds of candidate skills"),
+started well before exit and running fully async in a daemon thread —
+so unlike the bounded (~30s) memory-extraction call, exit must NEVER
+block waiting for it.
+
+**Fix:**
+- `agent/curator.py`: added a small module-level cost ledger
+  (`_accumulated_curator_cost_usd`, lock-guarded — the review runs on a
+  daemon thread) plus `_active_curator_thread` (tracks the daemon thread
+  object so liveness can be checked without blocking). `_run_llm_review`
+  now captures `review_agent.session_estimated_cost_usd` in its `finally`
+  block (before `.close()`) and records it via the new
+  `_record_curator_cost_usd`. Two new public functions:
+  `get_and_reset_curator_cost_usd()` (drain-and-reset, same pattern as
+  the memory-extraction ledger) and `is_curator_running()` (True while
+  the tracked thread is alive).
+- `cli.py`: new `_fold_curator_cost_before_exit()` (idempotent, guarded
+  by `_curator_fold_attempted`), called at all three exit call sites
+  alongside `_run_memory_confirm_before_exit()` (same ordering
+  requirement — before `_print_exit_summary()`). Non-blocking by
+  construction: drains the ledger and folds a nonzero result into
+  `session_estimated_cost_usd`; when the ledger is empty AND
+  `is_curator_running()` is True, prints a one-line dim note
+  ("background skill curator still running — its cost isn't included
+  above; check `hermes curator status` after it finishes") so the
+  printed total isn't silently incomplete without any indication. When
+  the ledger is empty and curator isn't running (curator never fired,
+  or already folded), it's a silent no-op.
+
+**Tests:**
+- `tests/agent/test_curator.py` — 6 new tests: `_run_llm_review` records
+  nonzero fork cost into the ledger (draining resets it to 0.0 on a
+  second read), a zero-cost fork doesn't pollute `result_meta` with a
+  `cost_usd` key, a fork stub with NO `session_estimated_cost_usd`
+  attribute at all doesn't break the review pass (cost tracking is
+  advisory), and `is_curator_running()` correctly reflects thread
+  liveness (false with no thread, true while a stub thread is alive,
+  false again after it exits).
+- `tests/cli/test_curator_cost_before_exit.py` (new file, 7 tests) —
+  folds a nonzero drained cost into `session_estimated_cost_usd`, a zero
+  drain with curator not running leaves the total unchanged and prints
+  nothing, a zero drain WITH curator running prints the "still running"
+  note without touching the cost total, the idempotent guard prevents a
+  second drain, a missing `_active_agent_ref` is a no-op, and a raising
+  `get_and_reset_curator_cost_usd` doesn't crash exit.
+- `tests/cli/test_exit_summary_before_cleanup_ordering.py` — extended
+  with a third source-level test pinning
+  `_fold_curator_cost_before_exit()` before every exit-summary call site,
+  same pattern as the memory-confirm ordering test. Fixed a latent bug in
+  this file's own helper while adding it: the original `_find_all`-based
+  substring search for `_run_memory_confirm_before_exit()` / the new
+  `_fold_curator_cost_before_exit()` matched docstring MENTIONS of the
+  call (e.g. `_run_memory_confirm_before_exit`'s own docstring explains
+  its relationship to `_print_exit_summary()` in prose), not just actual
+  call statements — happened to not matter for the memory-confirm test
+  (the def-line's proximity papered over it) but caused a real false
+  failure for the curator test. Replaced with `_bare_call_positions()`,
+  which only counts lines that are ONLY the call statement (mirroring
+  the bare-`_run_cleanup()` filter the very first test in this file
+  already used) — applied retroactively to the memory-confirm test too
+  for consistency.
+- Full regression sweep: `tests/agent/test_curator.py` +
+  `test_hot_tier_audit.py` (105 passed, 1 skipped) and the full
+  `tests/cli/` suite with the 8 already-documented pre-existing failures
+  explicitly deselected (1069 passed, 44 skipped, 8 deselected, exit 0)
+  — zero new failures introduced.
+
+
