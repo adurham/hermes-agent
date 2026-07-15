@@ -594,3 +594,122 @@ class TestFlushBuffer:
         cleared = mex_extractor.flush_buffer("sid")
         assert cleared == 1
         assert mex_buffer.get_session_entries("sid") == []
+
+
+# =========================================================================
+# extractor.py — cost ledger (fork-only, 2026-07-14)
+#
+# The CLI exit path (cli.py's _run_memory_confirm_before_exit) drains this
+# ledger and folds it into session_estimated_cost_usd so the printed cost
+# report includes memory-extraction LLM spend. These tests exercise
+# _call_extraction_llm directly (not on_turn_end/on_session_end) since
+# every other test in this file patches _call_extraction_llm itself away
+# — the accounting logic lives inside that function and needs a real
+# (mocked-at-the-transport-level) call to exercise.
+# =========================================================================
+
+class TestExtractionCostLedger:
+    def _fake_response(self, *, model="claude-haiku-4-5", input_tokens=100, output_tokens=50):
+        from types import SimpleNamespace
+        usage = SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        )
+        message = SimpleNamespace(content='{"entries": []}')
+        choice = SimpleNamespace(message=message)
+        return SimpleNamespace(choices=[choice], usage=usage, model=model)
+
+    def test_ledger_starts_at_zero_after_drain(self):
+        # Draining with nothing recorded returns 0.0 and leaves it at 0.0.
+        assert mex_extractor.get_and_reset_extraction_cost_usd() == 0.0
+        assert mex_extractor.get_and_reset_extraction_cost_usd() == 0.0
+
+    def test_call_extraction_llm_records_nonzero_cost(self, monkeypatch):
+        # Drain any residue from other tests running in the same process.
+        mex_extractor.get_and_reset_extraction_cost_usd()
+
+        response = self._fake_response()
+        monkeypatch.setattr(
+            "agent.auxiliary_client.call_llm", lambda **kw: response,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *a, **kw: ("anthropic", "claude-haiku-4-5", None, None, "anthropic_messages"),
+        )
+        monkeypatch.setattr(
+            mex_extractor, "_get_extraction_config",
+            lambda: {
+                "model": "claude-haiku-4-5", "provider": "anthropic", "timeout": 30,
+                "max_tokens_per_turn": 1024, "max_tokens_session_end": 2048,
+                "include_pre_compress": True, "auto_commit_session_end": False,
+            },
+        )
+
+        mex_extractor._call_extraction_llm(system="sys", user="usr", max_tokens=100)
+
+        cost = mex_extractor.get_and_reset_extraction_cost_usd()
+        assert cost > 0.0, (
+            "Expected a real API call with usage tokens against a priced "
+            "model (claude-haiku-4-5) to record nonzero cost in the ledger."
+        )
+
+    def test_ledger_drains_and_resets(self, monkeypatch):
+        mex_extractor.get_and_reset_extraction_cost_usd()
+
+        response = self._fake_response()
+        monkeypatch.setattr(
+            "agent.auxiliary_client.call_llm", lambda **kw: response,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *a, **kw: ("anthropic", "claude-haiku-4-5", None, None, "anthropic_messages"),
+        )
+        monkeypatch.setattr(
+            mex_extractor, "_get_extraction_config",
+            lambda: {
+                "model": "claude-haiku-4-5", "provider": "anthropic", "timeout": 30,
+                "max_tokens_per_turn": 1024, "max_tokens_session_end": 2048,
+                "include_pre_compress": True, "auto_commit_session_end": False,
+            },
+        )
+
+        mex_extractor._call_extraction_llm(system="sys", user="usr", max_tokens=100)
+        mex_extractor._call_extraction_llm(system="sys", user="usr", max_tokens=100)
+
+        first_drain = mex_extractor.get_and_reset_extraction_cost_usd()
+        assert first_drain > 0.0
+        # Second drain immediately after must be zero -- the ledger resets
+        # on read so the CLI exit path never double-counts a prior drain.
+        second_drain = mex_extractor.get_and_reset_extraction_cost_usd()
+        assert second_drain == 0.0
+
+    def test_cost_accounting_failure_does_not_break_extraction(self, monkeypatch):
+        """A pricing/accounting exception must never surface to the caller
+        -- the actual extraction content is the contract; cost tracking is
+        advisory bookkeeping layered on top."""
+        mex_extractor.get_and_reset_extraction_cost_usd()
+
+        response = self._fake_response()
+        monkeypatch.setattr(
+            "agent.auxiliary_client.call_llm", lambda **kw: response,
+        )
+        # Make provider/model resolution blow up -- the try/except around it
+        # in _call_extraction_llm must swallow this.
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr(
+            mex_extractor, "_get_extraction_config",
+            lambda: {
+                "model": "claude-haiku-4-5", "provider": "anthropic", "timeout": 30,
+                "max_tokens_per_turn": 1024, "max_tokens_session_end": 2048,
+                "include_pre_compress": True, "auto_commit_session_end": False,
+            },
+        )
+
+        # Must not raise despite the resolution failure.
+        result = mex_extractor._call_extraction_llm(system="sys", user="usr", max_tokens=100)
+        assert result == "{\"entries\": []}"

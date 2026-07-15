@@ -2439,3 +2439,103 @@ verified explicitly, not just assumed). Full existing `tests/cli/` exit/
 cleanup suite (31 pre-existing tests across 6 files) re-run clean
 alongside the new file (38 total).
 
+### Fork-only fix — 2026-07-14 (memory-confirm cost not counted, no exit progress indicator)
+
+**Problem (two related complaints, same root cause: the memory-confirm
+step's real work was invisible to two different things).**
+
+1. The Phase 2 memory-confirm step (`hermes_cli/memory_confirm.py::
+   confirm_and_commit` → `tools.memory_extraction.extractor.
+   on_session_end` → `_call_extraction_llm`) makes a real LLM call against
+   whatever `auxiliary.memory_extraction.*` is configured (default
+   `claude-haiku-4-5`). That call has a real dollar cost, but nothing
+   folded it into `agent.session_estimated_cost_usd` — the printed
+   "Cost: $X.XX (estimated)" line in the exit summary only ever reflected
+   the main conversation loop's spend, silently under-counting the true
+   cost of ending the session. Compounding this, the confirm step ran
+   inline inside `_run_cleanup_body`, which is called AFTER
+   `_print_exit_summary()` reads that total in source order at every
+   interactive-exit call site — so even if the cost had been tracked
+   somewhere, the summary printed before it existed.
+2. Separately, the confirm step printed a single static
+   `"Memory: reviewing proposals from this session..."` banner and then
+   blocked silently on the LLM call (which can legitimately take several
+   seconds, longer with several proposals needing conflict classification
+   via `conflict.classify` — one LLM call per ambiguous entry). No
+   spinner, no heartbeat — the terminal looked hung with zero visible
+   indication anything was happening, a regression from earlier behavior
+   where at least a "thinking" indicator was visible.
+
+**Fix:**
+- `tools/memory_extraction/extractor.py`: added a small module-level cost
+  ledger (`_accumulated_cost_usd`, lock-guarded since per-turn extraction
+  runs on a background thread). `_call_extraction_llm` now mirrors
+  `call_llm`'s own provider/model resolution (via
+  `agent.auxiliary_client._resolve_task_provider_model`, read-only, purely
+  for pricing) and calls `agent.usage_pricing.{normalize_usage,
+  estimate_usage_cost}` on the response, recording the result. New
+  `get_and_reset_extraction_cost_usd()` drains (reads + zeroes) the ledger
+  — the CLI exit path uses this so a later drain never double-counts a
+  cost already folded into the session total. Cost accounting is
+  best-effort: any pricing/resolution failure is caught and logged at
+  debug level, never affects the actual extraction call or its return
+  value.
+- `hermes_cli/memory_confirm.py`: `confirm_and_commit`'s
+  `extractor.on_session_end` call and `_classify_proposals`'s per-entry
+  `conflict.classify` loop are now each wrapped in a `KawaiiSpinner`
+  (reusing the same spinner class `agent/display.py` already uses
+  elsewhere in the CLI) so the terminal shows live progress instead of a
+  static banner during the LLM call(s). The session-end spinner is
+  stopped as the FIRST action inside `_confirm_callback` (called
+  synchronously mid-`on_session_end`) rather than after the call returns,
+  so it never animates concurrently with `_interactive_review`'s own
+  classify spinner or printed proposal list. Both spinners degrade
+  silently to no-progress-indicator on construction/drive failure —
+  never block the actual LLM call.
+- `cli.py`: extracted the memory-confirm invocation out of
+  `_run_cleanup_body` into a standalone, idempotent
+  `_run_memory_confirm_before_exit()` (guarded by a new
+  `_memory_confirm_attempted` module flag). All three exit call sites
+  (the stdin-unavailable early-return path, the main `run()`
+  finally-block exit, and the single-query `-q` path — the last of these
+  was previously fine on ordering but still missing the cost fold-in) now
+  call this function explicitly BEFORE `self._print_exit_summary()` /
+  `cli._print_exit_summary()`, and it folds the drained extraction cost
+  into `agent.session_estimated_cost_usd` right there. `_run_cleanup_body`
+  still calls the same function (now a no-op on the common path thanks to
+  the guard) as a safety net for any exit route that doesn't call it
+  explicitly first.
+
+**Tests:**
+- `tests/tools/test_memory_extraction.py` — new `TestExtractionCostLedger`
+  class (4 tests): ledger starts/drains at 0.0, a real
+  `_call_extraction_llm` invocation (mocked at the `call_llm` transport
+  boundary, not at `_call_extraction_llm` itself like every other test in
+  the file) records nonzero cost against a priced model, the ledger
+  resets on read so a second immediate drain returns 0.0, and a
+  provider-resolution exception during cost accounting doesn't propagate
+  or block the extraction call's actual return value.
+- `tests/cli/test_memory_confirm_before_exit.py` (new file, 6 tests) —
+  `_run_memory_confirm_before_exit` folds a nonzero drained cost into
+  `session_estimated_cost_usd`, a zero drain leaves the total unchanged,
+  the idempotent guard prevents `confirm_and_commit` from running twice
+  in one process, a missing `_active_agent_ref` is a no-op, a raising
+  `confirm_and_commit` doesn't crash exit, and a raising
+  `get_and_reset_extraction_cost_usd` doesn't crash exit or undo an
+  already-successful `confirm_and_commit` call.
+- `tests/cli/test_exit_summary_before_cleanup_ordering.py` — extended with
+  a second source-level test asserting every `_print_exit_summary()` call
+  site is preceded (within the same local block) by a
+  `_run_memory_confirm_before_exit()` call, pinning the new ordering
+  requirement the same way the existing test pins the
+  `_run_cleanup()`-after-summary ordering.
+- Full regression sweep: `tests/cli/`, `tests/tools/test_memory_
+  extraction.py`, and `tests/hermes_cli/test_memory_confirm.py` re-run
+  together (1069+ tests collected in `tests/cli/` alone) — zero new
+  failures introduced. The 8 failures present both before and after this
+  change (5 in `test_exit_summary_resume_hint.py`, already documented
+  above as a pre-existing `sys.argv[0]` → `__main__.py` test-runner
+  quirk; 3 more in `test_cli_approval_ui.py`, `test_cli_context_warning.py`,
+  and `test_resume_quiet_stderr.py`) were confirmed pre-existing via
+  `git stash` against unmodified `main` before this fix.
+
