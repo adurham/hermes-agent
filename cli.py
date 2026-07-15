@@ -6460,6 +6460,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     chunk = _strip_markdown_syntax(chunk)
                 _emit_one(chunk)
 
+            # Sentence-boundary early flush: the wrap-width loop above only
+            # empties the buffer once it reaches a full terminal line's
+            # worth of NEW characters. Between tool calls the model can
+            # generate a short sentence/paragraph (well under wrap_w) and
+            # then go silent on this content block for a while (streaming
+            # tool-call arguments instead) — that already-generated text
+            # sits invisible in _stream_buf until the *next* visible-text
+            # delta pushes it over wrap_w, a newline shows up, or the turn
+            # ends and _flush_stream() drains it. From the user's side this
+            # looks exactly like the display froze mid-sentence even though
+            # the model already produced more.  Mirrors the same
+            # natural-boundary idea _flush_reasoning_preview() already uses
+            # for the dim reasoning box — flush what's already a complete
+            # sentence even if the line hasn't hit full width yet.
+            min_sentence_flush = max(24, wrap_w // 3)
+            if len(self._stream_buf) >= min_sentence_flush:
+                cut = -1
+                for boundary in (". ", "! ", "? ", ": "):
+                    idx = self._stream_buf.rfind(boundary)
+                    if idx != -1:
+                        cut = max(cut, idx + len(boundary) - 1)
+                if cut > 0:
+                    chunk, self._stream_buf = (
+                        self._stream_buf[: cut + 1],
+                        self._stream_buf[cut + 1 :].lstrip(" "),
+                    )
+                    if self.final_response_markdown == "strip":
+                        chunk = _strip_markdown_syntax(chunk)
+                    _emit_one(chunk)
+
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
         # If we're still inside a "reasoning block" at end-of-stream, it was
