@@ -92,3 +92,29 @@ class TestPartialLineForceFlush:
         cli._flush_stream()
         plain = _strip_ansi("\n".join(emitted))
         assert plain.count("x") == 300
+
+    def test_completed_sentence_flushes_before_wrap_width(self, cli_stub):
+        """A short, already-complete sentence must not sit invisibly
+        buffered while the model goes on to generate a tool call with no
+        further visible text — see the "cut off, waiting on a command"
+        symptom this covers (2026-07-15)."""
+        cli, emitted = cli_stub
+        # wrap_w is 74 here (fixture); a complete sentence well under that
+        # must still get flushed to screen instead of waiting for wrap_w
+        # or a newline that may never come (model went on to a tool call).
+        text = "Let me check that file first. "
+        assert len(text) < 74
+        cli._stream_delta(text)
+        plain = _strip_ansi("\n".join(emitted))
+        assert "Let me check that file first." in plain
+        # Remainder buffer should be empty (or just trailing whitespace)
+        assert cli._stream_buf.strip() == ""
+
+    def test_short_incomplete_fragment_still_buffered(self, cli_stub):
+        """Guard against over-eager flushing: a short fragment with no
+        sentence-ending punctuation must still wait (existing behavior)."""
+        cli, emitted = cli_stub
+        cli._stream_delta("Let me check that")
+        plain = _strip_ansi("\n".join(emitted))
+        assert "Let me check that" not in plain
+        assert cli._stream_buf == "Let me check that"

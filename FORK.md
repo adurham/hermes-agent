@@ -2653,4 +2653,48 @@ Full regression sweep re-run: targeted files 242 passed / 1 skipped
 deselected — 1070 passed / 44 skipped / 8 deselected (exit 0). Zero new
 failures.
 
+### Fork-only fix — 2026-07-15 (response box: short complete sentences invisibly buffered before a tool call)
+
+**Symptom:** in the interactive CLI, the streamed response box could look
+frozen mid-sentence with no closing border while the model was actually
+still working — e.g. the model finishes a short sentence ("Let me first
+enumerate outgoing messages and their subjects...") then goes on to
+generate a tool call's arguments with no further visible text. From the
+user's side this reads as a cut-off/stuck display.
+
+**Root cause:** `_emit_stream_text()`'s partial-line force-flush (`cli.py`,
+TTFT-perception fix from earlier this month) only paints buffered text once
+it hits a full terminal line's worth of new characters, or a newline
+arrives. A short-but-complete sentence well under that width just sits in
+`_stream_buf` until something else eventually flushes it — the next
+visible-text delta, the tool call actually firing (`_on_tool_gen_start` →
+`_flush_stream()`), or end of turn. No indicator distinguishes "still
+generating" from "done, waiting."
+
+**Fix:** added a sentence-boundary early flush right after the existing
+wrap-width loop in `_emit_stream_text()` — once the buffer holds at least
+`max(24, wrap_w // 3)` characters and ends with `. `, `! `, `? `, or `: `,
+flush immediately rather than waiting for wrap-width or a newline. Mirrors
+the natural-boundary approach `_flush_reasoning_preview()` already uses for
+the dim reasoning box. Short fragments with no sentence-ending punctuation
+still stay buffered (unchanged behavior) — this only closes the gap for
+complete-but-short chunks.
+
+**Tests:** `tests/cli/test_stream_partial_line_flush.py` — two new cases,
+`test_completed_sentence_flushes_before_wrap_width` (a short complete
+sentence must flush immediately, buffer left empty) and
+`test_short_incomplete_fragment_still_buffered` (guards against
+over-eager flushing — a fragment with no sentence-ending punctuation must
+still wait).
+
+Verification: targeted file 8 passed (exit 0). Full `tests/cli/` suite —
+1074 passed, 6 failed (exit 1); all 6 failures confirmed pre-existing via
+an isolated `git worktree` checkout of `HEAD` before this change existed
+(`test_exit_summary_resume_hint.py` ×5, `test_cli_context_warning.py` ×1) —
+zero new failures from this fix. Two additional tests
+(`test_cli_approval_ui.py`, `test_resume_quiet_stderr.py`) intermittently
+flagged under the parallel runner / a bare full-file pytest run but passed
+cleanly 3/3 and 1/1 in isolation — shared-state/parallel-worker flakiness,
+not real regressions.
+
 
