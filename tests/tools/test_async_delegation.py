@@ -446,6 +446,38 @@ def test_dispatch_never_forwards_model_toolsets():
     assert "toolsets" not in captured
 
 
+def test_dispatch_forwards_model_and_agent_type():
+    """The live model dispatch path (run_agent._dispatch_delegate_task) MUST
+    forward an explicit top-level `model` / `agent_type` through to
+    delegate_task(). Regression test: these two schema fields were added to
+    DELEGATE_TASK_SCHEMA and to the registry-fallback lambda, but the live
+    dispatch call site (the one actually used for every top-level model tool
+    call) never forwarded them — so a model-requested `model="claude-opus-4-7"`
+    was silently dropped and fell through to delegation.model /
+    delegation.by_provider.<provider>.model / the parent's model instead of
+    honoring the caller's explicit choice."""
+    from unittest.mock import patch
+    import run_agent
+
+    class _FakeAgent:
+        _delegate_depth = 0
+
+    captured = {}
+
+    def _fake_delegate(**kwargs):
+        captured.update(kwargs)
+        return "{}"
+
+    with patch("tools.delegate_tool.delegate_task", _fake_delegate):
+        run_agent.AIAgent._dispatch_delegate_task(
+            _FakeAgent(),
+            {"goal": "x", "model": "claude-opus-4-7", "agent_type": "coder"},
+        )
+
+    assert captured.get("model") == "claude-opus-4-7"
+    assert captured.get("agent_type") == "coder"
+
+
 def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
     """A background child must NOT remain in parent._active_children —
     otherwise parent-turn interrupts / cache evicts / session close would
