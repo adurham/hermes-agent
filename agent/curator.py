@@ -36,6 +36,60 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Cost ledger + in-flight tracking (fork-only, 2026-07-14)
+#
+# The curator's LLM review pass (_run_llm_review) spawns a forked AIAgent
+# that accumulates real cost on its own `session_estimated_cost_usd`, but
+# that fork runs in a daemon thread (`run_curator_review`'s `_llm_pass`,
+# kicked off from `maybe_run_curator` at CLI/session startup) and nothing
+# ever surfaced its spend anywhere — not in the curator's own state file,
+# not in the CLI's exit-summary cost report. Since the fork can legitimately
+# run for minutes (its own docstring: "50-100 API calls against hundreds of
+# candidate skills"), the CLI must never BLOCK exit waiting for it — this
+# ledger + liveness check let the exit path fold in the cost non-blockingly
+# when the pass already finished, and skip it (visibly, via
+# is_curator_running()) when it's still going.
+# ---------------------------------------------------------------------------
+_curator_cost_lock = threading.Lock()
+_accumulated_curator_cost_usd: float = 0.0
+_active_curator_thread: Optional[threading.Thread] = None
+
+
+def _record_curator_cost_usd(amount: float) -> None:
+    global _accumulated_curator_cost_usd
+    if not amount:
+        return
+    with _curator_cost_lock:
+        _accumulated_curator_cost_usd += amount
+
+
+def get_and_reset_curator_cost_usd() -> float:
+    """Return accumulated curator-review LLM spend and zero the ledger.
+
+    Non-blocking: reflects only completed review passes. A pass still
+    running in its daemon thread has not yet deposited its cost here —
+    callers should pair this with :func:`is_curator_running` to tell
+    "no curator spend this session" apart from "curator still working,
+    ask again later / check `hermes curator status`".
+    """
+    global _accumulated_curator_cost_usd
+    with _curator_cost_lock:
+        amount = _accumulated_curator_cost_usd
+        _accumulated_curator_cost_usd = 0.0
+    return amount
+
+
+def is_curator_running() -> bool:
+    """True while a background curator review thread is still alive.
+
+    Used by the CLI exit path to explain a $0.00 / unchanged cost fold-in
+    as "still running" rather than "nothing happened" when a pass was
+    kicked off but hasn't finished by the time the process exits.
+    """
+    t = _active_curator_thread
+    return t is not None and t.is_alive()
+
 
 def _strip_aux_credential(value: Any) -> Optional[str]:
     if value is None:
@@ -1756,6 +1810,11 @@ def run_curator_review(
         _llm_pass()
     else:
         t = threading.Thread(target=_llm_pass, daemon=True, name="curator-review")
+        # Track the thread so is_curator_running() can tell the CLI exit
+        # path (and anything else) whether a pass is still in flight —
+        # its cost hasn't landed in the ledger yet if so.
+        global _active_curator_thread
+        _active_curator_thread = t
         t.start()
 
     return {
@@ -1968,6 +2027,20 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         result_meta["summary"] = result_meta["error"]
     finally:
         if review_agent is not None:
+            # Capture the fork's accumulated cost BEFORE close() — record
+            # it in the module ledger so the CLI exit path (or `hermes
+            # curator status`) can surface real spend for a pass that was
+            # previously invisible everywhere. Best-effort: a missing/odd
+            # attribute must never break the review pass itself.
+            try:
+                _fork_cost = float(
+                    getattr(review_agent, "session_estimated_cost_usd", 0.0) or 0.0
+                )
+                if _fork_cost:
+                    _record_curator_cost_usd(_fork_cost)
+                    result_meta["cost_usd"] = _fork_cost
+            except Exception:
+                pass
             try:
                 review_agent.close()
             except Exception:
