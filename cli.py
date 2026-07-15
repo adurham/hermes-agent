@@ -976,6 +976,12 @@ _deferred_agent_startup_done = False
 # one-shot CLI runs — which also register _run_cleanup via atexit — don't emit
 # escape codes for modes they never enabled (#36823).
 _tui_input_modes_active = False
+# Guard so the Phase 2 memory-confirm UI (see _run_memory_confirm_before_exit)
+# runs at most once per process, even though it's now called from multiple
+# exit call sites (each guarded by its own early-return / atexit path) plus
+# _run_cleanup_body's fallback invocation for paths that skip the explicit
+# pre-summary call.
+_memory_confirm_attempted = False
 
 
 def _mark_tui_input_modes_active() -> None:
@@ -1197,6 +1203,61 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         _restore_sigint()
 
 
+def _run_memory_confirm_before_exit() -> None:
+    """Run the Phase 2 memory-confirm UI for buffered proposals, once.
+
+    Fork-only — no upstream equivalent. Historically this lived inline
+    inside ``_run_cleanup_body``, which put it BEHIND
+    ``self._print_exit_summary()`` in source order on every interactive-exit
+    call site. Since ``confirm_and_commit`` makes a real LLM call (up to the
+    ``auxiliary.memory_extraction.timeout`` default of 30s) and the exit
+    watchdog (``_arm_exit_watchdog``) can fire mid-``_run_cleanup``, that
+    ordering meant the process could ``os._exit(0)`` before the cost
+    report / resume hint ever printed (see the 2026-07-14 exit-summary-
+    ordering fix in FORK.md) — and separately, the confirm step's own LLM
+    spend was invisible to ``session_estimated_cost_usd`` because nothing
+    folded it in.
+    Callers now invoke this explicitly BEFORE ``_print_exit_summary()`` so
+    both the confirm UI and its cost are guaranteed to land in the printed
+    summary. ``_run_cleanup_body`` still calls this too (idempotently, via
+    the module-level guard below) as a safety net for any exit path that
+    doesn't call it explicitly first — better a double-checked no-op than a
+    dropped memory review.
+    """
+    global _memory_confirm_attempted
+    if _memory_confirm_attempted:
+        return
+    _memory_confirm_attempted = True
+    try:
+        if _active_agent_ref:
+            _session_msgs_for_mex = getattr(_active_agent_ref, '_session_messages', None) or []
+            from hermes_cli.memory_confirm import confirm_and_commit
+            confirm_and_commit(
+                getattr(_active_agent_ref, 'session_id', "") or "",
+                _session_msgs_for_mex if isinstance(_session_msgs_for_mex, list) else [],
+            )
+            # Fold the confirm step's LLM spend (session-end extraction pass
+            # + any conflict-classification calls) into the same counter
+            # _print_exit_summary reads, so the printed total reflects the
+            # real cost of ending the session, not just the conversation
+            # that preceded it.
+            try:
+                from tools.memory_extraction.extractor import (
+                    get_and_reset_extraction_cost_usd,
+                )
+                _mex_cost = get_and_reset_extraction_cost_usd()
+                if _mex_cost:
+                    _active_agent_ref.session_estimated_cost_usd = (
+                        float(getattr(_active_agent_ref, "session_estimated_cost_usd", 0.0) or 0.0)
+                        + _mex_cost
+                    )
+            except Exception:
+                pass
+    except Exception:
+        # Never block exit on extraction issues
+        pass
+
+
 def _run_cleanup_body(*, notify_session_finalize: bool = True):
     """The actual cleanup steps, split out of ``_run_cleanup`` so the
     Ctrl+C-skip handler installed there always gets restored via a
@@ -1253,18 +1314,13 @@ def _run_cleanup_body(*, notify_session_finalize: bool = True):
     # proposals BEFORE shutdown_memory_provider runs (the latter would auto-
     # stash if no confirm callback was registered). No-op when
     # memory.auto_extract is off in config or when there are no proposals.
-    # Fork-only — no upstream equivalent.
-    try:
-        if _active_agent_ref:
-            _session_msgs_for_mex = getattr(_active_agent_ref, '_session_messages', None) or []
-            from hermes_cli.memory_confirm import confirm_and_commit
-            confirm_and_commit(
-                getattr(_active_agent_ref, 'session_id', "") or "",
-                _session_msgs_for_mex if isinstance(_session_msgs_for_mex, list) else [],
-            )
-    except Exception:
-        # Never block exit on extraction issues
-        pass
+    # Fork-only — no upstream equivalent. Extracted into a standalone,
+    # idempotent function (see its docstring) so exit call sites can invoke
+    # it explicitly BEFORE ``_print_exit_summary()`` — this call here is the
+    # safety-net path for any exit route that skips that explicit call; the
+    # module-level guard makes it a no-op on the common path where it
+    # already ran.
+    _run_memory_confirm_before_exit()
 
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
@@ -18025,6 +18081,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
                 "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
             )
+            # Run the memory-confirm UI (and fold its LLM cost into the
+            # session total) BEFORE printing the exit summary — otherwise
+            # the cost report would be missing that spend. Explained in
+            # _run_memory_confirm_before_exit's docstring.
+            _run_memory_confirm_before_exit()
             # Print the exit summary BEFORE cleanup: _run_cleanup() can block
             # for tens of seconds (memory-confirm LLM call, MCP/browser
             # teardown) and is guillotined by the exit watchdog (see
@@ -18210,6 +18271,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
                 except Exception:
                     pass
+            # Run the memory-confirm UI (and fold its LLM cost into the
+            # session total) BEFORE printing the exit summary, so both the
+            # confirm UI's own output AND its LLM spend are guaranteed to
+            # appear/be counted even if the exit watchdog later guillotines
+            # the rest of cleanup. See _run_memory_confirm_before_exit's
+            # docstring for the full history of why this ordering matters.
+            _run_memory_confirm_before_exit()
             # Print the exit summary BEFORE cleanup: _run_cleanup() can block
             # for tens of seconds (memory-confirm LLM call, MCP/browser
             # teardown) and is guillotined by the exit watchdog (see
@@ -18829,6 +18897,12 @@ def main(
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
+                # Same ordering fix as the interactive-mode exit paths: run
+                # the memory-confirm step (and fold its LLM cost into
+                # session_estimated_cost_usd) before printing the exit
+                # summary, so a single-query run's cost report also reflects
+                # that spend instead of only the conversation turn itself.
+                _run_memory_confirm_before_exit()
                 cli._print_exit_summary()
         finally:
             _finalize_single_query(cli)

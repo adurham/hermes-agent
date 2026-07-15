@@ -52,6 +52,49 @@ _per_turn_thread: Optional[threading.Thread] = None
 # Telemetry log handle (lazy)
 _telemetry_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Cost ledger (fork-only, 2026-07-14)
+#
+# Phase 2 auto-memory makes real LLM calls (per-turn, pre-compress,
+# session-end, and conflict-classification) that were previously invisible
+# to session cost accounting — the CLI's exit summary only ever priced the
+# main agent loop's own API calls, so the "Memory: reviewing proposals..."
+# step's spend simply vanished from the user-visible total. Every call in
+# this module runs on the process's main thread or a short-lived worker
+# thread, never overlapping across sessions in the CLI's single-process
+# model, so a simple module-level accumulator (guarded by a lock for the
+# per-turn background thread) is sufficient — no need for a per-session
+# keyed ledger. ``get_and_reset_extraction_cost_usd`` is the drain API the
+# CLI exit path uses to fold this into ``agent.session_estimated_cost_usd``
+# right before printing the exit summary.
+# ---------------------------------------------------------------------------
+_cost_ledger_lock = threading.Lock()
+_accumulated_cost_usd: float = 0.0
+
+
+def get_and_reset_extraction_cost_usd() -> float:
+    """Return the accumulated memory-extraction LLM spend and zero the ledger.
+
+    Called once per CLI exit (see ``hermes_cli`` / ``cli.py``'s exit-summary
+    wiring) so the reported total reflects every ``_call_extraction_llm``
+    invocation since the last drain — per-turn, pre-compress, session-end,
+    and conflict-classification calls all funnel through the same function
+    and are recorded there regardless of which path is invoking it.
+    """
+    global _accumulated_cost_usd
+    with _cost_ledger_lock:
+        amount = _accumulated_cost_usd
+        _accumulated_cost_usd = 0.0
+    return amount
+
+
+def _record_extraction_cost_usd(amount: float) -> None:
+    global _accumulated_cost_usd
+    if not amount:
+        return
+    with _cost_ledger_lock:
+        _accumulated_cost_usd += amount
+
 
 # ---------------------------------------------------------------------------
 # Config / enable check
@@ -174,6 +217,22 @@ def _call_extraction_llm(
     elif cfg.get("timeout"):
         call_kwargs["timeout"] = cfg["timeout"]
 
+    # Resolve provider/model/api_mode the same way call_llm will internally,
+    # purely so cost estimation below has a real routing target to price
+    # against — call_llm doesn't hand back its resolution, so we mirror it
+    # read-only. Best-effort: any failure here just leaves cost unpriced,
+    # never blocks the actual call.
+    _resolved_provider = _resolved_base_url = _resolved_api_mode = None
+    try:
+        from agent.auxiliary_client import _resolve_task_provider_model
+        _resolved_provider, _, _resolved_base_url, _, _resolved_api_mode = (
+            _resolve_task_provider_model(
+                "memory_extraction", cfg.get("provider"), cfg.get("model"),
+            )
+        )
+    except Exception:
+        pass
+
     response = call_llm(**call_kwargs)
     content = response.choices[0].message.content
     if not isinstance(content, str):
@@ -186,6 +245,30 @@ def _call_extraction_llm(
         "output_chars": len(content),
         "usage": _maybe_extract_usage(response),
     })
+    # Cost accounting (fork-only): fold this call's spend into the module
+    # ledger so the CLI exit path can add it to session_estimated_cost_usd.
+    # Never lets a pricing failure affect the caller — this whole block is
+    # advisory bookkeeping, not part of the extraction contract.
+    try:
+        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        raw_usage = getattr(response, "usage", None)
+        if raw_usage is not None:
+            canonical = normalize_usage(
+                raw_usage, provider=_resolved_provider, api_mode=_resolved_api_mode,
+            )
+            _model_for_pricing = (
+                getattr(response, "model", "") or cfg.get("model") or _DEFAULT_MODEL
+            )
+            cost_result = estimate_usage_cost(
+                _model_for_pricing,
+                canonical,
+                provider=_resolved_provider,
+                base_url=_resolved_base_url,
+            )
+            if cost_result.amount_usd is not None:
+                _record_extraction_cost_usd(float(cost_result.amount_usd))
+    except Exception as e:
+        logger.debug("memory extraction: cost accounting failed: %s", e)
     return content.strip()
 
 

@@ -155,17 +155,43 @@ def _classify_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     Each annotated entry has the original fields plus:
         verdict: ConflictVerdict
         outcome: dict (the would-be apply_verdict result, NOT applied)
+
+    Shows a spinner while this runs — each entry can trigger its own LLM
+    classification call (``conflict.classify``), so with several proposals
+    this step can legitimately take a few seconds with nothing else printed.
+    Without visible progress here, a user watching the terminal only ever
+    sees the static "reviewing proposals..." banner (printed by the caller)
+    for the whole duration, which reads as a hang. The spinner is
+    best-effort: any failure to construct/drive it silently degrades to no
+    progress indicator rather than blocking classification.
     """
     from tools.memory_extraction import conflict
+
+    spinner = None
+    try:
+        from agent.display import KawaiiSpinner
+        noun = "entry" if len(proposals) == 1 else "entries"
+        spinner = KawaiiSpinner(f"classifying {len(proposals)} {noun} against memory")
+        spinner.start()
+    except Exception:
+        spinner = None
+
     annotated: List[Dict[str, Any]] = []
-    for p in proposals:
-        try:
-            v = conflict.classify(p["content"])
-        except Exception as e:
-            logger.warning("memory confirm: classify failed: %s", e)
-            from tools.memory_extraction.conflict import ConflictVerdict
-            v = ConflictVerdict(verdict="NEW", rationale=f"classify failed: {e}")
-        annotated.append({**p, "verdict": v})
+    try:
+        for p in proposals:
+            try:
+                v = conflict.classify(p["content"])
+            except Exception as e:
+                logger.warning("memory confirm: classify failed: %s", e)
+                from tools.memory_extraction.conflict import ConflictVerdict
+                v = ConflictVerdict(verdict="NEW", rationale=f"classify failed: {e}")
+            annotated.append({**p, "verdict": v})
+    finally:
+        if spinner is not None:
+            try:
+                spinner.stop("")
+            except Exception:
+                pass
     return annotated
 
 
@@ -217,14 +243,50 @@ def confirm_and_commit(
     print("Memory: reviewing proposals from this session...")
     _print_separator()
 
+    # The session-end extraction pass below makes a real LLM call
+    # (extractor._call_extraction_llm via on_session_end) that can take
+    # several seconds — previously nothing printed between the banner
+    # above and the proposal list, which read as a hang (the process
+    # looked frozen even though it was actively waiting on the LLM).
+    # Spinner covers ONLY that initial extraction pass: on_session_end
+    # calls confirm_callback synchronously partway through, and
+    # _interactive_review prints its own output (+ its own classify
+    # spinner) — so the callback stops this spinner as its first action,
+    # before _interactive_review renders anything, to avoid two spinners
+    # animating over each other on the same terminal line.
+    _spinner = None
+    try:
+        from agent.display import KawaiiSpinner
+        _spinner = KawaiiSpinner("extracting memory proposals")
+        _spinner.start()
+    except Exception:
+        _spinner = None
+
     def _confirm_callback(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if _spinner is not None:
+            try:
+                _spinner.stop("")
+            except Exception:
+                pass
         return _interactive_review(proposals)
 
-    summary = extractor.on_session_end(
-        session_id, final_messages or [],
-        interactive=True,
-        confirm_callback=_confirm_callback,
-    )
+    try:
+        summary = extractor.on_session_end(
+            session_id, final_messages or [],
+            interactive=True,
+            confirm_callback=_confirm_callback,
+        )
+    finally:
+        # No-op if the callback already stopped it (the common case); this
+        # only fires when on_session_end returned/raised before ever
+        # invoking confirm_callback (e.g. the extraction LLM call itself
+        # failed) — the spinner's own ``running`` guard makes a repeat
+        # stop() call harmless either way.
+        if _spinner is not None:
+            try:
+                _spinner.stop("")
+            except Exception:
+                pass
 
     print()
     _print_separator()

@@ -1,6 +1,9 @@
 """Regression test: the CLI must print `_print_exit_summary()` (cost
 report + `--resume <session_id>` hint) BEFORE calling `_run_cleanup()` on
-every interactive-mode exit path.
+every interactive-mode exit path. It must also run
+`_run_memory_confirm_before_exit()` before `_print_exit_summary()` at each
+of those same sites, so the memory-confirm LLM call's cost is folded into
+the total before it's printed.
 
 Why this matters: `_run_cleanup()` can block for tens of seconds — the
 Phase 2 memory-confirm LLM call (`confirm_and_commit` ->
@@ -30,6 +33,13 @@ early-return path and the main `run()` finally-block exit path) to call
 ordering at the source level so a future edit can't silently reintroduce
 the swallow-on-watchdog bug. (The single-query path was already correctly
 ordered and is not covered here.)
+
+Follow-up fix (2026-07-14, same day): the memory-confirm step itself was
+extracted out of `_run_cleanup_body` into `_run_memory_confirm_before_exit`
+(idempotent) so its own LLM cost could be drained and folded into
+`session_estimated_cost_usd` -- but only if it runs BEFORE
+`_print_exit_summary()` reads that total. This file's second test pins
+that ordering too.
 """
 
 from __future__ import annotations
@@ -93,4 +103,51 @@ def test_print_exit_summary_precedes_run_cleanup_on_every_interactive_exit_site(
             f"self._print_exit_summary() but {gap} chars earlier -- too far "
             "to confidently be the paired call for this exit site. Verify "
             "manually that ordering is still correct for this call site."
+        )
+
+
+def test_memory_confirm_precedes_print_exit_summary_on_every_exit_site():
+    """Every `self._print_exit_summary()` / `cli._print_exit_summary()`
+    call site in cli.py's exit paths must be preceded by a
+    `_run_memory_confirm_before_exit()` call within the same local block,
+    so the memory-confirm step's LLM cost is folded into
+    `session_estimated_cost_usd` BEFORE the summary reads and prints it.
+    Covers all three exit paths: the stdin-unavailable early return, the
+    main run() finally-block exit, and the single-query (`-q`) path.
+    """
+    src = CLI_PY.read_text(encoding="utf-8")
+
+    summary_call_positions = _find_all("self._print_exit_summary()", src) + _find_all(
+        "cli._print_exit_summary()", src
+    )
+    confirm_positions = _find_all("_run_memory_confirm_before_exit()", src)
+
+    # Definition + call sites: expect at least 1 def + 3 call sites = 4.
+    assert len(confirm_positions) >= 4, (
+        "Expected _run_memory_confirm_before_exit() to appear at least 4 "
+        "times in cli.py (its def, plus 3 call sites: stdin-unavailable "
+        f"exit, main run() exit, single-query exit); found {len(confirm_positions)}."
+    )
+
+    assert len(summary_call_positions) >= 3, (
+        "Expected at least 3 exit-summary call sites (self._print_exit_summary "
+        f"x2 + cli._print_exit_summary x1); found {len(summary_call_positions)}."
+    )
+
+    for summary_pos in summary_call_positions:
+        preceding = [p for p in confirm_positions if p < summary_pos]
+        assert preceding, (
+            f"_print_exit_summary() call at offset {summary_pos} has no "
+            "preceding _run_memory_confirm_before_exit() call anywhere "
+            "earlier in the file. The memory-confirm step (and its LLM "
+            "cost) must run BEFORE the exit summary is printed, otherwise "
+            "the printed cost total misses that spend."
+        )
+        nearest_preceding = max(preceding)
+        gap = summary_pos - nearest_preceding
+        assert gap < 800, (
+            f"_print_exit_summary() at offset {summary_pos} is preceded by "
+            f"_run_memory_confirm_before_exit() but {gap} chars earlier -- "
+            "too far to confidently be the paired call for this exit site. "
+            "Verify manually that ordering is still correct here."
         )
