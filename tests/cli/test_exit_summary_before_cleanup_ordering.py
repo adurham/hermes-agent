@@ -204,3 +204,46 @@ def test_curator_cost_fold_precedes_print_exit_summary_on_every_exit_site():
             "too far to confidently be the paired call for this exit site. "
             "Verify manually that ordering is still correct here."
         )
+
+
+def test_curator_fold_precedes_memory_confirm_at_every_exit_site():
+    """User-requested end-of-session order: curator check first, then
+    memory-confirm, then the exit summary. Both individually precede the
+    summary (pinned by the two tests above); this test additionally pins
+    their RELATIVE order at each of the (>= 3) exit call sites, so a
+    future edit can't silently swap them back.
+
+    Rationale: the curator check is near-instant and never blocks (it
+    either folds an already-finished pass's cost or prints one note and
+    returns), while the memory-confirm UI is interactive and can take a
+    while (countdown + review prompt). Running the fast, non-blocking
+    check first means a user who's about to sit through the slower
+    confirm UI already knows the curator status.
+    """
+    src = CLI_PY.read_text(encoding="utf-8")
+
+    fold_positions = _bare_call_positions("_fold_curator_cost_before_exit()", src)
+    confirm_positions = _bare_call_positions("_run_memory_confirm_before_exit()", src)
+
+    assert len(fold_positions) == len(confirm_positions), (
+        "Expected the same number of _fold_curator_cost_before_exit() and "
+        "_run_memory_confirm_before_exit() call sites (they're always "
+        f"paired); found {len(fold_positions)} vs {len(confirm_positions)}."
+    )
+
+    for confirm_pos in confirm_positions:
+        preceding_folds = [p for p in fold_positions if p < confirm_pos]
+        assert preceding_folds, (
+            f"_run_memory_confirm_before_exit() at offset {confirm_pos} has "
+            "no preceding _fold_curator_cost_before_exit() call -- the "
+            "curator check must run FIRST (fast, non-blocking) before the "
+            "slower, interactive memory-confirm UI."
+        )
+        nearest_preceding = max(preceding_folds)
+        gap = confirm_pos - nearest_preceding
+        assert gap < 300, (
+            f"_run_memory_confirm_before_exit() at offset {confirm_pos} is "
+            f"preceded by _fold_curator_cost_before_exit() but {gap} chars "
+            "earlier -- too far to confidently be the paired call for this "
+            "exit site. Verify manually that ordering is still correct here."
+        )

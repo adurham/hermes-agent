@@ -1372,11 +1372,13 @@ def _run_cleanup_body(*, notify_session_finalize: bool = True):
     # safety-net path for any exit route that skips that explicit call; the
     # module-level guard makes it a no-op on the common path where it
     # already ran.
-    _run_memory_confirm_before_exit()
-    # Same safety-net pattern for the background skill-curator's cost —
-    # non-blocking (see its docstring): folds in cost if the pass already
-    # finished, otherwise leaves a visible note that it's still running.
+    #
+    # Order: curator check first (near-instant — either folds an already-
+    # finished pass's cost or prints one note and returns; never blocks),
+    # then the memory-confirm UI (interactive, can take a while with the
+    # countdown + review prompt), then (by the caller) the exit summary.
     _fold_curator_cost_before_exit()
+    _run_memory_confirm_before_exit()
 
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
@@ -18137,13 +18139,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
                 "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
             )
-            # Run the memory-confirm UI (and fold its LLM cost into the
-            # session total) BEFORE printing the exit summary — otherwise
-            # the cost report would be missing that spend. Explained in
-            # _run_memory_confirm_before_exit's docstring.
-            _run_memory_confirm_before_exit()
-            # Same for the background skill-curator's cost, non-blocking.
+            # Order: curator (near-instant, never blocks) then the
+            # memory-confirm UI (interactive, can take longer) then the
+            # exit summary. Both fold their LLM cost into
+            # session_estimated_cost_usd before it's read below —
+            # otherwise the cost report would be missing that spend.
+            # Explained in each function's docstring.
             _fold_curator_cost_before_exit()
+            _run_memory_confirm_before_exit()
             # Print the exit summary BEFORE cleanup: _run_cleanup() can block
             # for tens of seconds (memory-confirm LLM call, MCP/browser
             # teardown) and is guillotined by the exit watchdog (see
@@ -18329,15 +18332,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
                 except Exception:
                     pass
-            # Run the memory-confirm UI (and fold its LLM cost into the
-            # session total) BEFORE printing the exit summary, so both the
-            # confirm UI's own output AND its LLM spend are guaranteed to
-            # appear/be counted even if the exit watchdog later guillotines
-            # the rest of cleanup. See _run_memory_confirm_before_exit's
-            # docstring for the full history of why this ordering matters.
-            _run_memory_confirm_before_exit()
-            # Same for the background skill-curator's cost, non-blocking.
+            # Order: curator (near-instant, never blocks) then the
+            # memory-confirm UI (interactive, can take longer), so both the
+            # confirm UI's own output AND both functions' LLM spend are
+            # guaranteed to appear/be counted even if the exit watchdog
+            # later guillotines the rest of cleanup. See
+            # _run_memory_confirm_before_exit's docstring for the full
+            # history of why this ordering matters.
             _fold_curator_cost_before_exit()
+            _run_memory_confirm_before_exit()
             # Print the exit summary BEFORE cleanup: _run_cleanup() can block
             # for tens of seconds (memory-confirm LLM call, MCP/browser
             # teardown) and is guillotined by the exit watchdog (see
@@ -18957,14 +18960,15 @@ def main(
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
-                # Same ordering fix as the interactive-mode exit paths: run
-                # the memory-confirm step (and fold its LLM cost into
-                # session_estimated_cost_usd) before printing the exit
-                # summary, so a single-query run's cost report also reflects
-                # that spend instead of only the conversation turn itself.
-                _run_memory_confirm_before_exit()
-                # Same for the background skill-curator's cost, non-blocking.
+                # Same ordering fix as the interactive-mode exit paths:
+                # curator (near-instant, never blocks) then the
+                # memory-confirm step, folding both functions' LLM cost
+                # into session_estimated_cost_usd before printing the exit
+                # summary, so a single-query run's cost report also
+                # reflects that spend instead of only the conversation
+                # turn itself.
                 _fold_curator_cost_before_exit()
+                _run_memory_confirm_before_exit()
                 cli._print_exit_summary()
         finally:
             _finalize_single_query(cli)
