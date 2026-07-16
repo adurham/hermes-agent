@@ -1173,7 +1173,64 @@ class ProcessRegistry:
         """Get a session by ID (running or finished)."""
         with self._lock:
             session = self._running.get(session_id) or self._finished.get(session_id)
-        return self._refresh_detached_session(session)
+        return self._bounded_refresh_detached_session(session)
+
+    # Backstop timeout for `_bounded_refresh_detached_session` — see its
+    # docstring. Kept short: this runs on the hot path of every `get()`
+    # call (poll/log/kill/wait/write/submit/close all route through it),
+    # so a hang here should surface as "proceed with stale state" almost
+    # immediately, not as a multi-second stall repeated on every call.
+    _REFRESH_HANG_TIMEOUT = 2.0
+
+    def _bounded_refresh_detached_session(
+        self, session: Optional[ProcessSession], timeout: Optional[float] = None,
+    ) -> Optional[ProcessSession]:
+        """Run ``_refresh_detached_session`` with a hard wall-clock bound.
+
+        ``_refresh_detached_session`` calls out to PID/host-liveness probes
+        (psutil, ``/proc`` reads, or a ``ps`` subprocess with its own
+        internal timeout) that are normally sub-millisecond but carry no
+        *guaranteed* bound — a wedged process table, an NFS-backed ``/proc``,
+        or contention under heavy host load can stall the calling thread
+        indefinitely. Every caller of this helper (``get()``, and the
+        ``wait()`` polling loop) promises callers a bounded response time, so
+        the actual refresh runs in a daemon thread and we give up after
+        ``timeout``, returning the session UNCHANGED (stale-but-safe) rather
+        than blocking the caller forever.
+
+        This closes the gap behind a real-world incident: a
+        ``process(action="wait", timeout=300)`` call whose TUI-displayed
+        elapsed time reached ~38,000s (over 10 hours) against its 300s
+        budget — the hang was reachable both via ``wait()``'s polling loop
+        AND via the plain ``get()`` call every other process action
+        (poll/log/kill/write/submit/close) makes on every invocation. Fixing
+        only the loop left ``get()`` -- and therefore every other action --
+        still exposed.
+
+        A thread that never finishes is leaked but harmless: it holds no
+        lock the rest of the registry depends on, and is a daemon thread so
+        it's reaped when the process exits.
+        """
+        if session is None:
+            return None
+        effective_timeout = timeout if timeout is not None else self._REFRESH_HANG_TIMEOUT
+        out: dict = {}
+
+        def _run(_session=session):
+            out["session"] = self._refresh_detached_session(_session)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=max(effective_timeout, 0.05))
+        if t.is_alive():
+            logger.warning(
+                "process_registry: _refresh_detached_session hung past "
+                "%.1fs for session %s; proceeding with unrefreshed state "
+                "rather than blocking indefinitely",
+                effective_timeout, session.id,
+            )
+            return session
+        return out.get("session", session)
 
     def _reconcile_local_exit(self, session: "ProcessSession") -> None:
         """Reconcile session.exited against the real child process state.
@@ -1362,13 +1419,23 @@ class ProcessRegistry:
 
         deadline = time.monotonic() + effective_timeout
 
+        # `self.get()` above already ran the refresh through
+        # `_bounded_refresh_detached_session`, so this loop's own refresh
+        # calls reuse the same bounded helper -- every iteration of this
+        # polling loop is now capped, closing the same hang class described
+        # in that helper's docstring (a stalled PID/host probe could
+        # otherwise block this loop past its promised `effective_timeout`;
+        # observed in the wild as a `process(action="wait", timeout=300)`
+        # call whose TUI elapsed reached ~38,000s against a 300s budget).
         while time.monotonic() < deadline:
-            session = self._refresh_detached_session(session)
+            session = self._bounded_refresh_detached_session(session)
             if session is None:
                 return {"status": "not_found", "error": f"No process with ID {session_id}"}
             # Reconcile against real child state — guards against orphaned-
             # pipe reader hangs where the reader is blocked but the direct
-            # child has already exited (issue #17327).
+            # child has already exited (issue #17327). `_reconcile_local_exit`
+            # only touches local `Popen.poll()` + a non-blocking pipe drain
+            # (never a remote/env call), so it doesn't need the same bound.
             self._reconcile_local_exit(session)
             if session.exited:
                 self._completion_consumed.add(session_id)
