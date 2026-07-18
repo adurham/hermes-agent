@@ -2120,11 +2120,14 @@ def _read_main_model() -> str:
 
     Runtime override: when an AIAgent is active with a CLI/gateway-provided
     model that differs from config.yaml, ``set_runtime_main()`` records the
-    override in a process-local global. This is consulted FIRST so tools
-    that gate on "the active main model" (e.g. ``vision_analyze``'s native
-    fast path) see the live runtime, not the persisted config default.
+    override in thread-local storage (one slot per thread — see the
+    ``_runtime_main_tls`` definition for why this must not be a shared
+    global). This is consulted FIRST so tools that gate on "the active main
+    model" (e.g. ``vision_analyze``'s native fast path) see the live
+    runtime for THIS thread, not the persisted config default or another
+    thread's override.
     """
-    override = _RUNTIME_MAIN_MODEL
+    override = _rtl_get("model")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2151,7 +2154,7 @@ def _read_main_provider() -> str:
     Runtime override: see ``_read_main_model`` — same mechanism for the
     provider half of the runtime tuple.
     """
-    override = _RUNTIME_MAIN_PROVIDER
+    override = _rtl_get("provider")
     if isinstance(override, str) and override.strip():
         return override.strip().lower()
     try:
@@ -2171,16 +2174,16 @@ def _read_main_api_key() -> str:
     """Read the user's main model API key from the runtime override or config.
 
     Mirrors ``_read_main_model`` / ``_read_main_provider``: checks the
-    process-local ``_RUNTIME_MAIN_API_KEY`` override first (set by
-    ``set_runtime_main`` when an AIAgent is active), then falls back to
-    ``model.api_key`` in config.yaml.
+    thread-local API-key override first (set by ``set_runtime_main`` when
+    an AIAgent is active), then falls back to ``model.api_key`` in
+    config.yaml.
 
     Used by the ``custom`` provider fallback chain so that auxiliary tasks
     configured with an explicit ``base_url`` but empty ``api_key`` inherit
     the main model's credentials instead of falling to ``no-key-required``
     (issue #9318).
     """
-    override = _RUNTIME_MAIN_API_KEY
+    override = _rtl_get("api_key")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2201,7 +2204,7 @@ def _read_main_base_url() -> str:
 
     Same override-then-config pattern as ``_read_main_api_key``.
     """
-    override = _RUNTIME_MAIN_BASE_URL
+    override = _rtl_get("base_url")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2237,13 +2240,49 @@ def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
     return _read_main_api_key()
 
 
-# Process-local override set by AIAgent at session/turn start. Single-threaded
-# per turn — no lock needed. Cleared by ``clear_runtime_main()``.
-_RUNTIME_MAIN_PROVIDER: str = ""
-_RUNTIME_MAIN_MODEL: str = ""
-_RUNTIME_MAIN_BASE_URL: str = ""
-_RUNTIME_MAIN_API_KEY: str = ""
-_RUNTIME_MAIN_API_MODE: str = ""
+# THREAD-LOCAL override set by AIAgent at session/turn start, one slot per
+# thread. Cleared (for the calling thread only) by ``clear_runtime_main()``.
+#
+# History (fork bug, found 2026-07-18): this used to be five bare module
+# globals with a comment claiming "single-threaded per turn — no lock
+# needed." That was false the moment background AIAgent forks existed:
+# ``_spawn_background_review`` (bg-review daemon thread) and
+# ``maybe_auto_title`` (auto-title daemon thread) each run a full turn
+# concurrently with the main conversation thread, and each calls
+# ``set_runtime_main()`` for ITS OWN provider/model. With bare globals,
+# whichever thread wrote last won for every thread's ``_read_main_provider()``
+# / ``_read_main_model()`` / ``_resolve_auto()`` reads process-wide — a true
+# data race, not a locking gap (a lock wouldn't have fixed "last writer wins
+# for unrelated threads"; the state needed to be *per-thread*, not shared).
+#
+# Concretely: a background-review fork configured via
+# ``auxiliary.background_review.{provider,model}`` (e.g. a cheaper
+# ollama-cloud/gemma model) calls set_runtime_main() on its own daemon
+# thread. If title_generation's daemon thread (main provider = anthropic)
+# happened to resolve its task config in that window, it read the
+# bg-review thread's clobbered globals and shipped a
+# claude-sonnet-5-session's title request as model "gemma4:31b" to the
+# Anthropic endpoint -> HTTP 404 "model: gemma4:31b" ("Auxiliary title
+# generation failed"). Reproduced directly by calling set_runtime_main()
+# from a simulated second thread and observing _read_main_provider() flip
+# for the main thread.
+#
+# threading.local() gives every thread its own attribute namespace, so a
+# bg-review thread's set_runtime_main() call is invisible to the main
+# thread and to auto-title's own daemon thread. Each thread still calls
+# set_runtime_main() itself at its own turn start (turn_context.py /
+# background_review.py), so no caller-side changes are needed — only the
+# storage had to stop being shared.
+_runtime_main_tls = threading.local()
+
+
+def _rtl_get(attr: str) -> str:
+    return getattr(_runtime_main_tls, attr, "")
+
+
+def _rtl_set(**kwargs: str) -> None:
+    for k, v in kwargs.items():
+        setattr(_runtime_main_tls, k, v)
 
 
 def set_runtime_main(
@@ -2254,7 +2293,7 @@ def set_runtime_main(
     api_key: str = "",
     api_mode: str = "",
 ) -> None:
-    """Record the live runtime provider/model/credentials for the current AIAgent.
+    """Record the live runtime provider/model/credentials for the CALLING thread.
 
     Called by ``run_agent.AIAgent._sync_runtime_main_for_aux_routing`` (or
     equivalent setter) at the top of each turn so that
@@ -2264,18 +2303,23 @@ def set_runtime_main(
     For ``custom:`` providers, ``base_url`` and ``api_key`` must also be
     recorded so that ``_resolve_auto`` can construct a valid client in
     Step 1 instead of falling through to the aggregator chain.
+
+    Thread-local by design (see ``_runtime_main_tls``): the main
+    conversation thread and any concurrent background AIAgent forks
+    (bg-review, auto-title) each call this for their OWN provider/model,
+    and each must only see its own override, never another thread's.
     """
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
-    global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
-    _RUNTIME_MAIN_MODEL = (model or "").strip()
-    _RUNTIME_MAIN_BASE_URL = (base_url or "").strip()
-    _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
-    _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
+    _rtl_set(
+        provider=(provider or "").strip().lower(),
+        model=(model or "").strip(),
+        base_url=(base_url or "").strip(),
+        api_key=api_key.strip() if isinstance(api_key, str) else "",
+        api_mode=(api_mode or "").strip(),
+    )
 
 
 def get_runtime_main_base_url() -> str:
-    """Return the live main base_url recorded for this turn (or "").
+    """Return the live main base_url recorded for THIS thread's turn (or "").
 
     Exposed so exo-detection (``agent.image_routing._provider_is_exo``) can
     identify a bare ``custom`` runtime by its ACTUAL live endpoint, rather
@@ -2285,18 +2329,12 @@ def get_runtime_main_base_url() -> str:
     session fail to select the exo provider block and cross over to another
     provider's model pointed at the exo endpoint (404).
     """
-    return _RUNTIME_MAIN_BASE_URL
+    return _rtl_get("base_url")
 
 
 def clear_runtime_main() -> None:
-    """Clear the runtime override (e.g. on session end)."""
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
-    global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    _RUNTIME_MAIN_PROVIDER = ""
-    _RUNTIME_MAIN_MODEL = ""
-    _RUNTIME_MAIN_BASE_URL = ""
-    _RUNTIME_MAIN_API_KEY = ""
-    _RUNTIME_MAIN_API_MODE = ""
+    """Clear the runtime override for the CALLING thread only (e.g. on session end)."""
+    _rtl_set(provider="", model="", base_url="", api_key="", api_mode="")
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -4204,17 +4242,21 @@ def _resolve_auto(
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
 
-    # Fall back to process-local globals when main_runtime dict was not
+    # Fall back to thread-local overrides when main_runtime dict was not
     # provided or was incomplete.  ``set_runtime_main()`` now records
     # base_url/api_key/api_mode alongside provider/model, so custom:
     # providers get the full credential surface in Step 1 of the
-    # auto-detect chain.
-    if not runtime_base_url and _RUNTIME_MAIN_BASE_URL:
-        runtime_base_url = _RUNTIME_MAIN_BASE_URL
-    if not runtime_api_key and _RUNTIME_MAIN_API_KEY:
-        runtime_api_key = _RUNTIME_MAIN_API_KEY
-    if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
-        runtime_api_mode = _RUNTIME_MAIN_API_MODE
+    # auto-detect chain. Thread-local so a concurrent background-review /
+    # auto-title fork's override never leaks into this thread's resolution.
+    _tls_base_url = _rtl_get("base_url")
+    _tls_api_key = _rtl_get("api_key")
+    _tls_api_mode = _rtl_get("api_mode")
+    if not runtime_base_url and _tls_base_url:
+        runtime_base_url = _tls_base_url
+    if not runtime_api_key and _tls_api_key:
+        runtime_api_key = _tls_api_key
+    if not runtime_api_mode and _tls_api_mode:
+        runtime_api_mode = _tls_api_mode
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -5526,16 +5568,17 @@ def _resolve_vision_provider_client_impl(
                 # whole chain would fall through to the aggregators, breaking
                 # vision for every user on a custom provider that has no
                 # separate ``auxiliary.vision`` block.  Recover the live main
-                # endpoint that ``set_runtime_main()`` recorded for this turn so
-                # Step 1 can build a working client.
+                # endpoint that ``set_runtime_main()`` recorded for THIS
+                # thread's turn so Step 1 can build a working client.
                 rpc_base_url = None
                 rpc_api_key = None
                 rpc_api_mode = resolved_api_mode
                 if main_provider == "custom" or main_provider.startswith("custom:"):
-                    if _RUNTIME_MAIN_BASE_URL:
-                        rpc_base_url = _RUNTIME_MAIN_BASE_URL
-                        rpc_api_key = _RUNTIME_MAIN_API_KEY or None
-                        rpc_api_mode = resolved_api_mode or _RUNTIME_MAIN_API_MODE or None
+                    _tls_base_url = _rtl_get("base_url")
+                    if _tls_base_url:
+                        rpc_base_url = _tls_base_url
+                        rpc_api_key = _rtl_get("api_key") or None
+                        rpc_api_mode = resolved_api_mode or _rtl_get("api_mode") or None
                     else:
                         # No live runtime recorded (non-gateway caller): fall
                         # back to resolving the configured custom endpoint.
