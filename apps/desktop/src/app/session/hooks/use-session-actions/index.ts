@@ -83,6 +83,7 @@ import {
   idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
+  rotateFreshDraftKey,
   sessionPinId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -586,6 +587,7 @@ export function useSessionActions({
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
 
+      rotateFreshDraftKey()
       resetViewSync()
       busyRef.current = false
       setBusy(false)
