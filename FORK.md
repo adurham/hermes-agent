@@ -2697,4 +2697,86 @@ flagged under the parallel runner / a bare full-file pytest run but passed
 cleanly 3/3 and 1/1 in isolation — shared-state/parallel-worker flakiness,
 not real regressions.
 
+### Fork-only fixes — 2026-07-18 (spinner redraw leaves stale digits + phantom "Δ+NNNK new" context-delta balloon)
+
+Two independent status/timer display bugs reported by the user in the same
+session ("timers show duplicate numbers or too many digits" and "Δ+115K new
+when I didn't add 115K of context in one go").
+
+1. **`agent/display.py` — `KawaiiSpinner` redraw padding used `len()`
+   instead of terminal cell width.** The base-CLI tool-call spinner
+   (`🌑 pondering (2.0s)`-style lines) tracks `self.last_line_len` to know
+   how many trailing spaces to blank out on each `\r`-redraw. It computed
+   that via Python's `len()`, which undercounts wide glyphs — the moon-phase
+   spinner frames, kawaii-face frames (`(｡◕‿◕｡)`), and wing decorations all
+   render as more terminal columns than `len()` reports (confirmed live:
+   `len("🌑 ...") ` reports 1 column short per emoji). When a wide-glyph
+   frame was followed by a narrower one, the pad computed from the
+   undercounted `last_line_len` was too small, leaving stale trailing
+   character(s) from the previous frame un-erased on screen — the visible
+   symptom being leftover digits from the prior elapsed-time readout
+   bleeding into the new one (e.g. a phantom trailing `0` surviving from a
+   wider previous frame, making `1s` misread as `01s`/duplicated digits).
+   This exact class of bug (`len()` vs true display width) was already
+   fixed once for the CLI status bar itself
+   (`HermesCLI._status_bar_display_width`, uses `get_cwidth`) but never
+   applied to this older, separate spinner — hence "fixed in a few places
+   but not everywhere."
+
+   Fix: added `KawaiiSpinner._display_width()` using the same
+   `prompt_toolkit.utils.get_cwidth()` mechanism as the CLI status bar, and
+   pointed the `\r`-redraw pad calculation + `last_line_len` capture at it
+   instead of `len()`. `print_above()`/`stop()`'s blank-line clearing derive
+   from `last_line_len` too, so they're fixed as a byproduct — no separate
+   change needed there.
+
+   Reproduced numerically before/after: a wide-glyph previous frame
+   followed by a shorter plain-ASCII frame left exactly 1 character
+   un-erased under the old `len()`-based math; 0 characters left over with
+   the `get_cwidth()`-based fix.
+
+   Tests: new `tests/agent/test_kawaii_spinner_display_width.py` (6 cases)
+   — direct `_display_width()` unit checks (ascii/emoji/kawaii-face/empty),
+   a padding-math reproduction of the exact under-erase scenario, and a
+   full `_animate()` integration test driving the real redraw loop and
+   asserting `last_line_len` tracks cell width, not `len()`.
+
+2. **`cli.py` — per-turn context-delta segment (`Δ+NNK new`) treated a `0`
+   baseline as a real baseline, reporting the ENTIRE context as this
+   turn's growth.** `ContextCompressor.display_prompt_tokens()` returns `0`
+   in two distinct "no real data yet" cases: a genuinely fresh session, and
+   the turn immediately following a context compression (where
+   `last_real_prompt_tokens` is parked at `-1` as an "awaiting real usage"
+   sentinel and the method clamps any non-positive value to `0`). The
+   turn-start capture stored that `0` directly into
+   `self._turn_start_context_tokens` — and `0` is not `None`, so the later
+   `base is not None` guard treated it as a legitimate baseline. The delta
+   math then computed `context_tokens - 0 == context_tokens`: the user's
+   whole accumulated context reported as if it were all added in a single
+   turn (observed: "Δ+115K new" on a session where nothing close to 115K
+   was actually added that turn).
+
+   Fix: both the capture site (turn-start handler, ~cli.py:14690) and the
+   consumption site (`_get_status_bar_snapshot`, ~cli.py:5044) now require
+   the baseline to be a positive int, not merely non-`None`, before
+   computing/showing a delta. A genuine prompt is never actually 0 tokens
+   (system prompt + tool schemas alone are non-zero), so this loses no real
+   baseline — it only suppresses the segment on the one/two turns where no
+   honest "previous state" exists to diff against (consistent with a
+   second-opinion review of the fix before applying it).
+
+   Tests: added `test_zero_baseline_does_not_report_full_context_as_delta`
+   to the existing `TestContextDeltaSegment` class in
+   `tests/cli/test_cli_status_bar.py`, asserting the segment is fully
+   suppressed (not shown as a false balloon) when the baseline is `0`.
+
+Verification: `tests/agent/test_kawaii_spinner_display_width.py` (6/6
+passed), `tests/cli/test_cli_status_bar.py` (51/51 passed, was 50). Full
+`tests/cli/` + relevant `tests/agent/` display suites: 1193 passed, 44
+skipped, 8 failed — all 8 failures reproduced identically against
+unmodified `main` via `git stash` (the same known `test_exit_summary_resume_hint.py`
+×5 / `test_cli_context_warning.py` ×1 pre-existing issues, plus 2 tests
+that only fail under full-suite ordering but pass 2/2 in isolation both
+before and after this change). Zero new failures.
+
 

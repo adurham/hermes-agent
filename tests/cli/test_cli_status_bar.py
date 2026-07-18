@@ -639,6 +639,32 @@ class TestContextDeltaSegment:
         text = cli_obj._build_status_bar_text(width=160)
         assert "Δ+" in text and "new" in text
 
+    def test_zero_baseline_does_not_report_full_context_as_delta(self):
+        """Regression: a fresh session or the turn right after a compression
+        both leave the compressor's real-prompt-token count at 0 (either
+        genuinely fresh, or clamped from the -1 "awaiting real usage"
+        sentinel). The turn-start capture used to store this 0 verbatim as
+        ``_turn_start_context_tokens`` (0 passes an ``is not None`` check),
+        so the next delta computed ``context_tokens - 0 == context_tokens``
+        — the user's ENTIRE current context reported as if it were all
+        added in a single turn (e.g. "Δ+115K new" on a session where they
+        did nothing of the sort). A 0 baseline must be treated the same as
+        "no baseline yet" (None), suppressing the segment entirely.
+        """
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=115_000,
+            completion_tokens=1_000,
+            total_tokens=116_000,
+            api_calls=3,
+            context_tokens=115_000,
+            context_length=1_000_000,
+        )
+        cli_obj._turn_start_context_tokens = 0  # the pre-fix buggy baseline
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert "context_delta" not in snapshot
+        assert cli_obj._format_context_delta(snapshot) is None
+
 
 class TestCLIUsageReport:
     def test_show_usage_includes_cost_reporting(self, capsys):
