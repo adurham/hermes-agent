@@ -5569,8 +5569,16 @@ class TestCustomEndpointApiKeyInheritance:
         assert captured.get("api_key") == "no-key-required"
 
     def test_runtime_override_key_is_used(self, monkeypatch):
-        """When _RUNTIME_MAIN_API_KEY is set (by set_runtime_main), it takes
-        precedence over config.yaml for the custom endpoint key."""
+        """When the thread-local runtime override is set (by set_runtime_main),
+        it takes precedence over config.yaml for the custom endpoint key.
+
+        Uses the public set_runtime_main()/clear_runtime_main() API rather
+        than patching module globals directly — as of the 2026-07-18
+        thread-safety fix, the override lives in a per-thread
+        threading.local() slot (``ac._runtime_main_tls``), not bare module
+        attributes, so ``patch.object(ac, "_RUNTIME_MAIN_API_KEY", ...)``
+        no longer has any effect.
+        """
         import agent.auxiliary_client as ac
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -5581,18 +5589,24 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch.object(ac, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key"), \
-             patch.object(ac, "_RUNTIME_MAIN_BASE_URL", "https://gw.example.com/v1"), \
-             patch("hermes_cli.config.load_config", return_value={"model": {}}), \
-             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
-            client, model = resolve_provider_client(
-                "custom",
-                model="test-model",
-                explicit_base_url="https://gw.example.com/v1",
-                explicit_api_key=None,
-            )
+        ac.set_runtime_main(
+            "custom", "test-model",
+            base_url="https://gw.example.com/v1",
+            api_key="«redacted:sk-…»",
+        )
+        try:
+            with patch("hermes_cli.config.load_config", return_value={"model": {}}), \
+                 patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+                client, model = resolve_provider_client(
+                    "custom",
+                    model="test-model",
+                    explicit_base_url="https://gw.example.com/v1",
+                    explicit_api_key=None,
+                )
+        finally:
+            ac.clear_runtime_main()
 
-        assert captured.get("api_key") == "sk-runtime-key"
+        assert captured.get("api_key") == "«redacted:sk-…»"
 
     def test_cross_host_aux_endpoint_does_not_inherit_main_key(self, monkeypatch):
         """An aux base_url on a DIFFERENT host than the main model must NOT
