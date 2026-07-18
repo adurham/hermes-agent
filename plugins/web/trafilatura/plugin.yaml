@@ -1,0 +1,7 @@
+name: web-trafilatura
+version: 1.0.0
+description: "Web content extraction via direct httpx fetch + the trafilatura Python package — no API key, no account, no self-hosted service. Extract-only (pair with brave-free/ddgs/searxng for search)."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - trafilatura

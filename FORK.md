@@ -38,6 +38,7 @@ will never touch them.
 || `hermes_cli/submit.py` | Fork-only CLI submit flow for interactive proposal confirmation. |
 || `plugins/model-providers/exo/` | First-class exo provider profile (`custom:exo` provider type). |
 || `plugins/web/claude_code/` | Claude Code web backend for the Hermes web interface. |
+|| `plugins/web/trafilatura/` | Free, no-API-key `web_extract` backend — direct `httpx` fetch (manual redirect-hop walk with per-hop SSRF/policy re-check) + the open-source `trafilatura` library for local content extraction. Closes the gap where non-Anthropic providers (exo, ollama-cloud) had a free search backend (brave-free/ddgs) but no free extract backend — every existing extract-capable provider (firecrawl/tavily/exa/parallel) needs a paid API key. |
 || `tools/bridges/` | Fork-only tool bridges (CC proxy MCP bridge). |
 || `tools/swarm_board.py` | Live SwarmBoard display for multi-agent task progress. |
 || `tools/swarm_tool.py` | Swarm orchestration tool — multi-agent parallel task execution with live board, cost tracking. |
@@ -2779,4 +2780,68 @@ unmodified `main` via `git stash` (the same known `test_exit_summary_resume_hint
 that only fail under full-suite ordering but pass 2/2 in isolation both
 before and after this change). Zero new failures.
 
+### Fork-only feature — 2026-07-18 (`trafilatura`: free no-API-key `web_extract` backend)
+
+**Problem:** the user's exo/ollama-cloud provider blocks had
+`web.extract_backend: ddgs` configured, but `DDGSWebSearchProvider.
+supports_extract()` is `False` — DuckDuckGo's `ddgs` package (like
+brave-free and searxng) is search-only. `web_extract` calls returned
+`"ddgs is a search-only backend and cannot extract URL content."` There was
+no free, no-API-key, no-self-hosted extract backend at all — every
+extract-capable provider in the registry (firecrawl/tavily/exa/parallel)
+needs a paid key or a self-hosted service, and `claude-code` only works on
+first-party Anthropic. Search-side was already fine (`web.search_chain:
+[brave-free, ddgs]` correctly fails over).
+
+**Fix:** new plugin `plugins/web/trafilatura/` (`TrafilaturaWebExtractProvider`,
+extract-only — `supports_search()` is `False`). Fetches each URL directly via
+`httpx.AsyncClient` and runs the open-source `trafilatura` library locally
+for boilerplate/nav/ad-stripped markdown extraction + metadata (title,
+author, description). No API key, no account, no self-hosted service.
+
+Security-sensitive detail: redirects are walked manually
+(`follow_redirects=False`, capped at 5 hops) rather than letting httpx
+auto-follow, so `tools.url_safety.is_safe_url()` and
+`tools.website_policy.check_website_access()` re-run on *every* hop before
+it's requested — letting httpx auto-follow would fetch an attacker-controlled
+redirect target (e.g. a 302 to a private/internal address) before any SSRF
+check ever saw it. Also enforces a response body size cap (10MB) and a
+content-type check (skips non-HTML responses rather than feeding binary/JSON
+through trafilatura).
+
+Wired into `hermes tools`' post-setup pip-install flow
+(`hermes_cli/tools_config.py`, mirrors the existing `ddgs` post_setup
+branch) and the picker auto-discovers it via the existing plugin-registry
+mechanism (`_plugin_web_search_providers()`, no picker changes needed).
+
+User's `~/.hermes/config.yaml` updated via `hermes config set` (not a direct
+file edit — config.yaml write-protection blocked that): `web.extract_backend`,
+`web.by_provider.exo.extract_backend`, and
+`web.by_provider.ollama-cloud.extract_backend` all set to `trafilatura`. The
+`anthropic` provider block's `claude-code` extract backend is untouched.
+
+**Tests:** updated `tests/plugins/web/test_web_search_provider_plugins.py`'s
+change-detector provider-count/capability-flag tests to include
+`trafilatura` (extract=True, search=False). Fixed a latent bug (present on
+clean `main` too, exposed by adding a second no-credential provider) in
+`tests/tools/test_web_tools_config.py::test_no_keys_returns_false` — the
+test only mocked the legacy `_ddgs_package_importable()` probe, not the
+registry's own `DDGSWebSearchProvider.is_available()` (which
+`get_active_search_provider()` calls directly), so `check_web_api_key()`
+returned `True` in any dev env with `ddgs` actually pip-installed; now both
+`DDGSWebSearchProvider.is_available` and
+`TrafilaturaWebExtractProvider.is_available` are patched `False`.
+
+Verification: real end-to-end extraction against
+`docs.python.org/3/tutorial/introduction.html` through the actual
+`web_extract_tool` dispatcher (18,592-char clean markdown, correct title,
+truncation footer applied). SSRF guard confirmed blocking a private IP
+(`127.0.0.1`) at the provider level. `tests/tools/test_web_tools*.py` +
+`tests/tools/test_web_providers*.py` + `tests/plugins/web/` + `tests/
+hermes_cli/test_plugins.py`: 418 passed, 1 failed — the 1 failure
+(`test_unconfigured_search_emits_top_level_error`) reproduced identically
+against unmodified `main` via `git stash` (a live `BRAVE_SEARCH_API_KEY` in
+the dev `.env` leaks into that "unconfigured" test case; same root-cause
+class as the bug fixed above, pre-existing, out of scope for this change).
+Zero new failures.
 
