@@ -2703,8 +2703,8 @@ Two independent status/timer display bugs reported by the user in the same
 session ("timers show duplicate numbers or too many digits" and "Δ+115K new
 when I didn't add 115K of context in one go").
 
-1. **`agent/display.py` — `KawaiiSpinner` redraw padding used `len()`
-   instead of terminal cell width.** The base-CLI tool-call spinner
+1. **`0a32275ff` — `agent/display.py`: `KawaiiSpinner` redraw padding used
+   `len()` instead of terminal cell width.** The base-CLI tool-call spinner
    (`🌑 pondering (2.0s)`-style lines) tracks `self.last_line_len` to know
    how many trailing spaces to blank out on each `\r`-redraw. It computed
    that via Python's `len()`, which undercounts wide glyphs — the moon-phase
@@ -2741,9 +2741,9 @@ when I didn't add 115K of context in one go").
    full `_animate()` integration test driving the real redraw loop and
    asserting `last_line_len` tracks cell width, not `len()`.
 
-2. **`cli.py` — per-turn context-delta segment (`Δ+NNK new`) treated a `0`
-   baseline as a real baseline, reporting the ENTIRE context as this
-   turn's growth.** `ContextCompressor.display_prompt_tokens()` returns `0`
+2. **`0a32275ff` — `cli.py`: per-turn context-delta segment (`Δ+NNK new`)
+   treated a `0` baseline as a real baseline, reporting the ENTIRE context
+   as this turn's growth.** `ContextCompressor.display_prompt_tokens()` returns `0`
    in two distinct "no real data yet" cases: a genuinely fresh session, and
    the turn immediately following a context compression (where
    `last_real_prompt_tokens` is parked at `-1` as an "awaiting real usage"
