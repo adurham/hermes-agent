@@ -2845,3 +2845,84 @@ the dev `.env` leaks into that "unconfigured" test case; same root-cause
 class as the bug fixed above, pre-existing, out of scope for this change).
 Zero new failures.
 
+### Fork-only fix — 2026-07-18 (`agent/auxiliary_client.py`: runtime-main override was a process-global data race, not thread-local)
+
+**Symptom:** on an all-Anthropic session (main model `claude-sonnet-5`, no
+ollama config error anywhere), the user hit `⚠ Auxiliary title generation
+failed: HTTP 404: model: gemma4:31b`. `gemma4:31b` is the user's
+`auxiliary.background_review` model (an `ollama-cloud`-routed
+self-improvement fork), not anything configured for `title_generation` —
+which should have resolved to `claude-haiku-4-5-20251001` via the
+`auxiliary.anthropic` block. Config was correct; the model name was wrong
+at request time.
+
+**Root cause:** `_RUNTIME_MAIN_{PROVIDER,MODEL,BASE_URL,API_KEY,API_MODE}`
+were bare module-level globals, written by `set_runtime_main()` at the top
+of each turn and read by `_read_main_provider()` / `_read_main_model()` /
+`_resolve_auto()` to determine "what the live main runtime is right now."
+The comment above them claimed `"Process-local override ... Single-threaded
+per turn — no lock needed."` That was false the moment background AIAgent
+forks existed: `_spawn_background_review()` (the `bg-review` daemon thread)
+and `maybe_auto_title()` (the `auto-title` daemon thread) each construct
+their own `AIAgent` and run a full turn **concurrently** with the main
+conversation thread — and each calls `set_runtime_main()` for **its own**
+provider/model at turn start. With bare globals, whichever thread wrote
+last won for every thread's reads, process-wide. A lock would not have
+fixed this — the problem isn't "two threads racing to safely mutate shared
+state," it's "the state itself needed to be per-thread, not shared." A
+lock around a genuinely shared mutable would have just serialized the
+clobbering instead of preventing it.
+
+Concretely: the user's `auxiliary.background_review` config routes that
+fork to `ollama-cloud` / `gemma4:31b`. Its daemon thread calls
+`set_runtime_main("ollama-cloud", "gemma4:31b", ...)`. If the main
+session's `title_generation` call (fired from `maybe_auto_title`'s own
+daemon thread after the first exchange) resolved its task config in that
+window, `_read_main_provider()` / `_read_main_model()` returned the
+bg-review thread's values instead of the main thread's own
+`anthropic`/`claude-sonnet-5` — sending a `gemma4:31b`-named request to the
+Anthropic endpoint. 404.
+
+Reproduced directly with a two-thread harness (one thread simulating the
+main session's `set_runtime_main("anthropic", "claude-sonnet-5", ...)`,
+the other simulating bg-review's `set_runtime_main("ollama-cloud",
+"gemma4:31b", ...)`, both racing with a small `sleep()` between write and
+read) — confirmed each thread saw the OTHER thread's values under the old
+bare-global code, and confirmed the exact `title_generation` /
+`background_review` resolution pair (`anthropic`/`claude-haiku-...` vs
+`ollama-cloud`/`gemma4:31b`) came back correctly isolated after the fix.
+
+**Fix:** converted the five globals to a single `threading.local()`
+(`_runtime_main_tls`), with `_rtl_get(attr)` / `_rtl_set(**kwargs)` helper
+wrappers. `set_runtime_main()` / `clear_runtime_main()` /
+`get_runtime_main_base_url()` and the two inline read sites inside
+`_resolve_auto()` and the vision custom-endpoint fallback in
+`resolve_vision_provider_client` now go through the thread-local accessors
+instead of bare globals. No caller-side changes needed —
+`agent/turn_context.py`'s `build_turn_context()` and
+`agent/background_review.py`'s review-fork setup already call
+`set_runtime_main()` themselves, once per thread, at their own turn start;
+they just needed the storage underneath to stop being shared.
+
+Updated 3 existing unit tests that patched the old bare globals directly
+(`monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", ...)`) to instead go
+through the public `set_runtime_main()`/`clear_runtime_main()` API or patch
+`aux._runtime_main_tls` attributes directly — `tests/agent/
+test_set_runtime_main_custom_provider.py`, `tests/agent/
+test_auxiliary_client.py::test_runtime_override_key_is_used`, `tests/agent/
+test_auxiliary_main_first.py::TestResolveVisionCustomProvider` (all 3
+cases).
+
+Verification: `tests/agent/test_auxiliary_provider_first.py` + `tests/
+agent/test_auxiliary_client.py` + `tests/agent/test_turn_context.py` +
+`tests/agent/test_set_runtime_main_custom_provider.py` + `tests/tools/
+test_browser_console.py` + `tests/tools/test_vision_native_fast_path.py`:
+395 passed, 4 skipped (3 pre-existing `TestResolveVisionCustomProvider`
+failures — a stale vision-resolution-cache test-isolation bug unrelated to
+this change — reproduced identically against unmodified `main` via `git
+stash`, excluded from this count). Plus `tests/agent/
+test_title_generator.py` and 12 other `test_auxiliary_client_*` /
+`test_auxiliary_*` suites: 167 passed, 3 skipped. Plus the full
+`background_review` suite (`tests/run_agent/test_background_review*.py`,
+`tests/test_background_review_*.py`): 57 passed. Zero new failures.
+
