@@ -1028,6 +1028,27 @@ class KawaiiSpinner:
             pass
         return cls.THINKING_VERBS
 
+    @staticmethod
+    def _display_width(text: str) -> int:
+        """Return terminal cell width, not Python character count.
+
+        Emoji / kawaii-face spinner frames (moon phases, "(｡◕‿◕｡)", etc.)
+        render as 2 terminal cells per codepoint on most terminals, but
+        ``len()`` counts them as 1. Padding the \\r-redraw with a
+        len()-based width under-erases the previous frame by however many
+        wide glyphs it contained, leaving stale trailing characters behind
+        — most visibly the previous frame's elapsed-time digits bleeding
+        through the new one (e.g. a leftover "00" from "(...0100s)" still
+        on screen after the real text shrank to "(...1s)"). Mirrors the
+        same fix already applied to the CLI status bar
+        (``HermesCLI._status_bar_display_width``) for the identical reason.
+        """
+        try:
+            from prompt_toolkit.utils import get_cwidth
+            return get_cwidth(text or "")
+        except Exception:
+            return len(text or "")
+
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
         self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
@@ -1122,9 +1143,13 @@ class KawaiiSpinner:
                 line = f"  {left} {frame} {self.message} {right} ({elapsed:.1f}s)"
             else:
                 line = f"  {frame} {self.message} ({elapsed:.1f}s)"
-            pad = max(self.last_line_len - len(line), 0)
+            # Use terminal cell width, not len(), so wide glyphs (emoji /
+            # kawaii faces in `wings` or `frame`) don't under-erase the
+            # previous frame — see _display_width docstring.
+            line_width = self._display_width(line)
+            pad = max(self.last_line_len - line_width, 0)
             self._write(f"\r{line}{' ' * pad}", end='', flush=True)
-            self.last_line_len = len(line)
+            self.last_line_len = line_width
             self.frame_idx += 1
             time.sleep(0.12)
 

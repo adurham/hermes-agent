@@ -5042,7 +5042,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Heuristic: if the jump is mostly cache_write -> "new"; if it's
             # mostly fresh input with little cache_write -> "cache" (refresh).
             base = getattr(self, "_turn_start_context_tokens", None)
-            if base is not None and context_tokens:
+            # Defense in depth: base should never be stored as 0 (see the
+            # capture site in the turn-start handler), but guard here too so
+            # a 0 baseline can never masquerade as "context_tokens - 0" —
+            # i.e. the entire current context reported as this turn's delta.
+            if base is not None and base > 0 and context_tokens:
                 delta = context_tokens - base
                 snapshot["context_delta"] = delta
                 if delta >= 2000:
@@ -14690,7 +14694,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     _base = _comp.display_prompt_tokens()
                 else:
                     _base = getattr(_comp, "last_prompt_tokens", None) if _comp else None
-                self._turn_start_context_tokens = max(0, _base) if isinstance(_base, int) else None
+                # 0 is not a legitimate baseline here — display_prompt_tokens()
+                # returns 0 both on a truly fresh session AND as the clamped
+                # value of the -1 "awaiting real usage" sentinel right after a
+                # compression. Storing 0 (instead of None) made the later
+                # `base is not None` check treat "no real baseline yet" as a
+                # valid zero baseline, so the delta math computed
+                # `context_tokens - 0 == context_tokens` — the ENTIRE current
+                # context reported as if it were all added this turn (the
+                # "Δ+115K new" phantom balloon). A genuine prompt is never
+                # actually 0 tokens (system prompt + tool schemas alone are
+                # non-zero), so requiring > 0 loses no real baseline.
+                self._turn_start_context_tokens = _base if isinstance(_base, int) and _base > 0 else None
             except Exception:
                 self._turn_start_context_tokens = None
             agent_thread = threading.Thread(target=run_agent, daemon=True)
