@@ -343,6 +343,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "anthropic": [
         "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -1045,6 +1046,8 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
+    ProviderEntry("google-gemini-cli", "agy/antigravity cli",   "Antigravity CLI via OAuth + Code Assist (Code Assist OAuth flow)"),
+    ProviderEntry("google-antigravity", "Google Antigravity (OAuth)", "Google Antigravity via OAuth + Code Assist (Gemini 3.5/3.1, Claude, GPT-OSS where entitled)"),
     ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
@@ -1957,6 +1960,61 @@ def detect_static_provider_for_model(
     return None
 
 
+def _detect_config_provider_for_model(
+    model_name: str,
+    current_provider: str,
+) -> Optional[tuple[str, str]]:
+    """Match a model against user-declared ``providers.<name>.models`` in config.
+
+    Returns ``(provider_id, model_name)`` when the model is listed under some
+    configured provider that is NOT already the current provider, else None.
+
+    Handles both provider ``models`` shapes:
+      * list form  — ``models: ["glm-5.2:cloud", "deepseek-v4-flash:cloud"]``
+      * dict form  — ``models: {"mlx-community/DeepSeek-V4-Flash": {...}}``
+
+    Matching is case-insensitive on the full model id. The current provider is
+    skipped so we never propose a no-op switch (and the caller's existing
+    catalog checks still handle the same-provider case). When multiple providers
+    declare the same id, the first configured match wins — deterministic and,
+    in practice, unambiguous because model ids are provider-specific.
+    """
+    name_lower = (model_name or "").strip().lower()
+    if not name_lower:
+        return None
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    providers_cfg = cfg.get("providers")
+    if not isinstance(providers_cfg, dict):
+        return None
+
+    current_keys = _provider_keys(current_provider)
+    for pid, pconf in providers_cfg.items():
+        if not isinstance(pid, str) or not isinstance(pconf, dict):
+            continue
+        if pid.strip().lower() in current_keys:
+            continue  # already on this provider — not a switch
+        models = pconf.get("models")
+        model_ids_here: list[str] = []
+        if isinstance(models, dict):
+            model_ids_here = [str(k) for k in models]
+        elif isinstance(models, list):
+            model_ids_here = [str(m) for m in models]
+        else:
+            continue
+        for mid in model_ids_here:
+            if mid.strip().lower() == name_lower:
+                # Return the model id exactly as the user declared it, so the
+                # downstream request uses the canonical name the endpoint expects.
+                return (pid, mid)
+    return None
+
+
 def detect_provider_for_model(
     model_name: str,
     current_provider: str,
@@ -1975,6 +2033,21 @@ def detect_provider_for_model(
     name = (model_name or "").strip()
     if not name:
         return None
+
+    # --- Step 0.5: user-declared providers in config.yaml ---
+    # Before the static/OpenRouter catalogs, honor a model the user explicitly
+    # declared under ``providers.<name>.models`` (e.g. an exo cluster model, an
+    # ollama-cloud tag). Without this, a bare ``/model <name>`` for such a model
+    # falls through to None and switch_model keeps the CURRENT provider — so a
+    # cold-start session on Anthropic that switches to an exo model gets stamped
+    # provider='anthropic'. That mislabel then cascades: every auxiliary task
+    # (title_generation, vision, …) resolves against the anthropic block and a
+    # Claude model name gets shipped to the exo endpoint → recurring 404.
+    # Consulting the user's own provider→models map fixes the whole class and
+    # makes bare ``/model`` match the explicit ``--provider`` form.
+    cfg_match = _detect_config_provider_for_model(name, current_provider)
+    if cfg_match:
+        return cfg_match
 
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
@@ -2552,6 +2625,27 @@ def _credential_fingerprint(provider: str) -> str:
             bev = getattr(pcfg, "base_url_env_var", "") or ""
             if bev:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
+    except Exception:
+        pass
+
+    # Config-level endpoint override (config.yaml ``model.base_url`` /
+    # ``model.api_key``). ``provider_model_ids`` honors these inline fields
+    # when the main ``model.provider`` matches this slug (see the anthropic
+    # branch), fetching /v1/models from that endpoint. If we leave them out
+    # of the fingerprint, a stale base_url that gets corrected on disk (e.g.
+    # an exo URL left under provider=anthropic, then blanked) does NOT bust
+    # the cache — so a poisoned catalog (exo's MLX models cached under the
+    # anthropic key) survives across sessions. Fold in the SAME fields under
+    # the SAME provider-match condition the fetch uses, so the fingerprint
+    # honestly tracks the endpoint the next fetch would actually hit.
+    try:
+        model_cfg = _get_model_config_dict()
+        cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
+        if cfg_provider and cfg_provider == provider:
+            cfg_base_url = str(model_cfg.get("base_url", "") or "").strip()
+            cfg_api_key = str(model_cfg.get("api_key", "") or "").strip()
+            parts.append(f"cfg.base_url={cfg_base_url}")
+            parts.append(f"cfg.api_key={cfg_api_key}")
     except Exception:
         pass
 

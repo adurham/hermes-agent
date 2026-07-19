@@ -530,6 +530,35 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#
+#   # Consult — second-opinion tool (fork feature). Unlike every other
+#   # auxiliary task, "auto" (the default) is usually the WRONG choice here:
+#   # the whole point of `consult` is asking a DIFFERENT model than your main
+#   # driver, typically a frontier model too slow/expensive/refusal-prone to
+#   # be a main model but valuable as an occasional second opinion. Point it
+#   # explicitly at that model:
+#   consult:
+#     provider: "anthropic"
+#     model: "claude-fable-5"
+#     timeout: 180           # generous — frontier models can be slow
+
+# =============================================================================
+# Consult — Second Opinion Tool (fork feature)
+# =============================================================================
+# Lets the agent (main or delegated subagent) call `consult(question,
+# context)` to get a second opinion from the reference model configured
+# above under `auxiliary.consult`. Refusals / empty responses from the
+# reference model are expected and handled gracefully (the tool returns
+# unavailable: true, not an error) — Fable-class frontier models refuse
+# often enough that this has to be a first-class outcome.
+#
+consult:
+  # Periodic reminder pointing the agent at the consult tool, fired after N
+  # risky tool calls (terminal, file writes, code execution, ...) — mirrors
+  # the memory nudge above but keyed on consequential actions rather than a
+  # flat turn count. Set to 0 to disable the nudge (the tool itself stays
+  # available either way).
+  nudge_interval: 8
 
 # =============================================================================
 # Persistent Memory
@@ -704,6 +733,12 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Strip prompt-cache breakpoints on overloaded retries so the request lands
+  # on a different routing pool (cached vs uncached traffic may be served by
+  # separate capacity). Loses cache savings on the retry but improves the
+  # chance of getting through when the primary pool is saturated. (default false)
+  # strip_cache_on_overload: false
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables
@@ -731,6 +766,7 @@ agent:
   # Default 3.
   # max_verify_nudges: 3
 
+>>>>>>> v2026.7.1
   # Enable verbose logging
   verbose: false
   

@@ -88,6 +88,7 @@ def test_build_welcome_banner_title_is_hyperlinked_to_release():
         _patch.object(_banner, "get_update_result", return_value=None),
         _patch.object(_mcp, "get_mcp_status", return_value=[]),
         _patch.object(_banner, "get_latest_release_tag", return_value=tag_url),
+        _patch.object(_banner, "_resolve_agent_name", return_value="Hermes Agent"),
     ):
         console = Console(file=buf, force_terminal=True, color_system="truecolor", width=160)
         _banner.build_welcome_banner(
@@ -121,6 +122,7 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
         _patch.object(_banner, "get_update_result", return_value=None),
         _patch.object(_mcp, "get_mcp_status", return_value=[]),
         _patch.object(_banner, "get_latest_release_tag", return_value=None),
+        _patch.object(_banner, "_resolve_agent_name", return_value="Hermes Agent"),
     ):
         console = Console(file=buf, force_terminal=True, color_system="truecolor", width=160)
         _banner.build_welcome_banner(

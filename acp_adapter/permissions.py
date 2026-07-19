@@ -151,9 +151,15 @@ def make_approval_callback(
 
         try:
             response = future.result(timeout=timeout)
-        except (FutureTimeout, Exception) as exc:
+        except FutureTimeout:
             future.cancel()
-            logger.warning("Permission request timed out or failed: %s", exc)
+            logger.warning("Permission request timed out with no response")
+            # Unanswered ≠ denied: report timeout so the model isn't told the
+            # user explicitly rejected something they never saw.
+            return "timeout"
+        except Exception as exc:
+            future.cancel()
+            logger.warning("Permission request failed: %s", exc)
             return "deny"
 
         if response is None:

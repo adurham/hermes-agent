@@ -1314,9 +1314,57 @@ def switch_model(
                 error_message=msg,
             )
 
-    # Apply auto-correction if validation found a closer match
+    # Apply auto-correction if validation found a closer match — UNLESS the
+    # user explicitly declared the requested model in their provider config.
+    # A configured model name is authoritative: the remote /v1/models catalog
+    # may advertise a base card name (e.g. `DeepSeek-V4-Flash`) while the
+    # actually-placed instance answers to a suffixed name (e.g.
+    # `DeepSeek-V4-Flash-8bit`). Fuzzy auto-correct would rewrite the working
+    # name to the unservable catalog name and 404 every request.
     if validation.get("corrected_model"):
-        new_model = validation["corrected_model"]
+        _explicitly_configured = False
+        if user_providers:
+            for slug, cfg in user_providers.items():
+                if slug == target_provider:
+                    cfg_models = cfg.get("models", {})
+                    if new_model in cfg_models:
+                        _explicitly_configured = True
+                        break
+                    if isinstance(cfg_models, list) and any(
+                        isinstance(m, dict) and m.get("name") == new_model
+                        for m in cfg_models
+                    ):
+                        _explicitly_configured = True
+                        break
+        if not _explicitly_configured and custom_providers and isinstance(custom_providers, list):
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                entry_name = entry.get("name", "")
+                entry_slug = f"custom:{entry_name}" if entry_name else ""
+                entry_url = entry.get("base_url", "")
+                if entry_slug == target_provider or entry_url == base_url:
+                    entry_models = entry.get("models", {})
+                    if new_model == entry.get("model", "") or (
+                        isinstance(entry_models, dict) and new_model in entry_models
+                    ):
+                        _explicitly_configured = True
+                        break
+        if _explicitly_configured:
+            logging.debug(
+                "Skipping auto-correction %r -> %r: model is explicitly "
+                "declared in provider config",
+                new_model,
+                validation["corrected_model"],
+            )
+            # Also drop the "Auto-corrected ..." warning message so the user
+            # isn't told their (correct) model name was changed when it wasn't.
+            if isinstance(validation, dict) and str(
+                validation.get("message", "")
+            ).startswith("Auto-corrected"):
+                validation["message"] = None
+        else:
+            new_model = validation["corrected_model"]
 
     # --- Copilot api_mode override ---
     if target_provider in {"copilot", "github-copilot"}:

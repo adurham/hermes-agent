@@ -145,6 +145,12 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
     "spotify": "Spotify",
 }
 
+# Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
+DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
+
+# Google Antigravity OAuth (Antigravity Code Assist backend)
+DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL = "antigravity-pa://google"
+
 # LM Studio's default no-auth mode still requires *some* non-empty bearer for
 # the API-key code paths (auxiliary_client, runtime resolver) to treat the
 # provider as configured. This sentinel is sent only to LM Studio, never to
@@ -208,6 +214,18 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Qwen OAuth",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_QWEN_BASE_URL,
+    ),
+    "google-gemini-cli": ProviderConfig(
+        id="google-gemini-cli",
+        name="agy/antigravity cli",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+    ),
+    "google-antigravity": ProviderConfig(
+        id="google-antigravity",
+        name="Google Antigravity (OAuth)",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL,
     ),
     "lmstudio": ProviderConfig(
         id="lmstudio",

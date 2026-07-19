@@ -851,6 +851,21 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        # Optional multi-principal auth — if API_SERVER_KEYS_FILE points at a
+        # YAML/JSON map of {principal_name: bearer_token}, _check_auth resolves
+        # the inbound bearer to a principal name and stashes it on the request
+        # for audit + per-user revocation. Falls back to the single-key path
+        # (legacy `API_SERVER_KEY`) when unset / empty / unreadable; the
+        # resolved principal in that case is the literal string ``default``.
+        self._principals: Dict[str, str] = self._load_principals_map(
+            extra.get("keys_file", os.getenv("API_SERVER_KEYS_FILE", ""))
+        )
+        # Optional audit log — if API_SERVER_AUDIT_LOG points at a writable
+        # path, /v1/runs POST appends a JSON line per submission with
+        # (ts, principal, run_id, prompt_sha256, remote). No-op if unset.
+        self._audit_log_path: str = extra.get(
+            "audit_log", os.getenv("API_SERVER_AUDIT_LOG", "")
+        )
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -1046,22 +1061,99 @@ class APIServerAdapter(BasePlatformAdapter):
     # Auth helper
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _load_principals_map(path: str) -> Dict[str, str]:
+        """Load a {principal_name: bearer_token} map from a YAML/JSON file.
+
+        File format (either YAML or JSON; auto-detected via the loader):
+            laptop-adam: "<token>"
+            discord-adapter: "<token>"
+
+        Returns an empty dict when path is empty or the file can't be
+        read/parsed — callers fall back to the legacy single-key path
+        (``self._api_key``). Logs at WARN on parse failure so misconfig
+        is visible but doesn't take down the gateway.
+        """
+        if not path:
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = f.read()
+        except OSError as exc:
+            logger.warning("API_SERVER_KEYS_FILE %s unreadable: %s", path, exc)
+            return {}
+        # Try JSON first (strict subset of YAML, cheap), then YAML if available.
+        data: Any
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                import yaml  # type: ignore[import-not-found]
+            except ImportError:
+                logger.warning(
+                    "API_SERVER_KEYS_FILE %s is not JSON and PyYAML isn't installed",
+                    path,
+                )
+                return {}
+            try:
+                data = yaml.safe_load(raw)
+            except yaml.YAMLError as exc:
+                logger.warning("API_SERVER_KEYS_FILE %s yaml parse failed: %s", path, exc)
+                return {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "API_SERVER_KEYS_FILE %s top-level must be a mapping of "
+                "principal->token, got %s",
+                path, type(data).__name__,
+            )
+            return {}
+        out: Dict[str, str] = {}
+        for name, tok in data.items():
+            if not isinstance(name, str) or not isinstance(tok, str) or not tok:
+                continue
+            out[name] = tok
+        return out
+
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
         Validate Bearer token from Authorization header.
 
         Returns None if auth is OK, or a 401 web.Response on failure.
+        If no API key is configured, all requests are allowed (only when API
+        server is local).
+
+        Side effect on success: stashes the resolved principal name on the
+        request via ``request["principal"]``. With ``API_SERVER_KEYS_FILE``
+        unset, the principal is the literal string ``"default"`` (legacy
+        single-key path). With it set, the principal is whichever map entry
+        matched the inbound bearer.
+
         connect() refuses to start the API server without API_SERVER_KEY, so
         the no-key branch only exists for tests or unsupported manual wiring.
         """
-        if not self._api_key:
+        if not self._api_key and not self._principals:
+            # No keys configured at all — allow (local-only use). Tag the
+            # request as ``anonymous`` for any downstream audit consumer.
+            request["principal"] = "anonymous"
             return None
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
-                return None  # Auth OK
+            # Legacy single-key path (back-compat).
+            if self._api_key and hmac.compare_digest(token, self._api_key):
+                request["principal"] = "default"
+                return None
+            # Multi-principal path. Iterate every entry to keep the wall-clock
+            # constant regardless of which (or no) principal matches; accumulate
+            # the match into a single name rather than short-circuiting.
+            matched: Optional[str] = None
+            for name, expected in self._principals.items():
+                if hmac.compare_digest(token, expected):
+                    matched = name
+            if matched is not None:
+                request["principal"] = matched
+                return None
 
         logger.warning(
             "API server rejected invalid API key: %s",
@@ -1071,6 +1163,38 @@ class APIServerAdapter(BasePlatformAdapter):
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
+
+    def _write_audit(
+        self,
+        *,
+        event: str,
+        run_id: str,
+        principal: str,
+        prompt_sha256: Optional[str] = None,
+        remote: Optional[str] = None,
+    ) -> None:
+        """Append one JSON line to API_SERVER_AUDIT_LOG. No-op if unset.
+
+        The audit log is append-only and tail-friendly. Never raises:
+        audit failure must not break a real run.
+        """
+        if not self._audit_log_path:
+            return
+        entry: Dict[str, Any] = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "event": event,
+            "run_id": run_id,
+            "principal": principal,
+        }
+        if prompt_sha256:
+            entry["prompt_sha256"] = prompt_sha256
+        if remote:
+            entry["remote"] = remote
+        try:
+            with open(self._audit_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            logger.warning("audit log write to %s failed: %s", self._audit_log_path, exc)
 
     # ------------------------------------------------------------------
     # Session header helpers
@@ -4251,6 +4375,27 @@ class APIServerAdapter(BasePlatformAdapter):
         # approval for one run must not unblock another run's dangerous command.
         approval_session_key = run_id
         ephemeral_system_prompt = instructions
+
+        # Audit-log the submission (no-op if API_SERVER_AUDIT_LOG unset).
+        # Records the resolved principal (set by _check_auth) and a SHA-256
+        # of the prompt so the actual user text never lands in audit logs;
+        # the run record itself still holds the content for legitimate
+        # callers. Remote address comes from peername — under
+        # `tailscale serve` this is the tailscale daemon on loopback (so
+        # not super useful), but we record it anyway for completeness.
+        try:
+            prompt_sha = hashlib.sha256(user_message.encode("utf-8")).hexdigest()
+        except Exception:
+            prompt_sha = None
+        peername = getattr(request.transport, "get_extra_info", lambda *_: None)("peername")
+        remote_addr = peername[0] if isinstance(peername, tuple) and peername else None
+        self._write_audit(
+            event="run.submitted",
+            run_id=run_id,
+            principal=request.get("principal", "default"),
+            prompt_sha256=prompt_sha,
+            remote=remote_addr,
+        )
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()

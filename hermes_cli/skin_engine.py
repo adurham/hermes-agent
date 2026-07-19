@@ -71,6 +71,8 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       response_label: " ⚕ Hermes "       # Response box header label
       prompt_symbol: "❯"                 # Input prompt symbol (bare token; renderers add trailing space)
       help_header: "(^_^)? Commands"      # /help header text
+      vendor_label: "Nous Research"       # Vendor attribution next to model name; "" hides it entirely
+      status_glyph: "⚕"                   # Leading glyph in the TUI status bar (single character)
 
     # Tool prefix: character for tool output lines (default: ┊)
     tool_prefix: "┊"

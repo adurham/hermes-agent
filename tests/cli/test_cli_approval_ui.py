@@ -176,11 +176,18 @@ class TestCliApprovalUi:
 
         rendered = "".join(text for _style, text in fragments)
         lines = rendered.splitlines()
-        border_width = len(lines[0])
+        # Terminal CELL width (cwidth), not Python character count, is the
+        # correct alignment invariant here — a row containing a wide glyph
+        # (emoji, CJK) has fewer Python characters than an all-ASCII row of
+        # the same rendered width. cli.HermesCLI._panel_ljust/_panel_box_width
+        # pad/size by cwidth for exactly this reason (see
+        # tests/cli/test_panel_cwidth_padding.py).
+        from cli import HermesCLI
+        border_width = HermesCLI._panel_cwidth(lines[0])
 
         assert "Show full" in rendered
         assert "command)" in rendered
-        assert all(len(line) == border_width for line in lines)
+        assert all(HermesCLI._panel_cwidth(line) == border_width for line in lines)
 
     def test_approval_display_shows_full_command_after_view(self):
         cli = _make_cli_stub()
@@ -431,6 +438,15 @@ class TestModalPaintNow:
             while getattr(cli, state_attr) is None and time.time() < deadline:
                 time.sleep(0.01)
             assert getattr(cli, state_attr) is not None
+            # State is set a few statements before _paint_now() is actually
+            # called (attention signals — a real stdout write/flush and, on
+            # darwin, a real subprocess.Popen for osascript — run in between).
+            # Poll for the paint itself rather than asserting the instant the
+            # state dict appears, or this races and fails nondeterministically
+            # against whichever modal type's background thread hasn't reached
+            # _paint_now() yet.
+            while not cli._app.invalidate.called and time.time() < deadline:
+                time.sleep(0.01)
             assert cli._app.invalidate.called, (
                 f"{state_attr} panel was not painted despite throttle + resize gates"
             )

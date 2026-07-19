@@ -313,9 +313,9 @@ class TestSlackNativeSlashes:
             for ch in name:
                 assert ch.isalnum() or ch in "-_", f"invalid char {ch!r} in {name!r}"
 
-    def test_under_fifty_command_cap(self):
-        """Slack allows at most 50 slash commands per app."""
-        assert len(slack_native_slashes()) <= 50
+    def test_under_slack_command_cap(self):
+        """Slack manifest accepts up to 100 slash commands per app."""
+        assert len(slack_native_slashes()) <= 100
 
     def test_unique_names(self):
         names = [n for n, _d, _h in slack_native_slashes()]

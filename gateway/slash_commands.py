@@ -2706,7 +2706,12 @@ class GatewaySlashCommandsMixin:
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
             self._set_session_reasoning_override(session_key, None)
-            self._reasoning_config = self._load_reasoning_config()
+            try:
+                from gateway.run import _resolve_gateway_model
+                current_model = _resolve_gateway_model()
+            except Exception:
+                current_model = ""
+            self._reasoning_config = self._load_reasoning_config(model=current_model)
             self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
         if effort == "none":
@@ -2722,6 +2727,21 @@ class GatewaySlashCommandsMixin:
         self._reasoning_config = parsed
         if persist_global:
             if _save_config_key("agent.reasoning_effort", effort):
+                # Also save per-model so switching back to this model restores it
+                try:
+                    from gateway.run import _resolve_gateway_model, _load_gateway_runtime_config
+                    current_model = _resolve_gateway_model()
+                    if current_model:
+                        by_model = dict(
+                            cfg_get(
+                                _load_gateway_runtime_config(),
+                                "agent", "reasoning_effort_by_model", default={},
+                            ) or {}
+                        )
+                        by_model[current_model] = effort
+                        _save_config_key("agent.reasoning_effort_by_model", by_model)
+                except Exception:
+                    pass
                 self._set_session_reasoning_override(session_key, None)
                 self._evict_cached_agent(session_key)
                 return t("gateway.reasoning.set_global", effort=effort)

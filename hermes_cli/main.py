@@ -795,6 +795,15 @@ def _has_any_provider_configured() -> bool:
 
     _DEFAULT_MODEL = DEFAULT_CONFIG.get("model", "")
     cfg = load_config()
+    # Apply ``display.skin`` from config to the active skin engine. Without
+    # this call, ``init_skin_from_config`` is unreachable and skin selection
+    # falls back to the hardcoded "default" — leaving custom skins (banner
+    # logo / hero / palette / branding) inert no matter what config says.
+    try:
+        from hermes_cli.skin_engine import init_skin_from_config
+        init_skin_from_config(cfg)
+    except Exception:
+        pass  # Skin init is non-fatal; fall through to default look.
     model_cfg = cfg.get("model")
     if isinstance(model_cfg, dict):
         _model_name = (model_cfg.get("default") or "").strip()
@@ -898,19 +907,50 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
+class _TerminalTooSmall(Exception):
+    """Raised inside the curses picker when the window is below the layout
+    minimum (40 cols × 5 rows).  Caught by ``_session_browse_picker``'s outer
+    ``except Exception`` so the call falls through to the numbered-list
+    picker.  Previously the in-curses code painted "Terminal too small" and
+    blocked on ``getch()`` — a dead-end with no good user response.
+    """
+
+
 def _session_browse_picker(sessions: list) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
     Returns the selected session ID, or None if cancelled.
     Uses curses (not simple_term_menu) to avoid the ghost-duplication rendering
     bug in tmux/iTerm when arrow keys are used.
+
+    Falls back to a plain numbered-list picker when the terminal is too small
+    for the curses layout (under 40 cols × 5 rows — happens with narrow tmux
+    splits, iTerm2 pane init races, and sleep/wake resize bursts).
     """
     if not sessions:
         print("No sessions found.")
         return None
 
-    # Try curses-based picker first
+    # Pre-check terminal size before paying the curses init cost.  When the
+    # window can't fit our 40 × 5 layout, jump straight to the numbered-list
+    # fallback below — same UX as Windows-without-curses.  We still defend
+    # inside the curses block because the window can shrink between this
+    # check and curses init (resize burst, tmux split during launch).
     try:
+        _ts = os.get_terminal_size()
+        _too_small_upfront = _ts.columns < 40 or _ts.lines < 5
+    except OSError:
+        # Stdout isn't a tty (piped output, non-interactive run).  Let the
+        # curses block below try and fail naturally; its outer exception
+        # handler already routes to the numbered fallback.
+        _too_small_upfront = False
+
+    # Try curses-based picker first (skipped when window is too small).
+    try:
+        if _too_small_upfront:
+            raise _TerminalTooSmall(
+                f"window {_ts.columns}x{_ts.lines} below 40x5 minimum"
+            )
         import curses
 
         result_holder = [None]
@@ -966,14 +1006,15 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
                 if max_y < 5 or max_x < 40:
-                    # Terminal too small
-                    try:
-                        stdscr.addstr(0, 0, "Terminal too small")
-                    except curses.error:
-                        pass
-                    stdscr.refresh()
-                    stdscr.getch()
-                    return
+                    # Window too small for the curses layout (40 cols × 5 rows
+                    # minimum).  Bail out of curses and let the caller fall
+                    # through to the numbered-list picker — far better UX than
+                    # the old dead-end that painted "Terminal too small" and
+                    # then blocked on getch().  Raises into the outer
+                    # ``except Exception: pass`` in _session_browse_picker.
+                    raise _TerminalTooSmall(
+                        f"window {max_x}x{max_y} below 40x5 minimum"
+                    )
 
                 # Header line
                 if search_text:
@@ -2407,6 +2448,26 @@ def cmd_gateway(args):
     from hermes_cli.gateway import gateway_command
 
     gateway_command(args)
+
+
+def cmd_submit(args):
+    """Submit a prompt to a remote hermes gateway."""
+    from hermes_cli.submit import submit_command, tail_only_command
+
+    if getattr(args, "tail_run", None):
+        sys.exit(tail_only_command(args))
+    sys.exit(submit_command(args))
+
+
+def cmd_mcp_gateway(args):
+    """Run an MCP server that proxies the remote hermes gateway as tools.
+
+    Intended to be spawned by Claude Code (or any MCP client) over
+    stdio. Blocks until the client disconnects.
+    """
+    from hermes_cli.mcp_gateway import main as mcp_main
+
+    mcp_main()
 
 
 def cmd_proxy(args):
@@ -3888,7 +3949,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             str(effort).strip().lower() for effort in efforts if str(effort).strip()
         )
     )
-    canonical_order = ("minimal", "low", "medium", "high", "xhigh")
+    canonical_order = ("minimal", "low", "medium", "high", "xhigh", "max")
     ordered = [effort for effort in canonical_order if effort in deduped]
     ordered.extend(effort for effort in deduped if effort not in canonical_order)
     if not ordered:
@@ -12215,6 +12276,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
+        "mcp-gateway",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
@@ -12654,9 +12716,39 @@ def cmd_insights(args):
         from hermes_state import SessionDB
         from agent.insights import InsightsEngine
 
+        # Best-effort: pull the authoritative billed figure from the
+        # provider usage API so the cost section can anchor on ground truth
+        # instead of a list-price estimate. Only attempted for Anthropic
+        # OAuth accounts; any failure is swallowed and we fall back to the
+        # token estimate alone.
+        account_billed = None
+        try:
+            from hermes_cli.config import load_config
+
+            model_cfg = load_config().get("model")
+            cfg_provider = (
+                (model_cfg.get("provider") or "").strip().lower()
+                if isinstance(model_cfg, dict)
+                else ""
+            )
+            if cfg_provider in ("", "anthropic"):
+                from agent.account_usage import fetch_anthropic_billing
+
+                billing = fetch_anthropic_billing()
+                if billing is not None:
+                    account_billed = {
+                        "billed_usd": billing.billed_usd,
+                        "currency": billing.currency,
+                        "monthly_limit_usd": billing.monthly_limit_usd,
+                    }
+        except Exception:
+            account_billed = None
+
         db = SessionDB()
         engine = InsightsEngine(db)
-        report = engine.generate(days=args.days, source=args.source)
+        report = engine.generate(
+            days=args.days, source=args.source, account_billed=account_billed
+        )
         print(engine.format_terminal(report))
         db.close()
     except Exception as e:
@@ -12894,6 +12986,73 @@ def main():
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
+
+    # =========================================================================
+    # submit command — fire a prompt at a remote gateway and exit
+    # ==================================================================
+
+    submit_parser = subparsers.add_parser(
+        "submit",
+        help="Submit a prompt to a remote hermes gateway and exit",
+        description=(
+            "POST a prompt to the configured gateway's /v1/runs endpoint, "
+            "print the run_id, and exit. Use --tail to also stream SSE events "
+            "until the run completes; ctrl-C detaches without stopping the run."
+        ),
+    )
+    submit_parser.add_argument(
+        "prompt",
+        nargs="*",
+        help="Prompt text (joined with spaces). Omit to read from --file or stdin.",
+    )
+    submit_parser.add_argument(
+        "--file", "-f",
+        help="Read prompt from this file instead of args/stdin.",
+    )
+    submit_parser.add_argument(
+        "--instructions",
+        help="Ephemeral system-prompt override sent as the run's `instructions`.",
+    )
+    submit_parser.add_argument(
+        "--gateway-url",
+        help="Override the gateway base URL (default: HERMES_GATEWAY_URL env "
+             "or https://hermes-gw-01.tail19c543.ts.net).",
+    )
+    submit_parser.add_argument(
+        "--api-key",
+        help="Override the bearer token (default: HERMES_GATEWAY_API_KEY or "
+             "API_SERVER_KEY from env / ~/.hermes/.env).",
+    )
+    submit_parser.add_argument(
+        "--tail", action="store_true",
+        help="After submitting, stream the SSE event feed until the run ends. "
+             "Ctrl-C detaches without stopping the run.",
+    )
+    submit_parser.add_argument(
+        "--tail-run",
+        metavar="RUN_ID",
+        help="Skip submission; just tail the event feed for an existing run.",
+    )
+    submit_parser.add_argument(
+        "--quiet", "-q", action="store_true",
+        help="Print only the run_id (machine-friendly, suitable for $(…)).",
+    )
+    submit_parser.set_defaults(func=cmd_submit)
+
+    # =========================================================================
+    # mcp-gateway command — expose the remote gateway as MCP tools
+    # =========================================================================
+    mcp_gw_parser = subparsers.add_parser(
+        "mcp-gateway",
+        help="Run an MCP server (stdio) exposing the remote hermes gateway's "
+             "/v1/runs API as tools (submit_task, get_run_status, ...).",
+        description=(
+            "Stdio-transport MCP server. Designed to be spawned by Claude "
+            "Code or another MCP client; blocks until the client disconnects. "
+            "Resolves gateway URL + bearer the same way `hermes submit` does."
+        ),
+    )
+    mcp_gw_parser.set_defaults(func=cmd_mcp_gateway)
 
     # =========================================================================
     # lsp command
@@ -13764,27 +13923,42 @@ def main():
             if not sessions:
                 print("No sessions found.")
                 return
+
+            def _fmt_cost(v):
+                try:
+                    c = float(v or 0.0)
+                except (TypeError, ValueError):
+                    return "—"
+                if c <= 0:
+                    return "—"
+                if c < 0.01:
+                    return f"${c:.4f}"
+                if c < 1:
+                    return f"${c:.3f}"
+                return f"${c:.2f}"
+
             has_titles = any(s.get("title") for s in sessions)
             if has_titles:
-                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
+                print(f"{'Title':<32} {'Preview':<36} {'Last Active':<13} {'Cost':>8}  {'ID'}")
+                print("─" * 115)
             else:
-                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 95)
+                print(f"{'Preview':<46} {'Last Active':<13} {'Src':<6} {'Cost':>8}  {'ID'}")
+                print("─" * 100)
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
+                cost = _fmt_cost(s.get("estimated_cost_usd"))
                 preview = (
-                    s.get("preview", "")[:38]
+                    s.get("preview", "")[:34]
                     if has_titles
-                    else s.get("preview", "")[:48]
+                    else s.get("preview", "")[:44]
                 )
                 if has_titles:
                     title = (s.get("title") or "—")[:30]
                     sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                    print(f"{title:<32} {preview:<36} {last_active:<13} {cost:>8}  {sid}")
                 else:
                     sid = s["id"]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                    print(f"{preview:<46} {last_active:<13} {s['source']:<6} {cost:>8}  {sid}")
 
         elif action == "export":
             from hermes_cli.session_filters import (

@@ -5062,6 +5062,56 @@ class TestRunConversation:
         assert "Thinking Budget Exhausted" in result["final_response"]
         assert "/thinkon" in result["final_response"]
 
+    def test_length_reasoning_channel_exhausted_skips_continuation(self, agent):
+        """DeepSeek-V4 streams CoT in the separate reasoning_content channel,
+        not inline <think> tags.  A length-truncated turn carrying substantial
+        reasoning_content but empty content and no tool calls is thinking
+        exhaustion — skip the pointless continuation retries."""
+        self._setup_agent(agent)
+        resp = _mock_response(
+            content="",
+            finish_reason="length",
+            reasoning_content="We need to call edit_file. " * 200,
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("refactor the file")
+
+        # Detected as exhaustion on the first call — no continuation retries.
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        assert "output tokens" in result["error"].lower()
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
+
+    def test_length_reasoning_field_exhausted_skips_continuation(self, agent):
+        """Same exhaustion detection via the OpenRouter-style ``reasoning``
+        field (not reasoning_content)."""
+        self._setup_agent(agent)
+        resp = _mock_response(
+            content=None,
+            finish_reason="length",
+            reasoning="Let me think through this step by step. " * 200,
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("solve this")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "Thinking Budget Exhausted" in result["final_response"]
+
     def test_length_empty_content_without_think_tags_retries_normally(self, agent):
         """When finish_reason='length' and content is None but no think tags,
         fall through to normal continuation retry (not thinking-exhaustion)."""
