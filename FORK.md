@@ -3,6 +3,77 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### History squash — 2026-07-19
+
+`main`'s 340 commits of fork-only history (vs the `upstream/main` merge-base)
+were squashed into 6 commits, grouped by subsystem, with a verified
+byte-identical tree before/after (`git diff <old-tip> <new-tip>` = empty).
+Rationale: this file already documents every change; git history depth added
+no information not already captured here, and 340 commits was getting
+unwieldy. Force-pushed to `origin/main`.
+
+The pre-squash history is preserved forever at tag
+`backup/pre-squash-2026-07-19` (pushed to origin) — every short SHA cited
+below still resolves there (`git show <sha>` after `git fetch --tags`), even
+though `git log upstream/main..main` on current `main` now shows just 6
+commits, not the commit counts quoted in a few places below (frozen at time
+of writing, pre-squash). New commits on current `main` post-squash:
+
+| SHA | Subsystem |
+|---|---|
+| `56c1c5417` | hard-fork modules |
+| `69444061b` | core agent runtime |
+| `a4c788a9a` | CLI, gateway, and run_agent |
+| `be1f94f32` | tool subsystem |
+| `715da117f` | plugins and scripts |
+| `53f78e85b` | docs, locales, and project config |
+
+Every pre-squash short SHA cited elsewhere in this file resolves to one of
+the six squash commits above (confirmed via `git log --oneline --follow --
+<path>` per file each old SHA touched):
+
+| Old SHA | New commit |
+|---|---|
+| `7b6cb3f98` | `69444061b` core agent runtime |
+| `0eff5e9cc` | `69444061b` core agent runtime |
+| `79650d1de` | `56c1c5417` hard-fork modules |
+| `efa0472954` | `69444061b` core agent runtime |
+| `bc44a94f20` | `69444061b` core agent runtime |
+| `8263a4c5c` | `69444061b` core agent runtime |
+| `89ab0ca37` | `69444061b` core agent runtime |
+| `8191519242` | `56c1c5417` hard-fork modules |
+| `da796e6bd` | `69444061b` core agent runtime |
+| `0285cf60c` | `69444061b` core agent runtime |
+| `ecf9d12bb` | `a4c788a9a` CLI, gateway, and run_agent |
+| `c5bb78547` | `56c1c5417` hard-fork modules |
+| `1052432ea` | `a4c788a9a` CLI, gateway, and run_agent |
+| `a026c8a74` | `a4c788a9a` CLI, gateway, and run_agent |
+| `ab9c74ee4` | `69444061b` core agent runtime |
+| `e6ffabb15` | `a4c788a9a` CLI, gateway, and run_agent |
+| `f0adbbf8f` | `be1f94f32` tool subsystem |
+| `ba0bc01d1` | `a4c788a9a` CLI, gateway, and run_agent |
+| `e046afdd3` | `a4c788a9a` CLI, gateway, and run_agent |
+| `fd2a35b16` | `a4c788a9a` CLI, gateway, and run_agent |
+| `680b32655` | `a4c788a9a` CLI, gateway, and run_agent |
+| `a730d5dc6` | `69444061b` core agent runtime |
+| `2f882c9bf` | `a4c788a9a` CLI, gateway, and run_agent |
+| `908ff9f25` | `a4c788a9a` CLI, gateway, and run_agent |
+| `e80d8c73f` | `69444061b` core agent runtime |
+| `61a1b8d6f` | `69444061b` core agent runtime |
+| `b713432ab` | `be1f94f32` tool subsystem |
+| `aeb00d7ae` | `be1f94f32` tool subsystem |
+| `0f60943f7` | `be1f94f32` tool subsystem |
+| `0f81be857` | `69444061b` core agent runtime |
+| `20fb2e005` | `69444061b` core agent runtime |
+| `ea0aef879` | `56c1c5417` hard-fork modules |
+| `84cbae4e3` | `56c1c5417` hard-fork modules |
+| `0a32275ff` | `69444061b` core agent runtime |
+
+For full standalone-commit detail (isolated diff, original message) on any
+of these, use the SHA directly against `backup/pre-squash-2026-07-19` —
+e.g. `git show 7b6cb3f98`. That tag is fetched automatically with
+`git fetch origin --tags`.
+
 ## What's different from upstream
 
 ### Hard-fork boundaries (zero merge conflicts ever)
@@ -109,8 +180,10 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/tool_guardrails.py` | +11 / -4 | `hard_stop_enabled` default `False→True` — tool-call loop guardrails now block/halt instead of just warning. See "Fork-only fix — 2026-07-07" below. |
 | `plugins/model-providers/anthropic/__init__.py` | +2 / -2 | `default_aux_model` updated from haiku to sonnet-5. |
 
-Plus 314 commits of fork-only history (vs `upstream/main`, refreshed
-2026-07-12 post v2026.7.7.2 sync). See `git log upstream/main..main`.
+Was 314 commits of fork-only history (vs `upstream/main`, refreshed
+2026-07-12 post v2026.7.7.2 sync) before the 2026-07-19 squash noted at the
+top of this file; `git log upstream/main..main` on current `main` now shows
+6 commits carrying the same net diff.
 
 ### Fork-only fixes — 2026-06-02 (prompt-cache cost work)
 
@@ -1204,7 +1277,9 @@ Soft-fork divergence vs `upstream/main` after this sync (refreshed line counts):
 `credential_pool.py` +124/-94, `hermes_state.py` +372/-553, `run_agent.py`
 +254/-243, `system_prompt.py` +52/-150, `tool_executor.py` +172/-82,
 `agent_runtime_helpers.py` +202/-249, `tools/delegate_tool.py` +977/-559,
-`tools/memory_tool.py` +548/-285. Plus 244 commits of fork-only history.
+`tools/memory_tool.py` +548/-285. Was 244 commits of fork-only history at
+the time; see the 2026-07-19 history-squash note at the top of this file
+for how commit history is organized on current `main`.
 
 
 ### Fork-only fixes — 2026-07-01 (DSv4-local reliability sweep + aux/status-bar bugs)
