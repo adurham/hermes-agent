@@ -42,7 +42,7 @@ _HERMES_CORE_TOOLS = [
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills
-    "skills_list", "skill_view", "skill_manage",
+    "skills_list", "skill_view", "skill_manage", "skill_pitfalls",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -61,8 +61,10 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # Second opinion from a configurable reference model (fork feature)
+    "consult",
     # Code execution + delegation
-    "execute_code", "delegate_task",
+    "execute_code", "delegate_task", "swarm_run",
     # Cronjob management
     "cronjob",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -165,7 +167,7 @@ TOOLSETS = {
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
+        "tools": ["skills_list", "skill_view", "skill_manage", "skill_pitfalls"],
         "includes": []
     },
     
@@ -236,6 +238,16 @@ TOOLSETS = {
         "includes": []
     },
     
+    "consult": {
+        "description": (
+            "Get a second opinion from a configurable reference model "
+            "(auxiliary.consult in config.yaml) before a risky or uncertain "
+            "decision. Available to both the main agent and subagents."
+        ),
+        "tools": ["consult"],
+        "includes": []
+    },
+    
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
         "tools": ["execute_code"],
@@ -244,7 +256,7 @@ TOOLSETS = {
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task"],
+        "tools": ["delegate_task", "swarm_run"],
         "includes": []
     },
 
@@ -382,14 +394,14 @@ TOOLSETS = {
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
+            "skills_list", "skill_view", "skill_manage", "skill_pitfalls",
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
             "session_search",
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_task", "swarm_run",
         ],
         "includes": []
     },
@@ -406,7 +418,7 @@ TOOLSETS = {
             # Vision + image generation
             "vision_analyze", "image_generate",
             # Skills
-            "skills_list", "skill_view", "skill_manage",
+            "skills_list", "skill_view", "skill_manage", "skill_pitfalls",
             # Browser automation
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
@@ -417,7 +429,7 @@ TOOLSETS = {
             # Session history search
             "session_search",
             # Code execution + delegation
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_task", "swarm_run",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

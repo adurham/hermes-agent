@@ -1088,8 +1088,40 @@ DEFAULT_CONFIG = {
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # System-prompt placement strategy on the OAuth path.
+        #
+        # Anthropic's billing classifier on personal Max plans routes
+        # requests with a "non-Claude-Code-shaped" system prompt through
+        # extra-usage billing — even with the spoofed UA + claude-code
+        # beta. Empirically, ANY system content beyond the 57-char Claude
+        # Code identity prefix trips the classifier; size and block count
+        # don't matter (a single merged 5K-char block fails just as a
+        # 2-block layout does). Real Claude Code ships a tiny system
+        # prompt; everything dynamic (cwd, env, memory, skill index, etc.)
+        # rides on the conversation, not the system slot.
+        #
+        # Modes:
+        #   "normal"  — legacy behavior. Hermes's full app prompt sits in
+        #               `system` alongside the CC prefix. Works on accounts
+        #               with extra-usage credits or on enterprise plans
+        #               where the classifier doesn't apply. Reliable on
+        #               work-mac account, fails on personal Max.
+        #   "compact" — Claude-Code-style. Only the 57-char CC prefix
+        #               stays in `system`; everything else is moved to a
+        #               preamble block on the first user message. Same
+        #               total content, same agent behavior, but the
+        #               request is shaped like real Claude Code so the
+        #               classifier accepts it. Required on personal Max
+        #               for the OAuth/subscription path to work end-to-end.
+        #
+        # Mirrors Claude Code's --exclude-dynamic-system-prompt-sections
+        # flag (which moves cwd/env/memory/git-status to the first user
+        # message for cross-user prompt-cache reuse). Same shape, same
+        # outcome — for OAuth requests Anthropic's classifier appears to
+        # use it as a "this is real Claude Code" signal.
+        "system_prompt_mode": "normal",
     },
-    
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
@@ -1191,6 +1223,14 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        # FORK: on first-party Anthropic (Claude) endpoints, use Anthropic's
+        # native server-side web_search_20250305 tool inline instead of the
+        # client web_search tool + a third-party backend. Default on; set
+        # false to force the client tool even on Claude. Non-Claude providers
+        # always use the client tool regardless of this flag.
+        # See agent/fork/anthropic_native_web_search.py.
+        "anthropic_native_search": True,
+        "anthropic_native_search_max_uses": 5,  # per-turn cap for native searches
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
     },
 
@@ -1422,6 +1462,46 @@ DEFAULT_CONFIG = {
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
         "cache_ttl": "5m",
+    },
+
+    # Lazy MCP tool loading. When enabled, hermes ships name-only stubs
+    # for MCP-prefixed tools (slack_*, salesforce_*, tanium_gateway_*, etc.)
+    # in the tools array. The model discovers the full schema on demand
+    # via either:
+    #
+    #   mode = "client_side" (default, recommended)
+    #     Discovery is a normal client-side tool (``hermes_load_tools``).
+    #     One API round-trip per discovery, billed once at normal rates.
+    #     This is the default for any new install.
+    #
+    #   mode = "server_side"
+    #     Discovery uses Anthropic's ``tool_search_tool_<variant>_20251119``
+    #     server tool. Each server-tool iteration re-bills the FULL prompt
+    #     context within a single API call — observed multipliers of 2x,
+    #     3x, 4x in the wild (see _build_tool_search_config docstring for
+    #     the 2026-05-13 case 00271597 evidence). Only valuable to OAuth
+    #     / Claude-subscription users whose billing classifier scores
+    #     wire bytes. API-key users SHOULD use client_side.
+    #
+    # Big context win when you have many MCP servers connected —
+    # Slack/Notion/PagerDuty/etc. can easily account for ~80K tokens of
+    # tool definitions.
+    #
+    # Mirrors Claude Code's tool_search approach. Available on Sonnet 4+,
+    # Opus 4+, Haiku 4.5+. anthropic_messages api_mode only — Bedrock
+    # converse API doesn't support it.
+    #
+    # variant: "regex" (default, server_side only) / "bm25" (server_side only).
+    # defer_mcp_tools: when True, all tools whose name starts with a
+    # configured MCP server name get deferred.
+    # additional_eager / additional_deferred: per-tool overrides (by name).
+    "tool_search": {
+        "enabled": False,
+        "mode": "client_side",
+        "variant": "regex",
+        "defer_mcp_tools": True,
+        "additional_eager": [],
+        "additional_deferred": [],
     },
 
     # OpenRouter-specific settings.
@@ -1669,6 +1749,41 @@ DEFAULT_CONFIG = {
             "timeout": 900,
             "extra_body": {},
         },
+        # Consult — second-opinion tool (fork feature). "auto" (default)
+        # routes through the same auto-detection chain as every other
+        # auxiliary task (OpenRouter -> Nous Portal -> main endpoint), which
+        # is USUALLY the wrong choice for consult: the whole point is asking
+        # a DIFFERENT, typically smarter/more expensive model than your main
+        # driver. Point this at a frontier model that's too
+        # slow/expensive/refusal-prone to be a main model but valuable as an
+        # occasional second opinion (e.g. provider: anthropic,
+        # model: claude-fable-5). Refusals/empty responses from the consult
+        # model are expected and handled gracefully by the tool (returns
+        # unavailable=true) -- no fallback_model needed.
+        "consult": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 180,
+            "extra_body": {},
+        },
+        # Delegation router — classifies each delegate_task task into a
+        # capability tier (light/standard/deep) so the child runs on the
+        # right-sized model without the caller having to set agent_type. Used
+        # by tools/delegation_router.py, gated by delegation.auto_route.enabled.
+        # Point this at a cheap, fast model (the default "auto" chain lands on
+        # the provider's cheap default, e.g. claude-haiku): the job is a short
+        # one-shot JSON classification, so a big model is wasted here. Fails
+        # open — if this model is unavailable, tasks inherit the normal default.
+        "delegation_router": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 20,
+            "extra_body": {},
+        },
     },
     
     "display": {
@@ -1689,6 +1804,15 @@ DEFAULT_CONFIG = {
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # Which key interrupts a running agent in the classic CLI:
+        #   "ctrl-c" (default) — Ctrl+C interrupts (legacy Hermes behaviour)
+        #   "escape"           — Esc interrupts (claude-code parity); Ctrl+C
+        #                        becomes a "press again to exit" shortcut.
+        #                        Note: Esc has ~0.5s chord-flush delay so
+        #                        prompt_toolkit can disambiguate Alt+Enter etc.
+        #   "both"             — Either key interrupts; Ctrl+C keeps its
+        #                        double-press force-exit behaviour.
+        "interrupt_key": "ctrl-c",
         # When busy_input_mode="steer", suppress only the visible
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.
@@ -2136,6 +2260,56 @@ DEFAULT_CONFIG = {
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
+        # Per-role model overrides (ruflo agent persona → model). Populated
+        # by the /delegation slash command. Lets users pin "researcher → Haiku,
+        # security-architect → Opus" once and have every delegated child of
+        # that persona auto-use the right model. Precedence (highest first):
+        # per-task `model` arg > per-role map (this dict) > top-level `model`
+        # arg > delegation.model > parent's model.
+        "model_by_role": {},
+        # Auto-route (fork feature): when a delegate_task task sets NEITHER an
+        # explicit `model` NOR an `agent_type`, a cheap classifier
+        # (auxiliary.delegation_router) sorts it into a capability tier and
+        # maps tier → role → model via model_by_role above. Lets a cheap main
+        # chat model fan work out onto the right tier automatically instead of
+        # every child silently inheriting the (cheap) parent model. Precedence:
+        # per-task `model` > per-task `agent_type` role-map > auto-route (this) >
+        # delegation.model > parent's model. Fail-open: any classifier failure
+        # leaves the task on the normal default, never worse than today.
+        "auto_route": {
+            # Master switch. On by default; set false to disable entirely.
+            "enabled": True,
+            # Only auto-route when the child's provider is in this list —
+            # model_by_role values are provider-specific model slugs (usually
+            # claude-*), so routing them onto exo/ollama/openrouter would 404.
+            "providers": ["anthropic"],
+            # tier → ruflo role. The role resolves to a model via model_by_role;
+            # if a tier's role has no model_by_role entry, that tier fails open.
+            "tier_roles": {
+                "light": "researcher",
+                "standard": "coder",
+                "deep": "system-architect",
+            },
+            # Max chars of each task's goal+context sent to the classifier.
+            "max_chars": 1500,
+            # Classifier call timeout (seconds). Short — it's a one-shot.
+            "timeout": 20,
+            # Persona classification (fork feature): the SAME classifier call
+            # above may also pick a ruflo persona (agent_type) for a task,
+            # when one is a clearly better fit than the generic tier role.
+            # A confident pick feeds into the same `agent_type` precedence
+            # used by an explicit caller-supplied agent_type, so it gets
+            # BOTH persona-prompt injection and per-role model resolution
+            # for free. Only personas with a model_by_role entry are ever
+            # offered to the classifier (unroutable picks are useless), and
+            # any hallucinated/unrecognized name is dropped, never applied.
+            # Set false to keep tier-based model routing but disable
+            # automatic persona/prompt injection (cost/behavior-stability).
+            "classify_persona": True,
+        },
+        # Path to the ruflo install for /delegation's agent discovery. Empty
+        # = use ~/repos/ruflo. Override via this setting or RUFLO_PATH env.
+        "ruflo_path": "",
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
@@ -2266,6 +2440,15 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Lazy-load the skills index. When True, the system prompt skips the
+        # bulky ``<available_skills>`` block (one entry per skill — names +
+        # descriptions for every skill in every external_dirs source). The
+        # model uses the existing ``skills_list`` tool to discover skills
+        # on demand, then ``skill_view(name)`` to load the full content.
+        # Mirrors the tool_search pattern: same just-in-time-retrieval idea
+        # applied to skills. Big context win on stacks like Adam's where
+        # the index alone is ~5K tokens / ~20K chars (148 skills).
+        "lazy_listing": False,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
         # background self-improvement review fork.
@@ -2278,6 +2461,16 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+    },
+
+    # Second-opinion nudge (fork feature) — periodic reminder pointing the
+    # agent at the `consult` tool. Mirrors agent.fork.memory_recall /
+    # agent.fork.skill_recall: fires on risky tool calls, not on a flat turn
+    # count, so it doesn't nag during routine reads/searches.
+    "consult": {
+        # Risky tool calls between reminders. 0 disables the nudge entirely
+        # (the `consult` tool itself remains available either way).
+        "nudge_interval": 8,
     },
 
     # Curator — background skill maintenance.
@@ -2457,8 +2650,24 @@ DEFAULT_CONFIG = {
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
         "mode": "manual",
-        "timeout": 60,
+        # Seconds to wait for the user to respond to an approval prompt
+        # before timing out and denying.  Bumped from 60s to 300s (5 min)
+        # because users juggling multiple windows / SSH sessions routinely
+        # miss the 60s window before they ever notice the prompt is up.
+        # Sudo and approval prompts both honor this knob.
+        "timeout": 300,
         "cron_mode": "deny",
+        # When true (default), play the terminal bell (\a) when an
+        # approval / sudo / clarify prompt opens.  Bell propagates through
+        # SSH so a session running on a remote box can still ping the
+        # local terminal.  Set to false to silence.
+        "bell_on_prompt": True,
+        # When true (default on macOS), fire a native macOS notification
+        # (osascript "display notification") with sound when a prompt
+        # opens.  Useful when the user has SSH'd into the box from
+        # another machine — the Mac still owns the GUI.  Set to false to
+        # silence.  No-op on non-darwin platforms.
+        "notify_on_prompt": True,
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
         # --yolo / /yolo / mode=off bypass — making this the user-editable
@@ -2725,6 +2934,20 @@ DEFAULT_CONFIG = {
             "search_default_limit": 5,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
+            # FORK: opt normally-always-loaded toolsets/tools into lazy
+            # loading behind the tool_search/describe/call bridge. Empty by
+            # default (upstream behavior preserved). See tools/tool_search.py
+            # is_deferrable_tool_name for precedence. Names are registry
+            # toolset names / tool names; accept a list or comma-string.
+            #   defer_toolsets:   toolset names to lazy-load even though core
+            #                     (e.g. ["browser", "homeassistant", "tts"]).
+            #   defer_tools:      individual tool names to force-defer.
+            #   keep_eager_tools: individual tool names that must stay eager,
+            #                     overriding defer_toolsets (e.g. keep
+            #                     "delegate_task" while deferring "swarm_run").
+            "defer_toolsets": [],
+            "defer_tools": [],
+            "keep_eager_tools": [],
         },
     },
 
@@ -4468,6 +4691,69 @@ def _set_nested(config, dotted_key: str, value):
         current[last] = value
 
 
+_MISSING = object()
+
+
+def _lookup_default(defaults: dict, dotted_key: str):
+    """Return the DEFAULT_CONFIG value at a dotted key path, or ``_MISSING``.
+
+    Used by ``set_config_value`` to learn the *intended type* of a key so a
+    CLI string can be coerced correctly (e.g. a list-typed key like
+    ``agent.disabled_toolsets`` must become a YAML list, not a comma string).
+    Numeric path segments (list indices) abort the lookup — we only resolve
+    types for statically-known dict paths, not into list elements.
+    """
+    cur = defaults
+    for part in dotted_key.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return _MISSING
+    return cur
+
+
+def _coerce_config_value(key: str, value: str, defaults: dict):
+    """Coerce a CLI-supplied string to the right config type.
+
+    Order of resolution:
+      1. Explicit JSON (``[...]`` / ``{...}``) is parsed as-is — lets callers
+         pass lists/dicts unambiguously, e.g. ``'["a","b"]'``.
+      2. If the key is list-typed in DEFAULT_CONFIG, split a comma-separated
+         string into a list (``a,b,c`` → ``["a","b","c"]``; empty → ``[]``).
+         This fixes the bug where ``hermes config set agent.disabled_toolsets
+         a,b,c`` stored a single string, silently disabling enforcement.
+      3. Otherwise fall back to scalar coercion (bool / int / float / str).
+
+    Indexed scalar writes (e.g. ``custom_providers.0.api_key``) are
+    unaffected: their default lookup returns ``_MISSING`` (numeric segment),
+    so they take the scalar path.
+    """
+    stripped = value.strip()
+    if stripped[:1] in ("[", "{"):
+        import json
+        try:
+            return json.loads(stripped)
+        except (ValueError, TypeError):
+            pass  # not valid JSON — fall through to other coercions
+
+    default_at_key = _lookup_default(defaults, key)
+    if isinstance(default_at_key, list):
+        if stripped == "":
+            return []
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    low = value.lower()
+    if low in {"true", "yes", "on"}:
+        return True
+    if low in {"false", "no", "off"}:
+        return False
+    if value.isdigit():
+        return int(value)
+    if value.replace(".", "", 1).isdigit():
+        return float(value)
+    return value
+
+
 def clear_model_endpoint_credentials(
     model_cfg: Dict[str, Any],
     *,
@@ -4505,11 +4791,29 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
     config = load_config()
     missing = []
 
+    # When the user's ``auxiliary`` config uses the provider-first schema
+    # (per-provider blocks + ``defaults``), DEFAULT_CONFIG's task-first
+    # ``auxiliary.<task>`` keys are NOT missing — they're a different schema for
+    # the same data. Descending would re-inject every task block as inert
+    # ``{provider: auto, model: ''}`` pollution on top of the provider-first
+    # config (and recur on every migrate). Detect and skip the auxiliary
+    # subtree in that case; the resolver reads provider-first natively.
+    _aux = config.get("auxiliary")
+    _skip_auxiliary = False
+    if isinstance(_aux, dict) and _aux:
+        try:
+            from agent.auxiliary_client import _aux_schema_is_provider_first
+            _skip_auxiliary = _aux_schema_is_provider_first(_aux)
+        except Exception:
+            _skip_auxiliary = "defaults" in _aux
+
     def _check(defaults: dict, current: dict, prefix: str = ""):
         for key, default_value in defaults.items():
             if key.startswith('_'):
                 continue
             full_key = key if not prefix else f"{prefix}.{key}"
+            if _skip_auxiliary and full_key == "auxiliary":
+                continue
             if key not in current:
                 missing.append({
                     "key": full_key,
@@ -5079,6 +5383,61 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_max_tokens(
+    model: Optional[str],
+    base_url: Optional[str],
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Look up a per-model ``max_tokens`` default from ``custom_providers``.
+
+    Mirrors ``get_custom_provider_context_length`` but reads
+    ``custom_providers[i].models.<model>.max_tokens``. Useful for thinking
+    / reasoning models where the OpenAI-compat default lets reasoning consume
+    the entire generation budget; setting a default here gives the user a
+    config-level knob without having to pass ``--max-tokens`` every invocation.
+    """
+    if not model or not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        raw_max = model_cfg.get("max_tokens")
+        if raw_max is None:
+            continue
+        try:
+            value = int(raw_max)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 def _coerce_config_version(value: Any) -> int:
     """Return a safe integer config version, treating invalid values as legacy."""
     if isinstance(value, bool):
@@ -5132,7 +5491,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "sessions", "streaming", "updates", "mcp_servers", "consult",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -5931,6 +6290,31 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "legacy surface-aware behavior."
                 )
 
+    # ── Version 30 → 31: convert auxiliary config to provider-first schema ──
+    # Legacy task-first ``auxiliary.<task>`` blocks (with per-task
+    # provider/model + fallback_models maps) are converted to the
+    # provider-first shape: one block per provider (``exo``, ``anthropic``, …)
+    # keyed by task→model, plus a shared ``defaults`` block for per-task
+    # settings. The auxiliary_client resolver reads both schemas, so this is a
+    # readability/maintenance migration — it is provably resolve-equivalent
+    # (see tests/agent/test_auxiliary_provider_first.py). Only runs when the
+    # user actually has task-first aux blocks; no-op for fresh/empty configs.
+    if current_ver < 31:
+        config = read_raw_config()
+        raw_aux = config.get("auxiliary")
+        if isinstance(raw_aux, dict) and raw_aux:
+            converted = convert_auxiliary_to_provider_first(copy.deepcopy(raw_aux))
+            if converted is not raw_aux and converted != raw_aux:
+                config["auxiliary"] = converted
+                save_config(config)
+                results["config_added"].append(
+                    "auxiliary → provider-first schema (per-provider blocks)"
+                )
+                if not quiet:
+                    print(
+                        "  ✓ Converted auxiliary config to provider-first schema "
+                        "(per-provider blocks + shared defaults)"
+                    )
     # ── Version 32 → 33: unify delegation concurrency caps ──
     # delegation.max_async_children is deprecated: max_concurrent_children now
     # caps both a single batch's parallelism and concurrent background
@@ -6160,6 +6544,201 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             print("  Set later with: hermes config set <key> <value>")
 
     return results
+
+
+# Built-in auxiliary task keys whose presence (with routing values) at the top
+# level of an ``auxiliary`` map marks a legacy *task-first* config. Mirrors
+# ``agent.auxiliary_client._BUILTIN_AUX_TASK_KEYS`` — kept local to avoid a
+# config→agent import cycle.
+_AUX_TASK_FIRST_KEYS = frozenset({
+    "vision", "web_extract", "compression", "skills_hub", "approval", "mcp",
+    "title_generation", "tts_audio_tags", "triage_specifier",
+    "kanban_decomposer", "profile_describer", "curator", "monitor",
+    "session_search", "memory_extraction", "delegation_router",
+})
+# Per-task setting keys that are provider-independent and belong in the shared
+# provider-first ``defaults`` block (NOT a model/routing field).
+_AUX_SETTING_KEYS = frozenset({
+    "timeout", "extra_body", "download_timeout", "language",
+    "max_concurrency", "max_tokens_per_turn", "max_tokens_session_end",
+    "include_pre_compress", "auto_commit_session_end", "fallback_chain",
+})
+# Routing keys handled explicitly during conversion (not copied as settings).
+_AUX_ROUTING_KEYS = frozenset({
+    "provider", "model", "base_url", "api_key", "api_mode",
+    "fallback_model", "fallback_models",
+})
+
+
+def convert_auxiliary_to_provider_first(aux: dict) -> dict:
+    """Convert a legacy *task-first* ``auxiliary`` map to *provider-first*.
+
+    Task-first input (one block per task)::
+
+        vision:      {provider: custom:exo, model: <qwen>, base_url: …,
+                      timeout: 120, fallback_models: {anthropic: claude-sonnet-4-6}}
+        compression: {provider: custom:exo, model: <deepseek>, …,
+                      fallback_models: {anthropic: claude-sonnet-4-6}}
+
+    Provider-first output (one block per provider + shared per-task settings)::
+
+        defaults:
+          vision: {timeout: 120}
+        exo:
+          provider: custom:exo
+          base_url: …
+          default: <qwen>          # most-common model across tasks
+          compression: <deepseek>  # task that differs from default
+        anthropic:
+          default: claude-haiku-4-5  # most-common fallback across tasks
+          vision: claude-sonnet-4-6  # tasks that differ
+
+    The conversion is intentionally *behavior-preserving* against the
+    auxiliary_client resolver:
+      * The task's primary ``provider``/``model``/``base_url`` becomes an entry
+        in the matching provider block (exo pin → ``exo`` block; ``auto``/none
+        → no explicit block, the resolver's provider-catalog default applies).
+      * Each ``fallback_models[<prov>]`` entry becomes a task entry in that
+        provider's block.
+      * A legacy ``fallback_model`` scalar (assumed anthropic, per the old
+        resolver) becomes an ``anthropic`` block entry.
+      * Per-task settings (timeout, extra_body, …) move to ``defaults``.
+
+    Idempotent: an already provider-first map (has a ``defaults`` key or no
+    task-first keys) is returned unchanged.
+    """
+    if not isinstance(aux, dict) or not aux:
+        return aux
+    # Idempotency / already-provider-first guard: if there are no task-first
+    # keys carrying routing values, assume it's already converted.
+    task_keys_present = [
+        k for k in aux
+        if k in _AUX_TASK_FIRST_KEYS and isinstance(aux.get(k), dict)
+    ]
+    if not task_keys_present or "defaults" in aux:
+        return aux
+
+    # provider id → {task → model}; plus per-block routing (base_url/api_key/…).
+    provider_models: dict = {}
+    provider_routing: dict = {}
+    defaults_block: dict = {}
+
+    def _block(prov: str) -> dict:
+        return provider_models.setdefault(prov, {})
+
+    for task in task_keys_present:
+        tcfg = aux[task]
+        prov = str(tcfg.get("provider", "")).strip()
+        model = str(tcfg.get("model", "")).strip()
+        base_url = str(tcfg.get("base_url", "")).strip()
+        api_key = str(tcfg.get("api_key", "")).strip()
+        api_mode = str(tcfg.get("api_mode", "")).strip()
+
+        # Primary pin → provider block (skip 'auto'/empty: resolver default).
+        if prov and prov != "auto":
+            # Normalise custom:exo → exo block name for readability.
+            block_name = prov.split(":", 1)[1] if prov.startswith("custom:") else prov
+            if model:
+                _block(block_name)[task] = model
+            routing = provider_routing.setdefault(block_name, {})
+            # Record block-level routing once (consistent across tasks by design).
+            if prov.startswith("custom:") or base_url:
+                routing.setdefault("provider", prov)
+            if base_url:
+                routing.setdefault("base_url", base_url)
+            if api_key:
+                routing.setdefault("api_key", api_key)
+            if api_mode:
+                routing.setdefault("api_mode", api_mode)
+
+        # Provider-scoped fallbacks → each provider's block.
+        fbm = tcfg.get("fallback_models")
+        if isinstance(fbm, dict):
+            for fb_prov, fb_model in fbm.items():
+                fb_prov = str(fb_prov).strip().lower()
+                fb_model = str(fb_model).strip()
+                if fb_prov and fb_model:
+                    _block(fb_prov)[task] = fb_model
+        # Legacy scalar fallback_model → anthropic (old resolver assumption).
+        fb_scalar = str(tcfg.get("fallback_model", "")).strip()
+        if fb_scalar:
+            _block("anthropic").setdefault(task, fb_scalar)
+
+        # Per-task settings → defaults block.
+        settings = {
+            k: v for k, v in tcfg.items()
+            if k in _AUX_SETTING_KEYS and k not in _AUX_ROUTING_KEYS
+        }
+        if settings:
+            defaults_block[task] = settings
+
+    # Collapse each provider block to a per-block ``default`` (most common
+    # model) + explicit overrides for the minority.
+    out: dict = {}
+    if defaults_block:
+        out["defaults"] = defaults_block
+    for prov, task_model in provider_models.items():
+        if not task_model:
+            continue
+        block: dict = {}
+        block.update(provider_routing.get(prov, {}))
+        # Most-common model becomes the block default.
+        from collections import Counter
+        most_common, _count = Counter(task_model.values()).most_common(1)[0]
+        block["default"] = most_common
+        for task, model in task_model.items():
+            if model != most_common:
+                block[task] = model
+        out[prov] = block
+    return out
+
+
+def _auxiliary_is_provider_first(aux: Any) -> bool:
+    """Local provider-first detector (mirrors agent.auxiliary_client's, but
+    kept here to avoid a config→agent import in the save path).
+
+    Provider-first markers (never present in a legacy task-first config):
+      * a top-level ``defaults`` key, or
+      * a top-level key that is NOT a known task name and whose value is a dict
+        carrying a ``default`` model / ``provider`` / ``base_url`` (a provider
+        block).
+    """
+    if not isinstance(aux, dict) or not aux:
+        return False
+    if "defaults" in aux:
+        return True
+    for k, v in aux.items():
+        if k in _AUX_TASK_FIRST_KEYS:
+            continue
+        if isinstance(v, dict) and (
+            "default" in v or "provider" in v or "base_url" in v
+        ):
+            return True
+    return False
+
+
+def _strip_provider_first_aux_pollution(config: dict) -> dict:
+    """Remove task-key pollution from a provider-first ``auxiliary`` block.
+
+    ``load_config()`` deep-merges the task-first ``DEFAULT_CONFIG`` over the
+    user's config, re-injecting all 15 ``auxiliary.<task>`` blocks as inert
+    ``{provider: auto, model: ''}`` entries on top of a provider-first config.
+    Any ``save_config`` of such a merged dict would persist that pollution
+    (this is exactly how the first ``hermes config migrate`` to v31 left stale
+    task keys behind). Stripping here — at the single choke point all writes
+    flow through — guarantees no code path can ever persist it.
+
+    No-op for a genuine task-first config (its keys are all task names, so it
+    is not detected as provider-first) and for configs with no ``auxiliary``.
+    Mutates and returns *config*.
+    """
+    aux = config.get("auxiliary")
+    if not isinstance(aux, dict) or not _auxiliary_is_provider_first(aux):
+        return config
+    for k in list(aux.keys()):
+        if k in _AUX_TASK_FIRST_KEYS:
+            del aux[k]
+    return config
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -7043,6 +7622,12 @@ def save_config(
         # ----------------------------------------------------------------
 
         current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        # Drop task-key pollution that the DEFAULT_CONFIG deep-merge injects on
+        # top of a provider-first ``auxiliary`` block, so no write path (migrate,
+        # wizard, programmatic save) can persist stale ``auxiliary.<task>``
+        # entries. No-op for legacy task-first configs. See
+        # _strip_provider_first_aux_pollution.
+        current_normalized = _strip_provider_first_aux_pollution(current_normalized)
         normalized = current_normalized
         raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
         if raw_existing:
@@ -8025,17 +8610,15 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    # Convert the CLI string to the right type. List-typed keys (e.g.
+    # agent.disabled_toolsets, toolsets) parse comma/JSON into an actual
+    # list — previously they were stored as a raw comma-string, which
+    # silently broke any consumer that iterates the value as a list.
+    coerced = _coerce_config_value(key, value, DEFAULT_CONFIG)
 
-    _set_nested(user_config, key, value)
+    # FORK: store the type-coerced value (list/bool/int coercion via
+    # _coerce_config_value) rather than the raw CLI string.
+    _set_nested(user_config, key, coerced)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
     # key the runtime resolver actually reads, instead of being silently

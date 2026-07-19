@@ -55,6 +55,12 @@ def _skin_color(key: str, fallback: str) -> str:
         return get_active_skin().get_color(key, fallback)
     except Exception:
         return fallback
+
+
+def _skin_branding(key: str, fallback: str) -> str:
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.skin_branding``."""
+    from hermes_cli.fork_banner import skin_branding
+    return skin_branding(key, fallback)
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================
@@ -349,13 +355,10 @@ def check_for_updates() -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
+        repo_dir = _resolve_repo_dir()
+        if repo_dir is None:
+            # No local git checkout — fall back to PyPI version comparison
+            # so users on pure-PyPI installs still see "update available".
             behind = check_via_pypi()
         else:
             behind = _check_via_local_git(repo_dir)
@@ -373,19 +376,27 @@ def check_for_updates() -> Optional[int]:
 def _resolve_repo_dir() -> Optional[Path]:
     """Return the active Hermes git checkout, or None if this isn't a git install.
 
-    Prefers the running code's location over the profile-scoped path
-    because ``$HERMES_HOME/hermes-agent/`` may be a stale copy carried
-    over by ``--clone-all``.
+    Prefers the directory this module is loaded from (covers editable /
+    `pip install -e` installs, which live outside ``~/.hermes``). Falls back
+    to ``~/.hermes/hermes-agent`` for the managed-install layout. Reporting
+    against the path actually imported keeps the banner honest when a
+    developer ``pip install -e``'s a fork checkout.
     """
-    repo_dir = Path(__file__).parent.parent.resolve()
-    if not (repo_dir / ".git").exists():
-        hermes_home = get_hermes_home()
-        repo_dir = hermes_home / "hermes-agent"
+    code_dir = Path(__file__).parent.parent.resolve()
+    if (code_dir / ".git").exists():
+        return code_dir
+    hermes_home = get_hermes_home()
+    repo_dir = hermes_home / "hermes-agent"
     return repo_dir if (repo_dir / ".git").exists() else None
 
 
 def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
-    """Resolve a git revision to an 8-character short hash."""
+    """Resolve a git revision to an 8-character short hash.
+
+    Low-level git plumbing — stays in banner.py (not fork_banner) because the
+    fork's banner tests patch ``hermes_cli.banner.subprocess.run`` and call
+    these directly. fork_banner's composite logic calls back to these names.
+    """
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=8", rev],
@@ -402,124 +413,96 @@ def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
     return value or None
 
 
-def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
-    """Return upstream/local git hashes for the startup banner.
-
-    For source installs and dev images this runs ``git rev-parse`` against
-    the active checkout.  When no checkout is available — the canonical case
-    is the published Docker image, which excludes ``.git`` from the build
-    context — we fall back to the baked-in build SHA (see
-    ``hermes_cli/build_info.py``) and return it as a frozen
-    ``upstream == local`` state with ``ahead=0``.  A built image is by
-    definition pinned to one commit, so "ahead" is always zero and the
-    banner correctly shows ``· upstream <sha>`` with no carried-commits
-    annotation.
-    """
-    repo_dir = repo_dir or _resolve_repo_dir()
-    if repo_dir is None:
-        # No git checkout — try the baked build SHA (Docker image path).
-        try:
-            from hermes_cli.build_info import get_build_sha
-            baked = get_build_sha(short=8)
-            if baked:
-                return {"upstream": baked, "local": baked, "ahead": 0}
-        except Exception:
-            pass
-        return None
-
-    upstream = _git_short_hash(repo_dir, "origin/main")
-    local = _git_short_hash(repo_dir, "HEAD")
-    if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without origin/main).
-        # Fall back to the baked build SHA if available.
-        try:
-            from hermes_cli.build_info import get_build_sha
-            baked = get_build_sha(short=8)
-            if baked:
-                return {"upstream": baked, "local": baked, "ahead": 0}
-        except Exception:
-            pass
-        return None
-
-    ahead = 0
+def _git_count(repo_dir: Path, range_spec: str) -> int:
+    """Return ``git rev-list --count <range_spec>`` or 0 on any failure."""
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            ["git", "rev-list", "--count", range_spec],
             capture_output=True,
             text=True,
             timeout=5,
             cwd=str(repo_dir),
         )
-        if result.returncode == 0:
-            ahead = int((result.stdout or "0").strip() or "0")
     except Exception:
-        ahead = 0
+        return 0
+    if result.returncode != 0:
+        return 0
+    try:
+        return max(int((result.stdout or "0").strip() or "0"), 0)
+    except ValueError:
+        return 0
 
-    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
 
+def _git_head_date(repo_dir: Path) -> Optional[str]:
+    """Return HEAD's committer date as ``YYYY-MM-DD``, or None on any failure.
 
-_RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
-_latest_release_cache: Optional[tuple] = None  # (tag, url) once resolved
-
-
-def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
-    """Return ``(tag, release_url)`` for the latest git tag, or None.
-
-    Local-only — runs ``git describe --tags --abbrev=0`` against the
-    Hermes checkout. Cached per-process. Release URL always points at the
-    canonical NousResearch/hermes-agent repo (forks don't get a link).
+    Used as the banner's release-date stand-in when running on a fork —
+    a stale ``__release_date__`` constant is meaningless once the fork
+    diverges from upstream tags.
     """
-    global _latest_release_cache
-    if _latest_release_cache is not None:
-        return _latest_release_cache or None
-
-    repo_dir = repo_dir or _resolve_repo_dir()
-    if repo_dir is None:
-        _latest_release_cache = ()  # falsy sentinel — skip future lookups
-        return None
-
     try:
         result = subprocess.run(
-            ["git", "describe", "--tags", "--abbrev=0"],
+            ["git", "log", "-1", "--format=%cs", "HEAD"],
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=5,
             cwd=str(repo_dir),
         )
     except Exception:
-        _latest_release_cache = ()
         return None
-
     if result.returncode != 0:
-        _latest_release_cache = ()
         return None
+    value = (result.stdout or "").strip()
+    return value or None
 
-    tag = (result.stdout or "").strip()
-    if not tag:
-        _latest_release_cache = ()
-        return None
 
-    url = f"{_RELEASE_URL_BASE}/{tag}"
-    _latest_release_cache = (tag, url)
-    return _latest_release_cache
+def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.get_git_banner_state``."""
+    from hermes_cli.fork_banner import get_git_banner_state as _impl
+    return _impl(repo_dir)
+
+
+# ── Fork-owned branding + git-state (see hermes_cli/fork_banner.py) ──
+# These are thin forwarders. The implementations live in the fork module so
+# upstream rewrites of this file can't drop them (a real bug we hit). On merge,
+# take-ours on these few lines.
+#
+# The constants + per-process caches live HERE (not fork_banner) so the fork's
+# banner tests, which reset ``banner._origin_repo_cache = None`` and read
+# ``banner._CANONICAL_REPO``, operate on the live values. fork_banner reads and
+# writes them via the ``banner`` module namespace.
+_CANONICAL_REPO = ("NousResearch", "hermes-agent")
+_FALLBACK_RELEASE_URL_BASE = (
+    f"https://github.com/{_CANONICAL_REPO[0]}/{_CANONICAL_REPO[1]}/releases/tag"
+)
+_latest_release_cache: Optional[tuple] = None  # (tag, url) once resolved
+_origin_repo_cache: Optional[tuple] = None  # ((owner, repo) | None,) once resolved
+# Threshold (commits) before the banner nudges that upstream/main has moved on.
+_UPSTREAM_BEHIND_NUDGE = 10
+
+
+def _parse_github_origin(repo_dir: Path) -> Optional[tuple]:
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner._parse_github_origin``."""
+    from hermes_cli.fork_banner import _parse_github_origin as _impl
+    return _impl(repo_dir)
+
+
+def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.get_latest_release_tag``."""
+    from hermes_cli.fork_banner import get_latest_release_tag as _impl
+    return _impl(repo_dir)
+
+
+def _resolve_agent_name() -> str:
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.resolve_agent_name``."""
+    from hermes_cli.fork_banner import resolve_agent_name
+    return resolve_agent_name()
 
 
 def format_banner_version_label() -> str:
-    """Return the version label shown in the startup banner title."""
-    base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
-    state = get_git_banner_state()
-    if not state:
-        return base
-
-    upstream = state["upstream"]
-    local = state["local"]
-    ahead = int(state.get("ahead") or 0)
-
-    if ahead <= 0 or upstream == local:
-        return f"{base} · upstream {upstream}"
-
-    carried_word = "commit" if ahead == 1 else "commits"
-    return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
+    """Forwarder — fork-owned, see ``hermes_cli.fork_banner.format_banner_version_label``."""
+    from hermes_cli.fork_banner import format_banner_version_label as _impl
+    return _impl()
 
 
 # =========================================================================
@@ -581,6 +564,7 @@ def _display_toolset_name(toolset_name: str) -> str:
 def build_welcome_banner(console: "Console", model: str, cwd: str,
                          tools: List[dict] = None,
                          enabled_toolsets: List[str] = None,
+                         disabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
                          context_length: int = None,
@@ -676,7 +660,15 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             preset_name = preset_name[:25] + "..."
         agg_str = f" [dim {dim}]·[/] [dim {dim}]agg {agg_label}[/]" if agg_label else ""
         ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-        left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+        # Vendor / provider attribution string shown next to the model name.
+        # Default is "Nous Research" (canonical upstream attribution); skins
+        # can override via ``branding.vendor_label`` to drop the attribution
+        # entirely (set to empty string), or substitute a different label.
+        _vendor_label = _skin_branding("vendor_label", "Nous Research")
+        if _vendor_label:
+            left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]{_vendor_label}[/]")
+        else:
+            left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str}")
     else:
         model_short = model.split("/")[-1] if "/" in model else model
         if model_short.endswith(".gguf"):
@@ -684,7 +676,15 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         if len(model_short) > 28:
             model_short = model_short[:25] + "..."
         ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+        # Vendor / provider attribution string shown next to the model name.
+        # Default is "Nous Research" (canonical upstream attribution); skins
+        # can override via ``branding.vendor_label`` to drop the attribution
+        # entirely (set to empty string), or substitute a different label.
+        _vendor_label = _skin_branding("vendor_label", "Nous Research")
+        if _vendor_label:
+            left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]{_vendor_label}[/]")
+        else:
+            left_lines.append(f"[{accent}]{model_short}[/]{ctx_str}")
 
     if os.getenv("HERMES_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
@@ -701,9 +701,19 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         toolset = _display_toolset_name(get_toolset_for_tool(tool_name) or "other")
         toolsets_dict.setdefault(toolset, []).append(tool_name)
 
+    # Toolsets the user has explicitly disabled in config shouldn't appear
+    # at all — even as "unavailable" hints. Otherwise users who turn off a
+    # toolset (discord, messaging, etc.) keep seeing it in the banner with
+    # "missing env var" styling, which feels like a bug rather than the
+    # configured intent.
+    _disabled_set = set(disabled_toolsets or [])
     for item in unavailable_toolsets:
         toolset_id = item.get("id", item.get("name", "unknown"))
+        if toolset_id in _disabled_set:
+            continue
         display_name = _display_toolset_name(toolset_id)
+        if display_name in _disabled_set:
+            continue
         if display_name not in toolsets_dict:
             toolsets_dict[display_name] = []
         for tool_name in item.get("tools", []):

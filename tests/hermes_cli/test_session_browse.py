@@ -539,3 +539,112 @@ class TestEdgeCases:
         assert "just now" in output
         assert "2h ago" in output
         assert "3d ago" in output
+
+
+class TestTerminalTooSmallFallback:
+    """Regression: when the terminal is too small for the curses layout
+    (under 40 cols × 5 rows), the picker used to paint "Terminal too small"
+    and block on getch() — a dead-end that left users stuck on a useless
+    screen.  The fix routes to the existing numbered-list fallback instead.
+
+    The pre-check (before curses init) catches the common case: narrow tmux
+    splits, iTerm2 pane init races, recent resize.  The in-curses raise is
+    the defence for the rare case where the window shrinks between our
+    pre-check and curses init (sleep/wake resize burst).
+    """
+
+    def test_narrow_window_falls_back_to_numbered_list(self):
+        """40-col cutoff: 39 cols should skip curses entirely."""
+        from hermes_cli.main import _session_browse_picker
+        import os as _os
+
+        sessions = _make_sessions(3)
+        tiny = _os.terminal_size((30, 24))  # 30 cols × 24 rows
+
+        with patch("os.get_terminal_size", return_value=tiny):
+            with patch("builtins.input", return_value="2"):
+                result = _session_browse_picker(sessions)
+
+        assert result == sessions[1]["id"]
+
+    def test_short_window_falls_back_to_numbered_list(self):
+        """5-row cutoff: 4 rows should skip curses entirely."""
+        from hermes_cli.main import _session_browse_picker
+        import os as _os
+
+        sessions = _make_sessions(3)
+        tiny = _os.terminal_size((120, 4))  # 120 cols × 4 rows
+
+        with patch("os.get_terminal_size", return_value=tiny):
+            with patch("builtins.input", return_value="1"):
+                result = _session_browse_picker(sessions)
+
+        assert result == sessions[0]["id"]
+
+    def test_exact_threshold_uses_curses(self):
+        """40 cols × 5 rows is the minimum that still uses curses."""
+        from hermes_cli.main import _session_browse_picker
+        import os as _os
+
+        sessions = _make_sessions(3)
+        threshold = _os.terminal_size((40, 5))
+
+        # If we reach curses, the input() mock won't be called — curses takes
+        # over.  We mock curses.wrapper to capture invocation and return a
+        # session ID, so we can assert curses WAS attempted.
+        with patch("os.get_terminal_size", return_value=threshold):
+            with patch("curses.wrapper") as mock_wrapper:
+                # curses.wrapper(_curses_browse) is called; we don't need
+                # to simulate the loop — just confirm it was invoked.
+                # The picker will return result_holder[0] (None by default,
+                # which falls through to the numbered list).
+                with patch("builtins.input", return_value="1"):
+                    _session_browse_picker(sessions)
+
+        # Curses WAS attempted (window was big enough)
+        assert mock_wrapper.called
+
+    def test_non_tty_skips_pre_check_and_lets_curses_try(self, capsys):
+        """When stdout isn't a tty, os.get_terminal_size raises OSError.
+        The pre-check should let the curses block try anyway; its existing
+        exception handler will route to the numbered fallback if curses
+        fails (which it will, no tty)."""
+        from hermes_cli.main import _session_browse_picker
+
+        sessions = _make_sessions(3)
+
+        with patch("os.get_terminal_size", side_effect=OSError("not a tty")):
+            with patch("builtins.input", return_value="1"):
+                result = _session_browse_picker(sessions)
+
+        # Either curses worked or fallback worked — but we shouldn't crash,
+        # and we should get a valid session back.
+        assert result == sessions[0]["id"]
+
+    def test_terminal_too_small_class_exists(self):
+        """The sentinel exception class must be importable so the in-curses
+        defence (used when the window shrinks AFTER the pre-check) can
+        raise it to trigger the outer fallback."""
+        from hermes_cli.main import _TerminalTooSmall
+        assert issubclass(_TerminalTooSmall, Exception)
+
+    def test_fallback_message_not_shown(self, capsys):
+        """Explicit: the dead-end "Terminal too small" string must not
+        appear in any user-visible output path."""
+        from hermes_cli.main import _session_browse_picker
+        import os as _os
+
+        sessions = _make_sessions(3)
+        tiny = _os.terminal_size((30, 4))
+
+        with patch("os.get_terminal_size", return_value=tiny):
+            with patch("builtins.input", return_value="q"):
+                _session_browse_picker(sessions)
+
+        output = capsys.readouterr().out
+        # Must NOT contain the historical dead-end message
+        assert "Terminal too small" not in output
+        # Must show the numbered-list header instead
+        assert "Browse sessions" in output
+
+

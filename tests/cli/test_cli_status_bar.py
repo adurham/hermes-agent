@@ -3,8 +3,33 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import cli as cli_mod
 from cli import HermesCLI
+
+
+@pytest.fixture(autouse=True)
+def _reset_active_skin():
+    """Force the "default" skin (status_glyph "⚕") for every test here.
+
+    cli.py runs ``init_skin_from_config(CLI_CONFIG)`` at import time, which
+    reads the OPERATOR's real ``~/.hermes/config.yaml`` and sets the
+    module-level ``_active_skin`` singleton in hermes_cli/skin_engine.py.
+    On any machine with a non-default ``display.skin`` configured (e.g. a
+    custom branded skin overriding ``status_glyph``), every status-bar test
+    in this file that asserts the literal default glyph fails -- not
+    because of a code bug, but because the test suite is silently coupled
+    to whatever skin happens to be active on the machine running pytest.
+    Reset to "default" before each test and restore afterward so the suite
+    is deterministic regardless of the operator's local skin config.
+    """
+    from hermes_cli.skin_engine import get_active_skin_name, set_active_skin
+
+    original = get_active_skin_name()
+    set_active_skin("default")
+    yield
+    set_active_skin(original)
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -30,6 +55,9 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    last_input_tokens: int = 0,
+    last_cache_read_tokens: int = 0,
+    last_cache_write_tokens: int = 0,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
@@ -48,6 +76,9 @@ def _attach_agent(
             last_prompt_tokens=context_tokens,
             context_length=context_length,
             compression_count=compressions,
+            last_input_tokens=last_input_tokens,
+            last_cache_read_tokens=last_cache_read_tokens,
+            last_cache_write_tokens=last_cache_write_tokens,
         ),
     )
     return cli_obj
@@ -506,8 +537,145 @@ class TestCLIStatusBar:
         assert compact == [("class:voice-status", " 🎤 Ctrl+B ")]
 
 
+class TestContextDeltaSegment:
+    """Per-turn context delta segment (Δ) on the status bar.
+
+    Surfaces *why* the context counter jumps on a follow-up: genuinely-new
+    content this turn (a fat tool result -> ``new``) vs. a prompt-cache
+    refresh after idle (prefix re-charged as full-price input -> ``cache``).
+    """
+
+    def test_no_segment_without_turn_baseline(self):
+        # base is None until the first turn establishes a baseline; no Δ shown.
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=50_000,
+            completion_tokens=2_000,
+            total_tokens=52_000,
+            api_calls=7,
+            context_tokens=50_000,
+            context_length=200_000,
+        )
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert "context_delta" not in snapshot
+        assert cli_obj._format_context_delta(snapshot) is None
+
+    def test_small_growth_omits_segment(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=50_900,
+            completion_tokens=300,
+            total_tokens=51_200,
+            api_calls=7,
+            context_tokens=50_900,
+            context_length=200_000,
+            last_input_tokens=2,
+            last_cache_read_tokens=50_898,
+        )
+        cli_obj._turn_start_context_tokens = 50_000  # +900, under the 2K floor
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["context_delta"] == 900
+        assert cli_obj._format_context_delta(snapshot) is None
+
+    def test_new_content_jump_tagged_new(self):
+        # Real case: a fat tool result lands on a warm cache. The growth is
+        # freshly-written cache_write on top of a flat cached prefix.
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=252_493,
+            completion_tokens=2_656,
+            total_tokens=255_149,
+            api_calls=131,
+            context_tokens=252_493,
+            context_length=400_000,
+            last_input_tokens=2,
+            last_cache_read_tokens=229_478,
+            last_cache_write_tokens=23_013,
+        )
+        cli_obj._turn_start_context_tokens = 229_480  # +23,013
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["context_delta"] == 23_013
+        assert snapshot["context_delta_cause"] == "new"
+        label = cli_obj._format_context_delta(snapshot)
+        assert label is not None and label.startswith("Δ+") and label.endswith("new")
+
+    def test_cache_refresh_jump_tagged_cache(self):
+        # Real case: prompt cache expired during idle. The same prefix
+        # re-accounts as full-price input (cache_read collapsed), so input is
+        # a large share of the total even though no new content arrived.
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=59_692,
+            completion_tokens=400,
+            total_tokens=60_092,
+            api_calls=29,
+            context_tokens=59_692,
+            context_length=200_000,
+            last_input_tokens=33_077,
+            last_cache_read_tokens=26_615,
+            last_cache_write_tokens=0,
+        )
+        cli_obj._turn_start_context_tokens = 33_077  # +26,615
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["context_delta"] == 26_615
+        assert snapshot["context_delta_cause"] == "cache"
+        label = cli_obj._format_context_delta(snapshot)
+        assert label is not None and label.endswith("cache")
+
+    def test_segment_rendered_in_wide_status_bar(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=252_493,
+            completion_tokens=2_656,
+            total_tokens=255_149,
+            api_calls=131,
+            context_tokens=252_493,
+            context_length=400_000,
+            last_input_tokens=2,
+            last_cache_read_tokens=229_478,
+            last_cache_write_tokens=23_013,
+        )
+        cli_obj._turn_start_context_tokens = 229_480
+        text = cli_obj._build_status_bar_text(width=160)
+        assert "Δ+" in text and "new" in text
+
+    def test_zero_baseline_does_not_report_full_context_as_delta(self):
+        """Regression: a fresh session or the turn right after a compression
+        both leave the compressor's real-prompt-token count at 0 (either
+        genuinely fresh, or clamped from the -1 "awaiting real usage"
+        sentinel). The turn-start capture used to store this 0 verbatim as
+        ``_turn_start_context_tokens`` (0 passes an ``is not None`` check),
+        so the next delta computed ``context_tokens - 0 == context_tokens``
+        — the user's ENTIRE current context reported as if it were all
+        added in a single turn (e.g. "Δ+115K new" on a session where they
+        did nothing of the sort). A 0 baseline must be treated the same as
+        "no baseline yet" (None), suppressing the segment entirely.
+        """
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=115_000,
+            completion_tokens=1_000,
+            total_tokens=116_000,
+            api_calls=3,
+            context_tokens=115_000,
+            context_length=1_000_000,
+        )
+        cli_obj._turn_start_context_tokens = 0  # the pre-fix buggy baseline
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert "context_delta" not in snapshot
+        assert cli_obj._format_context_delta(snapshot) is None
+
+
 class TestCLIUsageReport:
-    def test_show_usage_omits_cost_reporting(self, capsys):
+    def test_show_usage_includes_cost_reporting(self, capsys):
+        """This fork intentionally diverges from upstream's fd2a35b16
+        (which removed cost reporting from /usage everywhere, citing
+        misleading estimates on providers without cache-token reporting).
+        Adam's fork keeps a `display.show_cost` opt-in and per-session cost
+        lines in _show_usage() -- see feat(cli): show session cost in exit
+        summary (680b32655) and its follow-ups. Cache read/write token
+        LINES were never reintroduced, so those stay asserted absent.
+        """
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=10_230,
@@ -530,10 +698,11 @@ class TestCLIUsageReport:
         assert "Total tokens:" in output
         assert "Session duration:" in output
         assert "Compressions:" in output
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "Total cost:" not in output
-        assert "Cost status:" not in output
-        assert "Cost source:" not in output
+        # Cost reporting is a deliberate fork feature -- present, not omitted.
+        assert "Total cost:" in output
+        assert "Cost status:" in output
+        assert "Cost source:" in output
+        # Cache-hit token LINES were never reintroduced after fd2a35b16.
         assert "Cache read tokens:" not in output
         assert "Cache write tokens:" not in output
 

@@ -87,7 +87,7 @@ def _hard_stop_config(**overrides) -> dict:
 
 
 def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():
-    agent = _make_agent("web_search")
+    agent = _make_agent("web_search", config={"tool_loop_guardrails": {"hard_stop_enabled": False}})
     args = {"query": "same"}
     _seed_exact_failures(agent, "web_search", args)
     starts = []
@@ -239,7 +239,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():
-    agent = _make_agent("web_search", max_iterations=10)
+    agent = _make_agent("web_search", max_iterations=10, config={"tool_loop_guardrails": {"hard_stop_enabled": False}})
     same_args = {"query": "same"}
     responses = [
         _mock_response(

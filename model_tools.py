@@ -281,6 +281,7 @@ def get_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    sticky_active: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -296,6 +297,19 @@ def get_tool_definitions(
             tool_search / tool_describe bridge handlers so they can read the
             real catalog, not the already-collapsed one. Public callers should
             leave this False.
+        sticky_active: FORK. Pass True when the caller's conversation/agent
+            has *ever* had tool_search activated before (see
+            ``agent._tool_search_ever_activated``). Forces tool_search to
+            stay activated even if the live deferrable-token total has since
+            dropped back under threshold — see ``tools/tool_search.py``
+            ``assemble_tool_defs`` docstring for why: recomputing the
+            activate/deactivate decision fresh from the live, global tool
+            registry on every rebuild lets it flip mid-conversation when an
+            unrelated MCP reconnect or subagent shifts the token total across
+            the threshold, and Anthropic hard-rejects previous-turn tool_use
+            blocks for names that vanish from the wire tools array, which
+            corrupts tool-call history. This does NOT change which tools are
+            in the catalog — only whether the bridge tools are shown.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -323,6 +337,7 @@ def get_tool_definitions(
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
+            bool(sticky_active),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -335,7 +350,8 @@ def get_tool_definitions(
             return list(cached)
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+                                       skip_tool_search_assembly=skip_tool_search_assembly,
+                                       sticky_active=sticky_active)
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -359,6 +375,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    sticky_active: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -553,6 +570,7 @@ def _compute_tool_definitions(
                 filtered_tools,
                 context_length=context_length,
                 config=ts_cfg,
+                sticky_active=sticky_active,
             )
             if assembly.activated and not quiet_mode:
                 print(
@@ -597,7 +615,7 @@ def _resolve_active_context_length() -> int:
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task", "hermes_load_tools"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
@@ -1056,6 +1074,27 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    # CC-name aliasing on the OAuth path. When the wire request shipped
+    # canonical Claude Code tools (Bash/Read/Edit/Write/Grep/...) instead
+    # of hermes's native names, the model emits tool_use blocks with
+    # those CC names. Translate (name, args) back to the hermes-side
+    # equivalents BEFORE coerce_tool_args / dispatch — coerce_tool_args
+    # looks up the schema by name, and dispatching ``Bash`` would
+    # 404 the registry. The adapter is a no-op when the name has no
+    # alias mapping (CC name dictionary lives in agent/cc_aliases.py).
+    try:
+        from agent import cc_aliases as _cc
+        if _cc.is_enabled():
+            function_name, function_args = _cc.adapt_tool_use(
+                function_name, function_args
+            )
+    except Exception:
+        # Aliasing is best-effort; if it fails, fall through to the
+        # normal dispatch path (which will likely 404 if the model
+        # used a CC name and the alias module crashed, but that's a
+        # clearer signal than silently mistranslating).
+        pass
+
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):

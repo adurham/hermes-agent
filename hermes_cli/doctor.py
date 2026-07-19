@@ -846,6 +846,10 @@ def run_doctor(args):
                 "nous",
                 "nvidia",
             }
+            # Custom providers (bare ``custom`` or named ``custom:<name>`` that
+            # fronts an OpenAI-compatible aggregator, e.g. the user's exo / LM
+            # Studio endpoint serving ``mlx-community/X``) legitimately use
+            # vendor/model slugs as the real served id, not a routing prefix.
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs
                 or provider_policy_id == "custom"

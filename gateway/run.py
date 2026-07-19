@@ -1558,7 +1558,19 @@ if _config_path.exists():
                 pass
 
             for _task_key in _aux_bridged_keys:
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
+                # Resolve through the schema-aware flattener so this works for
+                # BOTH the legacy task-first config AND the provider-first
+                # schema (fork, 2026-06-24). For provider-first, reading
+                # ``_auxiliary_cfg.get(_task_key)`` directly would only see the
+                # inert task-key pollution injected by the DEFAULT_CONFIG merge
+                # (provider=auto, model=''); the flattener instead selects the
+                # block matching the active main provider. Falls back to the
+                # raw dict if the resolver is unavailable.
+                try:
+                    from agent.auxiliary_client import _get_auxiliary_task_config
+                    _task_cfg = _get_auxiliary_task_config(_task_key)
+                except Exception:
+                    _task_cfg = _auxiliary_cfg.get(_task_key, {})
                 if not isinstance(_task_cfg, dict):
                     continue
                 _prov = str(_task_cfg.get("provider", "")).strip()
@@ -4763,15 +4775,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return getattr(self, "_ephemeral_system_prompt", None) or ""
 
     @staticmethod
-    def _load_reasoning_config() -> dict | None:
+    def _load_reasoning_config(model: str = "") -> dict | None:
         """Load reasoning effort from config.yaml.
 
-        Reads agent.reasoning_effort from config.yaml. Valid: "none",
-        "minimal", "low", "medium", "high", "xhigh". Returns None to use
-        default (medium).
+        Reads agent.reasoning_effort from config.yaml. When ``model`` is
+        provided, also checks ``agent.reasoning_effort_by_model`` for a
+        per-model entry (matched case-insensitively). Falls back to the
+        global ``agent.reasoning_effort`` when no per-model entry exists.
+        Valid: "none", "minimal", "low", "medium", "high", "xhigh".
+        Returns None to use default (medium).
         """
         from hermes_constants import parse_reasoning_effort
         cfg = _load_gateway_runtime_config()
+        # Check per-model map first
+        if model:
+            by_model = cfg_get(cfg, "agent", "reasoning_effort_by_model", default={}) or {}
+            if isinstance(by_model, dict):
+                model_lower = model.strip().lower()
+                for saved_model, saved_effort in by_model.items():
+                    if saved_model.strip().lower() == model_lower:
+                        effort = str(saved_effort or "").strip()
+                        result = parse_reasoning_effort(effort)
+                        if result is not None:
+                            return result
+
         # Keep the raw value — coercing with ``or ""`` turns a YAML boolean
         # False (``reasoning_effort: false``/``off``/``no``) into "", silently
         # re-enabling thinking for users who explicitly disabled it.
@@ -4812,8 +4839,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
+        model: str = "",
     ) -> dict | None:
-        """Resolve reasoning effort for a session, honoring session overrides."""
+        """Resolve reasoning effort for a session, honoring session overrides.
+
+        When ``model`` is provided, checks ``agent.reasoning_effort_by_model``
+        for a per-model entry (via ``_load_reasoning_config(model)``) before
+        falling back to the global effort.
+        """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
             try:
@@ -4824,7 +4857,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
-        return self._load_reasoning_config()
+        return self._load_reasoning_config(model=model)
 
     def _set_session_reasoning_override(
         self,
@@ -7076,7 +7109,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._startup_restore_in_progress = False
                 return True
             if enabled_platform_count > 0:
-                if startup_retryable_errors:
+                reason = "; ".join(startup_retryable_errors) or "all configured messaging platforms failed to connect"
+                # ``run_without_messaging_platforms`` lets the gateway keep
+                # running cron in the face of stale/revoked credentials
+                # instead of crashlooping under launchd. The retry queue is
+                # already populated above, so the platform reconnects if the
+                # credential is rotated back in.
+                if getattr(self.config, "run_without_messaging_platforms", False):
+                    logger.warning(
+                        "All configured messaging platforms failed to connect: %s. "
+                        "run_without_messaging_platforms=true — continuing in cron-only mode.",
+                        reason,
+                    )
+                elif startup_retryable_errors:
                     # All enabled platforms hit retryable failures (network
                     # blip, bridge not paired, npm install timeout, etc.).
                     # Keep the gateway alive so:
@@ -7087,7 +7132,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     #     proxy, etc.)
                     # Exiting here used to convert a single misconfigured
                     # platform into an infinite systemd restart loop.
-                    reason = "; ".join(startup_retryable_errors)
                     logger.warning(
                         "Gateway started with no connected platforms — "
                         "%d platform(s) queued for retry: %s",
@@ -7103,16 +7147,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         pass
                     # Fall through to the normal "running" state — reconnect
                     # watcher takes it from here.
-                # All enabled platforms had no adapter (missing library or credentials).
-                # In fleet deployments the same config.yaml is shared across nodes that
-                # may only have credentials for a subset of platforms.  Rather than
-                # failing hard, degrade gracefully and allow cron jobs to run (#5196).
-                logger.warning(
-                    "No adapter could be created for any of the %d configured platform(s). "
-                    "Check that required dependencies are installed and credentials are set. "
-                    "Gateway will continue for cron job execution.",
-                    enabled_platform_count,
-                )
+                else:
+                    # All enabled platforms had no adapter (missing library or credentials).
+                    # In fleet deployments the same config.yaml is shared across nodes that
+                    # may only have credentials for a subset of platforms.  Rather than
+                    # failing hard, degrade gracefully and allow cron jobs to run (#5196).
+                    logger.warning(
+                        "No adapter could be created for any of the %d configured platform(s). "
+                        "Check that required dependencies are installed and credentials are set. "
+                        "Gateway will continue for cron job execution.",
+                        enabled_platform_count,
+                    )
             else:
                 logger.warning("No messaging platforms enabled.")
                 logger.info("Gateway will continue running for cron job execution.")
@@ -13074,7 +13119,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
-            reasoning_config = self._resolve_session_reasoning_config(source=source)
+            reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
@@ -17711,6 +17756,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
                 session_key=session_key,
+                model=model,
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()

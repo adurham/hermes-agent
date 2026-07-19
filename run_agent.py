@@ -45,7 +45,9 @@ import tempfile
 import time
 import threading
 import uuid
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Set, Tuple, Callable
+from agent.fork._mixin import ForkForwardersMixin
+from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -390,7 +392,7 @@ class _StreamErrorEvent(Exception):
         }
 
 
-class AIAgent:
+class AIAgent(ForkForwardersMixin):
     """
     AI Agent with tool calling capabilities.
 
@@ -461,6 +463,11 @@ class AIAgent:
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
+        # Force one tool call per turn so the model emits a fresh
+        # <think> block before each tool. Useful for models that
+        # contractually emit one <think> per turn but support
+        # multi-step reasoning chained across turns (DSv4-Flash, etc).
+        interleaved_thinking: bool = False,
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
@@ -536,6 +543,7 @@ class AIAgent:
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
+            interleaved_thinking=interleaved_thinking,
             request_overrides=request_overrides,
             prefill_messages=prefill_messages,
             platform=platform,
@@ -721,7 +729,9 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+        self._usage_history = []
+        self._tools_hash_cache = None
+
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
@@ -1080,6 +1090,44 @@ class AIAgent:
             return False
         message = str(error).strip().lower()
         return "expected ident at line" in message
+
+    def _is_upstream_toolcall_clean_fail(self, error: BaseException) -> bool:
+        """Return True for an upstream server that DELIBERATELY failed a turn
+        because the model emitted a tool-call block it could not parse.
+
+        exo's DSv4 output parser cleanly fails such a turn with
+        ``finish_reason="error"`` (-> 500 / APIError) rather than leaking the
+        garbled tool-call innards as content or silently dropping the call. The
+        error text always ends with "Failing the turn so it can be retried."
+        These are SAFE to silently retry even though no partial tool *name* was
+        parsed (so the normal ``_partial_tool_in_flight`` gate misses them):
+
+          * The failure happens server-side BEFORE any tool executes — the call
+            never parsed, so there is no side-effect to duplicate.
+          * The only "partial delivery" is a preamble; the garbled tool-call
+            text is intentionally never surfaced, so there is no useful content
+            to preserve. Re-streaming a fresh draw is strictly better than
+            returning a dead length-truncated stub.
+
+        Without this, an unterminated/malformed tool-call clean-fail that lands
+        after some preamble text was streamed hits the "not retrying" branch and
+        becomes a dead turn (observed 2026-06-20 09:46: "unterminated invoke"
+        -> 0-char stub).
+        """
+        message = str(error).strip().lower()
+        if "failing the turn so it can be retried" not in message:
+            return False
+        # Guard to the known tool-call clean-fail shapes so an unrelated error
+        # that happens to echo the phrase can't widen the retry surface.
+        return any(
+            sig in message
+            for sig in (
+                "malformed tool-call block",
+                "unterminated invoke",
+                "tool call without the",  # sentinel-less wrong-dialect block
+                "tool_calls wrapper was present",
+            )
+        )
 
     def _log_stream_retry(
         self,
@@ -1665,6 +1713,7 @@ class AIAgent:
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
+
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
 
@@ -1873,6 +1922,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    anthropic_content_blocks=msg.get("anthropic_content_blocks") if role == "assistant" else None,
                     timestamp=_row_timestamp,
                 )
                 msg[_DB_PERSISTED_MARKER] = True
@@ -2602,6 +2652,7 @@ class AIAgent:
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
+                "usage_history": list(self._usage_history),
             }
 
             atomic_json_write(
@@ -3287,6 +3338,35 @@ class AIAgent:
                 self._memory_manager.shutdown_all()
             except Exception:
                 pass
+        # Phase 2 auto-extraction: session-end pass + commit. No-op when
+        # memory.auto_extract is off. Best-effort. The CLI's session-finalize
+        # callback is responsible for surfacing the confirm UI; here we just
+        # let extractor stash the proposals back to the buffer for the next
+        # interactive session if no callback was registered.
+        try:
+            from tools import memory_extraction as _mex
+            _summary = _mex.on_session_end(
+                self.session_id or "",
+                messages or [],
+                interactive=False,
+            )
+            if _summary.get("final_proposed", 0) or _summary.get("committed", 0):
+                logger.info(
+                    "memory extraction session end: buffered=%d proposed=%d committed=%d skipped=%d",
+                    _summary.get("buffered", 0),
+                    _summary.get("final_proposed", 0),
+                    _summary.get("committed", 0),
+                    _summary.get("skipped", 0),
+                )
+        except Exception:
+            pass
+        # Phase 3 auto-feedback: drop per-session window so a long-running
+        # CLI process doesn't accumulate session state forever.
+        try:
+            from tools.memory_auto_feedback import flush_session as _maf_flush
+            _maf_flush(self.session_id or "")
+        except Exception:
+            pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
@@ -3358,27 +3438,57 @@ class AIAgent:
         """
         if interrupted:
             return
-        if not (self._memory_manager and final_response and original_user_message):
+        if not (final_response and original_user_message):
             return
         # Multimodal turns carry content as a list of typed parts; providers
         # expect plain strings, so flatten to text first (newline-joined for
         # memory, vs the default space-join used for log/trajectory previews).
+        # (upstream multimodal-flatten fix)
         user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
         response_text = _summarize_user_message_for_log(final_response, sep="\n")
-        if not (user_text and response_text):
-            return
+
+        # External memory provider sync (existing path). Gated on a configured
+        # manager AND non-empty flattened text.
+        if self._memory_manager and user_text and response_text:
+            try:
+                # Thread the turn's message list into sync_all when present so
+                # the external backend can persist the full exchange shape, not
+                # just the user/assistant strings (upstream #34xxx). messages
+                # stays optional — bare-agent and legacy callers omit it.
+                sync_kwargs = {"session_id": self.session_id or ""}
+                if messages is not None:
+                    sync_kwargs["messages"] = messages
+                self._memory_manager.sync_all(
+                    user_text, response_text,
+                    **sync_kwargs,
+                )
+                self._memory_manager.queue_prefetch_all(
+                    user_text,
+                    session_id=self.session_id or "",
+                )
+            except Exception:
+                pass
+        # Phase 2 auto-extraction (per-turn hook). Backgrounded; never blocks.
+        # No-op when memory.auto_extract is off in config. (FORK)
         try:
-            sync_kwargs = {"session_id": self.session_id or ""}
-            if messages is not None:
-                sync_kwargs["messages"] = messages
-            self._memory_manager.sync_all(
-                user_text,
-                response_text,
-                **sync_kwargs,
+            from tools import memory_extraction as _mex
+            _mex.on_turn_end(
+                self.session_id or "",
+                user_msg=str(original_user_message),
+                assistant_msg=str(final_response),
             )
-            self._memory_manager.queue_prefetch_all(
-                user_text,
-                session_id=self.session_id or "",
+        except Exception:
+            pass
+
+        # Phase 3 auto-feedback: walk the recall window for this session,
+        # match fingerprints against the assistant response, and upvote
+        # any fact whose distinctive content the assistant cited. Best-
+        # effort; never blocks. No-op when memory.auto_feedback is off. (FORK)
+        try:
+            from tools import memory_auto_feedback as _maf
+            _maf.on_turn_end(
+                self.session_id or "",
+                assistant_text=str(final_response),
             )
         except Exception:
             pass
@@ -4366,6 +4476,7 @@ class AIAgent:
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -4488,6 +4599,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -5679,6 +5791,8 @@ class AIAgent:
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
+            model=function_args.get("model"),
+            agent_type=function_args.get("agent_type"),
             background=(not _is_subagent),
             parent_agent=self,
         )
@@ -5793,6 +5907,107 @@ class AIAgent:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+
+
+def _classify_anthropic_stream_phase(
+    *,
+    thinking_active: bool,
+    thinking_chars: int,
+    first_event_seen: bool,
+    content_silence: int,
+    thinking_requested: bool,
+    message_start_arrived: bool,
+    ping_seen: bool,
+    user_elapsed: int,
+) -> str:
+    """Classify the current Anthropic stream phase for the user heartbeat.
+
+    Pure function — extracted from the inline classifier so it can be unit
+    tested.  All inputs are observed wire signals (no inference).
+
+    Phase priorities (most-specific wins):
+      1. ``thinking_active``: model is currently emitting thinking_delta
+         tokens (display=summarized).  If thinking_chars > 0, surface the
+         count for visible progress.
+      2. ``first_event_seen`` AND content has been silent: stream started,
+         then went quiet — server is generating but emitting nothing
+         (display=omitted between blocks, or tool_use prep).
+      3. ``first_event_seen``: regular streaming.
+      4. ``message_start_arrived`` + ``thinking_requested``: pre-content,
+         post-acceptance with thinking enabled — the canonical
+         "thinking server-side, holding back content" state.
+      5. Pre-message_start states, distinguished by whether pings are
+         flowing — proves connection alive vs may-be-wedged.
+
+    The string returned is the value plugged into the heartbeat
+    "(model: X, <phase>)" slot.  Test names pin the exact phase string
+    so docs/UX changes are intentional.
+    """
+    if thinking_active:
+        if thinking_chars:
+            return f"thinking ({thinking_chars:,} chars streamed)"
+        return "thinking"
+    if first_event_seen and content_silence > 10:
+        return "thinking (server-side)"
+    if first_event_seen:
+        return "streaming"
+    if message_start_arrived and thinking_requested:
+        return "thinking server-side (display=omitted)"
+    if thinking_requested and ping_seen and user_elapsed >= 30:
+        return "queued/prefilling (thinking req'd, server pinging)"
+    if thinking_requested and user_elapsed >= 30:
+        return "no pings yet — connection may be cold or wedged"
+    if ping_seen:
+        return "queued/prefilling, server alive (pings flowing)"
+    return "queued/prefilling (no pings yet)"
+
+# Read-only tools with no shared mutable session state.
+_PARALLEL_SAFE_TOOLS = frozenset({
+    "ha_get_state",
+    "ha_list_entities",
+    "ha_list_services",
+    "read_file",
+    "search_files",
+    "session_search",
+    "skill_view",
+    "skills_list",
+    "vision_analyze",
+    "web_extract",
+    "web_search",
+})
+
+# File tools can run concurrently when they target independent paths.
+_PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
+
+# Tools that mutate files on disk.  Used by the per-turn verifier that
+# surfaces silently-failed file edits so the model can't over-claim success.
+# Imported above as `_FILE_MUTATING_TOOLS` from `agent.tool_result_classification`.
+
+# Maximum number of concurrent worker threads for parallel tool execution.
+_MAX_TOOL_WORKERS = 8
+
+# Guard so the OpenRouter metadata pre-warm thread is only spawned once per
+# process, not once per AIAgent instantiation.  Without this, long-running
+# gateway processes leak one OS thread per incoming message and eventually
+# exhaust the system thread limit (RuntimeError: can't start new thread).
+_openrouter_prewarm_done = threading.Event()
+
+# Patterns that indicate a terminal command may modify/delete files.
+_DESTRUCTIVE_PATTERNS = re.compile(
+    r"""(?:^|\s|&&|\|\||;|`)(?:
+        rm\s|rmdir\s|
+        cp\s|install\s|
+        mv\s|
+        sed\s+-i|
+        truncate\s|
+        dd\s|
+        shred\s|
+        git\s+(?:reset|clean|checkout)\s
+    )""",
+    re.VERBOSE,
+)
+# Output redirects that overwrite files (> but not >>)
+_REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
 def main(
     query: str = None,
