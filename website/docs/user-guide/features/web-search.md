@@ -26,8 +26,11 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | Paid |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth login xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
+| **Trafilatura** (direct fetch) | — (no key) | — | ✔ | ✔ Free |
 
-Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
+Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel/Trafilatura when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
+
+Trafilatura is **extract-only** and the only fully free, no-account extract backend — it fetches pages directly via `httpx` and runs the open-source [`trafilatura`](https://pypi.org/project/trafilatura/) library locally for boilerplate-stripped content extraction. Pair it with Brave Search/DDGS/SearXNG for a completely free search + extract setup with no API keys or self-hosting required. It cannot render JavaScript-heavy single-page apps (use `browser_navigate` for those instead).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -346,7 +349,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai | trafilatura
 ```
 
 ### Per-capability configuration
@@ -366,6 +369,32 @@ When per-capability keys are empty, both fall through to `web.backend`. When `we
 1. `web.search_backend` / `web.extract_backend` (explicit per-capability)
 2. `web.backend` (shared fallback)
 3. Auto-detect from environment variables
+
+### Failover chain
+
+Set an ordered list of search providers; when the first fails (rate limit,
+429, network error, unavailable, etc.) the dispatcher falls through to the
+next, returning the first successful response. Useful for staying resilient
+when a free-tier provider hits its quota:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_chain:
+    - brave-free     # tried first
+    - ddgs           # fallthrough on 429 / failure
+```
+
+When `web.search_chain` is set, it takes precedence over `web.search_backend`
+/ `web.backend` for `web_search`. When unset or empty, the single-provider
+path above runs unchanged. `web_extract` is unaffected (it uses
+`web.extract_backend` / `web.backend` as before).
+
+Provider names are the same identifiers used by `web.search_backend` (e.g.
+`brave-free`, `ddgs`, `searxng`, `exa`, `tavily`, `parallel`, `firecrawl`,
+`xai`). Providers that are not registered, don't support search, or aren't
+available (missing credentials) are skipped with a log line and the walk
+continues. If every provider fails, the last error is returned.
 
 ### Auto-detection
 

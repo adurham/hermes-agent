@@ -1,6 +1,15 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
 
+# Lockfiles are generated artifacts, never hand-merged. On an upstream merge
+# conflict, take our side then regenerate (`uv lock` / npm install) so the
+# resolved tree reflects the merged pyproject.toml/package.json. The custom
+# "ours-then-regen" driver below (configured per-clone via
+# scripts/setup-merge-drivers.sh) handles uv.lock automatically; if the driver
+# isn't installed git falls back to a normal conflict and you regenerate by hand.
+uv.lock              merge=uvlock-ours linguist-generated=true
+web/package-lock.json merge=ours
+
 # Enforce LF for scripts that run inside Linux containers.
 # Without this, Windows checkout converts to CRLF and breaks `exec` in the
 # container entrypoint with "no such file or directory".

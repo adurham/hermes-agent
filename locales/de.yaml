@@ -7,7 +7,7 @@ approval:
   choose_short:    "      [o]einmal  |  [s]sitzung  |  [d]ablehnen"
   prompt_long:     "      Auswahl [o/s/a/D]: "
   prompt_short:    "      Auswahl [o/s/D]: "
-  timeout:         "      ⏱ Zeitüberschreitung – Befehl wird abgelehnt"
+  timeout:         "      ⏱ Zeitüberschreitung – Befehl nicht ausgeführt (keine Antwort)"
   allowed_once:    "      ✓ Einmalig erlaubt"
   allowed_session: "      ✓ Für diese Sitzung erlaubt"
   allowed_always:  "      ✓ Zur dauerhaften Erlaubnisliste hinzugefügt"

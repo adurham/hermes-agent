@@ -143,7 +143,7 @@ dependencies = [
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
-anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+anthropic = ["anthropic==0.100.0"]  # fork floor for CC OAuth; >=0.87.0 covers CVE-2026-34450, CVE-2026-34452
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
@@ -360,6 +360,7 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*",
 testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
+    "real_countdown: opt out of the autouse countdown stub in tests/hermes_cli/test_memory_confirm.py — those tests exercise the real _countdown_for_review helper and patch its internals themselves.",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
 ]
 # integration tests take way too long to run in the normal CI environments
@@ -374,6 +375,12 @@ redundant-cast = "ignore"
 
 [tool.ruff]
 preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
+
+[tool.uv]
+exclude-newer = "7 days"
+# Allow anthropic past the 7-day cutoff: 0.100.0 (2026-05-06) ships fields
+# we mirror to match Claude Code's wire format. Selective override only.
+exclude-newer-package = { anthropic = "2026-05-07" }
 
 [tool.ruff.lint]
 # All other lints are intentionally disabled (see comment history on this
