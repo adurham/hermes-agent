@@ -45,9 +45,14 @@ class AnthropicTransport(ProviderTransport):
         tools: Optional[List[Dict[str, Any]]] = None,
         **params,
     ) -> Dict[str, Any]:
-        """Build Anthropic messages.create() kwargs.
+        """Build kwargs for ``client.beta.messages.{create,stream}``.
 
-        Calls convert_messages and convert_tools internally.
+        Calls convert_messages and convert_tools internally. The output
+        is shaped for the beta namespace specifically — typed kwargs for
+        ``thinking``, ``output_config``, ``context_management``, ``betas``,
+        ``speed``, ``metadata`` go through directly without the
+        ``extra_body``/``extra_headers`` workarounds the plain
+        ``messages.*`` namespace required.
 
         params (all optional):
             max_tokens: int
@@ -59,6 +64,11 @@ class AnthropicTransport(ProviderTransport):
             base_url: str | None
             fast_mode: bool
             drop_context_1m_beta: bool
+            tool_search_config: dict | None — see _apply_tool_search in
+                anthropic_adapter.py for the schema. When None or
+                disabled, no transformation is applied.
+            session_id: str | None — included in metadata.user_id blob
+                so Anthropic-side analytics can correlate per-session.
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
@@ -75,6 +85,10 @@ class AnthropicTransport(ProviderTransport):
             base_url=params.get("base_url"),
             fast_mode=params.get("fast_mode", False),
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
+            tool_search_config=params.get("tool_search_config"),
+            session_id=params.get("session_id"),
+            cache_tools=params.get("cache_tools", False),
+            cache_ttl=params.get("cache_ttl", "5m"),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -94,6 +108,16 @@ class AnthropicTransport(ProviderTransport):
         reasoning_parts = []
         reasoning_details = []
         tool_calls = []
+        # Server-side tools (web_search_20250305, etc.) emit two distinct
+        # block types in the same response: ``server_tool_use`` (Anthropic
+        # logging the search Anthropic-side) and ``web_search_tool_result``
+        # (the search results Anthropic fetched). We don't execute these
+        # locally — Anthropic already did. Keep them in provider_data so
+        # they survive into the next turn's history (Anthropic requires
+        # the tool_result blocks to be present when re-submitting prior
+        # assistant turns that reference them) and so the UI can show a
+        # search citation panel. (FORK: native web-search feature.)
+        server_tool_blocks: list[dict] = []
         # Verbatim, order-preserving copy of every content block in the turn.
         # Anthropic signs each thinking block against the turn content that
         # PRECEDES it at its position; when a turn interleaves thinking and
@@ -151,6 +175,48 @@ class AnthropicTransport(ProviderTransport):
                             name = single
                         elif _tool_registry.get_entry(bare):
                             name = bare
+                        else:
+                            # FORK: the tool_search/tool_describe/tool_call
+                            # bridge tools (tools/tool_search.py) are
+                            # dynamically synthesized and dispatched by a
+                            # name-check in agent/tool_executor.py — they
+                            # are NEVER registered in tools/registry.py, so
+                            # both lookups above always miss for them and
+                            # ``name`` falls through unresolved as
+                            # ``mcp__tool_call`` forever. That's exactly the
+                            # gap this whole reversal exists to close (see
+                            # the sticky_active fix in
+                            # tools/tool_search.py::assemble_tool_defs):
+                            # the live ordered_blocks copy stayed stale
+                            # even after e80d8c73f synced ``tool_calls``
+                            # via the separate agent_runtime_helpers.py
+                            # ``repair_tool_call`` fuzzy-match path (which
+                            # matches against agent.valid_tool_names, not
+                            # the registry, and only fixes the dispatch
+                            # copy — not this replay copy). Recognize the
+                            # fixed bridge-tool name set explicitly so the
+                            # replay copy resolves them too.
+                            from tools.tool_search import BRIDGE_TOOL_NAMES as _bridge_names
+                            if bare in _bridge_names:
+                                name = bare
+                    # Keep the verbatim replay copy (``ordered_blocks``,
+                    # persisted as provider_data["anthropic_content_blocks"])
+                    # in sync with the resolved name. Without this, the
+                    # replay copy permanently retains the raw OAuth wire
+                    # name (``mcp__clarify``) while ``tool_calls`` gets the
+                    # reversed name (``clarify``). On the NEXT turn,
+                    # _strip_unknown_tool_blocks() compares the stale wire
+                    # name in the replayed history against the current
+                    # turn's live (bare) tool names, finds no match, and
+                    # rewrites the historical tool_use/tool_result into a
+                    # lossy 400-char-truncated "tool no longer available"
+                    # text breadcrumb — silently discarding the real
+                    # clarify question/answer and corrupting the model's
+                    # view of its own prior turn (reproduced: a clarify
+                    # exchange's answer was truncated mid-sentence and the
+                    # model concluded the user's message "got cut off").
+                    if isinstance(clean_block, dict) and clean_block.get("type") == "tool_use":
+                        clean_block["name"] = name
                 tool_calls.append(
                     ToolCall(
                         id=block.id,
@@ -158,17 +224,60 @@ class AnthropicTransport(ProviderTransport):
                         arguments=json.dumps(block.input),
                     )
                 )
+            elif (
+                block.type
+                in (
+                    "server_tool_use",
+                    "web_search_tool_result",
+                )
+                or block.type.startswith("tool_search_tool_")
+            ):
+                # tool_search_tool_<variant>_tool_result (e.g.
+                # tool_search_tool_regex_tool_result) carries the discovered
+                # tool_reference array. Anthropic auto-expands tool_reference
+                # blocks across the conversation history so the model can
+                # reuse discovered tools without re-searching — but only as
+                # long as we round-trip the block back in messages on
+                # subsequent turns. The block type is variant-specific, so
+                # match by prefix rather than a fixed name.
+                block_dict = _to_plain_data(block)
+                if isinstance(block_dict, dict):
+                    server_tool_blocks.append(block_dict)
 
         finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
+
+        # Canonicalize tool_search_tool_*_tool_result block types to the
+        # bare ``tool_search_tool_result`` form before persisting.
+        # Anthropic's INPUT validator only accepts the bare canonical
+        # type — variant-suffixed types (which appear on the wire
+        # OUTPUT) are rejected with 400 "Input tag '<variant>_tool_result'
+        # ... does not match any of the expected tags". Pydantic
+        # already coerces fresh responses, but cached/streamed paths
+        # can leak the wire variant; normalize here so persisted
+        # sessions never contain a variant-suffixed type. See
+        # _canonicalize_tool_search_result_types in
+        # ``agent/anthropic_adapter.py`` for the full diagnosis.
+        from agent.anthropic_adapter import _canonicalize_tool_search_result_types
+        if server_tool_blocks:
+            _canonicalize_tool_search_result_types(server_tool_blocks)
 
         provider_data = {}
         if reasoning_details:
             provider_data["reasoning_details"] = reasoning_details
-        # Only worth carrying the ordered-blocks channel when the turn
-        # actually interleaves signed thinking with tool_use — that's the
-        # only shape the parallel lists reconstruct incorrectly. A turn that
-        # is purely text, or thinking-then-tools with a single leading
-        # thinking block, replays correctly without it.
+        if server_tool_blocks:
+            provider_data["server_tool_blocks"] = server_tool_blocks
+        # Verbatim content array.  reasoning_details + tool_calls lose the
+        # relative position of thinking blocks among text/tool_use blocks;
+        # interleaved-thinking-2025-05-14 + clear_thinking_20251015 require
+        # those positions to round-trip exactly or the API rejects the next
+        # turn ("thinking blocks ... cannot be modified").
+        #
+        # Upstream gates this channel on the only shape the parallel lists
+        # reconstruct incorrectly: a turn that actually interleaves SIGNED
+        # thinking with tool_use. Pure-text turns, or thinking-then-tools with
+        # a single leading thinking block, replay correctly without it. The
+        # ordered_blocks list was captured in-loop already sanitized
+        # (_sanitize_replay_block) and canonicalized, so use it directly.
         _has_signed_thinking = any(
             isinstance(b, dict)
             and b.get("type") in ("thinking", "redacted_thinking")
@@ -180,7 +289,17 @@ class AnthropicTransport(ProviderTransport):
             for b in ordered_blocks
         )
         if _has_signed_thinking and _has_tool_use:
+            if isinstance(ordered_blocks, list) and ordered_blocks:
+                _canonicalize_tool_search_result_types(ordered_blocks)
             provider_data["anthropic_content_blocks"] = ordered_blocks
+        # Structured stop_details (Anthropic SDK 0.88+, propagated through
+        # streaming in 0.98+).  Today only refusal stops carry detail
+        # (category=cyber|bio + human-readable explanation); future stop
+        # types may add more.  Surface as-is so callers/UI can present
+        # the refusal explanation rather than a bare "refusal" string.
+        stop_details = _to_plain_data(getattr(response, "stop_details", None))
+        if stop_details:
+            provider_data["stop_details"] = stop_details
 
         return NormalizedResponse(
             content="\n".join(text_parts) if text_parts else None,
@@ -209,6 +328,9 @@ class AnthropicTransport(ProviderTransport):
           can surface it.
 
         Treating either as invalid falsely retries a completed response.
+
+        (``pause_turn`` is not accepted here — the caller's retry loop detects
+        it via ``stop_reason`` and resumes separately with reduced effort.)
         """
         if response is None:
             return False

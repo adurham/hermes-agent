@@ -251,12 +251,20 @@ class TestMinimaxBetaHeaders:
     # -- _common_betas_for_base_url unit tests ---------------------------
 
     def test_common_betas_none_url(self):
-        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
-        assert _common_betas_for_base_url(None) == _COMMON_BETAS
+        # Native Anthropic (no base_url override) gets _COMMON_BETAS plus
+        # context-1m for 1M-context-capable models.
+        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS, _CONTEXT_1M_BETA
+        betas = _common_betas_for_base_url(None)
+        assert _CONTEXT_1M_BETA in betas
+        for b in _COMMON_BETAS:
+            assert b in betas
 
     def test_common_betas_empty_url(self):
-        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
-        assert _common_betas_for_base_url("") == _COMMON_BETAS
+        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS, _CONTEXT_1M_BETA
+        betas = _common_betas_for_base_url("")
+        assert _CONTEXT_1M_BETA in betas
+        for b in _COMMON_BETAS:
+            assert b in betas
 
     def test_common_betas_minimax_url(self):
         from agent.anthropic_adapter import _common_betas_for_base_url, _TOOL_STREAMING_BETA
@@ -270,8 +278,12 @@ class TestMinimaxBetaHeaders:
         assert _TOOL_STREAMING_BETA not in betas
 
     def test_common_betas_regular_url(self):
-        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
-        assert _common_betas_for_base_url("https://api.anthropic.com") == _COMMON_BETAS
+        # Anthropic-hosted base URL gets _COMMON_BETAS + context-1m.
+        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS, _CONTEXT_1M_BETA
+        betas = _common_betas_for_base_url("https://api.anthropic.com")
+        assert _CONTEXT_1M_BETA in betas
+        for b in _COMMON_BETAS:
+            assert b in betas
 
 
 class TestMinimaxApiMode:
@@ -328,8 +340,10 @@ class TestMinimaxMaxOutput:
 
     def test_claude_output_unaffected(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
-        # Sanity: Claude limits are not broken by the MiniMax entry
-        assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
+        # Sanity: Claude limits are not broken by the MiniMax entry.
+        # claude-sonnet-4-6 caps at 16_000 to mirror Claude Code's defaults
+        # (see commit b8dea7337).
+        assert _get_anthropic_max_output("claude-sonnet-4-6") == 16_000
 
 
 class TestMinimaxPreserveDots:

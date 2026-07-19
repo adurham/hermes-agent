@@ -35,6 +35,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _ANTHROPIC_DEFAULT_AUX_MODEL,
 )
 
 
@@ -655,7 +656,7 @@ class TestAnthropicOAuthFlag:
             client, model = _try_anthropic()
 
         assert client is not None
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == _ANTHROPIC_DEFAULT_AUX_MODEL
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
@@ -1214,7 +1215,7 @@ class TestVisionClientFallback:
 
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == _ANTHROPIC_DEFAULT_AUX_MODEL
 
     def test_anthropic_auxiliary_client_aggregates_stream_response(self):
         from agent.auxiliary_client import AnthropicAuxiliaryClient
@@ -2297,6 +2298,11 @@ class TestAuxiliaryFallbackLayering:
         exc.status_code = 402
         return exc
 
+    def _make_429_rate_limit_error(self, msg="Rate limit exceeded, try again in 60 seconds"):
+        exc = Exception(msg)
+        exc.status_code = 429
+        return exc
+
     def test_empty_choices_with_output_text_is_recovered_before_fallback(self, monkeypatch):
         """Responses-style output_text should be used before provider fallback."""
         primary_client = MagicMock()
@@ -2500,6 +2506,77 @@ class TestAuxiliaryFallbackLayering:
 
         assert main_client.chat.completions.create.called
 
+    def test_auto_task_with_cheap_pin_falls_back_to_main_model(self, monkeypatch):
+        """Auto task pinned to a cheap model (e.g. Haiku via fallback_model) must
+        fall back to the CURRENT main agent model when the third-party chain is
+        empty — the single-provider (Anthropic-only) safety net.
+
+        Regression: previously the auto path called only _try_payment_fallback
+        (third-party chain). With no third-party providers configured, a
+        rate-limited Haiku aux call had nowhere to go and the task failed,
+        despite the user's main Opus creds being available on the same provider.
+        """
+        # Cheap pinned aux model (resolved_provider='auto', model=Haiku),
+        # main model is Opus — they differ, so main-model fallback applies.
+        cheap_client = MagicMock()
+        cheap_client.chat.completions.create.side_effect = self._make_429_rate_limit_error()
+
+        main_client = MagicMock()
+        main_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from main opus"))
+        ])
+
+        with patch("agent.auxiliary_client._read_main_model",
+                   return_value="claude-opus-4-8"), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(cheap_client, "claude-haiku-4-5-20251001")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "claude-haiku-4-5-20251001", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(main_client, "claude-opus-4-8", "main-agent(anthropic)")) as main_fb:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=20,
+            )
+
+        # The auto path must consult the main-agent fallback after the empty
+        # third-party chain, and the main model must serve the request.
+        main_fb.assert_called_once()
+        assert main_client.chat.completions.create.called
+        assert result.choices[0].message.content == "from main opus"
+
+    def test_auto_task_no_cheap_pin_skips_redundant_main_fallback(self, monkeypatch):
+        """When the aux task already resolves to the SAME model as main (no cheap
+        pin), the auto path must NOT add a redundant same-model main fallback —
+        retrying the identical model against the same rate-limited backend is
+        pointless. The third-party chain remains the only auto fallback."""
+        same_client = MagicMock()
+        same_client.chat.completions.create.side_effect = self._make_429_rate_limit_error()
+
+        with patch("agent.auxiliary_client._read_main_model",
+                   return_value="claude-opus-4-8"), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(same_client, "claude-opus-4-8")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "claude-opus-4-8", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(MagicMock(), "claude-opus-4-8", "main-agent(anthropic)")) as main_fb:
+            with pytest.raises(Exception):
+                call_llm(
+                    task="title_generation",
+                    messages=[{"role": "user", "content": "hi"}],
+                    max_tokens=20,
+                )
+
+        # final_model == main model → the same-model guard must skip the
+        # redundant main-agent fallback entirely.
+        main_fb.assert_not_called()
+
     def test_explicit_provider_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit on an explicit provider must trigger fallback (not be ignored).
 
@@ -2536,7 +2613,6 @@ class TestAuxiliaryFallbackLayering:
         assert fallback_client.chat.completions.create.called
         # Main agent fallback should NOT be needed when chain succeeds
         mock_main.assert_not_called()
-
 
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
@@ -4845,15 +4921,21 @@ class TestAnthropicExplicitApiKey:
     """
 
     def test_try_anthropic_uses_explicit_api_key_over_env(self):
-        """_try_anthropic(explicit_api_key) must use the supplied key, not the env fallback."""
+        """_try_anthropic(explicit_api_key) must use the supplied key, not the env fallback.
+
+        The explicit key must start with "sk-ant-" to be accepted as a genuine
+        Anthropic credential (non-"sk-ant-" values are treated as foreign-provider
+        placeholders and discarded so the real OAuth token is used instead).
+        """
+        explicit_key = "sk-ant-api03-explicit-pool-key-" + "x" * 40
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic
-            client, model = _try_anthropic("explicit-pool-key")
+            client, model = _try_anthropic(explicit_key)
         assert client is not None
-        assert mock_build.call_args.args[0] == "explicit-pool-key", (
+        assert mock_build.call_args.args[0] == explicit_key, (
             f"Expected explicit_api_key to be passed, got: {mock_build.call_args.args[0]}"
         )
         assert mock_build.call_args.args[0] != "env-fallback-key"
@@ -4870,17 +4952,23 @@ class TestAnthropicExplicitApiKey:
         assert mock_build.call_args.args[0] == "env-fallback-key"
 
     def test_resolve_provider_client_passes_explicit_api_key_to_anthropic(self):
-        """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate the key."""
+        """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate
+        a genuine Anthropic credential (sk-ant-* prefix) to _try_anthropic().
+
+        Non-"sk-ant-" values are treated as foreign-provider placeholders and are
+        discarded by _try_anthropic so the real OAuth token is used instead.
+        """
+        explicit_key = "sk-ant-api03-explicit-fallback-" + "x" * 40
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-key"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             client, model = resolve_provider_client(
                 provider="anthropic",
-                explicit_api_key="explicit-fallback-key",
+                explicit_api_key=explicit_key,
             )
         assert client is not None
-        assert mock_build.call_args.args[0] == "explicit-fallback-key", (
+        assert mock_build.call_args.args[0] == explicit_key, (
             "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
         )
 
@@ -5481,8 +5569,16 @@ class TestCustomEndpointApiKeyInheritance:
         assert captured.get("api_key") == "no-key-required"
 
     def test_runtime_override_key_is_used(self, monkeypatch):
-        """When _RUNTIME_MAIN_API_KEY is set (by set_runtime_main), it takes
-        precedence over config.yaml for the custom endpoint key."""
+        """When the thread-local runtime override is set (by set_runtime_main),
+        it takes precedence over config.yaml for the custom endpoint key.
+
+        Uses the public set_runtime_main()/clear_runtime_main() API rather
+        than patching module globals directly — as of the 2026-07-18
+        thread-safety fix, the override lives in a per-thread
+        threading.local() slot (``ac._runtime_main_tls``), not bare module
+        attributes, so ``patch.object(ac, "_RUNTIME_MAIN_API_KEY", ...)``
+        no longer has any effect.
+        """
         import agent.auxiliary_client as ac
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -5493,18 +5589,24 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch.object(ac, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key"), \
-             patch.object(ac, "_RUNTIME_MAIN_BASE_URL", "https://gw.example.com/v1"), \
-             patch("hermes_cli.config.load_config", return_value={"model": {}}), \
-             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
-            client, model = resolve_provider_client(
-                "custom",
-                model="test-model",
-                explicit_base_url="https://gw.example.com/v1",
-                explicit_api_key=None,
-            )
+        ac.set_runtime_main(
+            "custom", "test-model",
+            base_url="https://gw.example.com/v1",
+            api_key="«redacted:sk-…»",
+        )
+        try:
+            with patch("hermes_cli.config.load_config", return_value={"model": {}}), \
+                 patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+                client, model = resolve_provider_client(
+                    "custom",
+                    model="test-model",
+                    explicit_base_url="https://gw.example.com/v1",
+                    explicit_api_key=None,
+                )
+        finally:
+            ac.clear_runtime_main()
 
-        assert captured.get("api_key") == "sk-runtime-key"
+        assert captured.get("api_key") == "«redacted:sk-…»"
 
     def test_cross_host_aux_endpoint_does_not_inherit_main_key(self, monkeypatch):
         """An aux base_url on a DIFFERENT host than the main model must NOT

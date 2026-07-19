@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
+    AnthropicBilling,
     fetch_account_usage,
+    fetch_anthropic_billing,
     render_account_usage_lines,
 )
 
@@ -201,3 +203,97 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+# =========================================================================
+# fetch_anthropic_billing — authoritative billed spend (used_credits in cents)
+# =========================================================================
+
+def test_fetch_anthropic_billing_converts_cents_to_dollars(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token", lambda: "oauth-token"
+    )
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _Client(
+            {
+                "extra_usage": {
+                    "is_enabled": True,
+                    "monthly_limit": None,
+                    "used_credits": 4778,  # cents -> $47.78
+                    "currency": "USD",
+                }
+            }
+        ),
+    )
+
+    billing = fetch_anthropic_billing()
+
+    assert isinstance(billing, AnthropicBilling)
+    assert billing.billed_usd == 47.78
+    assert billing.currency == "USD"
+    assert billing.monthly_limit_usd is None
+
+
+def test_fetch_anthropic_billing_includes_monthly_limit_in_dollars(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token", lambda: "oauth-token"
+    )
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _Client(
+            {
+                "extra_usage": {
+                    "is_enabled": True,
+                    "monthly_limit": 20000,  # cents -> $200.00
+                    "used_credits": 5123,    # cents -> $51.23
+                    "currency": "USD",
+                }
+            }
+        ),
+    )
+
+    billing = fetch_anthropic_billing()
+
+    assert billing is not None
+    assert billing.billed_usd == 51.23
+    assert billing.monthly_limit_usd == 200.0
+
+
+def test_fetch_anthropic_billing_none_without_oauth(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token", lambda: "sk-ant-api-key"
+    )
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: False)
+
+    assert fetch_anthropic_billing() is None
+
+
+def test_fetch_anthropic_billing_none_when_no_extra_usage(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token", lambda: "oauth-token"
+    )
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _Client({"five_hour": {"utilization": 0.1}}),
+    )
+
+    assert fetch_anthropic_billing() is None
+
+
+def test_fetch_anthropic_billing_swallows_errors(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token", lambda: "oauth-token"
+    )
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+
+    def _boom(timeout=10.0):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", _boom)
+
+    # Must never raise — callers treat None as "unavailable".
+    assert fetch_anthropic_billing() is None

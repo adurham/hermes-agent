@@ -16,18 +16,20 @@ The decision is made once per message turn by :func:`decide_image_input_mode`.
 It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
 | ``text``, default ``auto``) and the active model's capability metadata.
 
-In ``auto`` mode:
-  - If the active model reports ``supports_vision=True`` (via config
-    override or models.dev metadata), we attach natively — vision-capable
-    main models should always see the original pixels, even when an
-    auxiliary vision backend is configured. That auxiliary backend then
-    acts as a *fallback* for sessions whose main model can't take images.
-  - Otherwise, if the user has explicitly configured ``auxiliary.vision``
-    (provider/model/base_url not ``auto``/empty), we route through the
-    text pipeline so the auxiliary vision backend can describe the image
-    for the text-only main model.
-  - Otherwise (non-vision model, no explicit override), we fall back to
-    text via the default vision_analyze flow.
+In ``auto`` mode (native capability is checked FIRST):
+  - If the active model reports ``supports_vision=True`` (config override or
+    models.dev metadata), we attach natively — a model that can see the
+    pixels directly always beats a lossy text summary, even when a dedicated
+    auxiliary vision backend is configured.
+  - Otherwise the main model cannot see. If the user has explicitly
+    configured an ``auxiliary.vision`` backend AND the active provider is the
+    local exo cluster, we use the text pipeline (delegate the image to the
+    exo-hosted vision model, e.g. DeepSeek-V4-Flash → Qwen3.6). The exo
+    vision delegate is deliberately scoped to exo sessions — a non-exo,
+    non-vision model native-attaches instead so we never silently pull the
+    exo cluster into an unrelated provider's request.
+  - Otherwise (non-vision model, no explicit override), we fall back to text
+    with provider auto-detection (the pre-existing behaviour).
 
 This keeps ``vision_analyze`` surfaced as a tool in every session — skills
 and agent flows that chain it (browser screenshots, deeper inspection of
@@ -370,6 +372,73 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     return True
 
 
+# Provider-name forms that identify the local exo cluster across both of
+# Adam's machines: work declares it as ``providers.exo`` (active provider
+# string ``exo``), personal declares it under ``custom_providers`` (active
+# provider string ``custom:exo``). A bare ``custom`` runtime is matched by
+# cross-checking the active main ``base_url`` against the exo provider entry.
+_EXO_PROVIDER_NAMES = frozenset({"exo", "custom:exo"})
+
+
+def _provider_is_exo(provider: Optional[str], cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """True when the active main provider is the local exo cluster.
+
+    Vision delegation to the exo-hosted vision model must fire ONLY when the
+    main model is itself served by exo — we never want a non-exo session
+    (Claude, OpenRouter, etc.) to silently route its images into the cluster.
+    """
+    p = (provider or "").strip().lower()
+    if p in _EXO_PROVIDER_NAMES:
+        return True
+
+    # Bare "custom" runtime: identify exo by matching the active main
+    # base_url against the configured exo provider's base_url.
+    if p == "custom":
+        # Prefer the LIVE runtime base_url recorded for this turn over the
+        # static ``config.model.base_url``. A ``--provider exo`` / ``hermes
+        # model`` switch to the local cluster leaves the saved config default
+        # (e.g. Anthropic) untouched, so comparing against it would never match
+        # and every aux task in an exo session would cross over to another
+        # provider's model pointed at the exo endpoint (404). The runtime value
+        # reflects what is ACTUALLY being used this turn.
+        main_base = ""
+        try:
+            from agent.auxiliary_client import get_runtime_main_base_url
+            main_base = (get_runtime_main_base_url() or "").strip().lower()
+        except Exception:
+            main_base = ""
+        if not main_base and isinstance(cfg, dict):
+            model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+            main_base = str((model_cfg or {}).get("base_url") or "").strip().lower()
+        if not main_base:
+            return False
+        if not isinstance(cfg, dict):
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                cfg = _load_cfg()
+            except Exception:
+                return False
+
+        exo_base = ""
+        providers_cfg = cfg.get("providers")
+        if isinstance(providers_cfg, dict) and isinstance(providers_cfg.get("exo"), dict):
+            exo_base = str(providers_cfg["exo"].get("base_url") or "").strip().lower()
+        if not exo_base:
+            custom_providers = cfg.get("custom_providers")
+            if isinstance(custom_providers, list):
+                for entry in custom_providers:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = str(entry.get("name") or "").strip().lower()
+                    if name in _EXO_PROVIDER_NAMES:
+                        exo_base = str(entry.get("base_url") or "").strip().lower()
+                        break
+        if main_base and exo_base and main_base == exo_base:
+            return True
+
+    return False
+
+
 def _lookup_supports_vision(
     provider: str,
     model: str,
@@ -438,15 +507,33 @@ def decide_image_input_mode(
     if mode_cfg == "text":
         return "text"
 
-    # auto: prefer native vision when the main model supports it. An
-    # explicit auxiliary.vision config acts as a *fallback* for text-only
-    # main models — it should not preempt native vision on a model that
-    # can natively inspect the pixels (issue #29135).
+    # auto
+    #
+    # Native capability is checked FIRST: a vision-capable main model
+    # (Claude, Gemini, a VL model, etc.) sees the pixels directly, which is
+    # always higher fidelity than a lossy text summary. An explicit
+    # auxiliary.vision backend must NOT suppress native vision on a model
+    # that can already see — that was the old bug (every image, even on
+    # Claude, got shipped to the aux vision model).
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+
+    # The main model cannot see natively (supports is False or None).
     if _explicit_aux_vision_override(cfg):
-        return "text"
+        # A dedicated auxiliary vision backend is configured. Delegate to it
+        # ONLY when the active provider is the local exo cluster — that keeps
+        # the exo-hosted vision delegate scoped to exo sessions
+        # (e.g. DeepSeek-V4-Flash → Qwen3.6). For a non-exo, non-vision main
+        # model we deliberately do NOT pull the exo cluster into the request;
+        # we native-attach instead and let that provider accept or reject the
+        # image. (Adam's explicit scoping: vision delegation is exo-only.)
+        if _provider_is_exo(provider, cfg):
+            return "text"
+        return "native"
+
+    # No explicit aux backend configured: preserve the historical default —
+    # text pipeline via vision_analyze provider auto-detection.
     return "text"
 
 
@@ -610,14 +697,49 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
     }.get(suffix, "image/jpeg")
 
 
-def _file_to_data_url(path: Path) -> Optional[str]:
-    """Encode a local image as a base64 data URL at its native size.
+# Proactive ingestion ceiling for native image attachments.
+#
+# This is NOT about token budget — it's about the provider's HTTP request
+# *body* limit. Anthropic rejects any request whose total body exceeds
+# 32 MB with a 413 ``request_too_large`` regardless of how few tokens the
+# conversation holds. A single ~35 MB phone photo inflates to ~49 MB once
+# base64-encoded and blows the body limit on the very first call, before
+# the conversation has any history to compress.
+#
+# Crucially, vision models gain nothing from the extra pixels: Anthropic
+# (and most others) downscale to a ~1568px long edge server-side anyway,
+# so a 4284px capture carries ~7x the bytes for identical comprehension.
+# We therefore cap encoded size at a universally-safe ceiling at ingestion
+# time. Providers that happily accept large images (OpenAI 49 MB+, Gemini
+# 100 MB) lose no real quality — the cap only trims pixels the model would
+# have discarded. Images already under the ceiling are passed through at
+# native size, so the common case (screenshots, normal uploads) is
+# untouched.
+#
+# 4 MB matches the reactive retry-loop shrink target
+# (``conversation_compression.try_shrink_image_parts_in_messages``), which
+# is deliberately chosen to slide under Anthropic's 5 MB *per-image* base64
+# ceiling with header overhead. Using the same target here means a
+# freshly-ingested image can't trip EITHER the 32 MB request-body limit or
+# the 5 MB per-image limit. Providers that accept large images (OpenAI
+# 49 MB+, Gemini 100 MB) lose no real quality — the cap only trims pixels
+# the model would have discarded during its own server-side downscale. The
+# reactive shrink remains as a safety net for images that arrive oversized
+# through other paths.
+_NATIVE_IMAGE_CEILING_BYTES = 4 * 1024 * 1024
 
-    Size limits are NOT enforced here — the agent retry loop
-    (``run_agent._try_shrink_image_parts_in_messages``) shrinks on the
-    provider's first rejection. Keeping this simple means providers that
-    accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
-    quality tax just because one other provider is stricter.
+
+def _file_to_data_url(path: Path) -> Optional[str]:
+    """Encode a local image as a base64 data URL, downscaling if oversized.
+
+    Images whose base64 encoding would exceed ``_NATIVE_IMAGE_CEILING_BYTES``
+    are downscaled via ``vision_tools._resize_image_for_vision`` before
+    encoding. This prevents a single large photo from tripping a provider's
+    HTTP body limit (Anthropic 413 ``request_too_large``) on the first call,
+    which the conversation-compression recovery path cannot fix because the
+    oversized payload is one protected image, not history. Images already
+    under the ceiling are encoded at native size — no quality tax for the
+    common case.
 
     Format compatibility IS handled here: if the sniffed MIME isn't one
     of ``_UNIVERSALLY_SUPPORTED_MIMES`` (i.e. it's something like AVIF,
@@ -648,7 +770,10 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
+
     mime = _guess_mime(path, raw=raw)
+
+    # Transcode unsupported formats to PNG for provider compatibility
     if mime not in _UNIVERSALLY_SUPPORTED_MIMES:
         transcoded = _transcode_to_png(raw)
         if transcoded is None:
@@ -665,6 +790,50 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         )
         raw = transcoded
         mime = "image/png"
+
+    # Estimate encoded size (base64 inflates by ~4/3 plus a small header).
+    # Only pay the resize cost when the image would actually breach the
+    # body-size ceiling.
+    estimated_b64 = (len(raw) * 4) // 3 + 64
+    if estimated_b64 <= _NATIVE_IMAGE_CEILING_BYTES:
+        b64 = base64.b64encode(raw).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+
+    # Oversized — downscale before encoding. _resize_image_for_vision is a
+    # soft dependency on Pillow; it falls back to native bytes if Pillow is
+    # missing or can't open the image, in which case the reactive retry-loop
+    # shrink remains the backstop.
+    try:
+        from tools.vision_tools import _resize_image_for_vision
+
+        data_url = _resize_image_for_vision(
+            path, mime_type=mime, max_base64_bytes=_NATIVE_IMAGE_CEILING_BYTES,
+        )
+        if data_url:
+            if len(data_url) > _NATIVE_IMAGE_CEILING_BYTES:
+                logger.warning(
+                    "image_routing: %s still %.1f MB after resize (ceiling "
+                    "%.1f MB) — Pillow unavailable or image incompressible; "
+                    "relying on retry-loop shrink",
+                    path, len(data_url) / (1024 * 1024),
+                    _NATIVE_IMAGE_CEILING_BYTES / (1024 * 1024),
+                )
+            else:
+                logger.info(
+                    "image_routing: downscaled %s from ~%.1f MB to %.1f MB "
+                    "base64 to fit native-attach ceiling",
+                    path, estimated_b64 / (1024 * 1024),
+                    len(data_url) / (1024 * 1024),
+                )
+            return data_url
+    except Exception as exc:
+        logger.warning(
+            "image_routing: resize of oversized %s failed (%s) — "
+            "falling back to native-size encode", path, exc,
+        )
+
+    # Resize unavailable or failed: encode at native size and let the
+    # reactive retry-loop shrink handle the provider rejection.
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

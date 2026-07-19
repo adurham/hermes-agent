@@ -1074,6 +1074,23 @@ class CredentialPool:
             # has a newer token pair and retry once.
             if self.provider == "anthropic" and entry.source == "claude_code":
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
+                # If another process (Claude Code, another hermes instance)
+                # already refreshed and the new access token is still valid,
+                # adopt it directly — calling refresh_anthropic_oauth_pure
+                # again would consume the freshly-issued single-use
+                # refresh_token. If THAT call rate-limits or races, this entry
+                # ends up marked exhausted with error_code=null even though no
+                # real quota was hit. This is the dominant cause of spurious
+                # exhaustion when Claude Code + hermes share keychain creds.
+                if (
+                    synced.refresh_token != entry.refresh_token
+                    and not self._entry_needs_refresh(synced)
+                ):
+                    logger.debug(
+                        "Pool entry %s: adopting newer valid token from credentials store (no refresh needed)",
+                        entry.id,
+                    )
+                    return synced
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Retrying refresh with synced token from credentials file")
                     try:
@@ -1743,7 +1760,8 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
         "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
         "hermes_pkce": 2,
         "claude_code": 3,
-        "env:ANTHROPIC_API_KEY": 4,
+        "keychain_longlived": 4,
+        "env:ANTHROPIC_API_KEY": 5,
     }
     manual_entries = sorted(
         (entry for entry in entries if _is_manual_source(entry.source)),
@@ -1841,23 +1859,23 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             ("hermes_pkce", read_hermes_oauth_credentials()),
             ("claude_code", read_claude_code_credentials()),
         ):
-            if creds and creds.get("accessToken"):
-                if _is_suppressed(provider, source_name):
-                    continue
-                active_sources.add(source_name)
-                changed |= _upsert_entry(
-                    entries,
-                    provider,
-                    source_name,
-                    {
-                        "source": source_name,
-                        "auth_type": AUTH_TYPE_OAUTH,
-                        "access_token": creds.get("accessToken", ""),
-                        "refresh_token": creds.get("refreshToken"),
-                        "expires_at_ms": creds.get("expiresAt"),
-                        "label": label_from_token(creds.get("accessToken", ""), source_name),
-                    },
-                )
+                if creds and creds.get("accessToken"):
+                    if _is_suppressed(provider, source_name):
+                        continue
+                    active_sources.add(source_name)
+                    changed |= _upsert_entry(
+                        entries,
+                        provider,
+                        source_name,
+                        {
+                            "source": source_name,
+                            "auth_type": AUTH_TYPE_OAUTH,
+                            "access_token": creds.get("accessToken", ""),
+                            "refresh_token": creds.get("refreshToken"),
+                            "expires_at_ms": creds.get("expiresAt"),
+                            "label": label_from_token(creds.get("accessToken", ""), source_name),
+                        },
+                    )
 
     elif provider == "nous":
         state = _load_provider_state(auth_store, "nous")

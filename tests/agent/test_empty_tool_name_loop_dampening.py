@@ -119,10 +119,24 @@ def agent_env():
     os.environ["HERMES_HOME"] = os.path.join(test_home, ".hermes")
 
     # Import fresh so the patched conversation_loop is exercised even when the
-    # module was imported earlier in the same worker.
-    for mod in list(sys.modules):
-        if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
-            del sys.modules[mod]
+    # module was imported earlier in the same worker. We snapshot the modules
+    # we are about to evict so teardown can restore the ORIGINAL objects —
+    # otherwise sibling test files that bound names from these modules at
+    # collection time keep references to stale module objects, and their
+    # ``patch("agent.X.fn")`` re-imports a *fresh* module and patches that
+    # copy, so the mock never reaches the already-bound function. That leak
+    # silently broke ~87 unrelated tests in the full-suite run.
+    def _is_evicted(mod: str) -> bool:
+        return (
+            mod == "run_agent"
+            or mod.startswith("agent.")
+            or mod.startswith("tools.")
+            or mod.startswith("hermes_")
+        )
+
+    saved_modules = {m: sys.modules[m] for m in list(sys.modules) if _is_evicted(m)}
+    for mod in saved_modules:
+        del sys.modules[mod]
     from run_agent import AIAgent
 
     agent = AIAgent(
@@ -138,11 +152,38 @@ def agent_env():
         yield agent, _MockHandler
     finally:
         srv.shutdown()
+        # Detach any logging handlers that AIAgent.__init__ wired to the temp
+        # HERMES_HOME's agent.log — otherwise they survive the rmtree below and
+        # FileNotFoundError on every subsequent log emit in the worker.
+        import logging as _logging
+
+        def _points_into_temp(h) -> bool:
+            base = getattr(h, "baseFilename", None)
+            return bool(base) and os.path.abspath(base).startswith(os.path.abspath(test_home))
+
+        for _lg in [_logging.getLogger()] + [
+            _logging.getLogger(n) for n in list(_logging.root.manager.loggerDict)
+        ]:
+            for _h in list(getattr(_lg, "handlers", [])):
+                if _points_into_temp(_h):
+                    try:
+                        _h.close()
+                    except Exception:
+                        pass
+                    _lg.removeHandler(_h)
+
         shutil.rmtree(test_home, ignore_errors=True)
         if prev_home is None:
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = prev_home
+
+        # Restore the original module objects we evicted, and drop any fresh
+        # copies imported under the temp HERMES_HOME, so sibling test files'
+        # already-bound names and their patch() targets stay identity-consistent.
+        for mod in [m for m in list(sys.modules) if _is_evicted(m)]:
+            del sys.modules[mod]
+        sys.modules.update(saved_modules)
 
 
 def _tool_results(handler) -> list[str]:

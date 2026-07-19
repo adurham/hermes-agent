@@ -99,13 +99,25 @@ class InsightsEngine:
         self.db = db
         self._conn = db._conn
 
-    def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+    def generate(
+        self,
+        days: int = 30,
+        source: str = None,
+        account_billed: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Generate a complete insights report.
 
         Args:
             days: Number of days to look back (default: 30)
             source: Optional filter by source platform
+            account_billed: Optional authoritative billed-spend info from the
+                provider's usage API (e.g. Claude's extra_usage.used_credits).
+                Shape: {"billed_usd": float, "currency": str,
+                "monthly_limit_usd": float|None}. When provided, the cost
+                section displays this as the ground-truth period spend
+                alongside the token-based estimate. This is period-cumulative
+                (not windowed by `days`), so it's labeled distinctly.
 
         Returns:
             Dict with all computed insights
@@ -138,6 +150,7 @@ class InsightsEngine:
                 },
                 "activity": {},
                 "top_sessions": [],
+                "account_billed": account_billed,
             }
 
         # Compute insights
@@ -161,6 +174,7 @@ class InsightsEngine:
             "skills": skills,
             "activity": activity,
             "top_sessions": top_sessions,
+            "account_billed": account_billed,
         }
 
     # =========================================================================
@@ -414,22 +428,34 @@ class InsightsEngine:
         actual_cost = 0.0
         models_with_pricing = set()
         models_without_pricing = set()
+        # Bucket every session by the pricing status reported by the engine.
+        # Statuses are: actual | estimated | included | unknown. The previous
+        # version only counted included/unknown, leaving the common "estimated"
+        # case uncounted and making priced_cost_sessions read 0.
         unknown_cost_sessions = 0
         included_cost_sessions = 0
+        estimated_cost_sessions = 0
+        actual_cost_sessions = 0
         for s in sessions:
             model = s.get("model") or ""
             estimated, status = _estimate_cost(s)
             total_cost += estimated
             actual_cost += s.get("actual_cost_usd") or 0.0
             display = model.split("/")[-1] if "/" in model else (model or "unknown")
-            if status == "included":
+            if status == "actual":
+                actual_cost_sessions += 1
+            elif status == "estimated":
+                estimated_cost_sessions += 1
+            elif status == "included":
                 included_cost_sessions += 1
-            elif status == "unknown":
+            else:
                 unknown_cost_sessions += 1
             if has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url")):
                 models_with_pricing.add(display)
             else:
                 models_without_pricing.add(display)
+        # Sessions for which we have any dollar figure (actual or estimated).
+        priced_cost_sessions = actual_cost_sessions + estimated_cost_sessions
 
         # Session duration stats (guard against negative durations from clock drift)
         durations = []
@@ -471,6 +497,9 @@ class InsightsEngine:
             "models_without_pricing": sorted(models_without_pricing),
             "unknown_cost_sessions": unknown_cost_sessions,
             "included_cost_sessions": included_cost_sessions,
+            "estimated_cost_sessions": estimated_cost_sessions,
+            "actual_cost_sessions": actual_cost_sessions,
+            "priced_cost_sessions": priced_cost_sessions,
         }
 
     def _compute_model_breakdown(self, sessions: List[Dict]) -> List[Dict]:
@@ -714,6 +743,58 @@ class InsightsEngine:
     # Formatting
     # =========================================================================
 
+    @staticmethod
+    def _format_cost_lines(overview: Dict, account_billed: Optional[Dict]) -> List[str]:
+        """Build the body lines for the Cost section.
+
+        Returns [] when there's nothing meaningful to show (no billed figure
+        and no priced sessions) so the caller can skip the whole section.
+
+        Cost was historically hidden in this report because a bare list-price
+        estimate was unreliable. It's surfaced again here because (a) the
+        provider usage API now gives us the real billed number to anchor on,
+        and (b) the estimate is explicitly labeled as a list-price estimate,
+        never presented as the billed amount.
+        """
+        lines: List[str] = []
+
+        billed = None
+        currency = "USD"
+        monthly_limit = None
+        if isinstance(account_billed, dict):
+            billed = account_billed.get("billed_usd")
+            currency = account_billed.get("currency") or "USD"
+            monthly_limit = account_billed.get("monthly_limit_usd")
+
+        estimated = overview.get("estimated_cost") or 0.0
+        priced_sessions = overview.get("priced_cost_sessions") or 0
+        unknown_sessions = overview.get("unknown_cost_sessions") or 0
+        sym = "$" if currency == "USD" else f"{currency} "
+
+        if isinstance(billed, (int, float)):
+            # Ground truth from the provider. Period-cumulative — label it so
+            # nobody compares it 1:1 against the windowed estimate.
+            line = f"  Billed this period:  {sym}{billed:,.2f}   (provider usage API — authoritative)"
+            if isinstance(monthly_limit, (int, float)) and monthly_limit > 0:
+                pct = (billed / monthly_limit) * 100
+                line += f"  [{pct:.0f}% of {sym}{monthly_limit:,.2f}]"
+            lines.append(line)
+
+        if priced_sessions > 0 and estimated > 0:
+            lines.append(
+                f"  Est. (this window):  {sym}{estimated:,.2f}   "
+                f"(token list-price estimate, not billed)"
+            )
+            if unknown_sessions > 0:
+                lines.append(
+                    f"  {' ' * 19}  + {unknown_sessions} session(s) with unknown pricing (excluded)"
+                )
+
+        # Nothing authoritative and nothing priced — don't render the section.
+        if not lines:
+            return []
+        return lines
+
     def format_terminal(self, report: Dict) -> str:
         """Format the insights report for terminal display (CLI)."""
         if report.get("empty"):
@@ -758,6 +839,22 @@ class InsightsEngine:
             lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
         lines.append("")
+
+        # Cost
+        # Display rules:
+        #   - The authoritative billed figure (from the provider usage API) is
+        #     shown as ground truth when available. It is period-cumulative, not
+        #     windowed by --days, so it's labeled to avoid the apples-to-oranges
+        #     trap of comparing it directly to the windowed estimate.
+        #   - The token-based estimate is shown only when we have known pricing
+        #     for at least one priced session; it's always labeled "estimated"
+        #     (list-price reconstruction, not billed cost).
+        cost_lines = self._format_cost_lines(o, report.get("account_billed"))
+        if cost_lines:
+            lines.append("  💰 Cost")
+            lines.append("  " + "─" * 56)
+            lines.extend(cost_lines)
+            lines.append("")
 
         # Model breakdown
         if report["models"]:

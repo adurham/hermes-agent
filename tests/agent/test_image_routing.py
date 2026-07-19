@@ -80,6 +80,67 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=False):
             assert decide_image_input_mode("openrouter", "some-non-vision-model", cfg) == "native"
 
+    def test_native_capable_model_attaches_natively_even_with_exo_aux_vision(self):
+        """Regression: an explicit (exo) aux vision backend must NOT suppress
+        native vision on a model that can already see (e.g. Claude). The old
+        code returned 'text' here and shipped every image to the aux model."""
+        cfg = {
+            "auxiliary": {"vision": {
+                "provider": "custom:exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+            }},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-opus-4-8", cfg) == "native"
+
+    def test_exo_nonvision_model_delegates_to_aux_vision(self):
+        """DSv4 on exo (no native vision) + explicit exo aux vision → text
+        (delegate the image to the exo-hosted vision model)."""
+        cfg = {
+            "auxiliary": {"vision": {
+                "provider": "custom:exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+            }},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            # work machine: provider string is "exo"
+            assert decide_image_input_mode("exo", "mlx-community/DeepSeek-V4-Flash", cfg) == "text"
+            # personal machine: provider string is "custom:exo"
+            assert decide_image_input_mode("custom:exo", "mlx-community/DeepSeek-V4-Flash", cfg) == "text"
+
+    def test_nonexo_nonvision_model_does_not_route_to_exo_delegate(self):
+        """A non-exo, non-vision model must NOT be pulled into the exo vision
+        delegate. With native capability unknown/false it native-attaches and
+        lets its own provider handle/reject the image — the exo cluster stays
+        out of non-exo sessions (Adam's explicit scoping)."""
+        cfg = {
+            "auxiliary": {"vision": {
+                "provider": "custom:exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+            }},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("openrouter", "some-text-only-model", cfg) == "native"
+
+    def test_exo_bare_custom_runtime_matched_by_base_url(self):
+        """When the runtime collapses the provider to bare 'custom', exo is
+        identified by matching the active main base_url against the configured
+        exo provider entry."""
+        cfg = {
+            "model": {"provider": "custom", "base_url": "http://192.168.86.201:52415/v1"},
+            "providers": {"exo": {"base_url": "http://192.168.86.201:52415/v1"}},
+            "auxiliary": {"vision": {
+                "provider": "custom:exo",
+                "model": "mlx-community/Qwen3.6-35B-A3B-8bit",
+                "base_url": "http://192.168.86.201:52415/v1",
+            }},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("custom", "mlx-community/DeepSeek-V4-Flash", cfg) == "text"
+
     def test_explicit_text_overrides_everything(self):
         cfg = {"agent": {"image_input_mode": "text"}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
@@ -97,21 +158,14 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
-    def test_auto_prefers_native_for_vision_capable_main_model_even_with_aux_configured(self):
-        """Regression #29135: vision-capable main model wins over aux fallback.
-
-        Auxiliary.vision is a fallback for text-only main models; it must
-        not preempt native vision on a vision-capable main model.
-        """
+    def test_nonexo_aux_vision_override_is_ignored_for_routing(self):
+        """A non-exo aux vision backend (e.g. OpenRouter Gemini) no longer
+        forces text mode. A native-capable main model attaches natively; the
+        exo-only delegate scoping means a non-exo aux backend doesn't reroute
+        a vision-capable model through the text pipeline."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
-
-    def test_auto_uses_aux_vision_fallback_for_text_only_main_model(self):
-        """#29135: aux vision still acts as fallback for non-vision main models."""
-        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
-        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
-            assert decide_image_input_mode("deepseek", "deepseek-v4-pro", cfg) == "text"
 
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
@@ -335,10 +389,11 @@ class TestAutoModeRespectsOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "unknown", {}) == "text"
 
-    def test_explicit_aux_vision_no_longer_overrides_native_capable_main(self):
-        # #29135: aux.vision is a fallback for text-only main models; it
-        # must NOT preempt native routing when the main model can take
-        # images directly (supports_vision: true).
+    def test_vision_capable_model_attaches_natively_despite_nonexo_aux(self):
+        # Native capability is now checked FIRST: a model declared
+        # supports_vision: true attaches natively even when a (non-exo) aux
+        # vision backend is configured. The aux delegate is reserved for
+        # models that can't see, and only when the provider is exo.
         cfg = {
             "model": {"supports_vision": True},
             "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
@@ -346,14 +401,15 @@ class TestAutoModeRespectsOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
 
-    def test_explicit_aux_vision_used_when_main_model_supports_vision_false(self):
-        # #29135 counterpart: text-only main model + aux fallback → text.
+    def test_nonvision_custom_model_with_nonexo_aux_does_not_delegate(self):
+        # Non-vision model, but the aux backend is NOT exo → don't route to it;
+        # native-attach instead (exo-only delegate scoping).
         cfg = {
             "model": {"supports_vision": False},
             "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
         }
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
-            assert decide_image_input_mode("custom", "deepseek-v4", cfg) == "text"
+            assert decide_image_input_mode("custom", "some-text-only", cfg) == "native"
 
 
 # ─── build_native_content_parts ──────────────────────────────────────────────
@@ -702,6 +758,102 @@ class TestBuildNativeContentPartsURLs:
         )
         assert parts[0]["type"] == "text"
         assert parts[0]["text"].startswith("What do you see in this image?")
+
+
+# ─── _file_to_data_url ingestion ceiling ─────────────────────────────────────
+
+
+import pytest
+
+from agent.image_routing import _NATIVE_IMAGE_CEILING_BYTES, _file_to_data_url
+
+
+def _has_pillow() -> bool:
+    try:
+        import PIL  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def _big_jpeg_bytes(side: int = 4000) -> bytes:
+    """Return a JPEG large enough to exceed the ingestion ceiling.
+
+    A noise-filled image resists JPEG compression so the encoded bytes stay
+    well above _NATIVE_IMAGE_CEILING_BYTES even at quality 95.
+    """
+    from PIL import Image
+    import io as _io
+    import os as _os
+
+    img = Image.frombytes("RGB", (side, side), _os.urandom(side * side * 3))
+    buf = _io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
+class TestFileToDataUrlIngestionCeiling:
+    """The proactive ingestion ceiling — the root-cause fix for the 35 MB
+    phone-photo 413 ``request_too_large`` that no conversation compression
+    could recover from."""
+
+    def test_small_image_passes_through_at_native_size(self, tmp_path: Path):
+        """Images under the ceiling are encoded verbatim — no quality tax,
+        no resize round-trip for the common case (screenshots, uploads)."""
+        img = tmp_path / "small.png"
+        raw = _png_bytes()
+        img.write_bytes(raw)
+        url = _file_to_data_url(img)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,")
+        # Exact native encoding — same base64 as a direct encode.
+        assert url == f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
+
+    def test_missing_file_returns_none(self, tmp_path: Path):
+        assert _file_to_data_url(tmp_path / "does_not_exist.png") is None
+
+    @pytest.mark.skipif(not _has_pillow(), reason="Pillow required to downscale")
+    def test_oversized_image_is_downscaled_under_ceiling(self, tmp_path: Path):
+        """An image whose base64 would breach the ceiling is downscaled at
+        ingestion so it never reaches the provider oversized."""
+        raw = _big_jpeg_bytes(side=4000)
+        # Sanity: the source really is over the ceiling once base64-encoded.
+        assert (len(raw) * 4) // 3 > _NATIVE_IMAGE_CEILING_BYTES
+        img = tmp_path / "huge.jpg"
+        img.write_bytes(raw)
+
+        url = _file_to_data_url(img)
+        assert url is not None
+        assert url.startswith("data:image/")
+        # The whole point: the emitted data URL fits under the ceiling.
+        assert len(url) <= _NATIVE_IMAGE_CEILING_BYTES
+
+    def test_oversized_falls_back_to_native_when_pillow_absent(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """If Pillow can't be imported or installed, _file_to_data_url must
+        still return the native-size encode (the reactive retry-loop shrink
+        is the backstop) rather than dropping the image entirely."""
+        # A payload that *looks* oversized by byte count. Content validity
+        # doesn't matter — we force the resize path to fail and assert the
+        # fallback still yields a data URL.
+        raw = b"\xff\xd8\xff" + b"\x00" * (_NATIVE_IMAGE_CEILING_BYTES + 1024)
+        img = tmp_path / "oversized.jpg"
+        img.write_bytes(raw)
+
+        import tools.vision_tools as vt
+
+        def _boom(*a, **k):
+            raise RuntimeError("resize unavailable")
+
+        monkeypatch.setattr(vt, "_resize_image_for_vision", _boom)
+
+        url = _file_to_data_url(img)
+        assert url is not None
+        assert url.startswith("data:image/")
+        # Native-size fallback: full bytes preserved for the retry-loop shrink.
+        assert base64.b64encode(raw).decode("ascii") in url
 
 
 # ─── Format compatibility: transcode non-universal formats to PNG ────────────

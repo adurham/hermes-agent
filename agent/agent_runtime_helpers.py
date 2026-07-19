@@ -57,7 +57,14 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task"}
+    # Fork note: hermes_load_tools + swarm_run are fork-only inline dispatch
+    # branches in tool_executor.execute_tool_calls_sequential (client-side lazy
+    # tool loading + multi-agent swarm). They go through the same
+    # _run_agent_tool_execution_middleware path, so the executor fires their
+    # post_tool_call hook — they must be listed here or it double-fires.
+    # read_terminal is upstream's; keep it alongside the two fork-only names.
+    {"todo", "session_search", "memory", "clarify", "read_terminal",
+     "delegate_task", "hermes_load_tools", "swarm_run"}
 )
 
 
@@ -1009,7 +1016,7 @@ def try_recover_primary_transport(
         agent.api_key = rt["api_key"]
 
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
             agent._anthropic_client = build_anthropic_client(
@@ -1410,7 +1417,7 @@ def dump_api_request_debug(
         try:
             api_key = getattr(agent.client, "api_key", None)
         except Exception as e:
-            _ra().logger.debug("Could not extract API key for debug dump: %s", e)
+            logger.debug("Could not extract API key for debug dump: %s", e)
 
         dump_payload: Dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
@@ -1447,7 +1454,7 @@ def dump_api_request_debug(
                     error_info["response_status"] = getattr(response_obj, "status_code", None)
                     error_info["response_text"] = response_obj.text
                 except Exception as e:
-                    _ra().logger.debug("Could not extract error response details: %s", e)
+                    logger.debug("Could not extract error response details: %s", e)
 
             dump_payload["error"] = error_info
 
@@ -1480,8 +1487,6 @@ def dump_api_request_debug(
         if agent.verbose_logging:
             logger.warning(f"Failed to dump API request debug payload: {dump_error}")
         return None
-
-
 
 def anthropic_prompt_cache_policy(
     agent,
@@ -1890,9 +1895,23 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+            # Re-evaluate the 1M-beta latch for the new model: if we're
+            # switching to a non-1M model (e.g. Opus → Haiku), set the
+            # latch so the new client doesn't carry the rejected beta;
+            # if we're going the other way (Haiku → Opus), clear it.
+            try:
+                from agent.anthropic_adapter import _model_supports_1m_context
+                if not _model_supports_1m_context(agent.model):
+                    agent._oauth_1m_beta_disabled = True
+                else:
+                    # Drop the latch so 1M-capable models can use the beta again.
+                    agent._oauth_1m_beta_disabled = False
+            except Exception:
+                pass
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url,
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent.client = None
@@ -1972,16 +1991,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
         except Exception:
             _sm_custom_providers = None
-        # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
-        # token provider). ``get_model_context_length`` expects a
-        # string for its live-probe paths; for Foundry the context
-        # length normally resolves via config or static catalogs and
-        # never hits a probe, but coerce to empty string defensively.
-        _ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
         new_context_length = get_model_context_length(
             agent.model,
             base_url=agent.base_url,
-            api_key=_ctx_api_key,
+            api_key=agent.api_key,
             provider=agent.provider,
             config_context_length=getattr(agent, "_config_context_length", None),
             custom_providers=_sm_custom_providers,
@@ -1990,7 +2003,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             model=agent.model,
             context_length=new_context_length,
             base_url=agent.base_url,
-            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
+            api_key=getattr(agent, "api_key", ""),
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
@@ -2210,16 +2223,37 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
+            # Preserve raw target=None signal for the warm dispatcher's
+            # promote/demote branches. The hot path inside memory_tool
+            # defaults target to 'memory' when it's None, so this is
+            # safe for the existing add/replace/remove flow.
+            raw_target = next_args.get("target")
+            # `target` (defaulted) is used by the external-memory write bridge
+            # below; `operations` carries upstream's atomic batch shape.
             target = next_args.get("target", "memory")
             operations = next_args.get("operations")
             from tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
                 action=next_args.get("action"),
-                target=target,
+                target=raw_target,
                 content=next_args.get("content"),
                 old_text=next_args.get("old_text"),
                 operations=operations,
                 store=agent._memory_store,
+                # Warm-tier args — must be forwarded so recall / recall_related
+                # / read / replace / remove / feedback / promote / demote work.
+                # Without these the warm dispatcher in tools/memory_tool.py
+                # rejects valid calls with "query is required for recall." etc.
+                tier=next_args.get("tier", "hot"),
+                query=next_args.get("query"),
+                top_k=next_args.get("top_k"),
+                category=next_args.get("category"),
+                tags=next_args.get("tags"),
+                fact_id=next_args.get("fact_id"),
+                helpful=next_args.get("helpful"),
+                # Agent ref — used by warm recall to reset the
+                # memory-recall-reminder counter on voluntary calls.
+                agent=agent,
             )
             # Mirror successful built-in memory writes to external providers.
             # All gating/op-expansion lives behind the manager interface
@@ -2248,6 +2282,21 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
+    elif function_name == "hermes_load_tools":
+        # Client-side lazy tool loading.  Mutates agent._promoted_tools;
+        # the schema for promoted names will ship on the NEXT API call
+        # (handled by _apply_tool_search in client_side mode).
+        def _execute(next_args: dict) -> Any:
+            from tools.hermes_load_tools import load_tools as _load_tools
+            return _finish_agent_tool(
+                _load_tools(
+                    names=next_args.get("names") or [],
+                    promoted=agent._promoted_tools,
+                    available_names=set(agent.valid_tool_names or ()),
+                    deferred_names=agent._currently_deferred_names(),
+                ),
+                next_args,
+            )
     elif function_name == "read_terminal":
         def _execute(next_args: dict) -> Any:
             from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool
@@ -2262,6 +2311,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
+    elif function_name == "swarm_run":
+        def _execute(next_args: dict) -> Any:
+            from tools.swarm_tool import swarm_run as _swarm_run
+            return _finish_agent_tool(
+                _swarm_run(
+                    agents=next_args.get("agents"),
+                    topology=next_args.get("topology"),
+                    title=next_args.get("title"),
+                    shared_context=next_args.get("shared_context"),
+                    swarm_id=next_args.get("swarm_id"),
+                    parent_agent=agent,
+                ),
+                next_args,
+            )
     else:
         def _execute(next_args: dict) -> Any:
             return _ra().handle_function_call(
@@ -2292,8 +2355,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         api_request_id=getattr(agent, "_current_api_request_id", "") or "",
     )
 
-
-
 def repair_tool_call(agent, tool_name: str) -> str | None:
     """Attempt to repair a mismatched tool name before aborting.
 
@@ -2315,11 +2376,34 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
     Returns the repaired name if found in valid_tool_names, else None.
     """
+    # CC alias hits are well-known and silent — see agent/cc_aliases.py
+    agent._last_repair_silent = False
     import re
     from difflib import get_close_matches
 
     if not tool_name:
         return None
+
+    # CC canonical alias fast-path. The Anthropic OAuth path swaps
+    # hermes tool entries for canonical CC schemas (Bash, Read, Edit,
+    # Write, Grep) on the outbound side via cc_aliases.replace_with_cc_canonical
+    # so the billing classifier accepts the request. The model then
+    # emits tool_use blocks with the CC names. cc_aliases.adapt_tool_use
+    # translates them back at dispatch (model_tools.py), but validation
+    # against valid_tool_names runs *before* dispatch — so without this
+    # fast-path the model burns a round-trip agent-correcting to the
+    # hermes name. Match exactly (CC names are case-sensitive: ``Bash``,
+    # not ``bash``) and short-circuit before any normalization (incl. the
+    # VolcEngine XML trim below, which would mangle a clean CC name).
+    try:
+        from agent.cc_aliases import CC_TO_HERMES
+        hermes_name = CC_TO_HERMES.get(tool_name)
+        if hermes_name and hermes_name in agent.valid_tool_names:
+            # CC alias hits are well-known and silent — see agent/cc_aliases.py
+            agent._last_repair_silent = True
+            return hermes_name
+    except Exception:
+        pass
 
     # VolcEngine api/plan workaround (issue #33007): the endpoint's
     # protocol-translation layer occasionally leaks raw XML attribute
@@ -2365,6 +2449,44 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
     # Build the full candidate set for class-like emissions.
     cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
+    # Strip mangled MCP-style prefixes so resumed sessions whose saved
+    # tool_use blocks carry old-format names (``mcp_<server>_<tool>`` or
+    # ``mcp__<server>__<tool>``) still resolve to today's bare
+    # ``<server>_<tool>`` registry names.  Two strip variants:
+    #   * ``mcp__<rest>`` → ``<rest>``
+    #   * ``mcp_<rest>``  → ``<rest>``
+    # And the partial-strip case where Claude's MCP-routing layer ate
+    # ``mcp`` but left the trailing ``__``: ``__<rest>`` → ``<rest>``.
+    prefix_stripped: set[str] = set()
+    for c in list(cands):
+        if not c:
+            continue
+        if c.startswith("mcp__"):
+            prefix_stripped.add(c[5:])
+        elif c.startswith("mcp_"):
+            prefix_stripped.add(c[4:])
+        elif c.startswith("__"):
+            prefix_stripped.add(c[2:])
+        elif c.startswith("_"):
+            prefix_stripped.add(c[1:])
+    cands |= prefix_stripped
+    # Also keep the legacy ``mcp_<name>`` / ``mcp__<name>`` *additions*
+    # for resumed sessions where ``valid_tool_names`` was loaded with
+    # an older registry that still prefixed its entries.
+    prefixed_extra: set[str] = set()
+    for c in list(cands):
+        if not c:
+            continue
+        if not c.startswith("mcp"):
+            prefixed_extra.add(f"mcp_{c}")
+            prefixed_extra.add(f"mcp__{c}")
+    cands |= prefixed_extra
+    # Also try ``__`` → ``_`` collapse for the case where the registry
+    # has bare ``<server>_<tool>`` but a saved session emitted
+    # ``<server>__<tool>``.
+    for c in list(cands):
+        if "__" in c:
+            cands.add(c.replace("__", "_"))
     # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.
     for _ in range(2):
         extra: set[str] = set()
@@ -2386,8 +2508,6 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         return matches[0]
 
     return None
-
-
 
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
@@ -3120,13 +3240,11 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             messages[target_idx]["content"] = f"{existing_content}{marker}"
     else:
         messages[target_idx]["content"] = existing_content + marker
-    _ra().logger.info(
+    logger.info(
         "Delivered /steer to agent after tool batch (%d chars): %s",
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
-
-
 
 def force_close_tcp_sockets(client: Any) -> int:
     """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.

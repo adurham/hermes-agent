@@ -27,7 +27,8 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -305,6 +306,11 @@ def init_agent(
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
+    # Force one tool call per turn so the model emits a fresh
+    # <think> block before each tool. Useful for models that
+    # contractually emit one <think> per turn but support
+    # multi-step reasoning chained across turns (DSv4-Flash, etc).
+    interleaved_thinking: bool = False,
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
@@ -471,6 +477,27 @@ def init_agent(
     except Exception:
         pass
 
+    # Pre-stamp the 1M-context-beta latch for models that have no 1M tier.
+    # Haiku 4.5 (and older Claude pre-4.6) reject ``context-1m-2025-08-07``
+    # with "long context beta is not yet available" even on paid API keys —
+    # the entitlement is per-model, not per-subscription. Without this
+    # pre-stamp, every Haiku-routed agent (parents pinned to haiku, or
+    # children spawned with haiku from delegation.model_by_role) hits the
+    # rejection at first call, prints the noisy 🔕 warning, rebuilds its
+    # client, and retries. By stamping the latch up front based on the
+    # model alone, the beta header simply never goes out, no probe is
+    # made, no retry is needed, and the warning stays silent.
+    # ``_oauth_1m_beta_disabled`` is what every downstream client-build
+    # path already keys on, so flipping it here costs zero further wiring.
+    try:
+        from agent.anthropic_adapter import _model_supports_1m_context
+
+        if not _model_supports_1m_context(agent.model):
+            agent._oauth_1m_beta_disabled = True
+    except Exception:
+        # Best-effort — never let the gate crash agent init.
+        pass
+
     # GPT-5.x models usually require the Responses API path, but some
     # providers have exceptions (for example Copilot's gpt-5-mini still
     # uses chat completions). Also auto-upgrade for direct OpenAI URLs
@@ -591,8 +618,20 @@ def init_agent(
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
+    if agent.max_tokens is None:
+        # Per-model config-level default: custom_providers[*].models.<id>.max_tokens.
+        # Lets thinking / reasoning models keep enough generation budget for both
+        # reasoning_content and the visible response without a CLI flag.
+        try:
+            from hermes_cli.config import get_custom_provider_max_tokens
+            _cfg_max = get_custom_provider_max_tokens(agent.model, agent.base_url)
+            if _cfg_max:
+                agent.max_tokens = _cfg_max
+        except Exception:
+            pass
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
     agent.service_tier = service_tier
+    agent.interleaved_thinking = bool(interleaved_thinking)
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
@@ -646,9 +685,19 @@ def init_agent(
     # late/concurrent refresh reject a stale (older-generation) rebuild instead
     # of clobbering a newer one. Set adjacent to the tool snapshot below.
     agent._tool_snapshot_generation = 0
-    # Rate limit tracking — updated from x-ratelimit-* response headers
-    # after each API call.  Accessed by /usage slash command.
+
+    # Rate limit tracking — updated from x-ratelimit-* / anthropic-
+    # ratelimit-* response headers after each API call (and from 429
+    # error responses).  Accessed by /usage and the streaming heartbeat.
     agent._rate_limit_state: Optional["RateLimitState"] = None
+    # First-capture flag and per-bucket "currently hot" set, used to
+    # emit one-shot observability events (INFO on first capture, WARN
+    # on bucket transitions across the 90% threshold) without spamming
+    # the log on every successful API call.  Hysteresis: a bucket
+    # leaves the set only after dropping below 80%, so noisy 89↔91
+    # oscillations don't generate paired warn/clear pairs.
+    agent._rate_limit_first_logged: bool = False
+    agent._rate_limit_hot_buckets: set[str] = set()
 
     # Credits tracking (dev-only, L0 usage-aware-credits) — updated from
     # x-nous-credits-* response headers after each API call.  Session-start
@@ -796,7 +845,19 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            # Honor the 1M-beta latch the pre-stamp set above (~line 1111)
+            # at fresh client construction, not just on rebuild.  Without
+            # this every Haiku-routed agent (parents and swarm/delegate
+            # children alike) builds a client carrying
+            # ``context-1m-2025-08-07``, hits HTTP 400 on first call,
+            # prints the retry banner, and only gets clean on rebuild.
+            _drop_1m_init = bool(getattr(agent, "_oauth_1m_beta_disabled", False))
+            agent._anthropic_client = build_anthropic_client(
+                effective_key,
+                base_url,
+                timeout=_provider_timeout,
+                drop_context_1m_beta=_drop_1m_init,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
@@ -1156,11 +1217,27 @@ def init_agent(
         agent._tool_snapshot_generation = _snapshot_registry._generation
     except Exception:
         agent._tool_snapshot_generation = 0
+    # FORK: sticky tool_search activation flag, read BEFORE the first
+    # get_tool_definitions() call so it defaults to False/not-yet-sticky
+    # here (init is the very first assembly of this agent's lifetime).
+    # See tools/tool_search.py::assemble_tool_defs docstring for the full
+    # rationale — once activated, stays activated for the life of this
+    # agent/conversation, so an unrelated live-registry token shift never
+    # flips bridge tools out of the wire array mid-conversation and
+    # corrupts tool-call history via _strip_unknown_tool_blocks.
+    agent._tool_search_ever_activated = False
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        sticky_active=agent._tool_search_ever_activated,
     )
+    try:
+        from tools.tool_search import tool_defs_show_bridge as _ts_show_bridge
+        if _ts_show_bridge(agent.tools):
+            agent._tool_search_ever_activated = True
+    except Exception:
+        pass
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
@@ -1303,7 +1380,27 @@ def init_agent(
     # In-memory todo list for task planning (one per agent/session)
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
-    
+
+    # Fork-only feature state — each module owns its own init.
+    # See agent/fork/<module>.py::init_state for what gets set.
+    from agent.fork import skill_recall as _fork_skill_recall
+    from agent.fork import memory_recall as _fork_memory_recall
+    from agent.fork import memory_session_pin as _fork_session_pin
+    from agent.fork import rate_limit_tracker as _fork_rl
+    from agent.fork import tool_search_lazy as _fork_ts
+    from agent.fork import diagnostics as _fork_diag
+    from agent.fork import consult_nudge as _fork_consult
+    for _fork_mod in (
+        _fork_skill_recall,
+        _fork_memory_recall,
+        _fork_session_pin,
+        _fork_rl,
+        _fork_ts,
+        _fork_diag,
+        _fork_consult,
+    ):
+        _fork_mod.init_state(agent)
+
     # Load config once for memory, skills, and compression sections
     try:
         from hermes_cli.config import load_config as _load_agent_config
@@ -1424,6 +1521,70 @@ def init_agent(
     try:
         skills_config = _agent_cfg.get("skills", {})
         agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+    except Exception:
+        pass
+
+    # Skill-recall reminder interval (see __init__ above for the rationale).
+    # Reads agent.skills.recall_reminder_interval if present. 0 disables.
+    try:
+        skills_config = _agent_cfg.get("skills", {})
+        agent._skill_recall_reminder_interval = int(
+            skills_config.get("recall_reminder_interval", 6)
+        )
+    except Exception:
+        pass
+
+    # Memory-recall reminder config. Mirrors the skill-recall reminder
+    # but targets the warm-tier store. See
+    # ``agent.fork.memory_recall`` for semantics and
+    # ``docs/plans/2026-05-19-memory-recall-reminder-and-session-pin.md``
+    # for the design.  Config keys (all optional):
+    #   agent.memory.recall_reminder_interval — turns between reminders (default 8, 0 disables)
+    #   agent.memory.recall_reminder_mode     — "auto" | "hint" (default "auto")
+    #   agent.memory.recall_auto_top_k        — top_k for auto-run mode (default 3)
+    #   agent.memory.recall_min_user_chars    — min user-msg length to fire (default 200)
+    #   agent.memory.session_pin_max_count    — max pinned facts per session (default 5)
+    #   agent.memory.session_pin_max_chars    — total char budget across pins (default 2000)
+    try:
+        _memory_cfg = _agent_cfg.get("memory", {})
+        if not isinstance(_memory_cfg, dict):
+            _memory_cfg = {}
+        agent._memory_recall_reminder_interval = int(
+            _memory_cfg.get("recall_reminder_interval", 8)
+        )
+        _mode = str(
+            _memory_cfg.get("recall_reminder_mode", "auto")
+        ).lower().strip()
+        if _mode not in ("auto", "hint"):
+            _mode = "auto"
+        agent._memory_recall_reminder_mode = _mode
+        agent._memory_recall_auto_top_k = max(
+            1, int(_memory_cfg.get("recall_auto_top_k", 3))
+        )
+        agent._memory_recall_min_user_chars = max(
+            0, int(_memory_cfg.get("recall_min_user_chars", 200))
+        )
+        # Session-pin caps.
+        agent._session_pin_max_count = max(
+            1, int(_memory_cfg.get("session_pin_max_count", 5))
+        )
+        agent._session_pin_max_chars = max(
+            100, int(_memory_cfg.get("session_pin_max_chars", 2000))
+        )
+    except Exception:
+        # Defaults already set by init_state; keep them on bad config.
+        pass
+
+    # Consult-nudge interval (see ``agent.fork.consult_nudge`` for
+    # semantics). Reads ``consult.nudge_interval``. 0 disables the nudge;
+    # the ``consult`` tool itself remains available regardless.
+    try:
+        _consult_cfg = _agent_cfg.get("consult", {})
+        if not isinstance(_consult_cfg, dict):
+            _consult_cfg = {}
+        agent._consult_nudge_interval = max(
+            0, int(_consult_cfg.get("nudge_interval", 8))
+        )
     except Exception:
         pass
 
@@ -1962,7 +2123,16 @@ def init_agent(
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
-    
+
+    # Per-turn usage breakdown — append one record per successful API
+    # response so post-mortems can spot a cache flush (cache_read drops
+    # to ~0 while msg_count keeps climbing) without needing the bloaty
+    # ``HERMES_DUMP_REQUESTS`` capture. Bounded so a long session
+    # doesn't grow the field unbounded.
+    agent._usage_history: List[Dict[str, Any]] = []
+    agent._usage_history_cap: int = 2000
+    agent._tools_hash_cache: Optional[Tuple[int, str]] = None
+
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.
     # When running against an Ollama server, detect the model's max context

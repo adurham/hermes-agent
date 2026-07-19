@@ -68,6 +68,9 @@ class FailoverReason(enum.Enum):
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
 
+    # Internal / client-side code bug
+    internal_code_error = "internal_code_error"  # A bug in our own code (NameError, AttributeError, etc.) surfaced inside the API call path — deterministic, NOT retryable
+
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
 
@@ -436,6 +439,33 @@ _TRANSPORT_ERROR_TYPES = frozenset({
     "APITimeoutError",
 })
 
+# Python builtin exception types that ALWAYS indicate a bug in OUR OWN code
+# path — never a transient provider/transport failure.  When one of these
+# surfaces from inside the API call, retrying re-runs the identical buggy code
+# and reproduces the identical exception — burning every retry to no effect
+# (real case: a missing `import logging`/`import hashlib` in a per-turn
+# diagnostics helper raised NameError on every attempt and killed the session
+# with 0 tool calls, 2026-07).  Classify as a non-retryable internal error so
+# the turn fails fast and surfaces the real bug instead of masquerading as a
+# flaky provider.
+#
+# Matched by EXACT builtin type name only, so provider SDK exceptions
+# (APIError, APIStatusError, …) and genuine transport builtins are NOT swept
+# in.  The set is deliberately CONSERVATIVE — it excludes AttributeError /
+# TypeError / KeyError / IndexError / ValueError, which can legitimately arise
+# from our code not defensively handling a *malformed provider response* where
+# a retry yields a different, valid response.  Only exceptions that cannot be
+# caused by response *content* are listed:
+_INTERNAL_CODE_ERROR_TYPES = frozenset({
+    "NameError",            # undefined name — missing import / typo'd symbol
+    "UnboundLocalError",    # subclass of NameError; use-before-assign bug
+    "ImportError",          # bad/missing import at call time
+    "ModuleNotFoundError",  # subclass of ImportError
+    "NotImplementedError",  # an abstract/stub path was reached
+    "IndentationError",     # (subclass of SyntaxError) shouldn't reach here, but never retryable
+    "SyntaxError",          # dynamically-eval'd bad code — never retryable
+})
+
 # Server disconnect patterns (no status code, but transport-level).
 # These are the "ambiguous" patterns — a plain connection close could be
 # transient transport hiccup OR server-side context overflow rejection
@@ -640,6 +670,13 @@ def classify_api_error(
     #      Pattern: "thinking" + ("cannot be modified" | "must remain as they were").
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the
     # provider may be "openrouter" even though the error is Anthropic-specific.
+    # Two wordings to match:
+    #   - legacy: "Invalid signature in thinking block"
+    #   - context_management.clear_thinking_20251015 strict-validation
+    #     wording: "thinking or redacted_thinking blocks in the latest
+    #     assistant message cannot be modified. These blocks must remain
+    #     as they were in the original response."
+    # Both indicate the same recovery: strip thinking blocks and retry.
     # The combined patterns are unique enough.
     if (
         status_code == 400
@@ -844,6 +881,24 @@ def classify_api_error(
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
+
+    # ── 7.5. Internal code bug (NameError/ImportError/…) → fail fast ──
+    # A Python builtin exception that can only come from a bug in our own
+    # code path (not from provider/transport/response content).  These are
+    # deterministic: retrying re-runs the same broken code and reproduces the
+    # same exception, so mark non-retryable to fail fast and surface the real
+    # bug rather than burning the retry budget and presenting it as a flaky
+    # provider.  Matched by exact builtin type name AND isinstance so a
+    # provider SDK class that happens to reuse one of these names can't slip
+    # in, and a subclass (UnboundLocalError, ModuleNotFoundError,
+    # IndentationError) is still caught.  Must run AFTER the transport check
+    # above so genuine OSError/ConnectionError/TimeoutError transport failures
+    # keep their retryable timeout classification.
+    if error_type in _INTERNAL_CODE_ERROR_TYPES or isinstance(
+        error,
+        (NameError, ImportError, NotImplementedError, SyntaxError),
+    ):
+        return _result(FailoverReason.internal_code_error, retryable=False)
 
     # ── 8. Fallback: unknown ────────────────────────────────────────
 
@@ -1261,6 +1316,9 @@ def _classify_by_error_code(
 ) -> Optional[ClassifiedError]:
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
+
+    if code_lower in {"overloaded_error", "overloaded"}:
+        return result_fn(FailoverReason.overloaded, retryable=True)
 
     if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
