@@ -1127,6 +1127,33 @@ Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ## Important Policies
 
+### Vendor-Identifying Strings Must Not Land Without Approval
+
+This repo is mirrored to a personal GitHub account. Do **not** commit
+changes that introduce strings tied to the author's employer without
+explicit per-commit approval from the user. Specifically:
+
+- Case-insensitive match on `tanium` (covers `Tanium`, `TANIUM`,
+  `tanium-*` skill prefixes, `tanium_gateway` examples, etc.).
+- Any other obvious work-identity leakage: `@tanium.com` emails,
+  `git.corp.tanium.com` URLs, `TanOS` / Tanium product names.
+
+**Workflow before any commit on this repo:**
+
+```bash
+git diff --cached | grep -iE 'tanium|@tanium\.com|corp\.tanium|tanos'
+```
+
+If the grep finds anything in the staged diff, surface the hits to the
+user and get explicit approval before committing. The same check applies
+to changes you propose to stage. Existing references already in tree are
+out of scope unless the current task touches them.
+
+This rule was added 2026-05-04 after a public-fork audit that found six
+Tanium references in the code (3 illustrative comments, 3 in the
+`delegate_task` skills-awareness prompt). Items got cleaned up in the
+same session; future drift should be caught at commit time.
+
 ### Prompt Caching Must Not Break
 
 Hermes-Agent ensures caching remains valid throughout a conversation. **Do NOT implement changes that would:**

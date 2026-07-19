@@ -365,21 +365,29 @@ You can pick any local name (`hermes mcp add my-codex --preset codex` is fine); 
 
 ## How Hermes registers MCP tools
 
-Hermes prefixes MCP tools so they do not collide with built-in names:
+Hermes prefixes MCP tools with the server name so they do not collide with built-in names:
 
 ```text
-mcp_<server_name>_<tool_name>
+<server_name>_<tool_name>
 ```
 
 Examples:
 
 | Server | MCP tool | Registered name |
 |---|---|---|
-| `filesystem` | `read_file` | `mcp_filesystem_read_file` |
-| `github` | `create-issue` | `mcp_github_create_issue` |
-| `my-api` | `query.data` | `mcp_my_api_query_data` |
+| `filesystem` | `read_file` | `filesystem_read_file` |
+| `github` | `create-issue` | `github_create_issue` |
+| `my-api` | `query.data` | `my_api_query_data` |
 
 In practice, you usually do not need to call the prefixed name manually — Hermes sees the tool and chooses it during normal reasoning.
+
+> **Note:** Earlier versions of Hermes registered MCP tools with an
+> additional `mcp_` (or `mcp__`) prefix to mimic Claude Code's MCP
+> convention.  Both forms triggered Claude to strip the literal `mcp`
+> substring on every call, generating an "🔧 Auto-repaired tool name"
+> log line per invocation.  Hermes now drops the `mcp` part entirely; the
+> server name is the only prefix.  Resumed sessions that saved old-format
+> names still resolve via the auto-repair fallback.
 
 ## MCP utility tools
 
@@ -392,8 +400,8 @@ When supported, Hermes also registers utility tools around MCP resources and pro
 
 These are registered per server with the same prefix pattern, for example:
 
-- `mcp_github_list_resources`
-- `mcp_github_get_prompt`
+- `github_list_resources`
+- `github_get_prompt`
 
 ### Important
 

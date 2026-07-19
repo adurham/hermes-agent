@@ -7,7 +7,7 @@ approval:
   choose_short:    "      [o]仅此一次  |  [s]本次会话  |  [d]拒绝"
   prompt_long:     "      选择 [o/s/a/D]: "
   prompt_short:    "      选择 [o/s/D]: "
-  timeout:         "      ⏱ 超时 — 已拒绝命令"
+  timeout:         "      ⏱ 超时 — 命令未执行（无响应）"
   allowed_once:    "      ✓ 本次允许"
   allowed_session: "      ✓ 本次会话内允许"
   allowed_always:  "      ✓ 已加入永久允许列表"

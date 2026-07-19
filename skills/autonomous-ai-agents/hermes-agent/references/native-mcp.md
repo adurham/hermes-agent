@@ -41,7 +41,7 @@ mcp_servers:
 Restart Hermes Agent. On startup it will:
 1. Connect to the server
 2. Discover available tools
-3. Register them with the prefix `mcp_time_*`
+3. Register them with the server-name prefix `time_*`
 4. Inject them into all platform toolsets
 
 You can then use the tools naturally -- just ask the agent to get the current time.
@@ -105,15 +105,23 @@ When Hermes Agent starts, `discover_mcp_tools()` is called during tool initializ
 MCP tools are registered with the naming pattern:
 
 ```
-mcp_{server_name}_{tool_name}
+{server_name}_{tool_name}
 ```
 
 Hyphens and dots in names are replaced with underscores for LLM API compatibility.
 
 Examples:
-- Server `filesystem`, tool `read_file` → `mcp_filesystem_read_file`
-- Server `github`, tool `list-issues` → `mcp_github_list_issues`
-- Server `my-api`, tool `fetch.data` → `mcp_my_api_fetch_data`
+- Server `filesystem`, tool `read_file` → `filesystem_read_file`
+- Server `github`, tool `list-issues` → `github_list_issues`
+- Server `my-api`, tool `fetch.data` → `my_api_fetch_data`
+
+> **Convention change:** Hermes used to register MCP tools with an
+> `mcp_` (or `mcp__`) prefix to mirror Claude Code's MCP convention.
+> Both forms triggered Claude to strip the literal `mcp` substring on
+> every call, generating an "Auto-repaired tool name" log per invocation.
+> The `mcp` portion has been removed; the server name is the only
+> prefix.  Old-format names from resumed sessions still resolve via the
+> name-repair fallback.
 
 ### Auto-Injection
 
@@ -241,7 +249,7 @@ mcp_servers:
     args: ["mcp-server-time"]
 ```
 
-Registers tools like `mcp_time_get_current_time`.
+Registers tools like `time_get_current_time`.
 
 ### Filesystem Server (npx)
 
@@ -253,7 +261,7 @@ mcp_servers:
     timeout: 30
 ```
 
-Registers tools like `mcp_filesystem_read_file`, `mcp_filesystem_write_file`, `mcp_filesystem_list_directory`.
+Registers tools like `filesystem_read_file`, `filesystem_write_file`, `filesystem_list_directory`.
 
 ### GitHub Server with Authentication
 
@@ -267,7 +275,7 @@ mcp_servers:
     timeout: 60
 ```
 
-Registers tools like `mcp_github_list_issues`, `mcp_github_create_pull_request`, etc.
+Registers tools like `github_list_issues`, `github_create_pull_request`, etc.
 
 ### Remote HTTP Server
 

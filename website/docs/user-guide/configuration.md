@@ -1744,6 +1744,12 @@ web:
   # Or use per-capability keys to mix providers (e.g. free search + paid extract):
   search_backend: "searxng"
   extract_backend: "firecrawl"
+
+  # Or set a failover chain — web_search walks the list in order and falls
+  # through to the next on 429 / rate-limit / failure:
+  search_chain:
+    - brave-free
+    - ddgs
 ```
 
 | Backend | Env Var | Search | Extract |
