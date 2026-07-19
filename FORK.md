@@ -3001,3 +3001,56 @@ test_title_generator.py` and 12 other `test_auxiliary_client_*` /
 `background_review` suite (`tests/run_agent/test_background_review*.py`,
 `tests/test_background_review_*.py`): 57 passed. Zero new failures.
 
+### Fork-only fix — 2026-07-19 (`agent/display.py`: CLI todo tool showed a bare count, never the actual checklist)
+
+**Symptom:** user called `todo` with 7 items mid-session; the CLI printed
+only `┊ 📋 plan      7 task(s)  0.0s` with no way to see what the 7 tasks
+actually were. User: "we have to-do set/7 tasks but there is no UI element
+showing what they are, that's not good."
+
+**Root cause:** `get_cute_tool_message()`'s `"todo"` branch (the CLI's
+quiet-mode tool-completion renderer) only ever parsed `summary.total` /
+`summary.completed` out of the tool result to build a one-line count. It
+never read the `todos` array the result also carries. This was a CLI-only
+gap — the desktop app's `ComposerStatusStack`
+(`apps/desktop/src/app/chat/composer/status-stack/index.tsx`) already
+renders a full per-item checklist group (`defaultCollapsed={group.type !==
+'todo'}`, i.e. expanded by default), and the TUI gateway
+(`tui_gateway/server.py`) already forwards the complete `todos` array to
+its frontend as structured `payload["todos"]`. Only the terminal path in
+`agent/display.py` dropped the item list on the floor.
+
+**Fix:** the `"todo"` branch now also extracts `data["todos"]` (the full
+current item list, always present in `todo_tool()`'s return value — see
+`tools/todo_tool.py`) and, when non-empty, renders each item as an indented
+status line below the existing header, e.g.:
+
+```
+┊ 📋 plan      2/7 task(s)  0.0s
+      [x] Wire EXO_PP_SPEC_FINISH_LOG through start_cluster.sh
+      [x] Clear stall-dump directories on both nodes
+      [>] Reboot both Mac Studios (TB link wedge)
+      [ ] Verify TB link (en3) back up on macstudio-m4-1
+      [ ] Relaunch exo cluster
+      [ ] Repro the stall condition
+      [ ] Capture finish-decision diagnostic log
+```
+
+Markers (`[x]`/`[>]`/`[ ]`/`[~]`) match `TodoStore.format_for_injection`'s
+post-compression re-injection format, so the terminal view and what the
+model sees after a compaction event look the same. Capped at 30 items
+shown with a `+N more` tail line; per-item content still goes through the
+existing `_trunc()` helper (respects the global `_tool_preview_max_len`
+config). Falls back to the original header-only line whenever the result
+doesn't carry a `todos` array — fully backward compatible.
+
+Verification: added `TestTodoChecklistBody` (8 new tests) to `tests/agent/
+test_display_todo_progress.py` covering read/create/merge-update paths,
+per-item truncation, the 30-item cap, malformed non-dict items, and the
+no-checklist-body fallback. `tests/agent/test_display_todo_progress.py` +
+`tests/agent/test_display.py` + `tests/agent/test_display_tool_failure.py`
++ `tests/hermes_cli/test_skin_engine.py`: 145 passed. All 24 pre-existing
+todo-progress tests pass unchanged (they don't pass item data in their
+fake results, so `current_items` stays empty and the header-only path is
+byte-identical to before). Zero new failures.
+
