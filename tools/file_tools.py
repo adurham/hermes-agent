@@ -634,7 +634,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     """Return an error message if the path targets a sensitive system location."""
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
     _err = (
@@ -2115,11 +2115,37 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    # Defensive: catch missing/empty/wrong-shape path BEFORE we feed empty
+    # string to read_file_tool — otherwise it surfaces as "File not found: "
+    # with an empty path and a useless similar-files list pulled from cwd.
+    # This also catches the case where a CC-shaped tool_use ("file_path")
+    # slipped past the alias translation (see agent/cc_aliases.py and the
+    # _repair_tool_call site in run_agent.py that translates CC args after
+    # a name-repair pass).
+    raw_path = args.get("path")
+    if raw_path is None and "file_path" in args:
+        return tool_error(
+            "read_file: received CC-shaped argument 'file_path' instead of "
+            "'path'. Re-emit the tool call using the hermes schema: "
+            "{'path': '<absolute path>', 'offset': <int>, 'limit': <int>}."
+        )
+    if not raw_path or not isinstance(raw_path, str):
+        return tool_error(
+            "read_file: missing required field 'path'. Re-emit the tool call "
+            "with 'path' set to an absolute file path. Optional: 'offset' "
+            "(1-indexed start line) and 'limit' (max lines to return)."
+        )
+    return read_file_tool(path=raw_path, offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
 
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
+    if not args.get("path") and "file_path" in args:
+        return tool_error(
+            "write_file: received CC-shaped argument 'file_path' instead of "
+            "'path'. Re-emit the tool call using the hermes schema: "
+            "{'path': '<absolute path>', 'content': '<file contents>'}."
+        )
     if not args.get("path") or not isinstance(args.get("path"), str):
         return tool_error(
             "write_file: missing required field 'path'. Re-emit the tool call with "
@@ -2147,6 +2173,24 @@ def _handle_write_file(args, **kw):
 
 def _handle_patch(args, **kw):
     tid = kw.get("task_id") or "default"
+    # CC-shaped Edit slip-through guard: explicit error beats the cryptic
+    # "path required" the model gets today when an adapter miss leaves
+    # ``file_path`` in the args dict.
+    if not args.get("path") and "file_path" in args:
+        return tool_error(
+            "patch: received CC-shaped argument 'file_path' instead of "
+            "'path'. Re-emit the tool call using the hermes schema: "
+            "{'mode': 'replace'|'patch', 'path': '<absolute path>', "
+            "'old_string': ..., 'new_string': ..., 'replace_all': bool} "
+            "OR {'mode': 'patch', 'path': ..., 'patch': '<unified diff>'}."
+        )
+    if not args.get("path") or not isinstance(args.get("path"), str):
+        return tool_error(
+            "patch: missing required field 'path'. Re-emit the tool call "
+            "with 'path' set to an absolute file path, plus mode + "
+            "old_string/new_string (mode='replace') or patch text "
+            "(mode='patch')."
+        )
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
@@ -2161,8 +2205,23 @@ def _handle_search_files(args, **kw):
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
+    # Empty/missing pattern guard. Today the default-empty pattern hands an
+    # empty regex to ripgrep which matches every line of every file, dumping
+    # ~50 random matches into the model's context — burning budget without
+    # producing useful signal.  Reject up front and tell the model what to do.
+    raw_pattern = args.get("pattern")
+    if not raw_pattern or not isinstance(raw_pattern, str):
+        return tool_error(
+            "search_files: missing required field 'pattern'. Re-emit the "
+            "tool call with 'pattern' set to a regex (or literal string). "
+            "Optional: 'path' (default '.'), 'file_glob', 'target' "
+            "('content' to grep inside files, 'files' to find files by "
+            "name), 'limit' (default 50), 'output_mode' ('content', "
+            "'files_with_matches', or 'count'), 'context' (lines around "
+            "each match)."
+        )
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
+        pattern=raw_pattern, target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 

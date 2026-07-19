@@ -621,9 +621,45 @@ class MemoryStore:
         prompt stable across all turns, preserving the prefix cache.
 
         Returns None if the snapshot is empty (no entries at load time).
+
+        Special target ``"warm_status"`` returns a one-line status string
+        for the warm tier (e.g. ``"WARM MEMORY: 247 facts indexed..."``)
+        that's safe to include in the system prompt every turn — it's a
+        small constant string that only changes when the warm-tier count
+        crosses a turn boundary.
         """
+        if target == "warm_status":
+            return self._format_warm_status()
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
+
+    @staticmethod
+    def _format_warm_status() -> Optional[str]:
+        """Return a one-line warm-tier status block for the system prompt.
+
+        Returns ``None`` when the warm tier is empty or unavailable —
+        callers append the result conditionally so the system prompt
+        stays clean for users who haven't migrated.
+        """
+        try:
+            from tools.memory_warm import get_warm_store
+            store = get_warm_store()
+            n = store.count()
+        except Exception:
+            return None
+        if n <= 0:
+            return None
+        return (
+            "══════════════════════════════════════════════\n"
+            f"WARM MEMORY: {n} facts indexed (search-only)\n"
+            "══════════════════════════════════════════════\n"
+            "Search via memory(action=\"recall\", query=\"...\") when the "
+            "user references something cross-session, you suspect related "
+            "context exists, or you're debugging a system covered in prior "
+            "notes. ~50 tokens per call. Default tier for new entries is "
+            "\"warm\" — use tier=\"hot\" only for facts that must influence "
+            "every turn (user preferences, recurring corrections)."
+        )
 
     # -- Internal helpers --
 
@@ -786,6 +822,323 @@ class MemoryStore:
                 raise
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
+
+
+def _get_warm_store_or_error():
+    """Return the warm-tier store, or a ``tool_error`` JSON if unavailable."""
+    try:
+        from tools.memory_warm import get_warm_store
+        return get_warm_store(), None
+    except Exception as e:
+        return None, tool_error(
+            f"Warm-tier memory unavailable: {e}. Hot-tier writes still work.",
+            success=False,
+        )
+
+
+def _handle_warm_action(
+    action: str,
+    args_query: Optional[str],
+    args_content: Optional[str],
+    args_old_text: Optional[str],
+    args_top_k: Optional[int],
+    args_category: Optional[str],
+    args_tags: Optional[str],
+    args_fact_id: Optional[int],
+    args_helpful: Optional[bool],
+    args_target: Optional[str],
+    hot_store: Optional[MemoryStore],
+    agent: Optional[Any] = None,
+) -> str:
+    """Dispatch warm-tier actions. Always returns a JSON string.
+
+    ``agent`` is optional — when provided, voluntary ``recall`` calls
+    reset the memory-recall-reminder counter (so the agent doesn't get a
+    redundant nudge on the next tool result). Pass ``None`` from tests
+    or non-agent callers.
+    """
+    warm, err = _get_warm_store_or_error()
+    if err is not None:
+        return err
+
+    if action == "add":
+        if not args_content:
+            return tool_error("content is required for warm add.", success=False)
+        # Warm-tier content is also injected as recall results, so the same
+        # injection-safety scan applies.
+        scan_error = _scan_memory_content(args_content)
+        if scan_error:
+            return tool_error(scan_error, success=False)
+        result = warm.add(
+            content=args_content,
+            category=args_category or "general",
+            tags=args_tags or "",
+        )
+
+    elif action == "recall":
+        if not args_query:
+            return tool_error("query is required for recall.", success=False)
+        rows = warm.recall(
+            query=args_query,
+            top_k=int(args_top_k) if args_top_k else 5,
+            category=args_category,
+        )
+        # Voluntary recall — reset the recall-reminder counter so the
+        # agent doesn't get a nudge on the very next tool result.
+        # Best-effort: skip silently when agent ref is unavailable.
+        if agent is not None:
+            try:
+                from agent.fork.memory_recall import record_voluntary_recall
+                record_voluntary_recall(agent)
+            except Exception:
+                pass
+        if not rows:
+            result = {
+                "success": True,
+                "results": [],
+                "count": 0,
+                "message": (
+                    "No matches in warm tier. Try different keywords, or "
+                    "memory(action=\"read\", tier=\"warm\") to browse."
+                ),
+            }
+        else:
+            result = {
+                "success": True,
+                "results": rows,
+                "count": len(rows),
+            }
+
+    elif action == "recall_related":
+        seed = args_query or args_content or ""
+        if not seed and args_fact_id:
+            row = warm.get(int(args_fact_id))
+            if row is None:
+                return tool_error(
+                    f"No warm fact with id {args_fact_id}.", success=False,
+                )
+            seed = row["content"]
+        if not seed:
+            return tool_error(
+                "recall_related requires query, content, or fact_id.",
+                success=False,
+            )
+        rows = warm.recall_related(
+            seed=seed, top_k=int(args_top_k) if args_top_k else 5,
+        )
+        result = {"success": True, "results": rows, "count": len(rows)}
+
+    elif action == "read":
+        rows = warm.list_facts(
+            category=args_category,
+            limit=int(args_top_k) if args_top_k else 50,
+        )
+        result = {
+            "success": True,
+            "results": rows,
+            "count": len(rows),
+            "total_indexed": warm.count(),
+        }
+
+    elif action == "remove":
+        if args_fact_id is None:
+            return tool_error(
+                "fact_id is required for warm remove.", success=False,
+            )
+        result = warm.remove(int(args_fact_id))
+
+    elif action == "replace":
+        if args_fact_id is None:
+            return tool_error(
+                "fact_id is required for warm replace.", success=False,
+            )
+        if not args_content:
+            return tool_error(
+                "content is required for warm replace.", success=False,
+            )
+        scan_error = _scan_memory_content(args_content)
+        if scan_error:
+            return tool_error(scan_error, success=False)
+        result = warm.update(
+            fact_id=int(args_fact_id),
+            content=args_content,
+            tags=args_tags,
+            category=args_category,
+        )
+
+    elif action == "feedback":
+        if args_fact_id is None:
+            return tool_error(
+                "fact_id is required for feedback.", success=False,
+            )
+        if args_helpful is None:
+            return tool_error(
+                "helpful (true/false) is required for feedback.", success=False,
+            )
+        result = warm.record_feedback(
+            fact_id=int(args_fact_id), helpful=bool(args_helpful),
+        )
+
+    elif action == "promote":
+        # Move a warm fact to the hot tier. Fetch the row, write it to hot,
+        # delete from warm only if hot write succeeded.
+        #
+        # Destination hot target is taken from ``target`` ('memory' or
+        # 'user'), defaulting to 'memory'. Earlier versions overloaded
+        # ``old_text`` for this — callers passing old_text='user' will
+        # still get user-target promotion via the back-compat shim
+        # below, but new code should use target=.
+        if hot_store is None:
+            return tool_error(
+                "Hot tier is not available; cannot promote.", success=False,
+            )
+        if args_fact_id is None:
+            return tool_error(
+                "fact_id is required for promote.", success=False,
+            )
+        row = warm.get(int(args_fact_id))
+        if row is None:
+            return tool_error(
+                f"No warm fact with id {args_fact_id}.", success=False,
+            )
+        # Resolve destination target. Prefer the new explicit ``target``
+        # arg; fall back to the legacy ``old_text`` overload only when
+        # target wasn't explicitly set to a valid value.
+        if args_target in ("memory", "user"):
+            hot_target = args_target
+        elif args_old_text in ("memory", "user"):
+            hot_target = args_old_text  # legacy behavior — preserved
+        else:
+            hot_target = "memory"
+        hot_result = hot_store.add(hot_target, row["content"])
+        if not hot_result.get("success"):
+            return json.dumps(hot_result, ensure_ascii=False)
+        # Hot write succeeded — drop from warm.
+        warm.remove(int(args_fact_id))
+        result = {
+            "success": True,
+            "message": f"Promoted warm fact {args_fact_id} to hot tier.",
+            "hot_target": hot_target,
+            "hot_state": hot_result,
+        }
+
+    elif action == "demote":
+        # Move a hot entry to warm. Identified by old_text substring (same
+        # rules as hot remove).
+        #
+        # Source hot target is taken from ``target`` ('memory' or 'user'),
+        # defaulting to 'memory'. Earlier versions overloaded ``category``
+        # for this, which clashed with category's documented meaning
+        # ("warm-tier category for the new fact"). New code should use
+        # target= for the source and category= for the new warm fact's
+        # category. The legacy category-as-target overload is preserved
+        # only when ``target`` wasn't explicitly set to a valid value
+        # AND ``category`` happens to be 'memory'/'user'.
+        if hot_store is None:
+            return tool_error(
+                "Hot tier is not available; cannot demote.", success=False,
+            )
+        if not args_old_text:
+            return tool_error(
+                "old_text is required for demote.", success=False,
+            )
+        if args_target in ("memory", "user"):
+            hot_target = args_target
+            warm_category = args_category or "general"
+        elif args_category in ("memory", "user"):
+            # Legacy overload — category was the source target. Preserved
+            # for back-compat; new code should use target=.
+            hot_target = args_category
+            warm_category = "general"
+        else:
+            hot_target = "memory"
+            warm_category = args_category or "general"
+        # Find the hot entry first (without removing it), so we don't
+        # delete-without-write if warm add fails.
+        with hot_store._file_lock(hot_store._path_for(hot_target)):  # type: ignore[attr-defined]
+            hot_store._reload_target(hot_target)  # type: ignore[attr-defined]
+            entries = hot_store._entries_for(hot_target)  # type: ignore[attr-defined]
+            matches = [e for e in entries if args_old_text in e]
+        if not matches:
+            return tool_error(
+                f"No hot entry matched '{args_old_text}'.", success=False,
+            )
+        if len(set(matches)) > 1:
+            return tool_error(
+                f"Multiple hot entries matched '{args_old_text}'. Be more specific.",
+                success=False,
+            )
+        content = matches[0]
+        warm_result = warm.add(
+            content=content,
+            category=warm_category,
+            tags=args_tags or "demoted-from-hot",
+        )
+        if not warm_result.get("success"):
+            return json.dumps(warm_result, ensure_ascii=False)
+        # Warm write OK — drop from hot.
+        hot_store.remove(hot_target, args_old_text)
+        result = {
+            "success": True,
+            "message": f"Demoted hot entry to warm fact {warm_result.get('fact_id')}.",
+            "warm_state": warm_result,
+            "hot_target": hot_target,
+            "warm_category": warm_category,
+        }
+
+    elif action in ("pin", "unpin", "pinned"):
+        # Session-pin actions — keep a warm fact visible in the system
+        # prompt for the rest of this session. See
+        # ``agent.fork.memory_session_pin`` for semantics.
+        if agent is None:
+            return tool_error(
+                "Session-pin requires an agent reference. This call must "
+                "originate from the AIAgent runtime (not a subagent stub "
+                "or test harness without agent= passed).",
+                success=False,
+            )
+        try:
+            from agent.fork import memory_session_pin
+        except Exception as e:
+            return tool_error(
+                f"Session-pin module unavailable: {e}.", success=False,
+            )
+
+        if action == "pinned":
+            result = memory_session_pin.list_pinned(agent)
+        elif action == "pin":
+            if args_fact_id is None:
+                return tool_error(
+                    "fact_id is required for pin.", success=False,
+                )
+            result = memory_session_pin.pin_fact(agent, int(args_fact_id))
+        else:  # unpin
+            if args_fact_id is None:
+                return tool_error(
+                    "fact_id is required for unpin.", success=False,
+                )
+            result = memory_session_pin.unpin_fact(agent, int(args_fact_id))
+
+        # Pin/unpin mutate the system prompt — invalidate the cached
+        # version so the next turn includes the change. Best-effort:
+        # any failure here is non-fatal (worst case the pin shows up
+        # one turn late).
+        if action != "pinned" and result.get("success"):
+            try:
+                from agent.system_prompt import invalidate_system_prompt
+                invalidate_system_prompt(agent)
+            except Exception:
+                pass
+
+    else:
+        return tool_error(
+            f"Unknown warm action '{action}'. Use: add, recall, recall_related, "
+            f"read, replace, remove, feedback, promote, demote, "
+            f"pin, unpin, pinned",
+            success=False,
+        )
+
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 def load_on_disk_store() -> "MemoryStore":
@@ -957,15 +1310,40 @@ def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> s
 
 
 def memory_tool(
+    # action may be None when using the batch `operations` shape (upstream);
+    # target stays Optional/None so the warm-tier promote/demote dispatch can
+    # tell "defaulted" from "explicit" (fork). Hot-tier ops default target to
+    # 'memory' internally.
     action: str = None,
-    target: str = "memory",
+    target: Optional[str] = None,
     content: str = None,
     old_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
+    # Warm-tier extension (Phase 1 dynamic memory recall):
+    tier: str = "hot",
+    query: Optional[str] = None,
+    top_k: Optional[int] = None,
+    category: Optional[str] = None,
+    tags: Optional[str] = None,
+    fact_id: Optional[int] = None,
+    helpful: Optional[bool] = None,
+    # Agent reference for recall-reminder counter reset on voluntary
+    # recall calls (see ``agent.fork.memory_recall``). Optional —
+    # tests and non-agent callers pass None.
+    agent: Optional[Any] = None,
 ) -> str:
     """
-    Single entry point for the memory tool. Dispatches to MemoryStore methods.
+    Single entry point for the memory tool. Dispatches to MemoryStore (hot
+    tier) or WarmStore (warm tier) based on the ``tier`` arg or action.
+
+    Hot tier: ``add``/``replace``/``remove`` — small, always-loaded,
+    file-backed (MEMORY.md / USER.md), bounded by char_limit.
+
+    Warm tier: ``add``/``recall``/``recall_related``/``read``/``replace``/
+    ``remove``/``feedback`` — unbounded, search-only via FTS5 + BM25,
+    SQLite-backed at ``$HERMES_HOME/memory_store.db``. Plus cross-tier:
+    ``promote`` (warm → hot), ``demote`` (hot → warm).
 
     Two shapes:
       - Single op: action + (content / old_text).
@@ -974,17 +1352,51 @@ def memory_tool(
 
     Returns JSON string with results.
     """
-    if store is None:
-        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+    # Warm-tier-only actions route directly regardless of tier param.
+    WARM_ONLY_ACTIONS = {
+        "recall", "recall_related", "feedback", "promote", "demote",
+        # Session-pin actions operate on the agent's session state but
+        # are dispatched alongside warm-tier actions because they
+        # reference warm-tier fact ids.
+        "pin", "unpin", "pinned",
+    }
+    is_warm_action = (tier == "warm") or (action in WARM_ONLY_ACTIONS)
 
+    if is_warm_action:
+        return _handle_warm_action(
+            action=action,
+            args_query=query,
+            args_content=content,
+            args_old_text=old_text,
+            args_top_k=top_k,
+            args_category=category,
+            args_tags=tags,
+            args_fact_id=fact_id,
+            args_helpful=helpful,
+            args_target=target,
+            hot_store=store,
+            agent=agent,
+        )
+
+    # Hot-tier path (legacy behavior — unchanged for backward compat).
+    if store is None:
+        return tool_error(
+            "Memory is not available. It may be disabled in config or this environment.",
+            success=False,
+        )
+
+    # Default target for hot-tier ops is 'memory' (the personal-notes file).
+    # The warm path handles its own target resolution (None means "not
+    # specified" — see _handle_warm_action's promote/demote branches).
     # Some strict providers fill optional schema fields with JSON null rather
     # than omitting them.  Treat ``target: null`` as omitted so memory writes
     # still use the documented default store instead of failing validation.
     if target is None:
         target = "memory"
-
     if target not in {"memory", "user"}:
-        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+        return tool_error(
+            f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False,
+        )
 
     # --- Batch path -------------------------------------------------------
     if operations:
@@ -1028,8 +1440,17 @@ def memory_tool(
     elif action == "remove":
         result = store.remove(target, old_text)
 
+    elif action == "read":
+        # New explicit hot-tier read action — returns the live entries.
+        result = store._success_response(target, "Hot tier entries returned.")
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(
+            f"Unknown action '{action}'. Hot-tier actions: add, replace, remove, read. "
+            f"Warm-tier actions (use tier='warm' or these names): "
+            f"recall, recall_related, feedback, promote, demote",
+            success=False,
+        )
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1064,54 +1485,107 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Save durable facts to persistent memory that survive across sessions. Memory is "
-        "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
-        "checked only on the FINAL result — so a single call can remove/replace stale entries "
-        "to free room AND add new ones, even when an add alone would overflow. The response "
-        "reports current/limit chars and confirms completion; one batch call finishes the "
-        "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
-        "single lone change.\n\n"
-        "WHEN: save proactively when the user states a preference, correction, or personal "
-        "detail, or you learn a stable fact about their environment, conventions, or workflow. "
-        "Priority: user preferences & corrections > environment facts > procedures. The best "
-        "memory stops the user repeating themselves.\n\n"
-        "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
-        "removes or shortens enough stale entries and adds the new one together.\n\n"
-        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
-        "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
-        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        "Save durable information to persistent memory and recall it across sessions. "
+        "TWO TIERS, ONE TOOL — pick the right tier per fact.\n\n"
+        "HOT TIER (tier='hot', the default for add/replace/remove with target='memory' or 'user'):\n"
+        "  - Always loaded into the system prompt at session start. Costs tokens every turn forever.\n"
+        "  - SMALL CAP (~600+400 chars combined). Use only for facts that MUST influence every turn.\n"
+        "  - Best fit: user preferences, recurring corrections, routing rules, hot environment quirks.\n"
+        "  - Targets: 'memory' (your notes) or 'user' (who the user is).\n\n"
+        "WARM TIER (tier='warm' on add, or use any warm-only action):\n"
+        "  - Searchable via memory(action='recall', query='...'). Not in the prompt by default.\n"
+        "  - UNBOUNDED. SQLite + FTS5 keyword search with trust scoring.\n"
+        "  - Best fit: factual reference (TDS internals, MCP procedures), debugging notes, "
+        "project conventions, lessons learned. Anything you'd otherwise jam into hot tier and run out of room.\n"
+        "  - DEFAULT for new content unless it genuinely belongs in hot tier — when in doubt, warm.\n\n"
+        "BATCH (hot tier): make multiple hot-tier changes in ONE call via an 'operations' array "
+        "(each item: {action, content?, old_text?}). The batch applies atomically and the hot-tier "
+        "char limit is checked only on the FINAL result — so a single call can remove/replace stale "
+        "entries to free room AND add new ones, even when an add alone would overflow. Use the bare "
+        "action/content/old_text fields only for a single lone change.\n\n"
+        "WHEN TO SAVE (proactively, don't wait):\n"
+        "- User corrects you or says 'remember this'\n"
+        "- User shares a preference / personal detail → HOT (target='user')\n"
+        "- You discover environment / project / API quirks → WARM\n"
+        "- You learn a stable fact useful in future sessions → WARM unless it's a recurring correction\n\n"
+        "ACTIONS:\n"
+        "  HOT-TIER: add (target+content), replace (target+old_text+content), "
+        "remove (target+old_text), read (target). Batch via 'operations'.\n"
+        "  WARM-TIER: add (content [+category +tags]), recall (query [+top_k +category]), "
+        "recall_related (query OR fact_id), read ([+category +top_k]), "
+        "replace (fact_id+content), remove (fact_id), "
+        "feedback (fact_id+helpful) — train trust scores by rating retrieved facts.\n"
+        "  SESSION-PIN: pin (fact_id) — keep a warm fact visible in the system prompt "
+        "for the rest of THIS session; unpin (fact_id); pinned — list current pins. "
+        "Use pin when a fact applies to your whole current investigation; gone on session restart.\n"
+        "  CROSS-TIER: promote (fact_id [+target]) — move warm fact to hot tier "
+        "(target='memory' or 'user', defaults to 'memory'); "
+        "demote (old_text [+target +category]) — move hot entry to warm "
+        "(target picks the source hot tier; category sets the new warm category).\n\n"
+        "RECALL: use memory(action='recall', query='...') when the user references something cross-session, "
+        "you suspect related context exists from prior work, or you're debugging a system covered in older notes. "
+        "It's keyword search (BM25), so use exact terms / proper nouns when possible. ~50 tokens per call.\n\n"
+        "IF FULL: a hot-tier add is rejected with the current entries shown. Reissue as ONE batch "
+        "that removes or shortens enough stale entries and adds the new one together.\n\n"
+        "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO state. "
+        "Use session_search for those. If you've solved a non-trivial problem worth reusing, save it as a skill.\n\n"
+        "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform (single-op shape). Omit when using 'operations'."
+                "enum": [
+                    "add", "replace", "remove", "read",
+                    "recall", "recall_related",
+                    "feedback", "promote", "demote",
+                    "pin", "unpin", "pinned",
+                ],
+                "description": (
+                    "The action to perform (single-op shape). Omit when using the "
+                    "hot-tier 'operations' batch array."
+                ),
+            },
+            "tier": {
+                "type": "string",
+                "enum": ["hot", "warm"],
+                "description": (
+                    "Which tier to write/read. Defaults to 'hot' for backward compat. "
+                    "Use 'warm' for new content unless it must be always-loaded. "
+                    "Warm-only actions (recall, recall_related, feedback, promote, demote) "
+                    "ignore this param."
+                ),
             },
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "description": (
+                    "'memory' for personal notes, 'user' for user profile. "
+                    "Hot tier (add/replace/remove/read): which file to operate on. "
+                    "Cross-tier promote: which hot file the fact lands in. "
+                    "Cross-tier demote: which hot file the fact comes from. "
+                    "Defaults to 'memory'. Ignored for warm-tier-only actions "
+                    "(add/recall/recall_related/read/replace/remove/feedback)."
+                ),
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace' (single-op shape)."
+                "description": "Entry content. Required for 'add' and 'replace' (both tiers).",
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
+                "description": (
+                    "Hot tier: short unique substring identifying the entry to replace, remove, "
+                    "or demote. Ignored for warm tier (warm uses fact_id)."
+                ),
             },
             "operations": {
                 "type": "array",
                 "description": (
-                    "Batch shape: a list of operations applied atomically in one call "
-                    "against the final char budget. Preferred when making multiple changes "
-                    "or consolidating to make room. Each item is {action, content?, old_text?}."
+                    "Hot-tier batch shape: a list of operations applied atomically in one call "
+                    "against the final char budget. Preferred when making multiple hot-tier "
+                    "changes or consolidating to make room. Each item is {action, content?, old_text?}."
                 ),
                 "items": {
                     "type": "object",
@@ -1123,8 +1597,45 @@ MEMORY_SCHEMA = {
                     "required": ["action"],
                 },
             },
+            "query": {
+                "type": "string",
+                "description": (
+                    "Warm-tier search query. Required for 'recall'. Used as the seed for "
+                    "'recall_related' if no fact_id is given. Plain text — keyword search."
+                ),
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "Warm-tier max results (default 5, max 25). For 'read' max 200.",
+            },
+            "category": {
+                "type": "string",
+                "description": (
+                    "Warm-tier category filter / assignment. Free-form string "
+                    "(e.g. 'tanium', 'debugging', 'preferences'). Defaults to 'general' on add."
+                ),
+            },
+            "tags": {
+                "type": "string",
+                "description": (
+                    "Warm-tier tags on add/replace. Comma-separated free-form (e.g. 'tds,mcp,review')."
+                ),
+            },
+            "fact_id": {
+                "type": "integer",
+                "description": (
+                    "Warm-tier fact id. Required for 'replace'/'remove'/'feedback'/'promote'. "
+                    "Returned by 'add'/'recall'."
+                ),
+            },
+            "helpful": {
+                "type": "boolean",
+                "description": (
+                    "Warm-tier feedback flag. True → trust+0.05, helpful_count+1. "
+                    "False → trust-0.10. Helps the recall ranker prefer reliable facts."
+                ),
+            },
         },
-        "required": ["target"],
     },
 }
 
@@ -1138,11 +1649,22 @@ registry.register(
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
         action=args.get("action", ""),
-        target=args.get("target", "memory"),
+        # target=None means "not specified" — memory_tool defaults it
+        # to 'memory' on hot-tier ops and treats None as a signal to
+        # the warm dispatcher's promote/demote branches.
+        target=args.get("target"),
         content=args.get("content"),
         old_text=args.get("old_text"),
         operations=args.get("operations"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        tier=args.get("tier", "hot"),
+        query=args.get("query"),
+        top_k=args.get("top_k"),
+        category=args.get("category"),
+        tags=args.get("tags"),
+        fact_id=args.get("fact_id"),
+        helpful=args.get("helpful"),
+    ),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

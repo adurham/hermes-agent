@@ -82,6 +82,46 @@ class TestConfigParsing:
         assert cfg.max_search_limit == 50
         assert cfg.search_default_limit <= cfg.max_search_limit
 
+    # FORK: defer_toolsets / defer_tools / keep_eager_tools parsing.
+    def test_defer_lists_default_empty(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(None)
+        assert cfg.defer_toolsets == frozenset()
+        assert cfg.defer_tools == frozenset()
+        assert cfg.keep_eager_tools == frozenset()
+
+    def test_defer_lists_parsed_from_list(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({
+            "defer_toolsets": ["browser", "homeassistant"],
+            "defer_tools": ["swarm_run"],
+            "keep_eager_tools": ["delegate_task"],
+        })
+        assert cfg.defer_toolsets == frozenset({"browser", "homeassistant"})
+        assert cfg.defer_tools == frozenset({"swarm_run"})
+        assert cfg.keep_eager_tools == frozenset({"delegate_task"})
+
+    def test_defer_lists_parsed_from_comma_string(self):
+        """A comma-separated string is accepted as well as a list."""
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": "browser, tts ,vision"})
+        assert cfg.defer_toolsets == frozenset({"browser", "tts", "vision"})
+
+    def test_defer_lists_ignore_garbage(self):
+        """A non-list/str value yields an empty frozenset, never raises."""
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": 12345})
+        assert cfg.defer_toolsets == frozenset()
+
+    def test_bool_shape_has_empty_defer_lists(self):
+        """Legacy bool config carries no defer lists."""
+        from tools.tool_search import ToolSearchConfig
+        for raw in (True, False):
+            cfg = ToolSearchConfig.from_raw(raw)
+            assert cfg.defer_toolsets == frozenset()
+            assert cfg.defer_tools == frozenset()
+            assert cfg.keep_eager_tools == frozenset()
+
 
 # ---------------------------------------------------------------------------
 # Classification — the hard invariant: core tools NEVER defer.
@@ -126,6 +166,130 @@ class TestClassification:
         names = {(td.get("function") or {}).get("name") for td in visible}
         assert "xx_unknown_tool" in names
         assert deferrable == []
+
+
+# ---------------------------------------------------------------------------
+# FORK: opt-in deferral of normally-core toolsets/tools
+# ---------------------------------------------------------------------------
+
+
+class _FakeEntry:
+    def __init__(self, toolset: str):
+        self.toolset = toolset
+
+
+class TestForkDeferToolsets:
+    """defer_toolsets / defer_tools / keep_eager_tools override the
+    'core tools never defer' base rule with explicit user intent.
+    """
+
+    def _patch_registry(self, monkeypatch, mapping):
+        """Make registry.get_entry resolve names -> _FakeEntry(toolset)."""
+        import tools.registry as _reg
+
+        def _fake_get_entry(name):
+            ts = mapping.get(name)
+            return _FakeEntry(ts) if ts is not None else None
+
+        monkeypatch.setattr(_reg.registry, "get_entry", _fake_get_entry)
+
+    def test_defer_toolsets_defers_a_core_tool(self, monkeypatch):
+        """A core tool whose toolset is in defer_toolsets becomes deferrable."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {"browser_navigate": "browser"})
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": ["browser"]})
+        # browser_navigate is in _HERMES_CORE_TOOLS, so without the override
+        # it would never defer.
+        assert is_deferrable_tool_name("browser_navigate", cfg) is True
+
+    def test_no_override_keeps_core_eager(self, monkeypatch):
+        """Without defer_toolsets, a core tool stays eager (upstream rule)."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {"browser_navigate": "browser"})
+        cfg = ToolSearchConfig.from_raw(None)
+        assert is_deferrable_tool_name("browser_navigate", cfg) is False
+
+    def test_defer_tools_defers_single_core_tool(self, monkeypatch):
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {"swarm_run": "delegation"})
+        cfg = ToolSearchConfig.from_raw({"defer_tools": ["swarm_run"]})
+        assert is_deferrable_tool_name("swarm_run", cfg) is True
+
+    def test_keep_eager_overrides_defer_toolsets(self, monkeypatch):
+        """keep_eager_tools wins: defer the toolset but keep one sibling eager."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {
+            "delegate_task": "delegation",
+            "swarm_run": "delegation",
+        })
+        cfg = ToolSearchConfig.from_raw({
+            "defer_toolsets": ["delegation"],
+            "keep_eager_tools": ["delegate_task"],
+        })
+        assert is_deferrable_tool_name("delegate_task", cfg) is False
+        assert is_deferrable_tool_name("swarm_run", cfg) is True
+
+    def test_keep_eager_overrides_defer_tools(self, monkeypatch):
+        """keep_eager_tools beats defer_tools for the same name (eager wins)."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        self._patch_registry(monkeypatch, {"vision_analyze": "vision"})
+        cfg = ToolSearchConfig.from_raw({
+            "defer_tools": ["vision_analyze"],
+            "keep_eager_tools": ["vision_analyze"],
+        })
+        assert is_deferrable_tool_name("vision_analyze", cfg) is False
+
+    def test_bridge_tools_never_defer_even_with_override(self, monkeypatch):
+        from tools.tool_search import (
+            ToolSearchConfig, is_deferrable_tool_name, BRIDGE_TOOL_NAMES,
+        )
+        cfg = ToolSearchConfig.from_raw({
+            "defer_tools": list(BRIDGE_TOOL_NAMES),
+            "defer_toolsets": ["anything"],
+        })
+        for name in BRIDGE_TOOL_NAMES:
+            assert is_deferrable_tool_name(name, cfg) is False
+
+    def test_classify_tools_defers_overridden_core(self, monkeypatch):
+        """End-to-end through classify_tools: core tool lands in deferrable."""
+        from tools.tool_search import ToolSearchConfig, classify_tools
+        self._patch_registry(monkeypatch, {
+            "browser_navigate": "browser",
+            "terminal": "terminal",
+        })
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": ["browser"]})
+        defs = [_td("browser_navigate", "Navigate"), _td("terminal", "Shell")]
+        visible, deferrable = classify_tools(defs, cfg)
+        vis_names = {(t.get("function") or {}).get("name") for t in visible}
+        def_names = {(t.get("function") or {}).get("name") for t in deferrable}
+        assert "browser_navigate" in def_names
+        assert "terminal" in vis_names  # not in defer_toolsets → stays eager
+
+
+class TestForkActivationIntent:
+    """Explicit defer lists activate tool search even below auto threshold."""
+
+    def test_defer_toolsets_activates_below_threshold(self):
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto", "threshold_pct": 10, "defer_toolsets": ["browser"],
+        })
+        # 5K tokens is far below 10% of 200K (20K) — but explicit intent wins.
+        assert should_activate(cfg, deferrable_tokens=5_000, context_length=200_000)
+
+    def test_off_still_wins_over_defer_lists(self):
+        """The global off switch beats explicit defer lists."""
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "off", "defer_toolsets": ["browser"],
+        })
+        assert not should_activate(cfg, deferrable_tokens=5_000, context_length=200_000)
+
+    def test_no_defer_lists_respects_auto_threshold(self):
+        """Without explicit defer lists, auto threshold behavior is unchanged."""
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+        assert not should_activate(cfg, deferrable_tokens=5_000, context_length=200_000)
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +441,169 @@ class TestAssembly:
         # The pre-existing tool_search was stripped (it would be re-injected if
         # activation happened; here it didn't).
         assert "tool_search" not in names
+
+
+# ---------------------------------------------------------------------------
+# Sticky activation — the flap regression this bug report targets.
+#
+# The real bug: classify_tools() walks the LIVE global registry singleton
+# every call. If the total deferrable-token count for a conversation drifts
+# across the threshold boundary between two consecutive assemblies of the
+# SAME conversation (MCP reconnect, subagent loading tools, etc.),
+# should_activate() flips its answer turn-to-turn. When it flips
+# activated -> not-activated, bridge tool names vanish from the wire tools
+# array and Anthropic hard-rejects prior tool_use blocks referencing them,
+# which _strip_unknown_tool_blocks then rewrites into inert breadcrumbs —
+# corrupting tool-call history mid-conversation.
+# ---------------------------------------------------------------------------
+
+
+class TestStickyActivation:
+    def _big_deferrable_defs(self, n: int = 40) -> List[Dict[str, Any]]:
+        """A pile of mcp-toolset tools big enough to clear a low
+        threshold_pct with a small context_length. Named with an ``mcp_``
+        prefix and paired with ``_patch_mcp_registry`` below so
+        ``classify_tools`` resolves them to a real deferrable ``mcp-``
+        toolset via the registry, instead of falling into the "unknown
+        tool -> stays visible" defensive path."""
+        return [
+            _td(f"mcp_tool_{i}", "x" * 200, {"arg": {"type": "string"}})
+            for i in range(n)
+        ]
+
+    def _patch_mcp_registry(self, monkeypatch):
+        """Make every ``mcp_tool_*`` name resolve to an ``mcp-fake``
+        toolset entry, so ``is_deferrable_tool_name`` classifies them as
+        deferrable via the upstream base rule (mcp- prefixed toolset)."""
+        import tools.registry as _reg
+
+        def _fake_get_entry(name):
+            if name.startswith("mcp_tool_"):
+                return _FakeEntry("mcp-fake")
+            return None
+
+        monkeypatch.setattr(_reg.registry, "get_entry", _fake_get_entry)
+
+    def test_flap_without_sticky_flag_deactivates(self, monkeypatch):
+        """Baseline: without sticky_active, a shrinking registry between two
+        calls of the same conversation flips activation off — this is the
+        exact bug, reproduced directly against assemble_tool_defs."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        self._patch_mcp_registry(monkeypatch)
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+
+        # Call 1: large deferrable surface crosses threshold -> activates.
+        call1 = assemble_tool_defs(
+            self._big_deferrable_defs(40), context_length=20_000, config=cfg,
+        )
+        assert call1.activated
+        names1 = {(t.get("function") or {}).get("name") for t in call1.tool_defs}
+        assert BRIDGE_TOOL_NAMES <= names1
+
+        # Call 2 (same conversation): registry shrank (e.g. an MCP server
+        # dropped tools), now under threshold -> flips OFF without the fix.
+        call2 = assemble_tool_defs(
+            self._big_deferrable_defs(2), context_length=20_000, config=cfg,
+        )
+        assert not call2.activated
+        names2 = {(t.get("function") or {}).get("name") for t in call2.tool_defs}
+        assert not (BRIDGE_TOOL_NAMES & names2)
+
+    def test_sticky_flag_keeps_bridge_tools_present(self, monkeypatch):
+        """The fix: once activated=True on call 1, passing
+        sticky_active=True (the caller's per-conversation latch) on call 2
+        keeps bridge tools present even though the live total dropped
+        under threshold again."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        self._patch_mcp_registry(monkeypatch)
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+
+        call1 = assemble_tool_defs(
+            self._big_deferrable_defs(40), context_length=20_000, config=cfg,
+            sticky_active=False,
+        )
+        assert call1.activated
+        assert not call1.sticky_forced
+
+        # Same conversation, second assembly: shrunk registry, but the
+        # caller now passes sticky_active=True because it activated once.
+        call2 = assemble_tool_defs(
+            self._big_deferrable_defs(2), context_length=20_000, config=cfg,
+            sticky_active=True,
+        )
+        assert call2.activated
+        assert call2.sticky_forced
+        names2 = {(t.get("function") or {}).get("name") for t in call2.tool_defs}
+        assert BRIDGE_TOOL_NAMES <= names2
+
+    def test_sticky_flag_trusts_caller_latch_when_deferrable_exist(self, monkeypatch):
+        """``assemble_tool_defs`` itself is stateless and has no memory of
+        prior calls — it trusts ``sticky_active`` as the caller's word that
+        this conversation activated before. So passing sticky_active=True
+        with any deferrable tools present forces activation on, even on a
+        function call that looks "cold" in isolation. This is safe in
+        practice because real callers (agent_init.py, mcp_tool.py,
+        acp_adapter/server.py) only ever pass True once
+        ``agent._tool_search_ever_activated`` was actually set True by a
+        prior call that showed bridge tools — see ``tool_defs_show_bridge``.
+        This test documents that contract at the assemble_tool_defs layer;
+        the "don't force from a cold conversation" guarantee lives one layer
+        up, in how callers set/thread the flag (asserted in
+        test_sticky_flag_keeps_bridge_tools_present)."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        self._patch_mcp_registry(monkeypatch)
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+
+        result = assemble_tool_defs(
+            self._big_deferrable_defs(2), context_length=200_000, config=cfg,
+            sticky_active=True,
+        )
+        assert result.activated
+        assert result.sticky_forced
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert BRIDGE_TOOL_NAMES <= names
+
+    def test_sticky_flag_noop_when_no_deferrable_tools(self):
+        """sticky_active=True must not conjure bridge tools out of thin air
+        when there is nothing deferrable to hide behind them."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+        defs = [_td("terminal", "Run shell"), _td("read_file", "Read a file")]
+        result = assemble_tool_defs(
+            defs, context_length=200_000, config=cfg, sticky_active=True,
+        )
+        assert not result.activated
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert not (BRIDGE_TOOL_NAMES & names)
+
+    def test_catalog_rebuilt_fresh_even_when_sticky(self, monkeypatch):
+        """Sticky must only hold the boolean decision open — the actual
+        catalog contents (which tools/schemas are deferrable) must still be
+        rebuilt fresh every call, never cached stale. This guards against
+        reintroducing the OpenClaw session-keyed-catalog regression."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+
+        self._patch_mcp_registry(monkeypatch)
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+        call1 = assemble_tool_defs(
+            self._big_deferrable_defs(40), context_length=20_000, config=cfg,
+        )
+        assert call1.activated
+        assert call1.deferred_count == 40
+
+        call2 = assemble_tool_defs(
+            self._big_deferrable_defs(2), context_length=20_000, config=cfg,
+            sticky_active=True,
+        )
+        assert call2.activated
+        assert call2.sticky_forced
+        # The catalog size reflects the CURRENT (shrunk) live tool set, not
+        # a cached snapshot from call 1.
+        assert call2.deferred_count == 2
 
 
 # ---------------------------------------------------------------------------

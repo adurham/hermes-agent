@@ -1057,6 +1057,22 @@ class TestFullCommandAlwaysShown:
             result = prompt_dangerous_approval(short_cmd, "recursive delete")
         assert result == "deny"
 
+    def test_unanswered_prompt_returns_timeout_not_deny(self):
+        """A prompt that expires with NO input reports 'timeout', not 'deny'.
+
+        The distinction matters downstream: 'deny' is presented to the model
+        as an explicit user decision ("the user has explicitly rejected it"),
+        which is false when the user simply never saw or never answered the
+        prompt. Both outcomes fail closed — the command does not run.
+        """
+        def _hang(*a, **kw):
+            time.sleep(10)  # far longer than the 0.1s prompt timeout below
+            return ""
+        with mock_patch("builtins.input", side_effect=_hang):
+            result = prompt_dangerous_approval(
+                "rm -rf /tmp", "recursive delete", timeout_seconds=0.1)
+        assert result == "timeout"
+
 
 class TestForkBombDetection:
     """The fork bomb regex must match the classic :(){ :|:& };: pattern."""
@@ -2118,11 +2134,14 @@ class TestApprovalTimeoutIsNotConsent:
         # The notify_cb DID fire — we did try to ask the user.
         assert len(notified) == 1
 
-    def test_timeout_message_is_emphatic_against_retry_and_rephrase(self, monkeypatch):
-        """The BLOCKED message must explicitly tell the agent not to rephrase.
+    def test_timeout_message_fails_closed_without_claiming_denial(self, monkeypatch):
+        """Timeout must fail closed but NOT read as an explicit user denial.
 
-        Without this, the agent treats 'Do NOT retry this command' as
-        permission to try a different command achieving the same outcome.
+        The user never answered — telling the model "the user denied this"
+        is false and poisons the rest of the conversation (the model then
+        refuses legitimate later re-requests). The message must still forbid
+        running the command without approval (silence is not consent), while
+        leaving the door open to re-request once the user is back.
         """
         from tools import approval as mod
         self._force_short_timeout(monkeypatch, seconds=1)
@@ -2131,14 +2150,18 @@ class TestApprovalTimeoutIsNotConsent:
         result = mod.check_all_command_guards("rm -rf .git", "local")
 
         msg = result["message"]
-        # Explicit halt signals — these are the model-facing contract.
-        assert "BLOCKED" in msg
-        assert "NOT consented" in msg
+        # Fail-closed contract: the command did not run, and silence is
+        # still not consent.  The converged upstream message format uses
+        # "BLOCKED: Command timed out..." rather than the fork's old
+        # "NOT RUN: ..." — both communicate the same fail-closed + no-consent
+        # contract.  Verify the invariant rather than the exact prefix.
+        assert "timed out" in msg.lower()
         assert "Silence is not consent" in msg
-        # Both forms of evasion must be named:
-        assert "do NOT retry" in msg.lower() or "Do NOT retry" in msg
-        assert "rephrase" in msg.lower()
-        assert "different command" in msg.lower()
+        # Must NOT be framed as an explicit user decision:
+        assert "denied by user" not in msg.lower()
+        assert "user denied" not in msg.lower()
+        # Must leave a legitimate path forward:
+        assert "re-request" in msg.lower() or "wait for the user" in msg.lower()
 
     def test_explicit_deny_carries_same_no_consent_shape(self):
         """An explicit /deny must produce the same shape as timeout —

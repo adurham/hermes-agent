@@ -218,6 +218,11 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        # check_web_api_key() falls through to "Anthropic native available?"
+        # when no third-party search backend is wired. Tests for "no keys"
+        # paths must scrub these too.
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
     )
 
     def setup_method(self):
@@ -583,9 +588,27 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_no_keys_returns_false(self):
+    def test_no_keys_returns_false(self, monkeypatch, tmp_path):
+        # check_web_api_key() also falls through to a ~/.claude/.credentials.json
+        # existence probe; redirect HOME to an empty tempdir so a host login can't
+        # leak True into this assertion. Also patch out every no-credential
+        # plugin provider (ddgs for search, trafilatura for extract) so their
+        # legitimate "no API key needed" availability doesn't count as
+        # "configured" for this specifically-testing-the-no-keys-case test.
+        # Two ddgs patch targets are both needed: the legacy
+        # _ddgs_package_importable() probe AND the registry's own
+        # DDGSWebSearchProvider.is_available() (get_active_search_provider()
+        # walks the registry directly and isn't gated by the legacy probe —
+        # in a dev env where the `ddgs` package is actually pip-installed,
+        # only mocking the legacy probe left this test failing).
+        monkeypatch.setenv("HOME", str(tmp_path))
         from tools.web_tools import check_web_api_key
-        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+        from plugins.web.trafilatura.provider import TrafilaturaWebExtractProvider
+
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch.object(DDGSWebSearchProvider, "is_available", return_value=False), \
+             patch.object(TrafilaturaWebExtractProvider, "is_available", return_value=False):
             assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):

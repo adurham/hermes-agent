@@ -977,6 +977,147 @@ class TestExternalSkillMutations:
         assert result["success"] is True
 
 
+# ---------------------------------------------------------------------------
+# Background-review external guard — the curator (background_review origin)
+# must NOT auto-mutate external_dirs skills. Foreground writes still pass.
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _background_review_context():
+    """Set the skill_provenance ContextVar to BACKGROUND_REVIEW for the body."""
+    from tools.skill_provenance import (
+        set_current_write_origin,
+        reset_current_write_origin,
+        BACKGROUND_REVIEW,
+    )
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        yield
+    finally:
+        reset_current_write_origin(token)
+
+
+class TestBackgroundReviewExternalGuard:
+    """The curator (background_review write origin) refuses mutations of
+    external_dirs skills so it can't silently push session artifacts into
+    a shared repo's working tree.
+
+    Foreground writes (CLI / gateway / subagent / cron) are unchanged —
+    only background_review hits the gate.
+    """
+
+    def _patch_skills_dir(self, local_dir):
+        """Pin SKILLS_DIR to ``local_dir`` so _containing_skills_root resolves
+        external_dirs entries as 'external' (not equal to local)."""
+        return patch("tools.skill_manager_tool.SKILLS_DIR", local_dir)
+
+    def test_background_review_refuses_write_file_to_external(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with self._patch_skills_dir(local), _two_roots(local, external), \
+                _background_review_context():
+            result = _write_file("ext-skill", "references/note.md", "# Note\n")
+
+        assert result["success"] is False, result
+        assert "external skills directory" in result["error"]
+        assert "ext-skill" in result["error"]
+        # File must NOT have been written
+        assert not (skill_dir / "references" / "note.md").exists()
+
+    def test_background_review_refuses_patch_to_external(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with self._patch_skills_dir(local), _two_roots(local, external), \
+                _background_review_context():
+            result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is False, result
+        assert "external skills directory" in result["error"]
+        # SKILL.md must be untouched
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
+        assert "NEW_MARKER" not in (skill_dir / "SKILL.md").read_text()
+
+    def test_background_review_refuses_edit_to_external(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        original = (skill_dir / "SKILL.md").read_text()
+
+        new_content = (
+            "---\nname: ext-skill\ndescription: Rewritten by curator.\n---\n\n"
+            "# Rewritten\n\nBody.\n"
+        )
+        with self._patch_skills_dir(local), _two_roots(local, external), \
+                _background_review_context():
+            result = _edit_skill("ext-skill", new_content)
+
+        assert result["success"] is False, result
+        assert "external skills directory" in result["error"]
+        # SKILL.md must be unchanged
+        assert (skill_dir / "SKILL.md").read_text() == original
+
+    def test_background_review_refuses_remove_file_on_external(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "keep.md").write_text("# Keep\n")
+
+        with self._patch_skills_dir(local), _two_roots(local, external), \
+                _background_review_context():
+            result = _remove_file("ext-skill", "references/keep.md")
+
+        assert result["success"] is False, result
+        assert "external skills directory" in result["error"]
+        # File must still exist
+        assert (skill_dir / "references" / "keep.md").exists()
+
+    def test_background_review_still_allows_local_writes(self, tmp_path):
+        """Curator can write/patch in local ~/.hermes/skills/ — only
+        external_dirs are off-limits."""
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        # Skill lives in LOCAL — guard should fall through
+        local_skill = local / "local-skill"
+        local_skill.mkdir()
+        (local_skill / "SKILL.md").write_text(
+            "---\nname: local-skill\ndescription: Personal.\n---\n\n"
+            "# Local\n\nBody with OLD_MARKER.\n"
+        )
+
+        with self._patch_skills_dir(local), _two_roots(local, external), \
+                _background_review_context():
+            result = _patch_skill("local-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (local_skill / "SKILL.md").read_text()
+
+    def test_foreground_still_writes_external_in_place(self, tmp_path):
+        """Without background_review context, foreground writes to external
+        skills succeed — preserves the #4759/#4381 fix."""
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        # NO _background_review_context() — foreground
+        with self._patch_skills_dir(local), _two_roots(local, external):
+            result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text()
+
 
 # ---------------------------------------------------------------------------
 # Pinned-skill guard — skill_manage refuses only `delete` on pinned skills.
