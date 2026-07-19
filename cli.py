@@ -4434,6 +4434,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._swarm_board = None
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
+        self._spinner_elapsed_anomaly_logged: bool = False  # forensic latch, see _render_spinner_text
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
         self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
         self._command_running = False
@@ -5283,6 +5284,47 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         t0 = getattr(self, "_tool_start_time", 0) or 0
         if t0 > 0:
             elapsed = time.monotonic() - t0
+            # Forensic instrumentation (2026-07-19): a live report showed this
+            # timer displaying a wildly implausible elapsed (tens of thousands
+            # of seconds) for a `process(action="wait", ...)` call inside a
+            # session barely 49 minutes old -- i.e. bigger than the entire
+            # session's own runtime, which is impossible for a genuine
+            # `time.monotonic() - t0` delta if t0 was set at this tool's own
+            # start (see cli.py's `tool.started` handler, which always sets
+            # `_tool_start_time = time.monotonic()` in lockstep with
+            # `_spinner_text`). Every code path that *sets* `_tool_start_time`
+            # was audited and only ever assigns `time.monotonic()` or 0.0 --
+            # so if this ever fires again, the timestamp itself, not the
+            # arithmetic, is the lead to chase (e.g. a checkpoint/resume path
+            # rehydrating an old `_spinner_text` without a matching fresh
+            # `_tool_start_time`, or a cross-thread write race). Root cause
+            # was NOT found live (both sampled processes were idle by the
+            # time this was investigated) -- this logs once per occurrence so
+            # the next report carries the state needed to diagnose it instead
+            # of relying on catching a live py-spy dump.
+            try:
+                session_age = (datetime.now() - self.session_start).total_seconds()
+            except Exception:
+                session_age = None
+            if (
+                session_age is not None
+                and elapsed > session_age + 5.0  # small slop for clock skew
+                and not getattr(self, "_spinner_elapsed_anomaly_logged", False)
+            ):
+                self._spinner_elapsed_anomaly_logged = True
+                try:
+                    logger.warning(
+                        "Spinner elapsed timer implausible: elapsed=%.1fs > "
+                        "session_age=%.1fs. t0=%.3f (monotonic), now=%.3f, "
+                        "spinner_text=%r, thread=%s. This should be "
+                        "impossible if _tool_start_time was set at this "
+                        "tool's own start -- capture this log line if it "
+                        "recurs.",
+                        elapsed, session_age, t0, time.monotonic(), txt,
+                        threading.current_thread().name,
+                    )
+                except Exception:
+                    pass
             if elapsed >= 60:
                 _m, _s = int(elapsed // 60), int(elapsed % 60)
                 # Fixed-width timer to avoid status-line wrap jitter while
@@ -13176,6 +13218,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
             self._tool_start_time = time.monotonic()
+            self._spinner_elapsed_anomaly_logged = False  # re-arm the forensic check (see _render_spinner_text) for this tool call
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {}
