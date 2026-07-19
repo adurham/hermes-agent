@@ -1376,9 +1376,16 @@ def get_cute_tool_message(
     if tool_name == "todo":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
-        # Parse result for completion progress
+        # Parse result for completion progress AND the full current item
+        # list. todo_tool() always returns the complete list on every call
+        # (read, create, or merge-update) -- see tools/todo_tool.py -- so
+        # the same payload the desktop/TUI clients already render as a
+        # checklist is available here too. Previously this branch only
+        # ever produced a bare "N task(s)" count with no way to see what
+        # the tasks actually are in the terminal.
         total = 0
         done = 0
+        current_items: list = []
         if result:
             try:
                 data = safe_json_loads(result)
@@ -1386,20 +1393,54 @@ def get_cute_tool_message(
                     s = data.get("summary", {})
                     total = s.get("total", 0)
                     done = s.get("completed", 0)
+                    raw_items = data.get("todos")
+                    if isinstance(raw_items, list):
+                        current_items = raw_items
             except Exception:
                 pass
+
+        def _checklist_lines(items: list) -> list:
+            """Render each todo item as an indented status line.
+
+            Markers match the post-compression injection format in
+            TodoStore.format_for_injection so the same list looks
+            consistent whether it's re-injected into context or printed
+            to the terminal.
+            """
+            markers = {"completed": "[x]", "in_progress": "[>]",
+                       "pending": "[ ]", "cancelled": "[~]"}
+            max_shown = 30
+            lines = []
+            for item in items[:max_shown]:
+                if not isinstance(item, dict):
+                    continue
+                marker = markers.get(str(item.get("status") or ""), "[?]")
+                content = _trunc(item.get("content", ""), 70)
+                lines.append(f"      {marker} {content}")
+            remaining = len(items) - max_shown
+            if remaining > 0:
+                lines.append(f"      … +{remaining} more")
+            return lines
+
         if todos_arg is None:
             if total > 0:
-                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
-            return _wrap(f"┊ 📋 plan      reading tasks  {dur}")
+                header = _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
+            else:
+                header = _wrap(f"┊ 📋 plan      reading tasks  {dur}")
         elif merge:
             if total > 0 and done > 0:
-                return _wrap(f"┊ 📋 plan      update {done}/{total} ✓  {dur}")
-            return _wrap(f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}")
+                header = _wrap(f"┊ 📋 plan      update {done}/{total} ✓  {dur}")
+            else:
+                header = _wrap(f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}")
         else:
             if total > 0 and done > 0:
-                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
-            return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
+                header = _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
+            else:
+                header = _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
+
+        if current_items:
+            return "\n".join([header] + _checklist_lines(current_items))
+        return header
     if tool_name == "session_search":
         return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
     if tool_name == "memory":
