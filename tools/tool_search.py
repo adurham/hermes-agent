@@ -68,6 +68,23 @@ class ToolSearchConfig:
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
     search_default_limit: int
     max_search_limit: int
+    # FORK: opt normally-core toolsets / tools into lazy loading. Empty by
+    # default (upstream behavior: only MCP + non-core plugin tools defer).
+    #   defer_toolsets  — registry toolset names (e.g. "browser",
+    #                     "homeassistant") whose tools defer behind the
+    #                     tool_search/describe/call bridge even though they
+    #                     are listed in toolsets._HERMES_CORE_TOOLS.
+    #   defer_tools     — individual tool names to force-defer, for granular
+    #                     control when a toolset mixes keep-eager and
+    #                     defer tools (e.g. defer "swarm_run" but not the
+    #                     rest of the "delegation" toolset).
+    #   keep_eager_tools— individual tool names that must NEVER defer, even
+    #                     when their toolset is in defer_toolsets. Wins over
+    #                     everything (e.g. keep "delegate_task" eager while
+    #                     deferring its "delegation" sibling "swarm_run").
+    defer_toolsets: frozenset = field(default_factory=frozenset)
+    defer_tools: frozenset = field(default_factory=frozenset)
+    keep_eager_tools: frozenset = field(default_factory=frozenset)
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -111,6 +128,9 @@ class ToolSearchConfig:
             threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
+            defer_toolsets=_str_frozenset(raw.get("defer_toolsets")),
+            defer_tools=_str_frozenset(raw.get("defer_tools")),
+            keep_eager_tools=_str_frozenset(raw.get("keep_eager_tools")),
         )
 
 
@@ -119,6 +139,24 @@ def _safe_int(value: Any, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _str_frozenset(value: Any) -> frozenset:
+    """Coerce a config value into a frozenset of non-empty strings.
+
+    Accepts a list/tuple/set of strings, a single comma-separated string,
+    or None. Anything unparseable yields an empty frozenset rather than
+    raising — a typo in user config must never break tool loading.
+    """
+    if not value:
+        return frozenset()
+    if isinstance(value, str):
+        items = [p.strip() for p in value.split(",")]
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        items = [str(p).strip() for p in value]
+    else:
+        return frozenset()
+    return frozenset(p for p in items if p)
 
 
 def _safe_float(value: Any, fallback: float) -> float:
@@ -160,22 +198,62 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-def is_deferrable_tool_name(name: str) -> bool:
+def is_deferrable_tool_name(name: str, config: Optional["ToolSearchConfig"] = None) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
-    A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    Base rule (upstream): a tool is deferrable iff it is registered with an
+    MCP toolset prefix OR it is not in ``_HERMES_CORE_TOOLS``. Core tools
+    are never deferred even when their toolset is technically
+    plugin-provided (this protects against accidental shadowing).
+
+    FORK override (precedence, highest first):
+      1. Bridge tools never defer.
+      2. ``keep_eager_tools`` — name listed here never defers, full stop.
+         Lets you keep one tool eager while deferring its toolset siblings
+         (e.g. keep ``delegate_task`` while deferring ``swarm_run``).
+      3. ``defer_tools`` — name listed here always defers, even if core.
+      4. ``defer_toolsets`` — tool whose registry toolset is listed here
+         always defers, even if core (e.g. defer the whole ``browser``
+         toolset). This is what lets normally-always-loaded toolsets become
+         lazy-loaded behind the bridge.
+      5. Fall through to the upstream base rule.
+
+    ``config`` is loaded lazily when not provided so every existing caller
+    keeps working; hot paths (``classify_tools``) pass it once to avoid a
+    per-tool config load.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
+
+    if config is None:
+        config = load_config()
+
+    # (2) explicit keep-eager wins over everything below.
+    if name in config.keep_eager_tools:
+        return False
+    # (3) explicit per-tool force-defer (overrides core status).
+    if name in config.defer_tools:
+        return True
+
+    # (4) toolset-level force-defer (overrides core status). Needs the
+    # registry entry to resolve the tool's toolset.
+    entry = None
+    if config.defer_toolsets:
+        try:
+            from tools.registry import registry
+            entry = registry.get_entry(name)
+        except Exception:
+            entry = None
+        if entry is not None and entry.toolset in config.defer_toolsets:
+            return True
+
+    # (5) upstream base rule.
     if name in _core_tool_names():
         return False
-    # Check registry toolset for MCP prefix.
     try:
         from tools.registry import registry
-        entry = registry.get_entry(name)
+        if entry is None:
+            entry = registry.get_entry(name)
         if entry is None:
             return False
         if entry.toolset.startswith("mcp-"):
@@ -186,13 +264,22 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(
+    tool_defs: List[Dict[str, Any]],
+    config: Optional["ToolSearchConfig"] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
     every core tool, plus any tool we can't classify. ``deferrable`` is the
     candidate set for catalog entry.
+
+    ``config`` is loaded once here and threaded into each
+    ``is_deferrable_tool_name`` call so the FORK defer_toolsets/defer_tools/
+    keep_eager_tools lists are honored without a per-tool config reload.
     """
+    if config is None:
+        config = load_config()
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
     for td in tool_defs:
@@ -202,7 +289,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if is_deferrable_tool_name(name, config):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -242,12 +329,22 @@ def should_activate(
     (as long as there is at least one deferrable tool — there's no point
     swapping a no-op). ``"auto"`` activates when the deferrable schemas
     would consume ``threshold_pct`` of context or more.
+
+    FORK: when the user has explicitly opted toolsets/tools into deferral
+    via defer_toolsets/defer_tools, that intent overrides the auto
+    threshold — they've asked for these specific tools to be lazy-loaded,
+    so honor it even if the total is under threshold_pct. ``"off"`` still
+    wins (a global kill switch must stay absolute).
     """
     if config.enabled == "off":
         return False
     if deferrable_tokens <= 0:
         return False
     if config.enabled == "on":
+        return True
+    # FORK: explicit opt-in defer lists express direct user intent — activate
+    # regardless of the auto threshold (but not when globally off, handled above).
+    if config.defer_toolsets or config.defer_tools:
         return True
     # auto
     if not context_length or context_length <= 0:
@@ -524,6 +621,12 @@ class AssemblyResult:
     deferred_count: int = 0
     deferred_tokens: int = 0
     threshold_tokens: int = 0
+    # FORK: True when this assembly activated (or stayed activated) purely
+    # because sticky_active=True was passed in, i.e. the live deferrable-
+    # token total no longer clears should_activate() on its own.
+    # Observability field so callers/logs can distinguish "activated
+    # because sticky" from "activated because still over threshold".
+    sticky_forced: bool = False
 
 
 def assemble_tool_defs(
@@ -531,6 +634,7 @@ def assemble_tool_defs(
     *,
     context_length: Optional[int] = None,
     config: Optional[ToolSearchConfig] = None,
+    sticky_active: bool = False,
 ) -> AssemblyResult:
     """Return the tool-defs list the model should actually see.
 
@@ -542,6 +646,31 @@ def assemble_tool_defs(
     Idempotent: calling with bridge tools already in the input is a no-op
     (they classify as non-core/non-deferrable but their names are reserved,
     so they are filtered out of the deferrable set).
+
+    ``sticky_active`` (FORK): the *catalog* (which tools are deferrable and
+    their live schemas) is always rebuilt fresh from ``tool_defs`` on every
+    call — this function never caches that. But the boolean activate/
+    deactivate decision is NOT safe to recompute from scratch every call
+    within one ongoing conversation: ``classify_tools`` walks the live,
+    global ``tools/registry.py`` singleton, so an unrelated MCP reconnect
+    or a concurrent subagent loading tools can shift the deferrable-token
+    total across the ``threshold_pct`` boundary between two API calls of
+    the *same* conversation. When that flips activation from on to off,
+    the bridge tool names (tool_search/tool_describe/tool_call) disappear
+    from the wire tools array for that turn, and Anthropic's API rejects
+    any previous-turn tool_use block referencing them — which
+    ``_strip_unknown_tool_blocks`` (agent/anthropic_adapter.py) then
+    rewrites into inert text breadcrumbs, corrupting tool-call history
+    mid-conversation even though the model successfully used those tools
+    moments earlier. Passing ``sticky_active=True`` (the caller's
+    per-conversation "have we ever activated" flag) forces activation to
+    stay on once it was ever on, without touching what's actually in the
+    catalog. This is a ONE-WAY latch: off->on still requires clearing the
+    normal threshold; only on->off is suppressed. See
+    ``agent/fork/tool_search_lazy.py`` for the analogous
+    ``agent._promoted_tools`` per-agent persistent-state pattern this
+    mirrors, and callers in model_tools.py / agent_init.py / tools/mcp_tool.py
+    for where the flag is threaded from the agent object.
     """
     if config is None:
         config = load_config()
@@ -551,12 +680,14 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(incoming, config)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
-    if not should_activate(config, deferrable_tokens, context_length):
+    naturally_active = should_activate(config, deferrable_tokens, context_length)
+    sticky_forced = bool(sticky_active) and not naturally_active
+    if not naturally_active and not sticky_forced:
         return AssemblyResult(
             tool_defs=incoming,
             activated=False,
@@ -569,10 +700,20 @@ def assemble_tool_defs(
     result = visible + bridge
     threshold_tokens = int((context_length or 0) * (config.threshold_pct / 100.0))
 
-    logger.info(
-        "tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
-        len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
-    )
+    if sticky_forced:
+        logger.info(
+            "tool_search stays activated (sticky): %d core/visible tools kept, "
+            "%d deferred (~%d tokens, threshold ~%d) — live total now below "
+            "threshold but this conversation already activated tool_search, "
+            "so we keep bridge tools present to avoid corrupting tool-call "
+            "history (see assemble_tool_defs sticky_active docs).",
+            len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
+        )
+    else:
+        logger.info(
+            "tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
+            len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
+        )
 
     return AssemblyResult(
         tool_defs=result,
@@ -580,6 +721,7 @@ def assemble_tool_defs(
         deferred_count=len(deferrable),
         deferred_tokens=deferrable_tokens,
         threshold_tokens=threshold_tokens,
+        sticky_forced=sticky_forced,
     )
 
 
@@ -590,6 +732,24 @@ def assemble_tool_defs(
 
 def is_bridge_tool(name: str) -> bool:
     return name in BRIDGE_TOOL_NAMES
+
+
+def tool_defs_show_bridge(tool_defs: Optional[List[Dict[str, Any]]]) -> bool:
+    """Return True if any bridge tool name is present in a tool-defs list.
+
+    FORK. Cheap way for callers (agent_init, refresh_agent_mcp_tools) to
+    detect whether an assembled tools array activated progressive
+    disclosure, without threading AssemblyResult through every call site —
+    ``get_tool_definitions`` returns a plain list, not an AssemblyResult.
+    Used to set/update the caller's sticky "ever activated" flag.
+    """
+    if not tool_defs:
+        return False
+    for td in tool_defs:
+        name = (td.get("function") or {}).get("name")
+        if name in BRIDGE_TOOL_NAMES:
+            return True
+    return False
 
 
 def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:

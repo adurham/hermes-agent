@@ -456,6 +456,54 @@ class TestMaybePersistToolResult:
         # Any non-empty content with threshold=0 should be persisted
         assert PERSISTED_OUTPUT_TAG in result
 
+    def test_scrubs_trigger_pattern_below_threshold(self):
+        """A tool result too small to persist still gets content-filter
+        trigger patterns scrubbed -- e.g. session_search surfacing an old
+        session's pg_dump command verbatim into live context."""
+        content = "earlier we ran PGPASSWORD=`vault read -field=pw secret/db` pg_dump -h host db > dump.sql"
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="session_search",
+            tool_use_id="tc_small",
+            env=None,
+            threshold=50_000,
+        )
+        assert "PGPASSWORD" not in result
+        assert "vault read" not in result
+        assert "paraphrased for content continuity" in result
+
+    def test_scrubs_trigger_pattern_regardless_of_tool(self):
+        """Not session_search-specific -- any tool's raw output (grep, bash,
+        read_file) that surfaces one of these patterns gets scrubbed too."""
+        content = "aws s3 presign s3://bucket/customer-export.zip --expires-in 3600"
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="read_file",
+            tool_use_id="tc_rf_trigger",
+            env=None,
+            threshold=float("inf"),
+        )
+        assert "aws s3 presign" not in result
+        assert "paraphrased for content continuity" in result
+
+    def test_scrub_runs_before_persist_to_disk(self):
+        """The persisted file on disk (and its preview) should carry the
+        scrubbed text, not the raw trigger pattern."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        content = ("x" * 60_000) + "\nTaniumServer config get SQLConnectionString --decrypt"
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="session_search",
+            tool_use_id="tc_persist_scrub",
+            env=env,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        written_content = env.execute.call_args[1]["stdin_data"]
+        assert "SQLConnectionString" not in written_content or "paraphrased" in written_content
+        assert "--decrypt" not in written_content
+
 
 # ── enforce_turn_budget ───────────────────────────────────────────────
 

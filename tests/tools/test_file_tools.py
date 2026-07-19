@@ -613,6 +613,130 @@ class TestPatchSchemaShape:
         assert "anyOf" not in params and "oneOf" not in params
 
 
+class TestCCArgSlipThroughGuards:
+    """Defensive guards in the file-tool handlers.
+
+    The Anthropic OAuth path advertises Claude Code canonical tool names
+    (Bash/Read/Edit/Write/Grep) on the wire and translates them back at
+    dispatch via agent/cc_aliases.adapt_tool_use.  Args translation is
+    expected to happen in two places:
+
+      1.  agent/cc_aliases.adapt_tool_use (called by model_tools.handle_function_call)
+      2.  run_agent.AIAgent._repair_tool_call site (CC alias fast-path),
+          which renames the tool AND translates args after a name-repair.
+
+    If both miss — e.g. an adapter raises or a future code path forgets to
+    call ``adapt_tool_use`` — these guards catch the CC-shaped ``file_path``
+    arg and return an actionable error instead of the historical confusing
+    failures:
+
+      *   read_file:  "File not found: " with empty path (suggests random
+          ~/ entries).  Wasted context, the model retries blindly.
+      *   patch:      "path required" — cryptic, no recovery hint.
+      *   write_file: "missing required field 'path'" — OK but doesn't
+          surface the actual mistake (file_path → path).
+      *   search_files: empty pattern matches every line of every file in
+          cwd, dumping 50 random matches into context for free.
+
+    See run_agent.py:_repair_tool_call site for the upstream fix that
+    prevents these from being hit during normal CC-OAuth flow.
+    """
+
+    def test_read_file_missing_path_returns_actionable_error(self):
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({}))
+        assert "error" in result
+        assert "missing required field 'path'" in result["error"]
+        assert "absolute file path" in result["error"]
+        # Must not leak an empty "File not found: " message.
+        assert result["error"] != "File not found: "
+        assert "similar_files" not in result
+
+    def test_read_file_cc_shape_returns_explicit_hint(self):
+        """CC ``Read`` uses ``file_path``; if it slips past the adapter,
+        the handler must say so explicitly instead of returning the
+        confusing empty-path 'File not found' chain."""
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({"file_path": "/tmp/x"}))
+        assert "error" in result
+        assert "CC-shaped" in result["error"]
+        assert "file_path" in result["error"]
+        assert "path" in result["error"]
+
+    def test_read_file_offset_limit_preserved_on_proper_call(self):
+        """The new guard must not change the happy-path behaviour: a
+        properly-shaped call still flows through to read_file_tool."""
+        from tools.file_tools import _handle_read_file
+
+        with patch("tools.file_tools.read_file_tool") as mock_read:
+            mock_read.return_value = json.dumps({"content": "ok", "total_lines": 1})
+            result = json.loads(_handle_read_file(
+                {"path": "/tmp/x", "offset": 10, "limit": 20}
+            ))
+        assert result["content"] == "ok"
+        mock_read.assert_called_once_with(path="/tmp/x", offset=10, limit=20, task_id="default")
+
+    def test_write_file_cc_shape_returns_explicit_hint(self):
+        from tools.file_tools import _handle_write_file
+
+        result = json.loads(_handle_write_file(
+            {"file_path": "/tmp/x", "content": "hi"}
+        ))
+        assert "error" in result
+        assert "CC-shaped" in result["error"]
+        assert "file_path" in result["error"]
+
+    def test_patch_missing_path_returns_actionable_error(self):
+        from tools.file_tools import _handle_patch
+
+        result = json.loads(_handle_patch({}))
+        assert "error" in result
+        assert "missing required field 'path'" in result["error"]
+        assert "old_string" in result["error"] or "patch" in result["error"]
+
+    def test_patch_cc_shape_returns_explicit_hint(self):
+        from tools.file_tools import _handle_patch
+
+        result = json.loads(_handle_patch(
+            {"file_path": "/tmp/x", "old_string": "a", "new_string": "b"}
+        ))
+        assert "error" in result
+        assert "CC-shaped" in result["error"]
+        assert "file_path" in result["error"]
+
+    def test_search_files_empty_pattern_returns_actionable_error(self):
+        """Empty pattern handed to ripgrep matches every line of every
+        file in cwd, dumping ~50 random matches into context. Reject
+        upfront."""
+        from tools.file_tools import _handle_search_files
+
+        result = json.loads(_handle_search_files({}))
+        assert "error" in result
+        assert "missing required field 'pattern'" in result["error"]
+
+    def test_search_files_non_string_pattern_returns_actionable_error(self):
+        from tools.file_tools import _handle_search_files
+
+        result = json.loads(_handle_search_files({"pattern": None}))
+        assert "error" in result
+        assert "pattern" in result["error"]
+
+    def test_search_files_valid_pattern_passes_through(self):
+        """Happy path: a real pattern still reaches search_tool."""
+        from tools.file_tools import _handle_search_files
+
+        with patch("tools.file_tools.search_tool") as mock_search:
+            mock_search.return_value = json.dumps({"total_count": 0, "matches": []})
+            result = json.loads(_handle_search_files({"pattern": "foo", "path": "/tmp"}))
+        assert "matches" in result
+        mock_search.assert_called_once()
+        args, kwargs = mock_search.call_args
+        assert kwargs["pattern"] == "foo"
+        assert kwargs["path"] == "/tmp"
+
+
 # ---------------------------------------------------------------------------
 # _last_known_cwd tests (#26211: silent file creation failure in long conversations)
 # ---------------------------------------------------------------------------

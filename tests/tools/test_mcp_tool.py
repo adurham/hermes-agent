@@ -233,7 +233,7 @@ class TestSchemaConversion:
         mcp_tool = _make_mcp_tool(name="read_file", description="Read a file")
         schema = _convert_mcp_schema("filesystem", mcp_tool)
 
-        assert schema["name"] == "mcp__filesystem__read_file"
+        assert schema["name"] == "filesystem_read_file"
         assert schema["description"] == "Read a file"
         assert "properties" in schema["parameters"]
 
@@ -549,7 +549,7 @@ class TestSchemaConversion:
         bare_tool = types.SimpleNamespace(name="probe", description="Probe")
         schema = _convert_mcp_schema("srv", bare_tool)
 
-        assert schema["name"] == "mcp__srv__probe"
+        assert schema["name"] == "srv_probe"
         assert schema["parameters"] == {"type": "object", "properties": {}}
 
     def test_convert_mcp_schema_with_none_inputschema(self):
@@ -571,7 +571,7 @@ class TestSchemaConversion:
         mcp_tool = _make_mcp_tool(name="list_dir")
         schema = _convert_mcp_schema("my_server", mcp_tool)
 
-        assert schema["name"] == "mcp__my_server__list_dir"
+        assert schema["name"] == "my_server_list_dir"
 
     def test_hyphens_sanitized_to_underscores(self):
         """Hyphens in tool/server names are replaced with underscores for LLM compat."""
@@ -580,7 +580,7 @@ class TestSchemaConversion:
         mcp_tool = _make_mcp_tool(name="get-sum")
         schema = _convert_mcp_schema("my-server", mcp_tool)
 
-        assert schema["name"] == "mcp__my_server__get_sum"
+        assert schema["name"] == "my_server_get_sum"
         assert "-" not in schema["name"]
 
 
@@ -607,14 +607,27 @@ class TestCheckFunction:
         finally:
             _servers.pop("test_server", None)
 
-    def test_session_none_returns_false(self):
+    def test_session_none_returns_true_for_cache_shell(self):
+        """Cache-registered servers report check=True even with session=None.
+
+        Pre-cache-era the check function returned False whenever a server's
+        session was None — meaning the connection had failed or been torn
+        down. The startup cache introduces a third state: ``_servers[name]``
+        holds a placeholder shell whose tools are already registered from
+        disk but whose real session is deferred until first use. The check
+        function MUST return True in that case so the banner /
+        ``check_tool_availability`` keep treating those tools as available;
+        the lazy-spawn path in the tool handlers resolves the session on
+        demand. See ``_ensure_server_connected``.
+        """
         from tools.mcp_tool import _make_check_fn, _servers
 
         server = _make_mock_server("test_server", session=None)
+        server._is_cache_shell = True  # simulate a disk-cached shell
         _servers["test_server"] = server
         try:
             check = _make_check_fn("test_server")
-            assert check() is False
+            assert check() is True
         finally:
             _servers.pop("test_server", None)
 
@@ -952,10 +965,10 @@ class TestDiscoverAndRegister:
                 _discover_and_register_server("fs", {"command": "npx", "args": []})
             )
 
-        assert "mcp__fs__read_file" in registered
-        assert "mcp__fs__write_file" in registered
-        assert "mcp__fs__read_file" in mock_registry.get_all_tool_names()
-        assert "mcp__fs__write_file" in mock_registry.get_all_tool_names()
+        assert "fs_read_file" in registered
+        assert "fs_write_file" in registered
+        assert "fs_read_file" in mock_registry.get_all_tool_names()
+        assert "fs_write_file" in mock_registry.get_all_tool_names()
 
         _servers.pop("fs", None)
 
@@ -983,8 +996,8 @@ class TestDiscoverAndRegister:
 
             assert validate_toolset("myserver") is True
             assert validate_toolset("mcp-myserver") is True
-            assert "mcp__myserver__ping" in resolve_toolset("myserver")
-            assert "mcp__myserver__ping" in resolve_toolset("mcp-myserver")
+            assert "myserver_ping" in resolve_toolset("myserver")
+            assert "myserver_ping" in resolve_toolset("mcp-myserver")
 
         _servers.pop("myserver", None)
 
@@ -1009,9 +1022,9 @@ class TestDiscoverAndRegister:
                 _discover_and_register_server("srv", {"command": "test"})
             )
 
-        entry = mock_registry._tools.get("mcp__srv__do_thing")
+        entry = mock_registry._tools.get("srv_do_thing")
         assert entry is not None
-        assert entry.schema["name"] == "mcp__srv__do_thing"
+        assert entry.schema["name"] == "srv_do_thing"
         assert "parameters" in entry.schema
         assert entry.is_async is False
         assert entry.toolset == "mcp-srv"
@@ -1092,7 +1105,7 @@ class TestMCPServerTask:
         server = MCPServerTask("srv")
         server._config = {"command": "test"}
         server._tools = [_make_mcp_tool("old"), _make_mcp_tool("keep")]
-        server._registered_tool_names = ["mcp__srv__old", "mcp__srv__keep"]
+        server._registered_tool_names = ["srv_old", "srv_keep"]
         server.session = MagicMock()
         server.session.list_tools = AsyncMock(
             return_value=SimpleNamespace(tools=[_make_mcp_tool("keep"), _make_mcp_tool("new")])
@@ -1100,31 +1113,31 @@ class TestMCPServerTask:
 
         with patch("tools.registry.registry", mock_registry):
             mock_registry.register(
-                name="mcp__srv__old",
+                name="srv_old",
                 toolset="mcp-srv",
-                schema={"name": "mcp__srv__old", "description": "Old"},
+                schema={"name": "srv_old", "description": "Old"},
                 handler=lambda *_args, **_kwargs: "{}",
             )
             mock_registry.register(
-                name="mcp__srv__keep",
+                name="srv_keep",
                 toolset="mcp-srv",
-                schema={"name": "mcp__srv__keep", "description": "Keep"},
+                schema={"name": "srv_keep", "description": "Keep"},
                 handler=lambda *_args, **_kwargs: "{}",
             )
 
             asyncio.run(server._refresh_tools())
 
             names = mock_registry.get_all_tool_names()
-            assert "mcp__srv__old" not in names
-            assert "mcp__srv__keep" in names
-            assert "mcp__srv__new" in names
+            assert "srv_old" not in names
+            assert "srv_keep" in names
+            assert "srv_new" in names
             assert set(server._registered_tool_names) == {
-                "mcp__srv__keep",
-                "mcp__srv__new",
-                "mcp__srv__list_resources",
-                "mcp__srv__read_resource",
-                "mcp__srv__list_prompts",
-                "mcp__srv__get_prompt",
+                "srv_keep",
+                "srv_new",
+                "srv_list_resources",
+                "srv_read_resource",
+                "srv_list_prompts",
+                "srv_get_prompt",
             }
 
     def test_schedule_tools_refresh_keeps_task_until_done(self):
@@ -1321,11 +1334,11 @@ class TestToolsetInjection:
             from tools.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
 
-            assert "mcp__fs__list_files" in result
+            assert "fs_list_files" in result
             assert validate_toolset("fs") is True
             assert validate_toolset("mcp-fs") is True
-            assert "mcp__fs__list_files" in resolve_toolset("fs")
-            assert "mcp__fs__list_files" in resolve_toolset("mcp-fs")
+            assert "fs_list_files" in resolve_toolset("fs")
+            assert "fs_list_files" in resolve_toolset("mcp-fs")
 
     def test_server_toolset_skips_builtin_collision(self):
         """MCP raw aliases never overwrite a built-in toolset name."""
@@ -1361,9 +1374,9 @@ class TestToolsetInjection:
             discover_mcp_tools()
 
             assert fake_toolsets["terminal"]["description"] == "Terminal tools"
-            assert "mcp__terminal__run" not in resolve_toolset("terminal")
+            assert "terminal_run" not in resolve_toolset("terminal")
             assert validate_toolset("mcp-terminal") is True
-            assert "mcp__terminal__run" in resolve_toolset("mcp-terminal")
+            assert "terminal_run" in resolve_toolset("mcp-terminal")
 
     def test_server_connection_failure_skipped(self):
         """If one server fails to connect, others still proceed."""
@@ -1401,8 +1414,8 @@ class TestToolsetInjection:
             from tools.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
 
-        assert "mcp__good__ping" in result
-        assert "mcp__broken__ping" not in result
+        assert "good_ping" in result
+        assert "broken_ping" not in result
         assert call_count == 2
 
     def test_partial_failure_retry_on_second_call(self):
@@ -1444,8 +1457,8 @@ class TestToolsetInjection:
 
             # First call: good connects, broken fails
             result1 = discover_mcp_tools()
-            assert "mcp__good__ping" in result1
-            assert "mcp__broken__ping" not in result1
+            assert "good_ping" in result1
+            assert "broken_ping" not in result1
             first_attempts = call_count
 
             # "Fix" the broken server
@@ -1454,8 +1467,8 @@ class TestToolsetInjection:
 
             # Second call: should retry broken, skip good
             result2 = discover_mcp_tools()
-            assert "mcp__good__ping" in result2
-            assert "mcp__broken__ping" in result2
+            assert "good_ping" in result2
+            assert "broken_ping" in result2
             assert call_count == 1  # Only broken retried
 
 
@@ -1523,10 +1536,10 @@ class TestShutdown:
 
         _servers.clear()
         registry.register(
-            name="mcp__test__ping",
+            name="test_ping",
             toolset="mcp-test",
             schema={
-                "name": "mcp__test__ping",
+                "name": "test_ping",
                 "description": "Ping",
                 "parameters": {"type": "object", "properties": {}},
             },
@@ -1535,19 +1548,19 @@ class TestShutdown:
         registry.register_toolset_alias("test", "mcp-test")
 
         server = MCPServerTask("test")
-        server._registered_tool_names = ["mcp__test__ping"]
+        server._registered_tool_names = ["test_ping"]
         _servers["test"] = server
 
         mcp_mod._ensure_mcp_loop()
         try:
             assert validate_toolset("test") is True
-            assert "mcp__test__ping" in resolve_toolset("test")
+            assert "test_ping" in resolve_toolset("test")
             shutdown_mcp_servers()
         finally:
             mcp_mod._mcp_loop = None
             mcp_mod._mcp_thread = None
 
-        assert "mcp__test__ping" not in registry.get_all_tool_names()
+        assert "test_ping" not in registry.get_all_tool_names()
         assert validate_toolset("test") is False
 
     def test_shutdown_handles_errors(self):
@@ -2279,10 +2292,10 @@ class TestUtilitySchemas:
         schemas = _build_utility_schemas("myserver")
         assert len(schemas) == 4
         names = [s["schema"]["name"] for s in schemas]
-        assert "mcp__myserver__list_resources" in names
-        assert "mcp__myserver__read_resource" in names
-        assert "mcp__myserver__list_prompts" in names
-        assert "mcp__myserver__get_prompt" in names
+        assert "myserver_list_resources" in names
+        assert "myserver_read_resource" in names
+        assert "myserver_list_prompts" in names
+        assert "myserver_get_prompt" in names
 
     def test_hyphens_sanitized_in_utility_names(self):
         from tools.mcp_tool import _build_utility_schemas
@@ -2291,7 +2304,7 @@ class TestUtilitySchemas:
         names = [s["schema"]["name"] for s in schemas]
         for name in names:
             assert "-" not in name
-        assert "mcp__my_server__list_resources" in names
+        assert "my_server_list_resources" in names
 
     def test_list_resources_schema_no_required_params(self):
         from tools.mcp_tool import _build_utility_schemas
@@ -2614,11 +2627,11 @@ class TestUtilityToolRegistration:
             )
 
         # Regular tool + 4 utility tools
-        assert "mcp__fs__read_file" in registered
-        assert "mcp__fs__list_resources" in registered
-        assert "mcp__fs__read_resource" in registered
-        assert "mcp__fs__list_prompts" in registered
-        assert "mcp__fs__get_prompt" in registered
+        assert "fs_read_file" in registered
+        assert "fs_list_resources" in registered
+        assert "fs_read_resource" in registered
+        assert "fs_list_prompts" in registered
+        assert "fs_get_prompt" in registered
         assert len(registered) == 5
 
         # All in the registry
@@ -2649,8 +2662,8 @@ class TestUtilityToolRegistration:
             )
 
         # Check that utility tools are in the right toolset
-        for tool_name in ["mcp__myserv__list_resources", "mcp__myserv__read_resource",
-                          "mcp__myserv__list_prompts", "mcp__myserv__get_prompt"]:
+        for tool_name in ["myserv_list_resources", "myserv_read_resource",
+                          "myserv_list_prompts", "myserv_get_prompt"]:
             entry = mock_registry._tools.get(tool_name)
             assert entry is not None, f"{tool_name} not found in registry"
             assert entry.toolset == "mcp-myserv"
@@ -2658,7 +2671,15 @@ class TestUtilityToolRegistration:
         _servers.pop("myserv", None)
 
     def test_utility_tools_have_check_fn(self):
-        """Utility tools have a working check_fn."""
+        """Utility tools have a working check_fn.
+
+        The check function returns True whenever ``_servers[name]`` holds an
+        entry — covering both a fully-connected server AND a cache shell
+        whose real session is deferred until first use. It only returns
+        False when the server has been removed entirely (e.g. config edit
+        + restart, OAuth blowup that purged the entry). The lazy-spawn
+        path handles bringing the session online on demand.
+        """
         from tools.registry import ToolRegistry
         from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
@@ -2677,16 +2698,21 @@ class TestUtilityToolRegistration:
                 _discover_and_register_server("chk", {"command": "test"})
             )
 
-        entry = mock_registry._tools.get("mcp__chk__list_resources")
+        entry = mock_registry._tools.get("chk_list_resources")
         assert entry is not None
         # Server is connected, check_fn should return True
         assert entry.check_fn() is True
 
-        # Disconnect the server
+        # Drop the session — emulates the cache shell state. check_fn must
+        # still return True so the banner / tool-availability reporting
+        # keeps showing these tools; lazy-spawn handles reconnection on use.
         _servers["chk"].session = None
-        assert entry.check_fn() is False
+        _servers["chk"]._is_cache_shell = True  # emulate cache-shell state
+        assert entry.check_fn() is True
 
+        # Remove the server entirely — only NOW should check_fn report False.
         _servers.pop("chk", None)
+        assert entry.check_fn() is False
 
 
 # ===========================================================================
@@ -3602,12 +3628,12 @@ class TestDiscoveryFailedCount:
             server.session = MagicMock()
             server._tools = [_make_mcp_tool("tool_a")]
             _servers[name] = server
-            return [f"mcp__{name}__tool_a"]
+            return [f"{name}_tool_a"]
 
         with patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
              patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__good_server__tool_a"]):
+             patch("tools.mcp_tool._existing_tool_names", return_value=["good_server_tool_a"]):
             _ensure_mcp_loop()
 
             # Capture the logger to verify failed_count in summary
@@ -3676,7 +3702,7 @@ class TestDiscoveryFailedCount:
             server.session = MagicMock()
             server._tools = [_make_mcp_tool("t")]
             _servers[name] = server
-            return [f"mcp__{name}__t"]
+            return [f"{name}_t"]
 
         with patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._discover_and_register_server", side_effect=selective_register), \
@@ -3748,7 +3774,7 @@ class TestMCPSelectiveToolLoading:
             config,
             session=SimpleNamespace(),
         )
-        assert registered == ["mcp__ink__create_service"]
+        assert registered == ["ink_create_service"]
 
     def test_exclude_filter_registers_all_except_listed_tools(self):
         config = {
@@ -3762,8 +3788,8 @@ class TestMCPSelectiveToolLoading:
             session=SimpleNamespace(),
         )
         assert registered == [
-            "mcp__ink_exclude__create_service",
-            "mcp__ink_exclude__list_services",
+            "ink_exclude_create_service",
+            "ink_exclude_list_services",
         ]
 
     def test_include_filter_skips_utility_tools_without_capabilities(self):
@@ -3777,8 +3803,8 @@ class TestMCPSelectiveToolLoading:
             config,
             session=SimpleNamespace(),
         )
-        assert registered == ["mcp__ink_no_caps__create_service"]
-        assert set(mock_registry.get_all_tool_names()) == {"mcp__ink_no_caps__create_service"}
+        assert registered == ["ink_no_caps_create_service"]
+        assert set(mock_registry.get_all_tool_names()) == {"ink_no_caps_create_service"}
 
     def test_no_filter_registers_all_server_tools_when_no_utilities_supported(self):
         registered, _ = self._run_discover(
@@ -3788,9 +3814,9 @@ class TestMCPSelectiveToolLoading:
             session=SimpleNamespace(),
         )
         assert registered == [
-            "mcp__ink_no_filter__create_service",
-            "mcp__ink_no_filter__delete_service",
-            "mcp__ink_no_filter__list_services",
+            "ink_no_filter_create_service",
+            "ink_no_filter_delete_service",
+            "ink_no_filter_list_services",
         ]
 
     def test_resources_and_prompts_can_be_disabled_explicitly(self):
@@ -3813,7 +3839,7 @@ class TestMCPSelectiveToolLoading:
             config,
             session=session,
         )
-        assert registered == ["mcp__ink_disabled_utils__create_service"]
+        assert registered == ["ink_disabled_utils_create_service"]
 
     def test_registers_only_utility_tools_supported_by_server_capabilities(self):
         session = SimpleNamespace(
@@ -3826,11 +3852,11 @@ class TestMCPSelectiveToolLoading:
             {"url": "https://mcp.example.com"},
             session=session,
         )
-        assert "mcp__ink_resources_only__create_service" in registered
-        assert "mcp__ink_resources_only__list_resources" in registered
-        assert "mcp__ink_resources_only__read_resource" in registered
-        assert "mcp__ink_resources_only__list_prompts" not in registered
-        assert "mcp__ink_resources_only__get_prompt" not in registered
+        assert "ink_resources_only_create_service" in registered
+        assert "ink_resources_only_list_resources" in registered
+        assert "ink_resources_only_read_resource" in registered
+        assert "ink_resources_only_list_prompts" not in registered
+        assert "ink_resources_only_get_prompt" not in registered
 
     def test_existing_tool_names_reflect_registered_subset(self):
         from tools.mcp_tool import _existing_tool_names, _servers, _discover_and_register_server
@@ -3859,8 +3885,8 @@ class TestMCPSelectiveToolLoading:
 
         try:
             registered, existing = asyncio.run(run())
-            assert registered == ["mcp__ink_existing__create_service"]
-            assert existing == ["mcp__ink_existing__create_service"]
+            assert registered == ["ink_existing_create_service"]
+            assert existing == ["ink_existing_create_service"]
         finally:
             _servers.pop("ink_existing", None)
 
@@ -3983,14 +4009,14 @@ class TestMCPBuiltinCollisionGuard:
         mock_registry = ToolRegistry()
 
         # Pre-register a "built-in" tool with the name that the MCP tool would produce.
-        # Server "abc", tool "search" → mcp_abc_search
+        # Server "abc", tool "search" → abc_search
         builtin_schema = {
-            "name": "mcp__abc__search",
+            "name": "abc_search",
             "description": "A hypothetical built-in",
             "parameters": {"type": "object", "properties": {}},
         }
         mock_registry.register(
-            name="mcp__abc__search", toolset="web",
+            name="abc_search", toolset="web",
             schema=builtin_schema, handler=lambda a, **k: "{}",
         )
 
@@ -4010,8 +4036,8 @@ class TestMCPBuiltinCollisionGuard:
             )
 
         # The MCP tool should have been skipped — built-in preserved.
-        assert "mcp__abc__search" not in registered
-        assert mock_registry.get_toolset_for_tool("mcp__abc__search") == "web"
+        assert "abc_search" not in registered
+        assert mock_registry.get_toolset_for_tool("abc_search") == "web"
 
         _servers.pop("abc", None)
 
@@ -4036,8 +4062,8 @@ class TestMCPBuiltinCollisionGuard:
                 _discover_and_register_server("minimax", {"command": "test", "args": []})
             )
 
-        assert "mcp__minimax__web_search" in registered
-        assert mock_registry.get_toolset_for_tool("mcp__minimax__web_search") == "mcp-minimax"
+        assert "minimax_web_search" in registered
+        assert mock_registry.get_toolset_for_tool("minimax_web_search") == "mcp-minimax"
 
         _servers.pop("minimax", None)
 
@@ -4050,12 +4076,12 @@ class TestMCPBuiltinCollisionGuard:
 
         # Pre-register an MCP tool from a different server.
         mcp_schema = {
-            "name": "mcp__srv__do_thing",
+            "name": "srv_do_thing",
             "description": "From another MCP server",
             "parameters": {"type": "object", "properties": {}},
         }
         mock_registry.register(
-            name="mcp__srv__do_thing", toolset="mcp-old",
+            name="srv_do_thing", toolset="mcp-old",
             schema=mcp_schema, handler=lambda a, **k: "{}",
         )
 
@@ -4075,8 +4101,8 @@ class TestMCPBuiltinCollisionGuard:
             )
 
         # MCP-to-MCP collision is allowed — the new server wins.
-        assert "mcp__srv__do_thing" in registered
-        assert mock_registry.get_toolset_for_tool("mcp__srv__do_thing") == "mcp-srv"
+        assert "srv_do_thing" in registered
+        assert mock_registry.get_toolset_for_tool("srv_do_thing") == "mcp-srv"
 
         _servers.pop("srv", None)
 
@@ -4123,7 +4149,7 @@ class TestSanitizeMcpNameComponent:
 
         mcp_tool = _make_mcp_tool(name="search")
         schema = _convert_mcp_schema("ai.exa/exa", mcp_tool)
-        assert schema["name"] == "mcp__ai_exa_exa__search"
+        assert schema["name"] == "ai_exa_exa_search"
         # Must match Anthropic's pattern: ^[a-zA-Z0-9_-]{1,128}$
         import re
         assert re.match(r"^[a-zA-Z0-9_-]{1,128}$", schema["name"])
@@ -4145,16 +4171,16 @@ class TestSanitizeMcpNameComponent:
 
         reg = ToolRegistry()
         reg.register(
-            name="mcp__ai_exa_exa__search",
+            name="ai_exa_exa_search",
             toolset="mcp-ai.exa/exa",
-            schema={"name": "mcp__ai_exa_exa__search", "description": "Search", "parameters": {"type": "object", "properties": {}}},
+            schema={"name": "ai_exa_exa_search", "description": "Search", "parameters": {"type": "object", "properties": {}}},
             handler=lambda *_args, **_kwargs: "{}",
         )
         reg.register_toolset_alias("ai.exa/exa", "mcp-ai.exa/exa")
 
         with patch("tools.registry.registry", reg):
             assert validate_toolset("ai.exa/exa") is True
-            assert "mcp__ai_exa_exa__search" in resolve_toolset("ai.exa/exa")
+            assert "ai_exa_exa_search" in resolve_toolset("ai.exa/exa")
 
 
 # ---------------------------------------------------------------------------
@@ -4211,17 +4237,17 @@ class TestRegisterMcpServers:
 
         async def fake_register(name, cfg):
             server = _make_mock_server(name)
-            server._registered_tool_names = ["mcp__my_server__tool1"]
+            server._registered_tool_names = ["my_server_tool1"]
             _servers[name] = server
-            return ["mcp__my_server__tool1"]
+            return ["my_server_tool1"]
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__my_server__tool1"]):
+             patch("tools.mcp_tool._existing_tool_names", return_value=["my_server_tool1"]):
             _ensure_mcp_loop()
             result = register_mcp_servers(fake_config)
 
-        assert "mcp__my_server__tool1" in result
+        assert "my_server_tool1" in result
         _servers.pop("my_server", None)
 
     def test_logs_summary_on_success(self):
@@ -4231,13 +4257,13 @@ class TestRegisterMcpServers:
 
         async def fake_register(name, cfg):
             server = _make_mock_server(name)
-            server._registered_tool_names = ["mcp__srv__t1", "mcp__srv__t2"]
+            server._registered_tool_names = ["srv_t1", "srv_t2"]
             _servers[name] = server
-            return ["mcp__srv__t1", "mcp__srv__t2"]
+            return ["srv_t1", "srv_t2"]
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__srv__t1", "mcp__srv__t2"]):
+             patch("tools.mcp_tool._existing_tool_names", return_value=["srv_t1", "srv_t2"]):
             _ensure_mcp_loop()
 
             with patch("tools.mcp_tool.logger") as mock_logger:
@@ -4336,7 +4362,17 @@ class TestMcpParallelToolCalls:
                 _mcp_tool_server_names.pop("mcp__a_b__tool", None)
 
     def test_registered_tool_provenance_prevents_prefix_collision(self):
-        """Registration records exact server ownership for ambiguous names."""
+        """Registration records exact server ownership for ambiguous names.
+
+        Fork divergence: upstream prefixes registered MCP tool names with
+        ``mcp_`` (so this would be ``mcp_a_b_tool``); this fork DELIBERATELY
+        does NOT single-underscore-prefix bare tool names — ``_register_server_tools``
+        registers them as ``{server}_{tool}`` (here ``a_b_tool``) and keys
+        ``_mcp_tool_server_names`` on that unprefixed name. See FORK.md
+        (anthropic_adapter tool-naming note). The provenance/parallel-safe
+        invariant this test guards is unchanged; only the registered name shape
+        differs from upstream.
+        """
         from tools.registry import registry
         from tools.mcp_tool import (
             _mcp_tool_server_names, _parallel_safe_servers,
@@ -4349,22 +4385,22 @@ class TestMcpParallelToolCalls:
         )
         registered = _register_server_tools("a_b", server, {})
         try:
-            assert registered == ["mcp__a_b__tool"]
+            assert registered == ["a_b_tool"]
             with _lock:
-                assert _mcp_tool_server_names["mcp__a_b__tool"] == "a_b"
+                assert _mcp_tool_server_names["a_b_tool"] == "a_b"
                 _parallel_safe_servers.add("a")
-            assert is_mcp_tool_parallel_safe("mcp__a_b__tool") is False
+            assert is_mcp_tool_parallel_safe("a_b_tool") is False
 
             with _lock:
                 _parallel_safe_servers.add("a_b")
-            assert is_mcp_tool_parallel_safe("mcp__a_b__tool") is True
+            assert is_mcp_tool_parallel_safe("a_b_tool") is True
         finally:
             for tool_name in registered:
                 registry.deregister(tool_name)
             with _lock:
                 _parallel_safe_servers.discard("a")
                 _parallel_safe_servers.discard("a_b")
-                _mcp_tool_server_names.pop("mcp__a_b__tool", None)
+                _mcp_tool_server_names.pop("a_b_tool", None)
 
     def test_is_mcp_tool_parallel_safe_no_tool_suffix(self):
         """Tool name that is just 'mcp_{server}' without a tool part returns False."""

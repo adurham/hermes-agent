@@ -265,6 +265,48 @@ def _get_search_backend() -> str:
     return _get_capability_backend("search")
 
 
+def _get_search_chain() -> tuple[str, ...]:
+    """Return the ordered web-search provider chain from config, if any.
+
+    Reads ``web.search_chain`` from config.yaml. When set to a non-empty
+    list of provider names, the web_search dispatcher walks them in order,
+    falling through on 429 / rate-limit / failure to the next provider.
+    When unset or empty, the dispatcher falls back to the single-provider
+    path (``web.search_backend`` / ``web.backend`` / auto-detect).
+
+    Provider names are normalized to lowercase and stripped. Unknown names
+    are kept in the tuple so the dispatcher can log them as "not
+    registered" rather than silently dropping them — matches the
+    single-provider path's explicit-config-wins behavior of surfacing
+    misconfiguration rather than hiding it.
+    """
+    raw = _load_web_config().get("search_chain")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    names = [str(item).lower().strip() for item in raw if str(item).strip()]
+    return tuple(names)
+
+
+def _provider_failed(response_data: object) -> bool:
+    """Return True when a provider response indicates a fallthrough-worthy failure.
+
+    Triggers a chain fallthrough on:
+      * ``success`` is False (any error — 429, network, parse, auth, etc.)
+      * error string mentioning "429" / "rate limit" / "rate_limit" /
+        "too many requests" (defensive: some providers return success=True
+        with an error field; not all do, so check both)
+
+    A response with ``success: True`` and a populated ``data.web`` list is
+    always treated as a success — never falls through.
+    """
+    if not isinstance(response_data, dict):
+        return True
+    if response_data.get("success") is True:
+        return False
+    err = str(response_data.get("error") or "")
+    return True
+
+
 def _get_extract_backend() -> str:
     """Determine which backend to use for web_extract specifically.
 
@@ -320,6 +362,9 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "claude-code":
+        from plugins.web.claude_code.provider import _is_configured as _cc_is_configured
+        return _cc_is_configured()
     if backend == "xai":
         # Cheap probe — env var OR auth.json has OAuth tokens. Must not
         # call resolve_xai_http_credentials() here because the OAuth path
@@ -597,6 +642,106 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
+def _resolve_search_provider(name: str):
+    """Resolve a provider name from the web search registry.
+
+    Returns the provider instance or None. Imports lazily so the module
+    can be imported without the registry populated.
+    """
+    from agent.web_search_registry import get_provider as _wsp_get_provider
+    return _wsp_get_provider(name)
+
+
+def _run_search_single(query: str, limit: int) -> dict:
+    """Single-provider dispatch (the legacy path).
+
+    Mirrors the pre-chain dispatcher: pick the configured/active provider,
+    call its search(), return the response dict. When no provider is
+    configured, returns a helpful "set up a provider" error.
+    """
+    from agent.web_search_registry import get_active_search_provider
+
+    backend = _get_search_backend()
+    provider = _resolve_search_provider(backend) if backend else None
+    if provider is None or not provider.supports_search():
+        provider = get_active_search_provider()
+
+    if provider is None:
+        return {
+            "success": False,
+            "error": (
+                "No web search provider configured. "
+                "Run `hermes tools` to set one up."
+            ),
+        }
+    logger.info("Web search via %s: '%s' (limit: %d)", provider.name, query, limit)
+    return provider.search(query, limit)
+
+
+def _run_search_chain(chain: tuple[str, ...], query: str, limit: int) -> dict:
+    """Walk the configured search provider chain with failover.
+
+    For each provider name in *chain*:
+      1. Resolve it from the registry. If not registered, log a warning and
+         skip (treat as a failure, fall through).
+      2. If registered but ``is_available()`` is False, log and skip.
+      3. If it doesn't ``supports_search()``, log and skip.
+      4. Call ``.search(query, limit)``. On a fallthrough-worthy failure
+         (``_provider_failed``), log the error and continue to the next.
+      5. On success, return the response dict immediately.
+
+    If every provider fails, return the last failure's response dict (or
+    a synthesized "all providers in chain failed" error if none even
+    produced a response).
+    """
+    last_response: dict | None = None
+
+    for name in chain:
+        provider = _resolve_search_provider(name)
+        if provider is None:
+            logger.warning("web_search chain: '%s' not registered; skipping", name)
+            last_response = {"success": False, "error": f"Provider '{name}' not registered"}
+            continue
+        if not provider.supports_search():
+            logger.warning("web_search chain: '%s' does not support search; skipping", name)
+            last_response = {"success": False, "error": f"Provider '{name}' does not support search"}
+            continue
+        try:
+            available = provider.is_available()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("web_search chain: '%s'.is_available() raised %s; skipping", name, exc)
+            last_response = {"success": False, "error": f"Provider '{name}' availability check failed: {exc}"}
+            continue
+        if not available:
+            logger.info("web_search chain: '%s' not available (missing credentials?); skipping", name)
+            last_response = {"success": False, "error": f"Provider '{name}' not available"}
+            continue
+
+        logger.info("web_search chain: trying %s for '%s' (limit %d)", name, query, limit)
+        try:
+            response = provider.search(query, limit)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("web_search chain: %s raised %s; falling through", name, exc)
+            last_response = {"success": False, "error": f"Provider '{name}' raised: {exc}"}
+            continue
+
+        if _provider_failed(response):
+            err = str(response.get("error") or "unknown error")
+            logger.warning("web_search chain: %s failed (%s); falling through", name, err)
+            last_response = response
+            continue
+
+        logger.info("web_search chain: %s succeeded for '%s'", name, query)
+        return response
+
+    if last_response is not None:
+        return last_response
+    return {
+        "success": False,
+        "error": "All providers in web.search_chain failed or were unavailable",
+    }
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -664,44 +809,47 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _disabled_web_plugin_for,
         )
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
-            provider = get_active_search_provider()
-
-        if provider is None:
-            # A bundled web plugin the user explicitly disabled looks
-            # identical to "no provider" here — point at the real cause
-            # (re-enable the plugin) rather than a generic setup hint.
-            disabled_key = _disabled_web_plugin_for(capability="search")
-            if disabled_key:
-                _vendor = disabled_key.split("/", 1)[-1]
-                response_data = {
-                    "success": False,
-                    "error": (
-                        f"web.search_backend is set to '{_vendor}', but its "
-                        f"plugin ('{disabled_key}') is disabled in config. "
-                        f"Re-enable it with `hermes plugins enable {disabled_key}` "
-                        "(or remove it from plugins.disabled)."
-                    ),
-                }
-            else:
-                response_data = {
-                    "success": False,
-                    "error": (
-                        "No web search provider configured. "
-                        "Run `hermes tools` to set one up."
-                    ),
-                }
+        chain = _get_search_chain()
+        if chain:
+            # Explicit failover chain — walk providers in order, fall through
+            # on 429 / rate-limit / any failure. Returns the first successful
+            # response, or the last error if all providers fail.
+            response_data = _run_search_chain(chain, query, limit)
         else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
-            response_data = provider.search(query, limit)
+            backend = _get_search_backend()
+            provider = _wsp_get_provider(backend) if backend else None
+            if provider is None or not provider.supports_search():
+                # Fall back to availability-walked active provider when the
+                # configured backend isn't a registered search provider (typo,
+                # uninstalled plugin, or capability mismatch).
+                provider = get_active_search_provider()
+
+            if provider is None:
+                # A bundled web plugin the user explicitly disabled looks
+                # identical to "no provider" here — point at the real cause
+                # (re-enable the plugin) rather than a generic setup hint.
+                disabled_key = _disabled_web_plugin_for(capability="search")
+                if disabled_key:
+                    _vendor = disabled_key.split("/", 1)[-1]
+                    response_data = {
+                        "success": False,
+                        "error": (
+                            f"web.search_backend is set to '{_vendor}', but its "
+                            f"plugin ('{disabled_key}') is disabled in config. "
+                            f"Re-enable it with `hermes plugins enable {disabled_key}` "
+                            "(or remove it from plugins.disabled)."
+                        ),
+                    }
+                else:
+                    response_data = {
+                        "success": False,
+                        "error": (
+                            "No web search provider configured. "
+                            "Run `hermes tools` to set one up."
+                        ),
+                    }
+            else:
+                response_data = _run_search_single(query, limit)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -997,6 +1145,18 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available.
 
+    Anthropic native web_search (server-side) is also a valid backend —
+    it requires no third-party key, only that we're running against a
+    first-party Anthropic (Claude) endpoint. Detection is loose: any of the
+    standard Anthropic credential paths counts. This function only gates
+    whether the client `web_search` schema is exposed to the model at all;
+    the actual native-vs-client swap happens in the adapter at request-build
+    time — agent/fork/anthropic_native_web_search.apply_native_web_search()
+    (called from anthropic_adapter.build_anthropic_kwargs) replaces the
+    client tool entry with Anthropic's native web_search_20250305 server tool
+    when the endpoint is first-party Anthropic. On non-Claude providers the
+    client tool stays and dispatches to the configured backend as before.
+
     Used as the ``check_fn`` gate for the ``web_search`` and ``web_extract``
     tool registry entries — so a plugin-registered provider that reports
     ``is_available()`` must light the tools up even when no built-in backend
@@ -1005,8 +1165,11 @@ def check_web_api_key() -> bool:
     registry.
     """
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured and _is_backend_available(configured):
-        return True
+    if configured in _LEGACY_WEB_BACKENDS or _registered_web_provider(configured) is not None:
+        # Explicitly configured backend — return its availability directly,
+        # do NOT fall through to the Anthropic-native credential probe
+        # (that would mask a misconfigured backend with a false "available").
+        return _is_backend_available(configured)
     # Any built-in backend with credentials present. This is a boolean OR, so
     # unlike _get_backend() the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
@@ -1021,13 +1184,25 @@ def check_web_api_key() -> bool:
             get_active_extract_provider,
         )
 
-        return (
+        if (
             get_active_search_provider() is not None
             or get_active_extract_provider() is not None
-        )
+        ):
+            return True
     except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
         logger.debug("web provider registry availability check failed: %s", exc)
-        return False
+    # Fall back to "Anthropic native available?" — credentials present
+    # via env or Claude Code OAuth credentials file. Cheap probes only;
+    # don't make network calls in a check_fn.
+    if _has_env("ANTHROPIC_API_KEY") or _has_env("CLAUDE_CODE_OAUTH_TOKEN"):
+        return True
+    try:
+        from pathlib import Path as _P
+        if (_P.home() / ".claude" / ".credentials.json").exists():
+            return True
+    except Exception:
+        pass
+    return False
 
 
 if __name__ == "__main__":
@@ -1131,7 +1306,7 @@ WEB_SEARCH_SCHEMA = {
             }
         },
         "required": ["query"]
-    }
+    },
 }
 
 WEB_EXTRACT_SCHEMA = {

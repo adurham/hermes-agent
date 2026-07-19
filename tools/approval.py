@@ -1661,7 +1661,7 @@ def save_permanent_allowlist(patterns: set):
 # =========================================================================
 
 def prompt_dangerous_approval(command: str, description: str,
-                              timeout_seconds: int | None = None,
+                              timeout_seconds: float | None = None,
                               allow_permanent: bool = True,
                               approval_callback=None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
@@ -1674,7 +1674,10 @@ def prompt_dangerous_approval(command: str, description: str,
             prompt_toolkit integration. Signature:
             (command, description, *, allow_permanent=True) -> str.
 
-    Returns: 'once', 'session', 'always', or 'deny'
+    Returns: 'once', 'session', 'always', 'deny', or 'timeout'.
+    'timeout' means the prompt expired with NO user response — callers must
+    still fail closed (do not run the command) but must NOT present it to
+    the model as an explicit user denial (the user never answered).
     """
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
@@ -1754,7 +1757,7 @@ def prompt_dangerous_approval(command: str, description: str,
 
             if thread.is_alive():
                 print("\n" + t("approval.timeout"))
-                return "deny"
+                return "timeout"
 
             choice = result["choice"]
             if choice in {'o', 'once'}:
@@ -2851,6 +2854,26 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                     "outcome": outcome,
                     "user_consent": False,
+                }
+            if choice == "deny":
+                # Explicit denial — a hard halt that names the agent's most
+                # common evasion paths (retry, rephrase, achieve the same
+                # outcome via a different command). See issue #24912.
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: Command denied by user. The user has NOT "
+                        "consented to this action. Do NOT retry this command, "
+                        "do NOT rephrase it, and do NOT attempt the same "
+                        "outcome via a different command. Stop the current "
+                        "workflow and wait for the user to respond before "
+                        "taking any further destructive or irreversible "
+                        "action."
+                    ),
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                    "outcome": "denied",
+                    "user_consent": False,
                     "deny_reason": deny_reason,
                 }
 
@@ -2917,6 +2940,26 @@ def check_all_command_guards(command: str, env_type: str,
         surface="cli",
         choice=choice,
     )
+
+    if choice == "timeout":
+        # Prompt expired with no user response. Fail closed, but do NOT
+        # frame it as a user decision — the user never answered.
+        return {
+            "approved": False,
+            "message": (
+                "NOT RUN: The approval prompt timed out with no response "
+                "from the user — this is NOT a denial; the user may simply "
+                "not have seen it. The command was not executed. Silence is "
+                "not consent: do not run this or any equivalent command "
+                "without approval. You may re-request approval later (e.g. "
+                "once the user is active again), or continue with other "
+                "non-destructive work in the meantime."
+            ),
+            "pattern_key": primary_key,
+            "description": combined_desc,
+            "outcome": "timeout",
+            "user_consent": False,
+        }
 
     if choice == "deny":
         return {
@@ -3135,6 +3178,20 @@ def check_execute_code_guard(code: str, env_type: str,
             "description": description,
             "outcome": "timeout" if not resolved else "denied",
             "user_consent": False,
+        }
+    if choice == "deny":
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: execute_code script denied by user. The user has NOT "
+                "consented to running this code. Do NOT retry, do NOT rephrase "
+                "the script, and do NOT attempt the same outcome via a "
+                "different tool."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "denied",
+            "user_consent": False,
             "deny_reason": deny_reason,
         }
 
@@ -3235,6 +3292,10 @@ def request_elicitation_consent(
 
     if choice in ("once", "session", "always"):
         return "accept"
+    if choice == "timeout":
+        # No user response — per the MCP elicitation spec, "cancel" means the
+        # request went unanswered/dismissed, vs "decline" = explicit refusal.
+        return "cancel"
     return "decline"
 
 
