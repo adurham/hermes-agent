@@ -193,6 +193,49 @@ def _containing_skills_root(skill_path: Path) -> Path:
     return _skills_dir()
 
 
+def _background_review_external_guard(name: str, skill_path: Path, action: str) -> Optional[str]:
+    """Refuse curator (background_review) writes that would mutate a skill
+    living under ``skills.external_dirs`` (e.g. a team-shared repo).
+
+    Returns a refusal message if the call should be blocked, else None.
+
+    Rationale: the background review fork autonomously consolidates skills
+    based on session sediment. Foreground users explicitly editing an
+    external skill is fine (and is the established behavior — see issues
+    #4759 and #4381). But the curator running with no user in the loop
+    must NOT silently push session artifacts into a shared repo's working
+    tree; that produces accidental commits, personal-preference bleed,
+    and surprise PR diffs.
+
+    Foreground (CLI / gateway / subagent / cron) calls fall through
+    unchanged — only when the ContextVar from tools.skill_provenance is
+    ``"background_review"`` does this gate activate.
+    """
+    try:
+        from tools.skill_provenance import is_background_review
+    except ImportError:
+        return None
+    if not is_background_review():
+        return None
+
+    root = _containing_skills_root(skill_path)
+    if root.resolve() == SKILLS_DIR.resolve():
+        return None  # local ~/.hermes/skills/<name> — always OK
+
+    # External dir under skills.external_dirs (team repo, shared vault, etc.)
+    return (
+        f"Skill '{name}' lives in an external skills directory ({root}). "
+        f"Background-review curator passes do not auto-mutate external "
+        f"skills — that path produces accidental commits, personal-"
+        f"preference bleed, and surprise PR diffs in shared repos. "
+        f"Refusing '{action}'. If this learning belongs in the user's "
+        f"personal skills, create or patch a local skill under "
+        f"~/.hermes/skills/ instead. If it genuinely belongs upstream, "
+        f"surface a suggestion in your reply text so the user can "
+        f"review and apply it themselves."
+    )
+
+
 def _is_path_redirect(path: Path) -> bool:
     """True when ``path`` is a symlink or (on Windows) a directory junction.
 
@@ -875,6 +918,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if guard:
         return guard
 
+    guard = _background_review_external_guard(name, existing["path"], "edit")
+    if guard:
+        return {"success": False, "error": guard}
+
     skill_md = existing["path"] / "SKILL.md"
     read_guard = _background_review_read_before_write_guard(
         name, skill_md, "edit", "SKILL.md"
@@ -931,6 +978,10 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+
+    guard = _background_review_external_guard(name, existing["path"], "patch")
+    if guard:
+        return {"success": False, "error": guard}
 
     skill_dir = existing["path"]
     guard = _background_review_write_guard(name, skill_dir, "patch")
@@ -1160,6 +1211,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if guard:
         return guard
 
+    guard = _background_review_external_guard(name, existing["path"], "write_file")
+    if guard:
+        return {"success": False, "error": guard}
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -1200,6 +1255,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+
+    guard = _background_review_external_guard(name, existing["path"], "remove_file")
+    if guard:
+        return {"success": False, "error": guard}
 
     skill_dir = existing["path"]
     guard = _background_review_write_guard(name, skill_dir, "remove_file")
