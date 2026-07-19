@@ -58,4 +58,31 @@ gemini = GeminiProfile(
     default_aux_model="gemini-3.5-flash",
 )
 
+google_gemini_cli = GeminiProfile(
+    name="google-gemini-cli",
+    aliases=("gemini-cli", "gemini-oauth", "antigravity", "antigravity-cli", "agy"),
+    api_mode="chat_completions",
+    env_vars=(),  # OAuth — no API key
+    base_url="cloudcode-pa://google",  # Cloud Code Assist internal scheme
+    auth_type="oauth_external",
+)
+
+google_antigravity = GeminiProfile(
+    name="google-antigravity",
+    aliases=(
+        "antigravity",
+        "antigravity-oauth",
+        "antigravity-cli",
+        "google-antigravity-oauth",
+        "agy",
+        "agy-cli",
+    ),
+    api_mode="chat_completions",
+    env_vars=(),  # OAuth — no API key
+    base_url="antigravity-pa://google",  # Antigravity Code Assist internal scheme
+    auth_type="oauth_external",
+)
+
 register_provider(gemini)
+register_provider(google_gemini_cli)
+register_provider(google_antigravity)

@@ -1,0 +1,7 @@
+name: web-claude-code
+version: 1.0.0
+description: "Web search + extract via the Claude Code CLI (claude -p + WebSearch/WebFetch). Uses your existing Anthropic auth — no extra API keys."
+author: adurham
+kind: backend
+provides_web_providers:
+  - claude-code

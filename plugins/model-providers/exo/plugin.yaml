@@ -1,0 +1,5 @@
+name: exo-provider
+kind: model-provider
+version: 1.0.0
+description: Exo distributed inference cluster
+author: Nous Research
