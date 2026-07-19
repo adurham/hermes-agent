@@ -1064,6 +1064,9 @@ class ContextCompressor(ContextEngine):
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
+        self.last_input_tokens = 0
+        self.last_cache_read_tokens = 0
+        self.last_cache_write_tokens = 0
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
@@ -1115,9 +1118,25 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model: Optional[str] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
-        """Update tracked token usage from API response."""
+        """Update tracked token usage from API response.
+
+        Accepts both the legacy 2-field shape (``prompt_tokens``,
+        ``completion_tokens``) and the breakdown shape
+        (``input_tokens``, ``cache_read_tokens``, ``cache_write_tokens``,
+        ``completion_tokens``). The breakdown lets the status bar show
+        ``cached / new`` instead of a single total — when the same content
+        flips from cached (cheap) to uncached (full price), a 500K → 1M
+        ``prompt_tokens`` jump reads as a balloon when it's actually a
+        cache flush. See discussion in #18900.
+        """
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
+        if "input_tokens" in usage:
+            self.last_input_tokens = usage.get("input_tokens", 0)
+        if "cache_read_tokens" in usage:
+            self.last_cache_read_tokens = usage.get("cache_read_tokens", 0)
+        if "cache_write_tokens" in usage:
+            self.last_cache_write_tokens = usage.get("cache_write_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
@@ -1127,6 +1146,28 @@ class ContextCompressor(ContextEngine):
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+
+    def display_prompt_tokens(self) -> int:
+        """Return the last *real* provider prompt-token count for display.
+
+        ``last_prompt_tokens`` is a dual-purpose field: preflight compression
+        ratchets it UP to the rough char/4 estimate (turn_context.py) so the
+        pre-send compression check can fire before the provider sees the
+        payload. That estimate overcounts schema-heavy / cached requests, so
+        reading ``last_prompt_tokens`` for the status bar makes the context
+        counter (and the Δ segment) spike to the estimate mid-turn, then snap
+        back to the real number once ``update_from_response`` records actual
+        provider usage. The user sees a phantom balloon that never happened.
+
+        ``last_real_prompt_tokens`` is written ONLY from real API usage
+        (never from the preflight estimate), so it is the honest number to
+        display. It is reset to -1 at compression (awaiting the next real
+        usage), which we clamp to 0 for the one transitional turn.
+        """
+        real = self.last_real_prompt_tokens
+        if not isinstance(real, int) or real <= 0:
+            return 0
+        return real
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
@@ -1736,7 +1777,16 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary — replace any that appear "
             "with [REDACTED]. Note that the user had credentials present, but "
-            "do not preserve their values."
+            "do not preserve their values. "
+            "For terminal commands that involve database operations (pg_dump, "
+            "mysqldump, etc.), credential extraction (PGPASSWORD, "
+            "SQLConnectionString, etc.), or data-transfer operations (aws s3, "
+            "upload_stream, presigned URLs), describe the action in plain "
+            "language rather than quoting the raw shell command. Preserve the "
+            "key facts (database host, file path, outcome, tool used) but do "
+            "not reproduce inline credential substitutions or flag-heavy "
+            "command strings verbatim — a future reader needs to know WHAT was "
+            "done and WHY, not the exact invocation."
         )
 
         # Temporal anchoring directive. Rewrites relative / still-pending-sounding
@@ -1779,8 +1829,7 @@ If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
 work, write the reverse signal verbatim and DO NOT carry forward the
 cancelled task. Example: "User asked: 'Stop the i18n refactor and just
-verify the current diff' — earlier i18n in-flight work is cancelled."
-If no outstanding task exists, write "None."]
+verify the current diff' — earlier i18n in-flight work is cancelled."]
 
 ## Goal
 [What the user is trying to accomplish overall]

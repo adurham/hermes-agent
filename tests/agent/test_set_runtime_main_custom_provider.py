@@ -8,13 +8,22 @@ from unittest.mock import patch, MagicMock
 
 
 def _get_globals(mod):
-    """Read runtime globals without triggering redaction."""
+    """Read the calling thread's runtime override without triggering redaction.
+
+    As of the 2026-07-18 thread-safety fix (#background_review-title_generation
+    race), these are no longer bare module globals — ``set_runtime_main()``
+    stores per-thread state in ``mod._runtime_main_tls`` (a ``threading.local``)
+    so that concurrent AIAgent forks (bg-review, auto-title) never clobber each
+    other's provider/model. Read back via the thread-local accessor so this
+    test still observes the SAME thread's state it just wrote (single-threaded
+    test body — no race here, just a storage-location change).
+    """
     return {
-        "provider": mod._RUNTIME_MAIN_PROVIDER,
-        "model": mod._RUNTIME_MAIN_MODEL,
-        "base_url": mod._RUNTIME_MAIN_BASE_URL,
-        "cred": mod._RUNTIME_MAIN_API_KEY,  # renamed to avoid redaction
-        "api_mode": mod._RUNTIME_MAIN_API_MODE,
+        "provider": mod._rtl_get("provider"),
+        "model": mod._rtl_get("model"),
+        "base_url": mod._rtl_get("base_url"),
+        "cred": mod._rtl_get("api_key"),  # renamed to avoid redaction
+        "api_mode": mod._rtl_get("api_mode"),
     }
 
 

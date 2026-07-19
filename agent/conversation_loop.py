@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -77,6 +78,131 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
+
+# ── Sentinel-less / bare-XML tool-call recovery ─────────────────────────────
+#
+# Some open-weight backends (notably DSv4-Flash on exo, at temperature=1.0)
+# intermittently emit a tool call as bare Claude-style XML in the *content*
+# stream instead of via structured ``tool_calls`` — e.g. (observed live
+# 2026-06-29, the read_file call dropped + leaked as text):
+#
+#     <tool_call>
+#     <invoke name="read_file">
+#     <parameter name="limit" string="false">15</parameter>
+#     <parameter name="path" string="true">~/.hermes/config.yaml</parameter>
+#     </invoke>
+#
+# The backend's own tool-call parser is the primary fix site (exo recovers this
+# into a real structured call). This is the client-side safety net: if a leak
+# still reaches us as content with NO structured tool_calls, recover the call
+# here so the tool actually RUNS rather than the XML painting as a final answer
+# (and the action silently dropping). Handles both DSv4's
+# ``string="true|false"``-annotated parameters and the attribute-less
+# Claude/minimax form.
+#
+# Gating is strict to avoid recovering prose that merely *quotes* tool-call
+# syntax: we require a real ``<invoke name="...">...</invoke>`` block that
+# itself contains at least one ``<parameter name="...">`` tag. A model
+# discussing tool-call XML in prose won't form that exact closed structure.
+
+_RECOVER_INVOKE_RE = re.compile(
+    r"<invoke\s+name=\"([^\"]+)\">(.*?)</invoke>",
+    re.DOTALL,
+)
+_RECOVER_PARAM_TYPED_RE = re.compile(
+    r"<parameter\s+name=\"([^\"]+)\"\s+string=\"(true|false)\"\s*>(.*?)</parameter>",
+    re.DOTALL,
+)
+_RECOVER_PARAM_PLAIN_RE = re.compile(
+    r"<parameter\s+name=\"([^\"]+)\"\s*>(.*?)</parameter>",
+    re.DOTALL,
+)
+
+
+def _coerce_recovered_param(raw: str, *, force_string: bool) -> Any:
+    """Coerce a recovered parameter value — verbatim text when the model marked
+    it ``string="true"``, else JSON-decoded (so ``15`` → int) with a raw-string
+    fallback for non-JSON values like file paths."""
+    if force_string:
+        return raw
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
+def _recover_bare_tool_calls_from_content(content: Optional[str]) -> list[Any]:
+    """Recover leaked bare-XML tool calls from assistant content.
+
+    Returns a list of OpenAI-shaped tool-call namespaces (``.id``, ``.type``,
+    ``.function.name``, ``.function.arguments``) for each well-formed
+    ``<invoke>`` block that contains at least one ``<parameter>`` tag. Returns
+    an empty list when nothing matches (the common case — zero hot-path cost
+    beyond one regex scan). Never matches DSML sentinel-bearing tags (those are
+    the backend parser's job); a leak that still carries ``｜DSML｜`` is left
+    alone here.
+    """
+    if not content or "<invoke" not in content or "<parameter" not in content:
+        return []
+    if "\uff5cDSML\uff5c" in content:
+        return []  # sentinel-bearing — owned by the backend parser, not us
+
+    recovered: list[Any] = []
+    for invoke_match in _RECOVER_INVOKE_RE.finditer(content):
+        func_name = invoke_match.group(1).strip()
+        if not func_name:
+            continue
+        body = invoke_match.group(2)
+
+        args: dict[str, Any] = {}
+        typed_spans: list[tuple[int, int]] = []
+        for pm in _RECOVER_PARAM_TYPED_RE.finditer(body):
+            typed_spans.append(pm.span())
+            args[pm.group(1)] = _coerce_recovered_param(
+                pm.group(3), force_string=(pm.group(2) == "true")
+            )
+        for pm in _RECOVER_PARAM_PLAIN_RE.finditer(body):
+            if any(s <= pm.start() < e for s, e in typed_spans):
+                continue
+            if pm.group(1) in args:
+                continue
+            args[pm.group(1)] = _coerce_recovered_param(pm.group(2), force_string=False)
+
+        if not args:
+            # An invoke with no parseable parameters is too weak a signal —
+            # skip it rather than fire a tool with empty args from prose.
+            continue
+
+        call_id = f"recovered_call_{len(recovered) + 1}_{uuid.uuid4().hex[:8]}"
+        recovered.append(
+            SimpleNamespace(
+                id=call_id,
+                type="function",
+                function=SimpleNamespace(
+                    name=func_name,
+                    arguments=json.dumps(args, ensure_ascii=False),
+                ),
+            )
+        )
+    return recovered
+
+
+def _strip_cache_control(payload: Any) -> None:
+    """Remove all cache_control keys from a nested dict/list payload in-place.
+
+    Used by the overloaded-error recovery path: when a provider returns an
+    ``overloaded_error`` and ``strip_cache_on_overload`` is enabled, the retry
+    request is re-sent with every ``cache_control`` breakpoint stripped so a
+    poisoned/oversized cache write can't re-trigger the same failure.
+    """
+    if isinstance(payload, dict):
+        payload.pop("cache_control", None)
+        for value in payload.values():
+            _strip_cache_control(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            _strip_cache_control(item)
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -572,7 +698,10 @@ def run_conversation(
     # ``pre_llm_call`` plugin hook, and external-memory prefetch — lives in
     # ``build_turn_context``.  It mutates ``agent`` exactly as the inline code
     # did and returns the locals the loop below reads back.  See
-    # ``agent/turn_context.py``.
+    # ``agent/turn_context.py``.  Fork note: the fork-only prologue steps
+    # (memory_auto_feedback session bind, _last_user_message capture,
+    # _recent_tool_args reset) were ported INTO build_turn_context during the
+    # 2026-06-08 sync — keep them there, not re-inlined here.
     _ctx = build_turn_context(
         agent,
         user_message,
@@ -847,6 +976,18 @@ def run_conversation(
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        # The cached system prompt may carry the internal volatile-boundary
+        # sentinel (see agent.system_prompt.build_system_prompt). It is only
+        # consumed by the native Anthropic stable|volatile cache split below.
+        # On every other path (non-native transports, caching disabled) strip
+        # it here so the marker never reaches the model; stripping restores
+        # the exact "\n\n" separator, keeping sent bytes identical to before.
+        _will_split = bool(
+            agent._use_prompt_caching and agent._use_native_cache_layout
+        )
+        if effective_system and not _will_split:
+            from agent.prompt_caching import strip_volatile_sentinel
+            effective_system = strip_volatile_sentinel(effective_system)
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
@@ -887,10 +1028,16 @@ def run_conversation(
         # to reduce input token costs by ~75% on multi-turn
         # conversations.
         if agent._use_prompt_caching:
+            # Reserve one of the 4 breakpoints for ``tools[]`` ONLY when
+            # we're going to actually emit it (native Anthropic path —
+            # ``cache_tools=True`` in _build_api_kwargs). On third-party
+            # gateways that path is off, so use all 3 message breakpoints.
+            _reserve_tools_bp = bool(agent._use_native_cache_layout)
             api_messages = apply_anthropic_cache_control(
                 api_messages,
                 cache_ttl=agent._cache_ttl,
                 native_anthropic=agent._use_native_cache_layout,
+                reserve_tools_breakpoint=_reserve_tools_bp,
             )
 
         # Safety net: strip orphaned tool results / add stubs for missing
@@ -1090,6 +1237,19 @@ def run_conversation(
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
         max_compression_attempts = 3
+        # Auth/retry single-shot flags consolidated into TurnRetryState (_retry)
+        # upstream — referenced as _retry.<flag> below.  Two fork-only flags
+        # have no TurnRetryState home and stay bare locals:
+        #   _strip_cache_for_overload    — cache-strip-on-overload recovery
+        #   _refusal_sanitize_attempted  — refusal-sanitize ladder (fork-only)
+        _strip_cache_for_overload = False
+        _refusal_sanitize_attempted = False
+        # pause_turn recovery: if Anthropic pauses the model's thinking turn
+        # before it produces output, we cap the effort level for subsequent
+        # retries within this turn only.  Reset at the top of each turn so
+        # the cap doesn't bleed into the next conversation turn.
+        _pause_turn_effort_cap = None   # local mirror for readability
+        agent._pause_turn_effort_cap = None  # read by _build_api_kwargs
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -1098,6 +1258,20 @@ def run_conversation(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
+            # ── Code Assist egress pacing ──────────────────────────
+            # The Google Code Assist endpoint (cloudcode-pa) has strict
+            # per-user RPM/TPM limits because it's designed for sparse IDE
+            # requests, not bursty agent loops. When agent context grows,
+            # rapid tool loops easily hit the ~30k TPM ceiling.
+            # Proactively pace requests to smooth out the bursts and avoid
+            # the hard 60s penalty box.
+            _provider = getattr(agent, "provider", "unknown")
+            if _provider == "google-gemini-cli" and approx_tokens > 3000 and retry_count == 0:
+                _pace_s = min(max((approx_tokens - 3000) / 1000.0, 1.0), 6.0)
+                if not agent.quiet_mode:
+                    agent._vprint(f"{agent.log_prefix}   ⏱️  Pacing request to avoid Code Assist limits ({_pace_s:.1f}s delay)")
+                time.sleep(_pace_s)
+
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
@@ -1159,6 +1333,8 @@ def run_conversation(
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
                 api_kwargs = agent._build_api_kwargs(api_messages)
+                if _strip_cache_for_overload:
+                    _strip_cache_control(api_kwargs)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -1410,7 +1586,65 @@ def run_conversation(
                         if response is None:
                             error_details.append("response is None")
                         else:
-                            error_details.append("response.content invalid (not a non-empty list)")
+                            _ant_stop = getattr(response, "stop_reason", None)
+                            _ant_detail = f"stop_reason={_ant_stop!r}" if _ant_stop else "no stop_reason"
+                            error_details.append(f"response.content invalid (not a non-empty list, {_ant_detail})")
+                            # Emit a full diagnostic dump so we can tell exactly why
+                            # the API returned empty content (max_tokens? refusal?
+                            # pause_turn? model_context_window_exceeded? something new?).
+                            try:
+                                _ant_content = getattr(response, "content", "MISSING")
+                                _ant_usage = getattr(response, "usage", None)
+                                _ant_model = getattr(response, "model", None)
+                                _ant_id = getattr(response, "id", None)
+                                _use_str = ""
+                                if _ant_usage is not None:
+                                    _use_str = (
+                                        f" usage=(in={getattr(_ant_usage,'input_tokens',None)}"
+                                        f" out={getattr(_ant_usage,'output_tokens',None)}"
+                                        f" cache_read={getattr(_ant_usage,'cache_read_input_tokens',None)}"
+                                        f" cache_create={getattr(_ant_usage,'cache_creation_input_tokens',None)})"
+                                    )
+                                logging.warning(
+                                    "EMPTY-CONTENT DIAGNOSTIC id=%s model=%s stop_reason=%r "
+                                    "content=%r%s",
+                                    _ant_id, _ant_model, _ant_stop, _ant_content, _use_str,
+                                )
+                            except Exception:
+                                pass
+                            # pause_turn: Anthropic's server paused the model's
+                            # thinking turn before it produced visible output.
+                            # Common at large context + high effort when the
+                            # thinking phase exceeds the server's pause timeout.
+                            # Recovery: cap effort one level lower so the model
+                            # completes within the limit on the next attempt.
+                            # _pause_turn_effort_cap is read by _build_api_kwargs
+                            # on each rebuild, so it applies to all remaining
+                            # retries without permanently changing agent.reasoning_config.
+                            if _ant_stop == "pause_turn":
+                                _cur_effort = (
+                                    (api_kwargs.get("output_config") or {}).get("effort")
+                                    or (agent.reasoning_config or {}).get("effort", "xhigh")
+                                )
+                                _effort_ladder = ["low", "medium", "high", "xhigh", "max"]
+                                try:
+                                    _next_effort = _effort_ladder[
+                                        max(0, _effort_ladder.index(_cur_effort) - 1)
+                                    ]
+                                except (ValueError, IndexError):
+                                    _next_effort = "high"
+                                _pause_turn_effort_cap = _next_effort
+                                agent._pause_turn_effort_cap = _next_effort
+                                agent._vprint(
+                                    f"{agent.log_prefix}⏬ Model paused mid-thinking "
+                                    f"(pause_turn) — capping effort {_cur_effort!r} → "
+                                    f"{_next_effort!r} for retry...",
+                                    force=True,
+                                )
+                                logging.warning(
+                                    "pause_turn detected: capping effort %r → %r for retry",
+                                    _cur_effort, _next_effort,
+                                )
                 elif agent.api_mode == "bedrock_converse":
                     _btv = agent._get_transport()
                     if not _btv.validate_response(response):
@@ -1458,8 +1692,73 @@ def run_conversation(
                     
                     # Invalid response — could be rate limiting, provider timeout,
                     # upstream server error, or malformed response.
+
+                    # Refusals are permanent for the current provider — retrying
+                    # the same model won't change the decision.  Try a fallback
+                    # provider first (different providers have different policies);
+                    # if none is available, give up immediately with a clear message
+                    # rather than burning 60s of backoff on hopeless attempts.
+                    # Fork-only refusal detection lives in
+                    # agent/fork/anthropic_recovery.py (via the mixin forwarder)
+                    # so upstream rewrites of this loop don't collide with it.
+                    _is_refusal = agent._is_anthropic_refusal(response)
+                    if _is_refusal:
+                        logging.error(
+                            "%sContent policy refusal (stop_reason='refusal'). "
+                            "Trying fallback before giving up.",
+                            agent.log_prefix,
+                        )
+                        agent._emit_status("🚫 Content policy refusal — trying fallback...")
+                        if agent._try_activate_fallback():
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
+                        # Fallback exhausted.  Before giving up, try stripping
+                        # shell-command patterns from historical context that
+                        # look like data exfiltration to the filter but are
+                        # legitimate support work (pg_dump, S3 presigns, etc.).
+                        # The most recent user message is left intact.
+                        if not _refusal_sanitize_attempted:
+                            _refusal_sanitize_attempted = True
+                            _san_msgs, _was_sanitized = agent._sanitize_messages_for_refusal_retry(messages)
+                            if _was_sanitized:
+                                logging.warning(
+                                    "%sRefusal sanitize retry: stripped triggering shell "
+                                    "patterns from historical context.",
+                                    agent.log_prefix,
+                                )
+                                agent._emit_status(
+                                    "🔄 Paraphrasing sensitive command patterns in history and retrying..."
+                                )
+                                messages = _san_msgs
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                        _refusal_msg = (
+                            "Anthropic refused this request (content policy). "
+                            "The conversation history may contain content that "
+                            "triggered the filter (e.g. commands that read "
+                            "credential files, private keys, or security-tool "
+                            "internals). Run /compact to summarize and clear "
+                            "the offending context, then try again."
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}🚫 {_refusal_msg}",
+                            force=True,
+                        )
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "messages": messages,
+                            "completed": False,
+                            "api_calls": api_call_count,
+                            "error": _refusal_msg,
+                            "failed": True,
+                        }
+
                     retry_count += 1
-                    
+
                     # Eager fallback: empty/malformed responses are a common
                     # rate-limit symptom.  Switch to fallback immediately
                     # rather than retrying with extended backoff.
@@ -1792,12 +2091,41 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
+                    # Reasoning-channel exhaustion: some models (DeepSeek-V4,
+                    # Moonshot) stream their chain-of-thought in the SEPARATE
+                    # ``reasoning_content``/``reasoning`` field, not inline
+                    # <think> tags in ``content``.  When such a model burns its
+                    # whole output budget there it returns finish_reason='length'
+                    # with substantial reasoning but empty/no content and no tool
+                    # calls — the inline-tag check above never sees it, so the
+                    # turn would fall through to 3 pointless continuation retries
+                    # (each re-sending the same prompt and exhausting again).
+                    # Treat a length-truncated turn carrying real reasoning but
+                    # no usable content/tool-call as exhaustion too.
+                    _trunc_reasoning = (
+                        getattr(_trunc_msg, "reasoning_content", None)
+                        or getattr(_trunc_msg, "reasoning", None)
+                    ) if _trunc_msg else None
+                    _has_reasoning_channel = bool(
+                        _trunc_reasoning and str(_trunc_reasoning).strip()
+                    )
+                    _content_is_blank = not (_trunc_content and _trunc_content.strip())
+                    _reasoning_channel_exhausted = (
+                        not _trunc_has_tool_calls
+                        and _has_reasoning_channel
+                        and _content_is_blank
+                    )
                     _thinking_exhausted = (
                         not _trunc_has_tool_calls
-                        and _has_think_tags
                         and (
-                            (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
-                            or _trunc_content is None
+                            (
+                                _has_think_tags
+                                and (
+                                    (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
+                                    or _trunc_content is None
+                                )
+                            )
+                            or _reasoning_channel_exhausted
                         )
                     )
 
@@ -2104,6 +2432,7 @@ def run_conversation(
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
+                    agent._record_usage_history(canonical_usage)
 
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
@@ -2137,6 +2466,18 @@ def run_conversation(
                         api_duration, _cache_pct,
                     )
 
+                    # Fast mode (Anthropic Opus 4.6 only) charges 6x
+                    # standard rates. Source the flag from the same
+                    # api_kwargs that drove this request so per-call
+                    # cost reflects what Anthropic actually billed.
+                    _fast_mode_active = (
+                        agent.api_mode == "anthropic_messages"
+                        and (
+                            api_kwargs.get("speed") == "fast"
+                            or (api_kwargs.get("extra_body") or {}).get("speed") == "fast"
+                        )
+                    )
+
                     # On the MoA path, agent.model/provider are the virtual
                     # preset name ("closed") and "moa", which have no pricing
                     # entry — estimating against them returns None and silently
@@ -2159,6 +2500,7 @@ def run_conversation(
                         provider=_agg_cost_provider,
                         base_url=_agg_cost_base_url,
                         api_key=getattr(agent, "api_key", ""),
+                        fast_mode=_fast_mode_active,
                     )
                     if cost_result.amount_usd is not None:
                         agent.session_estimated_cost_usd += float(cost_result.amount_usd)
@@ -2226,6 +2568,66 @@ def run_conversation(
                                 "Token persistence failed (session=%s, tokens=%d): %s",
                                 agent.session_id, total_tokens, e,
                             )
+
+                        # Per-call telemetry. update_token_counts above
+                        # writes cumulative session totals; this row
+                        # captures the per-call cache split, latency, and
+                        # request_id needed to actually diagnose
+                        # individual slow turns. Cumulative totals can't
+                        # answer "was THIS turn a cold prefill?" — only
+                        # the per-call cache_read vs cache_write split
+                        # can.
+                        _request_id = None
+                        try:
+                            # Streaming path (Anthropic): the request_id
+                            # was captured from stream.response.headers
+                            # before the context manager closed and
+                            # stashed as ``_hermes_request_id`` on the
+                            # final Message — pull it from there first.
+                            # Non-streaming and other transports fall
+                            # back to whatever the response object
+                            # exposes natively.
+                            _request_id = getattr(
+                                response, "_hermes_request_id", None
+                            )
+                            if not _request_id:
+                                _hdrs = getattr(response, "headers", None)
+                                if _hdrs:
+                                    _request_id = (
+                                        _hdrs.get("request-id")
+                                        or _hdrs.get("x-request-id")
+                                    )
+                            if not _request_id:
+                                _request_id = getattr(
+                                    response, "_request_id", None
+                                )
+                        except Exception:
+                            _request_id = None
+                        _routing_headers = getattr(
+                            response, "_hermes_routing_headers", None
+                        ) or {}
+                        agent._session_db.record_api_call(
+                            agent.session_id,
+                            call_seq=agent.session_api_calls,
+                            started_at=api_start_time,
+                            ended_at=api_start_time + api_duration,
+                            model=agent.model,
+                            provider=agent.provider,
+                            input_tokens=canonical_usage.input_tokens,
+                            cache_read_tokens=canonical_usage.cache_read_tokens,
+                            cache_write_tokens=canonical_usage.cache_write_tokens,
+                            output_tokens=canonical_usage.output_tokens,
+                            reasoning_tokens=canonical_usage.reasoning_tokens,
+                            request_id=_request_id,
+                            stop_reason=getattr(
+                                response, "stop_reason", None
+                            ) or getattr(response, "finish_reason", None),
+                            call_type="main",
+                            extra={
+                                "raw_usage": canonical_usage.raw_usage,
+                                "routing": _routing_headers,
+                            },
+                        )
                     
                     if agent.verbose_logging:
                         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
@@ -2651,6 +3053,16 @@ def run_conversation(
                             "or shrink didn't reduce size; surfacing original error."
                         )
 
+                # Overloaded: strip prompt-cache breakpoints so the retry
+                # lands on a different routing pool (cached vs uncached
+                # requests may be served by separate capacity).
+                if agent._strip_cache_on_overload and classified.reason == FailoverReason.overloaded and not _strip_cache_for_overload:
+                    _strip_cache_for_overload = True
+                    agent._vprint(
+                        f"{agent.log_prefix}🔄 Overloaded — stripping prompt cache to force fresh routing on retry...",
+                        force=True,
+                    )
+
                 # Multimodal-tool-content recovery: providers that follow
                 # the OpenAI spec strictly (tool message content must be a
                 # string) reject our list-type content with a 400.  Strip
@@ -2843,6 +3255,10 @@ def run_conversation(
                     for _m in api_messages:
                         if isinstance(_m, dict) and "reasoning_details" in _m:
                             _m.pop("reasoning_details", None)
+                            # Verbatim block array is the second source
+                            # of replayed thinking blocks; strip it too
+                            # so the retry sends none.
+                            _m.pop("anthropic_content_blocks", None)
                             _api_stripped += 1
                     agent._vprint(
                         f"{agent.log_prefix}⚠️  Thinking block signature invalid, "
@@ -3276,6 +3692,18 @@ def run_conversation(
                             getattr(_err_resp, "headers", None)
                             if _err_resp else None
                         )
+                        # Refresh rate-limit state from the error
+                        # response headers BEFORE classifying the
+                        # 429.  Anthropic / Nous both emit the same
+                        # ratelimit-* headers on 429 as on 200 OK,
+                        # so this is the moment when state most
+                        # accurately reflects "right now"; the
+                        # genuine-rate-limit check below then sees
+                        # the freshest data instead of last-known.
+                        try:
+                            agent._capture_rate_limits_from_headers(_err_hdrs)
+                        except Exception:
+                            pass
                         _genuine_nous_rate_limit = is_genuine_nous_rate_limit(
                             headers=_err_hdrs,
                             last_known_state=agent._rate_limit_state,
@@ -3345,6 +3773,33 @@ def run_conversation(
                     )
 
                 if is_payload_too_large:
+                    # Image-dominated 413 recovery: a single oversized image
+                    # part (e.g. a 35 MB phone photo → ~49 MB base64) blows the
+                    # provider's HTTP body limit (Anthropic 32 MB → 413
+                    # request_too_large) no matter how few conversation tokens
+                    # exist. History compression CANNOT fix this — the
+                    # oversized payload is one image in the protected last-N
+                    # turns, so compressing 93→10 messages leaves the same
+                    # image in place and the retry 413s again ("cannot compress
+                    # further"). Try shrinking image parts FIRST; only fall
+                    # through to history compression if there were no
+                    # shrinkable images. Gated on a single attempt so a
+                    # genuinely text-too-large 413 still reaches compression.
+                    if not _retry.image_shrink_retry_attempted:
+                        _retry.image_shrink_retry_attempted = True
+                        if agent._try_shrink_image_parts_in_messages(api_messages):
+                            agent._vprint(
+                                f"{agent.log_prefix}📐 Payload too large (413) — shrank "
+                                f"oversized image(s) and retrying...",
+                                force=True,
+                            )
+                            continue
+                        else:
+                            logger.info(
+                                "413 payload-too-large: no shrinkable image parts "
+                                "found; falling through to history compression."
+                            )
+
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
                         # Terminal — surface the buffered retry trace.
@@ -3672,6 +4127,23 @@ def run_conversation(
                         and "nonetype" in str(api_error).lower()
                         and "not iterable" in str(api_error).lower()
                     )
+                    # The Anthropic SDK's streaming consumer raises a *plain*
+                    # ValueError (not a json.JSONDecodeError) when the model
+                    # emits a malformed input_json_delta for a tool call —
+                    # e.g. a double comma `{"offset": 1642, , "limit": 90}`.
+                    # See anthropic/lib/streaming/_beta_messages.py: it catches
+                    # the inner parse ValueError and re-raises with the prefix
+                    # "Unable to parse tool parameter JSON from model. Please
+                    # retry your request or adjust your prompt."  This is the
+                    # same class of failure as the JSONDecodeError carve-out
+                    # above (corrupt bytes off the wire, not a local bug), and
+                    # the SDK itself instructs the caller to retry — resampling
+                    # the model almost always yields well-formed JSON.  Match
+                    # on the hardcoded message prefix since the SDK surfaces it
+                    # as a bare ValueError with no more-specific type (#39021).
+                    and "unable to parse tool parameter json" not in str(
+                        api_error
+                    ).lower()
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:
@@ -3705,6 +4177,49 @@ def run_conversation(
                 ) and not is_context_length_error
 
                 if is_client_error:
+                    # Internal code bug (NameError/ImportError/…): a provider
+                    # switch can't fix a bug in our own code path, and the
+                    # error carries no HTTP status.  Surface it accurately and
+                    # abort immediately rather than announcing a misleading
+                    # "HTTP None" provider error or wasting a fallback attempt.
+                    # Return the same failed-result shape the other terminal
+                    # client-error paths use (never raise — the caller expects
+                    # a structured result), but log the full traceback so the
+                    # underlying bug is diagnosable.
+                    if classified.reason == FailoverReason.internal_code_error:
+                        if api_kwargs is not None:
+                            agent._dump_api_request_debug(
+                                api_kwargs, reason="internal_code_error", error=api_error,
+                            )
+                        agent._flush_status_buffer()
+                        _internal_summary = agent._summarize_api_error(api_error)
+                        agent._emit_status(
+                            f"❌ Internal error ({type(api_error).__name__}): "
+                            f"{_internal_summary}"
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}❌ Internal code error "
+                            f"({type(api_error).__name__}) in the API call path — "
+                            f"not retryable (retrying re-runs the same bug). Aborting.",
+                            force=True,
+                        )
+                        logger.error(
+                            "Internal code error in API call path (non-retryable): "
+                            "%s: %s | provider=%s model=%s",
+                            type(api_error).__name__, api_error,
+                            _provider, _model,
+                            exc_info=api_error,
+                        )
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": f"Internal error ({type(api_error).__name__}): {_internal_summary}",
+                        }
+
                     # Try fallback before aborting — a different provider may
                     # not have the same issue (rate limit, auth, etc.). Only
                     # announce the attempt when a fallback chain actually
@@ -4107,6 +4622,26 @@ def run_conversation(
                                 _retry_after = min(float(_ra_raw), 600)
                             except (TypeError, ValueError):
                                 pass
+                        # Also refresh rate-limit state from the 429
+                        # response headers.  This catches non-Nous
+                        # 429s (Anthropic native, OpenRouter, etc.)
+                        # that bypass the genuine-Nous-rate-limit
+                        # branch above.  Without this, /usage and
+                        # the heartbeat would still display the
+                        # last-known state from before the throttle
+                        # event.
+                        try:
+                            agent._capture_rate_limits_from_headers(_resp_headers)
+                        except Exception:
+                            pass
+                    # Code Assist (google-gemini-cli) puts retry delay in
+                    # google.rpc.RetryInfo inside the JSON body, not in the
+                    # HTTP Retry-After header.  CodeAssistError.retry_after
+                    # carries the parsed value.
+                    if _retry_after is None:
+                        _ca_retry = getattr(api_error, "retry_after", None)
+                        if isinstance(_ca_retry, (int, float)) and _ca_retry > 0:
+                            _retry_after = min(float(_ca_retry), 120)
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
                 if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
@@ -4415,7 +4950,37 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
-            
+
+            # ── Bare-XML tool-call recovery (client-side safety net) ─────────
+            # If the model leaked a tool call as bare <invoke>/<parameter> XML
+            # in content but produced NO structured tool_calls, recover it so
+            # the tool actually runs instead of the XML painting as a final
+            # answer (and the action silently dropping). Backend parsers (e.g.
+            # exo's DSv4 recovery) are the primary fix site; this catches any
+            # leak that still slips through. Only fires when the model returned
+            # no structured calls — never overrides a real tool_calls payload.
+            if not assistant_message.tool_calls:
+                _leaked_content = getattr(assistant_message, "content", None)
+                if isinstance(_leaked_content, str):
+                    _recovered_calls = _recover_bare_tool_calls_from_content(_leaked_content)
+                    if _recovered_calls:
+                        agent._vprint(
+                            f"{agent.log_prefix}🔧 Recovered {len(_recovered_calls)} "
+                            f"leaked tool call(s) from content "
+                            f"({', '.join(c.function.name for c in _recovered_calls)}) "
+                            f"— executing instead of leaking as text"
+                        )
+                        logger.info(
+                            "Recovered %d bare-XML tool call(s) from leaked content: %s",
+                            len(_recovered_calls),
+                            [c.function.name for c in _recovered_calls],
+                        )
+                        assistant_message.tool_calls = _recovered_calls
+                        # Drop the leaked XML from the stored content so the raw
+                        # tags never persist into conversation history (which
+                        # would re-prime the model to leak again next turn).
+                        assistant_message.content = None
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
@@ -4429,10 +4994,28 @@ def run_conversation(
                 # Repair mismatched tool names before validating
                 for tc in assistant_message.tool_calls:
                     if tc.function.name not in agent.valid_tool_names:
-                        repaired = agent._repair_tool_call(tc.function.name)
+                        original_name = tc.function.name
+                        repaired = agent._repair_tool_call(original_name)
                         if repaired:
-                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                            # Route through _vprint so a child agent's
+                            # patched _print_fn (e.g. swarm board's note
+                            # interceptor) captures the line into its row
+                            # instead of letting it scroll past the live
+                            # board.  The bare print() this replaced was
+                            # the source of the "[subagent-N] Auto-repaired"
+                            # lines that interleaved with the swarm board.
+                            # CC alias hits are well-known and silent — see agent/cc_aliases.py
+                            if not getattr(agent, "_last_repair_silent", False):
+                                agent._vprint(
+                                    f"{agent.log_prefix}🔧 Auto-repaired tool name: "
+                                    f"'{original_name}' -> '{repaired}'"
+                                )
                             tc.function.name = repaired
+                            # CC alias hits also need ARGS translated —
+                            # otherwise Read({"file_path": ...}) gets
+                            # renamed to read_file but the args still use
+                            # the CC ``file_path`` key. See helper docstring.
+                            agent._translate_cc_args_after_repair(tc, original_name)
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names
@@ -4712,8 +5295,12 @@ def run_conversation(
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
-                # entire conversation.
+                # entire conversation.  Also reset length_continue_retries:
+                # the tool-call truncation path advances it to drive the
+                # output-budget boost, so clear it once a tool call lands
+                # cleanly to avoid an ever-climbing boost across the turn.
                 truncated_tool_call_retries = 0
+                length_continue_retries = 0
 
                 # Signal that a paragraph break is needed before the next
                 # streamed text.  We don't emit it immediately because
@@ -4767,19 +5354,58 @@ def run_conversation(
                     )
 
                 if agent.compression_enabled and _compressor.should_compress(_real_tokens):
-                    agent._safe_print("  ⟳ compacting context…")
+                    _pre_tokens = _real_tokens
+                    _pre_msgs = len(messages)
+                    # Show cache breakdown so a sudden ``500K → 1M``
+                    # display reads as the cache flush it usually is
+                    # (same content, just billed as new instead of
+                    # cached) rather than a real content balloon.
+                    _bd = ""
+                    _cr = getattr(_compressor, "last_cache_read_tokens", 0) or 0
+                    _in = getattr(_compressor, "last_input_tokens", 0) or 0
+                    _cw = getattr(_compressor, "last_cache_write_tokens", 0) or 0
+                    if _cr or _in or _cw:
+                        _bd = f" ({_cr:,} cached + {_in:,} new + {_cw:,} written)"
+                    agent._emit_status(
+                        f"⟳ Compacting context: {_pre_tokens:,} tokens{_bd} / {_pre_msgs} messages "
+                        f"→ summarizing with {agent.context_compressor.summary_model or agent.model}…"
+                    )
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
                         task_id=effective_task_id,
                     )
+                    _post_tokens = agent.context_compressor.last_prompt_tokens
+                    _saved_pct = (
+                        int((1 - _post_tokens / _pre_tokens) * 100)
+                        if _pre_tokens > 0 else 0
+                    )
+                    agent._emit_status(
+                        f"✓ Compaction complete: {_pre_tokens:,} → {_post_tokens:,} tokens "
+                        f"({_saved_pct}% reduction, {_pre_msgs} → {len(messages)} messages)"
+                    )
                     conversation_history = conversation_history_after_compression(
                         agent, messages
                     )
-                
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
-                
+                agent._save_session_log(messages)
+
+                # Tell the parent's swarm board (or any other progress
+                # consumer) that the child has stopped iterating: the
+                # tool-calling loop is done and only the final-answer
+                # text remains to be delivered.  This is the
+                # deterministic signal that the heuristic in
+                # delegate_tool's TASK_THINKING handler can't always
+                # catch — the streamed text could be phrased many ways
+                # ("Done.", "Here's the summary", "All set"), but
+                # "the model returned no tool_calls" is unambiguous.
+                if agent.tool_progress_callback:
+                    try:
+                        agent.tool_progress_callback("subagent.finalizing")
+                    except Exception:
+                        pass
+
                 # Continue loop for next response
                 continue
             

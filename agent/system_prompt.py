@@ -122,15 +122,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
       * ``volatile`` — memory snapshot, user profile, external
         memory provider block, timestamp line.
 
-    Joined into a single string by :func:`build_system_prompt` and
-    cached on ``agent._cached_system_prompt`` for the lifetime of the
+    Joined into a single string by ``_build_system_prompt`` and
+    cached on ``_cached_system_prompt`` for the lifetime of the
     AIAgent.  Hermes never re-renders parts of this string mid-
     session — that's the only way to keep upstream prompt caches
     warm across turns.
     """
-    # Local import to avoid pulling model_tools at module load.  Tests
-    # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
-    # we resolve through ``_ra()`` to honor those patches.
     _r = _ra()
 
     # Resolve the model's context window once so context-file caps can scale
@@ -195,12 +192,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
-    # this block. Resolved once at __init__ (see _kanban_worker_guidance).
-    _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance:
-        tool_guidance.append(_kanban_guidance)
-    elif _kanban_guidance is None and "kanban_show" in agent.valid_tool_names:
-        # Fallback for code paths that bypass agent_init (rare).
+    # this block.
+    if "kanban_show" in agent.valid_tool_names:
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
@@ -251,9 +244,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
@@ -433,6 +423,29 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             user_block = agent._memory_store.format_for_system_prompt("user")
             if user_block:
                 volatile_parts.append(user_block)
+        # Warm-tier status — a small one-line "WARM MEMORY: N facts indexed"
+        # block teaching the agent that on-demand recall is available.
+        # Returns None when warm tier is empty / unavailable; safe to call
+        # every turn, the underlying count is a fast SQLite COUNT(*).
+        if agent._memory_enabled or agent._user_profile_enabled:
+            try:
+                warm_block = agent._memory_store.format_for_system_prompt("warm_status")
+                if warm_block:
+                    volatile_parts.append(warm_block)
+            except Exception:
+                pass
+
+        # Session-pinned facts — warm-tier facts the agent (or user)
+        # has pinned for the rest of this session. Returns None when
+        # no facts are pinned. Best-effort: any render failure just
+        # skips the block rather than crashing prompt assembly.
+        try:
+            from agent.fork.memory_session_pin import render_pinned_block
+            pinned_block = render_pinned_block(agent)
+            if pinned_block:
+                volatile_parts.append(pinned_block)
+        except Exception:
+            pass
 
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
@@ -445,12 +458,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()
-    # Date-only (not minute-precision) so the system prompt is byte-stable
-    # for the full day.  Minute-precision changes invalidate prefix-cache KV
-    # on every rebuild path (compression boundary, fresh-agent gateway turns,
-    # session resume without a stored prompt).  The model can still query the
-    # exact wall-clock time via tools when it actually needs it.
-    # Credit: @iamfoz (PR #20451).
     timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
@@ -466,7 +473,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
     }
 
-
 def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
     """Assemble the full system prompt from all layers.
 
@@ -481,16 +487,39 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     one cached block — Hermes never rebuilds or reinjects parts of it
     mid-session, which is the only way to keep upstream prompt caches
     warm across turns.
+
+    Cache split marker: when a volatile tier is present, a single
+    ``SYSTEM_VOLATILE_SENTINEL`` line is inserted between the stable+context
+    head and the volatile tail. The Anthropic cache layer
+    (``agent.prompt_caching``) uses it to place the system cache_control
+    breakpoint at the end of the stable head so a memory edit or date
+    rollover doesn't cold-rewrite the stable identity. The sentinel is
+    internal-only — it is always either consumed by the split or stripped
+    (restoring the plain ``\\n\\n`` separator) before the prompt is sent,
+    so the model never sees it, and the stored/displayed flat string stays
+    byte-reproducible. No sentinel is emitted when volatile is empty.
     """
+    _r = _ra()
+    from agent.prompt_caching import SYSTEM_VOLATILE_SENTINEL
+
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 
     # Surface context-file truncation warnings through the normal agent status
     # channel so gateway/CLI users see them in chat instead of only in logs.
+    # (Side effect only — independent of the cache-split return shape below.)
     for warning in drain_truncation_warnings():
         agent._emit_status(warning)
 
-    return joined
+    # FORK (prompt-cache stable|volatile split, FORK.md 2026-06-02): insert the
+    # SYSTEM_VOLATILE_SENTINEL between the stable+context head and the volatile
+    # tier so apply_anthropic_cache_control can split the system block and keep
+    # the byte-stable identity+tools head cached across memory/date changes.
+    head = "\n\n".join(p for p in (parts["stable"], parts["context"]) if p)
+    volatile = parts["volatile"]
+    if head and volatile:
+        return head + "\n\n" + SYSTEM_VOLATILE_SENTINEL + "\n\n" + volatile
+    # Only one side present — no boundary to mark; emit a plain join.
+    return "\n\n".join(p for p in (head, volatile) if p)
 
 
 def invalidate_system_prompt(agent: Any) -> None:

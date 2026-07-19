@@ -1032,7 +1032,7 @@ def _approval_choice_to_codex_decision(choice: str) -> str:
     """Map Hermes approval choices onto codex's CommandExecutionApprovalDecision
     / FileChangeApprovalDecision wire values.
 
-    Hermes returns 'once', 'session', 'always', or 'deny'.
+    Hermes returns 'once', 'session', 'always', 'deny', or 'timeout'.
     Codex expects 'accept', 'acceptForSession', 'decline', or 'cancel'
     (verified against codex-rs/app-server-protocol/src/protocol/v2/item.rs
     on codex 0.130.0).
@@ -1041,6 +1041,10 @@ def _approval_choice_to_codex_decision(choice: str) -> str:
         return "accept"
     if choice in {"session", "always"}:
         return "acceptForSession"
+    if choice == "timeout":
+        # Unanswered prompt — 'cancel' (request withdrawn), not 'decline'
+        # (explicit user refusal). Codex still does not run the command.
+        return "cancel"
     return "decline"
 
 

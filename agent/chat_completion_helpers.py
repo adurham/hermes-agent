@@ -687,6 +687,19 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+            # Wire MCP-tool deferral (client-side lazy loading) and the native
+            # tools[] cache breakpoint. The transport and _apply_tool_search
+            # fully support both, but this builder was the one live call site
+            # that never passed them, leaving deferral + tools-array caching as
+            # dead code. Without tool_search_config every MCP tool ships its
+            # full schema (observed: 253 tools / ~399KB / ~100K tokens cold-
+            # cached on an MCP-heavy install). cache_tools mirrors the tools[]
+            # breakpoint conversation_loop already reserves when
+            # _use_native_cache_layout is set.
+            tool_search_config=agent._build_tool_search_config(),
+            session_id=getattr(agent, "session_id", None),
+            cache_tools=bool(getattr(agent, "_use_native_cache_layout", False)),
+            cache_ttl=getattr(agent, "_cache_ttl", "5m"),
         )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -1101,6 +1114,25 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if codex_message_items:
         msg["codex_message_items"] = codex_message_items
 
+    # Anthropic server-side tools (web_search_20250305, etc.) — preserve
+    # the server_tool_use + web_search_tool_result content blocks so they
+    # are re-emitted verbatim on the next turn. Anthropic's API will
+    # reject re-submitted assistant messages if the server_tool_use
+    # block exists without its paired tool_result.
+    server_tool_blocks = getattr(assistant_message, "server_tool_blocks", None)
+    if server_tool_blocks:
+        msg["server_tool_blocks"] = server_tool_blocks
+
+    # Anthropic-native: the full assistant content array, captured in
+    # original block order with all per-block fields (signature, data,
+    # cache_control absence) preserved.  Required for thinking-block
+    # signature validation under interleaved-thinking-2025-05-14 plus
+    # context_management.clear_thinking_20251015 — see the rebuild
+    # branch in convert_messages_to_anthropic.
+    anthropic_content_blocks = getattr(assistant_message, "anthropic_content_blocks", None)
+    if anthropic_content_blocks:
+        msg["anthropic_content_blocks"] = anthropic_content_blocks
+
     if assistant_tool_calls:
         tool_calls = []
         for tool_call in assistant_tool_calls:
@@ -1226,7 +1258,6 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     if not (has_access or has_refresh):
         return "nous_token_missing"
     return None
-
 
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
@@ -1516,22 +1547,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # the fallback activation drops to 128K even when config says 204800.
         if hasattr(agent, 'context_compressor') and agent.context_compressor:
             from agent.model_metadata import get_model_context_length
-            # ``agent.api_key`` may be callable (Entra ID); the
-            # context-length resolver expects a string for live
-            # probes. Foundry typically resolves via config/static
-            # catalogs anyway, so coerce defensively.
-            _fb_ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
             fb_context_length = get_model_context_length(
                 agent.model, base_url=agent.base_url,
-                api_key=_fb_ctx_api_key, provider=agent.provider,
+                api_key=agent.api_key, provider=agent.provider,
                 config_context_length=getattr(agent, "_config_context_length", None),
-                custom_providers=getattr(agent, "_custom_providers", None),
             )
             agent.context_compressor.update_model(
                 model=agent.model,
                 context_length=fb_context_length,
                 base_url=agent.base_url,
-                api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
+                api_key=getattr(agent, "api_key", ""),
                 provider=agent.provider,
                 api_mode=agent.api_mode,
             )
@@ -1559,8 +1584,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             unavailable.add(fb_key)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
         return agent._try_activate_fallback(reason)  # try next in chain
-
-
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
@@ -1824,10 +1847,222 @@ def cleanup_task_resources(agent, task_id: str) -> None:
         if agent.verbose_logging:
             logger.warning(f"Failed to cleanup browser for task {task_id}: {e}")
 
+# ------------------------------------------------------------------
+# Background memory/skill review
+# ------------------------------------------------------------------
 
+_MEMORY_REVIEW_PROMPT = (
+    "Review the conversation above and consider saving to memory if appropriate.\n\n"
+    "Focus on:\n"
+    "1. Has the user revealed things about themselves — their persona, desires, "
+    "preferences, or personal details worth remembering?\n"
+    "2. Has the user expressed expectations about how you should behave, their work "
+    "style, or ways they want you to operate?\n\n"
+    "If something stands out, save it using the memory tool. "
+    "If nothing is worth saving, just say 'Nothing to save.' and stop."
+)
 
+_SKILL_REVIEW_PROMPT = (
+    "Review the conversation above and update the skill library. Be "
+    "ACTIVE — most sessions produce at least one skill update, even if "
+    "small. A pass that does nothing is a missed learning opportunity, "
+    "not a neutral outcome.\n\n"
+    "Target shape of the library: CLASS-LEVEL skills, each with a rich "
+    "SKILL.md and a `references/` directory for session-specific detail. "
+    "Not a long flat list of narrow one-session-one-skill entries. This "
+    "shapes HOW you update, not WHETHER you update.\n\n"
+    "Signals to look for (any one of these warrants action):\n"
+    "  • User corrected your style, tone, format, legibility, or "
+    "verbosity. Frustration signals like 'stop doing X', 'this is too "
+    "verbose', 'don't format like this', 'why are you explaining', "
+    "'just give me the answer', 'you always do Y and I hate it', or an "
+    "explicit 'remember this' are FIRST-CLASS skill signals, not just "
+    "memory signals. Update the relevant skill(s) to embed the "
+    "preference so the next session starts already knowing.\n"
+    "  • User corrected your workflow, approach, or sequence of steps. "
+    "Encode the correction as a pitfall or explicit step in the skill "
+    "that governs that class of task.\n"
+    "  • Non-trivial technique, fix, workaround, debugging path, or "
+    "tool-usage pattern emerged that a future session would benefit "
+    "from. Capture it.\n"
+    "  • A skill that got loaded or consulted this session turned out "
+    "to be wrong, missing a step, or outdated. Patch it NOW.\n\n"
+    "Preference order — prefer the earliest action that fits, but do "
+    "pick one when a signal above fired:\n"
+    "  1. UPDATE A CURRENTLY-LOADED SKILL. Look back through the "
+    "conversation for skills the user loaded via /skill-name or you "
+    "read via skill_view. If any of them covers the territory of the "
+    "new learning, PATCH that one first. It is the skill that was in "
+    "play, so it's the right one to extend.\n"
+    "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). "
+    "If no loaded skill fits but an existing class-level skill does, "
+    "patch it. Add a subsection, a pitfall, or broaden a trigger.\n"
+    "  3. ADD A SUPPORT FILE under an existing umbrella. Skills can be "
+    "packaged with three kinds of support files — use the right "
+    "directory per kind:\n"
+    "     • `references/<topic>.md` — session-specific detail (error "
+    "transcripts, reproduction recipes, provider quirks) AND "
+    "condensed knowledge banks: quoted research, API docs, external "
+    "authoritative excerpts, or domain notes you found while working "
+    "on the problem. Write it concise and for the value of the task, "
+    "not as a full mirror of upstream docs.\n"
+    "     • `templates/<name>.<ext>` — starter files meant to be "
+    "copied and modified (boilerplate configs, scaffolding, a "
+    "known-good example the agent can `reproduce with modifications`).\n"
+    "     • `scripts/<name>.<ext>` — statically re-runnable actions "
+    "the skill can invoke directly (verification scripts, fixture "
+    "generators, deterministic probes, anything the agent should run "
+    "rather than hand-type each time).\n"
+    "     Add support files via skill_manage action=write_file with "
+    "file_path starting 'references/', 'templates/', or 'scripts/'. "
+    "The umbrella's SKILL.md should gain a one-line pointer to any "
+    "new support file so future agents know it exists.\n"
+    "     **Personal-first rule for external skills.** If the skill "
+    "lives under an external_dirs entry (a team-shared repo: paths "
+    "like ~/repos/<x>/skills/ rather than ~/.hermes/skills/), the "
+    "skill_manage tool will refuse mutations from background-review "
+    "passes. That refusal is by design — autonomous edits to a "
+    "shared repo's working tree cause accidental commits, "
+    "personal-preference bleed, and surprise PR diffs. When this "
+    "happens, your two options are: (a) capture the learning in a "
+    "**local** personal skill under ~/.hermes/skills/ (create a "
+    "companion skill, or extend an existing personal one); or "
+    "(b) if the learning is genuinely team-shareable, surface a "
+    "specific suggestion in your reply text — name the file and "
+    "the change — so the user can apply it themselves through the "
+    "team repo's PR flow.\n"
+    "  4. CREATE A NEW CLASS-LEVEL UMBRELLA SKILL when no existing "
+    "skill covers the class. The name MUST be at the class level. "
+    "The name MUST NOT be a specific PR number, error string, feature "
+    "codename, library-alone name, or 'fix-X / debug-Y / audit-Z-today' "
+    "session artifact. If the proposed name only makes sense for "
+    "today's task, it's wrong — fall back to (1), (2), or (3).\n\n"
+    "User-preference embedding (important): when the user expressed a "
+    "style/format/workflow preference, the update belongs in the "
+    "SKILL.md body, not just in memory. Memory captures 'who the user "
+    "is and what the current situation and state of your operations "
+    "are'; skills capture 'how to do this class of task for this "
+    "user'. When they complain about how you handled a task, the "
+    "skill that governs that task needs to carry the lesson.\n\n"
+    "If you notice two existing skills that overlap, note it in your "
+    "reply — the background curator handles consolidation at scale.\n\n"
+    "Do NOT capture (these become persistent agent-imposed constraints "
+    "that bite you later when the environment changes):\n"
+    "  • Environment-dependent failures: missing binaries, fresh-install "
+    "errors, post-migration path mismatches, 'command not found', "
+    "unconfigured credentials, uninstalled packages. The user can fix "
+    "these — they are not durable rules.\n"
+    "  • Negative claims about tools or features ('browser tools do not "
+    "work', 'X tool is broken', 'cannot use Y from execute_code'). These "
+    "harden into refusals the agent cites against itself for months "
+    "after the actual problem was fixed.\n"
+    "  • Session-specific transient errors that resolved before the "
+    "conversation ended. If retrying worked, the lesson is the retry "
+    "pattern, not the original failure.\n"
+    "  • One-off task narratives. A user asking 'summarize today's "
+    "market' or 'analyze this PR' is not a class of work that warrants "
+    "a skill.\n\n"
+    "If a tool failed because of setup state, capture the FIX (install "
+    "command, config step, env var to set) under an existing setup or "
+    "troubleshooting skill — never 'this tool does not work' as a "
+    "standalone constraint.\n\n"
+    "'Nothing to save.' is a real option but should NOT be the "
+    "default. If the session ran smoothly with no corrections and "
+    "produced no new technique, just say 'Nothing to save.' and stop. "
+    "Otherwise, act."
+)
 
-def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
+_COMBINED_REVIEW_PROMPT = (
+    "Review the conversation above and update two things:\n\n"
+    "**Memory**: who the user is. Did the user reveal persona, "
+    "desires, preferences, personal details, or expectations about "
+    "how you should behave? Save facts about the user and durable "
+    "preferences with the memory tool.\n\n"
+    "**Skills**: how to do this class of task. Be ACTIVE — most "
+    "sessions produce at least one skill update. A pass that does "
+    "nothing is a missed learning opportunity, not a neutral outcome.\n\n"
+    "Target shape of the skill library: CLASS-LEVEL skills with a rich "
+    "SKILL.md and a `references/` directory for session-specific detail. "
+    "Not a long flat list of narrow one-session-one-skill entries.\n\n"
+    "Signals that warrant a skill update (any one is enough):\n"
+    "  • User corrected your style, tone, format, legibility, "
+    "verbosity, or approach. Frustration is a FIRST-CLASS skill "
+    "signal, not just a memory signal. 'stop doing X', 'don't format "
+    "like this', 'I hate when you Y' — embed the lesson in the skill "
+    "that governs that task so the next session starts fixed.\n"
+    "  • Non-trivial technique, fix, workaround, or debugging path "
+    "emerged.\n"
+    "  • A skill that was loaded or consulted turned out wrong, "
+    "missing, or outdated — patch it now.\n\n"
+    "Preference order for skills — pick the earliest that fits:\n"
+    "  1. UPDATE A CURRENTLY-LOADED SKILL. Check what skills were "
+    "loaded via /skill-name or skill_view in the conversation. If one "
+    "of them covers the learning, PATCH it first. It was in play; "
+    "it's the right place.\n"
+    "  2. UPDATE AN EXISTING UMBRELLA (skills_list + skill_view to "
+    "find the right one). Patch it.\n"
+    "  3. ADD A SUPPORT FILE under an existing umbrella via "
+    "skill_manage action=write_file. Three kinds: "
+    "`references/<topic>.md` for session-specific detail OR condensed "
+    "knowledge banks (quoted research, API docs excerpts, domain "
+    "notes) written concise and task-focused; `templates/<name>.<ext>` "
+    "for starter files meant to be copied and modified; "
+    "`scripts/<name>.<ext>` for statically re-runnable actions "
+    "(verification, fixture generators, probes). Add a one-line "
+    "pointer in SKILL.md so future agents find them.\n"
+    "     **Personal-first rule for external skills.** If the target "
+    "skill lives under an external_dirs entry (a team-shared repo: "
+    "paths like ~/repos/<x>/skills/ rather than ~/.hermes/skills/), "
+    "skill_manage will refuse mutations from background-review passes. "
+    "That refusal is intentional — autonomous edits to a shared "
+    "repo's working tree cause accidental commits, personal-"
+    "preference bleed, and surprise PR diffs. On refusal: either "
+    "(a) put the learning in a **local** personal skill under "
+    "~/.hermes/skills/ (companion skill, or extend a personal one), "
+    "or (b) if it's genuinely team-shareable, name the file and "
+    "change in your reply text so the user can apply it themselves "
+    "through the team repo's PR flow.\n"
+    "  4. CREATE A NEW CLASS-LEVEL UMBRELLA when nothing exists. "
+    "Name at the class level — NOT a PR number, error string, "
+    "codename, library-alone name, or 'fix-X / debug-Y' session "
+    "artifact. If the name only fits today's task, fall back to (1), "
+    "(2), or (3).\n\n"
+    "User-preference embedding: when the user complains about how "
+    "you handled a task, update the skill that governs that task — "
+    "memory alone isn't enough. Memory says 'who the user is and "
+    "what the current situation and state of your operations are'; "
+    "skills say 'how to do this class of task for this user'. Both "
+    "should carry user-preference lessons when relevant.\n\n"
+    "If you notice overlapping existing skills, mention it — the "
+    "background curator handles consolidation.\n\n"
+    "Do NOT capture as skills (these become persistent agent-imposed "
+    "constraints that bite you later when the environment changes):\n"
+    "  • Environment-dependent failures: missing binaries, fresh-install "
+    "errors, post-migration path mismatches, 'command not found', "
+    "unconfigured credentials, uninstalled packages. The user can fix "
+    "these — they are not durable rules.\n"
+    "  • Negative claims about tools or features ('browser tools do not "
+    "work', 'X tool is broken', 'cannot use Y from execute_code'). These "
+    "harden into refusals the agent cites against itself for months "
+    "after the actual problem was fixed.\n"
+    "  • Session-specific transient errors that resolved before the "
+    "conversation ended. If retrying worked, the lesson is the retry "
+    "pattern, not the original failure.\n"
+    "  • One-off task narratives. A user asking 'summarize today's "
+    "market' or 'analyze this PR' is not a class of work that warrants "
+    "a skill.\n\n"
+    "If a tool failed because of setup state, capture the FIX (install "
+    "command, config step, env var to set) under an existing setup or "
+    "troubleshooting skill — never 'this tool does not work' as a "
+    "standalone constraint.\n\n"
+    "Act on whichever of the two dimensions has real signal. If "
+    "genuinely nothing stands out on either, say 'Nothing to save.' "
+    "and stop — but don't reach for that conclusion as a default."
+)
+
+def interruptible_streaming_api_call(
+    agent, api_kwargs: dict, *, on_first_delta: callable = None
+):
     """Streaming variant of _interruptible_api_call for real-time token delivery.
 
     Handles all three api_modes:
@@ -2014,6 +2249,68 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
     last_chunk_time = {"t": time.time()}
+    # Whether the stream iterator has yielded a semantic event (i.e.
+    # message_start / content_block_*).  Gates the cold-start vs
+    # mid-stream threshold split for the stale-stream detector.  See
+    # the comment on the kill-decision block in the outer poll loop.
+    first_event_seen = {"yes": False}
+    # Whether we've seen at least one SSE `ping` from the server.
+    # Pings prove "connection alive, server still working" during
+    # cold-start.  Wired up via agent.anthropic_adapter's monkey-patch
+    # on Stream._iter_events (the SDK silently drops pings at
+    # anthropic/_streaming.py:102 before they reach the high-level
+    # iterator).  The on_sse_event callback installed in
+    # _call_anthropic also resets last_chunk_time on every raw event,
+    # so as long as pings flow the stale detector won't fire spurious
+    # cold-start kills.  The chat_completions path doesn't get this
+    # signal (no equivalent SDK hook installed there).
+    ping_seen = {"yes": False}
+    # Ping cadence diagnostics — track arrival count + last-N timestamps
+    # so the heartbeat can distinguish "real thinking, server actively
+    # ping-keep-aliving" from "connection wedged but counter still
+    # ticking".  Anthropic emits pings at ~10s cadence during long
+    # thinking phases with display=omitted, where no semantic events
+    # arrive until thinking completes.  Without this, the only way to
+    # know the difference between a 19-min real thinking phase and a
+    # 19-min wedge is to wait for the timeout.
+    ping_count = {"n": 0}
+    last_ping_time = {"t": 0.0}  # 0 == no ping yet
+    # message_start usage — captured the moment Anthropic accepts the
+    # request and starts the response stream.  Holds (input_tokens,
+    # cache_read_tokens, arrival_timestamp).  Lets the heartbeat report
+    # "request accepted, X input tokens (cache Y%)" so the user knows
+    # we're past the queue/prefill phase even when content blocks are
+    # still pending (e.g. summarized thinking, or display=omitted
+    # holding back content_block_start).
+    # Note: ``input_tokens`` from Anthropic's usage object is the
+    # NEW (uncached) prompt tokens for THIS turn — not the total
+    # prompt size.  Total prompt = input_tokens + cache_read +
+    # cache_creation.  Treating input_tokens as total produces
+    # absurd cache percentages on cache-hot turns (a 6-token new
+    # prefix + 177K cache_read shows up as 2,957,817% if you
+    # divide cache_read by input_tokens).  Always combine all three
+    # before computing display percentages.
+    message_start_usage = {
+        "input_tokens": None,        # new uncached tokens
+        "cache_read_tokens": None,   # served from cache
+        "cache_creation_tokens": None,  # written to cache this turn
+        "arrival": 0.0,
+    }
+    # Whether the model is currently emitting a thinking content block
+    # (content_block_start with type="thinking" fired, next non-thinking
+    # content_block_start not yet seen). Drives the heartbeat status so
+    # multi-minute thinking phases display as "thinking" instead of the
+    # generic "queued/prefilling".
+    thinking_active = {"yes": False}
+    # Cumulative characters streamed in thinking_delta events for this
+    # request. Surfaced in the heartbeat as a progress signal.
+    thinking_chars = {"n": 0}
+    # Last semantic content event (any content_block_*). Distinct from
+    # last_chunk_time, which is also reset by SSE pings — when pings flow
+    # but no content events arrive (server-side summarized thinking),
+    # content_silence grows while last_chunk_time stays fresh, so the
+    # heartbeat keys off this for accurate status during long thinking.
+    last_content_time = {"t": time.time()}
     # Stale-stream patience, shared between the httpx socket read timeout
     # (built in ``_call_chat_completions`` below) and the stale-stream detector
     # (computed further down, before the worker thread starts).  Initialized
@@ -2085,10 +2382,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             **api_kwargs,
             "stream": True,
             "timeout": _httpx.Timeout(
-                connect=_conn_cap,
+                connect=30.0,
                 read=_stream_read_timeout,
                 write=_base_timeout,
-                pool=_conn_cap,
+                pool=30.0,
             ),
         }
         # OpenAI's `stream_options={"include_usage": True}` drives usage
@@ -2188,6 +2485,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         usage_obj = None
         for chunk in stream:
             last_chunk_time["t"] = time.time()
+            first_event_seen["yes"] = True
+            # This path (chat_completions / exo / DeepSeek / OpenAI-compat) has
+            # no SSE ping hook — the ping monkey-patch is Anthropic-native only
+            # (see note near ping_seen init).  Every chunk here IS a content
+            # chunk, so advancing last_content_time on each one makes the
+            # heartbeat's content_silence counter reflect TRUE token silence.
+            # Without this, last_content_time stays frozen at request-start and
+            # content_silence == total-elapsed-since-request — which is why the
+            # heartbeat showed an ever-climbing "Ns elapsed" while reasoning
+            # tokens were streaming continuously.
+            last_content_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
 
             # Update per-attempt diagnostic counters.  Best-effort —
@@ -2227,12 +2535,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
+                # Mirror the Anthropic-native handler's thinking-heartbeat
+                # wiring: mark the thinking phase active and advance the
+                # streamed-char progress counter.  The phase classifier then
+                # reports "thinking (N chars streamed)" instead of falling
+                # through to the generic "thinking (server-side)" fallback.
+                thinking_active["yes"] = True
+                thinking_chars["n"] += len(reasoning_text)
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
                 content_parts.append(delta.content)
+                # Real answer tokens are flowing: the thinking phase is over.
+                # Clear the flag so the heartbeat switches to the content-silence
+                # regime (warn only on true output stalls, not during thinking).
+                thinking_active["yes"] = False
                 if not tool_calls_acc:
                     _fire_first_delta()
                     agent._fire_stream_delta(delta.content)
@@ -2475,91 +2794,230 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         # Reset stale-stream timer for this attempt
         last_chunk_time["t"] = time.time()
-        # Per-attempt diagnostic dict for the retry block to consume.
-        _diag = agent._stream_diag_init()
-        request_client_holder["diag"] = _diag
         # Defensive: strip Responses-only kwargs (instructions, input, ...)
         # that can leak in under an api_mode-flip race. The Anthropic SDK
         # raises a non-retryable TypeError on them, killing the turn. See
-        # #31673 / sanitize_anthropic_kwargs().
+        # #31673 / sanitize_anthropic_kwargs(). Kept from upstream — applies
+        # cleanly to the fork's beta.messages.stream OAuth path below.
         from agent.anthropic_adapter import sanitize_anthropic_kwargs
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
-        # Use the Anthropic SDK's streaming context manager
-        with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
-            # The Anthropic SDK exposes the raw httpx response on
-            # ``stream.response``.  Snapshot diagnostic headers
-            # immediately so they survive a stream that dies before the
-            # first event.
-            try:
-                agent._stream_diag_capture_response(
-                    _diag, getattr(stream, "response", None)
-                )
-            except Exception:
-                pass
-            for event in stream:
-                # Update stale-stream timer on every event so the
-                # outer poll loop knows data is flowing.  Without
-                # this, the detector kills healthy long-running
-                # Opus streams after 180 s even when events are
-                # actively arriving (the chat_completions path
-                # already does this at the top of its chunk loop).
-                last_chunk_time["t"] = time.time()
-                agent._touch_activity("receiving stream response")
 
-                # Update per-attempt diagnostic counters (best-effort).
+        # Install a thread-local SSE event observer so the outer poll
+        # loop's stale detector sees server keep-alive pings.  The
+        # Anthropic SDK silently drops `ping` events at
+        # anthropic/_streaming.py:102 — without this hook we cannot
+        # tell "queued upstream, healthy" apart from "connection
+        # black-holed" during a request's cold-start phase.  See
+        # agent/anthropic_adapter.py::_install_sse_event_observer for
+        # the monkey-patch that wires this up.
+        from agent.anthropic_adapter import set_sse_event_callback
+
+        def _on_sse_event(event_name):
+            # Reset the stale timer on every raw SSE event, including
+            # pings.  Semantic events also reset it via the for-loop
+            # below (redundant but harmless).  Mark the connection as
+            # alive (pings count) but do NOT flip first_event_seen —
+            # that flag tracks "iterator has yielded a semantic event"
+            # and gates the cold-start vs mid-stream threshold split.
+            _now = time.time()
+            last_chunk_time["t"] = _now
+            if event_name == "ping":
+                ping_seen["yes"] = True
+                ping_count["n"] += 1
+                last_ping_time["t"] = _now
+
+        set_sse_event_callback(_on_sse_event)
+        try:
+            # Use the Anthropic SDK's streaming context manager.
+            # Beta namespace — see _anthropic_messages_create comment.
+            with agent._anthropic_client.beta.messages.stream(**api_kwargs) as stream:
+                # Capture anthropic-ratelimit-* headers from the initial
+                # HTTP response.  Anthropic emits these on the 200 OK
+                # before any SSE events arrive — the BetaMessageStream
+                # exposes the underlying httpx response via .response.
+                # Lets the streaming heartbeat answer "is this stall
+                # near a rate limit, or pure upstream queue?".
                 try:
-                    _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
-                    if _diag.get("first_chunk_at") is None:
-                        _diag["first_chunk_at"] = last_chunk_time["t"]
-                    try:
-                        _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
-                    except Exception:
-                        pass
+                    agent._capture_rate_limits(getattr(stream, "response", None))
+                except Exception:
+                    pass  # Never let header capture break the stream loop.
+                for event in stream:
+                    # Update stale-stream timer on every event so the
+                    # outer poll loop knows data is flowing.  Without
+                    # this, the detector kills healthy long-running
+                    # Opus streams after 180 s even when events are
+                    # actively arriving (the chat_completions path
+                    # already does this at the top of its chunk loop).
+                    last_chunk_time["t"] = time.time()
+                    first_event_seen["yes"] = True
+                    agent._touch_activity("receiving stream response")
+
+                    if agent._interrupt_requested:
+                        break
+
+                    event_type = getattr(event, "type", None)
+
+                    # Capture input usage from message_start the moment
+                    # it arrives — proves the request was accepted and
+                    # tells the user how big the prompt was + how much
+                    # was cache-served. Logged at INFO so historical
+                    # evidence accrues in agent.log (previously we
+                    # threw this signal away entirely, which left us
+                    # unable to tell "thinking productively for 19m"
+                    # apart from "wedged for 19m" after the fact).
+                    if event_type == "message_start" and message_start_usage["arrival"] == 0.0:
+                        try:
+                            _msg = getattr(event, "message", None)
+                            _u = getattr(_msg, "usage", None) if _msg else None
+                            if _u is not None:
+                                _it = getattr(_u, "input_tokens", None) or 0
+                                _crt = getattr(_u, "cache_read_input_tokens", None) or 0
+                                _cct = getattr(_u, "cache_creation_input_tokens", None) or 0
+                                message_start_usage["input_tokens"] = _it
+                                message_start_usage["cache_read_tokens"] = _crt
+                                message_start_usage["cache_creation_tokens"] = _cct
+                                message_start_usage["arrival"] = time.time()
+                                # _request_started is set immediately
+                                # before t.start() above so the closure
+                                # always sees a valid value here.
+                                _ms_elapsed = message_start_usage["arrival"] - _request_started
+                                # Total prompt = NEW uncached + cache_read + cache_creation.
+                                # ``input_tokens`` ALONE would give a misleading 6 on
+                                # a 177K-token cache-hot turn.  Cache % must use the
+                                # total or it produces nonsense (>100%) percentages.
+                                _total_in = _it + _crt + _cct
+                                _cache_pct = (
+                                    f" cache={_crt:,}/{_total_in:,} ({100*_crt/_total_in:.0f}%)"
+                                    if _total_in and _crt else ""
+                                )
+                                logger.info(
+                                    "anthropic stream: message_start arrived "
+                                    "after %.1fs (total_prompt=%d new=%d%s) — request accepted",
+                                    _ms_elapsed, _total_in, _it, _cache_pct,
+                                )
+                        except Exception:
+                            pass
+
+                    if event_type == "content_block_start":
+                        last_content_time["t"] = time.time()
+                        block = getattr(event, "content_block", None)
+                        block_type = getattr(block, "type", None) if block else None
+                        thinking_active["yes"] = (block_type == "thinking")
+                        if block_type == "tool_use":
+                            has_tool_use = True
+                            tool_name = getattr(block, "name", None)
+                            if tool_name:
+                                _fire_first_delta()
+                                agent._fire_tool_gen_started(tool_name)
+
+                    elif event_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta:
+                            delta_type = getattr(delta, "type", None)
+                            if delta_type == "text_delta":
+                                text = getattr(delta, "text", "")
+                                if text and not has_tool_use:
+                                    last_content_time["t"] = time.time()
+                                    _fire_first_delta()
+                                    agent._fire_stream_delta(text)
+                                    deltas_were_sent["yes"] = True
+                            elif delta_type == "thinking_delta":
+                                thinking_text = getattr(delta, "thinking", "")
+                                if thinking_text:
+                                    thinking_chars["n"] += len(thinking_text)
+                                    last_content_time["t"] = time.time()
+                                    _fire_first_delta()
+                                    agent._fire_reasoning_delta(thinking_text)
+
+                # Return the native Anthropic Message for downstream processing.
+                # Capture routing headers from the underlying HTTP
+                # response before exiting the context manager (the
+                # httpx Response may be closed once the with-block
+                # ends). request-id is for support correlation;
+                # cf-ray exposes Cloudflare's POP / data-center code
+                # so we can detect regional routing variance from the
+                # api_calls telemetry. Stash on the message as
+                # private attrs.
+                _final = stream.get_final_message()
+                try:
+                    _http_resp = getattr(stream, "response", None)
+                    _hdrs = getattr(_http_resp, "headers", None) if _http_resp else None
+                    if _hdrs:
+                        _rid = _hdrs.get("request-id") or _hdrs.get("x-request-id")
+                        if _rid:
+                            try:
+                                object.__setattr__(_final, "_hermes_request_id", _rid)
+                            except Exception:
+                                pass
+                        # Snapshot routing-relevant headers into a
+                        # small dict. Keys are lowercased; missing
+                        # headers map to None. Used by the api_calls
+                        # writer to populate ``extra.routing``.
+                        _routing: Dict[str, Any] = {}
+                        for _k in (
+                            "cf-ray",
+                            "anthropic-organization-id",
+                            "via",
+                            "x-served-by",
+                            "x-anthropic-served-by",
+                        ):
+                            _v = _hdrs.get(_k)
+                            if _v:
+                                _routing[_k] = _v
+                        if _routing:
+                            try:
+                                object.__setattr__(_final, "_hermes_routing_headers", _routing)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
-
-                if agent._interrupt_requested:
-                    break
-
-                event_type = getattr(event, "type", None)
-
-                if event_type == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    if block and getattr(block, "type", None) == "tool_use":
-                        has_tool_use = True
-                        tool_name = getattr(block, "name", None)
-                        if tool_name:
-                            _fire_first_delta()
-                            agent._fire_tool_gen_started(tool_name)
-
-                elif event_type == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if delta:
-                        delta_type = getattr(delta, "type", None)
-                        if delta_type == "text_delta":
-                            text = getattr(delta, "text", "")
-                            if text and not has_tool_use:
-                                _fire_first_delta()
-                                agent._fire_stream_delta(text)
-                                deltas_were_sent["yes"] = True
-                        elif delta_type == "thinking_delta":
-                            thinking_text = getattr(delta, "thinking", "")
-                            if thinking_text:
-                                _fire_first_delta()
-                                agent._fire_reasoning_delta(thinking_text)
-
-            # Return the native Anthropic Message for downstream processing.
-            # If the stream was interrupted (the event loop broke out above on
-            # agent._interrupt_requested), do NOT call get_final_message() — on
-            # a partially-consumed stream the SDK may hang draining remaining
-            # events or return a Message with incomplete tool_use blocks (partial
-            # JSON in `input`). The outer poll loop raises InterruptedError, so
-            # this return value is discarded anyway.
-            if agent._interrupt_requested:
-                return None
-            return stream.get_final_message()
+                # Stream lifecycle summary for historical evidence in
+                # agent.log.  Without this, we have no way to tell
+                # after the fact whether a 19-minute wait was real
+                # thinking (pings flowed, message_start arrived early,
+                # then long content_block silence) or a wedge (no
+                # pings, no message_start, just timeout). Single line
+                # at INFO so it survives default log rotation and
+                # rolls up cleanly with `grep stream-lifecycle`.
+                try:
+                    _now = time.time()
+                    _total_elapsed = _now - _request_started
+                    _ms_arrival = message_start_usage["arrival"]
+                    _ms_offset = (
+                        f"{_ms_arrival - _request_started:.1f}"
+                        if _ms_arrival > 0 else "never"
+                    )
+                    _it = message_start_usage["input_tokens"] or 0
+                    _crt = message_start_usage["cache_read_tokens"] or 0
+                    _cct = message_start_usage["cache_creation_tokens"] or 0
+                    _total_prompt = _it + _crt + _cct
+                    _last_ping_age = (
+                        f"{_now - last_ping_time['t']:.1f}"
+                        if last_ping_time["t"] > 0 else "never"
+                    )
+                    # Three separate token counts because each tells a
+                    # different story:
+                    #   new            = uncached prompt this turn (≈ user msg + new tools)
+                    #   cache_read     = served from prompt cache (the win)
+                    #   cache_creation = written to cache this turn (next turn benefits)
+                    # Sum is the total billed input tokens.
+                    logger.info(
+                        "anthropic stream-lifecycle: total=%.1fs "
+                        "message_start=%s pings=%d (last_age=%s) "
+                        "thinking_chars=%d total_prompt=%d new=%d cache_read=%d "
+                        "cache_create=%d model=%s",
+                        _total_elapsed, _ms_offset, ping_count["n"],
+                        _last_ping_age, thinking_chars["n"],
+                        _total_prompt, _it, _crt, _cct,
+                        api_kwargs.get("model", "unknown"),
+                    )
+                except Exception:
+                    pass
+                return _final
+        finally:
+            set_sse_event_callback(None)
 
     def _call():
         import httpx as _httpx
@@ -2650,9 +3108,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             or _is_sse_conn_err_preview
                             or _is_stream_parse_err
                         )
+                        # An upstream server that DELIBERATELY failed the turn on
+                        # an unparseable tool-call block is independently
+                        # retryable: no tool executed (the call never parsed) and
+                        # the garbled innards are intentionally never surfaced, so
+                        # re-streaming is side-effect-safe and strictly better
+                        # than a dead length-truncated stub — even though no
+                        # partial tool *name* was parsed.  (Fixes the
+                        # "unterminated invoke -> not retrying -> 0-char stub"
+                        # dead turn.)
+                        _is_toolcall_clean_fail = (
+                            agent._is_upstream_toolcall_clean_fail(e)
+                        )
                         _can_silent_retry = (
-                            _partial_tool_in_flight
-                            and _is_transient
+                            (
+                                (_partial_tool_in_flight and _is_transient)
+                                or _is_toolcall_clean_fail
+                            )
                             and _stream_attempt < _max_stream_retries
                         )
                         if not _can_silent_retry:
@@ -2676,8 +3148,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # additional INFO line needed.
                         try:
                             agent._fire_stream_delta(
-                                "\n\n⚠ Connection dropped mid tool-call; "
-                                "reconnecting…\n\n"
+                                "\n\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"⚠ ABANDONED STREAM (attempt {_stream_attempt + 1}/"
+                                f"{_max_stream_retries + 1}) — "
+                                f"{type(e).__name__}\n"
+                                "  Partial output above is stale and will\n"
+                                "  be replaced by the retry below.\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                             )
                         except Exception:
                             pass
@@ -2716,6 +3194,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 )
                             except Exception:
                                 pass
+                        if _is_toolcall_clean_fail:
+                            # Not a connection event — the provider (exo/DSv4)
+                            # deliberately failed the turn because the model
+                            # emitted a tool-call block it could not parse
+                            # (degenerate generation).  Re-drawing a fresh
+                            # completion, connection was never lost.
+                            agent._emit_status(
+                                "🔁 Provider rejected the generation "
+                                "(malformed tool-call) — re-drawing…"
+                            )
+                        else:
+                            agent._emit_status(
+                                "🔄 Reconnected after a dropped stream — resuming…"
+                            )
+                        if agent._interrupt_requested:
+                            agent._emit_status("⏹  Interrupt received during retry — aborting.")
+                            result["error"] = e
+                            return
                         continue
 
                     # SSE error events from proxies (e.g. OpenRouter sends
@@ -2759,6 +3255,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 mid_tool_call=False,
                                 diag=request_client_holder.get("diag"),
                             )
+                            # Even though no user-visible text was delivered
+                            # on this attempt, the context scrubber may hold
+                            # a partial-tag tail from chunks it received.
+                            # Flush + reset so the retry starts clean.
+                            try:
+                                agent._reset_stream_delivery_tracking()
+                            except Exception:
+                                pass
                             # Close the stale request client before retry
                             _close_request_client_once("stream_retry_cleanup")
                             # Also rebuild the primary client to purge
@@ -2776,6 +3280,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                     )
                                 except Exception:
                                     pass
+                            if _is_stream_parse_err:
+                                agent._emit_status(
+                                    "🔁 Provider sent a malformed stream frame "
+                                    "— retrying…"
+                                )
+                            else:
+                                agent._emit_status(
+                                    "🔄 Connection dropped before any output "
+                                    "— reconnecting…"
+                                )
+                            if agent._interrupt_requested:
+                                agent._emit_status("⏹  Interrupt received during retry — aborting.")
+                                result["error"] = e
+                                return
                             continue
                         # Retries exhausted. Log the final failure with
                         # full diagnostic detail (chain, headers,
@@ -2899,10 +3417,30 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _reasoning_floor is not None:
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
+    # Define _request_started BEFORE t.start() so the inner thread's
+    # closure (e.g. message_start logging) can read it without racing
+    # against this assignment.  Time captured here is the request
+    # *issue* time — close enough to thread spawn that any drift is
+    # microseconds.
+    _request_started = time.time()
     t = threading.Thread(target=_call, daemon=True)
     t.start()
-    _last_heartbeat = time.time()
+    _last_heartbeat = _request_started
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # Thinking-progress tracker: snapshot of thinking_chars at the last
+    # heartbeat emit.  Lets the heartbeat distinguish "model is actively
+    # streaming reasoning tokens right now" (chars advanced since last tick)
+    # from "genuinely stalled / waiting" (chars frozen).  Only the latter
+    # deserves the "⏳ Still waiting on provider" framing — during active
+    # thinking we emit a progress pulse instead.
+    _last_hb_thinking_chars = 0
+    # Track consecutive stale-stream kills with no chunk progress in between.
+    # If close() fails to unblock the streaming thread (e.g. httpx blocked on
+    # a TLS read that ignores socket close), the loop would otherwise spin
+    # forever, heartbeating "Still waiting on provider" with no recovery.
+    _stale_kill_count = 0
+    _post_kill_chunk_baseline = 0.0
+    _MAX_STALE_KILLS = 1  # allow one reconnect attempt; bail on the second
     while t.is_alive():
         t.join(timeout=0.3)
 
@@ -2917,24 +3455,251 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _hb_now = time.time()
         if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
             _last_heartbeat = _hb_now
-            _waiting_secs = int(_hb_now - last_chunk_time["t"])
+            # Silence (since last raw chunk/ping) drives the gateway
+            # activity touch — this is what the inactivity monitor and
+            # the stale-stream detector care about.
+            _silence_secs = int(_hb_now - last_chunk_time["t"])
             agent._touch_activity(
-                f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
+                f"waiting for stream response ({_silence_secs}s, no chunks yet)"
             )
+            # User-visible heartbeat: long thinking pauses (large
+            # contexts on slow models, local provider prefill, etc.)
+            # produce zero terminal output for the entire stale-stream
+            # window — by default 180s.  That looks frozen.  Surface a
+            # status line every heartbeat tick so the user knows we're
+            # alive and still waiting on the provider.
+            #
+            # Cold-start vs mid-stream elapsed counter:
+            #   - Before first_event_seen flips, server pings reset
+            #     last_chunk_time roughly every 10 s (Anthropic SDK
+            #     ping cadence).  Using silence_secs there would keep
+            #     the user-visible counter pinned below the heartbeat
+            #     threshold and suppress every emit after the first.
+            #     Use total elapsed since request start instead so the
+            #     user sees a monotonically growing wait counter.
+            #   - Once first_event_seen flips, real semantic events
+            #     are flowing.  A subsequent silence is a true stall;
+            #     reporting silence_secs there ("streaming stalled —
+            #     30 s") is what the user actually wants to see.
+            # _content_silence grows during text streaming when the model
+            # actually pauses; during summarized thinking on Opus 4.7 the
+            # thinking_delta tokens flow continuously and reset
+            # last_content_time, so silence stays near zero even though
+            # the user sees nothing in the TUI. Two regimes:
+            #   * thinking active OR pre-first-event: heartbeat on
+            #     request-elapsed time so the user gets progress every
+            #     ~30s during multi-minute thinking phases.
+            #   * post-thinking text streaming: heartbeat on
+            #     content-silence so we only warn when output stalls,
+            #     not while tokens are flowing visibly.
+            _content_silence = int(_hb_now - last_content_time["t"])
+            _request_elapsed = int(_hb_now - _request_started)
+            if thinking_active["yes"] or not first_event_seen["yes"]:
+                _user_elapsed = _request_elapsed
+            else:
+                _user_elapsed = _content_silence
+            if _user_elapsed >= int(_HEARTBEAT_INTERVAL):
+                try:
+                    _model_name = api_kwargs.get("model", "unknown")
+                    # Detect adaptive/extended thinking from the request
+                    # so we can label long pre-event stalls accurately.
+                    # With ``thinking.display`` defaulting to "omitted"
+                    # (matching Claude Code), the server holds back
+                    # message_start until thinking completes — which
+                    # means a long "no events" wait is *almost
+                    # certainly* the model thinking, not a real queue.
+                    _thinking_cfg = api_kwargs.get("thinking") or {}
+                    _thinking_requested = bool(
+                        isinstance(_thinking_cfg, dict)
+                        and _thinking_cfg.get("type") in ("adaptive", "enabled")
+                    )
+                    # Surface the actual effort/budget in the model
+                    # label so the user can tell if a long wait
+                    # matches the requested depth.  Adaptive: model
+                    # picks its own budget — effort is just a bias
+                    # ("xhigh" = "lean toward longer thinking").
+                    # Enabled: explicit budget_tokens cap.
+                    _model_label_extra = ""
+                    if isinstance(_thinking_cfg, dict):
+                        _ttype = _thinking_cfg.get("type")
+                        if _ttype == "adaptive":
+                            _oc = api_kwargs.get("output_config") or {}
+                            _eff = _oc.get("effort") if isinstance(_oc, dict) else None
+                            if _eff:
+                                _model_label_extra = f", thinking=adaptive/{_eff}"
+                            else:
+                                _model_label_extra = ", thinking=adaptive"
+                        elif _ttype == "enabled":
+                            _budget = _thinking_cfg.get("budget_tokens")
+                            if _budget:
+                                _model_label_extra = f", thinking={_budget}t"
+                            else:
+                                _model_label_extra = ", thinking=on"
+                    # Build a real-evidence diagnostic suffix.  Without
+                    # this, every long pre-event wait looked identical
+                    # ("thinking (no events yet)" forever) regardless
+                    # of whether pings were actually flowing or
+                    # message_start had arrived.  The user couldn't
+                    # tell a productive 19-min thinking phase from a
+                    # 19-min wedge.  Now we surface what we actually
+                    # observed on the wire:
+                    #   * pings: count + last-arrival age. ≤15s gap
+                    #     means server is actively heartbeating;
+                    #     >30s gap is suspicious.
+                    #   * message_start: input_tokens + cache_pct +
+                    #     wall time it took to arrive.  Proves the
+                    #     queue/prefill phase is over and we're now
+                    #     either generating or thinking server-side.
+                    _diag_bits: list[str] = []
+                    if last_ping_time["t"] > 0:
+                        _ping_age = int(_hb_now - last_ping_time["t"])
+                        _diag_bits.append(
+                            f"{ping_count['n']} ping{'s' if ping_count['n'] != 1 else ''}, "
+                            f"last {_ping_age}s ago"
+                        )
+                    if message_start_usage["arrival"] > 0:
+                        _it = message_start_usage["input_tokens"] or 0
+                        _crt = message_start_usage["cache_read_tokens"] or 0
+                        _cct = message_start_usage["cache_creation_tokens"] or 0
+                        # Total prompt = new uncached + cache_read +
+                        # cache_creation.  ``input_tokens`` is just the
+                        # NEW prefix delta and on cache-hot turns can
+                        # be tiny (~6 tokens) while the actual prompt
+                        # is 177K — using it alone gave a 2,957,817%
+                        # cache figure first time we shipped this.
+                        _total_in = _it + _crt + _cct
+                        _ms_age = int(_hb_now - message_start_usage["arrival"])
+                        _bit = f"message_start +{_ms_age}s"
+                        if _total_in:
+                            _bit += f", {_total_in:,} prompt"
+                            if _crt:
+                                _bit += f" (cache {100*_crt/_total_in:.0f}%)"
+                        _diag_bits.append(_bit)
+                    # Rate-limit signal: tells the user whether a stall is
+                    # plausibly throttle-related or upstream-only.  Hot
+                    # bucket (≥80%) gets a ⚠ tag; healthy state collapses
+                    # to "limits OK (RPM 47/50)" which is shorter than
+                    # silence-and-guessing.  Captured up front from the
+                    # 200 OK headers, so this bit lights up immediately
+                    # — no need to wait for message_start.
+                    try:
+                        _rl_state = agent._rate_limit_state
+                        if _rl_state and _rl_state.has_data:
+                            from agent.rate_limit_tracker import (
+                                format_rate_limit_heartbeat,
+                            )
+                            _rl_bit = format_rate_limit_heartbeat(_rl_state)
+                            if _rl_bit:
+                                _diag_bits.append(_rl_bit)
+                    except Exception:
+                        pass  # Never let display formatting break the heartbeat.
+                    _diag = (" [" + " · ".join(_diag_bits) + "]") if _diag_bits else ""
+
+                    _phase = _ra()._classify_anthropic_stream_phase(
+                        thinking_active=thinking_active["yes"],
+                        thinking_chars=thinking_chars["n"],
+                        first_event_seen=first_event_seen["yes"],
+                        content_silence=_content_silence,
+                        thinking_requested=_thinking_requested,
+                        message_start_arrived=message_start_usage["arrival"] > 0,
+                        ping_seen=ping_seen["yes"],
+                        user_elapsed=_user_elapsed,
+                    )
+                    # Progress-vs-stall framing.  If thinking chars advanced
+                    # since the last heartbeat, the model is actively streaming
+                    # reasoning RIGHT NOW — "Still waiting on provider" is a lie
+                    # (the user is watching tokens flow).  Emit a progress pulse
+                    # instead, keyed off char delta, not elapsed time.  Only a
+                    # genuine freeze (no new chars, or no thinking at all) keeps
+                    # the "waiting" framing.
+                    #
+                    # Suppress the progress pulse when reasoning is already being
+                    # streamed to a display consumer (agent.reasoning_callback is
+                    # set — CLI with show_reasoning=true, or any driver wiring a
+                    # live reasoning box).  The streamed reasoning text IS the
+                    # progress signal in that mode; an overlay on top of it just
+                    # breaks the flow of the output the user is reading.  When the
+                    # callback is unset (gateway with reasoning off, batch, quiet),
+                    # the pulse is the only progress signal — keep it.  The
+                    # stall/waiting pulse below is always emitted: a zero-char
+                    # delta means nothing was returned this window, which is a
+                    # genuine signal regardless of display mode.
+                    _thinking_delta_chars = thinking_chars["n"] - _last_hb_thinking_chars
+                    _last_hb_thinking_chars = thinking_chars["n"]
+                    if thinking_active["yes"] and _thinking_delta_chars > 0:
+                        if agent.reasoning_callback is None:
+                            agent._emit_status(
+                                f"🧠 Thinking — {thinking_chars['n']:,} chars "
+                                f"(+{_thinking_delta_chars:,} in last "
+                                f"{int(_HEARTBEAT_INTERVAL)}s) "
+                                f"(model: {_model_name}{_model_label_extra}){_diag}"
+                            )
+                    else:
+                        agent._emit_status(
+                            f"⏳ Still waiting on provider — {_user_elapsed}s elapsed "
+                            f"(model: {_model_name}{_model_label_extra}, {_phase}){_diag}"
+                        )
+                except Exception:
+                    pass
 
         # Detect stale streams: connections kept alive by SSE pings
         # but delivering no real chunks.  Kill the client so the
         # inner retry loop can start a fresh connection.
+        #
+        # Cold-start vs mid-stream distinction: until the first event
+        # arrives, the SDK iterator is silent even when the server is
+        # actively keep-alive-ing (the SDK drops SSE `ping` frames at
+        # anthropic/_streaming.py:102).  A queued OAuth request on
+        # Opus 4.7 + 1M-context with a 200K-token prompt routinely
+        # exceeds 5 min before message_start.  Killing at 300s in
+        # that window is a false positive and pays for two server-side
+        # prefills (the killed one + the retry).  Once first_event_seen
+        # flips, any further silence is a real stall — kill at the
+        # configured (shorter) threshold.
         _stale_elapsed = time.time() - last_chunk_time["t"]
-        if _stale_elapsed > _stream_stale_timeout:
+        # Fork-only cold-start grace window lives in agent/fork/stream_recovery.py
+        # so upstream edits to this watchdog block don't collide with it.
+        from agent.fork.stream_recovery import effective_stale_timeout as _eff_timeout
+        _effective_stale_timeout = _eff_timeout(first_event_seen["yes"], _stream_stale_timeout)
+        if _stale_elapsed > _effective_stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
+            # If a previous kill didn't produce any new chunks, the inner
+            # thread is hung on a socket that ignored close().  Count
+            # consecutive no-progress kills and bail out so the outer
+            # retry/fallback chain can take over instead of spinning.
+            if _stale_kill_count > 0 and last_chunk_time["t"] <= _post_kill_chunk_baseline:
+                _stale_kill_count += 1
+            else:
+                _stale_kill_count = 1
             logger.warning(
-                "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
-                "model=%s context=~%s tokens. Killing connection.",
-                _stale_elapsed, _stream_stale_timeout,
+                "Stream stale for %.0fs (threshold %.0fs, %s) — no chunks received. "
+                "model=%s context=~%s tokens. Kill attempt %d/%d.",
+                _stale_elapsed, _effective_stale_timeout,
+                "mid-stream" if first_event_seen["yes"] else "cold-start",
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+                _stale_kill_count, _MAX_STALE_KILLS + 1,
             )
-            agent._buffer_status(
+            if _stale_kill_count > _MAX_STALE_KILLS:
+                # Inner thread hung; close() did not unblock it.  Break out
+                # so the post-loop error path raises and the outer retry
+                # logic can fall back to another provider.  The daemon
+                # thread leaks but dies with the process.
+                logger.error(
+                    "Stream hung after %d stale-kill attempts; abandoning "
+                    "connection.  Last close did not wake the streaming thread.",
+                    _stale_kill_count,
+                )
+                agent._emit_status(
+                    f"❌ Provider stream unresponsive after "
+                    f"{_stale_kill_count} reconnect attempts — failing over."
+                )
+                result["error"] = TimeoutError(
+                    f"Provider stream hung: no chunks for {int(_stale_elapsed)}s "
+                    f"after {_stale_kill_count} reconnect attempts "
+                    f"(model={api_kwargs.get('model', 'unknown')})"
+                )
+                break
+            agent._emit_status(
                 f"⚠️ No response from provider for {int(_stale_elapsed)}s "
                 f"(model: {api_kwargs.get('model', 'unknown')}, "
                 f"context: ~{_est_ctx:,} tokens). "
@@ -2961,8 +3726,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 except Exception:
                     pass
             # Reset the timer so we don't kill repeatedly while
-            # the inner thread processes the closure.
+            # the inner thread processes the closure.  Snapshot the
+            # post-reset value as the baseline for the next stale check:
+            # if no real chunks land, last_chunk_time["t"] will still equal
+            # this baseline on the next fire and we'll bail out.
             last_chunk_time["t"] = time.time()
+            _post_kill_chunk_baseline = last_chunk_time["t"]
             agent._touch_activity(
                 f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
             )
@@ -3089,15 +3858,3 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     return result["response"]
 
 # ── Provider fallback ──────────────────────────────────────────────────
-
-
-
-__all__ = [
-    "interruptible_api_call",
-    "build_api_kwargs",
-    "build_assistant_message",
-    "try_activate_fallback",
-    "handle_max_iterations",
-    "cleanup_task_resources",
-    "interruptible_streaming_api_call",
-]

@@ -66,6 +66,36 @@ class TestUpdateFromResponse:
         assert compressor.last_prompt_tokens == 0
 
 
+class TestDisplayPromptTokens:
+    """display_prompt_tokens must return the last REAL provider count, never
+    the preflight rough estimate that turn_context.py ratchets into
+    last_prompt_tokens — otherwise the status bar / Δ segment spike to the
+    (over)estimate mid-turn and snap back, showing a phantom balloon.
+    """
+
+    def test_returns_real_count_after_usage(self, compressor):
+        compressor.update_from_response({"prompt_tokens": 475_000, "completion_tokens": 300})
+        assert compressor.display_prompt_tokens() == 475_000
+
+    def test_ignores_preflight_inflation(self, compressor):
+        # Real usage lands first...
+        compressor.update_from_response({"prompt_tokens": 475_000, "completion_tokens": 300})
+        # ...then preflight ratchets last_prompt_tokens up to the rough estimate.
+        compressor.last_prompt_tokens = 528_000
+        # Display must stay on the honest real number, not the estimate.
+        assert compressor.display_prompt_tokens() == 475_000
+
+    def test_zero_before_any_real_usage(self, compressor):
+        compressor.last_real_prompt_tokens = 0
+        compressor.last_prompt_tokens = 528_000  # preflight estimate, no real usage yet
+        assert compressor.display_prompt_tokens() == 0
+
+    def test_post_compression_sentinel_reads_zero(self, compressor):
+        compressor.last_real_prompt_tokens = -1  # parked at compression
+        compressor.last_prompt_tokens = -1
+        assert compressor.display_prompt_tokens() == 0
+
+
 class TestPreflightDeferral:
     def test_defers_when_recent_real_usage_fit_and_rough_growth_is_small(self, compressor):
         compressor.threshold_tokens = 85_000

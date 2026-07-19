@@ -1273,3 +1273,133 @@ def test_review_fork_runs_under_background_review_origin(curator_env, monkeypatc
         "'background_review' — the skill_manage background-review write "
         "guard would not fire (GH-47688 regression)"
     )
+
+
+# =========================================================================
+# Cost ledger + in-flight tracking (fork-only, 2026-07-14)
+#
+# The curator's LLM review fork accumulates real cost on its own
+# session_estimated_cost_usd, but nothing surfaced it anywhere until this
+# ledger. cli.py's exit path drains it (get_and_reset_curator_cost_usd)
+# and folds it in only when the pass already finished (is_curator_running
+# tells the caller whether to expect $0 because nothing ran, or because
+# it's still in flight).
+# =========================================================================
+
+class _StubAgentWithCost:
+    def __init__(self, *args, cost=0.0, **kwargs):
+        self._memory_write_origin = "assistant_tool"
+        self._memory_nudge_interval = 10
+        self._skill_nudge_interval = 10
+        self.platform = kwargs.get("platform")
+        self._session_messages = []
+        self.session_estimated_cost_usd = cost
+
+    def run_conversation(self, user_message=None, **kwargs):
+        return {"final_response": "no change"}
+
+    def close(self):
+        pass
+
+
+def test_run_llm_review_records_cost_in_ledger(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    monkeypatch.setattr(curator, "_load_config", lambda: {})
+
+    # Drain any residue from other tests in this process.
+    curator.get_and_reset_curator_cost_usd()
+
+    monkeypatch.setattr(
+        "run_agent.AIAgent",
+        lambda *a, **kw: _StubAgentWithCost(*a, cost=0.42, **kw),
+    )
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert meta.get("cost_usd") == 0.42
+    assert curator.get_and_reset_curator_cost_usd() == 0.42
+    # Ledger reset on read.
+    assert curator.get_and_reset_curator_cost_usd() == 0.0
+
+
+def test_run_llm_review_zero_cost_not_recorded(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    monkeypatch.setattr(curator, "_load_config", lambda: {})
+
+    curator.get_and_reset_curator_cost_usd()
+
+    monkeypatch.setattr(
+        "run_agent.AIAgent",
+        lambda *a, **kw: _StubAgentWithCost(*a, cost=0.0, **kw),
+    )
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert "cost_usd" not in meta
+    assert curator.get_and_reset_curator_cost_usd() == 0.0
+
+
+def test_run_llm_review_missing_cost_attribute_is_swallowed(curator_env, monkeypatch):
+    """An agent stub with no session_estimated_cost_usd attribute at all
+    must not break the review pass -- cost tracking is advisory."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    monkeypatch.setattr(curator, "_load_config", lambda: {})
+
+    curator.get_and_reset_curator_cost_usd()
+
+    class _NoCostAgent:
+        def __init__(self, *a, **kw):
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 10
+            self._skill_nudge_interval = 10
+            self.platform = kw.get("platform")
+            self._session_messages = []
+            # Deliberately no session_estimated_cost_usd attribute.
+
+        def run_conversation(self, user_message=None, **kwargs):
+            return {"final_response": "no change"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _NoCostAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert curator.get_and_reset_curator_cost_usd() == 0.0
+
+
+def test_is_curator_running_false_when_no_thread():
+    from agent import curator as curator_mod
+    curator_mod._active_curator_thread = None
+    assert curator_mod.is_curator_running() is False
+
+
+def test_is_curator_running_true_while_thread_alive():
+    from agent import curator as curator_mod
+    import threading
+    import time
+
+    gate = threading.Event()
+
+    def _work():
+        gate.wait(timeout=2)
+
+    t = threading.Thread(target=_work, daemon=True)
+    curator_mod._active_curator_thread = t
+    t.start()
+    try:
+        assert curator_mod.is_curator_running() is True
+    finally:
+        gate.set()
+        t.join(timeout=2)
+    assert curator_mod.is_curator_running() is False

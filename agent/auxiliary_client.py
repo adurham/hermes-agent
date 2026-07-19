@@ -449,6 +449,15 @@ def _get_aux_model_for_provider(provider_id: str) -> str:
     return _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
 
 
+# When the active main provider is Anthropic and no per-task model override
+# is present, all auxiliary tasks (compression, title generation, session
+# search, etc.) use this model instead of mirroring the main Opus model or
+# falling back to Haiku.  build_anthropic_client gates the 1M-context beta on
+# _model_supports_1m_context, and claude-sonnet-4-6 is in that allowlist, so
+# compression automatically gets the 1M window it needs.  Per-task explicit
+# auxiliary.<task>.model overrides still win over this constant.
+_ANTHROPIC_DEFAULT_AUX_MODEL = "claude-sonnet-5"
+
 # Fallback for providers not yet migrated to ProviderProfile.default_aux_model,
 # plus providers we intentionally keep pinned here (e.g. Anthropic predates
 # profiles). New providers should set default_aux_model on their profile instead.
@@ -459,7 +468,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "stepfun": "step-3.5-flash",
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview",
-    "anthropic": "claude-haiku-4-5-20251001",
+    "anthropic": _ANTHROPIC_DEFAULT_AUX_MODEL,
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
@@ -1254,23 +1263,47 @@ class _AnthropicCompletionsAdapter:
             elif choice_type in {"auto", "required", "none"}:
                 normalized_tool_choice = choice_type
 
+        # Auxiliary calls are one-shot utility completions (title gen,
+        # compression summaries, vision, session search) — never extended
+        # reasoning. Explicitly DISABLE thinking: build_anthropic_kwargs
+        # otherwise defaults reasoning_config=None to adaptive thinking on
+        # 4.6+ models (mirroring the main conversational wire shape). With
+        # thinking on, Anthropic requires temperature==1 and 400s on the
+        # deterministic temperatures these tasks pass (e.g. title gen's 0.3) —
+        # "temperature may only be set to 1 when thinking is enabled". Passing
+        # enabled=False keeps the historical thinking-less behavior these tasks
+        # always had under haiku, honors the caller's temperature, and is
+        # faster/cheaper for utility work.
         anthropic_kwargs = build_anthropic_kwargs(
             model=model,
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
-            reasoning_config=None,
+            reasoning_config={"enabled": False},
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
         )
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
         # temperature for models that still accept it. build_anthropic_kwargs
         # additionally strips these keys as a safety net — keep both layers.
-        if temperature is not None:
+        # Final guard: never attach temperature when thinking ended up enabled
+        # (would 400 with "temperature may only be set to 1 when thinking is
+        # enabled"); thinking-on calls must use the server default temperature.
+        if temperature is not None and "thinking" not in anthropic_kwargs:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
+        # Use upstream's create_anthropic_message() helper — it prefers
+        # messages.stream().get_final_message() (matching the main turn path,
+        # robust against SSE-only gateways) and falls back to messages.create().
+        # SAFE for the fork's CC-mimicry OAuth path: build_anthropic_client bakes
+        # the anthropic-beta header into the client's default_headers at
+        # CONSTRUCTION, so every request through this client carries the betas
+        # regardless of the .messages vs .beta.messages namespace. (Verified:
+        # _COMMON_BETAS → kwargs["default_headers"]["anthropic-beta"] in
+        # build_anthropic_client.)
+        from agent.anthropic_adapter import create_anthropic_message
         response = create_anthropic_message(self._client, anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
@@ -1541,7 +1574,7 @@ def _maybe_wrap_anthropic(
         return client_obj
 
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(api_key, base_url, model=model)
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
@@ -2087,11 +2120,14 @@ def _read_main_model() -> str:
 
     Runtime override: when an AIAgent is active with a CLI/gateway-provided
     model that differs from config.yaml, ``set_runtime_main()`` records the
-    override in a process-local global. This is consulted FIRST so tools
-    that gate on "the active main model" (e.g. ``vision_analyze``'s native
-    fast path) see the live runtime, not the persisted config default.
+    override in thread-local storage (one slot per thread — see the
+    ``_runtime_main_tls`` definition for why this must not be a shared
+    global). This is consulted FIRST so tools that gate on "the active main
+    model" (e.g. ``vision_analyze``'s native fast path) see the live
+    runtime for THIS thread, not the persisted config default or another
+    thread's override.
     """
-    override = _RUNTIME_MAIN_MODEL
+    override = _rtl_get("model")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2118,7 +2154,7 @@ def _read_main_provider() -> str:
     Runtime override: see ``_read_main_model`` — same mechanism for the
     provider half of the runtime tuple.
     """
-    override = _RUNTIME_MAIN_PROVIDER
+    override = _rtl_get("provider")
     if isinstance(override, str) and override.strip():
         return override.strip().lower()
     try:
@@ -2138,16 +2174,16 @@ def _read_main_api_key() -> str:
     """Read the user's main model API key from the runtime override or config.
 
     Mirrors ``_read_main_model`` / ``_read_main_provider``: checks the
-    process-local ``_RUNTIME_MAIN_API_KEY`` override first (set by
-    ``set_runtime_main`` when an AIAgent is active), then falls back to
-    ``model.api_key`` in config.yaml.
+    thread-local API-key override first (set by ``set_runtime_main`` when
+    an AIAgent is active), then falls back to ``model.api_key`` in
+    config.yaml.
 
     Used by the ``custom`` provider fallback chain so that auxiliary tasks
     configured with an explicit ``base_url`` but empty ``api_key`` inherit
     the main model's credentials instead of falling to ``no-key-required``
     (issue #9318).
     """
-    override = _RUNTIME_MAIN_API_KEY
+    override = _rtl_get("api_key")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2168,7 +2204,7 @@ def _read_main_base_url() -> str:
 
     Same override-then-config pattern as ``_read_main_api_key``.
     """
-    override = _RUNTIME_MAIN_BASE_URL
+    override = _rtl_get("base_url")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2204,13 +2240,49 @@ def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
     return _read_main_api_key()
 
 
-# Process-local override set by AIAgent at session/turn start. Single-threaded
-# per turn — no lock needed. Cleared by ``clear_runtime_main()``.
-_RUNTIME_MAIN_PROVIDER: str = ""
-_RUNTIME_MAIN_MODEL: str = ""
-_RUNTIME_MAIN_BASE_URL: str = ""
-_RUNTIME_MAIN_API_KEY: str = ""
-_RUNTIME_MAIN_API_MODE: str = ""
+# THREAD-LOCAL override set by AIAgent at session/turn start, one slot per
+# thread. Cleared (for the calling thread only) by ``clear_runtime_main()``.
+#
+# History (fork bug, found 2026-07-18): this used to be five bare module
+# globals with a comment claiming "single-threaded per turn — no lock
+# needed." That was false the moment background AIAgent forks existed:
+# ``_spawn_background_review`` (bg-review daemon thread) and
+# ``maybe_auto_title`` (auto-title daemon thread) each run a full turn
+# concurrently with the main conversation thread, and each calls
+# ``set_runtime_main()`` for ITS OWN provider/model. With bare globals,
+# whichever thread wrote last won for every thread's ``_read_main_provider()``
+# / ``_read_main_model()`` / ``_resolve_auto()`` reads process-wide — a true
+# data race, not a locking gap (a lock wouldn't have fixed "last writer wins
+# for unrelated threads"; the state needed to be *per-thread*, not shared).
+#
+# Concretely: a background-review fork configured via
+# ``auxiliary.background_review.{provider,model}`` (e.g. a cheaper
+# ollama-cloud/gemma model) calls set_runtime_main() on its own daemon
+# thread. If title_generation's daemon thread (main provider = anthropic)
+# happened to resolve its task config in that window, it read the
+# bg-review thread's clobbered globals and shipped a
+# claude-sonnet-5-session's title request as model "gemma4:31b" to the
+# Anthropic endpoint -> HTTP 404 "model: gemma4:31b" ("Auxiliary title
+# generation failed"). Reproduced directly by calling set_runtime_main()
+# from a simulated second thread and observing _read_main_provider() flip
+# for the main thread.
+#
+# threading.local() gives every thread its own attribute namespace, so a
+# bg-review thread's set_runtime_main() call is invisible to the main
+# thread and to auto-title's own daemon thread. Each thread still calls
+# set_runtime_main() itself at its own turn start (turn_context.py /
+# background_review.py), so no caller-side changes are needed — only the
+# storage had to stop being shared.
+_runtime_main_tls = threading.local()
+
+
+def _rtl_get(attr: str) -> str:
+    return getattr(_runtime_main_tls, attr, "")
+
+
+def _rtl_set(**kwargs: str) -> None:
+    for k, v in kwargs.items():
+        setattr(_runtime_main_tls, k, v)
 
 
 def set_runtime_main(
@@ -2221,7 +2293,7 @@ def set_runtime_main(
     api_key: str = "",
     api_mode: str = "",
 ) -> None:
-    """Record the live runtime provider/model/credentials for the current AIAgent.
+    """Record the live runtime provider/model/credentials for the CALLING thread.
 
     Called by ``run_agent.AIAgent._sync_runtime_main_for_aux_routing`` (or
     equivalent setter) at the top of each turn so that
@@ -2231,25 +2303,38 @@ def set_runtime_main(
     For ``custom:`` providers, ``base_url`` and ``api_key`` must also be
     recorded so that ``_resolve_auto`` can construct a valid client in
     Step 1 instead of falling through to the aggregator chain.
+
+    Thread-local by design (see ``_runtime_main_tls``): the main
+    conversation thread and any concurrent background AIAgent forks
+    (bg-review, auto-title) each call this for their OWN provider/model,
+    and each must only see its own override, never another thread's.
     """
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
-    global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
-    _RUNTIME_MAIN_MODEL = (model or "").strip()
-    _RUNTIME_MAIN_BASE_URL = (base_url or "").strip()
-    _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
-    _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
+    _rtl_set(
+        provider=(provider or "").strip().lower(),
+        model=(model or "").strip(),
+        base_url=(base_url or "").strip(),
+        api_key=api_key.strip() if isinstance(api_key, str) else "",
+        api_mode=(api_mode or "").strip(),
+    )
+
+
+def get_runtime_main_base_url() -> str:
+    """Return the live main base_url recorded for THIS thread's turn (or "").
+
+    Exposed so exo-detection (``agent.image_routing._provider_is_exo``) can
+    identify a bare ``custom`` runtime by its ACTUAL live endpoint, rather
+    than the static ``config.model.base_url`` — which is the saved default
+    (e.g. Anthropic) and does not reflect a ``--provider exo`` / ``hermes
+    model`` switch to the local cluster. Without this, aux tasks in an exo
+    session fail to select the exo provider block and cross over to another
+    provider's model pointed at the exo endpoint (404).
+    """
+    return _rtl_get("base_url")
 
 
 def clear_runtime_main() -> None:
-    """Clear the runtime override (e.g. on session end)."""
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
-    global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    _RUNTIME_MAIN_PROVIDER = ""
-    _RUNTIME_MAIN_MODEL = ""
-    _RUNTIME_MAIN_BASE_URL = ""
-    _RUNTIME_MAIN_API_KEY = ""
-    _RUNTIME_MAIN_API_MODE = ""
+    """Clear the runtime override for the CALLING thread only (e.g. on session end)."""
+    _rtl_set(provider="", model="", base_url="", api_key="", api_mode="")
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -2385,7 +2470,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         # Anthropic OAuth claims only apply to api.anthropic.com.
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            real_client = build_anthropic_client(custom_key, custom_base)
+            real_client = build_anthropic_client(custom_key, custom_base, model=model)
         except ImportError:
             logger.warning(
                 "Custom endpoint declares api_mode=anthropic_messages but the "
@@ -2586,7 +2671,17 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic(explicit_api_key: str = None, model_override: str = None) -> Tuple[Optional[Any], Optional[str]]:
+    # Reject foreign-provider placeholder keys (e.g. "not-needed" from an exo
+    # config leaking into the Anthropic path via set_runtime_main when the user
+    # hot-swaps from exo to anthropic mid-session). Genuine Anthropic credentials
+    # always start with "sk-ant-"; anything else is a placeholder from a different
+    # provider and must be discarded so the function falls through to
+    # resolve_anthropic_token(), which reads the real OAuth cred from
+    # ~/.claude/.credentials.json.
+    if explicit_api_key and not explicit_api_key.strip().lower().startswith("sk-ant-"):
+        explicit_api_key = None
+
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
@@ -2637,10 +2732,16 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
     from agent.anthropic_adapter import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    # ``model_override`` (the caller's explicit per-task model, e.g. a Haiku
+    # fallback_model) takes precedence over the generic per-provider aux
+    # default. The model passed here is baked into the SDK client's beta
+    # headers at construction (see build_anthropic_client → _model_supports_1m_context):
+    # building for Sonnet then sending Haiku attaches context-1m-2025-08-07 to a
+    # model with no 1M tier → HTTP 400 "long context beta is not yet available".
+    model = model_override or _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
-        real_client = build_anthropic_client(token, base_url)
+        real_client = build_anthropic_client(token, base_url, model=model)
     except ImportError:
         # The anthropic_adapter module imports fine but the SDK itself is
         # missing — build_anthropic_client raises ImportError at call time
@@ -4103,6 +4204,7 @@ def _resolve_single_provider(
 
 def _resolve_auto(
     main_runtime: Optional[Dict[str, Any]] = None,
+    preferred_model: Optional[str] = None,
     task: Optional[str] = None,
 ) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
@@ -4117,6 +4219,19 @@ def _resolve_auto(
          switches to a cheap fallback model for side tasks.
       2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
          chain, only used when the main provider has no working client).
+
+    ``preferred_model`` is the caller's explicit per-task model (e.g. a Haiku
+    fallback_model for a cheap aux task on an Anthropic-main session). When
+    set, Step 1 builds the provider client for THAT model instead of the
+    generic per-provider aux default. This matters for Anthropic: the SDK
+    client bakes beta headers (notably ``context-1m-2025-08-07``) into its
+    default headers at construction based on the model it's told it will
+    serve. If the client is built for Sonnet (1M-capable) but the request is
+    later sent as Haiku (no 1M tier), Anthropic 400s with "The long context
+    beta is not yet available for this subscription". Threading the real
+    request model in keeps the baked betas consistent with the model actually
+    used. See FORK.md (2026-06-22 fallback_model entry) for the resolution
+    chain this rides on.
     """
     global auxiliary_is_nous, _stale_base_url_warned
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
@@ -4127,17 +4242,21 @@ def _resolve_auto(
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
 
-    # Fall back to process-local globals when main_runtime dict was not
+    # Fall back to thread-local overrides when main_runtime dict was not
     # provided or was incomplete.  ``set_runtime_main()`` now records
     # base_url/api_key/api_mode alongside provider/model, so custom:
     # providers get the full credential surface in Step 1 of the
-    # auto-detect chain.
-    if not runtime_base_url and _RUNTIME_MAIN_BASE_URL:
-        runtime_base_url = _RUNTIME_MAIN_BASE_URL
-    if not runtime_api_key and _RUNTIME_MAIN_API_KEY:
-        runtime_api_key = _RUNTIME_MAIN_API_KEY
-    if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
-        runtime_api_mode = _RUNTIME_MAIN_API_MODE
+    # auto-detect chain. Thread-local so a concurrent background-review /
+    # auto-title fork's override never leaks into this thread's resolution.
+    _tls_base_url = _rtl_get("base_url")
+    _tls_api_key = _rtl_get("api_key")
+    _tls_api_mode = _rtl_get("api_mode")
+    if not runtime_base_url and _tls_base_url:
+        runtime_base_url = _tls_base_url
+    if not runtime_api_key and _tls_api_key:
+        runtime_api_key = _tls_api_key
+    if not runtime_api_mode and _tls_api_mode:
+        runtime_api_mode = _tls_api_mode
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -4221,17 +4340,36 @@ def _resolve_auto(
         if main_chain_label and _is_provider_unhealthy(main_chain_label):
             _log_skip_unhealthy(main_chain_label)
         else:
+            # For Anthropic main sessions, use the dedicated aux model
+            # (claude-sonnet-4-6) rather than mirroring the main Opus model.
+            # Per-task explicit overrides still win: they propagate through the
+            # outer resolve_provider_client(model=per_task_model) call, which
+            # takes precedence over the resolved model we return here.
+            #
+            # When the caller supplied an explicit per-task model
+            # (``preferred_model`` — e.g. a Haiku fallback_model), build the
+            # client for THAT model. Otherwise the client would be constructed
+            # for Sonnet (1M-capable) and bake the ``context-1m-2025-08-07``
+            # beta into its default headers, then the request would go out as
+            # Haiku (no 1M tier) → HTTP 400 "long context beta is not yet
+            # available for this subscription". The model that builds the
+            # client must match the model that serves the request so the baked
+            # betas are correct.
+            if resolved_provider == "anthropic":
+                step1_model = preferred_model or _ANTHROPIC_DEFAULT_AUX_MODEL
+            else:
+                step1_model = main_model
             client, resolved = resolve_provider_client(
                 resolved_provider,
-                main_model,
+                step1_model,
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                            main_provider, resolved or main_model)
-                return client, resolved or main_model
+                            main_provider, resolved or step1_model)
+                return client, resolved or step1_model
 
     # ── Step 2: user-configured fallback policy ─────────────────────────
     # In auto mode, respect the task-specific fallback chain first, then the
@@ -4445,14 +4583,18 @@ def resolve_provider_client(
     # main_model also empty), the branches still hit their own
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
-    #
-    # Prefer explicit caller model, then provider-scoped aux model, then main model.
-    # Do NOT pre-fill a blank ``auto`` request from the config/main default here.
-    # ``auto`` has its own main-runtime resolver below; pre-filling first can pair
-    # a stale configured model with a live fallback provider (e.g. Claude model
-    # sent to Codex after the main lane fell back to gpt-5.5). Let _resolve_auto()
-    # return the actual current runtime model when the caller did not explicitly
-    # request one. (# compression-current-model)
+    # Capture the caller-supplied model BEFORE the auto-fill fallback so the
+    # auto branch can distinguish "caller explicitly asked for X" from "we
+    # filled in the main model as a fallback".  Only an explicitly-supplied
+    # model should override the provider-matched substitution that
+    # _resolve_auto returns (e.g. sonnet-4-6 for anthropic-main sessions).
+    caller_model = model
+    # Do NOT pre-fill a blank ``auto`` request from the config/main default.
+    # ``auto`` has its own main-runtime resolver below; pre-filling first can
+    # pair a stale configured model with a live fallback provider (e.g. Claude
+    # model sent to Codex after the main lane fell back to gpt-5.5). Let
+    # _resolve_auto() return the actual current runtime model when the caller
+    # did not explicitly request one. (# compression-current-model)
     if not model and provider != "auto":
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
@@ -4507,19 +4649,34 @@ def resolve_provider_client(
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
-        client, resolved = _resolve_auto(main_runtime=main_runtime, task=task)
+        # FORK: pass the caller's explicit per-task model so Step 1 builds the
+        # provider client for the model that will actually serve the request.
+        # Critical for Anthropic: the client bakes beta headers at construction
+        # from the model it's given, and a mismatch (client built for Sonnet,
+        # request sent as Haiku) attaches the Sonnet-only context-1m beta to a
+        # Haiku call → HTTP 400 "long context beta is not yet available".
+        # Also thread upstream's ``task`` so _resolve_auto can consult the
+        # task-specific fallback chain when the main provider is unavailable.
+        client, resolved = _resolve_auto(
+            main_runtime=main_runtime, preferred_model=caller_model, task=task,
+        )
         if client is None:
             return None, None
         # When auto-detection lands on a non-OpenRouter provider (e.g. a
         # local server), an OpenRouter-formatted model override like
         # "google/gemini-3-flash-preview" won't work.  Drop it and use
         # the provider's own default model instead.
-        if model and "/" in model and resolved and "/" not in resolved:
+        if caller_model and "/" in caller_model and resolved and "/" not in resolved:
             logger.debug(
                 "Dropping OpenRouter-format model %r for non-OpenRouter "
-                "auxiliary provider (using %r instead)", model, resolved)
-            model = None
-        final_model = model or resolved
+                "auxiliary provider (using %r instead)", caller_model, resolved)
+            caller_model = None
+        # Use caller_model (not the auto-filled `model`) so that a main-model
+        # fallback (e.g. "claude-opus-4-8" filled in from _read_main_model)
+        # does NOT override the provider-matched model that _resolve_auto
+        # already chose (e.g. "claude-sonnet-4-6" for an anthropic-main
+        # session).  Only an explicitly caller-supplied model wins here.
+        final_model = caller_model or resolved
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -4604,6 +4761,14 @@ def resolve_provider_client(
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── Google Code Assist (Gemini CLI) ──────────────────────────────
+    if provider == "google-gemini-cli":
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        client = GeminiCloudCodeClient(model=model or "gemini-3.1-pro-preview")
+        final_model = _normalize_resolved_model(model or "gemini-3.1-pro-preview", provider)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -4756,7 +4921,7 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base)
+                        real_client = build_anthropic_client(custom_key, custom_base, model=final_model)
                     except ImportError:
                         logger.warning(
                             "Named custom provider %r declares api_mode="
@@ -4857,7 +5022,14 @@ def resolve_provider_client(
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
-            client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
+            # Thread the requested model into the client builder so the SDK
+            # client bakes the correct beta headers for it (a Haiku request
+            # must not carry the Sonnet-only context-1m beta → HTTP 400). The
+            # caller-supplied model wins; falls back to the per-provider aux
+            # default inside _try_anthropic when None.
+            client, default_model = _try_anthropic(
+                explicit_api_key=explicit_api_key, model_override=model,
+            )
             if client is None:
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None
@@ -5247,6 +5419,17 @@ def get_available_vision_backends() -> List[str]:
     return available
 
 
+_vision_resolution_cache: Dict[tuple, Tuple[Optional[str], Optional[Any], Optional[str]]] = {}
+
+
+def _clear_vision_resolution_cache() -> None:
+    """Drop the per-process vision client cache.  Used by tests and by
+    code paths that intentionally reconfigure the vision provider mid-run
+    (model switch, oauth re-link, env var change) so the next call
+    re-resolves rather than hitting a stale entry."""
+    _vision_resolution_cache.clear()
+
+
 def resolve_vision_provider_client(
     provider: Optional[str] = None,
     model: Optional[str] = None,
@@ -5256,6 +5439,36 @@ def resolve_vision_provider_client(
     async_mode: bool = False,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
+
+    Memoized per-process: ``_toolset_has_keys('vision')`` runs on every
+    toolset that registers a vision dependency (5+ call sites in
+    tools_config.py / web_server.py), each with identical default args.
+    Without the cache that's 5 redundant network probes / OAuth
+    resolutions on every ``hermes chat`` startup. Call
+    ``_clear_vision_resolution_cache()`` after a config or auth change
+    to force re-resolution.
+    """
+    cache_key = (provider, model, base_url, api_key, async_mode)
+    cached = _vision_resolution_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    result = _resolve_vision_provider_client_impl(
+        provider, model,
+        base_url=base_url, api_key=api_key, async_mode=async_mode,
+    )
+    _vision_resolution_cache[cache_key] = result
+    return result
+
+
+def _resolve_vision_provider_client_impl(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    async_mode: bool = False,
+) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
+    """Uncached body of ``resolve_vision_provider_client``.
 
     Direct endpoint overrides take precedence over provider selection. Explicit
     provider overrides still use the generic provider router for non-standard
@@ -5307,7 +5520,7 @@ def resolve_vision_provider_client(
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in {"auto", ""}:
-            vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
+            vision_model = resolved_model or _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
                 sync_client, default_model = _resolve_strict_vision_backend(
                     main_provider, vision_model
@@ -5355,16 +5568,17 @@ def resolve_vision_provider_client(
                 # whole chain would fall through to the aggregators, breaking
                 # vision for every user on a custom provider that has no
                 # separate ``auxiliary.vision`` block.  Recover the live main
-                # endpoint that ``set_runtime_main()`` recorded for this turn so
-                # Step 1 can build a working client.
+                # endpoint that ``set_runtime_main()`` recorded for THIS
+                # thread's turn so Step 1 can build a working client.
                 rpc_base_url = None
                 rpc_api_key = None
                 rpc_api_mode = resolved_api_mode
                 if main_provider == "custom" or main_provider.startswith("custom:"):
-                    if _RUNTIME_MAIN_BASE_URL:
-                        rpc_base_url = _RUNTIME_MAIN_BASE_URL
-                        rpc_api_key = _RUNTIME_MAIN_API_KEY or None
-                        rpc_api_mode = resolved_api_mode or _RUNTIME_MAIN_API_MODE or None
+                    _tls_base_url = _rtl_get("base_url")
+                    if _tls_base_url:
+                        rpc_base_url = _tls_base_url
+                        rpc_api_key = _rtl_get("api_key") or None
+                        rpc_api_mode = resolved_api_mode or _rtl_get("api_mode") or None
                     else:
                         # No live runtime recorded (non-gateway caller): fall
                         # back to resolving the configured custom endpoint.
@@ -5845,6 +6059,40 @@ _AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
 }
 
 
+def _aux_override_targets_exo(
+    provider: Optional[str],
+    base_url: Optional[str],
+    cfg: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True when an ``auxiliary.<task>`` override targets the local exo cluster.
+
+    Matches by provider name (``exo`` / ``custom:exo``) or by a ``base_url``
+    that equals the configured ``providers.exo.base_url``.  Used to scope
+    exo-hosted auxiliary delegation (e.g. DeepSeek-V4-Flash main →
+    Qwen3.6-35B-A3B aux) to sessions whose main provider is itself exo.
+    """
+    p = (provider or "").strip().lower()
+    if p in {"exo", "custom:exo"}:
+        return True
+    if not base_url:
+        return False
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+        except Exception:
+            return False
+    if not isinstance(cfg, dict):
+        return False
+    providers_cfg = cfg.get("providers")
+    if not (isinstance(providers_cfg, dict) and isinstance(providers_cfg.get("exo"), dict)):
+        return False
+    exo_base = str(providers_cfg["exo"].get("base_url") or "").strip().lower().rstrip("/")
+    if not exo_base:
+        return False
+    return base_url.strip().lower().rstrip("/") == exo_base
+
+
 def _resolve_task_provider_model(
     task: str = None,
     provider: str = None,
@@ -5860,10 +6108,28 @@ def _resolve_task_provider_model(
       3. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
-    be None (use provider default). A bare base_url is treated as custom, but
-    a first-class provider plus base_url keeps the provider identity so its
-    auth, transport, and request-shaping behavior still apply. api_mode is one
-    of "chat_completions", "codex_responses", or None (auto-detect).
+    be None (use provider default). When base_url is set, provider is forced
+    to "custom" and the task uses that direct endpoint. api_mode is one of
+    "chat_completions", "codex_responses", or None (auto-detect).
+
+    Exo-scoped delegation: when ``auxiliary.<task>`` is configured to target
+    the local exo cluster (``provider: exo`` / ``custom:exo`` / matching
+    base_url), that override is honored ONLY when the active main provider is
+    itself exo.  For non-exo sessions (Claude, OpenRouter, Ollama, ...) the
+    override is dropped so aux tasks follow the main provider via "auto"
+    instead of pulling the exo cluster into the request.  Mirrors the
+    exo-only delegate scoping already used for vision in
+    ``agent/image_routing.py`` (``_provider_is_exo``).
+
+    Provider-scoped fallback (fork feature, 2026-06-24): when the exo pin is
+    dropped, the aux model is chosen from
+    ``auxiliary.<task>.fallback_models`` — a ``{provider: model}`` map keyed
+    by the active *main* provider id — falling back to the legacy
+    ``auxiliary.<task>.fallback_model`` scalar, then to cleared (provider
+    default). This lets one task declare different aux models per main
+    provider (``exo`` pin for exo-main, ``anthropic: claude-sonnet-4-6`` for
+    Anthropic-main, etc.) rather than a scalar that assumes the non-exo
+    provider is always Anthropic. Backward compatible: absent map ⇒ scalar.
     """
     cfg_provider = None
     cfg_model = None
@@ -5878,6 +6144,63 @@ def _resolve_task_provider_model(
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        cfg_fallback_model = str(task_config.get("fallback_model", "")).strip() or None
+        # Provider-scoped fallback map (fork feature, 2026-06-24): an optional
+        # ``auxiliary.<task>.fallback_models`` dict maps a *main-provider id*
+        # to the aux model to use when the exo pin is dropped (main != exo).
+        # This lets a single task carry a per-provider preferred aux model
+        # (e.g. ``exo: <qwen>``, ``anthropic: claude-sonnet-4-6``) instead of
+        # a lone ``fallback_model`` scalar that silently assumes the non-exo
+        # provider is Anthropic. Resolution order on drop: provider-scoped
+        # entry → legacy ``fallback_model`` scalar → cleared (provider default).
+        # Fully backward compatible: absent map ⇒ old scalar behavior.
+        cfg_fallback_models = task_config.get("fallback_models")
+        if not isinstance(cfg_fallback_models, dict):
+            cfg_fallback_models = {}
+
+        # ── Exo-scoped auxiliary delegation ────────────────────────────
+        # Drop the exo-targeted override when the active main provider is
+        # not exo, so non-exo sessions don't route side tasks into the
+        # cluster.  See function docstring.
+        if _aux_override_targets_exo(cfg_provider, cfg_base_url):
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _cfg = _load_cfg()
+            except Exception:
+                _cfg = None
+            _main_prov = _read_main_provider()
+            try:
+                from agent.image_routing import _provider_is_exo
+            except ImportError:
+                _provider_is_exo = None  # type: ignore[assignment]
+            if _provider_is_exo is None or not _provider_is_exo(_main_prov, _cfg):
+                logger.debug(
+                    "Auxiliary task %r: exo override dropped — main provider "
+                    "%r is not exo; falling back to auto%s",
+                    task, _main_prov or "(none)",
+                    f" with fallback_model {cfg_fallback_model!r}" if cfg_fallback_model else "",
+                )
+                cfg_provider = None
+                # When the exo pin is dropped because main isn't exo, choose
+                # the model for the now-main-following provider in this order:
+                #   1. provider-scoped ``fallback_models[<main_provider>]``
+                #   2. legacy ``fallback_model`` scalar
+                #   3. cleared → provider-default aux model (e.g. Sonnet on
+                #      Anthropic) applies.
+                # (1) lets one task carry distinct aux models per main provider
+                # — e.g. a cheap Haiku on Anthropic-main while a different model
+                # is used if main were OpenRouter/Ollama — instead of a single
+                # scalar that assumes the non-exo provider is always Anthropic.
+                _scoped_model = None
+                if isinstance(cfg_fallback_models, dict) and _main_prov:
+                    for _k, _v in cfg_fallback_models.items():
+                        if str(_k).strip().lower() == _main_prov:
+                            _scoped_model = str(_v).strip() or None
+                            break
+                cfg_model = _scoped_model or cfg_fallback_model
+                cfg_base_url = None
+                cfg_api_key = None
+                cfg_api_mode = None
 
     # 'auto' is a sentinel meaning "inherit from main runtime / auto-detect", not
     # a literal model id. Without this, a config of `auxiliary.<task>.model: auto`
@@ -5984,17 +6307,276 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
+# Built-in auxiliary task keys. Used by the schema detector to distinguish a
+# legacy *task-first* ``auxiliary`` map (top-level keys are task names) from a
+# *provider-first* map (top-level keys are provider ids + ``defaults``). The two
+# namespaces are disjoint — no provider is named "vision", no task is named
+# "anthropic" — so the presence of any of these at the top level unambiguously
+# marks a task-first config. Kept in sync with DEFAULT_CONFIG["auxiliary"].
+_BUILTIN_AUX_TASK_KEYS = frozenset({
+    "vision", "web_extract", "compression", "skills_hub", "approval", "mcp",
+    "title_generation", "tts_audio_tags", "triage_specifier",
+    "kanban_decomposer", "profile_describer", "curator", "monitor",
+    "session_search", "memory_extraction", "delegation_router",
+})
+
+# Reserved provider-first key holding per-task *settings* (timeout, extra_body,
+# language, token budgets, …) that are provider-independent. Looked up by task
+# regardless of which provider block serves the model.
+_AUX_DEFAULTS_KEY = "defaults"
+
+# Reserved keys inside a provider block that are block-level routing fields
+# rather than per-task model entries.
+_AUX_BLOCK_ROUTING_KEYS = frozenset({
+    "provider", "base_url", "api_key", "api_mode",
+})
+# Reserved per-block key naming the model used for any task NOT explicitly
+# listed in that provider block ("assume from the main aux config").
+_AUX_BLOCK_DEFAULT_MODEL_KEY = "default"
+
+
+def _aux_known_task_keys() -> frozenset:
+    """Built-in aux task keys plus any plugin-registered ones.
+
+    Plugin tasks must count as task-first markers too, otherwise a legacy
+    config that only configures a plugin task would be misread as
+    provider-first. Discovery failure degrades to the built-in set.
+    """
+    keys = set(_BUILTIN_AUX_TASK_KEYS)
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        for _entry in get_plugin_auxiliary_tasks():
+            k = _entry.get("key")
+            if isinstance(k, str) and k:
+                keys.add(k)
+    except Exception:
+        pass
+    return frozenset(keys)
+
+
+def _aux_schema_is_provider_first(aux: Dict[str, Any]) -> bool:
+    """Classify an ``auxiliary`` config map as provider-first or task-first.
+
+    Provider-first (fork schema, 2026-06-24)::
+
+        auxiliary:
+          defaults:        # per-task settings (timeout, extra_body, …)
+            vision: {timeout: 120}
+          exo:             # provider block — keys are task names → model
+            provider: custom:exo
+            base_url: http://…/v1
+            default: <qwen>
+            compression: <deepseek>
+          anthropic:
+            default: claude-haiku-4-5
+            vision: claude-sonnet-4-6
+
+    Task-first (legacy / upstream)::
+
+        auxiliary:
+          vision: {provider: auto, model: …, timeout: 120}
+          compression: {…}
+
+    Detection must survive ``load_config()``'s deep-merge against the
+    task-first ``DEFAULT_CONFIG``: that merge re-injects EVERY built-in task
+    key (``vision``, ``compression``, …) as inert ``{provider: auto, model:
+    ''}`` pollution on top of a user's provider-first config. So task-key
+    presence is NOT a usable signal — it's always there. The reliable positive
+    markers are the ones that never appear in a legacy task-first config:
+
+      * a ``defaults`` top-level key, or
+      * a top-level key that is a known provider id / exo / custom: alias.
+
+    Either marker ⇒ provider-first. Neither ⇒ task-first (legacy default; an
+    all-pollution or empty map behaves identically either way). The flattener
+    reads only the provider blocks + ``defaults`` and ignores the task-key
+    pollution, so a positive classification is safe.
+    """
+    if not isinstance(aux, dict) or not aux:
+        return False
+    keys = {str(k).strip().lower() for k in aux}
+    if _AUX_DEFAULTS_KEY in keys:
+        return True
+    # Known provider id (or exo/custom alias) at the top level → provider-first.
+    known_providers: set = set()
+    try:
+        from providers import list_providers
+        for _p in list_providers():
+            _name = getattr(_p, "name", None)
+            if isinstance(_name, str) and _name:
+                known_providers.add(_name.strip().lower())
+    except Exception:
+        known_providers = set()
+    # Exclude task keys from the provider scan so a legacy task-first config
+    # (whose keys are ALL task names) can never be misread as provider-first.
+    task_keys = _aux_known_task_keys()
+    for k in keys:
+        if k in task_keys:
+            continue
+        if k in known_providers or k in {"exo", "custom", "auto"} or k.startswith("custom:"):
+            return True
+    return False
+
+
+def _aux_select_provider_block(
+    aux: Dict[str, Any],
+    main_provider: str,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return the provider block matching the active *main* provider.
+
+    Resolution order:
+      1. exo alias (``exo`` / ``custom:exo``) when the main provider is the
+         local exo cluster (``_provider_is_exo``);
+      2. exact case-insensitive match on the main provider id;
+      3. ``custom:`` prefix stripped (``custom:exo`` → ``exo``);
+      4. empty block ⇒ caller falls through to the per-provider catalog
+         default ("assume from the main aux config").
+    """
+    if not isinstance(aux, dict):
+        return {}
+    # Build a case-insensitive view of provider blocks (skip the defaults key).
+    blocks = {
+        str(k).strip().lower(): v
+        for k, v in aux.items()
+        if k != _AUX_DEFAULTS_KEY and isinstance(v, dict)
+    }
+    mp = (main_provider or "").strip().lower()
+
+    # (1) exo cluster — prefer an explicit ``exo`` block.
+    try:
+        from agent.image_routing import _provider_is_exo
+        is_exo = _provider_is_exo(mp, cfg)
+    except Exception:
+        is_exo = mp in {"exo", "custom:exo"}
+    if is_exo:
+        for alias in ("exo", "custom:exo"):
+            if alias in blocks:
+                return blocks[alias]
+
+    # (2) exact match.
+    if mp in blocks:
+        return blocks[mp]
+    # (3) custom: prefix stripped.
+    if mp.startswith("custom:") and mp.split(":", 1)[1] in blocks:
+        return blocks[mp.split(":", 1)[1]]
+    return {}
+
+
+def _aux_flatten_provider_first(
+    task: str,
+    aux: Dict[str, Any],
+    main_provider: str,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Flatten a provider-first ``auxiliary`` map to the legacy task-config dict.
+
+    Returns the same flat ``{provider, model, base_url, api_key, api_mode,
+    timeout, extra_body, …}`` shape that the task-first path produced, so the
+    entire downstream resolver (``_resolve_task_provider_model``, the 1M-beta
+    header matching, the exo-scoping guard, ``_get_task_timeout`` /
+    ``_get_task_extra_body``) consumes it unchanged.
+
+    Model resolution within the selected provider block:
+        block[task]              # str → model, dict → routing/setting overrides
+        → block["default"]       # provider-wide default model
+        → "" (use main model / provider catalog default)
+
+    Routing emission:
+      * Block carries an explicit ``base_url`` or a non-auto ``provider``
+        (exo-style) → emit that explicit override so the request targets the
+        block's endpoint (and the exo-scoping guard keeps it when main==exo).
+      * Block is model-only (anthropic-style) → emit ``provider="auto"`` so the
+        main-provider auto-detect path runs exactly as before (preserving the
+        provider-matched aux model + baked betas for that family).
+    """
+    # (a) Per-task settings from the shared ``defaults`` block.
+    flat: Dict[str, Any] = {}
+    defaults_block = aux.get(_AUX_DEFAULTS_KEY)
+    if isinstance(defaults_block, dict):
+        task_defaults = defaults_block.get(task)
+        if isinstance(task_defaults, dict):
+            flat.update(task_defaults)
+
+    # (b) Provider block + model resolution.
+    block = _aux_select_provider_block(aux, main_provider, cfg)
+    task_entry = block.get(task) if isinstance(block, dict) else None
+    per_task_overrides: Dict[str, Any] = {}
+    resolved_model: Optional[str] = None
+    if isinstance(task_entry, str):
+        resolved_model = task_entry.strip() or None
+    elif isinstance(task_entry, dict):
+        per_task_overrides = dict(task_entry)
+        _m = per_task_overrides.pop("model", None)
+        resolved_model = str(_m).strip() or None if _m is not None else None
+    if resolved_model is None:
+        _default_model = block.get(_AUX_BLOCK_DEFAULT_MODEL_KEY) if isinstance(block, dict) else None
+        if isinstance(_default_model, str) and _default_model.strip():
+            resolved_model = _default_model.strip()
+
+    # (c) Block-level routing fields (base_url/api_key/api_mode/provider).
+    block_provider = str(block.get("provider", "")).strip() if isinstance(block, dict) else ""
+    block_base_url = str(block.get("base_url", "")).strip() if isinstance(block, dict) else ""
+    block_api_key = str(block.get("api_key", "")).strip() if isinstance(block, dict) else ""
+    block_api_mode = str(block.get("api_mode", "")).strip() if isinstance(block, dict) else ""
+
+    has_explicit_endpoint = bool(block_base_url) or (block_provider and block_provider != "auto")
+    if has_explicit_endpoint:
+        flat["provider"] = block_provider or "custom"
+        if block_base_url:
+            flat["base_url"] = block_base_url
+        if block_api_key:
+            flat["api_key"] = block_api_key
+        if block_api_mode:
+            flat["api_mode"] = block_api_mode
+    else:
+        # Model-only block (e.g. anthropic): defer to the main-provider auto
+        # path so family-matched aux model + baked betas behave as before.
+        flat["provider"] = "auto"
+
+    if resolved_model is not None:
+        flat["model"] = resolved_model
+
+    # (d) Per-task dict overrides win over block-level + defaults.
+    per_task_overrides.pop(_AUX_BLOCK_DEFAULT_MODEL_KEY, None)
+    flat.update(per_task_overrides)
+    return flat
+
+
+def _aux_task_pin_is_explicit(pin: Dict[str, Any]) -> bool:
+    """True when a top-level ``auxiliary.<task>`` dict carries REAL user
+    routing rather than the inert ``{provider: auto, model: ''}`` pollution
+    that ``load_config()``'s deep-merge against the task-first
+    ``DEFAULT_CONFIG`` injects into every provider-first config (see the
+    detection caveats on ``_aux_schema_is_provider_first``). Explicit means a
+    concrete provider (not empty/"auto"), a non-empty model, or a direct
+    base_url — none of which the merge pollution ever carries.
+    """
+    provider = str(pin.get("provider", "")).strip().lower()
+    model = str(pin.get("model", "")).strip()
+    base_url = str(pin.get("base_url", "")).strip()
+    return bool(base_url or model or (provider and provider != "auto"))
+
+
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
-    """Return the config dict for auxiliary.<task>, or {} when unavailable.
+    """Return the flat config dict for an auxiliary *task*, or {} when unavailable.
+
+    Supports two ``auxiliary`` schemas transparently and always returns the same
+    flat ``{provider, model, base_url, …}`` shape:
+
+      * **provider-first** (fork schema): top-level keys are provider ids +
+        ``defaults``; the model a task uses is selected from the block matching
+        the active main provider. Flattened via
+        :func:`_aux_flatten_provider_first`.
+      * **task-first** (legacy / upstream): top-level keys are task names whose
+        values are the flat routing dict directly.
 
     For plugin-registered auxiliary tasks (see
     :meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`) the
-    plugin's declared *defaults* are layered underneath the user's config
-    so an unconfigured plugin task still works:
+    plugin's declared *defaults* are layered underneath the user's config so an
+    unconfigured plugin task still works:
 
-        plugin defaults  ←  config.yaml auxiliary.<task>  (user wins)
-
-    Built-in tasks ignore this path (their defaults live in DEFAULT_CONFIG).
+        plugin defaults  ←  resolved task config  (user wins)
     """
     if not task:
         return {}
@@ -6004,9 +6586,38 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     except ImportError:
         return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
-    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    if not isinstance(task_config, dict):
-        task_config = {}
+    if not isinstance(aux, dict):
+        aux = {}
+
+    if _aux_schema_is_provider_first(aux):
+        main_provider = _read_main_provider()
+        task_config = _aux_flatten_provider_first(task, aux, main_provider, config)
+        # Fork fix (2026-07-11): a top-level ``auxiliary.<task>`` block that
+        # carries explicit routing is a TASK PIN, not a provider block —
+        # honor it over the provider-first flattening. Without this the pin
+        # is dead config in a provider-first schema: it is never selected by
+        # ``_aux_select_provider_block`` (no main provider is named after a
+        # task), so the task silently resolves to the main provider's block
+        # default (observed: ``auxiliary.consult: {provider: anthropic,
+        # model: claude-fable-5}`` ignored — consult answered by exo/Qwen on
+        # exo-main and gemma on ollama-main). The pin's routing replaces the
+        # block's routing WHOLESALE (routing keys and model dropped first) so
+        # a block ``base_url`` can't leak under the pin's provider and force
+        # the downstream base_url→custom coercion in
+        # ``_resolve_task_provider_model``.
+        pin = aux.get(task)
+        if isinstance(pin, dict) and _aux_task_pin_is_explicit(pin):
+            for _routing_key in _AUX_BLOCK_ROUTING_KEYS | {"model"}:
+                task_config.pop(_routing_key, None)
+            task_config.update({
+                _k: _v for _k, _v in pin.items()
+                if _v is not None
+                and not (isinstance(_v, str) and not _v.strip())
+            })
+    else:
+        task_config = aux.get(task, {})
+        if not isinstance(task_config, dict):
+            task_config = {}
 
     # Layer plugin-declared defaults underneath user config so
     # ctx.register_auxiliary_task(defaults={...}) takes effect without
@@ -6897,10 +7508,20 @@ def call_llm(
                         task or "call", reason, resolved_provider, first_err)
 
             # Fallback order (#26882, #26803):
-            #   1. User-configured fallback_chain (per-task) if set
+            #   1. For auto: per-task configured fallback chain
             #   2. For auto: top-level main fallback_providers/fallback_model
             #   3. For auto: built-in auxiliary discovery chain
-            #   4. For explicit aux providers: main agent model safety net
+            #   4. For auto (FORK): current main agent model, last-resort safety
+            #      net. Upstream's _try_main_fallback_chain reads the CONFIGURED
+            #      fallback_providers/fallback_model chain and SKIPS the main
+            #      provider — so on a single-provider setup (e.g. Anthropic-only,
+            #      no configured fallbacks) with a cheap per-task model pin
+            #      (fallback_model→Haiku), a rate-limited Haiku call would get
+            #      NO fallback at all. Re-try the CURRENT main model (e.g. Opus)
+            #      on the same provider/creds. Guard the degenerate same-model
+            #      case so we don't pointlessly re-hit the same rate-limited
+            #      backend.
+            #   5. For explicit aux providers: main agent model safety net
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
@@ -6910,6 +7531,9 @@ def call_llm(
                         task, resolved_provider or "auto", reason=reason)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_payment_fallback(
+                        resolved_provider, task, reason=reason)
+                if fb_client is None and (final_model or "") != (_read_main_model() or ""):
+                    fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(

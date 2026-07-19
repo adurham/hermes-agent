@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import sqlite3
 import time
 import json
@@ -648,6 +649,262 @@ class TestSessionLifecycle:
 
 
 # =========================================================================
+# Per-API-call telemetry (api_calls table, schema v12)
+# =========================================================================
+
+class TestRecordApiCall:
+    def test_records_full_response_split(self, db):
+        """A single record_api_call writes a queryable row with the full
+        cache split, latency, model/provider, and request_id."""
+        db.create_session(session_id="s_api1", source="cli")
+        db.record_api_call(
+            "s_api1",
+            call_seq=1,
+            started_at=1000.0,
+            ended_at=1042.5,
+            model="claude-opus-4-7",
+            provider="anthropic",
+            input_tokens=82,
+            cache_read_tokens=165_000,
+            cache_write_tokens=2_300,
+            output_tokens=512,
+            reasoning_tokens=128,
+            request_id="req_011CajzvS1CqiA6S2VdZsYiA",
+            stop_reason="end_turn",
+            call_type="main",
+        )
+
+        with sqlite3.connect(db.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM api_calls WHERE session_id = 's_api1'"
+            ).fetchone()
+        assert row["call_seq"] == 1
+        assert row["model"] == "claude-opus-4-7"
+        assert row["provider"] == "anthropic"
+        assert row["input_tokens"] == 82
+        assert row["cache_read_tokens"] == 165_000
+        assert row["cache_write_tokens"] == 2_300
+        assert row["output_tokens"] == 512
+        assert row["reasoning_tokens"] == 128
+        # latency derived from started/ended
+        assert abs(row["latency_seconds"] - 42.5) < 1e-6
+        # prompt_tokens_total is the sum of input + cache_read + cache_write
+        assert row["prompt_tokens_total"] == 82 + 165_000 + 2_300
+        assert row["request_id"] == "req_011CajzvS1CqiA6S2VdZsYiA"
+        assert row["stop_reason"] == "end_turn"
+        assert row["call_type"] == "main"
+
+    def test_cold_prefill_signature_is_queryable(self, db):
+        """The whole point: a cold-prefill turn (cache_read=0, big input)
+        followed by warm turns (cache_read >> input) must be distinguishable
+        with a single SQL query. This is the smoking-gun shape."""
+        db.create_session(session_id="s_diag", source="cli")
+        # Turn 1 — cold prefill of a big history
+        db.record_api_call(
+            "s_diag", call_seq=1,
+            started_at=2000.0, ended_at=2330.0,  # 330s wait
+            input_tokens=167_000, cache_read_tokens=0, cache_write_tokens=167_000,
+            output_tokens=200, model="claude-opus-4-7", provider="anthropic",
+            call_type="main",
+        )
+        # Turn 2 — same prompt, now cached
+        db.record_api_call(
+            "s_diag", call_seq=2,
+            started_at=2400.0, ended_at=2412.0,  # 12s wait
+            input_tokens=50, cache_read_tokens=167_000, cache_write_tokens=0,
+            output_tokens=400, model="claude-opus-4-7", provider="anthropic",
+            call_type="main",
+        )
+
+        with sqlite3.connect(db.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT call_seq, latency_seconds, input_tokens, "
+                "cache_read_tokens, cache_write_tokens "
+                "FROM api_calls WHERE session_id = 's_diag' "
+                "ORDER BY call_seq"
+            ).fetchall()
+        # Cold turn: latency >> warm latency, cache_read=0, cache_write big
+        cold, warm = rows[0], rows[1]
+        assert cold["latency_seconds"] > warm["latency_seconds"] * 10
+        assert cold["cache_read_tokens"] == 0
+        assert cold["cache_write_tokens"] > 0
+        assert warm["cache_read_tokens"] > 0
+        assert warm["cache_write_tokens"] == 0
+
+    def test_extra_field_persists_raw_usage_json(self, db):
+        """Raw provider usage dict should round-trip through extra so we can
+        see e.g. ephemeral_5m vs ephemeral_1h breakdown when needed."""
+        db.create_session(session_id="s_extra", source="cli")
+        raw = {"cache_creation": {"ephemeral_5m_input_tokens": 1000,
+                                  "ephemeral_1h_input_tokens": 0}}
+        db.record_api_call(
+            "s_extra", call_seq=1,
+            started_at=10.0, ended_at=12.0,
+            extra={"raw_usage": raw},
+        )
+        with sqlite3.connect(db.db_path) as conn:
+            row = conn.execute(
+                "SELECT extra FROM api_calls WHERE session_id = 's_extra'"
+            ).fetchone()
+        loaded = json.loads(row[0])
+        assert loaded["raw_usage"]["cache_creation"]["ephemeral_5m_input_tokens"] == 1000
+
+    def test_failure_does_not_raise(self, db):
+        """Telemetry must never block the agent loop. A failing write logs
+        but doesn't propagate."""
+        db.create_session(session_id="s_safe", source="cli")
+        # Pass non-existent session — FK violation if FKs were enforced; if
+        # not, the row inserts but has no parent — either way must not raise.
+        # The spec is "best-effort", so simply not raising on a bad call is
+        # the contract.
+        db.record_api_call(
+            "no_such_session", call_seq=1,
+            started_at=0.0, ended_at=1.0, input_tokens=10,
+        )  # must not raise
+
+
+class TestApiCallsSchema:
+    def test_table_exists_and_has_expected_columns(self, db):
+        """Schema v12 introduces the api_calls table with the documented
+        column set. Lock it in so future schema edits trip a test."""
+        db.create_session(session_id="s_schema", source="cli")
+        with sqlite3.connect(db.db_path) as conn:
+            cols = {
+                r[1] for r in conn.execute(
+                    "PRAGMA table_info(api_calls)"
+                ).fetchall()
+            }
+        expected = {
+            "id", "session_id", "call_seq", "started_at", "ended_at",
+            "latency_seconds", "model", "provider",
+            "input_tokens", "cache_read_tokens", "cache_write_tokens",
+            "output_tokens", "reasoning_tokens", "prompt_tokens_total",
+            "request_id", "stop_reason", "call_type", "extra",
+        }
+        assert expected.issubset(cols), f"missing: {expected - cols}"
+
+    def test_session_index_present(self, db):
+        """idx_api_calls_session is used by the diagnostic queries; lock it."""
+        with sqlite3.connect(db.db_path) as conn:
+            indices = {
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='index' AND tbl_name='api_calls'"
+                ).fetchall()
+            }
+        assert "idx_api_calls_session" in indices
+
+    def test_session_fk_has_cascade(self, db):
+        """v13: deleting a session must cascade-delete its api_calls rows.
+        Without CASCADE the existing prune_sessions retention sweep fails
+        with a FOREIGN KEY constraint violation on any session that has
+        telemetry rows."""
+        db.create_session(session_id="s_cascade", source="cli")
+        db.record_api_call(
+            "s_cascade", call_seq=1,
+            started_at=0.0, ended_at=1.0, input_tokens=10,
+        )
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            assert conn.execute(
+                "SELECT COUNT(*) FROM api_calls WHERE session_id='s_cascade'"
+            ).fetchone()[0] == 1
+            conn.execute("DELETE FROM sessions WHERE id='s_cascade'")
+            conn.commit()
+            assert conn.execute(
+                "SELECT COUNT(*) FROM api_calls WHERE session_id='s_cascade'"
+            ).fetchone()[0] == 0
+
+    def test_v12_to_v13_migration_recreates_with_cascade(self, tmp_path):
+        """A v12 database (api_calls FK without CASCADE) must be migrated
+        in place: the api_calls table gets recreated with CASCADE, the
+        session row survives, schema_version bumps to 13.
+
+        Strategy: build a fully-shaped current DB via SessionDB, then mutate
+        it back to "looks like v12" (drop CASCADE on api_calls, set
+        schema_version=12), close, re-open. The re-open triggers the
+        v12→v13 migration.
+        """
+        db_path = tmp_path / "v12.db"
+
+        # 1. Build a full current-schema DB.
+        bootstrap = SessionDB(db_path=db_path)
+        bootstrap.create_session(session_id="s_legacy", source="cli")
+        bootstrap.record_api_call(
+            "s_legacy", call_seq=1,
+            started_at=0.0, ended_at=1.0, input_tokens=100,
+        )
+        bootstrap.close()
+
+        # 2. Mutate the DB back to a "v12 shape": rebuild api_calls without
+        #    CASCADE on the FK, and rewind schema_version to 12.
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.executescript("""
+                ALTER TABLE api_calls RENAME TO api_calls_v12_old;
+                CREATE TABLE api_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    call_seq INTEGER NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL NOT NULL,
+                    latency_seconds REAL NOT NULL,
+                    model TEXT,
+                    provider TEXT,
+                    input_tokens INTEGER,
+                    cache_read_tokens INTEGER,
+                    cache_write_tokens INTEGER,
+                    output_tokens INTEGER,
+                    reasoning_tokens INTEGER,
+                    prompt_tokens_total INTEGER,
+                    request_id TEXT,
+                    stop_reason TEXT,
+                    call_type TEXT,
+                    extra TEXT NOT NULL DEFAULT '{}'
+                );
+                INSERT INTO api_calls SELECT * FROM api_calls_v12_old;
+                DROP TABLE api_calls_v12_old;
+                UPDATE schema_version SET version = 12;
+            """)
+            conn.commit()
+
+        # 3. Re-open. Migration must run.
+        migrated = SessionDB(db_path=db_path)
+        try:
+            from hermes_state import SCHEMA_VERSION
+            ver = migrated._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0]
+            assert ver == SCHEMA_VERSION
+
+            # Session row survives.
+            row = migrated._conn.execute(
+                "SELECT id FROM sessions WHERE id='s_legacy'"
+            ).fetchone()
+            assert row is not None
+
+            # CASCADE now in effect — deleting the session sweeps api_calls.
+            migrated.record_api_call(
+                "s_legacy", call_seq=2,
+                started_at=10.0, ended_at=11.0, input_tokens=50,
+            )
+            conn = migrated._conn
+            conn.execute("PRAGMA foreign_keys=ON")
+            assert conn.execute(
+                "SELECT COUNT(*) FROM api_calls WHERE session_id='s_legacy'"
+            ).fetchone()[0] >= 1
+            conn.execute("DELETE FROM sessions WHERE id='s_legacy'")
+            conn.commit()
+            assert conn.execute(
+                "SELECT COUNT(*) FROM api_calls WHERE session_id='s_legacy'"
+            ).fetchone()[0] == 0
+        finally:
+            migrated.close()
+
+
+# =========================================================================
 # Message storage
 # =========================================================================
 
@@ -1151,6 +1408,59 @@ class TestMessageStorage:
         msg = conv[0]
         assert msg["reasoning"] == "Thinking about what to say"
         assert msg["reasoning_details"] == details
+
+    def test_anthropic_content_blocks_persisted_and_restored(self, db):
+        """anthropic_content_blocks round-trips so resumed sessions keep the
+        verbatim block array.  Without this, the rebuild path on resume
+        falls back to recomposition, reorders interleaved thinking blocks,
+        and trips clear_thinking_20251015 strict validation on the next
+        Anthropic API call."""
+        db.create_session(session_id="s1", source="cli")
+        blocks = [
+            {"type": "thinking", "thinking": "step 1", "signature": "sig_A"},
+            {"type": "tool_use", "id": "tu_1", "name": "lookup", "input": {"q": "x"}},
+            {"type": "thinking", "thinking": "step 2", "signature": "sig_B"},
+            {"type": "tool_use", "id": "tu_2", "name": "lookup", "input": {"q": "y"}},
+        ]
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="",
+            anthropic_content_blocks=blocks,
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        msg = conv[0]
+        # Order and signatures preserved verbatim
+        assert msg["anthropic_content_blocks"] == blocks
+        assert [b["type"] for b in msg["anthropic_content_blocks"]] == [
+            "thinking",
+            "tool_use",
+            "thinking",
+            "tool_use",
+        ]
+
+    def test_anthropic_content_blocks_only_persisted_for_assistant(self, db):
+        """User/tool messages don't carry signed thinking blocks; the field
+        should never round-trip onto a non-assistant role even if upstream
+        accidentally tags it."""
+        db.create_session(session_id="s1", source="cli")
+        # Inject the field on a user message via replace_messages (the only
+        # path that reads msg["anthropic_content_blocks"] from arbitrary dicts)
+        db.replace_messages(
+            "s1",
+            [
+                {
+                    "role": "user",
+                    "content": "hi",
+                    "anthropic_content_blocks": [{"type": "text", "text": "leak"}],
+                },
+            ],
+        )
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert "anthropic_content_blocks" not in conv[0]
 
     def test_finish_reason_restored_by_get_messages_as_conversation(self, db):
         """finish_reason on assistant messages must survive conversation replay.

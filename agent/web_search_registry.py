@@ -219,6 +219,56 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     return None
 
 
+def _read_web_config_key(capability: str) -> Optional[str]:
+    """Resolve a web backend config key, with provider-scoped override support.
+
+    Precedence (highest first):
+
+    1. ``web.by_provider.<current_provider>.<capability>_backend``
+    2. ``web.by_provider.<current_provider>.backend``
+    3. ``web.<capability>_backend``
+    4. ``web.backend``
+
+    ``<capability>`` is ``"search"`` or ``"extract"``.
+    """
+    # Step 1: read the current main provider
+    try:
+        from agent.auxiliary_client import _read_main_provider
+
+        main_provider = (_read_main_provider() or "").strip().lower()
+    except Exception:
+        main_provider = ""
+
+    if main_provider:
+        # Step 2: check web.by_provider.<main_provider>
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            web_cfg = cfg.get("web", {})
+            if isinstance(web_cfg, dict):
+                by_provider = web_cfg.get("by_provider", {})
+                if isinstance(by_provider, dict):
+                    block = by_provider.get(main_provider)
+                    if isinstance(block, dict):
+                        # Per-capability override in the provider block
+                        cap_key = f"{capability}_backend"
+                        val = block.get(cap_key)
+                        if isinstance(val, str) and val.strip():
+                            return val.strip()
+                        # Shared backend in the provider block
+                        val = block.get("backend")
+                        if isinstance(val, str) and val.strip():
+                            return val.strip()
+        except Exception as exc:
+            logger.debug("Could not read web.by_provider config: %s", exc)
+
+    # Step 3: fall back to top-level web config
+    cap_key = f"{capability}_backend"
+    explicit = _read_config_key("web", cap_key) or _read_config_key("web", "backend")
+    return explicit
+
+
 def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Optional[str] = None) -> Optional[str]:
     """Return the plugin key of a *disabled* bundled web plugin that would
     have provided the configured backend, or None.
@@ -281,20 +331,20 @@ def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Op
 def get_active_search_provider() -> Optional[WebSearchProvider]:
     """Resolve the currently-active web search provider.
 
-    Reads ``web.search_backend`` (preferred) or ``web.backend`` (shared
-    fallback) from config.yaml; falls back per the module docstring.
+    Supports provider-scoped overrides via ``web.by_provider`` in config.yaml.
+    Falls back per the module docstring.
     """
-    explicit = _read_config_key("web", "search_backend") or _read_config_key("web", "backend")
+    explicit = _read_web_config_key("search")
     return _resolve(explicit, capability="search")
 
 
 def get_active_extract_provider() -> Optional[WebSearchProvider]:
     """Resolve the currently-active web extract provider.
 
-    Reads ``web.extract_backend`` (preferred) or ``web.backend`` (shared
-    fallback) from config.yaml; falls back per the module docstring.
+    Supports provider-scoped overrides via ``web.by_provider`` in config.yaml.
+    Falls back per the module docstring.
     """
-    explicit = _read_config_key("web", "extract_backend") or _read_config_key("web", "backend")
+    explicit = _read_web_config_key("extract")
     return _resolve(explicit, capability="extract")
 
 

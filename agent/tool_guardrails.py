@@ -27,14 +27,14 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
         "browser_snapshot",
         "browser_console",
         "browser_get_images",
-        "mcp_filesystem_read_file",
-        "mcp_filesystem_read_text_file",
-        "mcp_filesystem_read_multiple_files",
-        "mcp_filesystem_list_directory",
-        "mcp_filesystem_list_directory_with_sizes",
-        "mcp_filesystem_directory_tree",
-        "mcp_filesystem_get_file_info",
-        "mcp_filesystem_search_files",
+        "filesystem_read_file",
+        "filesystem_read_text_file",
+        "filesystem_read_multiple_files",
+        "filesystem_list_directory",
+        "filesystem_list_directory_with_sizes",
+        "filesystem_directory_tree",
+        "filesystem_get_file_info",
+        "filesystem_search_files",
     }
 )
 
@@ -64,13 +64,16 @@ MUTATING_TOOL_NAMES = frozenset(
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
-    Warnings are enabled by default and never prevent tool execution. Hard stops
-    are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    Warnings are enabled by default. Hard stops (blocking the tool call and
+    halting the turn) are also enabled by default — after N repeated failures
+    or N identical non-progressing idempotent calls, the guardrail injects a
+    synthetic error result and the agent stops retrying. Set
+    ``hard_stop_enabled: false`` in config.yaml to restore the old behavior
+    (warnings only, model can ignore them).
     """
 
     warnings_enabled: bool = True
-    hard_stop_enabled: bool = False
+    hard_stop_enabled: bool = True
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3

@@ -296,6 +296,29 @@ class TestInsightsPopulated:
         report = engine.generate(days=30)
         assert report["overview"]["estimated_cost"] > 0
 
+    def test_overview_priced_session_counters(self, populated_db):
+        """Status bucketing must count estimated sessions (regression).
+
+        The fixture's claude-sonnet / gpt-4o sessions have known pricing and so
+        carry an 'estimated' status. The earlier implementation only counted
+        'included'/'unknown', leaving priced_cost_sessions stuck at 0 despite a
+        positive estimated_cost. Guard against that.
+        """
+        engine = InsightsEngine(populated_db)
+        overview = engine.generate(days=30)["overview"]
+
+        # All buckets present and consistent with the session count.
+        total = (
+            overview["actual_cost_sessions"]
+            + overview["estimated_cost_sessions"]
+            + overview["included_cost_sessions"]
+            + overview["unknown_cost_sessions"]
+        )
+        assert total == overview["total_sessions"]
+        # At least one priced (estimated) session, matching the positive cost.
+        assert overview["priced_cost_sessions"] > 0
+        assert overview["estimated_cost_sessions"] > 0
+
     def test_overview_duration_stats(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
@@ -462,10 +485,46 @@ class TestTerminalFormatting:
 
         assert "Input tokens" in text
         assert "Output tokens" in text
-        # Cost and cache metrics are intentionally hidden (pricing was unreliable).
-        assert "Est. cost" not in text
+        # Cache metrics remain hidden (internal detail).
         assert "Cache read" not in text
         assert "Cache write" not in text
+
+    def test_terminal_format_shows_cost_estimate_for_known_pricing(self, populated_db):
+        """Cost is shown again (anchored on truth / labeled as estimate).
+
+        The populated fixture includes claude-sonnet sessions with known
+        pricing, so the token list-price estimate must appear, clearly labeled
+        as an estimate rather than the billed amount.
+        """
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+
+        assert "💰 Cost" in text
+        assert "Est. (this window)" in text
+        assert "estimate" in text.lower()
+        # Without a billed figure supplied, no "Billed this period" line.
+        assert "Billed this period" not in text
+
+    def test_terminal_format_shows_billed_when_provided(self, populated_db):
+        """When the authoritative billed figure is passed, it leads the section."""
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(
+            days=30,
+            account_billed={
+                "billed_usd": 51.23,
+                "currency": "USD",
+                "monthly_limit_usd": None,
+            },
+        )
+        text = engine.format_terminal(report)
+
+        assert "💰 Cost" in text
+        assert "Billed this period" in text
+        assert "$51.23" in text
+        assert "authoritative" in text
+        # Estimate still shown alongside, labeled distinctly.
+        assert "Est. (this window)" in text
 
     def test_terminal_format_shows_platforms(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -485,7 +544,12 @@ class TestTerminalFormatting:
         assert "█" in text  # Bar chart characters
 
     def test_terminal_format_hides_cost_for_custom_models(self, db):
-        """Cost display is hidden entirely — custom models no longer show 'N/A' either."""
+        """No pricing + no billed figure => the Cost section is suppressed.
+
+        Custom/self-hosted models have unknown pricing and (in this test) no
+        authoritative billed figure, so there's nothing trustworthy to show —
+        the whole section is omitted rather than printing 'N/A' or a $0.
+        """
         db.create_session(session_id="s1", source="cli", model="my-custom-model")
         db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
         db._conn.commit()
@@ -496,7 +560,31 @@ class TestTerminalFormatting:
 
         assert "N/A" not in text
         assert "custom/self-hosted" not in text
-        assert "Cost" not in text
+        assert "💰 Cost" not in text
+
+    def test_terminal_format_shows_billed_even_for_custom_models(self, db):
+        """A billed figure is authoritative regardless of per-model pricing.
+
+        Even when every session uses an unpriced custom model, if the provider
+        usage API gives us a billed number we still show it (it's real), just
+        without the estimate line.
+        """
+        db.create_session(session_id="s1", source="cli", model="my-custom-model")
+        db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(
+            days=30,
+            account_billed={"billed_usd": 12.50, "currency": "USD", "monthly_limit_usd": None},
+        )
+        text = engine.format_terminal(report)
+
+        assert "💰 Cost" in text
+        assert "Billed this period" in text
+        assert "$12.50" in text
+        # No known pricing => no estimate line.
+        assert "Est. (this window)" not in text
 
 
 class TestGatewayFormatting:

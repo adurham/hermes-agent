@@ -423,10 +423,55 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                _effort = "medium"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _effort = reasoning_config.get("effort", "medium") or "medium"
-                extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                if reasoning_config is not None:
+                    rc = dict(reasoning_config)
+                    if is_nous and rc.get("enabled") is False:
+                        pass  # omit for Nous when disabled
+                    else:
+                        extra_body["reasoning"] = rc
+                else:
+                    extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+
+        if is_nous:
+            extra_body["tags"] = ["product=hermes-agent"]
+
+        # Ollama num_ctx
+        ollama_ctx = params.get("ollama_num_ctx")
+        if ollama_ctx:
+            options = extra_body.get("options", {})
+            options["num_ctx"] = ollama_ctx
+            extra_body["options"] = options
+
+        # Custom OpenAI-compatible providers:
+        #   • Ollama-style: extra_body["think"] = False to disable.
+        #   • OpenAI-Responses-style (exo, vLLM with reasoning, LM Studio
+        #     when not auto-detected): top-level reasoning_effort is the
+        #     standard OpenAI Chat Completions field for o-series and
+        #     accepted by the Python SDK. enable_thinking is an exo
+        #     extension — must go in extra_body or the SDK rejects it
+        #     with TypeError("unexpected keyword argument").
+        if params.get("is_custom_provider", False):
+            if reasoning_config and isinstance(reasoning_config, dict):
+                _effort = (reasoning_config.get("effort") or "").strip().lower()
+                _enabled = reasoning_config.get("enabled", True)
+                if _effort == "none" or _enabled is False:
+                    extra_body["think"] = False
+                    extra_body["enable_thinking"] = False
+                elif _effort:
+                    # reasoning_effort: standard top-level field.
+                    api_kwargs["reasoning_effort"] = _effort
+                    # enable_thinking: exo extension — pass via extra_body
+                    # so the OpenAI SDK doesn't reject it as unknown.
+                    extra_body["enable_thinking"] = True
+
+        # Qwen portal (Alibaba DashScope OpenAI-compat endpoint) accepts a
+        # high-res image flag in extra_body.  Param name is is_qwen_portal —
+        # an earlier refactor referenced an undefined ``is_qwen`` here and
+        # raised NameError on every legacy-path call (e.g. aux client with
+        # no provider configured).  See errors.log:
+        #   "API call failed after 3 retries. name 'is_qwen' is not defined"
+        if params.get("is_qwen_portal", False):
+            extra_body["vl_high_resolution_images"] = True
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

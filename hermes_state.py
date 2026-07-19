@@ -761,6 +761,9 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
+    -- NOTE: the fork's anthropic_content_blocks column is NOT declared here
+    -- (it lives in FORK_TABLE_COLUMNS and is ALTER-ADDed by _reconcile_columns)
+    -- so this upstream-owned CREATE TABLE stays conflict-free on merge.
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
@@ -811,6 +814,67 @@ CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
 CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 """
+
+
+# ── Fork-only schema (see FORK.md) ───────────────────────────────────────
+# Tables/indexes the fork adds that upstream does not have. Kept in a SEPARATE
+# constant from SCHEMA_SQL so upstream's SCHEMA_SQL edits never collide with
+# the fork's DDL on merge (the api_calls block previously sat inline in
+# SCHEMA_SQL and conflicted positionally with every upstream table addition).
+# Executed via executescript() immediately after SCHEMA_SQL at every call site.
+# Both are idempotent (CREATE ... IF NOT EXISTS), so re-running is safe and the
+# unconditional _reconcile_columns() pass still handles additive columns.
+FORK_SCHEMA_SQL = """
+-- Per-API-call response telemetry (added v12, CASCADE added v13). One row
+-- per response we get back from the model provider, with the cache split,
+-- latency, and request_id needed to confirm whether a slow turn was a
+-- cold prefill, a queue stall, or something client-side. Cumulative
+-- session counters alone can't answer that — they only tell you the
+-- average. ON DELETE CASCADE so existing prune_sessions retention sweeps
+-- it out when its parent session row goes away (default 90 days).
+CREATE TABLE IF NOT EXISTS api_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    call_seq INTEGER NOT NULL,            -- 1-indexed within session
+    started_at REAL NOT NULL,
+    ended_at REAL NOT NULL,
+    latency_seconds REAL NOT NULL,
+    model TEXT,
+    provider TEXT,
+    -- Anthropic categorises prompt tokens into input/cache_read/cache_write.
+    -- input_tokens here is the *non-cached* portion (matches Anthropic's
+    -- field of the same name). Sum the three for the total prompt size.
+    input_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    output_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    prompt_tokens_total INTEGER,
+    request_id TEXT,                      -- Anthropic request id (for support)
+    stop_reason TEXT,
+    call_type TEXT,                       -- "main" | "auxiliary" | future
+    extra TEXT NOT NULL DEFAULT '{}'      -- JSON: raw provider usage etc.
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_calls_session ON api_calls(session_id, started_at);
+"""
+
+# Fork-only COLUMNS added to upstream-owned tables. Kept out of SCHEMA_SQL's
+# CREATE TABLE bodies so upstream's table edits never collide with the fork's
+# columns on merge (the anthropic_content_blocks column previously sat inline in
+# the messages CREATE TABLE and conflicted positionally with upstream's
+# platform_message_id/observed additions). _reconcile_columns() ALTER-ADDs these
+# on every startup, exactly like it does for SCHEMA_SQL-declared columns.
+# Format: {table: {column_name: column_type_with_constraints}}.
+FORK_TABLE_COLUMNS = {
+    "messages": {
+        # Anthropic-native: full assistant content array captured verbatim from
+        # response.content. Replayed on subsequent turns to preserve thinking-
+        # block positions (signed against position; reordering triggers HTTP 400
+        # under context_management.clear_thinking_20251015). JSON list of blocks.
+        "anthropic_content_blocks": "TEXT",
+    },
+}
 
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -1310,8 +1374,17 @@ class SessionDB:
         This makes column additions a declarative operation — just add
         the column to SCHEMA_SQL and it appears on the next startup.
         Version-gated migration blocks are no longer needed for ADD COLUMN.
+
+        Fork-only columns (FORK_TABLE_COLUMNS) are merged into the expected set
+        so they're ALTER-ADDed the same way, without living inside SCHEMA_SQL's
+        upstream-owned CREATE TABLE bodies (keeps them conflict-free on merge).
         """
         expected = self._parse_schema_columns(SCHEMA_SQL)
+        # Merge fork-only columns into the expected set (additive; never removes).
+        for _tbl, _cols in FORK_TABLE_COLUMNS.items():
+            expected.setdefault(_tbl, {})
+            for _cn, _ct in _cols.items():
+                expected[_tbl].setdefault(_cn, _ct)
         for table_name, declared_cols in expected.items():
             # Get current columns from the live table
             try:
@@ -1358,6 +1431,9 @@ class SessionDB:
         cursor = self._conn.cursor()
 
         cursor.executescript(SCHEMA_SQL)
+        # Fork-only tables/indexes (see FORK_SCHEMA_SQL). Run right after the
+        # upstream schema so api_calls etc. exist on fresh and existing DBs.
+        cursor.executescript(FORK_SCHEMA_SQL)
 
         # ── Declarative column reconciliation ──────────────────────────
         # Diff live tables against SCHEMA_SQL and ADD any missing columns.
@@ -1514,6 +1590,27 @@ class SessionDB:
                         fts_migrations_complete = False
                 else:
                     fts_migrations_complete = False
+            if current_version < 13:
+                # v13: recreate api_calls with ON DELETE CASCADE on its
+                # session_id FK. The v12 table didn't have CASCADE, so the
+                # existing prune_sessions retention sweep would fail with a
+                # FOREIGN KEY constraint violation on any session that had
+                # telemetry rows. SQLite can't ALTER a foreign key, so the
+                # only option is drop + recreate. The data lost here is
+                # cheap to recreate (just per-call telemetry from the last
+                # run); preserving session-level cumulative counts is what
+                # matters and those live on the sessions table.
+                try:
+                    cursor.execute("DROP TABLE IF EXISTS api_calls")
+                except sqlite3.OperationalError:
+                    pass
+                # The post-migration CREATE IF NOT EXISTS pass at the top of
+                # _ensure_schema runs FORK_SCHEMA_SQL again, which recreates
+                # api_calls with the v13 (CASCADE) shape. We just drop here.
+                # (api_calls is fork-only, so it lives in FORK_SCHEMA_SQL, not
+                # SCHEMA_SQL — run both to be safe; CREATE IF NOT EXISTS is idempotent.)
+                cursor.executescript(SCHEMA_SQL)
+                cursor.executescript(FORK_SCHEMA_SQL)
             if current_version < 16:
                 # v16: tag delegate subagent rows so pickers stay clean after
                 # parent deletes that used to orphan them (parent_session_id → NULL).
@@ -2360,6 +2457,70 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def record_api_call(
+        self,
+        session_id: str,
+        *,
+        call_seq: int,
+        started_at: float,
+        ended_at: float,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        input_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        output_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        request_id: Optional[str] = None,
+        stop_reason: Optional[str] = None,
+        call_type: str = "main",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist one API-call's response telemetry.
+
+        This is the per-call complement to ``update_token_counts`` — that
+        method bumps cumulative session totals; this one writes a row
+        capturing the split (input vs cache_read vs cache_write), latency,
+        and request_id needed to actually diagnose individual slow turns.
+
+        Best-effort: a write failure is logged at debug and never blocks
+        the agent loop. Counters in the sessions row remain authoritative
+        for cumulative views.
+        """
+        latency = max(0.0, float(ended_at) - float(started_at))
+        prompt_total = (
+            int(input_tokens or 0)
+            + int(cache_read_tokens or 0)
+            + int(cache_write_tokens or 0)
+        )
+        extra_json = json.dumps(extra or {}, default=str)
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO api_calls (
+                    session_id, call_seq, started_at, ended_at,
+                    latency_seconds, model, provider,
+                    input_tokens, cache_read_tokens, cache_write_tokens,
+                    output_tokens, reasoning_tokens, prompt_tokens_total,
+                    request_id, stop_reason, call_type, extra
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id, int(call_seq),
+                    float(started_at), float(ended_at), latency,
+                    model, provider,
+                    int(input_tokens or 0), int(cache_read_tokens or 0),
+                    int(cache_write_tokens or 0), int(output_tokens or 0),
+                    int(reasoning_tokens or 0), prompt_total,
+                    request_id, stop_reason, call_type, extra_json,
+                ),
+            )
+        try:
+            self._execute_write(_do)
+        except Exception:
+            logger.debug("record_api_call failed for session %s", session_id, exc_info=True)
+
     def update_session_model(self, session_id: str, model: str) -> None:
         """Update the model for a session after a mid-session switch.
 
@@ -2947,6 +3108,61 @@ class SessionDB:
             current = child_id
         return current
 
+    def get_lineage_cost_usd(self, session_id: str) -> float:
+        """Sum estimated_cost_usd across the compaction lineage of session_id.
+
+        Walks parent edges back to the lineage root (only through compaction
+        boundaries, not delegate/branch parents), then forward through every
+        compaction continuation, summing each session's cost.
+
+        Returns 0.0 if the session doesn't exist or has no recorded cost.
+        """
+        # Walk back to the compression-lineage root.
+        root = session_id
+        for _ in range(100):
+            with self._lock:
+                cursor = self._conn.execute(
+                    "SELECT s.parent_session_id, p.end_reason, p.ended_at, s.started_at "
+                    "FROM sessions s "
+                    "LEFT JOIN sessions p ON p.id = s.parent_session_id "
+                    "WHERE s.id = ?",
+                    (root,),
+                )
+                row = cursor.fetchone()
+            if row is None or not row["parent_session_id"]:
+                break
+            # Only traverse compaction edges (parent ended with 'compression'
+            # before child started). Delegate/branch parents are different
+            # logical conversations and shouldn't roll up into this total.
+            if row["end_reason"] != "compression":
+                break
+            if row["ended_at"] and row["started_at"] and row["started_at"] < row["ended_at"]:
+                break
+            root = row["parent_session_id"]
+
+        # Sum cost across the chain (root + every forward compaction continuation).
+        total = 0.0
+        with self._lock:
+            cursor = self._conn.execute(
+                "WITH RECURSIVE chain(id) AS ("
+                "    SELECT ? "
+                "    UNION ALL "
+                "    SELECT child.id "
+                "    FROM chain c "
+                "    JOIN sessions parent ON parent.id = c.id "
+                "    JOIN sessions child ON child.parent_session_id = c.id "
+                "    WHERE parent.end_reason = 'compression' "
+                "      AND child.started_at >= parent.ended_at "
+                ") "
+                "SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total "
+                "FROM sessions WHERE id IN (SELECT id FROM chain)",
+                (root,),
+            )
+            row = cursor.fetchone()
+        if row and row["total"] is not None:
+            total = float(row["total"])
+        return total
+
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery.
 
@@ -3250,6 +3466,13 @@ class SessionDB:
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
+                # Sum cost across the entire chain (root + every continuation)
+                # rather than taking only the root's or only the tip's cost —
+                # both are partials.
+                try:
+                    merged["estimated_cost_usd"] = self.get_lineage_cost_usd(s["id"])
+                except Exception:
+                    pass
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
@@ -3418,6 +3641,7 @@ class SessionDB:
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
+        anthropic_content_blocks: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
         timestamp: Any = None,
@@ -3447,6 +3671,10 @@ class SessionDB:
             json.dumps(codex_message_items)
             if codex_message_items else None
         )
+        anthropic_content_blocks_json = (
+            json.dumps(anthropic_content_blocks)
+            if anthropic_content_blocks else None
+        )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
@@ -3472,8 +3700,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, anthropic_content_blocks,
+                   platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3489,6 +3718,7 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    anthropic_content_blocks_json,
                     platform_message_id,
                     1 if observed else 0,
                     1,
@@ -3544,6 +3774,14 @@ class SessionDB:
             codex_message_items = (
                 msg.get("codex_message_items") if role == "assistant" else None
             )
+            # FORK: anthropic_content_blocks preserves the Claude thinking-
+            # signature blocks across compaction/replace flows (OAuth replay
+            # integrity). Upstream's shared helper omits this column; thread it
+            # here so replace_messages / archive_and_compact keep it, matching
+            # append_message. See FORK.md (hermes_state T2.4 residual).
+            anthropic_content_blocks = (
+                msg.get("anthropic_content_blocks") if role == "assistant" else None
+            )
             reasoning_details_json = (
                 json.dumps(reasoning_details) if reasoning_details else None
             )
@@ -3552,6 +3790,9 @@ class SessionDB:
             )
             codex_message_items_json = (
                 json.dumps(codex_message_items) if codex_message_items else None
+            )
+            anthropic_content_blocks_json = (
+                json.dumps(anthropic_content_blocks) if anthropic_content_blocks else None
             )
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
@@ -3564,8 +3805,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, anthropic_content_blocks, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3581,6 +3822,7 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    anthropic_content_blocks_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
                     1,
@@ -4055,7 +4297,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
+                "codex_reasoning_items, codex_message_items, anthropic_content_blocks, "
+                "platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -4124,6 +4367,12 @@ class SessionDB:
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_message_items, falling back to None")
                         msg["codex_message_items"] = None
+                if row["anthropic_content_blocks"]:
+                    try:
+                        msg["anthropic_content_blocks"] = json.loads(row["anthropic_content_blocks"])
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning("Failed to deserialize anthropic_content_blocks, falling back to None")
+                        msg["anthropic_content_blocks"] = None
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)

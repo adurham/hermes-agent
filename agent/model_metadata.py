@@ -204,6 +204,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
     "claude-fable-5": 1000000,
     "claude-fable": 1000000,
+    "claude-sonnet-5": 1000000,
     "claude-opus-4-8": 1000000,
     "claude-opus-4.8": 1000000,
     "claude-opus-4-7": 1000000,
@@ -395,6 +396,8 @@ _CONTAINER_LOCAL_SUFFIXES = (
     ".containers.internal",
     ".lima.internal",
 )
+# mDNS / Bonjour / Avahi — RFC 6762 reserves `.local` for link-local hostnames
+_MDNS_LOCAL_SUFFIXES = (".local",)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -590,6 +593,9 @@ def is_local_endpoint(base_url: str) -> bool:
         return True
     # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
     if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
+        return True
+    # mDNS / Bonjour hostnames (e.g. mac-studio.local) — always LAN-scoped
+    if any(host.endswith(suffix) for suffix in _MDNS_LOCAL_SUFFIXES):
         return True
     # Unqualified hostnames (no dots) are local by definition — Docker
     # Compose service names, /etc/hosts entries, or mDNS names.
@@ -2362,7 +2368,12 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
             ptype = part.get("type")
             if ptype in {"image", "image_url", "input_image"}:
                 count += 1
-    stashed = msg.get("_anthropic_content_blocks") if isinstance(msg, dict) else None
+    # Anthropic stashes the full provider content array on assistant
+    # messages under ``anthropic_content_blocks`` (see run_agent.py where
+    # it is attached after each Anthropic response).
+    stashed = None
+    if isinstance(msg, dict):
+        stashed = msg.get("anthropic_content_blocks")
     if isinstance(stashed, list):
         for part in stashed:
             if isinstance(part, dict) and part.get("type") == "image":
@@ -2382,14 +2393,60 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
 
     Base64 images are counted via `_count_image_tokens` instead; including
     their raw chars here would massively overestimate token usage.
+
+    When ``anthropic_content_blocks`` is present on an assistant message
+    it IS what ships to the Anthropic API (see ``anthropic_adapter`` —
+    ``content = msg.get("anthropic_content_blocks")`` with the visible
+    ``content`` string as fallback).  The string ``content`` field on the
+    same message is an extracted text duplicate.  Counting both walks
+    every web_search_tool_result, thinking block, and tool_use payload
+    twice — easily 200K+ phantom tokens on a search-heavy session and
+    the cause of the preflight estimator running ahead of the provider's
+    actual ``prompt_tokens`` by 30-50 %.  Treat blocks (when present) as
+    the authoritative source of size and skip the ``content`` duplicate.
+
+    Same duplication applies to ``reasoning`` / ``reasoning_content`` /
+    ``reasoning_details``: when ``anthropic_content_blocks`` is a non-empty
+    list, ``_convert_assistant_message``'s interleaved-thinking fast path
+    (agent/anthropic_adapter.py) replays ``ordered_blocks`` verbatim and
+    NEVER reads any of those three fields — they are pure leftover
+    duplicates of the same thinking text already inside
+    ``anthropic_content_blocks``. With ``interleaved_thinking: true`` and
+    high reasoning effort, every assistant turn carries a thinking block in
+    all four places, so counting them quadruples the estimate for that
+    block alone — the dominant driver of a preflight estimate running far
+    ahead of the real provider ``prompt_tokens`` (observed: ~600K rough vs
+    ~284K real on a single session).
     """
     if not isinstance(msg, dict):
         return len(str(msg))
+    has_anthropic_blocks = bool(msg.get("anthropic_content_blocks"))
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k == "_anthropic_content_blocks":
+        if k == "anthropic_content_blocks":
+            if isinstance(v, list):
+                cleaned = []
+                for part in v:
+                    if isinstance(part, dict) and part.get("type") == "image":
+                        cleaned.append({"type": "image", "image": "[stripped]"})
+                    else:
+                        cleaned.append(part)
+                shadow["anthropic_content_blocks"] = cleaned
+            else:
+                shadow[k] = v
+            continue
+        if k in ("reasoning", "reasoning_content", "reasoning_details"):
+            # Skip the reasoning-field duplicates when blocks already
+            # carry the same thinking text for the provider (see docstring).
+            if has_anthropic_blocks:
+                continue
+            shadow[k] = v
             continue
         if k == "content":
+            # Skip the text-extracted duplicate when blocks already
+            # represents the same content for the provider.
+            if has_anthropic_blocks:
+                continue
             if isinstance(v, list):
                 cleaned = []
                 for part in v:
@@ -2410,6 +2467,177 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     return len(str(shadow))
 
 
+# Per-image token cost used by the rough estimator.
+#
+# Anthropic counts each image at a fixed cost determined by its pixel
+# dimensions (cap ~1568×1568, anything bigger is auto-resized server-side).
+# A typical screen-grab lands around 1200-1600 tokens; we use 1600 as a
+# conservative approximation that's still ~30x cheaper than counting the
+# raw base64.  OpenAI's "low detail" path is 85, "high detail" is 765
+# tiles + base — also far below base64 length.  Using a single sane
+# constant here keeps the function provider-agnostic and avoids the old
+# behavior where a single 200KB screenshot inflated the estimate by
+# ~50,000 tokens (because ``len(str(message))`` walked the entire base64
+# blob), causing spurious preflight compression on sessions that were
+# nowhere near the real context limit.
+_IMAGE_TOKEN_COST = 1600
+
+
+def _is_image_part(part: Any) -> bool:
+    """True when a content part is an image block in any provider's shape.
+
+    Recognised shapes:
+      * OpenAI chat.completions:  {"type": "image_url", "image_url": {"url": "data:..."}}
+      * OpenAI chat.completions (string): {"type": "image_url", "image_url": "data:..."}
+      * OpenAI Responses:         {"type": "input_image", "image_url": "data:..."}
+      * Anthropic native:         {"type": "image", "source": {"type": "base64", "data": "..."}}
+    """
+    if not isinstance(part, dict):
+        return False
+    ptype = part.get("type")
+    if ptype in ("image_url", "input_image", "image"):
+        return True
+    return False
+
+
+def _image_part_filler(part: Dict[str, Any]) -> str:
+    """Return a small placeholder string that replaces an image part for
+    char-counting purposes.
+
+    Keeps the part's metadata (type tag, mime hint, alt text) but drops the
+    actual base64 payload so it doesn't dominate the estimate. Returned
+    string is then used in ``len(str(...))`` so callers that didn't import
+    this helper still get the right cost.
+    """
+    # Cheap, deterministic stand-in: type tag + (optional) media_type or
+    # url scheme prefix.  Length stays well under 200 chars even for the
+    # most verbose shape.
+    bits = [str(part.get("type") or "image")]
+    src = part.get("source")
+    if isinstance(src, dict):
+        mt = src.get("media_type") or src.get("type")
+        if mt:
+            bits.append(str(mt))
+    iu = part.get("image_url")
+    if isinstance(iu, dict):
+        url = iu.get("url") or ""
+        if isinstance(url, str) and url.startswith("data:"):
+            bits.append(url.split(";", 1)[0])  # keep "data:image/png", drop payload
+    elif isinstance(iu, str) and iu.startswith("data:"):
+        bits.append(iu.split(";", 1)[0])
+    return "<image:" + "|".join(bits) + ">"
+
+
+def _count_message_chars_with_image_token_credit(
+    msg: Dict[str, Any],
+) -> tuple[int, int]:
+    """Return ``(char_count, image_token_credit)`` for a single message.
+
+    Walks the message's content parts.  Image parts contribute a fixed
+    per-image token credit (returned separately so the caller can add
+    it to the final total) and only their lightweight placeholder string
+    feeds into the char count.  Non-image parts and the rest of the
+    message dict are stringified normally.
+
+    Falls back to plain ``len(str(msg))`` when the message has no list
+    content (string content, missing content, etc.) — in that case
+    nothing image-related is in play anyway.
+
+    Anthropic-specific: assistant messages can carry both a text
+    ``content`` field AND an ``anthropic_content_blocks`` stash of the
+    full provider response.  The blocks ARE what ships to the API (see
+    ``anthropic_adapter``); the visible ``content`` is an extracted
+    duplicate.  Counting both -- as the previous implementation did via
+    ``len(str(msg))`` -- inflated estimates by 30-50% on search-heavy
+    sessions, because every ``web_search_tool_result`` and ``thinking``
+    block got walked twice.  When the stash is present we strip the
+    duplicated ``content`` from the sanitized message before counting.
+
+    Same applies to ``reasoning`` / ``reasoning_content`` /
+    ``reasoning_details``: when blocks are present, Anthropic's
+    interleaved-thinking replay path (``_convert_assistant_message`` in
+    agent/anthropic_adapter.py) uses ``anthropic_content_blocks`` alone
+    and never reads those three fields — they duplicate the same thinking
+    text already inside the blocks. Left uncounted-for, a single thinking
+    block gets counted up to 4x (reasoning, reasoning_content,
+    reasoning_details, and inside anthropic_content_blocks), which is the
+    dominant driver of the preflight estimate running far ahead of the
+    provider's real prompt_tokens on sessions with interleaved_thinking
+    enabled (observed: ~600K rough vs ~284K real on a single session).
+    """
+    if not isinstance(msg, dict):
+        return len(str(msg)), 0
+
+    blocks = msg.get("anthropic_content_blocks")
+    has_blocks = bool(blocks)
+    _DUPLICATE_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details")
+
+    content = msg.get("content")
+    if not isinstance(content, list):
+        # String / missing content: handle the blocks-duplicate case
+        # and fall back to a normal stringify otherwise.
+        if has_blocks:
+            sanitized_msg = dict(msg)
+            sanitized_msg.pop("content", None)
+            for _k in _DUPLICATE_REASONING_KEYS:
+                sanitized_msg.pop(_k, None)
+            # Strip raw image bytes that may live inside blocks.
+            sanitized_msg["anthropic_content_blocks"] = _strip_image_data_from_blocks(blocks)
+            # Image credit for any images in blocks (no list content path
+            # to walk, so do it here).
+            image_count = _count_images_in_blocks(blocks)
+            return len(str(sanitized_msg)), image_count * _IMAGE_TOKEN_COST
+        return len(str(msg)), 0
+
+    image_count = 0
+    sanitized_parts: list[Any] = []
+    for part in content:
+        if _is_image_part(part):
+            image_count += 1
+            sanitized_parts.append(_image_part_filler(part))
+        else:
+            sanitized_parts.append(part)
+
+    # Blocks duplicate: strip ``content`` (and the reasoning-field
+    # duplicates) from the sanitized view.
+    if has_blocks:
+        sanitized_msg = dict(msg)
+        sanitized_msg.pop("content", None)
+        for _k in _DUPLICATE_REASONING_KEYS:
+            sanitized_msg.pop(_k, None)
+        sanitized_msg["anthropic_content_blocks"] = _strip_image_data_from_blocks(blocks)
+        image_count += _count_images_in_blocks(blocks)
+        return len(str(sanitized_msg)), image_count * _IMAGE_TOKEN_COST
+
+    if image_count == 0:
+        return len(str(msg)), 0
+
+    # Stringify the message with image parts replaced.  Cheaper than a
+    # deep copy — we're only swapping the content list reference.
+    sanitized_msg = dict(msg)
+    sanitized_msg["content"] = sanitized_parts
+    return len(str(sanitized_msg)), image_count * _IMAGE_TOKEN_COST
+
+
+def _strip_image_data_from_blocks(blocks: Any) -> Any:
+    """Return ``blocks`` with raw image bytes replaced by a placeholder."""
+    if not isinstance(blocks, list):
+        return blocks
+    cleaned = []
+    for part in blocks:
+        if isinstance(part, dict) and part.get("type") == "image":
+            cleaned.append({"type": "image", "image": "[stripped]"})
+        else:
+            cleaned.append(part)
+    return cleaned
+
+
+def _count_images_in_blocks(blocks: Any) -> int:
+    if not isinstance(blocks, list):
+        return 0
+    return sum(1 for p in blocks if isinstance(p, dict) and p.get("type") == "image")
+
+
 def estimate_request_tokens_rough(
     messages: List[Dict[str, Any]],
     *,
@@ -2421,14 +2649,24 @@ def estimate_request_tokens_rough(
     Includes the major payload buckets Hermes sends to providers:
     system prompt, conversation messages, and tool schemas.  With 50+
     tools enabled, schemas alone can add 20-30K tokens — a significant
-    blind spot when only counting messages. Image content is counted
-    at a flat per-image cost (see estimate_messages_tokens_rough).
+    blind spot when only counting messages.
+
+    Image content parts are NOT counted by raw base64 length (a single
+    200KB screenshot would otherwise add ~50K phantom tokens and
+    trigger preflight compression on sessions that are nowhere near
+    the real context ceiling).  Each image contributes a fixed
+    ``_IMAGE_TOKEN_COST`` credit instead — close to what Anthropic /
+    OpenAI actually bill regardless of source resolution.
     """
-    total = 0
+    total_chars = 0
+    image_token_credit = 0
     if system_prompt:
-        total += (len(system_prompt) + 3) // 4
+        total_chars += len(system_prompt)
     if messages:
-        total += estimate_messages_tokens_rough(messages)
+        for msg in messages:
+            chars, credit = _count_message_chars_with_image_token_credit(msg)
+            total_chars += chars
+            image_token_credit += credit
     if tools:
-        total += (len(str(tools)) + 3) // 4
-    return total
+        total_chars += len(str(tools))
+    return ((total_chars + 3) // 4) + image_token_credit

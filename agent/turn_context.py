@@ -151,6 +151,16 @@ def build_turn_context(
     # null; rebuilding from scratch" warning and a needless first-turn prefix
     # cache miss. (Issue #45499.)
 
+    # Phase 3 auto-feedback: bind session_id to a contextvar so
+    # ``WarmStore.recall`` can stash recall results in the per-session
+    # window without threading session_id through the memory tool surface.
+    # (fork-only — see agent/fork/memory_recall.py.)
+    try:
+        from tools.memory_auto_feedback import set_session as _maf_set
+        _maf_set(agent.session_id or None)
+    except Exception:
+        pass
+
     # Tell auxiliary_client what the live main provider/model are for this turn.
     try:
         from agent.auxiliary_client import set_runtime_main
@@ -206,6 +216,24 @@ def build_turn_context(
         user_message = sanitize_surrogates(user_message)
     if isinstance(persist_user_message, str):
         persist_user_message = sanitize_surrogates(persist_user_message)
+
+    # Capture the user message text for the memory-recall reminder
+    # (agent/fork/memory_recall.py). The reminder uses the user's framing
+    # as the primary seed for query-candidate extraction. Best-effort —
+    # non-string inputs (multimodal lists) get the str() form.
+    try:
+        if isinstance(user_message, str):
+            agent._last_user_message = user_message
+        else:
+            agent._last_user_message = str(user_message or "")
+    except Exception:
+        agent._last_user_message = ""
+    # Each new user turn resets the recent-tool-args window — old args
+    # from a prior turn don't seed a query for the new investigation.
+    try:
+        agent._recent_tool_args = []
+    except Exception:
+        pass
 
     # Store stream callback for _interruptible_api_call to pick up.
     agent._stream_callback = stream_callback

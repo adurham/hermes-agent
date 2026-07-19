@@ -591,8 +591,9 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         monthly_limit = extra.get("monthly_limit")
         currency = extra.get("currency") or "USD"
         if isinstance(used_credits, (int, float)) and isinstance(monthly_limit, (int, float)):
+            # used_credits / monthly_limit are integer cents on this endpoint.
             details.append(
-                f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {currency}"
+                f"Extra usage: ${used_credits / 100.0:.2f} / ${monthly_limit / 100.0:.2f} {currency}"
             )
     return AccountUsageSnapshot(
         provider="anthropic",
@@ -673,6 +674,68 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
         windows=tuple(windows),
         details=tuple(details),
     )
+
+
+@dataclass(frozen=True)
+class AnthropicBilling:
+    """Authoritative billed spend for the current Claude billing period.
+
+    Sourced from the same field the claude.ai /usage dashboard renders:
+    ``extra_usage.used_credits`` (integer cents) from
+    ``GET https://api.anthropic.com/api/oauth/usage``. This is the real billed
+    figure, not a token-based estimate — when present it should be displayed
+    as ground truth.
+    """
+
+    billed_usd: float
+    currency: str = "USD"
+    monthly_limit_usd: Optional[float] = None
+    fetched_at: Optional[datetime] = None
+
+
+def fetch_anthropic_billing() -> Optional[AnthropicBilling]:
+    """Best-effort fetch of the authoritative billed spend for the period.
+
+    Returns None when the account isn't OAuth-backed, the endpoint is
+    unreachable, or ``extra_usage`` isn't exposed. Never raises — callers can
+    treat None as "unavailable" and fall back to token estimates.
+
+    Note: ``used_credits`` is in integer cents (e.g. 4778 -> $47.78), matching
+    what the dashboard divides by 100 to render.
+    """
+    try:
+        token = (resolve_anthropic_token() or "").strip()
+        if not token or not _is_oauth_token(token):
+            return None
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-code/2.1.0",
+        }
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
+            response.raise_for_status()
+        payload = response.json() or {}
+        extra = payload.get("extra_usage") or {}
+        used_credits = extra.get("used_credits")
+        if not isinstance(used_credits, (int, float)):
+            return None
+        monthly_limit = extra.get("monthly_limit")
+        monthly_limit_usd = (
+            float(monthly_limit) / 100.0
+            if isinstance(monthly_limit, (int, float))
+            else None
+        )
+        return AnthropicBilling(
+            billed_usd=float(used_credits) / 100.0,
+            currency=str(extra.get("currency") or "USD"),
+            monthly_limit_usd=monthly_limit_usd,
+            fetched_at=_utc_now(),
+        )
+    except Exception:
+        return None
 
 
 def fetch_account_usage(

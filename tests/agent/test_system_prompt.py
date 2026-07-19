@@ -3,6 +3,16 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+# Force ``cli``'s one-time import side-effect (module-level ``load_cli_config()``
+# force-exports ``TERMINAL_CWD=os.getcwd()`` for the local backend) to fire NOW,
+# at collection time. ``build_system_prompt_parts`` imports ``run_agent`` → ``cli``
+# lazily *inside* the function, so without this the side-effect would fire on the
+# first call — re-setting ``TERMINAL_CWD`` *after* the per-test hermetic fixture and
+# ``test_none_when_terminal_cwd_unset``'s ``delenv`` cleared it, making the "unset"
+# precondition impossible to establish. Pulling the import up here confines the
+# side-effect to collection so the env-clearing in conftest + the test body wins.
+import run_agent  # noqa: E402,F401
+
 from agent.system_prompt import build_system_prompt_parts
 
 

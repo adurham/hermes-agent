@@ -445,25 +445,12 @@ def compress_context(
     """Compress conversation context and split the session in SQLite.
 
     Args:
-        agent: The owning :class:`AIAgent`.
-        messages: Current message history (will be summarised).
-        system_message: Current system prompt; rebuilt after compression.
-        approx_tokens: Pre-compression token estimate, logged for ops.
-        task_id: Tool task scope (used for clearing file-read dedup state).
         focus_topic: Optional focus string for guided compression — the
             summariser will prioritise preserving information related to
             this topic.  Inspired by Claude Code's ``/compact <focus>``.
-        force: If True, bypass any active summary-failure cooldown.  Set
-            by the manual ``/compress`` slash command so users can retry
-            immediately after an auto-compress abort.  Auto-compress
-            callers use the default ``False``.
 
     Returns:
-        ``(compressed_messages, new_system_prompt)`` tuple.  When
-        compression aborts (aux LLM failed to produce a usable summary),
-        returns the original messages unchanged and the existing system
-        prompt — the session is NOT rotated.  Callers should detect the
-        no-op via ``len(returned) == len(input)`` and stop the retry loop.
+        (compressed_messages, new_system_prompt) tuple
     """
     # Codex app-server sessions: the codex agent owns the real thread context;
     # Hermes' summarizer would only rewrite a local mirror without shrinking
@@ -634,6 +621,16 @@ def compress_context(
             agent._memory_manager.on_pre_compress(messages)
         except Exception:
             pass
+
+    # Phase 2 auto-extraction: piggyback on the compression boundary to
+    # extract durable facts from the slice that's about to be discarded.
+    # No-op when memory.auto_extract is off in config. Best-effort; never
+    # blocks compression.
+    try:
+        from tools import memory_extraction as _mex
+        _mex.on_pre_compress(agent.session_id or "", messages or [])
+    except Exception:
+        pass
 
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
