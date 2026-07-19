@@ -68,7 +68,17 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All bundled web plugins discover and register correctly.
+
+    Seven providers ship from upstream (brave-free / ddgs / searxng / exa /
+    parallel / tavily / firecrawl); the fork adds ``claude-code`` (delegates
+    to the Claude Code CLI's WebSearch/WebFetch tools), ``xai`` (Grok's
+    agentic web_search), and ``trafilatura`` (free, no-key, no-account
+    extract-only backend via direct httpx fetch + the trafilatura content
+    extraction library — closes the gap for non-Anthropic providers that
+    have a free search backend but no free extract backend, since
+    brave-free/ddgs/searxng are all search-only).
+    """
 
     def test_all_seven_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
@@ -77,12 +87,14 @@ class TestBundledPluginsRegister:
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "claude-code",
             "ddgs",
             "exa",
             "firecrawl",
             "parallel",
             "searxng",
             "tavily",
+            "trafilatura",
             "xai",
         ]
 
@@ -98,6 +110,9 @@ class TestBundledPluginsRegister:
             ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
+            # trafilatura: extract-only (direct fetch + content extraction,
+            # no search capability).
+            ("trafilatura", False, True),
         ],
     )
     def test_capability_flags_match_spec(
