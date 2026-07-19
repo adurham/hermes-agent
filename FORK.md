@@ -3054,3 +3054,76 @@ todo-progress tests pass unchanged (they don't pass item data in their
 fake results, so `current_items` stays empty and the header-only path is
 byte-identical to before). Zero new failures.
 
+### Fork-only instrumentation — 2026-07-19 (`cli.py`: unreproduced spinner-timer anomaly — forensic logging added, not yet root-caused)
+
+**Symptom reported, NOT yet reproduced or root-caused:** a screenshot showed
+the live CLI status line for an in-flight `process(action="wait",
+timeout=280)` call reading `wait proc_55cca0f2ceb 280s (17081s)` — i.e. the
+live elapsed timer (`17081s` ≈ 4.7 hours) exceeded the *entire session's*
+own runtime (`49m` shown in the same screenshot's status bar). That is
+mathematically impossible for a genuine `time.monotonic() - t0` delta if
+`t0` (`_tool_start_time`) was set at that same tool call's own start.
+
+**Investigation (extensive, inconclusive):**
+- Confirmed current on-disk `_render_spinner_text()` (`cli.py` ~5278)
+  cannot literally print a bare `"17081s"` once elapsed passes 60s — the
+  `>=60s` branch always renders `"{m}m{s:02d}s"` (e.g. `"284m41s"`). So
+  whatever produced the screenshot's string is either older code, or a
+  path not yet identified.
+- Audited every write site of `_tool_start_time` (`cli.py` — the `tool.
+  started` handler at ~13210 sets it to `time.monotonic()` in lockstep
+  with `_spinner_text`; three other sites clear it to `0.0` on tool
+  completion / mode switch / exit). No site was found that could set it to
+  a value that stale.
+- Confirmed the MCP-wire tool name (`mcp__process` in the screenshot) is
+  normalized back to bare `process` in `agent/transports/anthropic.py`
+  (`strip_tool_prefix`) before reaching the display code, so the earlier
+  analysis of `agent/display.py`'s bare-`"process"` branch applies
+  correctly — `mcp__process` never reaches display code as a distinct name.
+- Checked commit `069acf8e8` (2026-07-16, "bound PID/host-liveness probes
+  so process(wait) can't hang past its timeout") — a prior, structurally
+  similar incident (`process(wait, timeout=300)` displayed ~38,000s
+  elapsed). That fix is present and unmodified in current `HEAD`
+  (`9a8c49d1`); confirmed via `git merge-base --is-ancestor`. Doesn't
+  explain this one — the earlier bug was a probe hang inflating the
+  *real* elapsed via a stuck polling loop, not a display artifact.
+- Live-inspected both running `hermes` processes at the time of
+  investigation via `py-spy dump --pid <pid>` (requires `sudo` on macOS,
+  run manually and pasted back) — both were idle (no thread blocked in
+  `wait()` or any probe), so the anomaly wasn't caught mid-occurrence.
+  Both processes had launched (21:09 and 21:46 that day) well after every
+  relevant commit, ruling out "stale process running old code."
+- Ruled out the `polaris-bootstrap` wrapper (`~/repos/polaris-bootstrap`)
+  as a separate codebase — it's a thin auth-injection shim (`polaris.
+  launcher.main()`) that execs straight into `hermes-agent`'s own `.venv/
+  bin/hermes`; "Polaris" branding is purely a skin
+  (`~/.hermes/skins/tanium-dark.yaml`'s `branding.response_label`), not a
+  different code path.
+
+**Action taken (this commit):** added forensic instrumentation rather than
+a blind fix, since the mechanism is unknown. `_render_spinner_text()` now
+compares `elapsed` against `session_age` (`datetime.now() - self.
+session_start`) and logs a `logger.warning(...)` — once per tool call via
+a new `_spinner_elapsed_anomaly_logged` latch, re-armed on every `tool.
+started` event — whenever `elapsed > session_age + 5.0s`. That condition
+is a hard invariant violation (a single tool call cannot outlive the
+session that spawned it), so it should never fire on correct code; if it
+does, the log line captures `elapsed`, `session_age`, raw `t0` (monotonic),
+current `time.monotonic()`, the spinner text, and the calling thread name —
+enough to actually diagnose the next occurrence instead of relying on
+catching a live `py-spy` dump before it clears.
+
+Verification: added 3 new tests to `tests/cli/test_cli_status_bar.py`
+(`test_spinner_elapsed_anomaly_logs_when_exceeding_session_age`,
+`test_spinner_elapsed_anomaly_does_not_log_for_normal_elapsed`,
+`test_spinner_elapsed_anomaly_logs_only_once_per_tool_call`). Full
+`tests/cli/test_cli_status_bar.py` + `test_tool_progress_scrollback.py` +
+`test_slash_confirm_windows.py` + `test_reasoning_command.py` +
+`test_cli_approval_ui.py`: 166 passed, 1 pre-existing skip. Zero new
+failures.
+
+**Still open:** the underlying mechanism is unknown. If this warning fires
+in the wild, capture the full log line (not just the on-screen elapsed
+string) and reopen — that's the missing piece every prior investigation
+attempt lacked.
+

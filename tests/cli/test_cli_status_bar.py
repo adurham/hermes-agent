@@ -452,6 +452,57 @@ class TestCLIStatusBar:
         assert len(short_elapsed) == len(long_elapsed)
         assert "m" in long_elapsed and "s" in long_elapsed
 
+    def test_spinner_elapsed_anomaly_logs_when_exceeding_session_age(self):
+        """Regression instrumentation (2026-07-19): a live report showed the
+        spinner elapsed timer displaying tens of thousands of seconds inside
+        a session barely 49 minutes old -- larger than the session itself,
+        which should be impossible for a genuine monotonic delta. Root cause
+        was not reproducible live; this verifies the forensic warning fires
+        so the next occurrence is captured instead of silently rendered."""
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "running tool"
+        cli_obj.session_start = datetime.now() - timedelta(seconds=30)
+
+        with patch.object(cli_mod.time, "monotonic", return_value=1000.0), \
+             patch.object(cli_mod.logger, "warning") as mock_warn:
+            # elapsed (500s) far exceeds session_age (~30s) -- anomalous.
+            cli_obj._tool_start_time = 1000.0 - 500.0
+            cli_obj._render_spinner_text()
+
+        mock_warn.assert_called_once()
+        assert "implausible" in mock_warn.call_args[0][0]
+        assert cli_obj._spinner_elapsed_anomaly_logged is True
+
+    def test_spinner_elapsed_anomaly_does_not_log_for_normal_elapsed(self):
+        """Sanity check: a normal in-budget elapsed never fires the warning."""
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "running tool"
+        cli_obj.session_start = datetime.now() - timedelta(seconds=3600)
+
+        with patch.object(cli_mod.time, "monotonic", return_value=1000.0), \
+             patch.object(cli_mod.logger, "warning") as mock_warn:
+            cli_obj._tool_start_time = 1000.0 - 65.2
+            cli_obj._render_spinner_text()
+
+        mock_warn.assert_not_called()
+
+    def test_spinner_elapsed_anomaly_logs_only_once_per_tool_call(self):
+        """The latch should suppress repeat warnings for the SAME tool call
+        (re-rendered every ~0.15s by the TUI invalidate loop) but re-arm on
+        the next `tool.started` event (see _on_tool_progress)."""
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "running tool"
+        cli_obj.session_start = datetime.now() - timedelta(seconds=10)
+
+        with patch.object(cli_mod.time, "monotonic", return_value=1000.0), \
+             patch.object(cli_mod.logger, "warning") as mock_warn:
+            cli_obj._tool_start_time = 1000.0 - 500.0
+            cli_obj._render_spinner_text()
+            cli_obj._render_spinner_text()
+            cli_obj._render_spinner_text()
+
+        assert mock_warn.call_count == 1
+
     def test_voice_status_bar_compacts_on_narrow_terminals(self):
         cli_obj = _make_cli()
         cli_obj._voice_mode = True
