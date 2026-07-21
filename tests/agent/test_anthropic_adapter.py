@@ -3539,3 +3539,138 @@ class TestStickyActivationPreservesToolHistory:
         assert assistant_block["type"] == "text"
         assert "tool_search" in assistant_block["text"]
         assert "no longer available in this turn" in assistant_block["text"]
+
+
+class TestCreateAnthropicMessageBetaRouting:
+    """Regression: beta-only kwargs must route through .beta.messages when
+    the client supports it, and be stripped when it doesn't.
+
+    The fork's Claude-Code-mimicry path attaches typed body kwargs
+    (context_management, output_config, speed, betas) that only exist on
+    client.beta.messages.* (Anthropic SDK 0.100+). The plain .messages.*
+    namespace rejects them with TypeError.
+    """
+
+    BETA_KWARGS = {"context_management", "output_config", "speed", "betas"}
+
+    # ── helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_client(*, has_beta_messages: bool):
+        """Build a mock Anthropic client with or without .beta.messages."""
+        class _Messages:
+            def stream(self, **kwargs):
+                return _StreamContextManager(kwargs)
+            def create(self, **kwargs):
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="ok")],
+                    stop_reason="end_turn",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+
+        class _BetaMessages:
+            def stream(self, **kwargs):
+                return _StreamContextManager(kwargs)
+            def create(self, **kwargs):
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="ok")],
+                    stop_reason="end_turn",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+
+        if has_beta_messages:
+            return SimpleNamespace(
+                messages=_Messages(),
+                beta=SimpleNamespace(messages=_BetaMessages()),
+            )
+        return SimpleNamespace(messages=_Messages())
+
+    # ── create_anthropic_message tests ─────────────────────────────────
+
+    def test_create_with_beta_messages_routes_through_beta(self):
+        """When client has .beta.messages, stream() is called on .beta.messages."""
+        from agent.anthropic_adapter import create_anthropic_message
+
+        client = self._make_client(has_beta_messages=True)
+        kwargs = {"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi"}]}
+        for k in self.BETA_KWARGS:
+            kwargs[k] = "dummy"
+
+        # Monkey-patch .beta.messages.stream to capture the call
+        captured = {}
+        original_stream = client.beta.messages.stream
+        def _capture_stream(**kw):
+            captured["namespace"] = "beta"
+            captured["kwargs"] = kw
+            return _StreamContextManager(kw)
+        client.beta.messages.stream = _capture_stream
+
+        create_anthropic_message(client, kwargs)
+
+        assert captured.get("namespace") == "beta", \
+            "Should route through .beta.messages when available"
+        for k in self.BETA_KWARGS:
+            assert k in captured.get("kwargs", {}), \
+                f"Beta-only kwarg '{k}' should be preserved on .beta.messages"
+
+    def test_create_without_beta_messages_strips_beta_kwargs(self):
+        """When client lacks .beta.messages, beta-only kwargs are stripped."""
+        from agent.anthropic_adapter import create_anthropic_message
+
+        client = self._make_client(has_beta_messages=False)
+        kwargs = {"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi"}]}
+        for k in self.BETA_KWARGS:
+            kwargs[k] = "dummy"
+
+        captured = {}
+        original_stream = client.messages.stream
+        def _capture_stream(**kw):
+            captured["kwargs"] = kw
+            return _StreamContextManager(kw)
+        client.messages.stream = _capture_stream
+
+        create_anthropic_message(client, kwargs)
+
+        for k in self.BETA_KWARGS:
+            assert k not in captured.get("kwargs", {}), \
+                f"Beta-only kwarg '{k}' should be stripped on .messages"
+
+    def test_create_without_beta_messages_preserves_normal_kwargs(self):
+        """Non-beta kwargs pass through unchanged when .beta.messages is absent."""
+        from agent.anthropic_adapter import create_anthropic_message
+
+        client = self._make_client(has_beta_messages=False)
+        kwargs = {
+            "model": "claude-sonnet-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1000,
+            "temperature": 0.7,
+        }
+
+        captured = {}
+        def _capture_stream(**kw):
+            captured["kwargs"] = kw
+            return _StreamContextManager(kw)
+        client.messages.stream = _capture_stream
+
+        create_anthropic_message(client, kwargs)
+
+        assert captured["kwargs"].get("model") == "claude-sonnet-5"
+        assert captured["kwargs"].get("max_tokens") == 1000
+        assert captured["kwargs"].get("temperature") == 0.7
+
+
+class _StreamContextManager:
+    """Mimics Anthropic SDK's stream context manager."""
+    def __init__(self, kwargs):
+        self._kwargs = kwargs
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        pass
+    def get_final_message(self):
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="ok")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
