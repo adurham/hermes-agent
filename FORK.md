@@ -67,14 +67,125 @@ manual resolution of the highest-risk streaming/config/schema files).
   `.messages.stream` shape (no `.beta`) to match `_call_anthropic`'s
   resolved body.
 
-**Verification**: full `tests/agent/` + `tests/run_agent/` +
-`tests/test_hermes_state.py` targeted runs all green except 7 tests
-confirmed pre-existing failures (reproduced identically on a clean
-pre-merge `git worktree` at the old HEAD) — not merge regressions:
+**Verification (initial pass, ad-hoc file selection)**: full `tests/agent/` +
+`tests/run_agent/` + `tests/test_hermes_state.py` targeted runs all green
+except 7 tests confirmed pre-existing failures (reproduced identically on a
+clean pre-merge `git worktree` at the old HEAD) — not merge regressions:
 `TestAnthropicCredentialRefresh` (4 tests, `test_run_agent.py`),
 `test_run_conversation_dict_returns_include_final_response`,
 `test_tool_call_retry_budget_is_three_not_one`,
 `test_stale_kill_increments_streak`.
+
+**Follow-up sweep (2026-07-21, same day) — `scripts/run_tests.sh` isolation
+catches what ad-hoc file selection missed:**
+
+The initial verification pass above hand-picked files to re-test based on
+what the conflict resolution touched. Running the canonical isolated-subprocess
+runner (`scripts/run_tests.sh tests/agent/ tests/tools/ -j8` — one fresh
+`pytest` process per file, no xdist collisions) instead surfaced 46 failures
+across 18 files the ad-hoc selection never exercised. Every failure was
+checked against a disposable `git worktree` (pristine upstream `v2026.7.20`,
+or pre-merge fork HEAD `624340957`) before touching anything, specifically to
+avoid conflating real merge regressions with pre-existing bugs this sync
+happened to surface for the first time (new test files, or existing tests
+against code paths nobody had run in isolation before).
+
+**Real merge regressions found and fixed:**
+
+* `agent/anthropic_adapter.py` — the Kimi-family adaptive-thinking guard in
+  `build_anthropic_kwargs` was backwards. My earlier hand-merge of the
+  streaming call path (see above) kept the fork's `_is_kimi_coding` exclusion
+  verbatim without cross-referencing upstream commit `60811ced3` ("adaptive
+  thinking for Kimi-family Anthropic endpoints", landed the same week),
+  which removed that exclusion entirely — Kimi/Moonshot endpoints now
+  support adaptive thinking like everyone else. Removed the stale guard;
+  `_supports_adaptive_thinking()` already had the correct Kimi-family
+  detection from the same upstream commit and needed no changes.
+* `agent/fork/anthropic_messages.py` — ported upstream commit `ddd81e935`
+  ("preserve thinking blocks on Kimi-family endpoints on replay") into the
+  fork's separate `convert_messages_to_anthropic` (a documented hard-fork
+  boundary — upstream's own equivalent function in `anthropic_adapter.py`
+  is now just a forwarder into this file, so upstream's fix landed on a
+  function the fork doesn't call). Live probing (per the upstream commit)
+  showed Kimi For Coding (K3+) and Moonshot's Anthropic surface both issue
+  AND validate their own thinking signatures — the fork's old contract
+  (strip ALL signed thinking blocks for the whole Kimi family, keep only
+  unsigned ones) silently discarded the model's prior chain-of-thought
+  across multi-turn conversations. New contract: Kimi-family replays
+  thinking blocks (signed or unsigned) completely unchanged; DeepSeek keeps
+  the older strip-signed/preserve-unsigned contract (it genuinely can't
+  validate Anthropic signatures, unlike Kimi).
+* `tests/agent/test_set_runtime_main_custom_provider.py`,
+  `tests/agent/test_auxiliary_client.py` — 2 stale references to the deleted
+  `threading.local()` mechanism (`_rtl_get`/`_runtime_main_tls`, superseded
+  by the ContextVar migration documented above) updated to
+  `_runtime_main_value()` / a corrected docstring.
+* `tests/agent/test_kimi_coding_anthropic_thinking.py` — 7 parametrized
+  assertions expecting `thinking.display="summarized"` updated to match the
+  fork's documented CC-wire-shape-parity decision (no `display` key present
+  at all when `HERMES_THINKING_DISPLAY` is unset) — same class of test drift
+  as the `test_auxiliary_client.py` fix from the initial pass.
+* `toolsets.py`, `tools/delegate_tool.py` — split `swarm_run` out of the
+  shared `"delegation"` toolset into its own `"swarm"` toolset (composed back
+  in via `toolsets.py`'s `"includes"` mechanism, so top-level/non-delegated
+  usage is unaffected). `DELEGATE_BLOCKED_TOOLS`/`_blocked_toolsets_for_role`
+  only operate at whole-toolset granularity (`_strip_blocked_tools` disables
+  a toolset only when ALL its tools are blocked) — `swarm_run` was added to
+  the pre-existing `"delegation"` toolset when the fork's native swarm
+  feature shipped, but never threaded into the blocking logic, so orchestrator
+  subagents silently regained `swarm_run` alongside the intentionally-regranted
+  `delegate_task` (recursive swarm delegation was never supposed to be
+  allowed). Upstream's own unchanged
+  `test_orchestrator_composite_regains_only_delegate_task` test caught this
+  the first time the toolset actually held 2 tools instead of 1. Verified via
+  `mcp__consult` that toolset-splitting (not a per-tool exclusion kwarg,
+  which the resolution pipeline doesn't support) was the only fix shape that
+  didn't require widening the test's own contract.
+* `tests/agent/test_hot_tier_audit.py` — 2 call sites constructing
+  `curator._ReviewRuntimeBinding` with 4 positional args instead of 5
+  (missing `request_overrides`, added by the merge in an earlier pass).
+
+**Pre-existing fork bugs found and fixed (NOT caused by this sync — confirmed
+reproducing identically on pre-merge fork HEAD `624340957` via disposable
+worktree before fixing):**
+
+* `hermes_cli/config.py` — the auxiliary-schema migration step (task-first →
+  provider-first, `current_ver < 31`) called `save_config()` directly instead
+  of `_persist_migration()`, violating the documented single-choke-point
+  write invariant that exists specifically to prevent the "lean config →
+  full `DEFAULT_CONFIG` dump" regression (see `_persist_migration`'s own
+  docstring). Existed since the migration step was added; a pre-existing
+  test (`test_migrate_config_never_calls_save_config_directly`) had simply
+  never been run against this code path before this session.
+* `hermes_cli/config.py` (`_AUX_TASK_FIRST_KEYS`) + `agent/auxiliary_client.py`
+  (`_BUILTIN_AUX_TASK_KEYS`) — the canonical task-first-vs-provider-first
+  schema detector lists (documented as mirroring each other) were both stale,
+  missing 6 task keys that exist in `DEFAULT_CONFIG.auxiliary`
+  (`background_review`, `consult`, `goal_judge`, `memory_query_rewrite`,
+  `moa_aggregator`, `moa_reference`). This made `_auxiliary_is_provider_first()`
+  misdetect every unmodified default config as provider-first, which meant
+  `save_config()`'s `_strip_provider_first_aux_pollution` choke point would
+  silently **strip real user auxiliary task settings** (e.g. a configured
+  vision provider/model, set via `hermes config` or the setup wizard) on
+  every single write. This is a serious, silent data-loss bug independent of
+  the sync — fixed because it was found, not because the merge caused it.
+  Caught by `test_vision_picker_writes_provider_and_model` /
+  `test_vision_picker_custom_endpoint`, both pre-existing tests.
+
+**Verification (follow-up sweep)**: `scripts/run_tests.sh tests/agent/
+tests/tools/ -j8` went from 46 failures/18 files to 0 new failures. Every
+remaining failure (13–19, depending on which subset was run) was
+independently confirmed pre-existing on pristine upstream `v2026.7.20` or
+pre-merge fork HEAD via disposable `git worktree` — known flakes
+(`test_concurrent_writes_never_tear_the_snapshot`, a shell-timing race),
+pre-existing mock/fixture drift (`build_anthropic_client(model=...)` not
+threaded into several test mocks, unrelated to this sync), and one live
+network test (`test_unconfigured_search_emits_top_level_error` hits a real
+search backend). A partial full-suite run (`tests/`, 13,888/~41,888 tests
+collected before hitting the tool-call time budget) held at the same
+19-failure baseline with no new regressions — the full ~42k-test suite
+exceeds what's practical to run to completion in one session; see the
+`hermes-agent-fork-development` skill's own documented pitfall about this.
 
 ### History squash — 2026-07-19
 
@@ -249,9 +360,10 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/credential_pool.py` | +37 / -19 | Keychain longlived token seeding, prunable source handling. |
 | `agent/turn_context.py` | +29 / -1 | 3 ported fork-only prologue steps: memory_auto_feedback bind, `_last_user_message` capture, `_recent_tool_args` reset. |
 | `agent/credential_sources.py` | +26 / -1 | `keychain_longlived` credential source. |
-| `agent/conversation_compression.py` | +12 / -16 | Post-merge cleanup. Minimal diff. |
+| `agent/conversation_compression.py` | +12 / -16 | Phase-2 auto-extraction hook (`memory_extraction.on_pre_compress`). `compress_context`'s docstring converged to upstream's fuller version 2026-07-21 (dropped the fork's trim-only divergence). |
 | `agent/tool_guardrails.py` | +11 / -4 | `hard_stop_enabled` default `False→True` — tool-call loop guardrails now block/halt instead of just warning. See "Fork-only fix — 2026-07-07" below. |
 | `plugins/model-providers/anthropic/__init__.py` | +2 / -2 | `default_aux_model` updated from haiku to sonnet-5. |
+| `toolsets.py` | +25 / -7 | `"swarm"` toolset (`swarm_run`) split out of `"delegation"` (composed back in via `includes`) so delegation-blocking can independently gate it — see 2026-07-21 sync entry above. |
 
 Was 314 commits of fork-only history (vs `upstream/main`, refreshed
 2026-07-12 post v2026.7.7.2 sync) before the 2026-07-19 squash noted at the
