@@ -187,6 +187,31 @@ collected before hitting the tool-call time budget) held at the same
 exceeds what's practical to run to completion in one session; see the
 `hermes-agent-fork-development` skill's own documented pitfall about this.
 
+**Post-merge cleanup (same day, 2026-07-21) — two minor fixes that would
+otherwise be silently lost on the next sync:**
+
+* `hermes_cli/config.py` — upstream changed the `approvals.mode` default from
+  `"manual"` to `"smart"` in the v2026.7.20 release, but the line sat in a
+  clean (non-conflicting) region of the file, so the merge carried the updated
+  comment block ("smart (default)") while the actual `DEFAULT_CONFIG` value
+  stayed `"manual"`. Fixed: `978121070`. **Merge note:** on next sync, check
+  that `DEFAULT_CONFIG.approvals.mode` matches the upstream default — this is
+  the kind of drift that lives in clean regions and never produces a conflict
+  hunk to alert you.
+* `tests/tools/test_approval.py` — pre-existing upstream test bug (reproduces
+  identically on pristine v2026.7.20, not a merge regression):
+  `test_nonrecursive_verification_artifact_cleanup_is_not_dangerous` hardcoded
+  `"/tmp"` as both the mocked `gettempdir()` return and the operand path. On
+  macOS, `tempfile.gettempdir()` returns `"/tmp"` but the OS resolves it to
+  `/private/tmp` at the filesystem level; the production code's own
+  `os.path.realpath(tempfile.gettempdir())` call already accounts for this
+  correctly, but the test's hardcoded path never matched the realpath'd value
+  it was compared against, so the exemption never fired and the test failed
+  with a false "delete in root path" detection. Fixed: `45bc3c78e`. **Merge
+  note:** this test file is not a soft-fork file — the fix is a one-line
+  `tmp_path` change that will need re-verification if upstream rewrites the
+  test.
+
 ### History squash — 2026-07-19
 
 `main`'s 340 commits of fork-only history (vs the `upstream/main` merge-base)
