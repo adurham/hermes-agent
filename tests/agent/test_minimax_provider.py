@@ -344,6 +344,7 @@ class TestMinimaxMaxOutput:
         # claude-sonnet-4-6 caps at 16_000 to mirror Claude Code's defaults
         # (see commit b8dea7337).
         assert _get_anthropic_max_output("claude-sonnet-4-6") == 16_000
+        assert _get_anthropic_max_output("claude-sonnet-5") == 128_000
 
 
 class TestMinimaxPreserveDots:
