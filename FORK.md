@@ -3,6 +3,79 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Upstream sync — 2026-07-21 (v2026.7.20, 1,584 commits, 46 conflict files)
+
+Merge-base was v2026.7.7.2; pulled 1,584 upstream commits on branch
+`sync/upstream-2026-07-21` (tag `v2026.7.20`). 46 conflict files predicted by
+`fork-merge-plan.py`, all resolved (parallelized across delegated subagents +
+manual resolution of the highest-risk streaming/config/schema files).
+
+**Notable resolutions:**
+
+* `agent/anthropic_adapter.py` — kept fork's `thinking.display` omission
+  (CC wire-shape parity) verbatim over upstream's `display="summarized"`
+  re-add; updated `tests/agent/test_auxiliary_client.py` assertion to match.
+* `agent/chat_completion_helpers.py` (5 dense blocks) — hand-merged
+  `_call_anthropic()`: kept BOTH upstream's per-request-client lifecycle +
+  single-writer fencing (#67142/#65991) AND the fork's SSE-ping observability,
+  rate-limit header capture, message_start usage logging, and routing-header
+  capture. Neither side's fix was a superset of the other — verified via
+  `mcp__consult` before hand-merging. Live heartbeat display now fires BOTH
+  the fork's rich diagnostic scrollback line and upstream's `_emit_wait_notice`
+  live-spinner rewrite (previously two competing status writers; folded the
+  recovery-ETA into the shared diagnostic suffix instead of a separate call).
+* `agent/auxiliary_client.py` (12 blocks) — adopted upstream's ContextVar-based
+  `_RUNTIME_MAIN_CONTEXT` / `set_runtime_main()` / `scoped_runtime_main()` /
+  `reset_runtime_main()` over the fork's 2026-07-18 threading.local mechanism
+  (`_rtl_get`/`_runtime_main_tls`) — strictly dominates it (isolates async
+  tasks too) and other already-merged files (`turn_context.py`, `run_agent.py`,
+  `gateway/run.py`) already call the ContextVar API. **`_runtime_main_tls` no
+  longer exists** — any future patch referencing it should target
+  `_RUNTIME_MAIN_CONTEXT`/`set_runtime_main` instead.
+* `agent/turn_context.py` — collapsed a duplicate pre-restore
+  `set_runtime_main()` call (fork bug: called once before
+  `_restore_primary_runtime()`, once after — upstream's design calls it
+  exactly once, after restoration settles the runtime).
+* `hermes_state.py` — **blast-radius bug found post-merge, not in a
+  conflicting hunk**: two `INSERT INTO messages` statements had 20 declared
+  columns but only 19 `?` placeholders (`sqlite3.OperationalError: 19 values
+  for 20 columns`), and the shared `_CONVERSATION_ROW_COLUMNS` SELECT
+  constant was missing `anthropic_content_blocks` entirely (upstream added
+  the constant with no awareness of the fork's column). All three fixed;
+  `tests/test_hermes_state.py` went from 165 failures to 394/394 passing.
+  **Lesson reinforced**: after an "additive keep-both" schema merge, grep
+  every INSERT/SELECT touching the affected table for placeholder-count and
+  column-list drift — the bug is rarely in the conflict hunk itself.
+* `agent/auxiliary_client.py::_resolve_vision_provider_client_impl` — schema
+  drift bug: `resolve_vision_provider_client(main_runtime=...)` accepted the
+  param but never forwarded it to `_resolve_vision_provider_client_impl`,
+  which didn't even declare it (classic "field added to one call site, not
+  threaded to the next" — same bug genus as the 2026-07-15 delegate_task
+  entry below). Fixed; also added a module-level vision-resolution-cache
+  clear in test setup (`_clear_vision_resolution_cache()`) since 3 tests in
+  `test_auxiliary_main_first.py` shared a memoization cache key and polluted
+  each other's mocked results.
+* `hermes_cli/config.py::_coerce_config_value` — merged fork's JSON/list-split
+  coercion with upstream's string-typed-enum guard (`approvals.mode: "off"`
+  must never become the YAML boolean `False`). Order matters: the string-type
+  check must run BEFORE JSON parsing, or a string-typed key whose value
+  starts with `[`/`{` gets silently JSON-parsed anyway.
+* Tests requiring updates beyond their own conflict blocks:
+  `tests/run_agent/test_streaming.py` had 2 non-conflicting mock call sites
+  (`agent._anthropic_client.beta.messages.stream.side_effect/.call_count`)
+  left over from before the merge — updated to the post-merge
+  `.messages.stream` shape (no `.beta`) to match `_call_anthropic`'s
+  resolved body.
+
+**Verification**: full `tests/agent/` + `tests/run_agent/` +
+`tests/test_hermes_state.py` targeted runs all green except 7 tests
+confirmed pre-existing failures (reproduced identically on a clean
+pre-merge `git worktree` at the old HEAD) — not merge regressions:
+`TestAnthropicCredentialRefresh` (4 tests, `test_run_agent.py`),
+`test_run_conversation_dict_returns_include_final_response`,
+`test_tool_call_retry_budget_is_three_not_one`,
+`test_stale_kill_increments_streak`.
+
 ### History squash — 2026-07-19
 
 `main`'s 340 commits of fork-only history (vs the `upstream/main` merge-base)
