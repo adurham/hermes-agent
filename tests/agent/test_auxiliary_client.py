@@ -4094,7 +4094,19 @@ class TestAnthropicAuxiliaryReasoningTranslation:
                     usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
                 )
 
-        real_client = SimpleNamespace(messages=_Messages())
+        class _BetaMessages:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="ok")],
+                    stop_reason="end_turn",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+
+        real_client = SimpleNamespace(
+            messages=_Messages(),
+            beta=SimpleNamespace(messages=_BetaMessages()),
+        )
         return _AnthropicCompletionsAdapter(real_client, model), captured
 
     def test_reasoning_config_reaches_native_anthropic_wire_kwargs(self):

@@ -4562,15 +4562,25 @@ def create_anthropic_message(
 
     # FORK: prefer the ``.beta.messages`` namespace when the client exposes it.
     # The fork's Claude-Code-mimicry path attaches beta-ONLY *body* fields
-    # (``context_management``, ``output_config``, ``thinking`` with the CC
-    # 2.1.x shape) that the plain ``.messages.create()/.stream()`` reject with
+    # (``context_management``, ``output_config``, ``speed``, ``betas``) that
+    # the plain ``.messages.create()/.stream()`` reject with
     # ``TypeError: ... got an unexpected keyword argument 'context_management'``
     # (the betas ride in ``default_headers`` from build_anthropic_client, but
     # the typed body kwargs only exist on ``client.beta.messages.*``). Routing
     # through ``.beta.messages`` accepts them AND keeps upstream's SSE-only
     # stream aggregation. Falls back to ``.messages`` for clients without a
-    # ``.beta`` namespace (mocks, non-Anthropic-SDK clients).
+    # ``.beta`` namespace (mocks, non-Anthropic-SDK clients, SDK < 0.100),
+    # stripping the beta-only kwargs so the call doesn't TypeError.
+    _BETA_ONLY_KWARGS = frozenset({"context_management", "output_config", "speed", "betas"})
     _beta = getattr(client, "beta", None)
+    _has_beta_messages = getattr(_beta, "messages", None) is not None
+    if not _has_beta_messages:
+        # Strip beta-only kwargs when the client doesn't support .beta.messages.
+        # The betas still ride in default_headers from build_anthropic_client,
+        # so server-side behavior (thinking-block lifecycle, fast mode, etc.)
+        # is preserved — only the typed body kwargs are removed.
+        for _k in _BETA_ONLY_KWARGS:
+            api_kwargs.pop(_k, None)
     messages_api = getattr(_beta, "messages", None) or getattr(client, "messages", None)
     stream_fn = getattr(messages_api, "stream", None)
     if prefer_stream and callable(stream_fn):
