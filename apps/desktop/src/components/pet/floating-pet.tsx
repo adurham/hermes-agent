@@ -77,6 +77,13 @@ function facing(leftX: number, petW: number, zone?: DOMRect | null): string {
 }
 
 function loadPosition(zone?: DOMRect | null): Point {
+  // When confined to a zone, default to the top-left corner of the zone
+  // (0,0 relative to the container). The full-window default doesn't make
+  // sense for absolute positioning inside a pane.
+  if (zone) {
+    return { x: 0, y: 0 }
+  }
+
   try {
     const raw = storedString(POSITION_KEY)
 
@@ -84,7 +91,7 @@ function loadPosition(zone?: DOMRect | null): Point {
       const parsed = JSON.parse(raw) as Point
 
       if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
-        return clampPoint(parsed.x, parsed.y, NOMINAL_PET_PX, NOMINAL_PET_PX, zone)
+        return clampPoint(parsed.x, parsed.y, NOMINAL_PET_PX, NOMINAL_PET_PX)
       }
     }
   } catch {
@@ -92,8 +99,7 @@ function loadPosition(zone?: DOMRect | null): Point {
   }
 
   // Default: lower-left corner (top/left anchored).
-  const defaultY = zone ? Math.max(0, zone.height - 220) : (window.innerHeight || 600) - 220
-  return clampPoint(24, defaultY, NOMINAL_PET_PX, NOMINAL_PET_PX, zone)
+  return clampPoint(24, (window.innerHeight || 600) - 220, NOMINAL_PET_PX, NOMINAL_PET_PX)
 }
 
 /**
@@ -126,7 +132,9 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   const roamDir = useStore($petRoamDir)
   const routeOverlayOpen = useRouteOverlayActive()
 
-  const [position, setPosition] = useState<Point>(() => loadPosition(zoneContainer?.current?.getBoundingClientRect()))
+  const [position, setPosition] = useState<Point>(() =>
+    zoneContainer ? { x: 0, y: 0 } : loadPosition()
+  )
   const containerRef = useRef<HTMLDivElement | null>(null)
   // The facing mirror lives on the sprite wrapper, not the container, so the
   // speech bubble (a container child) never renders flipped/backwards.

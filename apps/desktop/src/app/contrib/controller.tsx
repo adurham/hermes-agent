@@ -357,7 +357,7 @@ const DEFAULT_TREE = split(
         group(['terminal'], { id: 'grp-terminal' }),
         group(['pet-zone'], { id: 'grp-pet-zone' })
       ],
-      [1.6, 1],
+      [1.6, 0.6, 0.4],
       'spl-right'
     )
   ],
