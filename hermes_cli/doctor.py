@@ -134,6 +134,24 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+def _disabled_toolset_names() -> set[str]:
+    """Return the set of toolset names in agent.disabled_toolsets.
+
+    Used to keep the doctor's "Tool Availability" section (a raw dependency/
+    capability probe, independent of whether a toolset is actually wired into
+    the live agent) from nagging about toolsets the user has intentionally
+    turned off via config. Fails open to an empty set on any config read
+    error — better to show a stray warning than silently hide a real one.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        disabled = (cfg.get("agent") or {}).get("disabled_toolsets") or []
+        return {str(ts) for ts in disabled}
+    except Exception:
+        return set()
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     updated_available = list(available)
@@ -2319,7 +2337,15 @@ def run_doctor(args):
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
-        
+
+        # Toolsets the user has explicitly turned off via agent.disabled_toolsets
+        # never load into the live agent regardless of dependency/capability
+        # status, so a raw availability warning for them is just noise —
+        # filter them out of this section entirely rather than reporting a
+        # false "problem" for something intentionally disabled.
+        disabled_names = _disabled_toolset_names()
+        unavailable = [item for item in unavailable if item.get("name") not in disabled_names]
+
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
             check_ok(info.get("name", tid), _doctor_tool_availability_detail(tid))

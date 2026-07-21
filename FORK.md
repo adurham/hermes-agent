@@ -3431,3 +3431,53 @@ substring in the skip/fail classifier. No upstream equivalent exists (no
 per-feature denylist concept upstream), so this should apply cleanly on
 future syncs unless upstream restructures `ensure()`'s control flow.
 
+### Fork-only fix — 2026-07-21 (doctor Tool Availability ignores agent.disabled_toolsets)
+
+**Symptom:** `hermes doctor`'s "Tool Availability" section warned about
+`discord`, `discord_admin`, `homeassistant`, `spotify`, `yuanbao` /
+`hermes-yuanbao`, `video_gen`, `image_gen`, `x_search`, `tts`,
+`computer_use`, and `browser-cdp` even after all of them were added to
+`agent.disabled_toolsets` (see the `blocked_features` entry above for the
+`platform.telegram`/`platform.discord` half of this cleanup — this entry
+covers the rest of a corp-machine toolset audit).
+
+**Root cause:** this doctor section calls `model_tools.check_tool_availability()`,
+a raw dependency/capability probe (`can this toolset's deps import`, `is its
+required env var set`) that has no awareness of `agent.disabled_toolsets` at
+all — that config key is only consulted later, at `get_tool_definitions()`
+time, when the live agent actually assembles its tool list. A toolset the
+user explicitly turned off still gets probed and still reports itself
+"unavailable" every single doctor run, which reads as an unresolved problem
+when it's actually working-as-configured.
+
+**Fix:** added `_disabled_toolset_names()` in `hermes_cli/doctor.py`, reading
+`agent.disabled_toolsets` from config (fails open to an empty set on any
+config read error, so a corrupt config surfaces MORE warnings, never fewer
+— never silently hide a real problem). The Tool Availability loop now
+filters `unavailable` through this set before printing, right after the
+existing `_apply_doctor_tool_availability_overrides()` call (which handles
+the unrelated honcho/kanban runtime-gate cases). Toolsets already showing
+`✓` (available) are untouched — this only suppresses the noisy ⚠ rows for
+toolsets the user deliberately disabled.
+
+**Verification:** added `TestDoctorDisabledToolsetNames` (3 tests: reads
+disabled list correctly, empty when unset, fails open on config error) to
+`tests/hermes_cli/test_doctor.py`. Full `test_doctor.py` +
+`test_doctor_command_install.py`: 87 passed, no regressions.
+
+**Config change (not code):** also set `agent.disabled_toolsets` on this
+machine to add `hermes-yuanbao`, `computer_use`, `tts`, and `browser-cdp`
+to the pre-existing list (`discord`, `discord_admin`, `messaging`,
+`feishu_doc`, `feishu_drive`, `yuanbao`, `homeassistant`, `moa`, `spotify`,
+`video`, `video_gen`, `image_gen`, `x_search`) — a corp-machine tool-surface
+audit, not a code change. Verified via `get_tool_definitions()` directly
+that `browser_cdp`/`browser_dialog` tool names are actually stripped from
+the assembled tool list (that toolset has no row in `hermes tools list`
+since it's a sub-toolset of `browser`, so the CLI listing alone doesn't
+confirm it — checked the resolved tool names instead).
+
+**Merge note:** purely additive — one new function, one filter line in the
+existing Tool Availability loop, three new tests. No upstream equivalent
+(upstream's doctor doesn't have this section at all in the same form), so
+should apply cleanly on future syncs.
+

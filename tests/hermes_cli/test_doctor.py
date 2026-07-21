@@ -192,6 +192,40 @@ class TestDoctorToolAvailabilityOverrides:
         assert doctor._doctor_tool_availability_detail("kanban") == "(runtime-gated; loaded only for dispatcher-spawned workers)"
 
 
+class TestDoctorDisabledToolsetNames:
+    """agent.disabled_toolsets should suppress noisy Tool Availability warnings
+    for toolsets the user has intentionally turned off, rather than reporting
+    them as unmet dependencies/missing env vars every time doctor runs."""
+
+    def test_reads_disabled_toolsets_from_config(self, monkeypatch):
+        fake_config = types.SimpleNamespace(
+            get=lambda key, default=None: (
+                {"disabled_toolsets": ["discord", "tts", "computer_use"]}
+                if key == "agent" else default
+            )
+        )
+        fake_config_module = types.SimpleNamespace(load_config=lambda: fake_config)
+        monkeypatch.setitem(sys.modules, "hermes_cli.config", fake_config_module)
+
+        assert doctor._disabled_toolset_names() == {"discord", "tts", "computer_use"}
+
+    def test_empty_when_no_disabled_toolsets_configured(self, monkeypatch):
+        fake_config = types.SimpleNamespace(get=lambda key, default=None: default)
+        fake_config_module = types.SimpleNamespace(load_config=lambda: fake_config)
+        monkeypatch.setitem(sys.modules, "hermes_cli.config", fake_config_module)
+
+        assert doctor._disabled_toolset_names() == set()
+
+    def test_fails_open_to_empty_set_on_config_error(self, monkeypatch):
+        def _raise():
+            raise RuntimeError("config unreadable")
+
+        fake_config_module = types.SimpleNamespace(load_config=_raise)
+        monkeypatch.setitem(sys.modules, "hermes_cli.config", fake_config_module)
+
+        assert doctor._disabled_toolset_names() == set()
+
+
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
         fake_config = SimpleNamespace(enabled=True, api_key="***")
