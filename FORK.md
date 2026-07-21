@@ -3369,16 +3369,30 @@ The betas themselves already ride in `default_headers` from
 lifecycle, fast mode, etc.) is preserved even without the typed body kwargs
 — only the typed kwarg form was missing.
 
-**Fix:** `create_anthropic_message` now detects whether the client has
-`.beta.messages` and, when it doesn't, strips the four beta-only kwargs
-(`context_management`, `output_config`, `speed`, `betas`) from `api_kwargs`
-before dispatching. The `_BETA_ONLY_KWARGS` frozenset is defined inline with
-a comment explaining the contract.
+**Fix:** Two sites needed the same guard:
+
+1. `create_anthropic_message` in `anthropic_adapter.py` (auxiliary client
+   path) — already tried `.beta.messages` first but passed beta-only kwargs
+   through on the `.messages` fallback.
+2. `_call_anthropic` in `chat_completion_helpers.py` (main agent streaming
+   path) — called `request_client.messages.stream()` directly on the plain
+   `.messages` namespace, never attempting `.beta.messages`.
+
+Both now detect whether the client has `.beta.messages` and, when it does,
+route through `.beta.messages` which accepts the typed kwargs. When it
+doesn't (older SDK, mocks, non-Anthropic-SDK clients), they strip the four
+beta-only kwargs before dispatching to `.messages.*`. The betas still ride
+in `default_headers` from `build_anthropic_client`, so server-side behavior
+(thinking-block lifecycle, fast mode) is preserved.
+
+`_BETA_ONLY_KWARGS` is a module-level constant in `anthropic_adapter.py`
+so both paths reference the same set.
 
 **Merge note:** this is a fork-only fix — upstream doesn't send
 `context_management` or `speed` as typed kwargs, so it never hits this error.
 On conflict, keep our version of `create_anthropic_message` (the entire
-function is a fork divergence). The `_BETA_ONLY_KWARGS` set and the
-`_has_beta_messages` guard are additive and won't conflict with upstream
-changes to the function body.
+function is a fork divergence) and the `_call_anthropic` block in
+`chat_completion_helpers.py`. The `_BETA_ONLY_KWARGS` constant and the
+`.beta.messages` routing guards are additive and won't conflict with upstream
+changes to either function body.
 
