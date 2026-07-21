@@ -46,6 +46,12 @@ from utils import base_url_host_matches, normalize_proxy_env_vars
 # the module after the first call and returns None on ImportError.
 _anthropic_sdk: Any = ...  # sentinel — None means "tried and missing"
 
+# FORK: beta-only typed kwargs that only work on client.beta.messages.*
+# (Anthropic SDK 0.100+). The fork's Claude-Code-mimicry path attaches
+# these as typed body kwargs; when the client doesn't have a .beta namespace
+# they must be stripped before dispatching to .messages.*.
+_BETA_ONLY_KWARGS = frozenset({"context_management", "output_config", "speed", "betas"})
+
 
 def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
@@ -4571,7 +4577,6 @@ def create_anthropic_message(
     # stream aggregation. Falls back to ``.messages`` for clients without a
     # ``.beta`` namespace (mocks, non-Anthropic-SDK clients, SDK < 0.100),
     # stripping the beta-only kwargs so the call doesn't TypeError.
-    _BETA_ONLY_KWARGS = frozenset({"context_management", "output_config", "speed", "betas"})
     _beta = getattr(client, "beta", None)
     _has_beta_messages = getattr(_beta, "messages", None) is not None
     if not _has_beta_messages:
