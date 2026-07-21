@@ -3457,7 +3457,22 @@ def interruptible_streaming_api_call(
             # shared ``_anthropic_client``, so the stale/interrupt watchdog
             # can abort this stream's socket without closing the shared
             # client mid-flight (#67142).
-            with request_client.messages.stream(**api_kwargs) as stream:
+            #
+            # FORK: prefer ``.beta.messages.stream`` when the client exposes
+            # it — the fork's Claude-Code-mimicry path attaches beta-only
+            # typed kwargs (context_management, output_config, speed, betas)
+            # that the plain ``.messages.stream`` rejects with TypeError.
+            # Falls back to ``.messages.stream`` for clients without a
+            # ``.beta`` namespace, stripping the beta-only kwargs first.
+            _stream_api = request_client
+            _beta = getattr(request_client, "beta", None)
+            if getattr(_beta, "messages", None) is not None:
+                _stream_api = _beta.messages
+            else:
+                from agent.anthropic_adapter import _BETA_ONLY_KWARGS as _BOK
+                for _k in _BOK:
+                    api_kwargs.pop(_k, None)
+            with _stream_api.stream(**api_kwargs) as stream:
                 # The Anthropic SDK exposes the raw httpx response on
                 # ``stream.response``.  Snapshot diagnostic headers
                 # immediately so they survive a stream that dies before the
