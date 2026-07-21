@@ -478,7 +478,9 @@ export const en: Translations = {
         exportFailed: slug => `Could not export ${slug}`,
         noneAvailable: 'No pets available to turn on right now.',
         turnOnFailed: 'Could not turn the pet on.',
-        turnOffFailed: 'Could not turn the pet off.'
+        turnOffFailed: 'Could not turn the pet off.',
+        zoneTitle: 'Pet Zone',
+        zoneDesc: 'Confine the pet to a dedicated pane in the layout instead of the full window.'
       }
     },
     fieldLabels: FIELD_LABELS,

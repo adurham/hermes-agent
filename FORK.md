@@ -3617,6 +3617,50 @@ the assembled tool list (that toolset has no row in `hermes tools list`
 since it's a sub-toolset of `browser`, so the CLI listing alone doesn't
 confirm it — checked the resolved tool names instead).
 
+### Fork-only feature — 2026-07-21 (pet zone pane for the desktop app)
+
+**Motivation:** the floating pet roams the entire window by default, which
+can be distracting. A dedicated layout pane confines the pet to a specific
+area of the window while preserving all its behavior (roam, loaf, hop,
+drag, pop-out overlay).
+
+**Change:** added a `pet-zone` pane to the desktop app's contribution-driven
+layout system. The pane is registered in `controller.tsx` with `placement:
+'bottom'` and added to the default layout tree (bottom-right, stacked with
+terminal). A new `PetZoneSurface` component renders a `data-slot="pet-zone"`
+container that hosts the `FloatingPet` inside it.
+
+When the pet zone is enabled (Settings → Pet → "Pet Zone" toggle), the
+pet renders inside the pane with `position: absolute` and its roam physics
+constrained to the pane's bounding rect via a new `snapshotContainerLedges()`
+function in `roam-geometry.ts`. The drag clamp, facing direction, and z-index
+all respect the zone bounds. When disabled, the pet falls back to full-window
+`position: fixed` behavior as before.
+
+The zone is collapsible (collapses to a rail when off) so the pane stays
+mounted and the pet keeps its position. Persisted per-device via localStorage
+(like the roam toggle), not per-profile.
+
+**Files:** `apps/desktop/src/store/pet.ts` (new `$petZoneEnabled` atom),
+`apps/desktop/src/app/contrib/types.ts` (added `petZone` to `WiringApi`),
+`apps/desktop/src/app/contrib/controller.tsx` (pane registration + layout +
+visibility binding), `apps/desktop/src/app/contrib/surfaces.tsx`
+(`PetZoneSurface`), `apps/desktop/src/app/contrib/wiring.tsx` (conditional
+rendering), `apps/desktop/src/components/pet/floating-pet.tsx` (zone-aware
+clamp/facing/position), `apps/desktop/src/components/pet/roam-geometry.ts`
+(`snapshotContainerLedges`), `apps/desktop/src/components/pet/use-pet-roam.ts`
+(zone-aware ledge selection), `apps/desktop/src/app/settings/pet-settings.tsx`
+(toggle), `apps/desktop/src/i18n/*.ts` (strings).
+
+**Merge note:** purely additive — new pane registration, new surface
+component, new store atom, new geometry helper. No upstream equivalent
+exists. The `WiringApi` interface gained a new field (`petZone`) which
+will conflict if upstream adds a 5th surface of their own; resolve by
+keeping both. The `FloatingPet` component signature changed from
+`export function FloatingPet()` to accepting an optional `zoneContainer`
+prop — any upstream call site that instantiates `<FloatingPet />` without
+the prop is unaffected (it's optional, defaults to full-window mode).
+
 **Merge note:** purely additive — one new function, one filter line in the
 existing Tool Availability loop, three new tests. No upstream equivalent
 (upstream's doctor doesn't have this section at all in the same form), so

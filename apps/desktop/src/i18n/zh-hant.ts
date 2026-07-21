@@ -354,7 +354,9 @@ export const zhHant = defineLocale({
         exportFailed: slug => `無法匯出 ${slug}`,
         noneAvailable: '目前沒有可開啟的寵物。',
         turnOnFailed: '無法開啟寵物。',
-        turnOffFailed: '無法關閉寵物。'
+        turnOffFailed: '無法關閉寵物。',
+        zoneTitle: '寵物區域',
+        zoneDesc: '將寵物限制在佈局中的專用窗格內，而非整個視窗。'
       }
     },
     fieldLabels: defineFieldCopy({
