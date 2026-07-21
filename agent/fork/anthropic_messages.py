@@ -38,11 +38,16 @@ def convert_messages_to_anthropic(
     Anthropic-proprietary — third-party endpoints cannot validate them and will
     reject them with HTTP 400 "Invalid signature in thinking block".
 
-    When *model* is provided and matches the Kimi / Moonshot family (or
-    *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
-    synthesised from ``reasoning_content`` are preserved on replayed
-    assistant tool-call messages — Kimi requires the field to exist, even
-    if empty.
+    When *model* matches the Kimi / Moonshot family (or *base_url* is a
+    Kimi / Moonshot host), thinking blocks — signed or unsigned — are
+    replayed as-is on assistant tool-call messages, unchanged. Kimi For
+    Coding (K3+) issues AND validates its own thinking signatures; live
+    probing (2026-07-18) confirmed both verbatim and content-mutated
+    signed blocks round-trip with HTTP 200 on Kimi/Moonshot's Anthropic
+    surface, so signature stripping there was silently discarding the
+    model's prior chain-of-thought across turns. DeepSeek's /anthropic
+    endpoint keeps the older contract (strip signed, preserve unsigned)
+    since it cannot validate Anthropic signatures.
     """
     # Bind the adapter's helpers locally (lazy import avoids the circular
     # dependency: anthropic_adapter imports this module for its forwarder).
@@ -462,16 +467,6 @@ def convert_messages_to_anthropic(
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi /coding and DeepSeek /anthropic share a contract: both speak the
-    # Anthropic Messages protocol upstream but require that thinking blocks
-    # synthesised from reasoning_content round-trip on subsequent turns when
-    # thinking is enabled.  Signed Anthropic blocks still have to be stripped
-    # (neither endpoint can validate Anthropic's signatures); unsigned blocks
-    # are preserved.  See hermes-agent#13848 (Kimi) and #16748 (DeepSeek).
-    _preserve_unsigned_thinking = (
-        _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
-    )
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -483,12 +478,24 @@ def convert_messages_to_anthropic(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _preserve_unsigned_thinking:
-            # Kimi's /coding and DeepSeek's /anthropic endpoints both enable
-            # thinking server-side and require unsigned thinking blocks on
-            # replayed assistant tool-call messages.  Strip signed Anthropic
-            # blocks (neither upstream can validate Anthropic signatures) but
-            # preserve the unsigned ones we synthesised from reasoning_content.
+        if _is_kimi_family_endpoint(base_url, model):
+            # Kimi does not enforce thinking signatures — replay as-is.
+            # Live probing (2026-07-18) showed Kimi For Coding (K3+) issues
+            # AND validates its own thinking signatures, and Moonshot's
+            # Anthropic surface accepts signed blocks the same way (both
+            # verbatim and content-mutated signed blocks replay with HTTP
+            # 200). The prior contract stripped signed blocks unconditionally
+            # and silently discarded the model's prior chain-of-thought in
+            # multi-turn conversations. One uniform rule for the whole Kimi
+            # family now — no /coding-vs-Moonshot split, no signed/unsigned
+            # split. Shared cleanup below still strips cache markers + the
+            # internal invalidation flag.
+            pass
+        elif _is_deepseek_anthropic_endpoint(base_url):
+            # DeepSeek's /anthropic endpoint enables thinking server-side and
+            # requires unsigned thinking blocks on replayed assistant
+            # tool-call messages, but — unlike Kimi — cannot validate
+            # Anthropic-signed blocks. Strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:

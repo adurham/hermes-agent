@@ -257,7 +257,13 @@ TOOLSETS = {
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task", "swarm_run"],
+        "tools": ["delegate_task"],
+        "includes": ["swarm"]
+    },
+
+    "swarm": {
+        "description": "Native multi-agent swarm orchestration (fork feature)",
+        "tools": ["swarm_run"],
         "includes": []
     },
 

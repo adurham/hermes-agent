@@ -6028,15 +6028,15 @@ class TestCustomEndpointApiKeyInheritance:
         assert captured.get("api_key") == "no-key-required"
 
     def test_runtime_override_key_is_used(self, monkeypatch):
-        """When the thread-local runtime override is set (by set_runtime_main),
+        """When the context-local runtime override is set (by set_runtime_main),
         it takes precedence over config.yaml for the custom endpoint key.
 
         Uses the public set_runtime_main()/clear_runtime_main() API rather
-        than patching module globals directly — as of the 2026-07-18
-        thread-safety fix, the override lives in a per-thread
-        threading.local() slot (``ac._runtime_main_tls``), not bare module
-        attributes, so ``patch.object(ac, "_RUNTIME_MAIN_API_KEY", ...)``
-        no longer has any effect.
+        than patching module globals directly — as of the 2026-07-21 sync,
+        the override lives in a ``contextvars.ContextVar``
+        (``ac._RUNTIME_MAIN_CONTEXT``), not bare module attributes, so
+        ``patch.object(ac, "_RUNTIME_MAIN_API_KEY", ...)`` no longer has any
+        effect.
         """
         import agent.auxiliary_client as ac
 

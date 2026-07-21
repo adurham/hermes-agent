@@ -6744,7 +6744,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             converted = convert_auxiliary_to_provider_first(copy.deepcopy(raw_aux))
             if converted is not raw_aux and converted != raw_aux:
                 config["auxiliary"] = converted
-                save_config(config)
+                _persist_migration(config)
                 results["config_added"].append(
                     "auxiliary → provider-first schema (per-provider blocks)"
                 )
@@ -6993,6 +6993,8 @@ _AUX_TASK_FIRST_KEYS = frozenset({
     "title_generation", "tts_audio_tags", "triage_specifier",
     "kanban_decomposer", "profile_describer", "curator", "monitor",
     "session_search", "memory_extraction", "delegation_router",
+    "background_review", "consult", "goal_judge", "memory_query_rewrite",
+    "moa_aggregator", "moa_reference",
 })
 # Per-task setting keys that are provider-independent and belong in the shared
 # provider-first ``defaults`` block (NOT a model/routing field).

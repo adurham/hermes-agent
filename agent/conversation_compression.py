@@ -717,9 +717,17 @@ def compress_context(
         focus_topic: Optional focus string for guided compression — the
             summariser will prioritise preserving information related to
             this topic.  Inspired by Claude Code's ``/compact <focus>``.
+        force: If True, bypass any active summary-failure cooldown.  Set
+            by the manual ``/compress`` slash command so users can retry
+            immediately after an auto-compress abort.  Auto-compress
+            callers use the default ``False``.
 
     Returns:
-        (compressed_messages, new_system_prompt) tuple
+        ``(compressed_messages, new_system_prompt)`` tuple.  When
+        compression aborts (aux LLM failed to produce a usable summary),
+        returns the original messages unchanged and the existing system
+        prompt — the session is NOT rotated.  Callers should detect the
+        no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
     # Codex app-server sessions: the codex agent owns the real thread context;
     # Hermes' summarizer would only rewrite a local mirror without shrinking

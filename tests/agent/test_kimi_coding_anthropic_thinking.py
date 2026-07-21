@@ -133,7 +133,10 @@ class TestKimiFamilyGetsAdaptiveThinking:
             reasoning_config={"enabled": True, "effort": hermes_effort},
             base_url="https://api.moonshot.cn/anthropic/v1",
         )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        # HERMES_THINKING_DISPLAY unset → display defaults to omitted,
+        # matching Claude Code's wire shape (fork decision 2026-05-06) —
+        # no "display" key present at all, same as native Claude endpoints.
+        assert kwargs["thinking"] == {"type": "adaptive"}
         assert kwargs["output_config"] == {"effort": wire_effort}
 
     def test_kimi_thinking_disabled_omits_parameter(self) -> None:

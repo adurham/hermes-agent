@@ -599,7 +599,7 @@ def test_llm_classify_entries_calls_call_llm_and_parses_response(audit_env, monk
     ]
 
     from agent import curator
-    fake_binding = curator._ReviewRuntimeBinding("anthropic", "claude-sonnet-4-6", None, None)
+    fake_binding = curator._ReviewRuntimeBinding("anthropic", "claude-sonnet-4-6", None, None, {})
     monkeypatch.setattr(curator, "_resolve_review_runtime", lambda cfg: fake_binding)
 
     import agent.auxiliary_client as aux_client
@@ -633,7 +633,7 @@ def test_llm_classify_entries_returns_none_on_call_llm_exception(audit_env, monk
     from agent import curator
     monkeypatch.setattr(
         curator, "_resolve_review_runtime",
-        lambda cfg: curator._ReviewRuntimeBinding("anthropic", "claude-sonnet-4-6", None, None),
+        lambda cfg: curator._ReviewRuntimeBinding("anthropic", "claude-sonnet-4-6", None, None, {}),
     )
 
     import agent.auxiliary_client as aux_client
