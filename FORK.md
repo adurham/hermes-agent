@@ -16,13 +16,13 @@ all came from the stale `package.json`.
 `package.json` in lockstep, but it only runs when `--bump` is passed and was
 silently skipped for 8 releases.
 
-**Fix:** `apps/desktop/scripts/before-build.mjs` now reads the canonical
-version from `hermes_cli/__init__.py` and overwrites `package.json`'s version
-field before every build. This is automatic — no manual bump needed, no
-dependency on `release.py --bump` being run. Best-effort: a read/write failure
-logs a warning and never blocks the build.
+**Fix:** `apps/desktop/scripts/sync-version.mjs` reads the canonical version
+from `hermes_cli/__init__.py` and writes it into `package.json` before every
+build, wired via the `prebuild` npm script. No manual bump needed, no
+dependency on `release.py --bump` being run. Best-effort: failures log a
+warning and never block the build.
 
-**Commits:** `8c2557360` (bump), `8014756b2` (FORK.md), `[pending]` (build hook)
+**Commits:** `8c2557360` (bump), `8014756b2` (FORK.md), `[pending]` (sync script + prebuild)
 
 ### Fork-only feature — 2026-07-21 (provider-first aux-task Models-page writes were never actually provider-scoped)
 
