@@ -3,6 +3,84 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only feature — 2026-07-21 (provider-first aux-task Models-page writes were never actually provider-scoped)
+
+Follow-up to the same-day "aux-task pin silently reverted on every save" fix
+below. After that fix, the Models page's per-task "Change" control correctly
+PERSISTED an assignment — but a deeper design gap remained: on a
+provider-first `auxiliary` config, the write path (`POST /api/model/set`,
+scope=auxiliary) and read path (`GET /api/model/auxiliary`) only ever knew
+about the LEGACY top-level `auxiliary.<task>` pin shape, never the
+provider-first per-provider blocks (`auxiliary.<provider_id>.<task>`). Net
+effect: every aux-task reassignment from the desktop/web Models page created
+a permanent, GLOBAL, cross-provider pin — e.g. assigning Vision to
+`ollama-cloud/gemma4` while main=ollama-cloud would keep vision on gemma4
+forever, even after switching main to Anthropic, silently shadowing the
+perfectly good `auxiliary.anthropic.vision` block entry already sitting in
+config. The read side had the mirror-image bug: it displayed raw top-level
+dict state instead of resolving through the real runtime resolver, so a
+genuine provider-block override (with no top-level pin) silently showed as
+"auto" — the Models page was lying about what a task would actually run on.
+
+**Fix — hybrid pin/block write rule** (validated via `mcp__consult` against a
+naive "always write to whichever provider was selected" design, which would
+have silently no-op'd any cross-provider assignment until main happened to
+match later):
+  * Selected provider == current active main provider → write into that
+    provider's BLOCK (`auxiliary.<block>.<task> = model`). Takes effect
+    immediately; naturally re-resolves to a DIFFERENT model later if the
+    same task is reassigned while main is on a different provider — one
+    override per (task, provider) pair, matching what the Models page rows
+    visually imply on a provider-first setup. Clears any stale top-level pin
+    for that task so it can't keep shadowing the block (explicit pins always
+    outrank block resolution per the existing read contract).
+  * Selected provider != current main, OR the assignment carries a
+    `base_url`/custom endpoint (a bare block entry is a model string with no
+    room for endpoint info) → falls back to the legacy top-level pin, which
+    takes effect immediately regardless of active main. This is the ONLY
+    shape that can express "run task X on provider Y always," so it remains
+    a first-class, reachable write path — just no longer the ONLY path.
+  * Reset ("Set to main" / "Reset all to main") on a provider-first config
+    clears the top-level pin PLUS the task entry in the CURRENT MAIN's block
+    ONLY — not every provider's block. Wiping every block would silently
+    destroy hand-authored per-provider overrides meant for later (e.g.
+    resetting Vision while main=ollama-cloud must not delete a deliberately
+    configured `auxiliary.anthropic.vision` entry).
+  * Read path (`GET /api/model/auxiliary`) now resolves each task through
+    `agent.auxiliary_client._get_auxiliary_task_config` (the SAME flattener
+    the runtime uses at call time) instead of a raw top-level dict lookup,
+    and annotates each task with `source: "pin" | "block" | "auto"` so a
+    future UI can distinguish "explicitly pinned" from "inherited from the
+    active provider's block" from "no override at all" — the same task can
+    legitimately show a different resolved model after main switches
+    providers, and `source` is what lets a client render that without
+    guessing. When the resolver returns the `provider: "auto"` sentinel
+    (model-only blocks, e.g. the `anthropic` block) the response substitutes
+    the real active main provider id so the UI never shows the literal
+    string "auto" next to a concrete resolved model.
+  * Legacy task-first configs are completely unaffected — every branch is
+    gated behind the existing `_auxiliary_is_provider_first()` detector.
+
+New shared helper `agent/auxiliary_client.py::_aux_block_key_for_provider`
+factors out the provider-id → block-key normalization (exo-cluster aliasing,
+`custom:` prefix stripping) so both the existing main-provider-keyed
+`_aux_select_provider_block` and the new selected-provider write path share
+one normalization rule instead of duplicating it.
+
+Verified with 6 new tests in `tests/hermes_cli/test_web_server.py`
+(same-provider block write, cross-provider pin write, reset scoped to main's
+block only, read-path real-resolver resolution + `source` tagging) — all
+pass. Ran the full `tests/hermes_cli/test_web_server.py` +
+`tests/agent/test_auxiliary_provider_first.py` suite (350 passed, 136
+skipped, 0 failures) and the broader aux/config/model-assignment surface
+(577 passed, same 6 pre-existing unrelated failures as this morning's fix, 0
+new failures).
+
+Files: `agent/auxiliary_client.py`, `hermes_cli/web_server.py`,
+`tests/hermes_cli/test_web_server.py`, `apps/desktop/src/types/hermes.ts`,
+`web/src/lib/api.ts` (TS response-type parity for the new `source` field;
+UI treatment of `source` is a follow-up, not done here).
+
 ### Fork-only fix — 2026-07-21 (aux-task pin silently reverted on every save)
 
 `save_config()`'s `_strip_provider_first_aux_pollution` (added 2026-06-24 with

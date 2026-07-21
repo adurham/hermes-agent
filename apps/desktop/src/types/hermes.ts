@@ -964,6 +964,16 @@ export interface AuxiliaryTaskAssignment {
   model: string
   provider: string
   task: string
+  /**
+   * Why this task resolved the way it did (provider-first configs only;
+   * absent/ignored on legacy task-first configs — always reflects a
+   * top-level pin there): "pin" = explicit cross-provider override that
+   * wins regardless of active main provider, "block" = a provider-first
+   * block entry matching the CURRENTLY active main provider (would change
+   * again if main switches to a provider with a different/no entry),
+   * "auto" = no override, runs on the main model.
+   */
+  source?: 'pin' | 'block' | 'auto'
 }
 
 export interface AuxiliaryModelsResponse {

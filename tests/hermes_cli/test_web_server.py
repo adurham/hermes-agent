@@ -4200,6 +4200,143 @@ class TestWebServerEndpoints:
         assert model_cfg["provider"] == "openrouter"
         assert model_cfg.get("base_url", "") == ""
 
+    def test_set_model_auxiliary_provider_first_same_as_main_writes_block(self):
+        """On a provider-first config, assigning an aux task to the SAME
+        provider as the active main must write into that provider's BLOCK
+        (auxiliary.<provider>.<task>), not a global top-level pin — so the
+        task naturally follows main if the user later switches main to a
+        DIFFERENT provider and re-assigns it there. Regression for the
+        desktop/web Models page silently creating a permanent cross-provider
+        pin on every "Change" click, defeating provider-first config."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "ollama-cloud", "default": "gemma4:31b"}
+        cfg["auxiliary"] = {
+            "defaults": {"vision": {"timeout": 120}},
+            "anthropic": {"default": "claude-haiku-4-5"},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "ollama-cloud",
+                "model": "gemma4:31b",
+            },
+        )
+        assert resp.status_code == 200
+
+        # read_raw_config (not load_config) — load_config's DEFAULT_CONFIG
+        # deep-merge re-injects an inert top-level auxiliary.vision on every
+        # read regardless of what's on disk, so it can't be used to assert
+        # absence of a real pin; only the raw on-disk file proves it.
+        from hermes_cli.config import read_raw_config
+        aux = read_raw_config().get("auxiliary", {})
+        # Landed in the ollama-cloud BLOCK, not a top-level pin.
+        assert aux.get("ollama-cloud", {}).get("vision") == "gemma4:31b"
+        assert "vision" not in aux
+
+    def test_set_model_auxiliary_provider_first_different_from_main_writes_pin(self):
+        """Assigning an aux task to a DIFFERENT provider than active main must
+        fall back to a top-level pin (the only shape that takes effect
+        immediately regardless of active main) rather than a dead block entry
+        under a provider that isn't main."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "ollama-cloud", "default": "gemma4:31b"}
+        cfg["auxiliary"] = {
+            "defaults": {"vision": {"timeout": 120}},
+            "anthropic": {"default": "claude-haiku-4-5"},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "anthropic",
+                "model": "claude-sonnet-5",
+            },
+        )
+        assert resp.status_code == 200
+
+        from hermes_cli.config import read_raw_config
+        aux = read_raw_config().get("auxiliary", {})
+        assert aux.get("vision") == {"provider": "anthropic", "model": "claude-sonnet-5"}
+        # Must NOT have polluted the anthropic block itself.
+        assert "vision" not in aux.get("anthropic", {})
+
+    def test_set_model_auxiliary_provider_first_reset_scoped_to_main_block(self):
+        """Reset (Set to main) on a provider-first config must clear ONLY the
+        top-level pin + the task entry in the CURRENT MAIN's block — hand
+        -authored overrides in OTHER provider blocks (meant for when main is
+        later switched to them) must survive untouched."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "ollama-cloud", "default": "gemma4:31b"}
+        cfg["auxiliary"] = {
+            "defaults": {"vision": {"timeout": 120}},
+            "ollama-cloud": {"default": "gemma4:31b", "vision": "gemma4:31b"},
+            # A deliberately-configured override for when main is Anthropic —
+            # must survive a reset performed while main=ollama-cloud.
+            "anthropic": {"default": "claude-haiku-4-5", "vision": "claude-sonnet-5"},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "auxiliary", "task": "__reset__", "provider": "", "model": ""},
+        )
+        assert resp.status_code == 200
+
+        from hermes_cli.config import read_raw_config
+        aux = read_raw_config().get("auxiliary", {})
+        assert "vision" not in aux  # top-level pin cleared (none existed, no-op)
+        assert "vision" not in aux.get("ollama-cloud", {})  # main's block entry cleared
+        # The anthropic block's override must be untouched.
+        assert aux.get("anthropic", {}).get("vision") == "claude-sonnet-5"
+
+    def test_get_auxiliary_models_provider_first_resolves_via_real_resolver(self):
+        """GET /api/model/auxiliary must reflect what the task would ACTUALLY
+        resolve to right now on a provider-first config — not just whether a
+        top-level key happens to exist. A provider-block entry with no
+        top-level pin must still show up as the active model/provider, tagged
+        source='block' (not silently reported as 'auto').
+
+        Uses an ollama-cloud block WITHOUT a "default" key so web_extract
+        (no per-task entry, no pin) has genuinely nothing governing it —
+        distinct from vision's explicit per-task block entry. A block-level
+        "default" key would itself count as a real override for any unlisted
+        task (see _aux_flatten_provider_first), which is a different,
+        already-covered case, not "no override at all"."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "ollama-cloud", "default": "gemma4:31b"}
+        cfg["auxiliary"] = {
+            "defaults": {"vision": {"timeout": 120}},
+            "ollama-cloud": {"vision": "gemma4:31b"},
+            "anthropic": {"default": "claude-haiku-4-5"},
+        }
+        save_config(cfg)
+
+        resp = self.client.get("/api/model/auxiliary")
+        assert resp.status_code == 200
+        tasks = {t["task"]: t for t in resp.json()["tasks"]}
+        assert tasks["vision"]["provider"] == "ollama-cloud"
+        assert tasks["vision"]["model"] == "gemma4:31b"
+        assert tasks["vision"]["source"] == "block"
+        # web_extract has no per-task entry, no block default, no pin -> auto.
+        assert tasks["web_extract"]["source"] == "auto"
+        assert tasks["web_extract"]["model"] == ""
+
+
     def test_custom_endpoints_list_includes_direct_custom_config(self):
         """A bare model.provider=custom config should show up in Desktop even
         before the user has materialized it under providers.

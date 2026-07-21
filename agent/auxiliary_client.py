@@ -6805,6 +6805,36 @@ def _aux_schema_is_provider_first(aux: Dict[str, Any]) -> bool:
     return False
 
 
+def _aux_block_key_for_provider(
+    provider_id: str, cfg: Optional[Dict[str, Any]] = None
+) -> str:
+    """Normalize an arbitrary provider id to the ``auxiliary`` block key it maps to.
+
+    Same aliasing rules ``_aux_select_provider_block`` applies when matching
+    the *main* provider, but usable for ANY provider string — e.g. when a
+    caller (the Models page write path) needs to know which block a
+    *selected* (not necessarily active-main) provider should read/write
+    under. ``custom:exo`` and the exo cluster generally normalize to the
+    ``exo`` block name; a bare ``custom:<name>`` prefix is stripped; anything
+    else passes through lowercased and unchanged.
+
+    Returns ``""`` for an empty/falsy input.
+    """
+    p = (provider_id or "").strip().lower()
+    if not p:
+        return ""
+    try:
+        from agent.image_routing import _provider_is_exo
+        if _provider_is_exo(p, cfg):
+            return "exo"
+    except Exception:
+        if p in {"exo", "custom:exo"}:
+            return "exo"
+    if p.startswith("custom:"):
+        return p.split(":", 1)[1]
+    return p
+
+
 def _aux_select_provider_block(
     aux: Dict[str, Any],
     main_provider: str,

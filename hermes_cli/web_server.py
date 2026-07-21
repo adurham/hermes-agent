@@ -6215,11 +6215,25 @@ def get_auxiliary_models(profile: Optional[str] = None):
     Shape:
       {
         "tasks": [
-          {"task": "vision", "provider": "auto", "model": "", "base_url": ""},
+          {"task": "vision", "provider": "auto", "model": "", "base_url": "",
+           "source": "auto"},
           ...
         ],
         "main": {"provider": "openrouter", "model": "anthropic/claude-opus-4.7"},
       }
+
+    ``source`` explains WHY a task resolved the way it did, so the UI can
+    distinguish "explicitly pinned" from "inherited from the active
+    provider's block" from "no override at all" — important on a
+    provider-first config where the SAME task can resolve to a different
+    model after the user switches main providers:
+      * "pin"   — an explicit top-level ``auxiliary.<task>`` override (wins
+                   over everything, regardless of active main provider).
+      * "block" — a provider-first per-provider-block entry that matches the
+                   CURRENTLY ACTIVE main provider (would change again if main
+                   switches to a provider with a different/no block entry).
+      * "auto"  — no override; the task runs on the main model / provider
+                   catalog default.
 
     ``profile`` scopes the read — without it, the Models page would show
     the dashboard profile's auxiliary pins while /api/model/set wrote the
@@ -6228,28 +6242,96 @@ def get_auxiliary_models(profile: Optional[str] = None):
     try:
         with _profile_scope(profile):
             cfg = load_config()
-        aux_cfg = cfg.get("auxiliary", {})
-        if not isinstance(aux_cfg, dict):
-            aux_cfg = {}
+            aux_cfg = cfg.get("auxiliary", {})
+            if not isinstance(aux_cfg, dict):
+                aux_cfg = {}
 
-        tasks = []
-        for slot in _AUX_TASK_SLOTS:
-            slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
-            tasks.append({
-                "task": slot,
-                "provider": str(slot_cfg.get("provider", "auto") or "auto"),
-                "model": str(slot_cfg.get("model", "") or ""),
-                "base_url": str(slot_cfg.get("base_url", "") or ""),
-            })
+            is_provider_first = False
+            try:
+                from hermes_cli.config import _auxiliary_is_provider_first
+                is_provider_first = _auxiliary_is_provider_first(aux_cfg)
+            except Exception:
+                is_provider_first = False
 
-        model_cfg = cfg.get("model", {})
-        if isinstance(model_cfg, dict):
-            main = {
-                "provider": str(model_cfg.get("provider", "") or ""),
-                "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
-            }
-        else:
-            main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
+            main_provider_id = ""
+            if is_provider_first:
+                try:
+                    from agent.auxiliary_client import _read_main_provider
+                    main_provider_id = _read_main_provider()
+                except Exception:
+                    main_provider_id = ""
+
+            tasks = []
+            for slot in _AUX_TASK_SLOTS:
+                if is_provider_first:
+                    # Resolve through the SAME flattener the runtime uses at
+                    # call time, so the Models page shows what a task would
+                    # ACTUALLY run on right now — not just whether a
+                    # top-level key happens to exist. A raw dict lookup here
+                    # (the pre-fix behavior) silently showed "auto" even when
+                    # a provider-block entry genuinely governed the task.
+                    try:
+                        from agent.auxiliary_client import (
+                            _get_auxiliary_task_config,
+                            _aux_task_pin_is_explicit,
+                        )
+                        resolved = _get_auxiliary_task_config(slot)
+                    except Exception:
+                        resolved = {}
+                        _aux_task_pin_is_explicit = None  # type: ignore[assignment]
+                    raw_pin = aux_cfg.get(slot)
+                    if (
+                        isinstance(raw_pin, dict)
+                        and _aux_task_pin_is_explicit is not None
+                        and _aux_task_pin_is_explicit(raw_pin)
+                    ):
+                        source = "pin"
+                    elif resolved.get("model") or (
+                        resolved.get("provider")
+                        and str(resolved.get("provider")).lower() != "auto"
+                    ):
+                        source = "block"
+                    else:
+                        source = "auto"
+                    # The resolver's provider="auto" means "inherit the
+                    # active main provider" (a model-only provider-first
+                    # block, e.g. the anthropic block, emits exactly this —
+                    # see _aux_flatten_provider_first). Substitute the real
+                    # main provider id for display so the UI doesn't show
+                    # the literal sentinel "auto" next to a concrete model.
+                    display_provider = str(resolved.get("provider", "") or "").strip()
+                    if display_provider.lower() in ("", "auto") and main_provider_id:
+                        display_provider = main_provider_id
+                    if not display_provider:
+                        display_provider = "auto"
+                    tasks.append({
+                        "task": slot,
+                        "provider": display_provider,
+                        "model": str(resolved.get("model", "") or ""),
+                        "base_url": str(resolved.get("base_url", "") or ""),
+                        "source": source,
+                    })
+                else:
+                    slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+                    tasks.append({
+                        "task": slot,
+                        "provider": str(slot_cfg.get("provider", "auto") or "auto"),
+                        "model": str(slot_cfg.get("model", "") or ""),
+                        "base_url": str(slot_cfg.get("base_url", "") or ""),
+                        "source": "pin" if slot_cfg.get("model") or (
+                            slot_cfg.get("provider")
+                            and str(slot_cfg.get("provider")).lower() != "auto"
+                        ) else "auto",
+                    })
+
+            model_cfg = cfg.get("model", {})
+            if isinstance(model_cfg, dict):
+                main = {
+                    "provider": str(model_cfg.get("provider", "") or ""),
+                    "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
+                }
+            else:
+                main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
 
         return {"tasks": tasks, "main": main}
     except HTTPException:
@@ -6535,8 +6617,48 @@ def _apply_model_assignment_sync(
     if not isinstance(aux, dict):
         aux = {}
 
+    # Provider-first configs (fork schema, 2026-06-24) route task assignments
+    # through per-provider blocks instead of a single top-level pin — see the
+    # helpers imported below for the read-side contract this mirrors.
+    is_provider_first = False
+    try:
+        from hermes_cli.config import _auxiliary_is_provider_first
+        is_provider_first = _auxiliary_is_provider_first(aux)
+    except Exception:
+        is_provider_first = False
+
     if task == "__reset__":
-        # Reset every slot to provider="auto", model="" — keeps other fields intact.
+        if is_provider_first:
+            # Reset must undo exactly what a "Change" write below can create:
+            # (a) any top-level pin (cross-provider assignment), and (b) the
+            # task entry in the CURRENT MAIN provider's block only — NOT
+            # every provider's block. Wiping every block would silently
+            # destroy hand-authored per-provider overrides for providers the
+            # user isn't even touching right now (e.g. resetting Vision
+            # while main=ollama-cloud must not delete a carefully-configured
+            # auxiliary.anthropic.vision entry meant for when main=anthropic).
+            try:
+                from agent.auxiliary_client import (
+                    _read_main_provider,
+                    _aux_block_key_for_provider,
+                    _AUX_DEFAULTS_KEY,
+                )
+                main_provider = _read_main_provider()
+                block_key = _aux_block_key_for_provider(main_provider, cfg)
+            except Exception:
+                block_key = ""
+            for slot in _AUX_TASK_SLOTS:
+                aux.pop(slot, None)  # drop any top-level pin
+                if block_key and block_key != "defaults":
+                    block = aux.get(block_key)
+                    if isinstance(block, dict):
+                        block.pop(slot, None)
+            cfg["auxiliary"] = aux
+            save_config(cfg)
+            return {"ok": True, "scope": "auxiliary", "reset": True}
+
+        # Legacy task-first: reset every slot to provider="auto", model="" —
+        # keeps other fields intact. Unchanged from prior behavior.
         for slot in _AUX_TASK_SLOTS:
             slot_cfg = aux.get(slot)
             if not isinstance(slot_cfg, dict):
@@ -6554,6 +6676,102 @@ def _apply_model_assignment_sync(
         raise HTTPException(status_code=400, detail="provider required for auxiliary")
 
     targets = [task] if task else list(_AUX_TASK_SLOTS)
+
+    if is_provider_first:
+        # Hybrid pin/block write rule (matches user intent + the existing
+        # "explicit top-level pin always wins" read contract):
+        #   selected provider == current main  -> write into that provider's
+        #     block (auxiliary.<block>.<task> = model). This takes effect
+        #     immediately and naturally re-resolves to a DIFFERENT model
+        #     later if the user assigns this same task again while main is
+        #     on a different provider — one override per (task, provider)
+        #     pair, exactly what the Models page rows visually imply.
+        #   selected provider != current main, OR the assignment carries a
+        #     base_url/custom endpoint that a bare block entry can't express
+        #     -> fall back to the legacy top-level pin (which always wins
+        #     over block resolution regardless of active main). Writing into
+        #     a non-main block would silently have NO effect until the user
+        #     later switches main to match — indistinguishable from a
+        #     no-op save from the UI's perspective.
+        try:
+            from agent.auxiliary_client import (
+                _read_main_provider,
+                _aux_block_key_for_provider,
+                _AUX_DEFAULTS_KEY,
+            )
+            main_provider = _read_main_provider()
+        except Exception:
+            main_provider = ""
+            _aux_block_key_for_provider = None  # type: ignore[assignment]
+            _AUX_DEFAULTS_KEY = "defaults"
+
+        selected_is_main = (
+            bool(main_provider)
+            and provider.strip().lower() == main_provider.strip().lower()
+        )
+        # A custom/local endpoint needs base_url (and often api_key) carried
+        # alongside the model — a provider block's per-task entry is a bare
+        # model string with no room for that, so it can only ever go through
+        # the top-level pin path.
+        can_write_block = (
+            selected_is_main
+            and not base_url
+            and _aux_block_key_for_provider is not None
+        )
+
+        block_key = ""
+        if can_write_block:
+            block_key = _aux_block_key_for_provider(provider, cfg)
+            if not block_key or block_key == _AUX_DEFAULTS_KEY:
+                can_write_block = False
+
+        if can_write_block and block_key:
+            block = aux.get(block_key)
+            if not isinstance(block, dict):
+                block = {}
+            for slot in targets:
+                if slot not in _AUX_TASK_SLOTS:
+                    raise HTTPException(
+                        status_code=400, detail=f"unknown auxiliary task: {slot}"
+                    )
+                block[slot] = model
+                # The block write now governs this task while main matches —
+                # drop any stale top-level pin so it can't keep shadowing it
+                # (explicit top-level pins always outrank block resolution).
+                aux.pop(slot, None)
+            aux[block_key] = block
+            cfg["auxiliary"] = aux
+            save_config(cfg)
+            return {
+                "ok": True,
+                "scope": "auxiliary",
+                "tasks": targets,
+                "provider": provider,
+                "model": model,
+            }
+
+        # Fall through to the top-level-pin write below for the
+        # cross-provider / custom-endpoint case.
+        for slot in targets:
+            if slot not in _AUX_TASK_SLOTS:
+                raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
+            pin = {"provider": provider, "model": model}
+            if base_url:
+                pin["base_url"] = base_url
+            if api_key:
+                pin["api_key"] = api_key
+            aux[slot] = pin
+        cfg["auxiliary"] = aux
+        save_config(cfg)
+        return {
+            "ok": True,
+            "scope": "auxiliary",
+            "tasks": targets,
+            "provider": provider,
+            "model": model,
+        }
+
+    # Legacy task-first: unchanged from prior behavior.
     for slot in targets:
         if slot not in _AUX_TASK_SLOTS:
             raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")

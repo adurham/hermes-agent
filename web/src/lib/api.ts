@@ -2314,6 +2314,13 @@ export interface AuxiliaryTaskAssignment {
   provider: string;
   model: string;
   base_url: string;
+  /**
+   * Why this task resolved the way it did (provider-first configs only):
+   * "pin" = explicit cross-provider override, wins regardless of active
+   * main provider; "block" = a provider-first block entry matching the
+   * CURRENTLY active main provider; "auto" = no override, runs on main.
+   */
+  source?: "pin" | "block" | "auto";
 }
 
 export interface AuxiliaryModelsResponse {
