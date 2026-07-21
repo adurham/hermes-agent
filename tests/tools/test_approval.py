@@ -120,9 +120,19 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
-        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+        # Mock gettempdir() to already be in canonical (realpath'd) form so
+        # the production code's ``os.path.realpath(tempfile.gettempdir())``
+        # is a no-op regardless of platform. A hardcoded "/tmp" fails on
+        # macOS, where the OS resolves /tmp -> /private/tmp at the
+        # filesystem level (unrelated to the symlink-rejection behavior
+        # itself, which test_symlinked_temp_dir_only_exempts_canonical_target
+        # below covers directly).
+        canonical_tmp = os.path.realpath("/tmp")
+        with mock_patch("tempfile.gettempdir", return_value=canonical_tmp):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
+                assert detect_dangerous_command(
+                    f"rm -f {canonical_tmp}/{prefix}example.py"
+                ) == (
                     False,
                     None,
                     None,
