@@ -3349,3 +3349,36 @@ in the wild, capture the full log line (not just the on-screen elapsed
 string) and reopen — that's the missing piece every prior investigation
 attempt lacked.
 
+### Fork-only fix — 2026-07-21 (beta-only kwargs crash on SDK < 0.100)
+
+**Symptom:** `Messages.stream() got an unexpected keyword argument
+'context_management'` — a `TypeError` on the very first API call when using
+the Anthropic provider with an SDK version older than 0.100.0.
+
+**Root cause:** The fork's Claude-Code-mimicry path in
+`build_anthropic_kwargs` attaches typed body kwargs (`context_management`,
+`output_config`, `speed`, `betas`) that only exist on the
+`client.beta.messages.*` namespace (Anthropic SDK 0.100+). The
+`create_anthropic_message` function already tried `.beta.messages` first and
+fell back to `.messages` when the client had no `.beta` namespace — but the
+fallback path passed the beta-only kwargs straight through, and
+`.messages.create()/.stream()` rejects them with `TypeError`.
+
+The betas themselves already ride in `default_headers` from
+`build_anthropic_client`, so the server-side behavior (thinking-block
+lifecycle, fast mode, etc.) is preserved even without the typed body kwargs
+— only the typed kwarg form was missing.
+
+**Fix:** `create_anthropic_message` now detects whether the client has
+`.beta.messages` and, when it doesn't, strips the four beta-only kwargs
+(`context_management`, `output_config`, `speed`, `betas`) from `api_kwargs`
+before dispatching. The `_BETA_ONLY_KWARGS` frozenset is defined inline with
+a comment explaining the contract.
+
+**Merge note:** this is a fork-only fix — upstream doesn't send
+`context_management` or `speed` as typed kwargs, so it never hits this error.
+On conflict, keep our version of `create_anthropic_message` (the entire
+function is a fork divergence). The `_BETA_ONLY_KWARGS` set and the
+`_has_beta_messages` guard are additive and won't conflict with upstream
+changes to the function body.
+
