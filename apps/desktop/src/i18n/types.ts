@@ -391,6 +391,8 @@ export interface Translations {
         noneAvailable: string
         turnOnFailed: string
         turnOffFailed: string
+        zoneTitle: string
+        zoneDesc: string
       }
     }
     fieldLabels: Record<string, string>

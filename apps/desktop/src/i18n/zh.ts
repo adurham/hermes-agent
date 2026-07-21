@@ -465,7 +465,9 @@ export const zh: Translations = {
         exportFailed: slug => `无法导出 ${slug}`,
         noneAvailable: '当前没有可开启的宠物。',
         turnOnFailed: '无法开启宠物。',
-        turnOffFailed: '无法关闭宠物。'
+        turnOffFailed: '无法关闭宠物。',
+        zoneTitle: '宠物区域',
+        zoneDesc: '将宠物限制在布局中的专用窗格内，而非整个窗口。'
       }
     },
     fieldLabels: defineFieldCopy({

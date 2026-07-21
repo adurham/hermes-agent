@@ -50,6 +50,7 @@ import {
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget, closeRightRail } from '@/store/preview'
+import { $petZoneEnabled, setPetZoneEnabled } from '@/store/pet'
 import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $sessionColorById, sessionColorFor } from '@/store/session-color'
@@ -172,6 +173,20 @@ registry.registerMany([
     // is moot): a short deck, not a third of the window.
     data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
     render: () => <WiredPane part="terminal" />
+  },
+  {
+    id: 'pet-zone',
+    area: 'panes',
+    title: 'pet zone',
+    data: {
+      placement: 'bottom',
+      collapsible: true,
+      height: '12vh',
+      minHeight: '6rem',
+      maxHeight: '30vh',
+      revealAliases: ['pet-zone']
+    },
+    render: () => <WiredPane part="petZone" />
   },
   {
     id: 'files',
@@ -339,7 +354,8 @@ const DEFAULT_TREE = split(
           [1, 1, 1.2],
           'spl-rail'
         ),
-        group(['terminal'], { id: 'grp-terminal' })
+        group(['terminal'], { id: 'grp-terminal' }),
+        group(['pet-zone'], { id: 'grp-pet-zone' })
       ],
       [1.6, 1],
       'spl-right'
@@ -541,6 +557,15 @@ bindPaneCollapse(
   $terminalTakeover,
   () => setTerminalTakeover(false),
   () => setTerminalTakeover(true)
+)
+
+// Pet zone: shown/hidden by the pet zone toggle in settings. Collapses to a
+// rail when off so the zone stays mounted (pet keeps its position).
+bindPaneCollapse(
+  'pet-zone',
+  $petZoneEnabled,
+  () => setPetZoneEnabled(false),
+  () => setPetZoneEnabled(true)
 )
 
 // Preview EXISTS only while something is previewed (old-shell semantics:

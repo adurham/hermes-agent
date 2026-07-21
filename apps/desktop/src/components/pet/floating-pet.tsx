@@ -57,22 +57,26 @@ function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
   )
 }
 
-// Keep a w×h box fully inside the viewport. Pre-pet-load callers pass a nominal
-// size; the live size flows in once `info` arrives.
-function clampPoint(x: number, y: number, w: number, h: number): Point {
+// Keep a w×h box fully inside the viewport (or zone container, when confined).
+// Pre-pet-load callers pass a nominal size; the live size flows in once `info` arrives.
+function clampPoint(x: number, y: number, w: number, h: number, zone?: DOMRect | null): Point {
+  const maxX = zone ? Math.max(0, zone.width - w) : Math.max(0, (window.innerWidth || 800) - w)
+  const maxY = zone ? Math.max(0, zone.height - h) : Math.max(0, (window.innerHeight || 600) - h)
   return {
-    x: Math.min(Math.max(0, x), Math.max(0, (window.innerWidth || 800) - w)),
-    y: Math.min(Math.max(0, y), Math.max(0, (window.innerHeight || 600) - h))
+    x: Math.min(Math.max(0, x), maxX),
+    y: Math.min(Math.max(0, y), maxY)
   }
 }
 
 // The sprite art faces left by default, so mirror it when the pet's center sits
-// on the left half of the window — it always faces inward, toward the content.
-function facing(leftX: number, petW: number): string {
-  return leftX + petW / 2 < (window.innerWidth || 800) / 2 ? 'scaleX(-1)' : 'none'
+// on the left half of the window (or zone container, when confined) — it always
+// faces inward, toward the content.
+function facing(leftX: number, petW: number, zone?: DOMRect | null): string {
+  const mid = zone ? zone.width / 2 : (window.innerWidth || 800) / 2
+  return leftX + petW / 2 < mid ? 'scaleX(-1)' : 'none'
 }
 
-function loadPosition(): Point {
+function loadPosition(zone?: DOMRect | null): Point {
   try {
     const raw = storedString(POSITION_KEY)
 
@@ -80,7 +84,7 @@ function loadPosition(): Point {
       const parsed = JSON.parse(raw) as Point
 
       if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
-        return clampPoint(parsed.x, parsed.y, NOMINAL_PET_PX, NOMINAL_PET_PX)
+        return clampPoint(parsed.x, parsed.y, NOMINAL_PET_PX, NOMINAL_PET_PX, zone)
       }
     }
   } catch {
@@ -88,7 +92,8 @@ function loadPosition(): Point {
   }
 
   // Default: lower-left corner (top/left anchored).
-  return clampPoint(24, (window.innerHeight || 600) - 220, NOMINAL_PET_PX, NOMINAL_PET_PX)
+  const defaultY = zone ? Math.max(0, zone.height - 220) : (window.innerHeight || 600) - 220
+  return clampPoint(24, defaultY, NOMINAL_PET_PX, NOMINAL_PET_PX, zone)
 }
 
 /**
@@ -110,7 +115,7 @@ function loadPosition(): Point {
 const PET_POLL_MS = 3000
 const PET_ACTIVE_REFRESH_MS = 15000
 
-export function FloatingPet() {
+export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject<HTMLDivElement | null> }) {
   const { requestGateway } = useGatewayRequest()
   const { resolvedMode } = useTheme()
   const gatewayState = useStore($gatewayState)
@@ -121,7 +126,7 @@ export function FloatingPet() {
   const roamDir = useStore($petRoamDir)
   const routeOverlayOpen = useRouteOverlayActive()
 
-  const [position, setPosition] = useState<Point>(loadPosition)
+  const [position, setPosition] = useState<Point>(() => loadPosition(zoneContainer?.current?.getBoundingClientRect()))
   const containerRef = useRef<HTMLDivElement | null>(null)
   // The facing mirror lives on the sprite wrapper, not the container, so the
   // speech bubble (a container child) never renders flipped/backwards.
@@ -140,7 +145,13 @@ export function FloatingPet() {
 
   // Keep the *whole* pet on-screen at its current size, so growing it near an
   // edge can't leave the window cropping it. Shared by drag + the reclamp effect.
-  const clamp = useCallback(({ x, y }: Point): Point => clampPoint(x, y, petW, petH), [petW, petH])
+  const clamp = useCallback(
+    ({ x, y }: Point): Point => {
+      const zone = zoneContainer?.current?.getBoundingClientRect()
+      return clampPoint(x, y, petW, petH, zone)
+    },
+    [petW, petH, zoneContainer]
+  )
 
   // Fetch pet.info on connect. Poll quickly while inactive so an in-app
   // `/pet <slug>` appears, then slowly while active so regenerated spritesheets
@@ -322,7 +333,8 @@ export function FloatingPet() {
       el.style.top = `${next.y}px`
 
       if (spriteWrapRef.current) {
-        spriteWrapRef.current.style.transform = facing(next.x, petW)
+        const zone = zoneContainer?.current?.getBoundingClientRect()
+        spriteWrapRef.current.style.transform = facing(next.x, petW, zone)
       }
     },
     [clamp, petW]
@@ -393,7 +405,8 @@ export function FloatingPet() {
     loopMs: info.loopMs ?? 1100,
     overlayOpen: routeOverlayOpen,
     petH,
-    petW
+    petW,
+    zoneContainer
   })
 
   // While roaming, drive the directional run row + mirror from the travel
@@ -416,11 +429,11 @@ export function FloatingPet() {
         cursor: 'grab',
         left: position.x,
         pointerEvents: 'auto',
-        position: 'fixed',
+        position: zoneContainer ? 'absolute' : 'fixed',
         top: position.y,
         touchAction: 'none',
         userSelect: 'none',
-        zIndex: 60
+        zIndex: zoneContainer ? 10 : 60
       }}
     >
       <div
@@ -442,7 +455,7 @@ export function FloatingPet() {
         style={{
           lineHeight: 0,
           position: 'relative',
-          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
+          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW, zoneContainer?.current?.getBoundingClientRect()),
           zIndex: 1
         }}
       >

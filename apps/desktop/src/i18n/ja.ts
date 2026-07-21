@@ -365,7 +365,9 @@ export const ja = defineLocale({
         exportFailed: slug => `${slug} をエクスポートできませんでした`,
         noneAvailable: 'オンにできるペットがありません。',
         turnOnFailed: 'ペットをオンにできませんでした。',
-        turnOffFailed: 'ペットをオフにできませんでした。'
+        turnOffFailed: 'ペットをオフにできませんでした。',
+        zoneTitle: 'ペットゾーン',
+        zoneDesc: 'ペットをウィンドウ全体ではなく、レイアウト内の専用ペインに閉じ込めます。'
       }
     },
     fieldLabels: defineFieldCopy({

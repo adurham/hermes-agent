@@ -117,6 +117,18 @@ export const $petUnread = atom(false)
 export const markPetUnread = () => $petUnread.set(true)
 export const clearPetUnread = () => $petUnread.set(false)
 
+/**
+ * Pet zone: confine the pet to a dedicated layout pane instead of the full
+ * window. Persisted per-device (like roam), not per-profile.
+ */
+const PET_ZONE_KEY = 'hermes.desktop.pet-zone.v1'
+export const $petZoneEnabled = atom<boolean>(storedBoolean(PET_ZONE_KEY, false))
+
+export const setPetZoneEnabled = (on: boolean) => {
+  $petZoneEnabled.set(on)
+  persistBoolean(PET_ZONE_KEY, on)
+}
+
 /** Steady activity flags (toolRunning / reasoning) set + cleared by the stream. */
 export const setPetActivity = (next: Partial<PetActivity>) => $petActivity.set({ ...$petActivity.get(), ...next })
 

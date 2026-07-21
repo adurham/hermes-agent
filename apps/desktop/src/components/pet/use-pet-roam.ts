@@ -10,6 +10,7 @@ import {
   overlapsX,
   overlayLedge,
   resolveLedge,
+  snapshotContainerLedges,
   snapshotLedges
 } from './roam-geometry'
 
@@ -54,6 +55,8 @@ interface PetRoamOptions {
   overlayOpen: boolean
   /** Persist the resting position back to React state when the loop settles. */
   commit: (point: Point) => void
+  /** When set, the pet is confined to this container instead of the full window. */
+  zoneContainer?: RefObject<HTMLDivElement | null>
 }
 
 /**
@@ -85,7 +88,8 @@ export function usePetRoam({
   petH,
   loopMs,
   overlayOpen,
-  commit
+  commit,
+  zoneContainer
 }: PetRoamOptions): void {
   useEffect(() => {
     if (!enabled) {
@@ -173,7 +177,11 @@ export function usePetRoam({
       // An open overlay swaps the surface set to just its bottom edge, so the pet
       // patrols along it; closing it restores the normal surfaces (and the pet
       // drops to whatever's below).
-      const ledges = overlayOpen ? [overlayLedge(petW)] : snapshotLedges(petW, petH)
+      const ledges = overlayOpen
+        ? [overlayLedge(petW)]
+        : zoneContainer?.current
+          ? snapshotContainerLedges(zoneContainer.current, petW, petH)
+          : snapshotLedges(petW, petH)
       curLedge = resolveLedge(ledges, cur.x, cur.y, petH)
 
       if (Math.abs(cur.y - restY(curLedge)) > GROUND_EPS) {

@@ -117,6 +117,21 @@ export function snapshotLedges(petW: number, petH: number): Ledge[] {
 }
 
 /**
+ * Snapshot ledges constrained to a container element (pet zone). The floor is
+ * the container's bottom; no external perches are measured — the pet stays
+ * inside the zone.
+ */
+export function snapshotContainerLedges(container: HTMLElement, petW: number, petH: number): Ledge[] {
+  const rect = container.getBoundingClientRect()
+  const width = rect.width
+  const height = rect.height
+
+  // The floor is the container's bottom edge (relative to the container).
+  // left/right are in container-local coordinates (0..width-petW).
+  return [{ left: 0, right: Math.max(0, width - petW), y: height }]
+}
+
+/**
  * While a full-screen route overlay is up it's the only walkable surface: a
  * single ledge at the overlay card's bottom inner edge. The card uses
  * `OverlayView`'s equal inset on every side — `titlebar-height + padding` — so
