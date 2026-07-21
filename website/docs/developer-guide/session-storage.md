@@ -135,7 +135,7 @@ END;
 
 ## Schema Version and Migrations
 
-Current schema version: **14**
+Current schema version: **21**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -155,6 +155,11 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 12 | Add `api_calls` table for per-call response telemetry (latency, cache split, request_id) |
 | 13 | Recreate `api_calls` with `ON DELETE CASCADE` on its `session_id` FK so `prune_sessions` retention sweeps no longer fail on sessions with telemetry rows |
 | 14 | Add `anthropic_content_blocks` column to messages — verbatim assistant content array for Anthropic-protocol replay; preserves thinking-block positions across turns so `clear_thinking_20251015` strict validation accepts them |
+| 16 | Tag delegate subagent rows in `model_config` (`$._delegate_from`) so session pickers stay clean after parent deletes orphan them |
+| 18 | Gateway metadata consolidation — backfill `display_name` / `origin_json` / `expiry_finalized` from `sessions.json` |
+| 20 | Per-model usage attribution — seed `session_model_usage` rows from historical per-session aggregate totals |
+
+Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
 
 Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to handle the column-already-exists case (idempotent). The version number is bumped after each successful migration block.
 
