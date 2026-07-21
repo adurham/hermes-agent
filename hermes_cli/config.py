@@ -2982,6 +2982,16 @@ DEFAULT_CONFIG = {
         # for restricted networks, audited environments, or air-gapped
         # systems where any runtime install is unacceptable.
         "allow_lazy_installs": True,
+        # Per-feature denylist, scoped narrower than allow_lazy_installs.
+        # Entries are LAZY_DEPS keys (see tools/lazy_deps.py), e.g.
+        # ["platform.telegram", "platform.discord"]. A blocked feature's
+        # packages are refused at ensure()-time with a clear error — the
+        # rest of the lazy-install system (other platforms, TTS, memory
+        # providers, etc.) keeps working normally. Use this when only a
+        # specific backend is unwanted (e.g. a managed device where
+        # messaging-platform bots should never run) rather than turning
+        # off lazy installs everywhere via allow_lazy_installs: false.
+        "blocked_features": [],
     },
 
     "cron": {

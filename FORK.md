@@ -3396,3 +3396,38 @@ function is a fork divergence) and the `_call_anthropic` block in
 `.beta.messages` routing guards are additive and won't conflict with upstream
 changes to either function body.
 
+### Fork-only feature — 2026-07-21 (per-feature lazy-install denylist)
+
+**Motivation:** `security.allow_lazy_installs: false` is all-or-nothing — it
+blocks every lazy backend (TTS, memory providers, search providers, every
+messaging platform). On a managed/work device we wanted to permanently
+prevent `python-telegram-bot` and `discord.py` from being reinstalled
+(neither `TELEGRAM_BOT_TOKEN` nor `DISCORD_BOT_TOKEN` is set there, so the
+lazy-install path never fires today, but a future config change or manual
+`ensure()` call could bring them back) without disabling lazy installs for
+every other backend on that machine.
+
+**Change:** added `security.blocked_features: []` (default empty list) to
+the config schema in `hermes_cli/config.py`. In `tools/lazy_deps.py`,
+`_is_feature_blocked(feature)` checks a `LAZY_DEPS` key (e.g.
+`"platform.telegram"`) against that list; `ensure()` raises
+`FeatureUnavailable` immediately if blocked, before even checking whether
+the packages are missing or validating specs. `refresh_active_features()`'s
+skip/fail classifier also recognizes the blocked-features message so
+`hermes update` reports it as `skipped: ...` rather than `failed: ...`.
+
+Fails open (not blocked) if config is unreadable, matching
+`_allow_lazy_installs()`'s existing fail-open behavior — a corrupt config
+should never lock a user out of their own backends.
+
+Set via `hermes config set security.blocked_features
+'["platform.telegram", "platform.discord"]'` (direct edits to
+`~/.hermes/config.yaml` are agent-blocked as security-sensitive; the CLI
+path is required).
+
+**Merge note:** purely additive — a new function (`_is_feature_blocked`),
+one new check at the top of `ensure()`, one new schema key, one new
+substring in the skip/fail classifier. No upstream equivalent exists (no
+per-feature denylist concept upstream), so this should apply cleanly on
+future syncs unless upstream restructures `ensure()`'s control flow.
+

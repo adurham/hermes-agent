@@ -471,6 +471,29 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
     return None
 
 
+def _is_feature_blocked(feature: str) -> bool:
+    """Return True if ``security.blocked_features`` names this feature.
+
+    Narrower than :func:`_allow_lazy_installs`: that flag is an all-or-
+    nothing kill switch for every lazy backend (TTS, memory, search,
+    platforms, ...). ``blocked_features`` lets a user veto specific
+    backends — e.g. a managed device where messaging-platform bots
+    should never come back — while everything else still lazy-installs
+    normally. Fails open (not blocked) if config is unreadable, matching
+    ``_allow_lazy_installs``'s fail-open behavior.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return False
+    if cfg is None:
+        return False
+    sec = cfg.get("security") or {}
+    blocked = sec.get("blocked_features") or []
+    return feature in blocked
+
+
 def _spec_is_safe(spec: str) -> bool:
     """Reject pip specs that contain URLs, paths, or shell metacharacters."""
     if not spec or len(spec) > 200:
@@ -753,6 +776,13 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             feature, (), f"feature {feature!r} not in LAZY_DEPS allowlist"
         )
 
+    if _is_feature_blocked(feature):
+        raise FeatureUnavailable(
+            feature, (),
+            f"feature {feature!r} is blocked by security.blocked_features "
+            f"in config.yaml"
+        )
+
     missing = feature_missing(feature)
     if not missing:
         return
@@ -906,6 +936,7 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
             # right non-error message.
             if (
                 "lazy installs disabled" in str(e)
+                or "is blocked by security.blocked_features" in str(e)
                 or "declined" in str(e)
                 or e.reason.startswith("unsupported ")
             ):
