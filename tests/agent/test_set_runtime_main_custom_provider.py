@@ -8,22 +8,23 @@ from unittest.mock import patch, MagicMock
 
 
 def _get_globals(mod):
-    """Read the calling thread's runtime override without triggering redaction.
+    """Read the calling context's runtime override without triggering redaction.
 
-    As of the 2026-07-18 thread-safety fix (#background_review-title_generation
-    race), these are no longer bare module globals — ``set_runtime_main()``
-    stores per-thread state in ``mod._runtime_main_tls`` (a ``threading.local``)
-    so that concurrent AIAgent forks (bg-review, auto-title) never clobber each
-    other's provider/model. Read back via the thread-local accessor so this
-    test still observes the SAME thread's state it just wrote (single-threaded
-    test body — no race here, just a storage-location change).
+    As of the 2026-07-21 sync, ``set_runtime_main()`` stores state in
+    ``mod._RUNTIME_MAIN_CONTEXT`` (a ``contextvars.ContextVar``) rather than
+    bare module globals or a ``threading.local`` — this isolates concurrent
+    AIAgent forks (bg-review, auto-title) AND concurrent async tasks on the
+    same thread from clobbering each other's provider/model. Read back via
+    the public accessor so this test still observes the SAME context's state
+    it just wrote (single-threaded, single-context test body — no race here,
+    just a storage-location change).
     """
     return {
-        "provider": mod._rtl_get("provider"),
-        "model": mod._rtl_get("model"),
-        "base_url": mod._rtl_get("base_url"),
-        "cred": mod._rtl_get("api_key"),  # renamed to avoid redaction
-        "api_mode": mod._rtl_get("api_mode"),
+        "provider": mod._runtime_main_value("provider"),
+        "model": mod._runtime_main_value("model"),
+        "base_url": mod._runtime_main_value("base_url"),
+        "cred": mod._runtime_main_value("api_key"),  # renamed to avoid redaction
+        "api_mode": mod._runtime_main_value("api_mode"),
     }
 
 

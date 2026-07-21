@@ -6703,6 +6703,8 @@ _BUILTIN_AUX_TASK_KEYS = frozenset({
     "title_generation", "tts_audio_tags", "triage_specifier",
     "kanban_decomposer", "profile_describer", "curator", "monitor",
     "session_search", "memory_extraction", "delegation_router",
+    "background_review", "consult", "goal_judge", "memory_query_rewrite",
+    "moa_aggregator", "moa_reference",
 })
 
 # Reserved provider-first key holding per-task *settings* (timeout, extra_body,

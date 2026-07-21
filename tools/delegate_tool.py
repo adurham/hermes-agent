@@ -46,6 +46,7 @@ from utils import base_url_hostname, is_truthy_value
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
         "delegate_task",  # no recursive delegation
+        "swarm_run",  # no recursive delegation (same rationale as delegate_task)
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects

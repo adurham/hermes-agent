@@ -4315,7 +4315,6 @@ def build_anthropic_kwargs(
     # latency.  Match Claude Code's wire shape — let display default.
     # See ``HERMES_THINKING_DISPLAY=summarized`` env var to opt back in
     # if the activity feed UX matters more than latency parity.
-    _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
     # When reasoning_config is unset, default to enabling adaptive thinking
     # at medium effort on Anthropic-native + adaptive-supporting models.
     # Mirrors Claude Code 2.1.119 wire shape (verified by mitmdump capture
@@ -4324,9 +4323,9 @@ def build_anthropic_kwargs(
     # thinking/output_config block below was a no-op for callers that
     # don't explicitly pass reasoning_config — i.e. nearly every default
     # session — leaving the interleaved-thinking + effort betas dormant.
-    if reasoning_config is None and not _is_kimi_coding and _supports_adaptive_thinking(model):
+    if reasoning_config is None and _supports_adaptive_thinking(model):
         reasoning_config = {"enabled": True, "effort": "medium"}
-    if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
+    if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)

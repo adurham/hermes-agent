@@ -34,14 +34,13 @@ class TestConversationCompressionFork:
         assert "on_pre_compress" in source
         assert "session_id" in source
 
-    def test_docstring_cleanup(self):
-        """Compress docstring no longer has the removed Args/Returns."""
-        from agent.conversation_compression import compress_context
-        doc = (compress_context.__doc__ or "").strip()
-        # The removed args should NOT be in the docstring
-        assert "approx_tokens" not in doc
-        # The kept arg should be there
-        assert "focus_topic" in doc
+    # test_docstring_cleanup removed 2026-07-21: asserted a fork-only
+    # docstring trim that only existed to reduce merge-conflict surface on
+    # this exact function. The v2026.7.20 sync adopted upstream's fuller
+    # docstring (documents `force` + no-op-return semantics, both genuinely
+    # useful) instead of re-trimming it back down — see FORK.md's 2026-07-21
+    # sync entry. Keeping this test would just re-fight that decision on
+    # every future sync for zero behavioral value.
 
     def test_compress_context_signature(self):
         """compress_context function signature has the expected params."""
