@@ -3,6 +3,21 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-07-21 (desktop package.json version stuck at 0.17.0)
+
+The desktop app's `package.json` version field was stuck at `0.17.0` while the
+canonical `hermes_cli/__init__.py` was at `0.19.0` (8 releases of drift). The
+runtime workaround `resolveHermesVersion()` in `electron/main.ts` reads from
+`__init__.py`, so the About panel showed the right version — but the installer
+DMG filename, `Info.plist CFBundleShortVersionString`, and `app.getVersion()`
+all came from the stale `package.json`.
+
+`scripts/release.py` (lines 2191–2204) already has code to bump the desktop
+`package.json` in lockstep, but it only runs when `--bump` is passed and was
+silently skipped for 8 releases. Bumped to `0.19.0` to match.
+
+**Commit:** `8c2557360`
+
 ### Fork-only feature — 2026-07-21 (provider-first aux-task Models-page writes were never actually provider-scoped)
 
 Follow-up to the same-day "aux-task pin silently reverted on every save" fix
