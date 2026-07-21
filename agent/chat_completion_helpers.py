@@ -3472,6 +3472,7 @@ def interruptible_streaming_api_call(
                 from agent.anthropic_adapter import _BETA_ONLY_KWARGS as _BOK
                 for _k in _BOK:
                     api_kwargs.pop(_k, None)
+                _stream_api = request_client.messages
             with _stream_api.stream(**api_kwargs) as stream:
                 # The Anthropic SDK exposes the raw httpx response on
                 # ``stream.response``.  Snapshot diagnostic headers
