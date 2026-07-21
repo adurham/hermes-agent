@@ -14,9 +14,15 @@ all came from the stale `package.json`.
 
 `scripts/release.py` (lines 2191–2204) already has code to bump the desktop
 `package.json` in lockstep, but it only runs when `--bump` is passed and was
-silently skipped for 8 releases. Bumped to `0.19.0` to match.
+silently skipped for 8 releases.
 
-**Commit:** `8c2557360`
+**Fix:** `apps/desktop/scripts/before-build.mjs` now reads the canonical
+version from `hermes_cli/__init__.py` and overwrites `package.json`'s version
+field before every build. This is automatic — no manual bump needed, no
+dependency on `release.py --bump` being run. Best-effort: a read/write failure
+logs a warning and never blocks the build.
+
+**Commits:** `8c2557360` (bump), `8014756b2` (FORK.md), `[pending]` (build hook)
 
 ### Fork-only feature — 2026-07-21 (provider-first aux-task Models-page writes were never actually provider-scoped)
 
