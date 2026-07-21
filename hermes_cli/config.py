@@ -7167,8 +7167,25 @@ def _auxiliary_is_provider_first(aux: Any) -> bool:
     return False
 
 
+def _aux_task_pin_is_explicit(pin: Any) -> bool:
+    """Local mirror of ``agent.auxiliary_client._aux_task_pin_is_explicit``
+    (kept here to avoid a config→agent import in the save path).
+
+    True when a top-level ``auxiliary.<task>`` dict carries a REAL user pin
+    (concrete provider, non-empty model, or a direct base_url) rather than
+    the inert ``{provider: auto, model: ''}`` entry the ``DEFAULT_CONFIG``
+    deep-merge injects into every provider-first config.
+    """
+    if not isinstance(pin, dict):
+        return False
+    provider = str(pin.get("provider", "")).strip().lower()
+    model = str(pin.get("model", "")).strip()
+    base_url = str(pin.get("base_url", "")).strip()
+    return bool(base_url or model or (provider and provider != "auto"))
+
+
 def _strip_provider_first_aux_pollution(config: dict) -> dict:
-    """Remove task-key pollution from a provider-first ``auxiliary`` block.
+    """Remove INERT task-key pollution from a provider-first ``auxiliary`` block.
 
     ``load_config()`` deep-merges the task-first ``DEFAULT_CONFIG`` over the
     user's config, re-injecting all 15 ``auxiliary.<task>`` blocks as inert
@@ -7178,6 +7195,19 @@ def _strip_provider_first_aux_pollution(config: dict) -> dict:
     task keys behind). Stripping here — at the single choke point all writes
     flow through — guarantees no code path can ever persist it.
 
+    A top-level ``auxiliary.<task>`` key is only stripped when it is INERT
+    (see ``_aux_task_pin_is_explicit``). An explicit task pin — e.g. the one
+    ``POST /api/model/set`` (scope=auxiliary) writes when a user picks a
+    model for a specific task on the Models page — must survive, or every
+    aux-task reassignment silently reverts to "auto" on the very next load
+    (observed: desktop "Change" on the Vision row wrote
+    ``auxiliary.vision: {provider: ollama-cloud, model: gemma4}``, and this
+    stripper deleted it unconditionally because ``vision`` is a
+    ``_AUX_TASK_FIRST_KEYS`` member, silently discarding the user's choice).
+    ``_get_auxiliary_task_config`` already honors an explicit top-level pin
+    over the provider block (see its 2026-07-11 fork fix) — this function
+    must agree with that read-side contract or a write can never take effect.
+
     No-op for a genuine task-first config (its keys are all task names, so it
     is not detected as provider-first) and for configs with no ``auxiliary``.
     Mutates and returns *config*.
@@ -7186,7 +7216,7 @@ def _strip_provider_first_aux_pollution(config: dict) -> dict:
     if not isinstance(aux, dict) or not _auxiliary_is_provider_first(aux):
         return config
     for k in list(aux.keys()):
-        if k in _AUX_TASK_FIRST_KEYS:
+        if k in _AUX_TASK_FIRST_KEYS and not _aux_task_pin_is_explicit(aux[k]):
             del aux[k]
     return config
 

@@ -303,6 +303,30 @@ def test_save_strip_noop_on_task_first():
     assert out["auxiliary"] == before
 
 
+def test_strip_pollution_preserves_explicit_task_pin():
+    """An EXPLICIT top-level ``auxiliary.<task>`` pin must survive stripping —
+    only the inert ``{provider: auto, model: ''}`` DEFAULT_CONFIG merge
+    artifact is pollution. Regression for the desktop/web Models page "Change"
+    action on an auxiliary task (e.g. Vision): POST /api/model/set writes
+    exactly this shape (auxiliary.vision: {provider: ..., model: ...}), and
+    the pre-fix stripper deleted ANY top-level task key unconditionally,
+    silently reverting the user's pick back to auto on the very next load."""
+    from hermes_cli.config import _strip_provider_first_aux_pollution
+    pinned = {
+        "auxiliary": {
+            "defaults": {"vision": {"timeout": 120}},
+            "exo": {"provider": "custom:exo", "default": _QWEN},
+            # Explicit user pin — must NOT be stripped.
+            "vision": {"provider": "ollama-cloud", "model": "gemma4"},
+            # Still-inert pollution on a different task — must be stripped.
+            "compression": {"provider": "auto", "model": ""},
+        }
+    }
+    out = _strip_provider_first_aux_pollution(pinned)
+    assert out["auxiliary"]["vision"] == {"provider": "ollama-cloud", "model": "gemma4"}
+    assert "compression" not in out["auxiliary"]
+
+
 def test_first_migrate_to_v31_leaves_no_pollution(tmp_path, monkeypatch):
     """A single migrate of a fresh v<31 task-first config must produce a clean
     provider-first config — no leftover task-key pollution (regression for the

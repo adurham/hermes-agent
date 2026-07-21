@@ -3,6 +3,48 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-07-21 (aux-task pin silently reverted on every save)
+
+`save_config()`'s `_strip_provider_first_aux_pollution` (added 2026-06-24 with
+the provider-first `auxiliary` schema, entry below) unconditionally deleted
+ANY top-level `auxiliary.<task>` key on a provider-first config, treating
+every one as `DEFAULT_CONFIG`-deep-merge pollution. It never distinguished
+that inert pollution (`{provider: auto, model: ''}`) from a genuine explicit
+task pin — e.g. exactly what `POST /api/model/set` (scope=auxiliary) writes
+when a user picks a model for a specific aux task via the desktop/web Models
+page "Change" control. Net effect: reassigning ANY auxiliary task (Vision,
+web_extract, compression, …) away from "auto" on Adam's provider-first config
+silently reverted to auto on the very next config load/save cycle — reported
+as "changing the vision model to gemma4 doesn't stick, instantly reverts back
+to auto" and initially suspected as a desktop-app staleness issue, but
+reproduced identically via the raw `save_config()`/`load_config()` round-trip
+with no desktop app involved.
+
+Fixed: `_strip_provider_first_aux_pollution` now only strips a task key when
+it is inert, via a new local `_aux_task_pin_is_explicit()` mirroring
+`agent.auxiliary_client._aux_task_pin_is_explicit` (concrete provider,
+non-empty model, or a base_url — none of which the merge pollution ever
+carries). This aligns the write-side stripper with the read-side contract
+that `agent/auxiliary_client.py::_get_auxiliary_task_config` already
+implements (its 2026-07-11 fix already honors an explicit top-level pin over
+the provider block) — the two sides had drifted: reads honored a pin that
+writes then silently deleted before the next read.
+
+Verified via a temp-`HERMES_HOME` round-trip (write pin → `save_config` →
+fresh `load_config` → `agent.auxiliary_client._get_auxiliary_task_config`)
+that the pin now survives on disk and resolves correctly. Added
+`test_strip_pollution_preserves_explicit_task_pin` to
+`tests/agent/test_auxiliary_provider_first.py` (19/19 passing, up from 18).
+Ran the broader aux/config/model-assignment test surface (~600 tests across
+`tests/hermes_cli/`, `tests/cli/`, `tests/agent/test_auxiliary_provider_first.py`)
+before and after the change — same 6 pre-existing failures both times (unrelated:
+a stubbed-CLI missing `_apply_reasoning_for_new_model` in one test file, and an
+unrelated base_url-persistence assertion), 0 new failures. Introduced in
+`a4c788a9a` (2026-07-18, fork-only commit, never existed upstream) — no
+upstream sync implication.
+
+Files: `hermes_cli/config.py`, `tests/agent/test_auxiliary_provider_first.py`.
+
 ### Upstream sync — 2026-07-21 (v2026.7.20, 1,584 commits, 46 conflict files)
 
 Merge-base was v2026.7.7.2; pulled 1,584 upstream commits on branch
