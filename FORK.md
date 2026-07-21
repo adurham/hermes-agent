@@ -2995,6 +2995,18 @@ Zero new failures.
 
 ### Fork-only fix — 2026-07-18 (`agent/auxiliary_client.py`: runtime-main override was a process-global data race, not thread-local)
 
+**SUPERSEDED 2026-07-21** — the `threading.local()` mechanism this entry
+describes (`_runtime_main_tls` / `_rtl_get` / `_rtl_set`) no longer exists.
+The v2026.7.20 sync adopted upstream's `_RUNTIME_MAIN_CONTEXT` (a
+`contextvars.ContextVar`) + `set_runtime_main()` / `scoped_runtime_main()` /
+`reset_runtime_main()`, which independently solves the same cross-thread
+clobbering bug this entry root-caused, and additionally isolates concurrent
+async tasks on the same thread (which `threading.local()` cannot). See the
+2026-07-21 sync entry above for what changed. Kept below for the historical
+root-cause narrative (still accurate) and the reproduction technique (still
+useful) — just mentally substitute ContextVar API calls for the
+`_rtl_get`/`_rtl_set`/`_runtime_main_tls` names below.
+
 **Symptom:** on an all-Anthropic session (main model `claude-sonnet-5`, no
 ollama config error anywhere), the user hit `⚠ Auxiliary title generation
 failed: HTTP 404: model: gemma4:31b`. `gemma4:31b` is the user's
