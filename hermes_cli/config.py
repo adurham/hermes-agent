@@ -2866,7 +2866,7 @@ DEFAULT_CONFIG = {
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
-        "mode": "manual",
+        "mode": "smart",
         # Seconds to wait for the user to respond to an approval prompt
         # before timing out and denying.  Bumped from 60s to 300s (5 min)
         # because users juggling multiple windows / SSH sessions routinely
