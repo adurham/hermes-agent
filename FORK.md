@@ -107,6 +107,74 @@ Commit: `356e55e15`.
 
 Files: `apps/desktop/src/app/session/hooks/use-session-state-cache.ts`.
 
+### Fork-only fix — 2026-07-22 (background skill/memory review racing a live turn: doubled prompt-token accounting + a Ctrl+C-proof lockup)
+
+Reported symptom (live, on an actual multi-hour exo-cluster debugging
+session): a single ordinary prompt showed the session's token usage jump by
+over 500K tokens in one turn (Δ+570K new, 100% of the 1M context window),
+and the session became completely unresponsive — required a hard Ctrl+C from
+outside the app; a normal in-app interrupt never recovered it.
+
+Root cause, confirmed against the session's own `agent.log` and `state.db`
+`api_calls` rows: `_spawn_background_review()`
+(`agent/turn_finalizer.py:595`) forks a **second, complete `AIAgent`** in a
+daemon thread after roughly every 10 tool-turns to self-review and update
+memory/skills. That fork deliberately shares the **live agent's own
+`session_id`** (`agent/background_review.py`, for prompt-cache warmth) and
+runs a full independent `run_conversation()` (up to 16 iterations) — but
+nothing stopped the user's **next real turn** from starting while that fork
+was still mid-conversation. Log evidence showed exactly that: a review fired
+at 11:57:56, and the user's very next message at 12:01:06 started a live turn
+whose API calls (sequence #90–#96) interleaved in real wall-clock time with
+the review fork's own independent call sequence (#1–#14) — both streaming
+against Anthropic concurrently under the identical `session_id`. The live
+turn's own call immediately afterward logged almost exactly **2.01x** its own
+prior call's prompt-token count (560,966 → 1,129,121), and premature context
+compression fired off that inflated number. Separately, the review fork —
+being a fully independent `AIAgent` — was never added to `_active_children`
+(the list `AIAgent.interrupt()` actually walks for real subagent
+delegation, `tools/delegate_tool.py`), so a live-turn Ctrl+C had **no
+propagation path to it at all**, explaining why the lockup didn't clear on
+interrupt.
+
+**Fix**, three files:
+1. `agent/agent_init.py` — added `_background_review_agent` /
+   `_background_review_lock` tracking state to every `AIAgent` (mirrors the
+   existing `_active_children` pattern).
+2. `agent/background_review.py` — the review fork now registers itself on
+   the parent's `_active_children` right after construction (reusing the
+   exact same list/lock `interrupt()` already fans out to for subagents, so
+   Ctrl+C now reaches it), and unregisters on every exit path (success,
+   the tool-whitelist `finally`, and the outer exception safety-net). All
+   registration is defensive (`getattr`/try-except) so an `AIAgent` built
+   without going through `agent_init.py`'s setup — test stubs, an older/
+   foreign construction path — degrades to "no cross-turn cancellation"
+   instead of aborting the whole review.
+3. `agent/conversation_loop.py` — at the very start of every
+   `run_conversation()` turn, if a prior background review is still
+   in-flight (`agent._background_review_agent` is set), it is now
+   proactively cancelled via `review_agent.interrupt(...)` before the live
+   turn proceeds — fire-and-forget, non-blocking, so it adds no latency.
+   This restores the feature's own documented intent
+   ("runs AFTER the response is delivered so it never competes with the
+   user's task for model attention") which the original code stated but
+   never actually enforced against a review that outlives its triggering
+   turn.
+
+Verified: `ruff check` clean on all three files; all 60 existing
+`background_review`-related tests pass (`tests/run_agent/test_background_review*.py`,
+`tests/test_background_review_list_shapes.py`,
+`tests/test_background_review_session_isolation.py`); all interrupt-
+propagation tests pass (`test_interrupt_propagation.py`,
+`test_concurrent_interrupt.py`, `test_real_interrupt_subagent.py`,
+`test_cascading_interrupt_6600.py`, `tools/test_interrupt.py`); ran the full
+`tests/run_agent/` suite (2162 passed) and confirmed via `git stash` that the
+11 remaining failures there are pre-existing on a clean `main` (unrelated
+Anthropic-SDK/mock drift in this sandbox), not caused by this change.
+
+Files: `agent/agent_init.py`, `agent/background_review.py`,
+`agent/conversation_loop.py`.
+
 ### Fork-only fix — 2026-07-22 (desktop: work profile deletion silently reverted after quitting and reopening the app)
 
 Reported symptom: deleting the "work" profile from the desktop app's Manage
