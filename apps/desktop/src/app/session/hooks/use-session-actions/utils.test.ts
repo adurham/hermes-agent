@@ -359,4 +359,50 @@ describe('appendLiveSessionProjection', () => {
 
     expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
   })
+
+  // Regression: a resume/reconnect landing mid-tool-call used to show a bare
+  // "thinking" bubble with no indication a tool was running, because the
+  // backend's inflight snapshot never carried the open tool call.
+  it('projects an open tool call as a pending tool-call part', () => {
+    const stored = [msg('stored-user', 'user', 'earlier')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'do the thing',
+        streaming: true,
+        tool: { tool_call_id: 'tc-1', name: 'terminal', args: { command: 'ls' } }
+      }
+    })
+
+    const assistantMessage = restored.find(message => message.id === 'assistant-stream-runtime-1')
+    expect(assistantMessage).toBeDefined()
+    expect(assistantMessage?.pending).toBe(true)
+
+    const toolPart = assistantMessage?.parts.find(part => part.type === 'tool-call')
+    expect(toolPart).toMatchObject({
+      type: 'tool-call',
+      toolCallId: 'tc-1',
+      toolName: 'terminal',
+      args: { command: 'ls' }
+    })
+    // No result field — ToolFallback renders it pending until it completes.
+    expect(toolPart && 'result' in toolPart).toBe(false)
+  })
+
+  it('projects an open tool call even with no assistant text yet', () => {
+    const stored: ChatMessage[] = []
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        streaming: true,
+        tool: { tool_call_id: 'tc-1', name: 'web_search', args: { query: 'x' } }
+      }
+    })
+
+    expect(restored).toHaveLength(1)
+    expect(restored[0]).toMatchObject({ id: 'assistant-stream-runtime-1', role: 'assistant', pending: true })
+    expect(restored[0]?.parts.some(part => part.type === 'tool-call')).toBe(true)
+  })
 })

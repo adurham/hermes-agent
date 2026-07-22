@@ -100,6 +100,22 @@ export function reasoningPart(text: string): ChatMessagePart {
   return { type: 'reasoning', text }
 }
 
+/** A tool call still awaiting its result — no `result` field, so ToolFallback
+ *  renders it in the pending state. Used to project a resumed session's
+ *  currently-open backend tool call (see inflight.tool in SessionResumeResponse)
+ *  instead of leaving it invisible until it completes. */
+export function pendingToolCallPart(toolCallId: string, toolName: string, args: unknown): ChatMessagePart {
+  const safeArgs = args && typeof args === 'object' ? (args as Record<string, unknown>) : {}
+
+  return {
+    type: 'tool-call',
+    toolCallId,
+    toolName,
+    args: safeArgs as never,
+    argsText: Object.keys(safeArgs).length ? JSON.stringify(safeArgs) : ''
+  }
+}
+
 const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
 
 const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g

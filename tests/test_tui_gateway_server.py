@@ -8263,6 +8263,9 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         )
 
         inflight = resp["result"].get("inflight")
+        assert inflight is not None
+        started_at = inflight.pop("started_at", None)
+        assert isinstance(started_at, float)
         assert inflight == {
             "assistant": "partial answer",
             "streaming": True,
@@ -8288,6 +8291,117 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         release.set()
         done.wait(2)
         server._sessions.pop("sid-live", None)
+
+
+def test_inflight_snapshot_carries_turn_started_at():
+    """Regression: resuming/reconnecting into a running turn must restore its
+    real backend start time, not let the frontend re-stamp "now" and reset the
+    live "thinking" timer.
+
+    ``_inflight_snapshot`` feeds both ``session.resume``'s reuse-live path and
+    ``session.activate`` (see ``_live_session_payload``).
+    """
+    session = _session(
+        inflight_turn={
+            "assistant": "partial",
+            "started_at": 1_700_000_000.5,
+            "streaming": True,
+            "updated_at": 1_700_000_001.0,
+            "user": "prompt",
+        }
+    )
+
+    snapshot = server._inflight_snapshot(session)
+
+    assert snapshot == {
+        "assistant": "partial",
+        "started_at": 1_700_000_000.5,
+        "streaming": True,
+        "user": "prompt",
+    }
+
+
+def test_inflight_snapshot_omits_started_at_when_absent_or_invalid():
+    # A turn dict built by hand (e.g. an older in-memory shape, or a caller
+    # that didn't go through _start_inflight_turn) must not crash or leak a
+    # non-numeric value into the payload.
+    no_started_at = _session(
+        inflight_turn={"assistant": "partial", "streaming": True, "user": "prompt"}
+    )
+    snapshot = server._inflight_snapshot(no_started_at)
+    assert snapshot is not None
+    assert "started_at" not in snapshot
+
+    bad_started_at = _session(
+        inflight_turn={
+            "assistant": "partial",
+            "started_at": "not-a-number",
+            "streaming": True,
+            "user": "prompt",
+        }
+    )
+    snapshot = server._inflight_snapshot(bad_started_at)
+    assert snapshot is not None
+    assert "started_at" not in snapshot
+
+
+def test_on_tool_start_and_complete_track_open_tool_calls(monkeypatch):
+    """Regression: a resume/reconnect that lands mid-tool-call used to show a
+    bare "thinking" bubble with no indication a tool was running, because
+    ``open_tool_calls`` didn't exist and nothing surfaced the open call.
+    """
+    monkeypatch.setattr(server, "_tool_progress_enabled", lambda sid: False)
+    session = _session(inflight_turn={"streaming": True, "user": "do it"})
+    server._sessions["sid-tool"] = session
+    try:
+        server._on_tool_start("sid-tool", "tc-1", "terminal", {"command": "ls"})
+
+        assert "tc-1" in session["open_tool_calls"]
+        open_call = session["open_tool_calls"]["tc-1"]
+        assert open_call["name"] == "terminal"
+        assert open_call["args"] == {"command": "ls"}
+        assert isinstance(open_call["started_at"], float)
+
+        snapshot = server._inflight_snapshot(session)
+        assert snapshot is not None
+        assert snapshot["tool"] == {
+            "args": {"command": "ls"},
+            "name": "terminal",
+            "tool_call_id": "tc-1",
+            "started_at": open_call["started_at"],
+        }
+
+        server._on_tool_complete("sid-tool", "tc-1", "terminal", {"command": "ls"}, "ok")
+
+        # The completed call is no longer open, so a fresh snapshot omits it.
+        assert "tc-1" not in session["open_tool_calls"]
+        snapshot_after = server._inflight_snapshot(session)
+        assert snapshot_after is not None
+        assert "tool" not in snapshot_after
+    finally:
+        server._sessions.pop("sid-tool", None)
+
+
+def test_open_tool_call_snapshot_picks_most_recent_when_multiple_open():
+    # Not expected in normal single-turn operation, but the snapshot must
+    # degrade predictably (most recent wins) rather than pick arbitrarily.
+    session = _session(
+        open_tool_calls={
+            "tc-old": {"name": "terminal", "args": {}, "started_at": 100.0, "tool_call_id": "tc-old"},
+            "tc-new": {"name": "web_search", "args": {"query": "x"}, "started_at": 200.0, "tool_call_id": "tc-new"},
+        }
+    )
+
+    snapshot = server._open_tool_call_snapshot(session)
+
+    assert snapshot is not None
+    assert snapshot["tool_call_id"] == "tc-new"
+    assert snapshot["name"] == "web_search"
+
+
+def test_open_tool_call_snapshot_none_when_empty_or_missing():
+    assert server._open_tool_call_snapshot(_session(open_tool_calls={})) is None
+    assert server._open_tool_call_snapshot(_session()) is None
 
 
 def test_session_activate_returns_prompt_queued_during_busy_turn(monkeypatch):

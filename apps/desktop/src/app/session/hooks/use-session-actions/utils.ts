@@ -1,5 +1,11 @@
 import { getSession } from '@/hermes'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import {
+  assistantTextPart,
+  type ChatMessage,
+  chatMessageText,
+  pendingToolCallPart,
+  textPart
+} from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -303,9 +309,10 @@ export function appendLiveSessionProjection(
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
   const inflightStreaming = Boolean(projection.inflight?.streaming)
+  const inflightTool = projection.inflight?.tool
   const queuedUser = projection.queued?.user?.trim() ?? ''
 
-  if (!inflightUser && !inflightAssistant && !inflightStreaming && !queuedUser) {
+  if (!inflightUser && !inflightAssistant && !inflightStreaming && !inflightTool && !queuedUser) {
     return messages
   }
 
@@ -321,12 +328,22 @@ export function appendLiveSessionProjection(
   }
 
   // Keep a pending assistant boundary even before the first delta when a
-  // queued user turn follows it. This preserves the two distinct turns.
-  if (inflightAssistant || inflightStreaming || (inflightUser && queuedUser)) {
+  // queued user turn follows it, or when the live turn is already inside a
+  // tool call with no assistant text yet. This preserves the two distinct
+  // turns and — critically — surfaces the tool call itself: without it, a
+  // resume/reconnect landing mid-tool-call showed a bare "thinking" bubble
+  // with no indication a tool was running until it completed.
+  if (inflightAssistant || inflightStreaming || inflightTool || (inflightUser && queuedUser)) {
+    const parts = inflightAssistant ? [assistantTextPart(inflightAssistant)] : []
+
+    if (inflightTool) {
+      parts.push(pendingToolCallPart(inflightTool.tool_call_id, inflightTool.name, inflightTool.args))
+    }
+
     projected.push({
       id: `assistant-stream-${sessionId}`,
       role: 'assistant',
-      parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
+      parts,
       pending: inflightStreaming
     })
   }
