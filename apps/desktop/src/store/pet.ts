@@ -203,14 +203,32 @@ export const $petMotion = atom<PetState | null>(null)
 export const $petRoamDir = atom<-1 | 0 | 1>(0)
 
 /**
- * Whether the agent-driven state is at rest (plain `idle`). The roam loop gates
- * on this — never on `$petState` itself, which would feed back on its own
- * `$petMotion`-driven pose and stall the wander.
+ * Whether the agent-driven state is at rest (plain `idle`). The idle-fidget
+ * effect gates on this — never on `$petState` itself, which would feed back
+ * on its own `$petMotion`-driven pose.
  */
 export const $petAtRest = computed(
   [$petActivity, $busy],
   (activity, busy): boolean => deriveLivePetState(activity, busy) === 'idle'
 )
+
+/**
+ * Whether the roam loop should be allowed to keep pacing right now. Broader
+ * than `$petAtRest`: ordinary work (`run`/`review`) doesn't freeze the pet —
+ * "thinking" or "running a tool" is exactly when idle pacing reads as most
+ * alive, and those states already render with the same running-leg rows the
+ * walk animation uses, so a stride mid-tool-call looks identical to a
+ * stride at idle. Only the states meant to grab the user's attention with a
+ * DISTINCT, stationary pose (`failed`, `waiting`, `wave`, `jump`) pause the
+ * wander — `usePetRoam`'s `enabled` flipping false decays `$petRoamDir` to 0
+ * within a frame, which is what actually stops `PetSprite`'s `rowOverride`
+ * from masking that pose (see `roamWalkRow`: no override once dir is 0).
+ */
+export const $petCanRoam = computed([$petActivity, $busy], (activity, busy): boolean => {
+  const state = deriveLivePetState(activity, busy)
+
+  return state === 'idle' || state === 'run' || state === 'review'
+})
 
 /**
  * The live pet state. Activity always wins; only when the agent is at rest does

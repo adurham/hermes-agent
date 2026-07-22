@@ -8,6 +8,7 @@ import { burstVibeHearts, PetHeartField } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
 import {
   $petAtRest,
+  $petCanRoam,
   $petInfo,
   $petMotion,
   $petRoam,
@@ -169,7 +170,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   const info = useStore($petInfo)
   const overlayActive = useStore($petOverlayActive)
   const roamEnabled = useStore($petRoam)
-  const atRest = useStore($petAtRest)
+  const canRoam = useStore($petCanRoam)
   const roamDir = useStore($petRoamDir)
   const routeOverlayOpen = useRouteOverlayActive()
 
@@ -521,13 +522,14 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
 
   const isDragging = useCallback(() => dragRef.current !== null, [])
 
-  // Roam only the in-window pet, only while it's idle (agent at rest) and not
-  // popped out into the OS overlay. Activity pauses the wander; the pet reacts
-  // in place, then resumes strolling when the turn ends.
+  // Roam the in-window pet whenever roaming is opted in and the agent isn't in
+  // a state that wants a distinct stationary pose ($petCanRoam allows ordinary
+  // idle AND active work — see its doc comment — so the pet keeps pacing while
+  // the agent is thinking/running a tool, not just at true idle).
   usePetRoam({
     commit: commitRoamPosition,
     containerRef,
-    enabled: roamEnabled && active && !overlayActive && atRest,
+    enabled: roamEnabled && active && !overlayActive && canRoam,
     isInteracting: isDragging,
     loopMs: info.loopMs ?? 1100,
     overlayOpen: routeOverlayOpen,
