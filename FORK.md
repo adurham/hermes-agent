@@ -3,6 +3,64 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-07-22 (desktop: queued composer message could be delivered into a different, currently-viewed session)
+
+Reported symptom: user queued a composer message while viewing session A
+(agent busy), switched to viewing session B before A's turn finished, and
+the queued message landed in / was sent to session B instead of A.
+
+Root cause: `useBackgroundQueueDrain`
+(`apps/desktop/src/app/session/hooks/use-background-queue-drain.ts`) — the
+hook that drains queued prompts for sessions not currently rendered by
+ChatBar — resolved the target session's live runtime id via a **raw,
+unvalidated** `runtimeIdByStoredSessionIdRef.current.get(storedSessionId)`.
+That stored→runtime map can go stale: a pooled/idle-reaped profile backend
+re-mints runtime ids (`pruneSecondaryGateways`), so an old mapping can end up
+pointing at a runtime id that now belongs to a **different, currently-live
+session**. This exact failure mode is already named, documented, and guarded
+against elsewhere in the same codebase —
+`use-session-state-cache.ts::getRuntimeIdForStoredSession` exists
+specifically to reject a mapping whose target runtime's cached state no
+longer claims the requested stored id (with its own regression test, "only
+returns a runtime whose cached state owns the requested stored session") —
+but `useBackgroundQueueDrain` wasn't using it, even though the validated
+getter was already in scope one call up in `wiring.tsx`. Downstream,
+`submit.ts`'s `useSubmitPrompt` honors an explicitly-passed `sessionId`
+faithfully (seeds optimistic state, submits `prompt.submit` against that
+exact runtime id), so a stale/recycled id handed to it by the drain wasn't
+just a UI paint bug — it dispatched the queued text as a live turn against
+whichever session actually held that runtime id.
+
+**Fix:** `useBackgroundQueueDrain` now takes `getRuntimeIdForStoredSession`
+(the validated getter) instead of the raw `runtimeIdByStoredSessionIdRef`
+map, mirroring the latest-closure-ref pattern the hook already uses for
+`submitText`. Call site (`wiring.tsx`) updated to pass the getter that was
+already computed there. On a stale/cross-wired mapping the getter now
+returns `null`, and the existing `submitText`/`session.resume` fallback path
+(already exercised by the "resume then send" test) reattaches by stored id
+instead of misrouting into whatever session currently owns the stale runtime
+id.
+
+Added a regression test to `use-background-queue-drain.test.tsx` — "passes
+null (not a recycled runtime id) when the stored→runtime mapping is
+cross-wired" — simulating the validated getter rejecting a stale mapping and
+asserting the drain falls back to `sessionId: null` rather than the stale
+id. All 6 tests in the file pass (5 pre-existing + 1 new); `tsc --noEmit`
+clean. Diagnosis independently reviewed via `mcp__consult` before
+implementing.
+
+A second, related symptom was also reported in the same session: a clarify
+(blocking Q&A) prompt raised by a background session didn't render/trigger
+when a different session was in view. Investigated but **not the same code
+path** — clarify state (`store/clarify.ts`) is keyed directly off the
+runtime id carried by the gateway's `clarify.request` event
+(`gateway-event.ts`), not through the stored→runtime map this fix touches.
+Left open for separate investigation.
+
+Files: `apps/desktop/src/app/session/hooks/use-background-queue-drain.ts`,
+`apps/desktop/src/app/session/hooks/use-background-queue-drain.test.tsx`,
+`apps/desktop/src/app/contrib/wiring.tsx`.
+
 ### Fork-only fix — 2026-07-22 (aux tasks stuck on stale provider-block "default" model after switching main; "Reset all to main" wrote nothing)
 
 Reported symptom: switching the desktop Models page's main model to
