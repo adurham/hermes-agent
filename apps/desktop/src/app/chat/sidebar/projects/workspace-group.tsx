@@ -22,9 +22,21 @@ interface SidebarWorkspaceGroupProps {
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
+  // Stored session ids with a turn currently running. When the group is
+  // collapsed, any overlap rolls up into a single pulsing dot on the header —
+  // the per-row dot + arc-border are already hidden while collapsed (they only
+  // render inside `renderRows`, which a collapsed group never calls), so this
+  // is the one place that state stays visible instead of vanishing on toggle.
+  workingSessionIdSet?: Set<string>
 }
 
-export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove }: SidebarWorkspaceGroupProps) {
+export function SidebarWorkspaceGroup({
+  group,
+  renderRows,
+  onNewSession,
+  onRemove,
+  workingSessionIdSet
+}: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
@@ -42,6 +54,11 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
   const visibleSessions = group.sessions.slice(0, visibleCount)
   const hiddenCount = Math.max(0, totalCount - visibleSessions.length)
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
+
+  // Only matters while collapsed — an expanded group already shows the real
+  // per-row indicator, so the aggregate would be a second, redundant cue.
+  const workingWhileCollapsed =
+    !open && Boolean(workingSessionIdSet?.size) && group.sessions.some(session => workingSessionIdSet!.has(session.id))
 
   // Leading glyph: profile color dot, a home mark for the repo's primary
   // checkout (labeled by its live branch), or a branch/kanban mark otherwise.
@@ -119,6 +136,7 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
         onToggle={toggleOpen}
         open={open}
         title={group.path ?? undefined}
+        workingWhileCollapsed={workingWhileCollapsed}
       />
       {open && (
         <>

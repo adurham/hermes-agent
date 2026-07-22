@@ -256,6 +256,7 @@ export function SidebarSessionsSection({
             removedSessionIds={removedSessionIds}
             renderRows={renderRows}
             repoWorktrees={projectRepoWorktrees}
+            workingSessionIdSet={workingSessionIdSet}
           />
         ) : (
           emptyState
@@ -303,6 +304,7 @@ export function SidebarSessionsSection({
         key={group.id}
         onNewSession={onNewSessionInWorkspace}
         renderRows={renderRows}
+        workingSessionIdSet={workingSessionIdSet}
       />
     ))
   } else if (flatVirtualized) {

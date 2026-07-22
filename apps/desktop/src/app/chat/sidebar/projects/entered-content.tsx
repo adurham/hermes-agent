@@ -42,7 +42,8 @@ export function EnteredProjectContent({
   onNewSession,
   repoWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  workingSessionIdSet
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
@@ -50,6 +51,7 @@ export function EnteredProjectContent({
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  workingSessionIdSet?: Set<string>
 }) {
   if (!project.repos.length) {
     return null
@@ -69,6 +71,7 @@ export function EnteredProjectContent({
           renderRows={renderRows}
           repo={repo}
           showHeader={!single}
+          workingSessionIdSet={workingSessionIdSet}
         />
       ))}
     </>
@@ -82,7 +85,8 @@ function RepoFlatSection({
   onNewSession,
   discoveredWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  workingSessionIdSet
 }: {
   repo: SidebarWorkspaceTree
   showHeader: boolean
@@ -91,6 +95,7 @@ function RepoFlatSection({
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  workingSessionIdSet?: Set<string>
 }) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -171,6 +176,7 @@ function RepoFlatSection({
           onNewSession={group.isKanban ? undefined : onNewSession}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
           renderRows={renderRows}
+          workingSessionIdSet={workingSessionIdSet}
         />
       ))}
     </>

@@ -26,6 +26,21 @@ const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
 // session). This snapshot is small and already polled at 1.5s by the TUI.
 const LIVE_SESSION_STATUS_POLL_INTERVAL_MS = 1_500
 
+// A runtime we believe is busy but that the authoritative snapshot no longer
+// reports is either genuinely finished (a terminal gateway event was missed —
+// a reconnect blip, an auto-compression rotation racing the poll) or brand new
+// and not yet backend-registered (an optimistic send marks busy before the
+// backend runtime exists — see seedOptimistic in use-prompt-actions/submit.ts).
+// Require several consecutive misses before force-clearing so neither case
+// makes a real turn's sidebar row go dark or a just-submitted one flicker.
+const MISSING_RUNTIME_GRACE_MS = 3 * LIVE_SESSION_STATUS_POLL_INTERVAL_MS + 5_000
+const missingRuntimeSinceMs = new Map<string, number>()
+
+/** Test-only: drop tracked misses so cases don't bleed into each other. */
+export function resetMissingRuntimeTrackingForTests(): void {
+  missingRuntimeSinceMs.clear()
+}
+
 interface LiveSessionStatusItem {
   id?: string
   last_active?: number
@@ -40,8 +55,19 @@ interface LiveSessionStatusResponse {
 /** Restore sidebar liveness after a renderer/backend reconnect. Stream events
  * normally own these states, but events emitted while Desktop was disconnected
  * cannot be replayed. `session.active_list` is the authoritative in-memory
- * snapshot and does not resume, focus, or otherwise mutate a chat. */
+ * snapshot and does not resume, focus, or otherwise mutate a chat.
+ *
+ * Also reconciles the other direction: a runtime this renderer still marks
+ * `busy` but that the snapshot no longer reports (a missed terminal event —
+ * reconnect blip, compression-rotation race) is force-cleared after
+ * {@link MISSING_RUNTIME_GRACE_MS} of consecutive absence. Without this sweep
+ * a stuck `busy: true` entry is permanently force-kept visible by
+ * `sessionsToKeep` (use-session-list-actions.ts) and never stops rendering the
+ * sidebar's working dot + arc-border — a phantom "still running" row that
+ * never resolves. */
 export function rehydrateLiveSessionStatuses(response: LiveSessionStatusResponse, nowMs = Date.now()): void {
+  const liveRuntimeIds = new Set<string>()
+
   for (const session of response.sessions ?? []) {
     const runtimeSessionId = session.id?.trim()
     const storedSessionId = session.session_key?.trim()
@@ -51,6 +77,9 @@ export function rehydrateLiveSessionStatuses(response: LiveSessionStatusResponse
     if (!runtimeSessionId || !storedSessionId) {
       continue
     }
+
+    liveRuntimeIds.add(runtimeSessionId)
+    missingRuntimeSinceMs.delete(runtimeSessionId)
 
     const existing = $sessionStates.get()[runtimeSessionId]
 
@@ -86,6 +115,28 @@ export function rehydrateLiveSessionStatuses(response: LiveSessionStatusResponse
       nowMs - lastActiveMs >= SESSION_WATCHDOG_TIMEOUT_MS
 
     setSessionStalled(storedSessionId, isQuiet)
+  }
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    if (!state.busy || liveRuntimeIds.has(runtimeId)) {
+      missingRuntimeSinceMs.delete(runtimeId)
+
+      continue
+    }
+
+    const missingSince = missingRuntimeSinceMs.get(runtimeId)
+
+    if (missingSince === undefined) {
+      missingRuntimeSinceMs.set(runtimeId, nowMs)
+
+      continue
+    }
+
+    if (nowMs - missingSince >= MISSING_RUNTIME_GRACE_MS) {
+      missingRuntimeSinceMs.delete(runtimeId)
+      publishSessionState(runtimeId, { ...state, awaitingResponse: false, busy: false, needsInput: false })
+      setSessionStalled(state.storedSessionId, false)
+    }
   }
 }
 
