@@ -335,6 +335,12 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   // current size, so depending on it covers both triggers. Zone-mode positions
   // are container-local and never persisted — POSITION_KEY belongs to the
   // full-window pet's coordinate space.
+  //
+  // In zone mode the zone pane is a layout-tree track the user drags, which
+  // never fires `window.resize` — only a ResizeObserver on the container
+  // itself sees it. Without this, shrinking the zone left the pet clamped to
+  // its OLD (now stale) bounds until some unrelated window resize happened to
+  // trigger a recheck.
   useEffect(() => {
     const reclamp = () =>
       setPosition(prev => {
@@ -354,7 +360,14 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     reclamp()
     window.addEventListener('resize', reclamp)
 
-    return () => window.removeEventListener('resize', reclamp)
+    const zoneEl = zoneContainer?.current
+    const zoneObserver = zoneEl ? new ResizeObserver(reclamp) : undefined
+    zoneObserver?.observe(zoneEl!)
+
+    return () => {
+      window.removeEventListener('resize', reclamp)
+      zoneObserver?.disconnect()
+    }
   }, [clamp, zoneContainer])
 
   // Viewport→container-local conversion. In zone mode style.left/top are

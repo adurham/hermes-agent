@@ -4102,6 +4102,45 @@ correctly zeroes `$petRoamDir`, which is what lets `PetSprite`'s
 **Merge note:** fork-only files, no upstream equivalent — no conflict
 risk.
 
+### Fork-only fix — 2026-07-22 (pet zone: resizing the pane didn't adjust the walk)
+
+**Symptom:** live-dragging the pet-zone layout track to shrink/grow the
+pane had no visible effect on the wander — the pet kept strolling to
+targets sized for the OLD dimensions, sometimes walking right past the
+new clipped edge after a shrink.
+
+**Root cause:** `snapshotContainerLedges()` (the zone's ledge geometry)
+only gets re-measured at the START of a decision beat in
+`use-pet-roam.ts`'s `planNext()` — i.e. when a pause ends or a walk
+arrives. A live pane resize is invisible to the loop for however long
+the CURRENT beat has left to run: a pause can dwell up to `PAUSE_DWELL`'s
+~13s ceiling, and an in-flight walk keeps striding toward a target
+already computed against stale bounds. The separate React-level reclamp
+effect that keeps the STATIONARY pet on-screen had the same class of gap:
+it only listened for `window.resize`, but the zone pane is a layout-tree
+grid track the user drags — a purely in-app CSS/layout event that never
+fires `window.resize` at all, so a standing-still pet could stay clamped
+to stale bounds indefinitely.
+
+**Fix:** `use-pet-roam.ts` now attaches a `ResizeObserver` directly to
+`zoneContainer` when zone mode is active. On any resize it (1) clamps the
+pet's current x into the fresh bounds immediately, (2) if the loop is in
+a controllable phase (`pause` or `walk`) forces an immediate `planNext()`
+re-plan so the next stroll/loaf targets the real, current span rather
+than finishing out a stale one; in-flight `fall`/`jump` transitions are
+left alone (re-targeting mid-arc looks glitchy, and they finish fast /
+the next pause re-measures anyway). `floating-pet.tsx`'s separate
+stationary-pet reclamp effect gained the same `ResizeObserver` on
+`zoneContainer` alongside its existing `window.resize` listener, so a
+standing pet reclamps to a shrunk zone the instant you finish dragging
+the track, not on some unrelated later window resize.
+
+**Files:** `apps/desktop/src/components/pet/use-pet-roam.ts`,
+`apps/desktop/src/components/pet/floating-pet.tsx`.
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict
+risk.
+
 **Merge note:** purely additive — one new function, one filter line in the
 existing Tool Availability loop, three new tests. No upstream equivalent
 (upstream's doctor doesn't have this section at all in the same form), so
