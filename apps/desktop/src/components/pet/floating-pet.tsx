@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
@@ -9,13 +9,13 @@ import { persistString, storedString } from '@/lib/storage'
 import {
   $petAtRest,
   $petInfo,
+  $petMotion,
   $petRoam,
   $petRoamDir,
-  $petState,
   clearPetUnread,
-  flashPetActivity,
   type PetInfo,
   petProfile,
+  type PetState,
   setPetInfo
 } from '@/store/pet'
 import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
@@ -46,6 +46,11 @@ const CLICK_SLOP_PX = 4
 // same exponential-dwell technique as the roam loop's PAUSE_DWELL, just with a
 // much longer mean so it reads as an occasional glance, not a tic.
 const FIDGET_DWELL: DwellRange = { maxMs: 150000, meanMs: 50000, minMs: 20000 }
+
+// Minimum room above the sprite (in the zone's local coordinate space) for
+// the status bubble to fit without clipping against the zone's clipped top
+// edge — a generous estimate for the bubble's own height + its 6px margin.
+const BUBBLE_CLEARANCE_PX = 40
 
 interface Point {
   x: number
@@ -90,6 +95,26 @@ function facing(leftX: number, petW: number, zone?: DOMRect | null): string {
   const mid = zone ? zone.width / 2 : (window.innerWidth || 800) / 2
 
   return leftX + petW / 2 < mid ? 'scaleX(-1)' : 'none'
+}
+
+// Horizontal anchor for the zone status bubble: centers on the pet by default,
+// but pins to the pet's near edge instead when the pet sits in the outer third
+// of a narrow zone — a strictly-centered bubble would otherwise overhang past
+// the zone's clipped left/right edge and get cut off, same failure mode the
+// vertical flip (BUBBLE_CLEARANCE_PX) fixes for the top edge.
+function bubbleHorizontalStyle(petX: number, petW: number, zoneWidth: number): CSSProperties {
+  const petCenter = petX + petW / 2
+  const third = zoneWidth / 3
+
+  if (petCenter < third) {
+    return { left: 0, transform: 'none' }
+  }
+
+  if (petCenter > zoneWidth - third) {
+    return { right: 0, transform: 'none' }
+  }
+
+  return { left: '50%', transform: 'translateX(-50%)' }
 }
 
 function loadPosition(zone?: DOMRect | null): Point {
@@ -511,27 +536,39 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     zoneContainer
   })
 
-  // Idle fidget: while the pet is genuinely at rest (plain `idle`, not roaming
-  // or mid-turn), occasionally flash a wave/jump beat so a long idle stretch
-  // doesn't read as frozen. Gated on `$petState` itself (not `$petAtRest`,
-  // which ignores the roam pose) so a strolling pet never fidgets mid-stride,
-  // and re-armed every time the pet returns to idle so the "still here" glance
-  // recurs on its own irregular schedule for as long as you leave it be.
+  // Idle fidget: while the pet is genuinely at rest, occasionally flash a
+  // wave/jump beat so a long idle stretch doesn't read as frozen. Drives
+  // `$petMotion` directly — the same silent "pose" channel the roam loop
+  // uses for its own walk/hop animations — instead of `$petActivity`/
+  // `flashPetActivity`, which is the REAL agent-status channel PetBubble
+  // reads. That distinction matters: a fidget is purely decorative and must
+  // never surface as a status line ("working…" etc.) the way genuine
+  // activity does.
+  //
+  // Only runs while roam is off: with roam on, the wander loop already
+  // provides continuous life (it loafs, then occasionally strolls/hops) by
+  // writing this same atom, and a second writer on top would fight it.
   useEffect(() => {
-    if (!active || overlayActive) {
+    if (!active || overlayActive || roamEnabled) {
       return
     }
 
     let timer: ReturnType<typeof setTimeout> | undefined
+    let decay: ReturnType<typeof setTimeout> | undefined
 
     const schedule = () => {
       timer = setTimeout(() => {
-        if ($petState.get() === 'idle') {
-          // Randomly pick between the two friendly at-rest beats: jump
-          // (celebrate) or wave (justCompleted) — either reads fine as an
-          // unprompted "still here" glance.
-          const beat = Math.random() < 0.5 ? { celebrate: true } : { justCompleted: true }
-          flashPetActivity(beat)
+        // Only fidget while genuinely idle and nothing else is already
+        // driving a pose (never interrupt a real turn or a stray beat).
+        if ($petAtRest.get() && $petMotion.get() === null) {
+          const beat: PetState = Math.random() < 0.5 ? 'jump' : 'wave'
+          $petMotion.set(beat)
+          decay = setTimeout(() => {
+            // Don't clobber a pose something else set in the meantime.
+            if ($petMotion.get() === beat) {
+              $petMotion.set(null)
+            }
+          }, 1600)
         }
 
         schedule()
@@ -540,8 +577,11 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
 
     schedule()
 
-    return () => clearTimeout(timer)
-  }, [active, overlayActive])
+    return () => {
+      clearTimeout(timer)
+      clearTimeout(decay)
+    }
+  }, [active, overlayActive, roamEnabled])
 
   // While roaming, drive the directional run row + mirror from the travel
   // direction; at rest, fall back to the inward-facing static mascot.
@@ -587,23 +627,34 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
       {/* Status bubble ("working…"/"your turn"/etc.) — only in the dedicated
           zone. The full-window pet skips it (the app itself is the surface,
           per the pop-out overlay's own rationale), but the zone is a small
-          fixed box where a glanceable status line earns its keep. */}
-      {zoneContainer && (
-        <div
-          style={{
-            bottom: '100%',
-            left: '50%',
-            marginBottom: 6,
-            pointerEvents: 'none',
-            position: 'absolute',
-            transform: 'translateX(-50%)',
-            whiteSpace: 'nowrap',
-            zIndex: 2
-          }}
-        >
-          <PetBubble />
-        </div>
-      )}
+          fixed box where a glanceable status line earns its keep.
+
+          Flips below the sprite when there isn't enough headroom above (the
+          zone clips with overflow:hidden, so a bubble that assumes it always
+          has room above gets cut off whenever the pet is near the zone's top
+          edge — from roaming there, or just being dragged there). */}
+      {zoneContainer &&
+        (() => {
+          const aboveFits = position.y >= BUBBLE_CLEARANCE_PX
+          const zoneWidth = zoneContainer.current?.getBoundingClientRect().width ?? 0
+          const horizontal = zoneWidth ? bubbleHorizontalStyle(position.x, petW, zoneWidth) : {}
+
+          return (
+            <div
+              style={{
+                [aboveFits ? 'bottom' : 'top']: '100%',
+                [aboveFits ? 'marginBottom' : 'marginTop']: 6,
+                pointerEvents: 'none',
+                position: 'absolute',
+                whiteSpace: 'nowrap',
+                zIndex: 2,
+                ...horizontal
+              }}
+            >
+              <PetBubble />
+            </div>
+          )
+        })()}
       <div
         ref={spriteWrapRef}
         style={{
