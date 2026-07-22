@@ -3849,6 +3849,61 @@ added. No upstream equivalent exists (upstream doesn't have a pet zone,
 and its `FloatingPet` predates the zone-aware coordinate work above) —
 no conflict risk on sync.
 
+### Fork-only fix — 2026-07-22 (pet: idle fidget leaked into the status bubble; zone bubble clipped)
+
+**Symptom:** with the pet zone on and roam enabled, the status bubble
+showed "making moves…" (a `run`-state phrase) while the pet was simply
+strolling around at idle — no agent activity in flight. Separately, the
+bubble text got visually cut off near the zone's top/side edges.
+
+**Root cause 1 (bubble showing at idle):** `$petState` — the single atom
+`PetSprite` reads for the animation row — deliberately layers the roam
+loop's own `run`/`jump` wander pose on top of real agent activity
+(`$petState = idle-base ?? roam-motion`) so a wandering pet *looks* alive.
+That's correct for the SPRITE, but the previous commit's `PetBubble`
+change (and this session's short-lived idle-fidget prototype) both read
+that same merged atom for status TEXT — so a roaming-but-idle pet was
+indistinguishable from a genuinely busy one, and `PetBubble`'s `run` spec
+list (`"making moves…"`, `"on it…"`, etc.) rendered for a walk that wasn't
+work.
+
+**Fix 1:** added `$petRealState` to `store/pet.ts` —
+`computed([$petActivity, $busy], deriveLivePetState)`, i.e. `$petState`
+minus the `$petMotion` merge. `PetBubble` now reads `$petRealState`
+instead of `$petState`; `PetSprite` is untouched (still correctly reads
+`$petState` — the sprite SHOULD show the roam pose). The idle-fidget
+effect was rewritten to write `$petMotion` directly (the same silent pose
+channel roam uses) rather than `flashPetActivity`/`$petActivity` — a
+decorative fidget is structurally incapable of reaching `PetBubble` now,
+not just accidentally avoiding it. Gated off whenever `roamEnabled` is
+true (the wander loop already provides continuous life by writing that
+same atom; a second writer would fight it) and skips firing if something
+else already holds `$petMotion` (never interrupt a real pose).
+
+**Root cause 2 (bubble clipping):** the zone container has
+`overflow: hidden` (required so a roaming pet is clipped to its pane),
+but the bubble was unconditionally positioned `bottom: 100%` + horizontally
+centered — no headroom/edge awareness. A pet near the zone's top edge (from
+roaming there, or a drag) pushed the bubble above the clipped boundary;
+a pet near the zone's left/right edge overhung the bubble past the
+clipped side.
+
+**Fix 2:** `floating-pet.tsx` gained `BUBBLE_CLEARANCE_PX` (flips the
+bubble below the sprite when `position.y` is too close to the zone's top)
+and `bubbleHorizontalStyle()` (pins the bubble to the pet's near edge
+instead of centering when the pet sits in the outer third of a narrow
+zone, so the bubble can't overhang the clipped side). Both are pure
+functions of the pet's already-tracked local position — no new
+measurement/RAF work.
+
+**Files:** `apps/desktop/src/store/pet.ts` (new `$petRealState`),
+`apps/desktop/src/components/pet/pet-bubble.tsx` (reads `$petRealState`),
+`apps/desktop/src/components/pet/floating-pet.tsx` (idle fidget rewrite +
+bubble edge-awareness).
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict
+risk.
+
 **Merge note:** purely additive — one new function, one filter line in the
 existing Tool Availability loop, three new tests. No upstream equivalent
 (upstream's doctor doesn't have this section at all in the same form), so

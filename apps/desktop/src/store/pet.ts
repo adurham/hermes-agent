@@ -222,3 +222,14 @@ export const $petState = computed([$petActivity, $busy, $petMotion], (activity, 
 
   return base === 'idle' && motion ? motion : base
 })
+
+/**
+ * Real agent-activity state, ignoring any roam/fidget pose. `$petState` is
+ * the right thing to feed the SPRITE (roaming should read as movement), but
+ * it is the WRONG thing to feed a status readout like `PetBubble`: the roam
+ * loop's own `run`/`jump` motion is indistinguishable from genuine tool
+ * activity once merged into `$petState`, so a wandering-but-idle pet would
+ * show a "working…" bubble for a walk that isn't work. Consumers that show
+ * agent-status TEXT (not just the sprite pose) should read this instead.
+ */
+export const $petRealState = computed([$petActivity, $busy], deriveLivePetState)

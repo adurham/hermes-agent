@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { AlertCircle, Clock, type IconComponent } from '@/lib/icons'
-import { $petActivity, $petState, type PetState } from '@/store/pet'
+import { $petActivity, $petRealState, type PetState } from '@/store/pet'
 
 /**
  * Speech bubble + status glyph for the popped-out pet overlay — the
@@ -11,10 +11,12 @@ import { $petActivity, $petState, type PetState } from '@/store/pet'
  * window. The in-window pet doesn't show it (the app itself is the surface);
  * only the overlay renders it.
  *
- * Text is derived purely from the same `$petState` / `$petActivity` the sprite
- * already reacts to, so it never drifts from the animation. The bubble is shown
- * only when there's something worth saying (working / reviewing / a transient
- * done/error beat / waiting on the user) and is hidden at plain idle.
+ * Text is derived from `$petRealState` (agent activity only) rather than the
+ * sprite-facing `$petState`, which also carries the roam loop's own walk/hop
+ * pose — reading that would show a "working…" bubble for a pet that's simply
+ * strolling while idle. The bubble is shown only when there's something
+ * worth saying (working / reviewing / a transient done/error beat / waiting
+ * on the user) and is hidden at plain idle or while merely wandering.
  */
 
 type Tone = 'error' | 'wait'
@@ -89,7 +91,7 @@ function pick(lines: string[], prev: string): string {
 }
 
 export function PetBubble() {
-  const state = useStore($petState)
+  const state = useStore($petRealState)
   const activity = useStore($petActivity)
   const [line, setLine] = useState('')
 
