@@ -14,7 +14,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { copyPath, revealPath } from '@/store/projects'
 
-import { SidebarCount, SidebarRowLead } from '../chrome'
+import { SidebarCount, SidebarRowLead, WorkspaceWorkingDot } from '../chrome'
 
 import { WorktreeDialog } from './worktree-dialog'
 
@@ -148,7 +148,8 @@ export function WorkspaceHeader({
   label,
   onToggle,
   open,
-  title
+  title,
+  workingWhileCollapsed = false
 }: {
   action?: React.ReactNode
   count: React.ReactNode
@@ -159,6 +160,12 @@ export function WorkspaceHeader({
   open: boolean
   /** Hover tooltip — the lane's full on-disk path (worktree / repo root). */
   title?: string
+  /** True when a session inside this (currently collapsed) group is actively
+   *  running. Renders the same pulsing-dot cue a working session row shows,
+   *  rolled up to the group — the child rows' own dot + arc-border are already
+   *  hidden while collapsed, so this is additive, never a duplicate. Callers
+   *  pass this only when `!open`; expanded groups rely on the child rows. */
+  workingWhileCollapsed?: boolean
 }) {
   return (
     <div
@@ -177,6 +184,7 @@ export function WorkspaceHeader({
       >
         <SidebarRowLead>{icon}</SidebarRowLead>
         <LaneLabel label={label} title={title ? `${label}\n${title}` : label} />
+        {workingWhileCollapsed && <WorkspaceWorkingDot />}
         <span className="shrink-0">
           <SidebarCount>{count}</SidebarCount>
         </span>

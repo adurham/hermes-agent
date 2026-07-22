@@ -154,3 +154,20 @@ export function SidebarRowLeadGlyph({
     </span>
   )
 }
+
+/** Collapsed-group aggregate "something inside is running" cue — the same
+ *  pulsing-dot treatment as a working session row's own lead dot
+ *  (`session-row.tsx`'s `working` DOT_VARIANT), but shown on a workspace/
+ *  project header INSTEAD of the child rows' dot + arc-border, never
+ *  alongside them: callers only render this while the group is collapsed, so
+ *  a running turn stays visible exactly once — per session while expanded,
+ *  per group while collapsed — rather than doubling up. */
+export function WorkspaceWorkingDot() {
+  return (
+    <span
+      aria-hidden="true"
+      className="relative size-1.5 shrink-0 rounded-full bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
+      role="status"
+    />
+  )
+}
