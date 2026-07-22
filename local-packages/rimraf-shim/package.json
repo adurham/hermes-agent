@@ -1,0 +1,7 @@
+{
+  "name": "rimraf",
+  "version": "2.6.3",
+  "description": "Local shim: same callable rimraf(path, opts, cb) / rimraf.sync(path, opts) API as rimraf@2.x, backed by Node's built-in fs.rm/fs.rmSync instead of the deprecated rimraf package (which pulls in glob@7 + inflight). Used only via an npm 'overrides' alias for temp@0.9.4 (electron-winstaller's Windows Squirrel/NSIS temp-dir cleanup) — see AGENTS.md dependency notes.",
+  "main": "index.js",
+  "license": "MIT"
+}

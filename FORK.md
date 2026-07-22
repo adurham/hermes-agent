@@ -160,6 +160,37 @@ Files: `tui_gateway/server.py` (+ `tests/test_tui_gateway_server.py`),
 `apps/desktop/src/components/chat/status-section.tsx`,
 `apps/desktop/src/app/chat/composer/status-stack/index.tsx`.
 
+### Fork-only chore — 2026-07-22 (replace two deprecated/unmaintained transitive npm deps with local shims)
+
+Discovered uncommitted alongside the feature above (same autostash sweep).
+`npm install`/lockfile were already regenerated and internally consistent, so
+this was finished, not in-progress, work — committed rather than discarded.
+
+Two deprecated packages showed up as install-time warnings from deep
+transitive chains with no way to bump the direct dependency to fix them:
+- `rimraf@2.6.3`, pulled in only by `temp@0.9.4` (used by
+  `electron-winstaller` for Windows Squirrel/NSIS temp-dir cleanup), itself
+  pulling in `glob@7` + `inflight`.
+- `boolean@3.2.0`, pulled in by `electron`'s `@electron/get` -> `global-agent`
+  chain and by `roarr`.
+
+**Fix:** added `local-packages/rimraf-shim/` and `local-packages/boolean-shim/`
+— minimal same-API reimplementations (rimraf's callable
+`rimraf(path, opts, cb)` / `rimraf.sync` backed by Node's built-in
+`fs.rm`/`fs.rmSync`; boolean's `boolean(value)`/`isBooleanable(value)`
+truthy-string parsing reimplemented directly, no dependency) — then aliased
+both via `package.json`'s `overrides` to `file:local-packages/<name>-shim`,
+plus an `electron-builder.app-builder-lib.@electron/asar.glob` override
+bumping a separately-flagged transitive `glob` to `^13.0.0`. Regenerated
+`package-lock.json` (`npm install`) so the alias is a real, resolved
+dependency edge, not just a manifest declaration; `npm ls rimraf boolean`
+confirms both resolve to the shims through their real consumers
+(`electron-winstaller` -> `temp` -> `rimraf`; `electron` -> `@electron/get` ->
+`global-agent`/`roarr` -> `boolean`).
+
+Files: `package.json`, `package-lock.json`, new
+`local-packages/rimraf-shim/{index.js,package.json}`, new
+`local-packages/boolean-shim/{index.js,package.json}`.
 
 ### Fork-only fix — 2026-07-22 (desktop: terminal glyphs render as tofu boxes, missing Nerd Font fallback)
 
