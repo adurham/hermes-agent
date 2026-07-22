@@ -620,8 +620,23 @@ export function treeSideOfPane(paneId: string): TreeSide | null {
 /**
  * App intent "show pane X" (a preview target landed, ⌘G opened review, …):
  * open its side, unhide it, and bring it to the front of its group.
+ *
+ * `front` (default true) gates ONLY the "make this the active tab" step.
+ * Un-dismiss / un-collapse-side / un-hide / un-minimize all still run
+ * regardless — those are legitimate reconciliation even on a boot-time
+ * sync. `front: false` is for exactly that boot-time sync: `bindPaneCollapse`
+ * calls `setPaneCollapsed` once per pane to reconcile its persisted open/
+ * closed store against the tree on mount, and multiple tool panes (terminal,
+ * logs) can share ONE zone. Each pane's own store can independently be
+ * persisted "open" from a past session — so on every boot, whichever pane's
+ * bind runs LAST would win the shared zone's active tab, regardless of which
+ * pane the user actually last looked at (or which preset placed it). Passing
+ * `front: false` for that initial sync lets the persisted tree's own `active`
+ * field keep deciding the front tab; only a genuine user gesture — the live
+ * `$open.listen` toggle callback, a reveal from a preview/review target
+ * landing, clicking the pane's tab, applying a preset — passes front: true.
  */
-export function revealTreePane(paneId: string) {
+export function revealTreePane(paneId: string, front: boolean = true) {
   // Reveal beats a Close: un-dismiss and let adoption put the pane back.
   if ($dismissedPanes.get().has(paneId)) {
     setDismissed(paneId, false)
@@ -665,7 +680,7 @@ export function revealTreePane(paneId: string) {
       next = setGroupMinimized(next, group.id, false)
     }
 
-    if (group.active !== paneId) {
+    if (front && group.active !== paneId) {
       next = setActivePaneOp(next, group.id, paneId)
     }
 
@@ -1086,8 +1101,15 @@ function paneGroup(paneId: string) {
 
 /** Collapse/restore a pane's ZONE to a minimized rail — its tab stays visible.
  *  Store-driven (one-way): a tool panel's $open store mirrors here via
- *  bindPaneCollapse, so a toggle collapses rather than hides. */
-export function setPaneCollapsed(paneId: string, collapsed: boolean) {
+ *  bindPaneCollapse, so a toggle collapses rather than hides.
+ *
+ *  `front` (default true) forwards to `revealTreePane`'s `front` — pass
+ *  `false` for the initial mount-time sync so a shared zone (terminal +
+ *  logs) doesn't have its active tab decided by bind ORDER (whichever
+ *  pane's `bindPaneCollapse` call runs last on boot would otherwise always
+ *  win the front tab, regardless of which pane the persisted tree — or the
+ *  user — actually last had active). */
+export function setPaneCollapsed(paneId: string, collapsed: boolean, front: boolean = true) {
   const group = paneGroup(paneId)
 
   if (!group) {
@@ -1111,7 +1133,7 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
         toggleTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
       }
     } else if (!collapsed) {
-      revealTreePane(paneId)
+      revealTreePane(paneId, front)
     }
 
     return
@@ -1121,7 +1143,7 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
     toggleTreeGroupMinimized(group.id, collapsed)
 
     if (!collapsed) {
-      revealTreePane(paneId)
+      revealTreePane(paneId, front)
     }
   }
 }
