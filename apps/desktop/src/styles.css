@@ -613,6 +613,16 @@
   --arc-c1: var(--dt-foreground);
 }
 
+/* Sidebar session rows stack with only a 1px gap (SidebarRowStack's
+   `gap-px`), so the shared -2px `--arc-inset` halo (tuned for isolated,
+   spaced-out cards like the onboarding provider buttons) visibly bleeds
+   into the row directly above a working row — reading as if the pulse
+   belongs to the wrong row. Zero the inset for stacked rows so the glow
+   stays inside the row's own box. */
+.arc-border.arc-row {
+  --arc-inset: 0px;
+}
+
 /* Quest-style "needs you" pulse for a clarify-blocked session's dot —
    a soft amber glow that breathes so the row draws the eye without a toast. */
 @keyframes quest-glow {
