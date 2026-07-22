@@ -180,7 +180,7 @@ export function SidebarSessionRow({
         {...rest}
       >
         {sessionShowsRunningArc({ isWorking, needsInput }) && (
-          <span aria-hidden="true" className="arc-border arc-row" />
+          <span aria-hidden="true" className="row-pulse-underline" />
         )}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
