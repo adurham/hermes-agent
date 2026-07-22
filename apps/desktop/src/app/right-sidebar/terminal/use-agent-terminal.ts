@@ -41,7 +41,11 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       convertEol: true,
       cursorBlink: false,
       disableStdin: true,
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+      // Nerd Font fallbacks after JetBrains Mono — see the matching comment in
+      // use-terminal-session.ts. Keeps the read-only agent-output terminal
+      // consistent with the interactive terminal's glyph rendering.
+      fontFamily:
+        "'JetBrains Mono', 'Hack Nerd Font Mono', 'FiraCode Nerd Font Mono', 'Symbols Nerd Font Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
       fontWeight: 'normal',
       fontWeightBold: 'bold',
