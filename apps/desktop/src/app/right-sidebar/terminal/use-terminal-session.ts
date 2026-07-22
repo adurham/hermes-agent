@@ -501,7 +501,12 @@ export function useTerminalSession({
       allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+      // Nerd Font fallbacks after JetBrains Mono so PUA glyphs (powerline
+      // separators, prompt icons — starship/oh-my-posh style) resolve instead
+      // of tofu boxes when the user's shell prompt assumes a Nerd Font is
+      // available. JetBrains Mono itself ships no such glyphs.
+      fontFamily:
+        "'JetBrains Mono', 'Hack Nerd Font Mono', 'FiraCode Nerd Font Mono', 'Symbols Nerd Font Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
       // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
       // (500) as the base, which reads a touch heavy at this size.
