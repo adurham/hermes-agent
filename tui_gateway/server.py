@@ -4052,7 +4052,18 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         except Exception:
             pass
-        session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+        started_at = time.time()
+        session.setdefault("tool_started_at", {})[tool_call_id] = started_at
+        # Tracks the currently-open (not-yet-completed) tool call so a
+        # reconnect/resume/session-switch mid-tool-call can render its pending
+        # row instead of showing a bare "thinking" bubble with no tool visible
+        # until it completes (see _inflight_snapshot / _live_session_payload).
+        session.setdefault("open_tool_calls", {})[tool_call_id] = {
+            "args": args,
+            "name": name,
+            "started_at": started_at,
+            "tool_call_id": tool_call_id,
+        }
     if _tool_progress_enabled(sid):
         payload = {
             "tool_id": tool_call_id,
@@ -4076,6 +4087,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if session is not None:
         snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None)
         started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None)
+        session.setdefault("open_tool_calls", {}).pop(tool_call_id, None)
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:
         payload["duration_s"] = duration_s
@@ -4829,6 +4841,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     session["show_reasoning"] = _load_show_reasoning()
     session["tool_progress_mode"] = _load_tool_progress_mode()
     session["tool_started_at"] = {}
+    session["open_tool_calls"] = {}
     with session["history_lock"]:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
@@ -5191,6 +5204,7 @@ def _init_session(
             "tool_progress_mode": _load_tool_progress_mode(),
             "edit_snapshots": {},
             "tool_started_at": {},
+            "open_tool_calls": {},
             # Per-session model override set by an in-session /model switch.
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
@@ -5728,6 +5742,39 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     return True
 
 
+def _open_tool_call_snapshot(session: dict) -> dict | None:
+    """Most-recently-started tool call that hasn't completed yet, if any.
+
+    Surfaced alongside the inflight-turn projection so a reconnect/resume/
+    session-switch that lands mid-tool-call can render its pending row
+    instead of a bare "thinking" bubble with no tool visible until it
+    completes.
+    """
+    open_calls = session.get("open_tool_calls")
+    if not isinstance(open_calls, dict) or not open_calls:
+        return None
+    # Only one tool call is realistically open at a time for the primary
+    # turn; if more than one is somehow tracked, surface the most recent.
+    _tool_call_id, call = max(
+        open_calls.items(), key=lambda item: item[1].get("started_at") or 0
+    )
+    if not isinstance(call, dict):
+        return None
+    name = str(call.get("name") or "")
+    if not name:
+        return None
+    args = call.get("args")
+    snapshot: dict = {
+        "args": args if isinstance(args, dict) else {},
+        "name": name,
+        "tool_call_id": str(call.get("tool_call_id") or _tool_call_id),
+    }
+    started_at = call.get("started_at")
+    if isinstance(started_at, (int, float)):
+        snapshot["started_at"] = float(started_at)
+    return snapshot
+
+
 def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
@@ -5737,11 +5784,21 @@ def _inflight_snapshot(session: dict) -> dict | None:
     streaming = bool(turn.get("streaming"))
     if not user and not assistant and not streaming:
         return None
-    return {
+    snapshot = {
         "assistant": assistant,
         "streaming": streaming,
         "user": user,
     }
+    started_at = turn.get("started_at")
+    if isinstance(started_at, (int, float)):
+        # Lets a reconnect/resume/session-switch restore the turn's real start
+        # time instead of stamping "now" — otherwise the frontend's live
+        # "thinking" timer resets to 0 every time the tab is revisited mid-turn.
+        snapshot["started_at"] = float(started_at)
+    open_tool = _open_tool_call_snapshot(session)
+    if open_tool is not None:
+        snapshot["tool"] = open_tool
+    return snapshot
 
 
 def _queued_prompt_snapshot(session: dict) -> dict | None:
@@ -5861,6 +5918,7 @@ def _(rid, params: dict) -> dict:
             "slash_worker": None,
             "tool_progress_mode": _load_tool_progress_mode(),
             "tool_started_at": {},
+            "open_tool_calls": {},
             "transport": current_transport() or _stdio_transport,
         }
         _register_session_cwd(_sessions[sid])
@@ -6115,6 +6173,7 @@ def _deferred_session_record(
         "source": source,
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
+        "open_tool_calls": {},
         "transport": current_transport() or _stdio_transport,
     }
 

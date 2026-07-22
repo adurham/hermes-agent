@@ -103,6 +103,64 @@ Files: `apps/desktop/src/app/chat/sidebar/index.tsx`,
 `apps/desktop/src/store/layout.ts`, new
 `apps/desktop/src/store/layout-lane-order.test.ts`.
 
+### Fork-only feature — 2026-07-22 (desktop: resume/reconnect into a running turn now restores the real "thinking" timer and mid-tool-call state)
+
+Discovered uncommitted and undocumented in the working tree (swept up by the
+same `hermes update` autostash as the sidebar drag-reorder work above — see
+that entry and the "Mandatory workflow" note for why this keeps happening).
+Traced, tested, and committed here rather than discarded, since it's
+complete, passing, and unrelated in cause to the sidebar bug.
+
+Two compounding gaps in resuming/reconnecting into an already-running
+session:
+1. `setSessionStartedAt(Date.now())` was called unconditionally on every
+   session switch/resume in `use-session-actions/index.ts`, so the
+   statusbar's session-age timer reset to ~0 on every tab switch instead of
+   continuing from the session's real creation time.
+2. The backend's inflight-turn projection (`_inflight_snapshot` in
+   `tui_gateway/server.py`) never carried the turn's real start time or
+   whether a tool call was currently open. A resume/reconnect landing
+   mid-turn re-stamped "now" as the turn start (resetting the live "thinking"
+   timer) and, if the turn was mid-tool-call, showed a bare "thinking" bubble
+   with no indication a tool was running until it completed.
+
+**Fix:** backend — `_on_tool_start`/`_on_tool_complete` now track a session's
+currently-open tool call in a new `open_tool_calls` dict (seeded alongside
+the existing `tool_started_at` at every session-init site);
+`_inflight_snapshot` includes the inflight turn's real `started_at` and, via
+new `_open_tool_call_snapshot`, the open tool call's name/args/id/start time.
+Frontend — `SessionResumeResponse.inflight` gained `started_at` and an
+optional `tool` field (`types/hermes.ts`); `use-session-actions` prefers the
+session's stored `started_at` over `Date.now()` for the age timer, and
+prefers the backend's inflight `started_at` over the locally-tracked value
+for the turn timer; `appendLiveSessionProjection`
+(`use-session-actions/utils.ts`) now also projects the open tool call as a
+pending `tool-call` message part via a new `pendingToolCallPart()` helper in
+`chat-messages.ts`, so mid-tool-call resumes render the tool's pending row
+instead of a bare bubble.
+
+Also included in this batch: a small, unrelated UI affordance — the composer
+status stack's "todo" group gained a `resizeId` (`composer-status-todo`) so
+`StatusSection` now supports an optional drag-to-resize height handle
+(persisted through the existing pane-height-override store), rather than
+always sizing to content.
+
+Verified: `tests/test_tui_gateway_server.py -k "inflight_snapshot or
+open_tool_call"` (5/5 pass); `tsc --noEmit` clean; desktop vitest —
+`use-session-actions.test.tsx` (31/31), `use-session-actions/utils.test.ts`
+(27/27), `chat-messages.test.ts` (34/34) all pass. No test file exists yet for
+`status-section.tsx`'s new resize behavior — untested by an automated test,
+manual verification only.
+
+Files: `tui_gateway/server.py` (+ `tests/test_tui_gateway_server.py`),
+`apps/desktop/src/types/hermes.ts`,
+`apps/desktop/src/app/session/hooks/use-session-actions/index.ts`,
+`apps/desktop/src/app/session/hooks/use-session-actions/utils.ts` (+ test),
+`apps/desktop/src/lib/chat-messages.ts`,
+`apps/desktop/src/components/chat/status-section.tsx`,
+`apps/desktop/src/app/chat/composer/status-stack/index.tsx`.
+
+
 ### Fork-only fix — 2026-07-22 (desktop: terminal glyphs render as tofu boxes, missing Nerd Font fallback)
 
 Reported symptom: the embedded xterm.js terminal pane rendered shell-prompt

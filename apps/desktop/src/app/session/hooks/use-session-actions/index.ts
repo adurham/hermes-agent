@@ -607,7 +607,11 @@ export function useSessionActions({
           syncSessionStateToView(cachedRuntimeId, cachedViewState)
           setCurrentCwd(cachedViewState.cwd)
           setCurrentBranch(cachedViewState.branch)
-          setSessionStartedAt(Date.now())
+          // The runtime timer reads the session's real creation time, not the
+          // moment we switched into it — otherwise the statusbar's session
+          // timer resets to ~0 on every tab switch instead of continuing to
+          // count from when the session actually started.
+          setSessionStartedAt(stored?.started_at ? stored.started_at * 1000 : Date.now())
 
           try {
             let activated: SessionResumeResponse | null = null
@@ -687,7 +691,15 @@ export function useSessionActions({
                   ...(runtimeInfo ?? {}),
                   messages: activatedMessages,
                   busy: running,
-                  awaitingResponse: running
+                  awaitingResponse: running,
+                  // The backend's inflight snapshot carries the turn's REAL start
+                  // time; prefer it so a reconnect doesn't reset the "thinking"
+                  // timer to 0. Fall back to whatever the cache already tracked
+                  // (set locally by message.start) when the backend doesn't send
+                  // one, and clear it once the turn is no longer running.
+                  turnStartedAt: running
+                    ? (activated.inflight?.started_at ? activated.inflight.started_at * 1000 : state.turnStartedAt)
+                    : null
                 }),
                 storedSessionId
               )
@@ -742,10 +754,13 @@ export function useSessionActions({
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
-      setSessionStartedAt(Date.now())
 
       const stored =
         $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+
+      // Same rationale as the warm-cache path above: use the session's real
+      // creation time so the statusbar timer doesn't reset on switch.
+      setSessionStartedAt(stored?.started_at ? stored.started_at * 1000 : Date.now())
 
       applyStoredSessionPreviewRuntimeInfo(stored)
 
@@ -881,7 +896,13 @@ export function useSessionActions({
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
             busy: resumedRunning,
-            awaitingResponse: resumedRunning
+            awaitingResponse: resumedRunning,
+            // Same rationale as the warm-cache path above: restore the turn's
+            // real start time from the backend's inflight snapshot so the
+            // "thinking" timer doesn't reset when resuming a running session.
+            turnStartedAt: resumedRunning
+              ? (resumed.inflight?.started_at ? resumed.inflight.started_at * 1000 : state.turnStartedAt)
+              : null
           }),
           storedSessionId
         )

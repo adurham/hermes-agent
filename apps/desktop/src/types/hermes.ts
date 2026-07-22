@@ -436,7 +436,22 @@ export interface SessionMessagesResponse {
 export interface SessionResumeResponse {
   inflight?: null | {
     assistant?: string
+    /** Epoch seconds the in-flight turn actually started (backend clock), so a
+     *  resume/reconnect can restore the live "thinking" timer instead of
+     *  restarting it from the moment of the switch. */
+    started_at?: number
     streaming?: boolean
+    /** The currently-open (not-yet-completed) tool call, if the live turn is
+     *  mid-tool when this snapshot was taken. Lets a resume/reconnect render
+     *  the tool's pending row instead of a bare "thinking" bubble until it
+     *  completes. */
+    tool?: {
+      args?: Record<string, unknown>
+      name: string
+      /** Epoch seconds the tool call started (backend clock). */
+      started_at?: number
+      tool_call_id: string
+    }
     user?: string
   }
   queued?: null | {
