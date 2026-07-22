@@ -3,6 +3,69 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-07-22 (aux tasks stuck on stale provider-block "default" model after switching main; "Reset all to main" wrote nothing)
+
+Reported symptom: switching the desktop Models page's main model to
+Anthropic `claude-sonnet-5` did not change any auxiliary task's model (all
+still showed `claude-haiku-4-5-20251001`); clicking "Reset all to main"
+also left every task on `claude-haiku-4-5-20251001` instead of the newly
+selected main model.
+
+Root cause, two compounding bugs in the provider-first `auxiliary` schema
+(`agent/auxiliary_client.py::_aux_flatten_provider_first`):
+
+1. **The "default" key conflated two unrelated concepts.** A model-only
+   provider block (e.g. `auxiliary.anthropic: {default: claude-haiku-4-5,
+   provider: anthropic}`) used the SAME `default` key as a genuine
+   cross-provider redirect block (e.g. `auxiliary.exo: {provider:
+   ollama-cloud, default: gemma4:31b}`, which has no "main model" concept
+   and must name *some* model to route to). For a model-only block, `default`
+   was silently governing every unconfigured task FOREVER — including after
+   switching main to a different model on the same provider — instead of
+   deferring to `_resolve_auto()`'s Step 1 (which tracks the LIVE main
+   model). A redundant same-provider `provider: anthropic` key inside the
+   anthropic block made this worse: it also tripped the block's "has an
+   explicit endpoint" check, routing the request through
+   `resolve_provider_client`'s hardcoded-aux-model branch instead of the
+   auto-detect chain that actually tracks main.
+2. **"Reset all to main" never wrote anything.** The `__reset__` handler in
+   `hermes_cli/web_server.py` (`POST /api/model/set`) only DELETES any
+   top-level pin and the current-main block's per-task entry — it does not
+   touch the block's `default` key (by design, to avoid clobbering
+   hand-authored per-provider defaults meant for other providers). Combined
+   with bug (1), deleting the task entries just fell straight back to the
+   same stale `default` — so the button appeared to do nothing.
+
+Fix: `_aux_flatten_provider_first` now distinguishes a genuine
+cross-provider/endpoint redirect (`is_cross_provider_redirect`: block names
+an explicit `base_url`, OR a `provider` that normalizes to something
+DIFFERENT from the live main provider) from a same-provider model-only
+block. Only the former may (a) consult the block's `default` model and (b)
+emit an explicit non-`auto` provider override. A same-provider block —
+redundant `provider:` key or not — is now always treated as model-only:
+unconfigured tasks resolve to `provider="auto", model=None`, which
+`_resolve_auto()` fills in with the CURRENT main provider + main model at
+call time. Explicit per-task overrides (e.g. `anthropic.memory_extraction:
+claude-sonnet-5`) are untouched — this only removes the provider-wide cheap
+fallback tier for tasks with NO configured override. The exo block's
+cross-provider `default` (its "assume from main aux config" rule) is
+preserved exactly as before, since it has no main-model concept to defer to.
+
+No changes to `POST /api/model/set`'s `__reset__` handler were needed — once
+the resolver stopped treating a same-provider `default` as authoritative,
+reset's existing delete-only behavior correctly falls through to live
+main-model tracking.
+
+Added regression tests: updated
+`test_anthropic_main_models`/`test_unlisted_task_uses_block_default` in
+`tests/agent/test_auxiliary_provider_first.py` to assert the new
+main-tracking behavior (they previously asserted the removed cheap-fallback
+behavior as the desired outcome), and added
+`test_set_model_auxiliary_reset_then_resolve_tracks_main_not_stale_default`
+in `tests/hermes_cli/test_web_server.py` — reset via the real endpoint, then
+resolve via the real aux-task resolver and confirm every unconfigured task
+returns `model=None` (defers to main), not the block's default.
+
 ### Fork-only fix — 2026-07-22 (desktop model picker hid Anthropic despite valid Claude Code credentials)
 
 Desktop's chat model picker (`build_models_payload(explicit_only=True)` in

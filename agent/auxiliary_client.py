@@ -6896,8 +6896,14 @@ def _aux_flatten_provider_first(
 
     Model resolution within the selected provider block:
         block[task]              # str → model, dict → routing/setting overrides
-        → block["default"]       # provider-wide default model
-        → "" (use main model / provider catalog default)
+        → (model-only block) None → "auto" + no model → _resolve_auto() Step 1
+          resolves to the user's LIVE main provider + main model (fork fix
+          2026-07-22: an unconfigured task must track main, never a separate
+          "cheap default" pinned in the block — see the dated fix note below)
+        → (explicit cross-provider/endpoint block, e.g. exo redirecting to a
+          different provider) block["default"] — REQUIRED here because a
+          redirect to a foreign endpoint has no "main model" to defer to; the
+          request cannot be sent without some model.
 
     Routing emission:
       * Block carries an explicit ``base_url`` or a non-auto ``provider``
@@ -6906,6 +6912,21 @@ def _aux_flatten_provider_first(
       * Block is model-only (anthropic-style) → emit ``provider="auto"`` so the
         main-provider auto-detect path runs exactly as before (preserving the
         provider-matched aux model + baked betas for that family).
+
+    Fork fix (2026-07-22): previously EVERY block type fell back to
+    ``block["default"]`` when a task had no explicit entry — so a model-only
+    block's ``default`` (e.g. ``auxiliary.anthropic.default:
+    claude-haiku-4-5``) silently governed every unconfigured task even after
+    switching main to a different model on the SAME provider (main ->
+    claude-sonnet-5, aux stayed on the block's stale claude-haiku-4-5
+    default). Worse, the desktop "Reset all to main" action wrote NOTHING
+    (it just deletes pins/block entries), so post-reset tasks fell straight
+    into that same stale default instead of the current main model. Root
+    cause: the "provider-wide cheap default" concept was never distinguished
+    from "the model this cross-provider redirect must use" — both used the
+    same ``default`` key. Now only the latter (an explicit-endpoint block)
+    consults ``default``; a model-only block leaves ``resolved_model`` at
+    None so it falls through to ``_resolve_auto()``'s main-tracking Step 1.
     """
     # (a) Per-task settings from the shared ``defaults`` block.
     flat: Dict[str, Any] = {}
@@ -6926,10 +6947,6 @@ def _aux_flatten_provider_first(
         per_task_overrides = dict(task_entry)
         _m = per_task_overrides.pop("model", None)
         resolved_model = str(_m).strip() or None if _m is not None else None
-    if resolved_model is None:
-        _default_model = block.get(_AUX_BLOCK_DEFAULT_MODEL_KEY) if isinstance(block, dict) else None
-        if isinstance(_default_model, str) and _default_model.strip():
-            resolved_model = _default_model.strip()
 
     # (c) Block-level routing fields (base_url/api_key/api_mode/provider).
     block_provider = str(block.get("provider", "")).strip() if isinstance(block, dict) else ""
@@ -6937,7 +6954,39 @@ def _aux_flatten_provider_first(
     block_api_key = str(block.get("api_key", "")).strip() if isinstance(block, dict) else ""
     block_api_mode = str(block.get("api_mode", "")).strip() if isinstance(block, dict) else ""
 
-    has_explicit_endpoint = bool(block_base_url) or (block_provider and block_provider != "auto")
+    # A genuine cross-provider redirect (e.g. the exo block routing to
+    # ollama-cloud while main is anthropic) has no "main model" concept to
+    # fall back to, so ONLY it may (a) consult the block's "default" model
+    # and (b) emit an explicit (non-"auto") provider/endpoint override. A
+    # block that merely names the SAME provider it's already selected for
+    # (a redundant/no-op ``provider: anthropic`` inside the anthropic block)
+    # must be treated as model-only — it has to defer to _resolve_auto()'s
+    # main-tracking Step 1, exactly like a bare model-only block would.
+    # Without this, a redundant same-provider ``provider:`` key would (i)
+    # keep consulting a stale ``default`` model forever and (ii) route
+    # through resolve_provider_client's provider-specific branch (which uses
+    # a HARDCODED aux-model constant, not the live main model) instead of
+    # the auto-detect chain that actually tracks main.
+    is_cross_provider_redirect = bool(block_base_url)
+    if not is_cross_provider_redirect and block_provider and block_provider != "auto":
+        try:
+            _norm_block = _aux_block_key_for_provider(block_provider, cfg)
+            _norm_main = _aux_block_key_for_provider(main_provider, cfg)
+        except Exception:
+            _norm_block = block_provider.strip().lower()
+            _norm_main = (main_provider or "").strip().lower()
+        is_cross_provider_redirect = bool(_norm_block) and _norm_block != _norm_main
+
+    has_explicit_endpoint = is_cross_provider_redirect
+
+    if resolved_model is None and is_cross_provider_redirect:
+        # Only a block that redirects to a genuinely different provider/
+        # endpoint consults "default" — it has no main-model concept to fall
+        # back to, so it MUST name a model or the request can't be sent.
+        _default_model = block.get(_AUX_BLOCK_DEFAULT_MODEL_KEY) if isinstance(block, dict) else None
+        if isinstance(_default_model, str) and _default_model.strip():
+            resolved_model = _default_model.strip()
+
     if has_explicit_endpoint:
         flat["provider"] = block_provider or "custom"
         if block_base_url:

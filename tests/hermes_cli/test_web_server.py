@@ -4302,6 +4302,48 @@ class TestWebServerEndpoints:
         # The anthropic block's override must be untouched.
         assert aux.get("anthropic", {}).get("vision") == "claude-sonnet-5"
 
+    def test_set_model_auxiliary_reset_then_resolve_tracks_main_not_stale_default(self):
+        """Fork bug (reported 2026-07-21): after switching main and clicking
+        'Reset all to main', every unconfigured task fell back to the
+        current-main provider block's ``default`` model instead of tracking
+        the newly-selected main model (main=claude-sonnet-5, but every reset
+        task resolved to the block's stale claude-haiku-4-5 default). Reset
+        only ever deletes task-level pins/block entries — it never touches
+        ``default`` — so this could only be fixed by having the resolver
+        itself stop treating ``default`` as a same-provider fallback. Verify
+        end-to-end: reset via the real endpoint, then resolve via the real
+        aux-task resolver and confirm it returns None (i.e. defers to main),
+        not the block's default model."""
+        from hermes_cli.config import load_config, save_config
+        from agent import auxiliary_client as ac
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "anthropic", "default": "claude-sonnet-5"}
+        cfg["auxiliary"] = {
+            "defaults": {},
+            "anthropic": {
+                "default": "claude-haiku-4-5-20251001",
+                "provider": "anthropic",
+            },
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "auxiliary", "task": "__reset__", "provider": "", "model": ""},
+        )
+        assert resp.status_code == 200
+
+        ac.set_runtime_main("anthropic", "claude-sonnet-5")
+        try:
+            for task in ("vision", "web_extract", "compression", "curator", "mcp"):
+                _provider, model, _base_url, _api_key, _api_mode = (
+                    ac._resolve_task_provider_model(task)
+                )
+                assert model is None, (task, model)
+        finally:
+            ac.clear_runtime_main()
+
     def test_get_auxiliary_models_provider_first_resolves_via_real_resolver(self):
         """GET /api/model/auxiliary must reflect what the task would ACTUALLY
         resolve to right now on a provider-first config — not just whether a

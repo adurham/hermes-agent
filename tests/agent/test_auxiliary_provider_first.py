@@ -146,11 +146,22 @@ def test_detector_empty_is_task_first():
 # ── Resolution equivalence (the core invariant) ───────────────────────
 
 def test_anthropic_main_models(hermes_home_pf):
+    """Fork fix (2026-07-22): a model-only block's ``default`` (here
+    ``claude-haiku-4-5``) no longer governs unconfigured tasks — those must
+    track the LIVE main model instead of a stale provider-wide cheap
+    fallback. Only explicitly-listed per-task entries (the ``_SONNET_TASKS``
+    override to claude-sonnet-4-6) still resolve to their configured model;
+    every other task resolves to ``model=None`` + ``provider=auto``, which
+    ``_resolve_auto()`` fills in with the current main model at call time."""
     ac.set_runtime_main("anthropic", "claude-opus-4-8")
     resolved = _resolve_all()
     for task in ALL_TASKS:
-        expected = "claude-sonnet-4-6" if task in _SONNET_TASKS else "claude-haiku-4-5"
-        assert resolved[task]["model"] == expected, (task, resolved[task])
+        if task in _SONNET_TASKS:
+            assert resolved[task]["model"] == "claude-sonnet-4-6", (task, resolved[task])
+        else:
+            # No per-task override and no provider-wide default fallback —
+            # must defer entirely to main-model tracking.
+            assert resolved[task]["model"] is None, (task, resolved[task])
         # Model-only anthropic block defers to the main-provider auto path.
         assert resolved[task]["provider"] == "auto", (task, resolved[task])
 
@@ -180,12 +191,18 @@ def test_per_task_timeouts_preserved_via_defaults(hermes_home_pf):
 
 
 def test_unlisted_task_uses_block_default(hermes_home_pf):
-    """A task with no explicit entry in a provider block falls back to that
-    block's ``default`` model (the 'assume from main aux config' rule)."""
+    """Fork fix (2026-07-22): a task with no explicit entry in a MODEL-ONLY
+    provider block (anthropic here) no longer falls back to that block's
+    ``default`` model — it must track the live main model instead. The
+    'assume from main aux config' fallback survives only for blocks that
+    redirect to a genuinely different provider/endpoint (see
+    test_flatten_unit_exo_block_routing), where there IS no main-model
+    concept to defer to."""
     ac.set_runtime_main("anthropic", "claude-opus-4-8")
-    # 'mcp' is not explicitly listed under anthropic → block default.
+    # 'mcp' is not explicitly listed under anthropic → defers to main, not
+    # the block's stale 'default'.
     _p, model, _b, _k, _m = ac._resolve_task_provider_model("mcp")
-    assert model == "claude-haiku-4-5"
+    assert model is None
 
 
 def test_flatten_unit_anthropic_block():
