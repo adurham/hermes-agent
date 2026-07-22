@@ -3,6 +3,47 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-07-22 (desktop model picker hid Anthropic despite valid Claude Code credentials)
+
+Desktop's chat model picker (`build_models_payload(explicit_only=True)` in
+`hermes_cli/inventory.py`, wired through `tui_gateway/server.py`'s
+`model.options` handler) was silently dropping the `anthropic` provider row
+even though the CLI's `hermes model` picker showed it fine with the exact
+same credentials on disk (valid Claude Code CLI OAuth tokens in Keychain /
+`~/.claude/.credentials.json`, no `ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN` env
+var, no `active_provider` set in `auth.json`).
+
+Root cause: `list_authenticated_providers()` (shared substrate for both CLI
+and desktop pickers) already special-cases anthropic — it treats valid
+external Claude Code / Hermes-PKCE credentials as `has_creds=True` and emits
+the row. But desktop's `explicit_only=True` path runs an ADDITIONAL filter,
+`_filter_explicit_provider_rows()`, which re-checks every row against
+`is_provider_explicitly_configured()`. That function deliberately excludes
+`CLAUDE_CODE_OAUTH_TOKEN` / external credential files from counting as
+"explicit" (upstream intent, PR #4210: stop aux tasks from silently burning
+the user's Claude Code subscription tokens without an explicit Hermes-side
+choice). The desktop filter reused that same strict gate for pure picker
+*display*, so a working Anthropic session showed up in the CLI but not in
+the desktop's model dropdown — the two surfaces disagreed even though
+neither is wrong about the underlying credential.
+
+**Fix:** narrow carve-out inside `_filter_explicit_provider_rows()` — when
+`is_provider_explicitly_configured("anthropic")` is False, additionally check
+for valid external Claude Code / Hermes-PKCE credentials (the exact same
+check `list_authenticated_providers()` already performs via
+`read_claude_code_credentials()` / `read_hermes_oauth_credentials()`) before
+dropping the row. `is_provider_explicitly_configured()` itself is completely
+untouched, so the PR #4210 aux-task gate (auxiliary tasks silently consuming
+Claude subscription tokens) still works exactly as before — this only widens
+what the desktop/dashboard model picker is willing to *display*. Verified
+`explicit_only=True` is consumed by nothing except the desktop model-options
+request path (`apps/desktop/src/lib/model-options.ts`), so there's no
+downstream credential-consumption code depending on this list being narrow.
+
+Added regression tests: `test_explicit_only_keeps_anthropic_row_when_claude_code_credentials_valid`
+and `test_explicit_only_drops_anthropic_row_without_external_credentials` in
+`tests/hermes_cli/test_inventory.py`.
+
 ### Fork-only fix — 2026-07-21 (desktop package.json version stuck at 0.17.0)
 
 The desktop app's `package.json` version field was stuck at `0.17.0` while the

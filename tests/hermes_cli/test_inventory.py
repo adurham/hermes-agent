@@ -503,6 +503,61 @@ def test_include_unconfigured_does_not_duplicate_configured_current_row():
 
     assert sum(row["slug"] == "deepseek" for row in payload["providers"]) == 1
 
+def test_explicit_only_keeps_anthropic_row_when_claude_code_credentials_valid():
+    """Desktop's explicit-only picker must show Anthropic whenever valid
+    external Claude Code CLI / Hermes-PKCE credentials exist — matching what
+    `list_authenticated_providers()` (and thus the CLI `/model` picker)
+    already surfaces. is_provider_explicitly_configured() intentionally
+    excludes CLAUDE_CODE_OAUTH_TOKEN so aux-task gating (#4210) is untouched;
+    this only affects picker row visibility."""
+    rows = [
+        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        {"slug": "gemini", "name": "Gemini", "models": ["gemini-2.5-pro"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+    ]
+    ctx = _empty_ctx()
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
+        patch(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            return_value={"accessToken": "tok", "refreshToken": "rtok"},
+        ),
+        patch(
+            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            return_value=None,
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert [row["slug"] for row in payload["providers"]] == ["anthropic"]
+
+
+def test_explicit_only_drops_anthropic_row_without_external_credentials():
+    """Without valid Claude Code / Hermes-PKCE credentials, the ambient
+    anthropic row stays hidden from the explicit-only picker as before."""
+    rows = [
+        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+    ]
+    ctx = _empty_ctx()
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
+        patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+        patch("agent.anthropic_adapter.read_hermes_oauth_credentials", return_value=None),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert payload["providers"] == []
+
+
 def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
     rows = [
         {"slug": "moa", "name": "MoA", "models": ["review"],
