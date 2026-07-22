@@ -618,17 +618,9 @@
    perimeter `.arc-border` ring (previously used here) reads as TWO separate
    horizontal lines — its top and bottom edges — since the left/right edges
    are too short to register. That's what looked like "two pulses" on one
-   row. A dedicated bottom-only bar renders the intended single cue. */
-@keyframes row-pulse-underline {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
+   row. This keeps `.arc-border`'s actual look — a bright band traveling
+   along a mostly-dark track — but draws only the bottom edge instead of a
+   full ring, so the same shimmer never doubles up top and bottom. */
 .row-pulse-underline {
   pointer-events: none;
   position: absolute;
@@ -636,22 +628,46 @@
   bottom: 0;
   left: 0.5rem;
   height: 0.09375rem;
+  overflow: hidden;
   border-radius: 9999px;
-  background: var(--dt-midground);
-  animation: row-pulse-underline 1.8s ease-in-out infinite;
+  background: color-mix(in srgb, var(--dt-midground) 20%, transparent);
+}
+
+.row-pulse-underline::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 45%;
+  background: linear-gradient(90deg, transparent, var(--dt-midground) 50%, transparent);
+  filter: drop-shadow(0 0 0.1875rem var(--dt-midground));
+  animation: row-pulse-sweep 2.1s ease-in-out infinite;
 }
 
 :root.dark .row-pulse-underline {
-  background: var(--dt-foreground);
+  background: color-mix(in srgb, var(--dt-foreground) 14%, transparent);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .row-pulse-underline {
-    animation: none;
-    opacity: 0.8;
+:root.dark .row-pulse-underline::before {
+  background: linear-gradient(90deg, transparent, var(--dt-foreground) 50%, transparent);
+  filter: drop-shadow(0 0 0.1875rem var(--dt-foreground));
+}
+
+@keyframes row-pulse-sweep {
+  0% {
+    left: -45%;
+  }
+  100% {
+    left: 100%;
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .row-pulse-underline::before {
+    animation: none;
+    left: 27.5%;
+  }
+}
 
 /* Quest-style "needs you" pulse for a clarify-blocked session's dot —
    a soft amber glow that breathes so the row draws the eye without a toast. */
