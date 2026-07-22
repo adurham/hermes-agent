@@ -195,6 +195,7 @@ export function usePetRoam({
         : overlayOpen
           ? [overlayLedge(petW)]
           : snapshotLedges(petW, petH)
+
       curLedge = resolveLedge(ledges, cur.x, cur.y, petH)
 
       if (Math.abs(cur.y - restY(curLedge)) > GROUND_EPS) {
@@ -327,12 +328,51 @@ export function usePetRoam({
 
     raf = requestAnimationFrame(step)
 
+    // React immediately to a live pane resize — not just the re-measure baked
+    // into each decision beat. Without this, a resize mid-pause (dwell up to
+    // PAUSE_DWELL's ~13s ceiling) or mid-stroll leaves the pet targeting stale
+    // geometry: shrinking the zone can walk it right past the new clipped
+    // edge, and growing it won't be "noticed" until whatever beat is already
+    // in flight finishes — which reads as "resizing doesn't adjust the walk."
+    let resizeObserver: ResizeObserver | undefined
+
+    if (zoneContainer?.current) {
+      resizeObserver = new ResizeObserver(() => {
+        // Let a drag keep sole control; the step loop already yields for it.
+        if (isInteracting()) {
+          return
+        }
+
+        const rect = zoneContainer.current?.getBoundingClientRect()
+
+        if (!rect) {
+          return
+        }
+
+        // Always keep the pet inside the fresh bounds, whatever the phase.
+        cur.x = Math.min(Math.max(0, cur.x), Math.max(0, rect.width - petW))
+
+        // Re-plan immediately from a controlled phase so a stroll/loaf picks
+        // up the new span right away instead of finishing on stale geometry.
+        // Mid-air transitions (fall/jump) look glitchy if re-targeted — those
+        // finish naturally and the next pause re-measures anyway.
+        if (phase === 'pause' || phase === 'walk') {
+          pendingHop = null
+          planNext(performance.now())
+        } else {
+          applyDom()
+        }
+      })
+      resizeObserver.observe(zoneContainer.current)
+    }
+
     return () => {
       cancelAnimationFrame(raf)
+      resizeObserver?.disconnect()
       signal(null, 0)
       // Hand the final position back to React so its `style` matches the DOM once
       // the loop stops re-asserting it.
       commit({ ...cur })
     }
-  }, [enabled, petW, petH, loopMs, overlayOpen, containerRef, isInteracting, commit])
+  }, [enabled, petW, petH, loopMs, overlayOpen, containerRef, isInteracting, commit, zoneContainer])
 }
