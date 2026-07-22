@@ -3,6 +3,109 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-07-22 (desktop: work profile deletion silently reverted after quitting and reopening the app)
+
+Reported symptom: deleting the "work" profile from the desktop app's Manage
+Profiles panel appeared to succeed, but the profile reappeared every time the
+app was quit and relaunched — reproduced 3 times in a row.
+
+Root cause, two independent bugs found across the backend and the sidebar UI:
+
+1. **Zombie backend process survived delete.** `_profile_bound_backend_pids()`
+   (`hermes_cli/profiles.py`) scans running processes for ones bound to a
+   profile so delete can terminate them first. It required `argv[0]` to
+   resolve to an executable literally named `hermes` (or contain a
+   `hermes_cli.main`/`hermes-gateway`/`tui_gateway` marker). Electron's
+   pool-backend spawn resolves the `hermes` console-script shim's path via
+   `findOnPath('hermes')` and executes it through the interpreter directly —
+   `python3 /path/to/hermes --profile work serve ...` — so the OS reports
+   `argv[0]` as `python3`, not `hermes`; the joined-argv marker check also came
+   up empty. The scanner never matched the running backend, so delete removed
+   the profile's directory/config while its live backend process (which
+   re-persists profile state as it runs) kept running untouched — surviving
+   the delete and reappearing at next launch.
+   **Fix:** added a `python[\d.]*w?(\.exe)?` interpreter-basename check; when
+   `argv[0]` matches, additionally check `argv[1]` (the script path handed to
+   the interpreter) for a `hermes`-prefixed basename. Verified live: the
+   previously-immortal PID (running since before the fix, survived 3 delete
+   attempts) is now correctly targeted and killed.
+2. **Sidebar profile rail cached a stale profile list.** Even with the
+   backend fix, `apps/desktop/src/app/chat/sidebar/profile-switcher.tsx`'s
+   `ProfileRail` only called `refreshActiveProfile()` once, on mount — a
+   profile deleted (or created/renamed) from another surface (the Manage
+   Profiles panel, another window, the CLI) left the rail's cached `$profiles`
+   atom stale until something unrelated happened to trigger a refetch, which
+   is why opening Manage Profiles was previously the only thing that made a
+   deleted profile's ghost square disappear.
+   **Fix:** added a `window focus` + `document visibilitychange` listener
+   that re-calls `refreshActiveProfile()`, matching the existing
+   focus/visibilitychange refresh idiom already used elsewhere in the sidebar
+   (`refreshProjects`/`refreshProjectTree` in `sidebar/index.tsx`).
+
+Added `test_backend_scan_matches_shebang_exec_of_hermes_shim` to
+`tests/hermes_cli/test_profiles.py` (interpreter-exec'd shim bound to the
+target profile is matched; a different profile or a non-hermes script under
+python3 is correctly skipped). `scripts/run_tests.sh
+tests/hermes_cli/test_profiles.py` — 156/156 passing. `tsc --noEmit` and
+`eslint` clean on `profile-switcher.tsx`.
+
+Files: `hermes_cli/profiles.py`, `tests/hermes_cli/test_profiles.py`,
+`apps/desktop/src/app/chat/sidebar/profile-switcher.tsx`.
+
+### Fork-only fix — 2026-07-22 (desktop: duplicate "working" pulse indicators for collapsed sidebar session groups; stale indicators never cleared)
+
+Reported symptom (screenshot): two horizontal pulsing "working" indicators
+visible simultaneously where only one was expected, in the session sidebar.
+
+Two related bugs, one about a stuck signal and one about how many places
+render it:
+
+1. **Stale `busy: true` state never cleared.** Live session status
+   (working-dot, arc-border) is normally driven by streamed gateway events,
+   but events emitted while Desktop was disconnected can't be replayed —
+   `rehydrateLiveSessionStatuses()` (`apps/desktop/src/app/contrib/hooks/use-background-sync.ts`)
+   already reconciled the reconnect direction (restoring liveness the
+   snapshot reports) but never the reverse: a runtime the renderer still
+   marked `busy: true` that the authoritative `session.active_list` snapshot
+   stopped reporting (a missed terminal event — reconnect blip, an
+   auto-compression rotation racing the poll) stayed `busy` forever.
+   `sessionsToKeep()` force-keeps any `busy` row visible, so a stuck entry
+   permanently rendered its pulse + arc-border with no turn actually running.
+   **Fix:** the rehydrate sweep now also walks every runtime still marked
+   `busy` and, if 3+ consecutive polls (~9.5s total, `MISSING_RUNTIME_GRACE_MS`)
+   stop reporting it, force-clears `busy`/`awaitingResponse`/`needsInput`. The
+   grace window avoids punishing a single flaky poll miss or a fresh
+   optimistic send (busy is set locally before the backend runtime is
+   registered — see `seedOptimistic` in `use-prompt-actions/submit.ts`).
+2. **One indicator per hidden row, not per collapsed group.** A collapsed
+   workspace/project group hides its child session rows entirely — including
+   each row's own working-dot — with no substitute cue at the group level, so
+   a user had no way to tell a hidden session was still running. Once (1)
+   above is fixed, the remaining ambiguity was: any place a group can show a
+   redundant indicator alongside its still-visible children.
+   **Fix:** added `WorkspaceWorkingDot` (`chrome.tsx`, same pulse styling as a
+   session row's own dot) and threaded a `workingSessionIdSet` down through
+   `SidebarSessionsSection` → `EnteredProjectContent`/`RepoFlatSection` →
+   `SidebarWorkspaceGroup` → `WorkspaceHeader`. The dot renders on a group's
+   header **only while that group is collapsed** and only when a session
+   inside it is working — expanded groups show nothing extra since each
+   row's own dot/arc-border is already visible. Net result: exactly one
+   pulsing cue per running session at all times — the row's own dot while
+   expanded, the collapsed group's aggregate dot while collapsed — never both.
+
+Verified: `tsc --noEmit` clean across the whole desktop app; `eslint` clean on
+all seven touched files; 95 sidebar/session-state tests pass (70 in
+`sidebar/` + `use-background-sync.test.ts`, 25 in `store/session-states.test.ts`
++ `store/session-watchdog.test.ts`), including 3 new cases for the
+missing-runtime reconciliation sweep.
+
+Files: `apps/desktop/src/app/contrib/hooks/use-background-sync.ts` (+ test),
+`apps/desktop/src/app/chat/sidebar/chrome.tsx`,
+`apps/desktop/src/app/chat/sidebar/projects/workspace-header.tsx`,
+`apps/desktop/src/app/chat/sidebar/projects/workspace-group.tsx`,
+`apps/desktop/src/app/chat/sidebar/projects/entered-content.tsx`,
+`apps/desktop/src/app/chat/sidebar/sessions-section.tsx`.
+
 ### Fork-only fix — 2026-07-22 (desktop: queued composer message could be delivered into a different, currently-viewed session)
 
 Reported symptom: user queued a composer message while viewing session A
