@@ -196,7 +196,7 @@ export function SidebarSessionsSection({
   const sessionsDraggable = sortable && !!onReorderSessions
   const displayEntries = useMemo(() => flattenSessionsWithBranches(sessions), [sessions])
 
-  const renderRow = (session: SessionInfo, draggable: boolean, branchStem?: string) => {
+  const renderRow = (session: SessionInfo, draggable: boolean, branchStem?: string, sortData?: Record<string, unknown>) => {
     const rowProps = {
       branchStem,
       isPinned: pinned,
@@ -213,15 +213,22 @@ export function SidebarSessionsSection({
     }
 
     return draggable && !branchStem ? (
-      <SortableSidebarSessionRow key={session.id} {...rowProps} />
+      <SortableSidebarSessionRow key={session.id} sortData={sortData} {...rowProps} />
     ) : (
       <SidebarSessionRow key={session.id} {...rowProps} />
     )
   }
 
-  // Sessions inside repos/worktrees are date-ordered and static.
-  const renderRows = (items: SessionInfo[]) =>
-    flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem))
+  // Sessions inside repos/worktrees are date-ordered by default, but a lane
+  // becomes drag-to-reorder when the caller enables it (see EnteredProjectContent /
+  // SidebarWorkspaceGroup) — mirrors the flat Recents list's `draggable` flag.
+  // `sortData` tags each row's sortable binding ({type:'session', laneId}) so
+  // the ONE shared DndContext up in RepoFlatSection can tell which array a
+  // dragged session belongs to; unused outside the project/lane view.
+  const renderRows = (items: SessionInfo[], draggable = false, sortData?: Record<string, unknown>) =>
+    flattenSessionsWithBranches(items).map(({ branchStem, session }) =>
+      renderRow(session, draggable, branchStem, sortData)
+    )
 
   const flatVirtualized =
     !showEmptyState &&
@@ -250,6 +257,7 @@ export function SidebarSessionsSection({
         {projectBackRow}
         {hasProjectContent ? (
           <EnteredProjectContent
+            dndSensors={dndSensors}
             liveSessions={liveSessions}
             onNewSession={onNewSessionInWorkspace}
             project={projectContent}
@@ -377,10 +385,15 @@ interface SortableSessionRowProps {
   onDelete: () => void
   onPin: () => void
   onResume: () => void
+  // Tags this row's sortable binding (e.g. {type:'session', laneId}) so an
+  // ancestor DndContext's shared dispatcher can tell which array it belongs
+  // to. Undefined for the flat Recents/Pinned lists, which own their own
+  // single-purpose DndContext and don't need to disambiguate.
+  sortData?: Record<string, unknown>
 }
 
-function SortableSidebarSessionRow(props: SortableSessionRowProps) {
-  return <SidebarSessionRow {...props} {...useSortableBindings(props.session.id)} />
+function SortableSidebarSessionRow({ sortData, ...props }: SortableSessionRowProps) {
+  return <SidebarSessionRow {...props} {...useSortableBindings(props.session.id, sortData)} />
 }
 
 function SortableProjectOverviewRow(props: React.ComponentProps<typeof ProjectOverviewRow>) {

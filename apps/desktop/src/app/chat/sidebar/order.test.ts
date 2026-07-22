@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import { mergeReorderedSubset, orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 
 describe('resolveManualSessionOrderIds', () => {
   it('clears legacy auto-seeded order until the user manually reorders sessions', () => {
@@ -58,5 +58,20 @@ describe('sameIds', () => {
     expect(sameIds(['a', 'b'], ['a', 'b'])).toBe(true)
     expect(sameIds(['a', 'b'], ['b', 'a'])).toBe(false)
     expect(sameIds(['a'], ['a', 'b'])).toBe(false)
+  })
+})
+
+describe('mergeReorderedSubset', () => {
+  it('replaces only the reordered subset, leaving other ids untouched', () => {
+    expect(mergeReorderedSubset(['x', 'a', 'b', 'y'], ['a', 'b'], ['b', 'a'])).toEqual(['x', 'y', 'b', 'a'])
+  })
+
+  it('appends a fresh subset when the shared list had no prior entries for it', () => {
+    expect(mergeReorderedSubset([], ['a', 'b'], ['b', 'a'])).toEqual(['b', 'a'])
+  })
+
+  it("does not disturb another owner's ids sharing the same list", () => {
+    // Repo A's lanes (a1, a2) reorder; repo B's lanes (b1, b2) must survive untouched.
+    expect(mergeReorderedSubset(['a1', 'a2', 'b1', 'b2'], ['a1', 'a2'], ['a2', 'a1'])).toEqual(['b1', 'b2', 'a2', 'a1'])
   })
 })

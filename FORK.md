@@ -27,6 +27,82 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only feature/fix — 2026-07-22 (desktop: sidebar drag-to-reorder inside a project/branch view, plus a nested-DndContext bug that broke it)
+
+Reported: user wanted to hand-reorder sessions in the sidebar; noted the
+existing project/branch (grouped) view visibly reshuffled lanes on its own
+("occasionally jump active ones to the top... random and kind of jarring").
+After a first implementation pass, the user rebuilt the desktop app and
+reported dragging a session did nothing — the panel/pane-split gesture fired
+instead.
+
+**Root cause 1 (the original ask):** the flat Recents/Pinned sidebar lists
+already supported drag-to-reorder (`dnd-kit`), deliberately sorted by creation
+time — never activity — to avoid exactly this jitter. Inside an entered
+project, though, sessions were flat, non-draggable, and grouped into
+branch/worktree "lanes." Those lanes were re-sorted by `sortWorktreeGroups` —
+an *activity*-based sort — on every project-tree refresh (turn completion,
+window focus, etc.) inside `mergeRepoWorktreeGroups`. A pre-existing, dead
+persisted-order atom (`$sidebarWorkspaceOrderIds`) was applied *before* that
+merge step but got silently discarded by the merge's own trailing sort every
+time, so no manual lane order could ever stick — this was the actual source
+of the "jumps to top" jitter.
+
+**Fix 1:** `mergeRepoWorktreeGroups` now accepts an optional manual lane order
+and applies it *after* the default activity sort (instead of always ending on
+it). Repurposed the existing `$sidebarWorkspaceOrderIds` atom rather than
+adding a new one. Added drag handles to lane headers (`WorkspaceHeader`) and a
+new per-lane session order map (`$sidebarLaneSessionOrderIds`, keyed by lane
+id, with a prune helper for stale lanes) so sessions inside a lane can also be
+manually reordered, independent of the lane's own order.
+
+**Root cause 2 (why dragging did nothing after rebuild):** two compounding
+issues.
+1. A concurrent `hermes update` autostashed the entire uncommitted diff during
+   the user's rebuild — the tested build contained none of the sidebar
+   changes at all. (Same incident class as the two entries below this one;
+   the "commit immediately" mandatory-workflow rule above exists because of
+   this exact failure mode.)
+2. Independently, the implementation itself had a real bug: it nested a
+   `DndContext` for session-level dragging *inside* another `DndContext` for
+   lane-level dragging (`ReorderableList` used twice, once per level).
+   `dnd-kit` does not support nesting `DndContext` providers — the outer
+   context's sensors capture pointer events first, so the inner list's drag
+   handles silently stop reordering and the gesture falls through to
+   whatever's listening outside (here, the sidebar row's own
+   `startSessionDrag` pane-split/tile-open gesture). This would have broken
+   dragging even without the autostash.
+
+**Fix 2:** rebuilt `RepoFlatSection` (`entered-content.tsx`) around dnd-kit's
+documented "multiple containers" pattern — **one shared `DndContext`** per
+repo subtree, with sibling/nested `SortableContext`s for lanes and each
+lane's sessions, and a single `onDragEnd` dispatcher that branches on a
+tagged `data.type` (`'lane'` vs `{type:'session', laneId}`) to resolve which
+array to reorder. A session only ever reorders within its own lane — dropping
+it on a different lane or a lane header is a no-op, never an implicit
+cross-lane move. Added a `SortableGroup` primitive (bare `SortableContext`,
+no `DndContext` of its own) to `reorderable-list.tsx` for this nesting case,
+with the pitfall documented directly in that file's header comment so it
+isn't reintroduced.
+
+Verified: `tsc --noEmit` clean (both `tsconfig.json` and
+`tsconfig.electron.json`), `eslint` clean, 76 targeted unit tests pass
+(15 new: manual-order vs default-order behavior in `mergeRepoWorktreeGroups`,
+`mergeReorderedSubset` subset-isolation, lane-session-order
+persistence/pruning), and a real `vite build` succeeds (no new errors/warnings
+beyond the pre-existing chunk-size notice).
+
+Files: `apps/desktop/src/app/chat/sidebar/index.tsx`,
+`apps/desktop/src/app/chat/sidebar/order.ts` (+ test),
+`apps/desktop/src/app/chat/sidebar/reorderable-list.tsx`,
+`apps/desktop/src/app/chat/sidebar/sessions-section.tsx`,
+`apps/desktop/src/app/chat/sidebar/projects/entered-content.tsx`,
+`apps/desktop/src/app/chat/sidebar/projects/workspace-group.tsx`,
+`apps/desktop/src/app/chat/sidebar/projects/workspace-groups.ts` (+ test),
+`apps/desktop/src/app/chat/sidebar/projects/workspace-header.tsx`,
+`apps/desktop/src/store/layout.ts`, new
+`apps/desktop/src/store/layout-lane-order.test.ts`.
+
 ### Fork-only fix — 2026-07-22 (desktop: terminal glyphs render as tofu boxes, missing Nerd Font fallback)
 
 Reported symptom: the embedded xterm.js terminal pane rendered shell-prompt

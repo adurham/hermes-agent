@@ -104,6 +104,62 @@ describe('sortWorktreeGroups', () => {
   })
 })
 
+describe('mergeRepoWorktreeGroups (manual lane order)', () => {
+  it('uses the activity-based default order when no manual order is given', () => {
+    const repo = {
+      id: '/repo',
+      path: '/repo',
+      groups: [
+        lane({ id: 'main', label: 'main', isMain: true, sessions: [makeSession('/x', { last_active: 1 })] }),
+        lane({ id: 'busy', label: 'busy', isMain: false, sessions: [makeSession('/x', { last_active: 500 })] }),
+        lane({ id: 'stale', label: 'stale', isMain: false, sessions: [makeSession('/x', { last_active: 10 })] })
+      ]
+    }
+
+    expect(mergeRepoWorktreeGroups(repo, undefined).map(g => g.id)).toEqual(['main', 'busy', 'stale'])
+  })
+
+  it('applies a manual lane order over the activity-based default, surfacing unlisted lanes first', () => {
+    const repo = {
+      id: '/repo',
+      path: '/repo',
+      groups: [
+        lane({ id: 'main', label: 'main', isMain: true, sessions: [makeSession('/x', { last_active: 1 })] }),
+        lane({ id: 'busy', label: 'busy', isMain: false, sessions: [makeSession('/x', { last_active: 500 })] }),
+        lane({ id: 'stale', label: 'stale', isMain: false, sessions: [makeSession('/x', { last_active: 10 })] })
+      ]
+    }
+
+    // User dragged `stale` above `busy`; the manual order must survive even
+    // though `stale` has far less recent activity — this is the exact bug
+    // (lanes silently re-sorting back to activity order on every refresh).
+    expect(mergeRepoWorktreeGroups(repo, undefined, ['main', 'stale', 'busy']).map(g => g.id)).toEqual([
+      'main',
+      'stale',
+      'busy'
+    ])
+  })
+
+  it('surfaces a newly discovered lane ahead of a stale manual order instead of dropping it', () => {
+    const repo = {
+      id: '/repo',
+      path: '/repo',
+      groups: [
+        lane({ id: 'main', label: 'main', isMain: true, sessions: [makeSession('/x', { last_active: 1 })] }),
+        lane({ id: 'a', label: 'a', isMain: false, sessions: [makeSession('/x', { last_active: 5 })] }),
+        lane({ id: 'b', label: 'b', isMain: false, sessions: [makeSession('/x', { last_active: 5 })] })
+      ]
+    }
+
+    // Manual order only knows about 'main' and 'a' — 'b' is new since the order
+    // was saved and must not vanish from the sidebar.
+    const result = mergeRepoWorktreeGroups(repo, undefined, ['a', 'main']).map(g => g.id)
+
+    expect(result).toContain('b')
+    expect(result).toHaveLength(3)
+  })
+})
+
 describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
   it('injects a linked worktree lane discovered by git that has no sessions yet', () => {
     const repo = {

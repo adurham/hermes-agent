@@ -2,6 +2,8 @@ import type { HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
 
+import { orderByIds } from '../order'
+
 // Session grouping is now computed authoritatively on the backend
 // (`tui_gateway/project_tree.py`, exposed via `projects.tree` /
 // `projects.project_sessions`). The desktop is a thin renderer: this module
@@ -163,7 +165,8 @@ export function sortWorktreeGroups(groups: SidebarSessionGroup[]): SidebarSessio
  */
 export function mergeRepoWorktreeGroups(
   repo: Pick<SidebarWorkspaceTree, 'groups' | 'id' | 'path'>,
-  discoveredWorktrees?: HermesGitWorktree[]
+  discoveredWorktrees?: HermesGitWorktree[],
+  laneOrderIds?: string[]
 ): SidebarSessionGroup[] {
   // Branch-primary labels: a linked worktree's identity in every git UI (VS
   // Code, JetBrains, lazygit, …) is its CHECKED-OUT BRANCH, not the directory it
@@ -322,7 +325,13 @@ export function mergeRepoWorktreeGroups(
     seenLabels.add(label.toLowerCase())
   }
 
-  return sortWorktreeGroups(merged)
+  const defaultOrdered = sortWorktreeGroups(merged)
+
+  // A manual drag-order (when present) wins over the activity-based default —
+  // otherwise every project-tree refresh (turn completion, focus, etc.) would
+  // silently discard the user's chosen lane order and re-sort by recency,
+  // which is exactly the "jumps to top" jitter this order exists to prevent.
+  return laneOrderIds?.length ? orderByIds(defaultOrdered, group => group.id, laneOrderIds) : defaultOrdered
 }
 
 // ── Live session overlay ─────────────────────────────────────────────────────
