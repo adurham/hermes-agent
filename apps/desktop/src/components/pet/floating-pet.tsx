@@ -277,7 +277,9 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
 
   // Never strand or crop the pet: re-clamp (and persist) whenever the viewport
   // shrinks or the pet's own size changes (wheel/slider). `clamp` carries the
-  // current size, so depending on it covers both triggers.
+  // current size, so depending on it covers both triggers. Zone-mode positions
+  // are container-local and never persisted — POSITION_KEY belongs to the
+  // full-window pet's coordinate space.
   useEffect(() => {
     const reclamp = () =>
       setPosition(prev => {
@@ -287,7 +289,9 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
           return prev
         }
 
-        persistString(POSITION_KEY, JSON.stringify(next))
+        if (!zoneContainer) {
+          persistString(POSITION_KEY, JSON.stringify(next))
+        }
 
         return next
       })
@@ -296,31 +300,49 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     window.addEventListener('resize', reclamp)
 
     return () => window.removeEventListener('resize', reclamp)
-  }, [clamp])
+  }, [clamp, zoneContainer])
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    const el = containerRef.current
+  // Viewport→container-local conversion. In zone mode style.left/top are
+  // relative to the zone container; in full-window mode (position:fixed)
+  // viewport coords ARE the style coords, so the origin is (0,0).
+  const zoneOrigin = useCallback((): Point => {
+    const z = zoneContainer?.current?.getBoundingClientRect()
 
-    if (!el) {
-      return
-    }
+    return z ? { x: z.left, y: z.top } : { x: 0, y: 0 }
+  }, [zoneContainer])
 
-    const rect = el.getBoundingClientRect()
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      const el = containerRef.current
 
-    // Shift-click pops the pet out into a free-floating desktop overlay (it can
-    // leave the window and stays visible while Hermes is minimized) instead of
-    // starting an in-window drag. Primary window only — the overlay is anchored
-    // to it.
-    if (e.shiftKey && !isSecondaryWindow()) {
-      popOutPet({ height: rect.height, width: rect.width, x: rect.left, y: rect.top })
+      if (!el) {
+        return
+      }
 
-      return
-    }
+      const rect = el.getBoundingClientRect()
 
-    dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top, x: rect.left, y: rect.top }
-    el.setPointerCapture(e.pointerId)
-    el.style.cursor = 'grabbing'
-  }, [])
+      // Shift-click pops the pet out into a free-floating desktop overlay (it can
+      // leave the window and stays visible while Hermes is minimized) instead of
+      // starting an in-window drag. Primary window only — the overlay is anchored
+      // to it.
+      if (e.shiftKey && !isSecondaryWindow()) {
+        popOutPet({ height: rect.height, width: rect.width, x: rect.left, y: rect.top })
+
+        return
+      }
+
+      const origin = zoneOrigin()
+      dragRef.current = {
+        dx: e.clientX - rect.left,
+        dy: e.clientY - rect.top,
+        x: rect.left - origin.x,
+        y: rect.top - origin.y
+      }
+      el.setPointerCapture(e.pointerId)
+      el.style.cursor = 'grabbing'
+    },
+    [zoneOrigin]
+  )
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
@@ -331,7 +353,10 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         return
       }
 
-      const next = clamp({ x: e.clientX - drag.dx, y: e.clientY - drag.dy })
+      // clientX/Y are viewport coords; convert the drag target into the pet's
+      // positioning space (container-local in zone mode) before clamping.
+      const origin = zoneOrigin()
+      const next = clamp({ x: e.clientX - drag.dx - origin.x, y: e.clientY - drag.dy - origin.y })
       drag.x = next.x
       drag.y = next.y
       // Mutate the DOM directly — no setState, so no re-render while dragging. The
@@ -345,7 +370,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         spriteWrapRef.current.style.transform = facing(next.x, petW, zone)
       }
     },
-    [clamp, petW]
+    [clamp, petW, zoneOrigin, zoneContainer]
   )
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
@@ -355,7 +380,10 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
       dragRef.current = null
       const committed = { x: drag.x, y: drag.y }
       setPosition(committed)
-      persistString(POSITION_KEY, JSON.stringify(committed))
+
+      if (!zoneContainer) {
+        persistString(POSITION_KEY, JSON.stringify(committed))
+      }
     }
 
     const el = containerRef.current
@@ -364,7 +392,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
       el.style.cursor = 'grab'
       el.releasePointerCapture?.(e.pointerId)
     }
-  }, [])
+  }, [zoneContainer])
 
   // Alt+wheel over the pet resizes it (persisted via the same path as the
   // settings slider). Zoom toward the cursor — shift the top-left so the pixel
@@ -374,19 +402,27 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     (next: number, { clientX, clientY, ratio }: PetZoomAnchor) => {
       setPetScale(requestGateway, next)
       setPosition(prev => {
+        // clientX/Y are viewport coords; prev is in the pet's positioning
+        // space (container-local in zone mode) — convert before anchoring.
+        const origin = zoneOrigin()
+        const localX = clientX - origin.x
+        const localY = clientY - origin.y
         const at = clampPoint(
-          clientX - (clientX - prev.x) * ratio,
-          clientY - (clientY - prev.y) * ratio,
+          localX - (localX - prev.x) * ratio,
+          localY - (localY - prev.y) * ratio,
           (info.frameW ?? 192) * next,
-          (info.frameH ?? 208) * next
+          (info.frameH ?? 208) * next,
+          zoneContainer?.current?.getBoundingClientRect()
         )
 
-        persistString(POSITION_KEY, JSON.stringify(at))
+        if (!zoneContainer) {
+          persistString(POSITION_KEY, JSON.stringify(at))
+        }
 
         return at
       })
     },
-    [requestGateway, info.frameW, info.frameH]
+    [requestGateway, info.frameW, info.frameH, zoneOrigin, zoneContainer]
   )
 
   usePetZoomGesture(containerRef, onScale, active && !overlayActive)
@@ -394,11 +430,18 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   // Commit a roamed-to position back to React state + storage when the wander
   // loop settles, so the inline style matches the DOM once the loop stops
   // driving it imperatively. Stable identity keeps the roam effect from
-  // restarting every render.
-  const commitRoamPosition = useCallback((point: Point) => {
-    setPosition(point)
-    persistString(POSITION_KEY, JSON.stringify(point))
-  }, [])
+  // restarting every render. Zone-mode positions are container-local — never
+  // persisted to the full-window POSITION_KEY.
+  const commitRoamPosition = useCallback(
+    (point: Point) => {
+      setPosition(point)
+
+      if (!zoneContainer) {
+        persistString(POSITION_KEY, JSON.stringify(point))
+      }
+    },
+    [zoneContainer]
+  )
 
   const isDragging = useCallback(() => dragRef.current !== null, [])
 

@@ -109,10 +109,21 @@ export function usePetRoam({
     const walkSpeedPxS = (petW * STRIDE_PER_LOOP) / (loopMs / 1000)
     const restY = (ledge: Ledge): number => groundTop(ledge, petH)
 
+    // In zone mode the pet is position:absolute inside the zone container, so
+    // style.left/top are CONTAINER-LOCAL — but getBoundingClientRect() always
+    // returns VIEWPORT coords. This origin converts between the two; (0,0)
+    // in full-window mode where the two spaces coincide (position:fixed).
+    const zoneOrigin = (): Point => {
+      const z = zoneContainer?.current?.getBoundingClientRect()
+
+      return z ? { x: z.left, y: z.top } : { x: 0, y: 0 }
+    }
+
     // Seed from the live DOM rect so we resume from wherever the pet actually is
     // (after a drag, reclamp, or activity pause) rather than a stale closure.
     const rect = el.getBoundingClientRect()
-    const cur: Point = { x: rect.left, y: rect.top }
+    const origin = zoneOrigin()
+    const cur: Point = { x: rect.left - origin.x, y: rect.top - origin.y }
 
     let phase: Phase = 'pause'
     let pauseUntil = performance.now() + rand(400, 1200)
@@ -176,11 +187,13 @@ export function usePetRoam({
     const planNext = (now: number) => {
       // An open overlay swaps the surface set to just its bottom edge, so the pet
       // patrols along it; closing it restores the normal surfaces (and the pet
-      // drops to whatever's below).
-      const ledges = overlayOpen
-        ? [overlayLedge(petW)]
-        : zoneContainer?.current
-          ? snapshotContainerLedges(zoneContainer.current, petW, petH)
+      // drops to whatever's below). Zone mode wins: the zone pane isn't covered
+      // by route overlays' viewport-space ledge, and its ledges are
+      // container-local anyway.
+      const ledges = zoneContainer?.current
+        ? snapshotContainerLedges(zoneContainer.current, petW, petH)
+        : overlayOpen
+          ? [overlayLedge(petW)]
           : snapshotLedges(petW, petH)
       curLedge = resolveLedge(ledges, cur.x, cur.y, petH)
 
@@ -224,8 +237,9 @@ export function usePetRoam({
       // reset the idle beat so it doesn't bolt the instant it's let go.
       if (isInteracting()) {
         const live = el.getBoundingClientRect()
-        cur.x = live.left
-        cur.y = live.top
+        const liveOrigin = zoneOrigin()
+        cur.x = live.left - liveOrigin.x
+        cur.y = live.top - liveOrigin.y
         phase = 'pause'
         pendingHop = null
         // Short settle so the pet falls right after you drop it, not seconds later.
