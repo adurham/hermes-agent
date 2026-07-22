@@ -3,6 +3,74 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+## Mandatory workflow for every fork-only change
+
+Every fork-only fix/feature landed in this repo — no exceptions — must complete
+all three of the following before the task is considered done:
+
+1. **Document it in this file** — add a dated `### Fork-only fix/feature — YYYY-MM-DD (...)`
+   entry (see the existing entries below for the expected level of detail:
+   symptom, root cause, fix, files touched, verification).
+2. **Commit it to git** — uncommitted changes are not durable. Multiple
+   concurrent Hermes sessions can run against this same working tree
+   (different terminals/windows/profiles), and any one of them doing a
+   `git reset`/`checkout` can silently wipe an uncommitted edit sitting in
+   another session's context. Commit as soon as the change is verified working
+   — don't leave it staged/unstaged across turns.
+3. **Push to `origin/main`** — unless the user has explicitly said they're
+   working on a branch other than `main` for this task (a sync branch, a
+   feature branch, etc.), in which case push there instead. An unpushed local
+   commit is still vulnerable to a sibling session's `git reset --hard
+   origin/main`, which a plain local commit does not protect against.
+
+This sequence is not optional or "when convenient" — it is the definition of
+done for a fork change. Skipping step 2 or 3 is how a fix gets silently
+reverted and re-discovered as "still happening" days later.
+
+### Fork-only fix — 2026-07-22 (desktop: clicking back into a still-running session showed a blank transcript)
+
+Reported symptom: user clicked back into a session that was actively
+running/thinking (backend logs, pet-zone indicator, and the sidebar dot all
+confirmed it was still working), but the transcript pane rendered completely
+blank instead of the in-progress conversation.
+
+Root cause: `syncSessionStateToView()`
+(`apps/desktop/src/app/session/hooks/use-session-state-cache.ts`) already had
+logic to force a synchronous flush for "critical transitions" (turn finished,
+needs input) specifically to avoid a documented sibling bug — the code's own
+comment names it: "Electron throttles `requestAnimationFrame` to ~0 while the
+window is backgrounded, occluded, or unfocused, so an RAF-deferred flush can be
+stranded in `pendingViewStateRef` indefinitely — that's the 'new chat stuck on
+Thinking until I refocus' bug." That synchronous-flush gate never covered a
+third case: switching onto a session that is ALREADY busy (clicking back into
+a running session, resuming a warm-cached busy session). That first paint was
+RAF-batched identically to a routine steady-state heartbeat; if the RAF tick
+landed on a throttled frame, the transcript stayed blank indefinitely with
+nothing else around to force a flush until the turn eventually finished.
+
+**Fix:** added an `isSessionSwitch` check (`sessionId !==
+viewSessionIdRef.current`, i.e. this session's transcript isn't the one
+currently painted into `$messages`) to the existing critical-transition gate,
+so the first paint after a session switch always flushes synchronously exactly
+like a terminal transition. Repeat heartbeats to a session already on screen
+are unaffected and still get the RAF coalescing that avoids scroll-position
+jank.
+
+Verified: `use-session-state-cache.test.tsx` (10/10) and
+`use-session-actions.test.tsx` (31/31, covers the warm-cache resume paths that
+call this function) both pass; `tsc --noEmit` clean on the modified file.
+
+**Note (2026-07-22, later same day):** this fix was initially applied and
+verified but left uncommitted across a turn boundary, and a concurrent Hermes
+session's `git reset` on the same working tree silently wiped it — rediscovered
+via "this is still happening." Re-applied, re-verified, and this time committed
++ pushed immediately. This incident is what prompted the "Mandatory workflow
+for every fork-only change" section at the top of this file.
+
+Commit: `356e55e15`.
+
+Files: `apps/desktop/src/app/session/hooks/use-session-state-cache.ts`.
+
 ### Fork-only fix — 2026-07-22 (desktop: work profile deletion silently reverted after quitting and reopening the app)
 
 Reported symptom: deleting the "work" profile from the desktop app's Manage
