@@ -27,6 +27,47 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only feature — 2026-07-22 (desktop: sidebar drag-to-reorder from anywhere on the session name, not just a dedicated grab icon)
+
+Follow-up to the sidebar drag-to-reorder entry directly below: the reorder
+handle worked (see that entry for the nested-DndContext bug it fixed), but
+the drag surface was a tiny dedicated dot/grabber icon — the user asked for
+drag-to-reorder to also work when clicking and dragging from the session's
+name/label, not just that small icon.
+
+`SidebarSessionRow` (`session-row.tsx`) got `dragHandleProps` (dnd-kit's
+`{...attributes, ...listeners}` from `useSortable`) as a single bundle,
+applied only to the small `SidebarRowGrab` dot wrapper via
+`data-reorder-handle` — everything else in the row, including the label,
+fell through to the row's own separate pointer-drag system
+(`startSessionDrag`, used for dragging a session into a pane/tab/split),
+which `.closest('[data-reorder-handle]')`-excludes from firing wherever that
+attribute is present.
+
+**Fix:** added `splitDragHandleProps()` (`session-row-state.ts`) to split
+dnd-kit's combined `dragHandleProps` into its POINTER activator
+(`onPointerDown`) and everything else (the KEYBOARD activator's `onKeyDown`
+plus `attributes` — role/tabIndex/aria-*). The row now wraps
+dot+handoff-badge+label in a `display: contents` span (so it doesn't disturb
+`SidebarRowBody`'s flex/gap layout) carrying only the pointer half +
+`data-reorder-handle` — dragging now starts from anywhere across that wider
+cluster, including the label, while a plain click still bubbles to the
+button's `onClick` untouched (dnd-kit's existing 6px movement threshold is
+what decides "drag" vs "click", not this wrapper). The keyboard half stays on
+the small dot alone (unchanged `SidebarRowGrab`, a real focusable element),
+because `display: contents` strips an element from the accessibility tree —
+it can never be dnd-kit's `KeyboardSensor` activator, which needs a real,
+focusable `role="button"` node to Tab onto. Without this split, Tab + Space +
+Arrow reordering would have silently stopped working for session rows.
+
+Verified: `tsc --noEmit` clean (both tsconfig targets), `eslint` clean, a
+real `vite build` succeeds, and 72 sidebar unit tests pass (2 new, covering
+`splitDragHandleProps`'s pointer/keyboard split and its `undefined` input
+case for non-reorderable rows).
+
+Files: `apps/desktop/src/app/chat/sidebar/session-row-state.ts` (+ test),
+`apps/desktop/src/app/chat/sidebar/session-row.tsx`.
+
 ### Fork-only feature/fix — 2026-07-22 (desktop: sidebar drag-to-reorder inside a project/branch view, plus a nested-DndContext bug that broke it)
 
 Reported: user wanted to hand-reorder sessions in the sidebar; noted the

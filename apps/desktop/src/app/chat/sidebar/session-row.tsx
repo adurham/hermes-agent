@@ -22,7 +22,7 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
-import { type SessionDotState, sessionDotState, sessionShowsRunningArc } from './session-row-state'
+import { type SessionDotState, sessionDotState, sessionShowsRunningArc, splitDragHandleProps } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -105,6 +105,33 @@ export function SidebarSessionRow({
   // to collapse them at the leaf is backwards.
   const dotState = sessionDotState({ hasBackground, isStalled, isUnread, isWorking, needsInput })
 
+  // Split dnd-kit's dragHandleProps ({...attributes, ...listeners}) so the
+  // POINTER activator (onPointerDown) can cover the wide dot+label area —
+  // "drag from the name" — while the KEYBOARD activator stays on the small
+  // dot alone. See splitDragHandleProps for why (display:contents strips the
+  // wide wrapper from the accessibility tree, so it can't be the KeyboardSensor's
+  // focusable activator node).
+  const { keyboardProps: reorderKeyboardProps, pointerDown: reorderPointerDown } = splitDragHandleProps(
+    dragHandleProps as undefined | Record<string, unknown>
+  )
+
+  const handoffBadge =
+    handoffSource && handoffLabel ? (
+      <Tip label={r.handoffOrigin(handoffLabel)}>
+        <PlatformAvatar
+          className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
+          platformId={handoffSource}
+          platformName={handoffLabel}
+        />
+      </Tip>
+    ) : null
+
+  const label = (
+    <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+      {title}
+    </SidebarRowLabel>
+  )
+
   return (
     <SessionContextMenu
       onArchive={onArchive}
@@ -183,7 +210,15 @@ export function SidebarSessionRow({
           <span aria-hidden="true" className="row-pulse-underline" />
         )}
         <SidebarRowBody
-          className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+          className={cn(
+            'z-0 group-hover:pr-12',
+            branchStem && 'pl-3.5',
+            // Cursor affordance for the wide pointer-drag surface below —
+            // the actual `touch-none`/grab styling on the surface itself
+            // lives on the dot (SidebarRowGrab); this just keeps the cursor
+            // consistent while hovering the label too.
+            reorderable && (dragging ? 'cursor-grabbing' : 'cursor-grab')
+          )}
           // Middle-click = open in a new tab (browser muscle memory). Swallow
           // the mousedown so Chromium doesn't enter autoscroll mode.
           onAuxClick={event => {
@@ -232,36 +267,41 @@ export function SidebarSessionRow({
           onMouseDown={event => event.button === 1 && event.preventDefault()}
         >
           {reorderable ? (
-            <SidebarRowGrab
-              ariaLabel={handleLabel}
-              dragging={dragging}
-              dragHandleProps={dragHandleProps}
-              leadClassName={needsInput ? 'overflow-visible' : undefined}
-            >
-              <SessionRowLeadDot
-                branchStem={branchStem}
-                className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                dotState={dotState}
-                projectColor={projectColor}
-              />
-            </SidebarRowGrab>
+            // Wide pointer-drag surface: dot + handoff badge + label are all
+            // "the handle" now — drag starts from anywhere in that cluster,
+            // not just the tiny dot. `display: contents` keeps SidebarRowBody's
+            // flex/gap layout exactly as if this span weren't here; only the
+            // POINTER activator (no `attributes`/tabIndex) lives here, so a
+            // plain click still bubbles to the button's onClick (resume/pin)
+            // untouched — dnd-kit's 6px movement threshold is what decides
+            // "drag" vs "click", not this wrapper. The real, focusable
+            // keyboard handle stays on the small dot below (SidebarRowGrab).
+            <span className="contents" data-reorder-handle onPointerDown={reorderPointerDown}>
+              <SidebarRowGrab
+                ariaLabel={handleLabel}
+                dragging={dragging}
+                dragHandleProps={reorderKeyboardProps}
+                leadClassName={needsInput ? 'overflow-visible' : undefined}
+              >
+                <SessionRowLeadDot
+                  branchStem={branchStem}
+                  className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                  dotState={dotState}
+                  projectColor={projectColor}
+                />
+              </SidebarRowGrab>
+              {handoffBadge}
+              {label}
+            </span>
           ) : (
-            <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} projectColor={projectColor} />
-            </SidebarRowLead>
+            <>
+              <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
+                <SessionRowLeadDot branchStem={branchStem} dotState={dotState} projectColor={projectColor} />
+              </SidebarRowLead>
+              {handoffBadge}
+              {label}
+            </>
           )}
-          {handoffSource && handoffLabel ? (
-            <Tip label={r.handoffOrigin(handoffLabel)}>
-              <PlatformAvatar
-                className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
-                platformId={handoffSource}
-                platformName={handoffLabel}
-              />
-            </Tip>
-          ) : null}
-          <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
-          </SidebarRowLabel>
           {showProfile && <ProfileTag profile={session.profile} />}
         </SidebarRowBody>
       </SidebarRowShell>
