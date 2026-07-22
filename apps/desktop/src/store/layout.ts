@@ -81,6 +81,27 @@ export const $sidebarWorkspaceOrderIds = persistentAtom(
   [] as string[],
   Codecs.stringArray
 )
+// Manual drag-order of sessions WITHIN a single workspace lane (repo/branch/
+// worktree), keyed by lane id. Each lane reorders independently — dragging
+// inside `main` never touches a linked worktree's order. Empty/absent for a
+// lane = the deterministic recency sort; orderByIds surfaces new sessions on
+// top once a lane has a manual order, same as the flat Recents list.
+const SIDEBAR_LANE_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.laneSessionOrder'
+export const $sidebarLaneSessionOrderIds = persistentAtom(
+  SIDEBAR_LANE_SESSION_ORDER_STORAGE_KEY,
+  {} as Record<string, string[]>,
+  Codecs.json(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {}
+    }
+
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]))
+        .map(([laneId, ids]) => [laneId, ids.filter((id): id is string => typeof id === 'string' && id.length > 0)])
+    )
+  })
+)
 // Order of the top-level repo "parent" groups in the worktree tree (worktrees
 // within a parent reuse $sidebarWorkspaceOrderIds).
 export const $sidebarWorkspaceParentOrderIds = persistentAtom(
@@ -296,6 +317,51 @@ export function setSidebarWorkspaceOrderIds(ids: string[]) {
 
 export function setSidebarWorkspaceParentOrderIds(ids: string[]) {
   setOrderIds($sidebarWorkspaceParentOrderIds, ids)
+}
+
+// Persist a lane's manual session order (id-only; caller resolves against
+// live sessions). An empty order removes the lane's entry entirely rather
+// than persisting an empty array forever.
+export function setSidebarLaneSessionOrderIds(laneId: string, ids: string[]) {
+  const current = $sidebarLaneSessionOrderIds.get()
+  const existing = current[laneId] ?? []
+
+  if (arraysEqual(existing, ids)) {
+    return
+  }
+
+  if (!ids.length) {
+    if (!(laneId in current)) {
+      return
+    }
+
+    const { [laneId]: _dropped, ...rest } = current
+
+    $sidebarLaneSessionOrderIds.set(rest)
+
+    return
+  }
+
+  $sidebarLaneSessionOrderIds.set({ ...current, [laneId]: ids })
+}
+
+// Drop persisted lane orders for lanes that no longer exist (repo deleted,
+// worktree removed, branch renamed) so the map doesn't grow unbounded.
+export function pruneSidebarLaneSessionOrderIds(liveLaneIds: ReadonlySet<string>) {
+  const current = $sidebarLaneSessionOrderIds.get()
+  const staleKeys = Object.keys(current).filter(laneId => !liveLaneIds.has(laneId))
+
+  if (!staleKeys.length) {
+    return
+  }
+
+  const next = { ...current }
+
+  for (const laneId of staleKeys) {
+    delete next[laneId]
+  }
+
+  $sidebarLaneSessionOrderIds.set(next)
 }
 
 export function setSidebarProjectOrderIds(ids: string[]) {

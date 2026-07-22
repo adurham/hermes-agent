@@ -592,14 +592,15 @@ export function ChatSidebar({
     }
   }, [worktreeGroupingActive, gatewayReady])
 
-  // Apply the persisted repo + worktree orders to a project's repo subtrees.
+  // Apply the persisted repo order to a project's repo subtrees. Lane order
+  // (which worktree/branch comes first WITHIN a repo) is applied later, inside
+  // mergeRepoWorktreeGroups — applying it here too was dead weight: that
+  // function's own default sort ran again after this and silently discarded
+  // it (the root cause of lanes "jumping" on every project-tree refresh).
   const orderRepos = useCallback(
     (repos: SidebarWorkspaceTree[]): SidebarWorkspaceTree[] =>
-      orderByIds(repos, parent => parent.id, workspaceParentOrderIds).map(parent => ({
-        ...parent,
-        groups: orderByIds(parent.groups, group => group.id, workspaceOrderIds)
-      })),
-    [workspaceParentOrderIds, workspaceOrderIds]
+      orderByIds(repos, parent => parent.id, workspaceParentOrderIds),
+    [workspaceParentOrderIds]
   )
 
   // ── Projects: the single top-level model (authoritative, from the backend) ──

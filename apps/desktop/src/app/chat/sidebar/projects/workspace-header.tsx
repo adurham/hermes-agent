@@ -14,7 +14,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { copyPath, revealPath } from '@/store/projects'
 
-import { SidebarCount, SidebarRowLead, WorkspaceWorkingDot } from '../chrome'
+import { SidebarCount, SidebarRowGrab, SidebarRowLead, WorkspaceWorkingDot } from '../chrome'
 
 import { WorktreeDialog } from './worktree-dialog'
 
@@ -149,7 +149,11 @@ export function WorkspaceHeader({
   onToggle,
   open,
   title,
-  workingWhileCollapsed = false
+  workingWhileCollapsed = false,
+  reorderable = false,
+  dragging = false,
+  dragHandleProps,
+  dragAriaLabel
 }: {
   action?: React.ReactNode
   count: React.ReactNode
@@ -166,7 +170,25 @@ export function WorkspaceHeader({
    *  hidden while collapsed, so this is additive, never a duplicate. Callers
    *  pass this only when `!open`; expanded groups rely on the child rows. */
   workingWhileCollapsed?: boolean
+  /** Drag-to-reorder this lane among its siblings (main/branches/worktrees). */
+  reorderable?: boolean
+  dragging?: boolean
+  dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  dragAriaLabel?: string
 }) {
+  const leadIcon = reorderable ? (
+    <SidebarRowGrab
+      ariaLabel={dragAriaLabel ?? label}
+      dragging={dragging}
+      dragHandleProps={dragHandleProps}
+      leadClassName="overflow-visible"
+    >
+      {icon}
+    </SidebarRowGrab>
+  ) : (
+    <SidebarRowLead>{icon}</SidebarRowLead>
+  )
+
   return (
     <div
       className={cn(
@@ -182,7 +204,7 @@ export function WorkspaceHeader({
         onClick={onToggle}
         type="button"
       >
-        <SidebarRowLead>{icon}</SidebarRowLead>
+        {leadIcon}
         <LaneLabel label={label} title={title ? `${label}\n${title}` : label} />
         {workingWhileCollapsed && <WorkspaceWorkingDot />}
         <span className="shrink-0">

@@ -7,14 +7,22 @@ import type * as React from 'react'
 // is rendered Y-only in useSortableBindings (no x, no scale); this just stops
 // dnd-kit's auto-scroll from dragging the rail — or the window — sideways when
 // the pointer nears an edge, killing the horizontal "drag to valhalla".
-const reorderAutoScroll = { threshold: { x: 0, y: 0.2 } }
+export const reorderAutoScroll = { threshold: { x: 0, y: 0.2 } }
 
-// One self-contained, nesting-safe reorderable list. It owns its DndContext, so a
-// drag only ever collides with THIS list's own items — drop it at any depth (repos,
-// worktrees, sessions) and reordering "just works" without leaking into the lists
-// around or inside it. Pair each item with useSortableBindings(id); the list reports
-// the new id order and the caller persists it. This is the single generic primitive
-// behind every reorderable surface in the sidebar.
+// A single, standalone reorderable list — it owns its own DndContext, so it is
+// safe to drop anywhere PROVIDED it is not itself nested inside another
+// ReorderableList/DndContext (Recents, Pinned, the project overview list).
+//
+// dnd-kit does NOT support nesting DndContext providers: when two are
+// ancestor/descendant, the OUTER one's sensors capture pointer events first,
+// so the inner list's drag handles silently stop reordering (the event either
+// no-ops or gets picked up by an unrelated outer gesture). For a lane that
+// itself contains draggable sessions (repos -> lanes -> sessions, all
+// reorderable), do NOT nest a second ReorderableList inside one of these —
+// build ONE DndContext for the whole subtree instead, with sibling/nested
+// SortableContexts (see `SortableGroup` below) and a single onDragEnd
+// dispatcher that branches on each item's `data.type`. See
+// projects/entered-content.tsx's RepoFlatSection for the reference pattern.
 export function ReorderableList({
   children,
   ids,
@@ -61,8 +69,21 @@ export function ReorderableList({
   )
 }
 
-export function useSortableBindings(id: string) {
-  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
+// A BARE SortableContext — no DndContext of its own. Use this (never a second
+// ReorderableList) to nest an independently-orderable group of items inside a
+// subtree that already has an ancestor DndContext. Sibling/nested
+// SortableContexts under ONE shared DndContext is dnd-kit's documented
+// "multiple containers" pattern; multiple DndContexts is not.
+export function SortableGroup({ children, ids }: { children: React.ReactNode; ids: string[] }) {
+  return (
+    <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+      {children}
+    </SortableContext>
+  )
+}
+
+export function useSortableBindings(id: string, data?: Record<string, unknown>) {
+  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ data, id })
 
   return {
     dragging: isDragging,

@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
@@ -10,6 +10,8 @@ import { switchBranchInRepo } from '@/store/projects'
 
 import { countLabel, SidebarRowStack } from '../chrome'
 import { SidebarLoadMoreRow } from '../load-more-row'
+import { orderByIds } from '../order'
+import { SortableGroup } from '../reorderable-list'
 
 import { SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
 import type { SidebarSessionGroup } from './workspace-groups'
@@ -17,7 +19,7 @@ import { WorkspaceAddButton, WorkspaceHeader, WorkspaceMenu, WorkspaceShowMoreBu
 
 interface SidebarWorkspaceGroupProps {
   group: SidebarSessionGroup
-  renderRows: (sessions: SessionInfo[]) => React.ReactNode
+  renderRows: (sessions: SessionInfo[], draggable?: boolean, sortData?: Record<string, unknown>) => React.ReactNode
   onNewSession?: (path: null | string) => void
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
@@ -28,6 +30,24 @@ interface SidebarWorkspaceGroupProps {
   // render inside `renderRows`, which a collapsed group never calls), so this
   // is the one place that state stays visible instead of vanishing on toggle.
   workingSessionIdSet?: Set<string>
+  // Drag-to-reorder THIS lane among its siblings (wired by the parent's own
+  // SortableGroup via useSortableBindings — see SortableWorkspaceGroup in
+  // entered-content.tsx). The actual DndContext + dispatcher live on the
+  // parent (RepoFlatSection) — see that file's header comment for why.
+  reorderable?: boolean
+  dragging?: boolean
+  dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  // Whether sessions inside this lane may drag-to-reorder at all. The actual
+  // persisted order and the DndContext handling the drop both live on the
+  // parent (RepoFlatSection); this component only renders the (bare, no
+  // DndContext of its own) SortableGroup wrapper and tags each row's sortable
+  // binding with {type: 'session', laneId} via renderRows' sortData param.
+  sessionsReorderable?: boolean
+  // A manual per-lane drag order (when set) wins over the backend's default
+  // (recency) session order.
+  laneSessionOrder?: string[]
+  ref?: React.Ref<HTMLDivElement>
+  style?: React.CSSProperties
 }
 
 export function SidebarWorkspaceGroup({
@@ -35,7 +55,14 @@ export function SidebarWorkspaceGroup({
   renderRows,
   onNewSession,
   onRemove,
-  workingSessionIdSet
+  workingSessionIdSet,
+  reorderable = false,
+  dragging = false,
+  dragHandleProps,
+  sessionsReorderable = false,
+  laneSessionOrder,
+  ref,
+  style
 }: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -47,13 +74,26 @@ export function SidebarWorkspaceGroup({
   const [open, toggleOpen] = useWorkspaceNodeOpen(group.id, defaultOpen)
   const [visibleCount, setVisibleCount] = useState(SIDEBAR_GROUP_PAGE)
 
-  const loadedCount = group.sessions.length
+  // A manual per-lane drag order (when set) wins over the backend's default
+  // (recency) order — same pattern as the flat Recents list, just scoped to
+  // this one lane instead of the whole sidebar.
+  const orderedSessions = useMemo(
+    () => (laneSessionOrder?.length ? orderByIds(group.sessions, session => session.id, laneSessionOrder) : group.sessions),
+    [group.sessions, laneSessionOrder]
+  )
+
+  const loadedCount = orderedSessions.length
   // Profile groups know their on-disk total (children excluded); workspace
   // groups only ever page within what's already loaded.
   const totalCount = isProfileGroup ? Math.max(group.totalCount ?? loadedCount, loadedCount) : loadedCount
-  const visibleSessions = group.sessions.slice(0, visibleCount)
+  const visibleSessions = orderedSessions.slice(0, visibleCount)
   const hiddenCount = Math.max(0, totalCount - visibleSessions.length)
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
+
+  // Sessions only drag-to-reorder when there's more than one visible AND the
+  // parent has enabled it for this view — branch/fork rows (rendered with a
+  // tree stem) never participate (mirrors the flat list's own exclusion).
+  const sessionsSortable = sessionsReorderable && visibleSessions.length > 1
 
   // Only matters while collapsed — an expanded group already shows the real
   // per-row indicator, so the aggregate would be a second, redundant cue.
@@ -111,8 +151,15 @@ export function SidebarWorkspaceGroup({
     onNewSession(group.path)
   }
 
+  const rows =
+    visibleSessions.length === 0 ? (
+      <div className="min-h-7 pl-2 text-[0.75rem] leading-7 text-(--ui-text-quaternary)">{s.noSessions}</div>
+    ) : (
+      renderRows(visibleSessions, sessionsSortable, sessionsSortable ? { laneId: group.id, type: 'session' } : undefined)
+    )
+
   return (
-    <SidebarRowStack>
+    <SidebarRowStack className={dragging ? 'relative z-10 bg-(--ui-sidebar-surface-background)' : undefined} ref={ref} style={style}>
       <WorkspaceHeader
         action={
           (onNewSession || isProfileGroup || onRemove) && (
@@ -131,19 +178,23 @@ export function SidebarWorkspaceGroup({
           )
         }
         count={isProfileGroup ? countLabel(visibleSessions.length, totalCount) : group.sessions.length}
+        dragAriaLabel={s.projects.reorder(group.label)}
+        dragging={dragging}
+        dragHandleProps={dragHandleProps}
         icon={leadingIcon}
         label={group.label}
         onToggle={toggleOpen}
         open={open}
+        reorderable={reorderable}
         title={group.path ?? undefined}
         workingWhileCollapsed={workingWhileCollapsed}
       />
       {open && (
         <>
-          {visibleSessions.length === 0 ? (
-            <div className="min-h-7 pl-2 text-[0.75rem] leading-7 text-(--ui-text-quaternary)">{s.noSessions}</div>
+          {sessionsSortable ? (
+            <SortableGroup ids={visibleSessions.map(session => session.id)}>{rows}</SortableGroup>
           ) : (
-            renderRows(visibleSessions)
+            rows
           )}
           {hiddenCount > 0 &&
             (isProfileGroup ? (

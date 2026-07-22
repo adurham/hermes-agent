@@ -68,3 +68,16 @@ export function reconcileOrderIds(currentIds: string[], orderIds: string[]): str
 export function sameIds(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index])
 }
+
+/**
+ * Merge a reordered subset back into a shared flat id list without disturbing
+ * ids outside that subset. Used when several independent nested lists (e.g.
+ * each repo's own set of worktree lanes) persist their manual order into ONE
+ * shared atom — reordering repo A's lanes must not drop repo B's saved order.
+ */
+export function mergeReorderedSubset(currentIds: string[], subsetIds: string[], newOrder: string[]): string[] {
+  const subset = new Set(subsetIds)
+  const others = currentIds.filter(id => !subset.has(id))
+
+  return [...others, ...newOrder]
+}
