@@ -489,7 +489,16 @@ function bindPaneCollapse(
   open: () => void
 ) {
   markCollapsePane(paneId)
-  setPaneCollapsed(paneId, !$open.get())
+  // front: false — this is a MOUNT-TIME reconciliation, not a user gesture.
+  // terminal and logs can share one zone; each has its OWN independently
+  // persisted open/closed store, and both can be "open" from a past session.
+  // Fronting on this initial sync would make the LAST-BOUND pane always win
+  // the shared zone's active tab on every boot (bindPaneCollapse('logs', …)
+  // runs after 'terminal' below, so logs would always steal the front tab
+  // from a Terminal-deck-style layout even though the user never touched
+  // logs this session). The persisted tree's own `active` field already
+  // knows which tab was actually last shown — leave it alone here.
+  setPaneCollapsed(paneId, !$open.get(), false)
   $open.listen(isOpen => setPaneCollapsed(paneId, !isOpen))
   registerPaneCloser(paneId, close)
   registerPaneOpener(paneId, open)

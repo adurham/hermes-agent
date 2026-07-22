@@ -27,6 +27,60 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-22 (desktop: Terminal-deck layout opened to the logs tab instead of terminal)
+
+**Symptom:** opening the desktop app while on the "Terminal deck" layout
+preset (or any layout where `terminal` and `logs` share one tabbed zone)
+showed the **logs** tab fronted, even though the user wanted/expected
+**terminal** to be active.
+
+**Root cause:** `terminal` and `logs` are both "tool panes" bound via
+`bindPaneCollapse(paneId, $open, close, open)` in
+`apps/desktop/src/app/contrib/controller.tsx`. Each pane's visibility is its
+own independently persisted boolean store (`$terminalTakeover`,
+`$logsOpen`), and they can land in the SAME tabbed zone (e.g. after using
+the Quad preset, which explicitly stacks them together). `bindPaneCollapse`
+ran `setPaneCollapsed(paneId, !$open.get())` unconditionally at MOUNT time
+for every tool pane to reconcile the pane's store against the tree — and
+`setPaneCollapsed`'s shared-zone branch always called `revealTreePane(paneId)`
+when the pane's store was "open," which always sets that pane as the zone's
+active tab. `terminal` is bound before `logs` in `controller.tsx`'s
+module-level code, so on every single app boot, `logs`'s mount-time sync ran
+LAST and unconditionally re-fronted logs over terminal whenever `$logsOpen`
+was persisted true from earlier in the session history — regardless of what
+the persisted layout tree's own `active` field said was actually last shown,
+and regardless of which preset the user had selected. This is a classic
+last-write-wins race decided by source-order of `bindPaneCollapse` calls, not
+by user intent.
+
+**Fix:** `revealTreePane(paneId, front = true)` and
+`setPaneCollapsed(paneId, collapsed, front = true)` gained a `front`
+parameter that gates ONLY the "make this the active tab" step — un-dismiss,
+un-collapse-side, un-hide, and un-minimize all still run regardless, since
+those are legitimate even during a boot-time reconciliation.
+`bindPaneCollapse`'s initial mount-time sync call now passes `front: false`,
+so it no longer steals the active tab away from whatever the persisted tree
+already recorded; only a genuine user gesture — the live `$open.listen`
+toggle callback, `restoreTreePane` (rail/chevron/tab click), a preview/review
+pane landing, applying a preset — still fronts with the default `front: true`.
+
+**Files:** `apps/desktop/src/components/pane-shell/tree/store.ts`
+(`revealTreePane`, `setPaneCollapsed`), `apps/desktop/src/app/contrib/controller.tsx`
+(`bindPaneCollapse`'s initial sync call).
+
+**Tests:** new regression test
+`apps/desktop/src/components/pane-shell/tree/bind-order-front.test.ts`
+mirrors `bindPaneCollapse`'s exact boot sequence (terminal bound first, logs
+bound last, both persisted-open) against a terminal-deck-shaped tree whose
+`active` starts as `terminal`; asserts `terminal` stays active after both
+binds run. Verified the test fails (`active` becomes `'logs'`) against the
+pre-fix code and passes after the fix. Full desktop `ui` vitest project:
+208 files / 1719 tests passed, no regressions.
+
+**Merge note:** touches only fork-owned `store.ts`/`controller.tsx` logic
+already present upstream — a straightforward 3-way merge on future syncs
+(no new files, no restructuring).
+
 ### Fork-only feature — 2026-07-22 (desktop: sidebar drag-to-reorder from anywhere on the session name, not just a dedicated grab icon)
 
 Follow-up to the sidebar drag-to-reorder entry directly below: the reorder
