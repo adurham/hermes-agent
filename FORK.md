@@ -27,6 +27,42 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-22 (desktop: terminal glyphs render as tofu boxes, missing Nerd Font fallback)
+
+Reported symptom: the embedded xterm.js terminal pane rendered shell-prompt
+icons (powerline separators, starship/oh-my-posh glyphs) as tofu/box
+placeholders, while the same prompt rendered correctly in kitty on the same
+machine.
+
+Root cause: both xterm.js `Terminal` instantiations (the interactive PTY
+terminal in `use-terminal-session.ts` and the read-only agent-output terminal
+in `use-agent-terminal.ts`) hardcoded a `fontFamily` stack — `'JetBrains
+Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace` — with no Nerd
+Font entry. None of those fonts ship the PUA glyph ranges Nerd Font-aware
+prompts assume. kitty renders correctly because its OS-level font-fallback
+path picks up an installed Nerd Font (Hack Nerd Font Mono / FiraCode Nerd Font
+Mono, both present under `~/Library/Fonts`) automatically when a glyph is
+missing from the configured font; Chromium's xterm.js canvas/WebGL renderer
+does not do the same automatic PUA fallback.
+
+**Fix:** added `'Hack Nerd Font Mono', 'FiraCode Nerd Font Mono', 'Symbols
+Nerd Font Mono'` to the `fontFamily` fallback chain (after `'JetBrains Mono'`,
+before the generic system fallbacks) in both terminal instantiation sites.
+
+**Note (2026-07-22, same incident class as the session below):** this fix was
+applied once, left uncommitted, and silently wiped by a concurrent Hermes
+session's git activity on the same shared working tree before it could be
+verified end-to-end. Root-caused via `git fsck --unreachable` (found the
+original edit stranded in an orphaned stash-merge commit created by another
+session's `hermes update` autostash) and re-applied. Committed immediately
+this time — see the "Mandatory workflow" section above, added as a direct
+result of this and the sibling incident below happening within the same hour.
+
+Commit: `edf9f4052`.
+
+Files: `apps/desktop/src/app/right-sidebar/terminal/use-terminal-session.ts`,
+`apps/desktop/src/app/right-sidebar/terminal/use-agent-terminal.ts`.
+
 ### Fork-only fix — 2026-07-22 (desktop: clicking back into a still-running session showed a blank transcript)
 
 Reported symptom: user clicked back into a session that was actively
