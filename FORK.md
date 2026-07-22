@@ -3765,6 +3765,90 @@ keeping both. The `FloatingPet` component signature changed from
 prop — any upstream call site that instantiates `<FloatingPet />` without
 the prop is unaffected (it's optional, defaults to full-window mode).
 
+### Fork-only fix — 2026-07-22 (pet zone: roam/drag used viewport coords, pet vanished)
+
+**Symptom:** with the pet zone enabled, the pet either never appeared or
+disappeared the moment you dragged it — flung outside the (clipped)
+`overflow: hidden` zone container.
+
+**Root cause:** two separate bugs stacked. (1) The default layout tree's
+right-column vertical `split()` had 3 children (rail row, terminal,
+pet-zone) but only 2 declared weights (`[1.6, 1]`) — the pet-zone group
+was silently dropped from the tree and never rendered at all. (2) Once
+visible, `getBoundingClientRect()` always returns viewport coordinates,
+but a zoned pet is `position: absolute`, so its `style.left/top` are
+container-local. The roam loop and drag handlers seeded/tracked directly
+from the rect without converting, so e.g. a viewport position of
+`(1400, 800)` got written as a *local* offset inside a ~300px pane —
+instantly outside the clipped zone.
+
+**Fix:** `controller.tsx`'s split weights corrected to `[1.6, 0.6, 0.4]`
+(3 children, 3 weights). `use-pet-roam.ts` gained a `zoneOrigin()` helper
+that subtracts the zone container's viewport offset when seeding the
+physics loop and when tracking during a drag-yield; zone ledges
+(`snapshotContainerLedges`) now take priority over the route-overlay
+ledge (which is viewport-space math and would corrupt zone coordinates
+whenever a route overlay — settings, profiles, etc. — is open).
+`floating-pet.tsx`'s drag handlers, Alt+wheel zoom anchor, and the
+initial mount position (`useState` initializer runs before the ref is
+attached, so it can't read the zone rect on first render — defaults to
+`{x:0,y:0}` when a `zoneContainer` prop is present) all convert pointer
+`clientX/Y` through the same origin before clamping. Zone-local positions
+are never written to the full-window `POSITION_KEY` — that key is in the
+wrong coordinate space and would teleport the full-window pet to a
+corner when the zone is toggled off.
+
+**Files:** `apps/desktop/src/app/contrib/controller.tsx`,
+`apps/desktop/src/components/pet/use-pet-roam.ts`,
+`apps/desktop/src/components/pet/floating-pet.tsx`.
+
+**Merge note:** fork-only file, no upstream equivalent — no conflict risk.
+
+### Fork-only feature — 2026-07-22 (pet interactions: click-to-pet, zone status bubble, idle fidget)
+
+**Motivation:** the pet's animation set is fixed at 7 states baked into
+the spritesheet taxonomy (`agent/pet/constants.py` — `idle/wave/run/
+failed/review/jump/waiting`), each tied to real agent activity via
+`derive_pet_state()`. Adding new animations needs new spritesheet art
+(backend generation work); this pass instead adds new *triggers* that
+reuse the existing rows/particle systems for occasions beyond agent
+activity.
+
+**Changes (`apps/desktop/src/components/pet/floating-pet.tsx`):**
+
+1. **Click-to-pet.** A plain click (pointerdown→pointerup with < 4px of
+   travel, not the existing shift-click pop-out) now fires
+   `burstVibeHearts()` — the same heart-particle + celebrate/wave beat
+   the composer's affection detector triggers on a `reaction` event, just
+   without needing an agent turn to say something nice first. Drag
+   tracking gained a `moved` flag (mirrors the pop-out overlay's own
+   `CLICK_SLOP_PX` click/drag disambiguation) so a real drag never
+   accidentally fires the reaction on release.
+2. **Zone status bubble.** `PetBubble` (the "working…"/"thinking…"/"your
+   turn" text bubble, driven by `$petState`/`$petActivity`) now renders
+   above the pet when `zoneContainer` is set — i.e. only inside the
+   dedicated pet zone pane. The full-window pet still skips it per the
+   original design note ("the app itself is the surface"), but that
+   reasoning doesn't hold inside a small dedicated box where a glanceable
+   status line costs nothing.
+3. **Idle fidget.** A new effect watches `$petState` (not `$petAtRest`,
+   which ignores the roam pose — gating on it would fire the fidget
+   mid-stride while the pet is walking) and, on an exponential dwell
+   (`dwellMs`/`DwellRange`, reused from `roam-behavior.ts`'s existing
+   `PAUSE_DWELL` mechanism, mean 50s / floor 20s / ceiling 150s), fires a
+   wave-or-jump beat if the pet is still idle when the timer lands. Reads
+   as an occasional "still here" glance during long idle stretches
+   instead of a frozen sprite; re-arms itself indefinitely while the
+   component is mounted and active.
+
+**Merge note:** purely additive to a fork-only file — new imports
+(`burstVibeHearts`, `flashPetActivity`, `$petState`, `PetBubble`,
+`dwellMs`/`DwellRange`), new constants, extended `dragRef` shape, no
+changes to exported signatures beyond what the pet-zone work already
+added. No upstream equivalent exists (upstream doesn't have a pet zone,
+and its `FloatingPet` predates the zone-aware coordinate work above) —
+no conflict risk on sync.
+
 **Merge note:** purely additive — one new function, one filter line in the
 existing Tool Availability loop, three new tests. No upstream equivalent
 (upstream's doctor doesn't have this section at all in the same form), so

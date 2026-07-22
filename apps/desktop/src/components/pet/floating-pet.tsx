@@ -4,14 +4,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
-import { PetHeartField } from '@/components/chat/vibe-hearts'
+import { burstVibeHearts, PetHeartField } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
 import {
   $petAtRest,
   $petInfo,
   $petRoam,
   $petRoamDir,
+  $petState,
   clearPetUnread,
+  flashPetActivity,
   type PetInfo,
   petProfile,
   setPetInfo
@@ -22,7 +24,9 @@ import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
+import { PetBubble } from './pet-bubble'
 import { PetSprite, roamWalkRow } from './pet-sprite'
+import { dwellMs, type DwellRange } from './roam-behavior'
 import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
 
@@ -32,6 +36,16 @@ const POSITION_KEY = 'hermes.desktop.pet-position.v2'
 
 // Stand-in pet size for the pre-load clamp (real size flows in with `info`).
 const NOMINAL_PET_PX = 96
+
+// A pointer that moves less than this before release reads as a click/pet,
+// not a drag — mirrors the pop-out overlay's own CLICK_SLOP_PX.
+const CLICK_SLOP_PX = 4
+
+// Idle fidget: an occasional "still here" beat (wave/jump) while the pet is at
+// rest, so a long idle stretch doesn't read as frozen. Rare and irregular —
+// same exponential-dwell technique as the roam loop's PAUSE_DWELL, just with a
+// much longer mean so it reads as an occasional glance, not a tic.
+const FIDGET_DWELL: DwellRange = { maxMs: 150000, meanMs: 50000, minMs: 20000 }
 
 interface Point {
   x: number
@@ -62,6 +76,7 @@ function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
 function clampPoint(x: number, y: number, w: number, h: number, zone?: DOMRect | null): Point {
   const maxX = zone ? Math.max(0, zone.width - w) : Math.max(0, (window.innerWidth || 800) - w)
   const maxY = zone ? Math.max(0, zone.height - h) : Math.max(0, (window.innerHeight || 600) - h)
+
   return {
     x: Math.min(Math.max(0, x), maxX),
     y: Math.min(Math.max(0, y), maxY)
@@ -73,6 +88,7 @@ function clampPoint(x: number, y: number, w: number, h: number, zone?: DOMRect |
 // faces inward, toward the content.
 function facing(leftX: number, petW: number, zone?: DOMRect | null): string {
   const mid = zone ? zone.width / 2 : (window.innerWidth || 800) / 2
+
   return leftX + petW / 2 < mid ? 'scaleX(-1)' : 'none'
 }
 
@@ -135,6 +151,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   const [position, setPosition] = useState<Point>(() =>
     zoneContainer ? { x: 0, y: 0 } : loadPosition()
   )
+
   const containerRef = useRef<HTMLDivElement | null>(null)
   // The facing mirror lives on the sprite wrapper, not the container, so the
   // speech bubble (a container child) never renders flipped/backwards.
@@ -146,16 +163,28 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   const shadowW = Math.round(petW * 0.55)
   const shadowH = Math.max(3, Math.round(shadowW * 0.28))
   const shadowAlpha = resolvedMode === 'light' ? 0.2 : 0.55
+
   // Live drag offset (pointer → element top-left). Drag updates the DOM
   // directly to avoid a React re-render (and canvas reflow) per pointermove —
-  // state is only committed on release.
-  const dragRef = useRef<{ dx: number; dy: number; x: number; y: number } | null>(null)
+  // state is only committed on release. `moved` distinguishes a real drag
+  // from a click/pet: a pointerup with `moved` still false triggers the pet
+  // reaction instead of just settling a (zero-distance) drag.
+  const dragRef = useRef<{
+    dx: number
+    dy: number
+    x: number
+    y: number
+    startClientX: number
+    startClientY: number
+    moved: boolean
+  } | null>(null)
 
   // Keep the *whole* pet on-screen at its current size, so growing it near an
   // edge can't leave the window cropping it. Shared by drag + the reclamp effect.
   const clamp = useCallback(
     ({ x, y }: Point): Point => {
       const zone = zoneContainer?.current?.getBoundingClientRect()
+
       return clampPoint(x, y, petW, petH, zone)
     },
     [petW, petH, zoneContainer]
@@ -336,7 +365,10 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         dx: e.clientX - rect.left,
         dy: e.clientY - rect.top,
         x: rect.left - origin.x,
-        y: rect.top - origin.y
+        y: rect.top - origin.y,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        moved: false
       }
       el.setPointerCapture(e.pointerId)
       el.style.cursor = 'grabbing'
@@ -351,6 +383,13 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
 
       if (!drag || !el) {
         return
+      }
+
+      if (
+        !drag.moved &&
+        Math.hypot(e.clientX - drag.startClientX, e.clientY - drag.startClientY) > CLICK_SLOP_PX
+      ) {
+        drag.moved = true
       }
 
       // clientX/Y are viewport coords; convert the drag target into the pet's
@@ -373,26 +412,37 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     [clamp, petW, zoneOrigin, zoneContainer]
   )
 
-  const onPointerUp = useCallback((e: React.PointerEvent) => {
-    const drag = dragRef.current
+  const onPointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      const drag = dragRef.current
 
-    if (drag) {
-      dragRef.current = null
-      const committed = { x: drag.x, y: drag.y }
-      setPosition(committed)
+      if (drag) {
+        dragRef.current = null
+        const committed = { x: drag.x, y: drag.y }
+        setPosition(committed)
 
-      if (!zoneContainer) {
-        persistString(POSITION_KEY, JSON.stringify(committed))
+        if (!zoneContainer) {
+          persistString(POSITION_KEY, JSON.stringify(committed))
+        }
+
+        // Pet the pet: a plain click (no real movement, not the shift-click
+        // pop-out) triggers the same reaction the composer's affection detector
+        // fires — a heart puff + a celebrate/wave beat — without needing an
+        // agent turn to say something nice first.
+        if (!drag.moved && !e.shiftKey) {
+          burstVibeHearts()
+        }
       }
-    }
 
-    const el = containerRef.current
+      const el = containerRef.current
 
-    if (el) {
-      el.style.cursor = 'grab'
-      el.releasePointerCapture?.(e.pointerId)
-    }
-  }, [zoneContainer])
+      if (el) {
+        el.style.cursor = 'grab'
+        el.releasePointerCapture?.(e.pointerId)
+      }
+    },
+    [zoneContainer]
+  )
 
   // Alt+wheel over the pet resizes it (persisted via the same path as the
   // settings slider). Zoom toward the cursor — shift the top-left so the pixel
@@ -407,6 +457,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         const origin = zoneOrigin()
         const localX = clientX - origin.x
         const localY = clientY - origin.y
+
         const at = clampPoint(
           localX - (localX - prev.x) * ratio,
           localY - (localY - prev.y) * ratio,
@@ -460,6 +511,38 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     zoneContainer
   })
 
+  // Idle fidget: while the pet is genuinely at rest (plain `idle`, not roaming
+  // or mid-turn), occasionally flash a wave/jump beat so a long idle stretch
+  // doesn't read as frozen. Gated on `$petState` itself (not `$petAtRest`,
+  // which ignores the roam pose) so a strolling pet never fidgets mid-stride,
+  // and re-armed every time the pet returns to idle so the "still here" glance
+  // recurs on its own irregular schedule for as long as you leave it be.
+  useEffect(() => {
+    if (!active || overlayActive) {
+      return
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const schedule = () => {
+      timer = setTimeout(() => {
+        if ($petState.get() === 'idle') {
+          // Randomly pick between the two friendly at-rest beats: jump
+          // (celebrate) or wave (justCompleted) — either reads fine as an
+          // unprompted "still here" glance.
+          const beat = Math.random() < 0.5 ? { celebrate: true } : { justCompleted: true }
+          flashPetActivity(beat)
+        }
+
+        schedule()
+      }, dwellMs(FIDGET_DWELL))
+    }
+
+    schedule()
+
+    return () => clearTimeout(timer)
+  }, [active, overlayActive])
+
   // While roaming, drive the directional run row + mirror from the travel
   // direction; at rest, fall back to the inward-facing static mascot.
   const walk = roamWalkRow(roamDir, info.stateRows)
@@ -501,6 +584,26 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
           zIndex: 0
         }}
       />
+      {/* Status bubble ("working…"/"your turn"/etc.) — only in the dedicated
+          zone. The full-window pet skips it (the app itself is the surface,
+          per the pop-out overlay's own rationale), but the zone is a small
+          fixed box where a glanceable status line earns its keep. */}
+      {zoneContainer && (
+        <div
+          style={{
+            bottom: '100%',
+            left: '50%',
+            marginBottom: 6,
+            pointerEvents: 'none',
+            position: 'absolute',
+            transform: 'translateX(-50%)',
+            whiteSpace: 'nowrap',
+            zIndex: 2
+          }}
+        >
+          <PetBubble />
+        </div>
+      )}
       <div
         ref={spriteWrapRef}
         style={{
