@@ -546,7 +546,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // sessions continue once those sessions are idle.
   useBackgroundQueueDrain({
     enabled: gatewayState === 'open',
-    runtimeIdByStoredSessionIdRef,
+    getRuntimeIdForStoredSession,
     selectedStoredSessionId,
     submitText
   })

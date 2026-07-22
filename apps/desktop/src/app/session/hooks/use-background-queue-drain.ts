@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type MutableRefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -20,7 +20,17 @@ type SubmitQueuedPrompt = (text: string, options?: SubmitTextOptions) => Promise
 
 interface BackgroundQueueDrainOptions {
   enabled: boolean
-  runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
+  // Validated stored→runtime lookup (use-session-state-cache's
+  // getRuntimeIdForStoredSession), NOT the raw runtimeIdByStoredSessionIdRef
+  // map. A pooled/idle-reaped profile backend re-mints runtime ids
+  // (pruneSecondaryGateways), so the raw map can hold a stale entry that now
+  // points at a DIFFERENT, currently-live session's runtime id. Draining a
+  // background session's queue with an unvalidated lookup would then dispatch
+  // that queued prompt as a live `prompt.submit` against the wrong session —
+  // the "queued in A, landed in B" bug. The validated getter rejects a mapping
+  // whose target runtime's cached state no longer claims this stored id, and
+  // submitText/session.resume falls back to reattaching by stored id instead.
+  getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   selectedStoredSessionId: string | null
   submitText: SubmitQueuedPrompt
 }
@@ -37,7 +47,7 @@ const BACKGROUND_DRAIN_RETRY_MS = 750
  */
 export function useBackgroundQueueDrain({
   enabled,
-  runtimeIdByStoredSessionIdRef,
+  getRuntimeIdForStoredSession,
   selectedStoredSessionId,
   submitText
 }: BackgroundQueueDrainOptions) {
@@ -45,6 +55,7 @@ export function useBackgroundQueueDrain({
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const workingSessionIds = useStore($workingSessionIds)
   const submitTextRef = useRef(submitText)
+  const getRuntimeIdForStoredSessionRef = useRef(getRuntimeIdForStoredSession)
   const drainingSessionIdsRef = useRef(new Set<string>())
   const drainFailuresRef = useRef(new Map<string, number>())
   const retryTimersRef = useRef<number[]>([])
@@ -53,6 +64,10 @@ export function useBackgroundQueueDrain({
   useEffect(() => {
     submitTextRef.current = submitText
   }, [submitText])
+
+  useEffect(() => {
+    getRuntimeIdForStoredSessionRef.current = getRuntimeIdForStoredSession
+  }, [getRuntimeIdForStoredSession])
 
   const scheduleRetry = useCallback(() => {
     if (typeof window === 'undefined') {
@@ -112,7 +127,7 @@ export function useBackgroundQueueDrain({
             return true
           }
 
-          const runtimeSessionId = runtimeIdByStoredSessionIdRef.current.get(sessionKey) ?? null
+          const runtimeSessionId = getRuntimeIdForStoredSessionRef.current(sessionKey)
 
           const accepted = await Promise.resolve(
             submitTextRef.current(liveEntry.text, {
@@ -143,7 +158,7 @@ export function useBackgroundQueueDrain({
           drainingSessionIdsRef.current.delete(sessionKey)
         })
     },
-    [runtimeIdByStoredSessionIdRef, scheduleRetry, t]
+    [scheduleRetry, t]
   )
 
   useEffect(() => {
