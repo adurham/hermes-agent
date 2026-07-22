@@ -1,0 +1,7 @@
+{
+  "name": "boolean",
+  "version": "3.2.0",
+  "description": "Local shim: same boolean(value)/isBooleanable(value) API as the deprecated boolean@3.2.0 package, reimplemented directly (no third-party code) instead of depending on the unmaintained upstream. Used only via an npm 'overrides' alias for electron's @electron/get -> global-agent chain -- see AGENTS.md dependency notes.",
+  "main": "index.js",
+  "license": "MIT"
+}
