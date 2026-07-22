@@ -4065,6 +4065,43 @@ bubble edge-awareness).
 **Merge note:** fork-only files, no upstream equivalent — no conflict
 risk.
 
+### Fork-only fix — 2026-07-22 (pet: roam froze entirely during real agent activity)
+
+**Symptom:** the pet would only wander while the agent was fully idle;
+the moment a turn started (talking, running a tool, thinking) it froze
+in place mid-frame for the whole duration of the activity, only resuming
+its walk once the agent went idle again.
+
+**Root cause:** `usePetRoam`'s `enabled` flag was gated on `$petAtRest`
+(`derivePetState(...) === 'idle'`) — the narrowest possible reading, true
+only at plain idle. Any activity at all (`run`/`review`/`waiting`/etc.)
+flipped it false, which `usePetRoam`'s cleanup immediately resolves to
+`$petMotion.set(null)` — killing the stride instantly rather than letting
+it finish naturally. This was overly conservative: ordinary work
+(`run`/`review`) already renders with the SAME running-leg sprite rows
+the walk animation itself uses, so a stride mid-tool-call is visually
+indistinguishable from a stride at idle — freezing for it bought nothing
+and just made the pet look stuck/broken during the exact moments
+(thinking, running tools) where continued pacing reads as most alive.
+
+**Fix:** added `$petCanRoam` to `store/pet.ts` —
+`state === 'idle' || state === 'run' || state === 'review'` — and wired
+`usePetRoam`'s `enabled` to it instead of `$petAtRest`. `$petAtRest`
+itself is unchanged and still used (correctly) by the idle-fidget effect,
+which SHOULD stay idle-only — a fidget wave/jump mid-tool-call would be
+wrong, unlike ordinary pacing. The wander now only pauses for the states
+that render a DISTINCT, stationary pose meant to grab attention —
+`failed`, `waiting`, `wave`, `jump` — where `usePetRoam` disabling
+correctly zeroes `$petRoamDir`, which is what lets `PetSprite`'s
+`rowOverride` stand down and the real pose show through
+(`roamWalkRow(0, ...)` returns no row override).
+
+**Files:** `apps/desktop/src/store/pet.ts` (new `$petCanRoam`),
+`apps/desktop/src/components/pet/floating-pet.tsx` (roam-enable gate).
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict
+risk.
+
 **Merge note:** purely additive — one new function, one filter line in the
 existing Tool Availability loop, three new tests. No upstream equivalent
 (upstream's doctor doesn't have this section at all in the same form), so
