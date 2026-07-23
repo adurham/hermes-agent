@@ -35,7 +35,10 @@ const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
 // Persisted so the pane stays open across reloads (like the other rail panes).
-export const $reviewOpen = persistentAtom(OPEN_KEY, false, Codecs.bool)
+// Defaults to true: the review pane is the only signal that surfaces
+// uncommitted changes at a glance, and gating it behind an undiscoverable
+// ⌘G left it permanently hidden for users who never happened to press it.
+export const $reviewOpen = persistentAtom(OPEN_KEY, true, Codecs.bool)
 
 // The split-button's remembered default action ('commit' | 'commitPush').
 export type CommitAction = 'commit' | 'commitPush'

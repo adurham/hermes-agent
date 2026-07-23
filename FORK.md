@@ -27,6 +27,36 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-23 (desktop: review pane never showed by default — hidden behind an undiscoverable ⌘G)
+
+**Symptom:** the review pane (git working-tree diff / uncommitted-changes
+list) never appeared in the app, even on layouts (e.g. Default) whose zone
+tree places it directly beside the files pane. The layout editor's dimmed
+preview correctly showed a "review" zone above/beside "files", but the live
+app never rendered it.
+
+**Root cause:** `$reviewOpen` in `apps/desktop/src/store/review.ts` is a
+`persistentAtom` gating the review pane's visibility (`bindPaneVisibility`
+in `controller.tsx` collapses the zone to nothing while `$reviewOpen` is
+false). It defaulted to `false` and is only flipped true by `openReview()`,
+called from the ⌘G shortcut / toggle button — a shortcut with no visible
+affordance anywhere in the UI. A user who never happened to discover ⌘G
+would never see the pane, even though its zone is present in every stock
+layout preset that includes it.
+
+**Fix:** default `$reviewOpen` to `true`. The pane is still gated on
+`$hasWorkspace` (hidden for a detached/no-cwd chat) and remains a normal
+`persistentAtom`, so an explicit ⌘G close is still remembered across
+reloads — only the *first-run* default changed. Updated two stale comments
+in `controller.tsx` that described the pane as "hidden until ⌘G".
+
+**Files:** `apps/desktop/src/store/review.ts` (`$reviewOpen` default),
+`apps/desktop/src/app/contrib/controller.tsx` (comments only).
+
+**Verification:** `npx vitest run src/store/review.test.ts` — 35/35 pass
+(tests explicitly set `$reviewOpen` per-case, unaffected by the default
+change).
+
 ### Fork-only fix — 2026-07-22 (desktop: Terminal-deck layout opened to the logs tab instead of terminal)
 
 **Symptom:** opening the desktop app while on the "Terminal deck" layout
