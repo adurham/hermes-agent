@@ -45,10 +45,14 @@ export default defineConfig({
     // Keep desktop packaging stable: Shiki ships many dynamic chunks by
     // default, and electron-builder can OOM scanning thousands of files.
     // Collapsing to a single chunk is intentional, so the renderer bundle is
-    // large by design (~22 MB). Raise the warning ceiling above that so the
-    // cosmetic "chunk larger than 500 kB" nag stays quiet, while still acting
-    // as a regression alarm if the bundle balloons well past today's size.
-    chunkSizeWarningLimit: 25000,
+    // large by design (~28 MB as of 2026-07). Raise the warning ceiling above
+    // that so the cosmetic "chunk larger than 500 kB" nag stays quiet, while
+    // still acting as a regression alarm if the bundle balloons well past
+    // today's size. Re-investigated 2026-07-19 (#67720, bench(desktop)):
+    // splitting was confirmed NOT to help cold-start (bundle EVAL is only
+    // ~0.27s of the ~1.5s boot) and DOES reintroduce the electron-builder OOM
+    // this collapsed-bundle design avoids, so codeSplitting stays disabled.
+    chunkSizeWarningLimit: 32000,
     rolldownOptions: {
       output: {
         codeSplitting: false
