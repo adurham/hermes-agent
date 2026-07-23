@@ -170,6 +170,27 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       return
     }
 
+    // Size the backing store to real device pixels, not CSS pixels — mirrors
+    // the same fix already applied to this pet's other canvases
+    // (pixel-egg-sprite.tsx, pet-star-shower.tsx). Without this, on a HiDPI
+    // (Retina) display the canvas draws at half (or less) the screen's actual
+    // pixel density and the OS/browser has to upscale the whole element to
+    // fill its CSS box on top of the drawImage scale-down already happening
+    // from the 192×208 source frame — a second resampling pass whose
+    // sub-pixel rounding shifts slightly differently per frame, reading as a
+    // subtle shimmer/wobble on a fast, edge-heavy cycle like running. Capped
+    // at 3x like the sibling components — no benefit beyond that, and it
+    // caps the offscreen memory/fill cost on very high-density external
+    // displays.
+    const dpr = Math.min(window.devicePixelRatio || 1, 3)
+    const backingW = Math.round(drawW * dpr)
+    const backingH = Math.round(drawH * dpr)
+
+    if (canvas.width !== backingW || canvas.height !== backingH) {
+      canvas.width = backingW
+      canvas.height = backingH
+    }
+
     // Track state via subscription, not a prop — no re-render on activity ticks.
     stateRef.current = $petState.get()
 
@@ -253,7 +274,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
         const sy = row * frameH
         ctx.clearRect(0, 0, canvas.width, canvas.height)
         ctx.imageSmoothingEnabled = false
-        ctx.drawImage(image, sx, sy, frameW, frameH, 0, 0, drawW, drawH)
+        ctx.drawImage(image, sx, sy, frameW, frameH, 0, 0, backingW, backingH)
         drawnFrame = frame
         drawnRow = row
       }
@@ -329,10 +350,8 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     <div ref={wrapRef} style={{ height: drawH, lineHeight: 0, width: drawW }}>
       <canvas
         aria-label={info.displayName ? `${info.displayName} pet` : 'pet'}
-        height={drawH}
         ref={canvasRef}
-        style={{ height: drawH, width: drawW }}
-        width={drawW}
+        style={{ height: drawH, imageRendering: 'pixelated', width: drawW }}
       />
     </div>
   )
