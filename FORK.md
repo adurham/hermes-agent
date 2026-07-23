@@ -27,6 +27,53 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only feature — 2026-07-23 (desktop: sidebar click opens browser-like tabs instead of always replacing the middle pane)
+
+**Ask:** user wanted the middle chat pane's tab strip to behave like a
+browser — multiple sessions visible as tabs at once — instead of always
+showing a single tab.
+
+**What already existed:** the tab strip (`components/pane-shell/tree/renderer/tree-group.tsx`)
+already fully supports multiple stacked tabs, and there's already a "session
+tile" mechanism (`store/session-states.ts`'s `openSessionTile(id, 'center')`)
+that docks a session as an additional closeable tab beside the main
+`workspace` tab. It was already wired to ⌘/⌃-click, middle-click (open in new
+tab), and ⇧⌘-click (pop into its own OS window) on sidebar session rows. The
+gap: a **plain click** (`onResumeSession` in `app/contrib/wiring.tsx`) always
+called `navigate(sessionRoute(id))`, which loads the session into the
+`workspace` tab **in place** — so serially clicking through sidebar sessions
+only ever showed one tab, no matter how many sessions you'd visited.
+
+**Fix (browser-tab semantics for a plain click):**
+1. If the session is already showing (an open tile, or the loaded main
+   session) — jump to its tab (`focusOpenSession`, unchanged).
+2. Otherwise, if the workspace is currently *empty* (a fresh "New session"
+   draft, or a full-page route with no session loaded) — load straight into
+   it, same as before. The very first session you open never needs a tile.
+3. Otherwise — call `openSessionTile(id, 'center')` instead of navigating,
+   so the session opens as a new tab **beside** whatever's already showing,
+   rather than replacing it.
+
+This reuses the existing tile/tab machinery verbatim (no new tab-model
+concepts, no change to the uncloseable-workspace invariant) — it only changes
+what a plain sidebar click decides to do with it. Considered and rejected: a
+"first click replaces, 2+ tabs open new" hybrid — it degenerates to always-new
+after the first couple of clicks in normal use, so it just adds a confusing
+mode for no real benefit over the simpler always-open-or-focus rule above.
+
+**Verification:** `tsc --noEmit` clean; `apps/desktop` production build
+succeeds; `store/session-states.test.ts` (6/6, unchanged) passes. Full
+`vitest run src/store` has pre-existing unrelated failures on this machine
+(`window.localStorage` unavailable under this Node/vitest config) — confirmed
+identical failure count on `main` before this change via `git stash`.
+
+**Files:** `apps/desktop/src/app/contrib/wiring.tsx` (`onResumeSession`
+branch + `$workspaceIsPage`/`openSessionTile` imports).
+
+**Merge note:** touches an upstream file (`wiring.tsx`) — small, isolated
+diff inside one callback; low conflict risk but worth a careful look on
+next upstream sync.
+
 ### Fork-only fix — 2026-07-23 (desktop: malformed CSS comment tripped a build-time lightningcss warning)
 
 **Symptom:** `npm run build` in `apps/desktop` prints `Found 1 warning while optimizing generated CSS: Unexpected token Delim('*')`, pointing at `.btn-arc`'s `text-*` comment text.

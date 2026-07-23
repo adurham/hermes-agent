@@ -56,7 +56,7 @@ import {
   setCurrentProvider,
   setMessages
 } from '@/store/session'
-import { focusOpenSession } from '@/store/session-states'
+import { focusOpenSession, openSessionTile } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -73,7 +73,7 @@ import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
-import { CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
+import { $workspaceIsPage, CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
@@ -754,11 +754,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onReload: reloadFromMessage,
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
-    // Already on screen (open tile, or the main session)? Jump to its tab;
-    // otherwise load it into main.
+    // Browser-tab semantics: already on screen (open tile, or the main
+    // session)? Jump to its tab. Otherwise, an EMPTY workspace (fresh draft,
+    // or a full-page route with no session showing) has no tab content worth
+    // preserving, so load straight into it — the first session opened never
+    // needs a tile. Once something is already showing, a further sidebar
+    // click opens the session as an ADDITIONAL tab beside it instead of
+    // replacing what's there, so multiple sessions stay visible at once.
     onResumeSession: sessionId => {
-      if (!focusOpenSession(sessionId)) {
+      if (focusOpenSession(sessionId)) {
+        return
+      }
+
+      const workspaceEmpty = !$selectedStoredSessionId.get() || $workspaceIsPage.get()
+
+      if (workspaceEmpty) {
         navigate(sessionRoute(sessionId))
+      } else {
+        openSessionTile(sessionId, 'center')
       }
     },
     onRetryResume: sessionId => void resumeSession(sessionId, true),
