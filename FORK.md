@@ -27,6 +27,24 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only chore — 2026-07-23 (desktop: bumped Vite chunk-size warning ceiling for the intentional single-bundle build)
+
+**Symptom:** `npm run build` in `apps/desktop` prints a `[plugin builtin:vite-reporter]` warning that "Some chunks are larger than 25000 kB after minification," suggesting dynamic `import()` / `codeSplitting` / raising `chunkSizeWarningLimit`.
+
+**Investigation (before touching anything):** the desktop renderer is deliberately built as a single JS chunk — `apps/desktop/vite.config.ts` sets `rolldownOptions.output.codeSplitting: false` — because Shiki's full language bundle emits ~694 per-language dynamic-import chunks, and `electron-builder` OOMs scanning that many files during packaging (see `0175be3aa7`, the commit that first raised this same warning's ceiling to 25000). The bundle has simply grown past that ceiling: it's now ~28.2 MB (was ~22 MB when the ceiling was set).
+
+Before proposing a `manualChunks`/`codeSplitting` rework as a "real fix," checked git history and found this exact angle was already investigated 4 days prior: `b6ae910d8c` (#67720, `bench(desktop): trustworthy cold-start measurement (code-splitting is not the lever)`, 2026-07-19). That commit built a real production bundle, measured actual cold-start composition with CDP, and found the entire bundle-eval cost is only ~0.27s of a ~1.5s cold boot — not a meaningful lever — and confirmed that re-enabling `codeSplitting` (required for `manualChunks`) reintroduces the exact electron-builder OOM the single-bundle design avoids, since `codeSplitting` is a global switch in rolldown (verified in `node_modules/rolldown/dist/shared/define-config-*.d.mts`: "If `manualChunks` and `codeSplitting` are both specified, `manualChunks` option will be ignored"). That same commit's suggested follow-up levers — deferred non-critical mount and V8 code cache — were also already addressed: `e702a45b5` (#67857, same day) wrapped the boot-hidden panes (files/preview/review/logs) in `<IdleMount>` (`requestIdleCallback`-gated mount), and V8's on-disk bytecode cache is an automatic Chromium mechanism the perf harness (`scripts/perf/lib/launch.mjs::coldStartSamples`) already accounts for via its `warm`/`--cold-fresh` split (fresh-profile cache miss costs ~+400ms, already measured, nothing to build).
+
+Ran the bench myself on today's HEAD (`npm run perf -- cold-start --spawn --prod --runs 3`) to confirm no regression: spawn→CDP 720ms, spawn→driver 1087ms, DOM interactive 416ms, DOM content loaded 660ms — all within the harness's gated tolerance vs. the 2026-07-19 baseline (606/984/324/574ms; the delta reads as normal machine-load noise, not a code regression, since nothing on this cold-start path was touched).
+
+**Conclusion:** no code-splitting/manualChunks work to do here — it was correctly rejected on the numbers 4 days ago, and both of that investigation's follow-up recommendations are already shipped. The warning itself is purely cosmetic (same conclusion as `0175be3aa7`); the fix is the same one applied then: bump the ceiling to reflect today's real, expected size.
+
+**Fix:** `apps/desktop/vite.config.ts` — `chunkSizeWarningLimit: 25000` → `32000`, updated comment to reflect the current ~28MB size and to record the 2026-07-19 re-investigation so a future pass doesn't redo it. `codeSplitting: false` untouched.
+
+**Verification:** `npm run build` in `apps/desktop` — clean, no chunk-size warning (28,223 kB bundle under the new 32,000 kB ceiling).
+
+**Files:** `apps/desktop/vite.config.ts` (comment + `chunkSizeWarningLimit` only).
+
 ### Fork-only fix — 2026-07-23 (desktop: running tool call buried mid-group, tool window too short)
 
 **Symptom:** in the inline tool-call list under a chat reply, once a
