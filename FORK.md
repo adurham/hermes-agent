@@ -4762,3 +4762,67 @@ once before (`072395dad`) — low conflict risk, but if upstream touches this
 `sessionId` seeding line, re-verify the explicit-null vs. absent-key
 distinction survives the merge.
 
+### Fork-only fix — 2026-07-23 (pet: jump still didn't lift off the ground)
+
+**Symptom:** after the previous jump-timing fix, the user reported the jump
+animation still isn't visibly lifting the pet off the ground (screenshot:
+Miku sitting still in the desktop app's Pet Zone).
+
+**Root cause:** the previous fix (`jumpDurationMs`) only paces the ROAM
+LOOP's ledge-to-ledge hop — a real `top`/`left` DOM move driven by
+`use-pet-roam.ts`'s platformer state machine. But the `jump` pose is also
+entered as a purely STATIONARY reaction with no roam physics behind it at
+all: idle fidget (`floating-pet.tsx`'s fidget effect writes `jump` straight
+onto `$petMotion`), click-to-pet (`burstVibeHearts` → `flashPetActivity({
+celebrate: true })`), and turn-end celebrate all just swap `PetSprite`'s
+canvas frames on a FIXED canvas position — there was never any vertical
+motion for that path, only a frame-row change. Worse: the Pet Zone (what the
+screenshot shows) has exactly one ledge (`snapshotContainerLedges` returns a
+single floor), so `chooseMove`'s `canHop` is always false there — the roam
+hop can never fire in the zone, meaning every jump the user sees in that
+surface is the stationary case. Confirmed via the same spritesheet decode as
+before: `jumping`'s 5 real frames were fine: the bug was 0px of vertical
+travel, not missing/short frames.
+
+**Fix:**
+- `store/pet.ts`: added `$petRoamAirborne` — true only while the roam loop
+  is actually mid-hop/fall (set in `use-pet-roam.ts`'s `beginVertical`,
+  cleared in every settle/pause/drag-yield/cleanup path). This is the signal
+  that distinguishes "roam is already moving me" from "the pose alone says
+  jump."
+- `roam-behavior.ts`: added `jumpBobHeightPx(petH)` — hop height as a
+  fraction (0.28) of the pet's on-screen height, clamped `[10px, 36px]`, so
+  the bob scales with `display.pet.scale` instead of a flat guess.
+- `styles.css`: new `.pet-jump-bob` class + `@keyframes pet-jump-bob` — a
+  CSS `translateY` bob (0 → up → slight settle → 0) driven by
+  `--pet-jump-height`/`--pet-jump-ms` custom properties, following the
+  existing `pet-egg-wobble` convention; respects
+  `prefers-reduced-motion: reduce`.
+- `pet-sprite.tsx`: wrapped the canvas in a `<div ref={wrapRef}>`, and added
+  a `$petState.listen` effect that re-triggers `.pet-jump-bob` (with a
+  reflow-forcing class remove/re-add so back-to-back jump beats restart the
+  animation) whenever the pose transitions INTO `jump` while
+  `$petRoamAirborne` is false — i.e. exactly the stationary-reaction case.
+  While the roam loop IS airborne, this is a no-op, so the two vertical
+  motions (DOM-level ledge hop vs. CSS-level stationary bob) never fight.
+  Shared by all three `PetSprite` consumers (in-window `FloatingPet`, the
+  pop-out overlay, and the generate-flow hatch preview) with zero
+  prop/API changes — the pop-out overlay in particular never had ANY
+  vertical jump motion before this, since it has no roam loop at all.
+
+**Verification:** `jumpBobHeightPx`/`jumpDurationMs` unit tests (17 total in
+`roam-behavior.test.ts`), full desktop `tsc --noEmit` clean, `eslint` clean
+on all touched files, full pet test suite green (31/31). The 104
+pre-existing `localStorage.clear` failures in unrelated files (session
+preview routing, pane-shell tree tests) reproduce identically on unmodified
+`main` — confirmed none are pet-related.
+
+**Files:** `apps/desktop/src/store/pet.ts` (new `$petRoamAirborne`),
+`apps/desktop/src/components/pet/use-pet-roam.ts` (sets/clears it),
+`apps/desktop/src/components/pet/roam-behavior.ts` (new
+`jumpBobHeightPx` + 3 tests), `apps/desktop/src/components/pet/pet-sprite.tsx`
+(bob-trigger effect + wrapper div), `apps/desktop/src/styles.css` (new
+`.pet-jump-bob` keyframes).
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict risk.
+

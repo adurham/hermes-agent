@@ -119,3 +119,21 @@ const JUMP_DUR_MAX_MS = 900
 export function jumpDurationMs(loopMs: number): number {
   return Math.min(JUMP_DUR_MAX_MS, Math.max(JUMP_DUR_MIN_MS, loopMs * JUMP_DUR_FRACTION))
 }
+
+// Fraction of the pet's own on-screen height it hops for the STATIONARY jump
+// reaction (idle fidget / click-to-pet / turn-end celebrate) — see
+// `.pet-jump-bob` in styles.css. This is a CSS transform bob, not the roam
+// loop's ledge physics, so it needs its own readable floor/ceiling rather
+// than reusing GRAVITY_PX_S2/ledge geometry that only exists once roaming.
+const JUMP_BOB_HEIGHT_FRACTION = 0.28
+const JUMP_BOB_HEIGHT_MIN_PX = 10
+const JUMP_BOB_HEIGHT_MAX_PX = 36
+
+/**
+ * How high (px) the stationary jump bob should lift the pet, scaled to its
+ * on-screen height so small/large pet scales both read as a real hop rather
+ * than a barely-there wobble or a wildly oversized pogo.
+ */
+export function jumpBobHeightPx(petH: number): number {
+  return Math.min(JUMP_BOB_HEIGHT_MAX_PX, Math.max(JUMP_BOB_HEIGHT_MIN_PX, petH * JUMP_BOB_HEIGHT_FRACTION))
+}

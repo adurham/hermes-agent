@@ -196,6 +196,20 @@ export const setPetRoam = (on: boolean) => {
 export const $petMotion = atom<PetState | null>(null)
 
 /**
+ * True while the roam loop is physically moving the pet's `top` between
+ * ledges (spring-up hop or fall), false otherwise — including while a
+ * *stationary* jump pose plays (idle fidget, click-to-pet, turn-end
+ * celebrate). `$petMotion`/`$petState` alone can't make this distinction:
+ * the idle fidget writes `jump` onto the very same `$petMotion` channel the
+ * roam loop's hop uses (see `floating-pet.tsx`'s fidget effect), so
+ * `petState === 'jump'` is true in both cases. Consumers that want to play a
+ * vertical "hop in place" animation for the stationary case must skip it
+ * while this is true — the roam loop is already moving the DOM node itself,
+ * and a second, independent vertical animation on top would fight it.
+ */
+export const $petRoamAirborne = atom<boolean>(false)
+
+/**
  * Horizontal travel direction while roaming: -1 left, 1 right, 0 not walking.
  * The floating pet maps this to the directional run row + mirror, keeping the
  * wander loop free of sprite-row knowledge.

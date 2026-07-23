@@ -1858,6 +1858,36 @@ text-* variant utilities. */ .btn-arc {
   }
 }
 
+/* Stationary "jump" reaction (idle fidget / click-to-pet / turn-end celebrate)
+   — NOT the roam loop's ledge-to-ledge hop, which already moves the pet's
+   real top/left in use-pet-roam.ts. Without this the jump pose only swapped
+   sprite frames on a fixed canvas position, so it never looked like it left
+   the ground (see FORK.md, pet: jump doesn't lift off the ground). Timing is
+   driven by --pet-jump-ms (set inline from the sprite's loopMs) so the hop
+   height/duration always matches how long the jump pose is actually shown. */
+@keyframes pet-jump-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(calc(-1 * var(--pet-jump-height, 22px)));
+  }
+  70% {
+    transform: translateY(calc(-0.35 * var(--pet-jump-height, 22px)));
+  }
+}
+
+.pet-jump-bob {
+  animation: pet-jump-bob var(--pet-jump-ms, 900ms) ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-jump-bob {
+    animation: none;
+  }
+}
+
 /* Pet generation progress bar — determinate (hatch rows: done/total) or         */
 /* indeterminate (drafts, which return together so a % would just snap).         */
 .pet-progress {

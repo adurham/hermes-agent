@@ -1,6 +1,6 @@
 import { type RefObject, useEffect } from 'react'
 
-import { $petMotion, $petRoamDir, type PetState } from '@/store/pet'
+import { $petMotion, $petRoamAirborne, $petRoamDir, type PetState } from '@/store/pet'
 
 import { chooseMove, dwellMs, jumpDurationMs, PAUSE_DWELL, pickStrollTarget } from './roam-behavior'
 import {
@@ -93,6 +93,7 @@ export function usePetRoam({
     if (!enabled) {
       $petMotion.set(null)
       $petRoamDir.set(0)
+      $petRoamAirborne.set(false)
 
       return
     }
@@ -157,6 +158,7 @@ export function usePetRoam({
       phase = 'pause'
       pauseUntil = now + dwellMs(PAUSE_DWELL)
       signal(null, 0)
+      $petRoamAirborne.set(false)
       commit({ ...cur })
     }
 
@@ -182,6 +184,7 @@ export function usePetRoam({
         fallVel = 0
       }
 
+      $petRoamAirborne.set(true)
       signal('jump', 0)
     }
 
@@ -247,6 +250,7 @@ export function usePetRoam({
         // Short settle so the pet falls right after you drop it, not seconds later.
         pauseUntil = now + DROP_SETTLE_MS
         signal(null, 0)
+        $petRoamAirborne.set(false)
         raf = requestAnimationFrame(step)
 
         return
@@ -371,6 +375,7 @@ export function usePetRoam({
       cancelAnimationFrame(raf)
       resizeObserver?.disconnect()
       signal(null, 0)
+      $petRoamAirborne.set(false)
       // Hand the final position back to React so its `style` matches the DOM once
       // the loop stops re-asserting it.
       commit({ ...cur })
