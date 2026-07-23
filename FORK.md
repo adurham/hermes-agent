@@ -4700,3 +4700,65 @@ it in place of the old flat constant.
 
 **Merge note:** fork-only files, no upstream equivalent — no conflict risk.
 
+### Fork-only fix — 2026-07-23 (desktop: queued prompt + attachments could deliver into a different, currently-active session)
+
+**Symptom (user report):** typed a message and pasted screenshots in one
+session (hermes-agent project), pressed Enter (queued because the session
+was busy), then browsed other sessions to check their progress. The queued
+message and its images were later sent into a *different*, unrelated
+session (homelab project) instead of the one they were queued in.
+
+**Root cause:** `use-prompt-actions/submit.ts` seeded the submit pipeline's
+target runtime id with:
+
+```ts
+let sessionId: null | string = options?.sessionId ?? activeSessionIdRef.current
+```
+
+Both queue-drain call sites (the foreground composer's
+`use-composer-queue.ts` and the offscreen `use-background-queue-drain.ts`)
+always pass `sessionId` explicitly for the session being drained — and per
+its own doc comment, that field exists specifically so *"a
+backgrounded/source session cannot be replaced by the current foreground
+session between enqueue and drain."* When the validated
+`getRuntimeIdForStoredSession` getter (added in `072395dad`, 2026-07-21, for
+the sibling "background queue drain could deliver a queued message into a
+different, currently-live session" bug) correctly rejects a stale/reaped
+runtime mapping, it returns `sessionId: null` explicitly — meaning "resolve
+this by stored id instead." `??` cannot distinguish an explicit `null` from
+"the key was never passed," so it silently fell through to
+`activeSessionIdRef.current` — whichever session the user currently has
+foregrounded. `submit.ts` already had the *correct* handling 30 lines down
+(`!sessionId && targetStoredSessionId` resumes the specific target stored
+session by id) — it was just unreachable for these calls because `sessionId`
+never landed on `null`.
+
+This is the same bug *class* as `072395dad`, but on the submit-pipeline side
+of the seam rather than the id-resolution side: that fix made the *getter*
+correctly say "I don't know," but nothing downstream distinguished "I don't
+know" from "no opinion, use the default."
+
+**Fix:** `submit.ts` now checks whether `sessionId` was an explicit key on
+`options` (`'sessionId' in options`) rather than using `??`. When explicitly
+provided (any queue drain), a `null` value is honored as "unresolved — fall
+through to the stored-session resume path," never coerced to the active
+session. Only a plain foreground submit (no `sessionId` key on `options` at
+all) still defaults to `activeSessionIdRef.current`.
+
+Added a regression test,
+`never substitutes the foreground active session when a queue drain
+explicitly passes sessionId: null`, in `use-prompt-actions/index.test.tsx`
+(`usePromptActions sleep/wake session recovery` describe block) — verified
+it fails against the pre-fix code (asserts `session.resume` against the
+background stored id fires before `prompt.submit`, and that the foreground's
+`activeSessionIdRef` is untouched).
+
+**Files:** `apps/desktop/src/app/session/hooks/use-prompt-actions/submit.ts`,
+`apps/desktop/src/app/session/hooks/use-prompt-actions/index.test.tsx` (new
+test).
+
+**Merge note:** small, local change to fork-diverged logic already patched
+once before (`072395dad`) — low conflict risk, but if upstream touches this
+`sessionId` seeding line, re-verify the explicit-null vs. absent-key
+distinction survives the merge.
+

@@ -1248,6 +1248,60 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(handle!.activeSessionIdRef.current).toBe(RUNTIME_SESSION_ID)
   })
 
+  // Regression: a queue drain (foreground ChatBar's edge-independent drain, or
+  // useBackgroundQueueDrain) always passes an explicit `sessionId` for the
+  // session it's draining — `null` there means "this session's runtime id
+  // couldn't be resolved" (a stale/reaped cache entry the validated getter
+  // correctly rejected), NOT "no target, use whichever session is active."
+  // `options?.sessionId ?? activeSessionIdRef.current` conflated the two: an
+  // explicit `sessionId: null` fell through to the foreground's active
+  // session, so text (and any attachments) queued in a background session
+  // whose runtime id had gone stale landed in whatever session the user was
+  // currently looking at instead of resuming its own stored session ("queued
+  // in A, landed in B").
+  it('never substitutes the foreground active session when a queue drain explicitly passes sessionId: null', async () => {
+    const BACKGROUND_STORED_SESSION_ID = 'stored-session-a'
+    const RECOVERED_BACKGROUND_SESSION_ID = 'rt-recovered-a'
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_BACKGROUND_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    // The user is viewing/foregrounded on RUNTIME_SESSION_ID (the Harness
+    // default active/selected session) while draining a DIFFERENT,
+    // backgrounded session's queue.
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('queued text and images from session a', {
+      fromQueue: true,
+      sessionId: null,
+      storedSessionId: BACKGROUND_STORED_SESSION_ID
+    })
+
+    expect(ok).toBe(true)
+    // Must resume the BACKGROUND stored session by id, never send straight to
+    // the foreground's active runtime (RUNTIME_SESSION_ID).
+    expect(calls.map(c => c.method)).toEqual(['session.resume', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({ session_id: BACKGROUND_STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({
+      session_id: RECOVERED_BACKGROUND_SESSION_ID,
+      text: 'queued text and images from session a'
+    })
+    // The foreground session's active runtime id must be untouched.
+    expect(handle!.activeSessionIdRef.current).toBe(RUNTIME_SESSION_ID)
+  })
+
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let interruptAttempts = 0
