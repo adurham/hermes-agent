@@ -4894,3 +4894,76 @@ mirrored vibe reaction).
 
 **Merge note:** fork-only files, no upstream equivalent — no conflict risk.
 
+### Fork-only fix — 2026-07-23 (pet: running animation looked janky on Retina)
+
+**Symptom:** user reported the running animation still looks "a bit jank"
+and asked whether it's a missing-sprite-frames problem.
+
+**Investigation, ruled out first:** decoded the active pet's spritesheet
+directly and diffed adjacent frame pairs pixel-by-pixel. The roaming
+directional walk rows (`running-left`/`running-right`) have 8 full real
+frames each — not starved. The stationary in-place `running` row (shown
+during ordinary busy/tool-running when the pet ISN'T roaming) genuinely only
+has 6 real frames of 8 columns — a real asset limit for that one row, but not
+the dominant complaint since roaming is the richer, more commonly-seen path
+and was reported as janky too.
+
+**Root cause (verified against the user's actual hardware — a Retina
+3024×1964 display):** `pet-sprite.tsx`'s canvas had no HiDPI-aware backing
+store. Every OTHER pixel-art canvas in this same directory
+(`pixel-egg-sprite.tsx`, `pet-star-shower.tsx`) already sizes its canvas to
+`Math.min(devicePixelRatio, 3) * cssSize` — but the actual animated pet
+sprite renderer, the highest-traffic canvas of the three, was missing this
+fix entirely and had no `imageRendering: 'pixelated'` CSS either (also
+present on `pet-thumb.tsx`'s `<img>` and the egg sprite, absent here). On a
+2x-density display, drawing into a backing store sized to CSS pixels forces
+the browser to upscale the whole canvas element 2x to fill its box — a
+SECOND resampling pass stacked on top of the `drawImage` scale-down already
+happening from the 192×208 source frame. That second pass's sub-pixel
+rounding shifts slightly differently frame to frame, reading as a subtle
+shimmer/wobble that's most visible on a fast, edge-heavy cycle like running
+(short ~183ms/frame cadence, limb edges crossing many pixels each frame).
+
+**A second hypothesis investigated and DISPROVEN before touching code:**
+suspected the RAF step loop's `lastStep = now` (rather than `lastStep +=
+stepMs`) discards overshoot from a late tick and could read as an uneven
+cadence. Wrote a numeric simulation (`execute_code`, jittered RAF ticks +
+occasional main-thread hitches) comparing the existing `if`-based step
+against a `while`-based catch-up variant before writing any product code.
+Result: the EXISTING code never skips a frame index across 2000+ simulated
+ticks (frame sequence stayed perfectly 0→1→2→…→0 with zero non-sequential
+jumps); the catch-up variant I was about to ship introduced real skips
+(13 in one run — e.g. frame 4→1) after a big stall, which would look WORSE,
+not better. Reverted that change before committing anything — logged here
+so a future me doesn't re-propose the same broken "fix." The lesson: a
+timing loop that looks superficially correct because it references
+`performance.now()` is not proof of behavior; simulate the actual frame
+sequence before changing a working animation loop.
+
+**Fix:**
+- `pet-sprite.tsx`: canvas backing store now `Math.round(drawW/drawH *
+  min(devicePixelRatio, 3))` instead of the plain CSS-pixel `drawW`/`drawH`,
+  matching the sibling canvases. `drawImage`'s destination rect now targets
+  the backing-store dimensions (`backingW`/`backingH`) instead of the CSS
+  ones. Dropped the JSX `width`/`height` canvas attributes (which fight an
+  imperatively-set `.width`/`.height`) in favor of imperative-only sizing,
+  matching `pixel-egg-sprite.tsx`'s exact pattern. Added `imageRendering:
+  'pixelated'` to the canvas's CSS, matching every other pixel-art surface
+  in the pet component tree.
+- Verified the pop-out overlay's per-pixel alpha click-through hit-test
+  (`pet-overlay-app.tsx`) is unaffected: it already computes
+  `target.width / rect.width` as a RATIO before scaling a click coordinate
+  into canvas space, so it's dpr-correct automatically — previously that
+  ratio was always exactly 1 (no HiDPI backing store), and is now correctly
+  the real device pixel ratio. No hit-test regression; if anything it's more
+  mathematically sound now.
+
+**Verification:** full desktop `tsc --noEmit` clean, `eslint` clean, pet
+test suite 33/33 unchanged, full desktop suite unchanged at 235 files / 2093
+tests passing (same pre-existing unrelated `localStorage.clear` failures).
+
+**Files:** `apps/desktop/src/components/pet/pet-sprite.tsx` (DPR-aware
+canvas backing store + `imageRendering: 'pixelated'`).
+
+**Merge note:** fork-only file, no upstream equivalent — no conflict risk.
+
