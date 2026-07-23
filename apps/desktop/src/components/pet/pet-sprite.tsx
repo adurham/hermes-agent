@@ -1,6 +1,8 @@
 import { memo, useEffect, useMemo, useRef } from 'react'
 
-import { $petState, type PetInfo, type PetState } from '@/store/pet'
+import { $petRoamAirborne, $petState, type PetInfo, type PetState } from '@/store/pet'
+
+import { jumpBobHeightPx, jumpDurationMs } from './roam-behavior'
 
 const DEFAULT_FRAME_W = 192
 const DEFAULT_FRAME_H = 208
@@ -116,6 +118,7 @@ interface PetSpriteProps {
  */
 function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSpriteProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const wrapRef = useRef<HTMLDivElement | null>(null)
   const stateRef = useRef<PetState>($petState.get())
   const overrideRef = useRef<PetState | undefined>(stateOverride)
   const rowOverrideRef = useRef<string | undefined>(rowOverride)
@@ -266,14 +269,52 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     }
   }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows])
 
+  // Stationary jump bob: play a CSS vertical hop whenever the pose enters
+  // `jump` for a reason OTHER than the roam loop's own ledge-to-ledge hop
+  // (idle fidget, click-to-pet, turn-end celebrate — see `.pet-jump-bob` in
+  // styles.css). The roam loop already moves the container's real top/left
+  // during an actual hop (`$petRoamAirborne`), so skip this there or the two
+  // vertical motions would fight each other.
+  useEffect(() => {
+    const wrap = wrapRef.current
+
+    if (!wrap) {
+      return
+    }
+
+    let prev = overrideRef.current ?? stateRef.current
+
+    const maybeBob = (next: PetState) => {
+      if (next === 'jump' && prev !== 'jump' && !$petRoamAirborne.get()) {
+        wrap.style.setProperty('--pet-jump-height', `${jumpBobHeightPx(drawH)}px`)
+        wrap.style.setProperty('--pet-jump-ms', `${jumpDurationMs(loopMs)}ms`)
+        // Force a reflow so re-triggering the same animation class (e.g. two
+        // quick jump beats) restarts it instead of no-oping.
+        wrap.classList.remove('pet-jump-bob')
+        void wrap.offsetWidth
+        wrap.classList.add('pet-jump-bob')
+      }
+
+      prev = next
+    }
+
+    const unsub = $petState.listen(maybeBob)
+
+    return () => {
+      unsub()
+    }
+  }, [drawH, loopMs])
+
   return (
-    <canvas
-      aria-label={info.displayName ? `${info.displayName} pet` : 'pet'}
-      height={drawH}
-      ref={canvasRef}
-      style={{ height: drawH, width: drawW }}
-      width={drawW}
-    />
+    <div ref={wrapRef} style={{ height: drawH, lineHeight: 0, width: drawW }}>
+      <canvas
+        aria-label={info.displayName ? `${info.displayName} pet` : 'pet'}
+        height={drawH}
+        ref={canvasRef}
+        style={{ height: drawH, width: drawW }}
+        width={drawW}
+      />
+    </div>
   )
 }
 

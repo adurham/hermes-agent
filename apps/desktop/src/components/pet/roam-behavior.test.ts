@@ -5,6 +5,7 @@ import {
   dwellMs,
   type DwellRange,
   HOP_CHANCE,
+  jumpBobHeightPx,
   jumpDurationMs,
   pickStrollTarget,
   REST_CHANCE,
@@ -118,5 +119,19 @@ describe('jumpDurationMs', () => {
 
   it('clamps to a ceiling so a slow loopMs never floats', () => {
     expect(jumpDurationMs(100000)).toBeLessThanOrEqual(900)
+  })
+})
+
+describe('jumpBobHeightPx', () => {
+  it('scales with the pet on-screen height instead of a flat guess', () => {
+    expect(jumpBobHeightPx(200)).toBeGreaterThan(jumpBobHeightPx(60))
+  })
+
+  it('clamps to a readable floor for a tiny pet', () => {
+    expect(jumpBobHeightPx(1)).toBeGreaterThanOrEqual(10)
+  })
+
+  it('clamps to a ceiling so a huge pet never pogos absurdly high', () => {
+    expect(jumpBobHeightPx(10000)).toBeLessThanOrEqual(36)
   })
 })
