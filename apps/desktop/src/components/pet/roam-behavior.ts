@@ -125,9 +125,11 @@ export function jumpDurationMs(loopMs: number): number {
 // `.pet-jump-bob` in styles.css. This is a CSS transform bob, not the roam
 // loop's ledge physics, so it needs its own readable floor/ceiling rather
 // than reusing GRAVITY_PX_S2/ledge geometry that only exists once roaming.
-const JUMP_BOB_HEIGHT_FRACTION = 0.28
-const JUMP_BOB_HEIGHT_MIN_PX = 10
-const JUMP_BOB_HEIGHT_MAX_PX = 36
+// (Started at 0.28/36px — user reported that read as jumping "a little too
+// high" for a small critter hopping in place; 0.15/24px is a lighter hop.)
+const JUMP_BOB_HEIGHT_FRACTION = 0.15
+const JUMP_BOB_HEIGHT_MIN_PX = 6
+const JUMP_BOB_HEIGHT_MAX_PX = 24
 
 /**
  * How high (px) the stationary jump bob should lift the pet, scaled to its

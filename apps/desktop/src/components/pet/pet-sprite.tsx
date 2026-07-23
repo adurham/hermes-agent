@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from 'react'
 
-import { $petRoamAirborne, $petState, type PetInfo, type PetState } from '@/store/pet'
+import { $petJumpBeat, $petRoamAirborne, $petState, type PetInfo, type PetState } from '@/store/pet'
 
 import { jumpBobHeightPx, jumpDurationMs } from './roam-behavior'
 
@@ -275,6 +275,14 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
   // styles.css). The roam loop already moves the container's real top/left
   // during an actual hop (`$petRoamAirborne`), so skip this there or the two
   // vertical motions would fight each other.
+  //
+  // Two triggers, not one: `$petState` fires on the FIRST transition into
+  // `jump`, but nanostores' `computed.set()` only notifies on a VALUE change —
+  // a repeat celebrate (click the pet again, or two turns finishing close
+  // together) while still inside the previous beat's decay window resolves to
+  // the same `'jump'` string, so `$petState` silently no-ops and the bob would
+  // never replay. `$petJumpBeat` is a nonce bumped on every celebrate request
+  // (see `flashPetActivity`) specifically to catch that repeat case.
   useEffect(() => {
     const wrap = wrapRef.current
 
@@ -282,26 +290,38 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       return
     }
 
+    const playBob = () => {
+      wrap.style.setProperty('--pet-jump-height', `${jumpBobHeightPx(drawH)}px`)
+      wrap.style.setProperty('--pet-jump-ms', `${jumpDurationMs(loopMs)}ms`)
+      // Force a reflow so re-triggering the same animation class (e.g. two
+      // quick jump beats) restarts it instead of no-oping.
+      wrap.classList.remove('pet-jump-bob')
+      void wrap.offsetWidth
+      wrap.classList.add('pet-jump-bob')
+    }
+
     let prev = overrideRef.current ?? stateRef.current
 
-    const maybeBob = (next: PetState) => {
+    const unsubState = $petState.listen(next => {
       if (next === 'jump' && prev !== 'jump' && !$petRoamAirborne.get()) {
-        wrap.style.setProperty('--pet-jump-height', `${jumpBobHeightPx(drawH)}px`)
-        wrap.style.setProperty('--pet-jump-ms', `${jumpDurationMs(loopMs)}ms`)
-        // Force a reflow so re-triggering the same animation class (e.g. two
-        // quick jump beats) restarts it instead of no-oping.
-        wrap.classList.remove('pet-jump-bob')
-        void wrap.offsetWidth
-        wrap.classList.add('pet-jump-bob')
+        playBob()
       }
 
       prev = next
-    }
+    })
 
-    const unsub = $petState.listen(maybeBob)
+    // A plain `atom.listen()` (unlike `.subscribe()`) never calls the new
+    // listener synchronously with the current value — only future `.set()`
+    // calls — so every firing here is a real, new celebrate request.
+    const unsubBeat = $petJumpBeat.listen(() => {
+      if ((overrideRef.current ?? stateRef.current) === 'jump' && !$petRoamAirborne.get()) {
+        playBob()
+      }
+    })
 
     return () => {
-      unsub()
+      unsubState()
+      unsubBeat()
     }
   }, [drawH, loopMs])
 

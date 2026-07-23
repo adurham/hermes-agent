@@ -128,10 +128,10 @@ describe('jumpBobHeightPx', () => {
   })
 
   it('clamps to a readable floor for a tiny pet', () => {
-    expect(jumpBobHeightPx(1)).toBeGreaterThanOrEqual(10)
+    expect(jumpBobHeightPx(1)).toBeGreaterThanOrEqual(6)
   })
 
   it('clamps to a ceiling so a huge pet never pogos absurdly high', () => {
-    expect(jumpBobHeightPx(10000)).toBeLessThanOrEqual(36)
+    expect(jumpBobHeightPx(10000)).toBeLessThanOrEqual(24)
   })
 })

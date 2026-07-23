@@ -6,7 +6,7 @@ import { PetBubble } from '@/components/pet/pet-bubble'
 import { PetSprite } from '@/components/pet/pet-sprite'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
-import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
+import { $petActivity, $petInfo, setPetInfo, triggerPetJumpBeat } from '@/store/pet'
 import { overlayWindowSize } from '@/store/pet-overlay'
 import { setAwaitingResponse, setBusy } from '@/store/session'
 
@@ -105,6 +105,7 @@ export function PetOverlayApp() {
 
         if (reaction.kind === 'vibe') {
           playVibeHearts()
+          triggerPetJumpBeat()
         }
       }
     })

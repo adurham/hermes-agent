@@ -1871,10 +1871,10 @@ text-* variant utilities. */ .btn-arc {
     transform: translateY(0);
   }
   40% {
-    transform: translateY(calc(-1 * var(--pet-jump-height, 22px)));
+    transform: translateY(calc(-1 * var(--pet-jump-height, 14px)));
   }
   70% {
-    transform: translateY(calc(-0.35 * var(--pet-jump-height, 22px)));
+    transform: translateY(calc(-0.35 * var(--pet-jump-height, 14px)));
   }
 }
 
