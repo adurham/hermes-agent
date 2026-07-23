@@ -149,7 +149,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const targetStartedInCurrentView =
         !targetStoredSessionId || targetStoredSessionId === selectedStoredSessionIdRef.current
 
-      let sessionId: null | string = options?.sessionId ?? activeSessionIdRef.current
+      // `sessionId` is a distinct key from "not passed": a queue drain (foreground
+      // or background) always sets it explicitly, and `null` there means "this
+      // session's runtime id couldn't be resolved" (e.g. a stale/reaped cache
+      // entry the validated getter correctly rejected) — NOT "no target, use
+      // whichever session is in the foreground." `?? activeSessionIdRef.current`
+      // conflated the two: an explicit `sessionId: null` fell through to the
+      // active session, so a background drain whose own session couldn't be
+      // resolved silently misdelivered into whatever the user was looking at
+      // instead of taking the `targetStoredSessionId` resume path below (the
+      // "queued in A, landed in B" bug — attachments included). Only a plain
+      // foreground submit (no `sessionId` key at all) should default to the
+      // active session.
+      const sessionIdWasProvided = Boolean(options) && 'sessionId' in options!
+      let sessionId: null | string = sessionIdWasProvided ? (options!.sessionId ?? null) : activeSessionIdRef.current
 
       // Pin the foreground session context for the whole async submit pipeline.
       // Without this, a fast session switch during session.resume / file.attach
