@@ -134,6 +134,22 @@ export const setPetActivity = (next: Partial<PetActivity>) => $petActivity.set({
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 
+/**
+ * Monotonic nonce, bumped every time a `celebrate` beat is requested via
+ * {@link flashPetActivity} — including repeat requests while a previous
+ * celebrate beat is still decaying. This exists because `$petState` is a
+ * `computed` atom: nanostores' `atom.set()` only notifies listeners when the
+ * VALUE changes, and `derivePetState()` still resolves to the same string
+ * `'jump'` on a repeat celebrate (e.g. clicking the pet again before the
+ * first beat's 1.6s decay finishes) — so `$petState` silently no-ops and any
+ * effect keyed on a `!== 'jump'` → `'jump'` transition never re-fires.
+ * Consumers that need to replay a one-shot effect (the jump bob) on every
+ * celebrate request, not just the first, should listen to this instead of
+ * (or alongside) `$petState`.
+ */
+export const $petJumpBeat = atom<number>(0)
+export const triggerPetJumpBeat = () => $petJumpBeat.set($petJumpBeat.get() + 1)
+
 /** Fire a transient reaction beat (error / celebrate / justCompleted) that
  *  decays back to the steady state after `ms`.
  *
@@ -143,6 +159,11 @@ let flashTimer: ReturnType<typeof setTimeout> | undefined
  *  finish would render the sad/failed pose. */
 export const flashPetActivity = (next: Partial<PetActivity>, ms = 1600) => {
   setPetActivity({ celebrate: false, error: false, justCompleted: false, ...next })
+
+  if (next.celebrate) {
+    triggerPetJumpBeat()
+  }
+
   clearTimeout(flashTimer)
   flashTimer = setTimeout(() => setPetActivity({ celebrate: false, error: false, justCompleted: false }), ms)
 }

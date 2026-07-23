@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   $petActivity,
   $petAtRest,
+  $petJumpBeat,
   $petMotion,
   $petState,
   derivePetState,
@@ -85,6 +86,34 @@ describe('flashPetActivity', () => {
 
     expect($petActivity.get().error).toBe(false)
     expect($petState.get()).toBe('jump')
+
+    setPetActivity({})
+  })
+
+  it('bumps $petJumpBeat on every celebrate call, even while already celebrating', () => {
+    // Regression: $petState is a computed atom, and nanostores only notifies
+    // listeners on a VALUE change. Two celebrate calls in a row both resolve
+    // to the same 'jump' string, so $petState alone can't signal "replay the
+    // bob" for a second click/beat landing inside the first one's decay
+    // window (e.g. clicking the pet twice in quick succession). $petJumpBeat
+    // must bump on every celebrate request regardless of the current pose.
+    const before = $petJumpBeat.get()
+
+    flashPetActivity({ celebrate: true })
+    expect($petJumpBeat.get()).toBe(before + 1)
+
+    // Still celebrating (same 'jump' state) — must bump again anyway.
+    flashPetActivity({ celebrate: true })
+    expect($petJumpBeat.get()).toBe(before + 2)
+
+    setPetActivity({})
+  })
+
+  it('does not bump $petJumpBeat for non-celebrate beats', () => {
+    const before = $petJumpBeat.get()
+
+    flashPetActivity({ error: true })
+    expect($petJumpBeat.get()).toBe(before)
 
     setPetActivity({})
   })

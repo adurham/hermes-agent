@@ -4826,3 +4826,71 @@ preview routing, pane-shell tree tests) reproduce identically on unmodified
 
 **Merge note:** fork-only files, no upstream equivalent — no conflict risk.
 
+### Fork-only fix — 2026-07-23 (pet: jump bob too high + didn't replay on repeat clicks)
+
+**Symptom (user report, follow-up to the previous fix):** the new jump bob
+was jumping "a little too high," and clicking the pet repeatedly in quick
+succession didn't replay the bob on the later clicks.
+
+**Root cause 1 (too high):** `jumpBobHeightPx`'s fraction/ceiling
+(`0.28`/`36px`) was tuned before seeing it live at the user's configured
+`display.pet.scale: 0.5` — 28% of a ~104px-tall pet's body height reads as
+an oversized pogo, not a light hop.
+
+**Root cause 2 (doesn't replay on repeat clicks):** the bob-trigger effect in
+`pet-sprite.tsx` only fired on a `$petState` *transition into* `'jump'`. But
+`$petState` is a `computed` nanostores atom, and `computed`'s internal
+`$computed.set(value)` — like the base `atom.set()` — only notifies
+listeners when the VALUE actually changes (`node_modules/nanostores/atom/
+index.js`: `if (oldValue !== newValue) { ...notify... }`). Clicking the pet
+again (`burstVibeHearts` → `flashPetActivity({celebrate: true})`) while
+still inside the first click's 1.6s decay window updates the underlying
+`$petActivity` object, but `derivePetState()` still resolves to the same
+string `'jump'` — so `$petState.set('jump')` on an already-`'jump'` value is
+a silent no-op, no listener fires, and the bob effect (keyed on a `!==
+'jump'` → `'jump'` transition) never replays. Same root cause class as
+`STATE_ALIASES`/priority races documented elsewhere in this file: derived
+state collapsing distinct *events* into one *value* loses the "did something
+happen again" signal.
+
+**Fix:**
+- `roam-behavior.ts`: `JUMP_BOB_HEIGHT_FRACTION` 0.28→0.15, floor 10→6px,
+  ceiling 36→24px. Updated the 2 boundary tests in `roam-behavior.test.ts`
+  and the CSS fallback default in `styles.css` (22px→14px) to match.
+- `store/pet.ts`: added `$petJumpBeat` — a monotonic nonce atom bumped by
+  `flashPetActivity` on every `celebrate: true` call, independent of whether
+  `$petState`'s VALUE actually changes. This is the general fix for "replay a
+  one-shot effect on every event, not just the first value change" — the
+  right primitive when a derived atom's value-equality check would otherwise
+  swallow a repeat.
+- `pet-sprite.tsx`: the bob effect now listens to BOTH `$petState` (catches
+  the first transition into `jump`, including the roam-airborne guard) AND
+  `$petJumpBeat` (catches every repeat celebrate while already in the `jump`
+  pose). Both paths funnel through one `playBob()` helper so the reflow-
+  forcing restart logic isn't duplicated.
+- `pet-overlay-app.tsx`: the pop-out overlay's `'vibe'` reaction handler
+  (received over IPC from the main renderer, since the overlay has no local
+  `flashPetActivity` call of its own) now also calls `triggerPetJumpBeat()`
+  so repeat click-to-pet reactions replay there too.
+- Added 2 new `pet.test.ts` cases asserting `$petJumpBeat` bumps on every
+  celebrate call (even while already celebrating) and does NOT bump for
+  non-celebrate beats (error/justCompleted), so this contract can't silently
+  regress.
+
+**Verification:** full desktop `tsc --noEmit` clean, `eslint` clean on all
+touched files, pet test suite 33/33 (10 in `pet.test.ts`, up from 8; 17 in
+`roam-behavior.test.ts`), full desktop suite unchanged at 235 files / 2093
+tests passing (the pre-existing 104 `localStorage.clear` failures in
+unrelated files reproduce identically on unmodified `main`).
+
+**Files:** `apps/desktop/src/components/pet/roam-behavior.ts` (bob height
+constants), `apps/desktop/src/components/pet/roam-behavior.test.ts` (updated
+boundary tests), `apps/desktop/src/styles.css` (fallback default),
+`apps/desktop/src/store/pet.ts` (new `$petJumpBeat` +
+`triggerPetJumpBeat`), `apps/desktop/src/store/pet.test.ts` (2 new tests),
+`apps/desktop/src/components/pet/pet-sprite.tsx` (dual-listener bob trigger),
+`apps/desktop/src/app/pet-overlay/pet-overlay-app.tsx` (bumps the beat on a
+mirrored vibe reaction).
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict risk.
+
