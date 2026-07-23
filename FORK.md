@@ -27,6 +27,18 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-23 (desktop: malformed CSS comment tripped a build-time lightningcss warning)
+
+**Symptom:** `npm run build` in `apps/desktop` prints `Found 1 warning while optimizing generated CSS: Unexpected token Delim('*')`, pointing at `.btn-arc`'s `text-*` comment text.
+
+**Root cause:** `src/styles.css`'s comment above `.btn-arc` read "Unlayered so it beats Tailwind's bg-\*/text-\* variant utilities." — the `bg-*/` substring contains a literal `*/`, which is the CSS block-comment close token. That closed the comment two words early; `text-* variant utilities. */ .btn-arc {` was then parsed as real (if harmless — `.btn-arc {` still matched correctly) CSS, and lightningcss choked on the leftover `text-*` token before the real comment-close.
+
+**Fix:** reworded the comment to avoid `*/ ` appearing mid-sentence (split `bg-*/text-*` into "bg- and text- variant utilities") and put `.btn-arc {` on its own line for clarity. No selector/rule/behavior change — `.btn-arc`'s actual CSS block was already being parsed correctly; only the comment truncation and the resulting bogus warning are fixed.
+
+**Verification:** `npm run build` in `apps/desktop` — no CSS warnings (previously: 1).
+
+**Files:** `apps/desktop/src/styles.css` (comment reword only).
+
 ### Fork-only chore — 2026-07-23 (desktop: bumped Vite chunk-size warning ceiling for the intentional single-bundle build)
 
 **Symptom:** `npm run build` in `apps/desktop` prints a `[plugin builtin:vite-reporter]` warning that "Some chunks are larger than 25000 kB after minification," suggesting dynamic `import()` / `codeSplitting` / raising `chunkSizeWarningLimit`.
