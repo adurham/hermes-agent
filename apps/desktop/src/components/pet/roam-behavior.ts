@@ -95,3 +95,27 @@ export function pickStrollTarget(ledge: Ledge, fromX: number, rng: Rng = Math.ra
 
   return goRight ? fromX + dist : fromX - dist
 }
+
+// Spring-up hop duration as a fraction of the sprite's jump-loop cadence
+// (`loopMs`), not a flat guess. `PetSprite` paces every state to complete its
+// real frame count exactly once per `loopMs` (`stepMs = loopMs / frameCount`
+// in pet-sprite.tsx), so a hop that finishes in a fixed 460ms — as this used
+// to be — plays only ~2 of a ~5-frame jump row before `settleOn()` snaps the
+// pose back to idle: the animation reads as a teleport, not a hop, and gets
+// worse the slower a pet's `loopMs` is configured.
+const JUMP_DUR_FRACTION = 0.75
+// Floor: even a very fast (short-`loopMs`) pet still gets a readable spring,
+// not an instant snap.
+const JUMP_DUR_MIN_MS = 260
+// Ceiling: a very slow pet's platforming hop still reads as a hop, not a
+// sluggish float.
+const JUMP_DUR_MAX_MS = 900
+
+/**
+ * Physical duration (ms) of a spring-up hop between ledges, paced to the
+ * sprite's own `loopMs` so the jump pose has time to actually play out its
+ * frames before the pet lands and the roam loop cuts back to idle.
+ */
+export function jumpDurationMs(loopMs: number): number {
+  return Math.min(JUMP_DUR_MAX_MS, Math.max(JUMP_DUR_MIN_MS, loopMs * JUMP_DUR_FRACTION))
+}

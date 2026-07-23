@@ -2,7 +2,7 @@ import { type RefObject, useEffect } from 'react'
 
 import { $petMotion, $petRoamDir, type PetState } from '@/store/pet'
 
-import { chooseMove, dwellMs, PAUSE_DWELL, pickStrollTarget } from './roam-behavior'
+import { chooseMove, dwellMs, jumpDurationMs, PAUSE_DWELL, pickStrollTarget } from './roam-behavior'
 import {
   GROUND_EPS,
   groundTop,
@@ -25,8 +25,6 @@ interface Point {
 const STRIDE_PER_LOOP = 0.8
 // Downward acceleration for falls between ledges — fast enough to read as a drop.
 const GRAVITY_PX_S2 = 5200
-// Time to spring up onto a higher ledge.
-const JUMP_DUR_MS = 460
 // Tiny settle after a drag release before the pet re-plans (and usually falls),
 // so dropping it in mid-air snaps down promptly instead of hanging for a beat.
 const DROP_SETTLE_MS = 90
@@ -107,6 +105,9 @@ export function usePetRoam({
 
     // Pace the stride to the sprite: one body-width per animation loop.
     const walkSpeedPxS = (petW * STRIDE_PER_LOOP) / (loopMs / 1000)
+    // Pace the spring-up hop to the sprite's jump cadence too — see
+    // `jumpDurationMs`'s doc comment for why a flat duration reads as abrupt.
+    const jumpDurMs = jumpDurationMs(loopMs)
     const restY = (ledge: Ledge): number => groundTop(ledge, petH)
 
     // In zone mode the pet is position:absolute inside the zone container, so
@@ -310,7 +311,7 @@ export function usePetRoam({
           }
 
           jumpElapsed += dt * 1000
-          const t = Math.min(1, jumpElapsed / JUMP_DUR_MS)
+          const t = Math.min(1, jumpElapsed / jumpDurMs)
           cur.y = jumpFromY + (restY(targetLedge) - jumpFromY) * easeOutCubic(t)
 
           if (t >= 1) {
