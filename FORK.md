@@ -4967,3 +4967,50 @@ canvas backing store + `imageRendering: 'pixelated'`).
 
 **Merge note:** fork-only file, no upstream equivalent — no conflict risk.
 
+### Fork-only fix — 2026-07-23 (pet: kept "running" against a wall it had already stopped at)
+
+**Symptom:** user reported the roaming pet keeps trying to run into walls —
+it hits the end of its walkable path and stops moving, but the running-leg
+animation keeps playing as if it were still walking.
+
+**Root cause:** `use-pet-roam.ts`'s `beginPause()` correctly stops the pet
+(`$petMotion.set(null)`) the instant it settles at a wall or picks a rest
+beat. But `$petState`'s derivation (`store/pet.ts`) intentionally lets a busy
+pose (`toolRunning`/`busy` → `run`) win over the roam pose — by design, so a
+stride mid-tool-call still reads as alive rather than the roam loop's pause
+freezing the pet's legs mid-work. The bug: `$petMotion === null` means BOTH
+"roam just settled at a wall" AND "roam was never enabled at all" — the busy
+check can't tell those apart, so if the agent was STILL busy the instant the
+pet hit a wall, the running pose kept forcing itself onto a pet that had
+already, correctly, stopped moving. Reads exactly as "the pet keeps trying to
+run into the wall."
+
+**Fix:** added `$petRoamPaused` — a boolean, false by default (so a
+roam-disabled pet, the pop-out overlay, and the generate-flow preview, none
+of which mount `usePetRoam`, are completely unaffected), set true by
+`beginPause()` (settled/loafing) and the drag-yield branch, cleared by
+`beginVertical()` (starting a hop) and `planNext()`'s walk-start branch, and
+reset in the effect's disable/cleanup path. `$petState`'s computed callback
+now takes an extra branch: a `base === 'run'` derived from busy/tool activity
+still shows `idle` when `motion === null && roamPaused` — i.e. exactly the
+"stopped at a wall while still busy" case — but is otherwise untouched
+(waiting/review/failed keep their existing priority; a roam-disabled pet's
+busy pose never changes since its `$petRoamPaused` never leaves `false`).
+
+Added 3 new `pet.test.ts` cases: the exact busy+wall scenario resolving to
+idle then back to running once roam picks a new stroll target, a check that
+a roam-disabled pet's `run` pose is completely unaffected, and a check that
+`waiting`/other higher-priority states aren't masked by the new branch.
+
+**Verification:** full desktop `tsc --noEmit` clean, `eslint` clean, pet test
+suite 36/36 (13 in `pet.test.ts`, up from 10), full desktop suite unchanged
+at 235 files / 2096 tests passing (same pre-existing unrelated
+`localStorage.clear` failures).
+
+**Files:** `apps/desktop/src/store/pet.ts` (new `$petRoamPaused` +
+`$petState` branch), `apps/desktop/src/store/pet.test.ts` (3 new tests),
+`apps/desktop/src/components/pet/use-pet-roam.ts` (sets/clears the new
+signal across every phase transition).
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict risk.
+

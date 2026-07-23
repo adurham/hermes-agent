@@ -231,6 +231,27 @@ export const $petMotion = atom<PetState | null>(null)
 export const $petRoamAirborne = atom<boolean>(false)
 
 /**
+ * True while the roam loop is in a deliberate resting/loafing beat (settled,
+ * waiting out its next `planNext()` decision) — false while it's actively
+ * walking or hopping, AND false whenever roam isn't running at all (opted
+ * out, agent grabbed a distinct attention pose, popped-out overlay, or the
+ * generate-flow preview, none of which mount `usePetRoam`).
+ *
+ * Exists to fix a real bug: `$petState` intentionally lets a busy pose (e.g.
+ * `toolRunning` -> `run`) win over the roam pose so a stride mid-tool-call
+ * reads as alive. But `$petMotion` alone can't tell "roam paused because it
+ * hit a wall/settled" apart from "roam was never enabled" — both read as
+ * `motion === null`. Without this signal, a pet that strolls into a wall
+ * while the agent is STILL busy freezes in place while `$petState` keeps
+ * forcing the running pose, since the busy check never sees that roam tried
+ * to stop. The legs keep cycling against a wall the pet has already stopped
+ * walking into. `$petRoamPaused` lets `$petState` show `idle` for exactly
+ * that beat, without regressing the busy `run` pose for anyone with roam
+ * disabled (where this atom is simply always false).
+ */
+export const $petRoamPaused = atom<boolean>(false)
+
+/**
  * Horizontal travel direction while roaming: -1 left, 1 right, 0 not walking.
  * The floating pet maps this to the directional run row + mirror, keeping the
  * wander loop free of sprite-row knowledge.
@@ -269,12 +290,32 @@ export const $petCanRoam = computed([$petActivity, $busy], (activity, busy): boo
  * The live pet state. Activity always wins; only when the agent is at rest does
  * a roam pose (walking → `run`, hopping → `jump`) show through, so the wander
  * reads as deliberate movement.
+ *
+ * One deliberate exception: a busy `run` pose still yields to `idle` when the
+ * roam loop has JUST settled into a paused/loafing beat (`$petRoamPaused`) —
+ * e.g. it strolled into a wall and stopped. Without this, a pet that's
+ * physically stationary (roam correctly stopped moving it) would keep
+ * playing the running-leg frames forever because the busy signal alone can't
+ * tell "still working" apart from "roam has nothing to show right now."
+ * `$petRoamPaused` is false whenever roam isn't running at all, so a
+ * roam-disabled pet's busy pose is completely unaffected.
  */
-export const $petState = computed([$petActivity, $busy, $petMotion], (activity, busy, motion): PetState => {
-  const base = deriveLivePetState(activity, busy)
+export const $petState = computed(
+  [$petActivity, $busy, $petMotion, $petRoamPaused],
+  (activity, busy, motion, roamPaused): PetState => {
+    const base = deriveLivePetState(activity, busy)
 
-  return base === 'idle' && motion ? motion : base
-})
+    if (base === 'idle') {
+      return motion ?? base
+    }
+
+    if (base === 'run' && motion === null && roamPaused) {
+      return 'idle'
+    }
+
+    return base
+  }
+)
 
 /**
  * Real agent-activity state, ignoring any roam/fidget pose. `$petState` is
