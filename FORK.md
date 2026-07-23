@@ -27,6 +27,53 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-23 (desktop: running tool call buried mid-group, tool window too short)
+
+**Symptom:** in the inline tool-call list under a chat reply, once a
+back-to-back run collapses into the bounded auto-scrolling window
+(`ToolGroupSlot` / `.tool-group-scroll`, triggered at
+`TOOL_GROUP_SCROLL_THRESHOLD = 3` rows), a still-*running* call that isn't
+the last one in the model's call order stayed wherever it was issued —
+buried under already-finished rows below it — instead of floating to the
+bottom where the auto-scroll-to-bottom/top-fade behavior could surface it.
+Separately, the window itself was only `6.75rem` tall (~2-3 rows), cramped
+even when nothing was misplaced.
+
+**Root cause:** `ToolGroupSlot` renders each tool call as a standalone row
+in strict DOM/call order — deliberately, per the existing comment, so a
+run reshaping mid-stream (narration/reasoning interleaved into many tiny
+ranges while streaming vs. one big settled range once done) never remounts
+a row. That stability is correct and worth keeping, but it means visual
+order was tied 1:1 to DOM order with no way for a pending row to visually
+sort last.
+
+**Fix:** two independent CSS-only changes, no DOM/row-identity changes:
+1. `ToolEntry`'s wrapper `div` (`fallback.tsx`) now carries a
+   `data-tool-pending` attribute whenever `isPending` is true (mirrors the
+   existing `data-tool-open`/`data-tool-row` pattern).
+2. `styles.css`: `.tool-group-scroll [data-tool-row][data-tool-pending] {
+   order: 1; }` — the group's inner content div is already a CSS grid
+   (`grid ... gap-(--tool-row-gap)`), so `order` repaints pending row(s) to
+   the end without touching the DOM. Finished rows keep flow order (all
+   `order: 0`), multiple concurrently-pending rows keep their relative call
+   order among themselves — only "pending vs. not" is reordered.
+3. `--tool-group-scroll-max-h` raised from `6.75rem` to `13.5rem` (~2x) so
+   the bounded window shows enough rows that the sorted-to-bottom pending
+   call has room to actually be visible, not just technically last.
+
+**Files:** `apps/desktop/src/components/assistant-ui/tool/fallback.tsx`
+(added `data-tool-pending` attr), `apps/desktop/src/styles.css` (`order`
+rule + taller `--tool-group-scroll-max-h`).
+
+**Verification:** `npx tsc -p . --noEmit` clean, `npx eslint
+src/components/assistant-ui/tool/fallback.tsx` clean, existing
+`fallback.test.ts` + `fallback-model.test.ts` (30 tests) pass unchanged.
+
+**Merge note:** small, isolated diff in two files with no upstream
+equivalent behavior change (upstream doesn't have this variable
+reorder) — should apply cleanly on future syncs; re-check
+`--tool-group-scroll-max-h`'s value if upstream retunes it independently.
+
 ### Fork-only fix — 2026-07-23 (desktop: review pane never showed by default — hidden behind an undiscoverable ⌘G)
 
 **Symptom:** the review pane (git working-tree diff / uncommitted-changes

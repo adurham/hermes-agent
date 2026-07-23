@@ -350,9 +350,11 @@
        run still reads as one cohesive sequence. */
     --tool-row-gap: 0.375rem;
     /* Height of the bounded, auto-scrolling window a long adjacent tool-call run
-       collapses into (see `.tool-group-scroll`). Sized to show a few rows before
-       the scroll + top fade kick in. */
-    --tool-group-scroll-max-h: 6.75rem;
+       collapses into (see `.tool-group-scroll`). Sized to show enough rows that
+       a still-running call (pinned to the bottom via `order`, see
+       `[data-tool-pending]` below) stays comfortably in view instead of peering
+       at the run through a 2-row slit. */
+    --tool-group-scroll-max-h: 13.5rem;
     /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
        markdown block and between consecutive prose parts. Single knob; tweak
        freely. */
@@ -1521,6 +1523,19 @@ text-* variant utilities. */ .btn-arc {
 .tool-group-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--ui-stroke-tertiary) transparent;
+}
+
+/* A still-running call sorts to the bottom of its group instead of staying
+   pinned wherever it was issued — a long parallel batch (several tools fired
+   in the same turn) otherwise buries the one row that's still live under
+   finished siblings above it, right where the auto-scroll-to-bottom /
+   top-fade behavior can't surface it. `order` only affects paint position
+   (grid auto-placement), never the underlying DOM — finished rows keep their
+   original relative order among themselves, and so do multiple concurrently
+   pending rows, so nothing here defeats the per-row mount stability the group
+   depends on. */
+.tool-group-scroll [data-tool-row][data-tool-pending] {
+  order: 1;
 }
 
 /* Break out of the fixed window the moment any row inside is expanded: the

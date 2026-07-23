@@ -458,6 +458,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       data-file-edit={isFileEdit && open ? '' : undefined}
       data-slot="tool-block"
       data-tool-open={open ? '' : undefined}
+      data-tool-pending={isPending ? '' : undefined}
       data-tool-row=""
       ref={enterRef}
     >
