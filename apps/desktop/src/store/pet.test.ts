@@ -5,6 +5,7 @@ import {
   $petAtRest,
   $petJumpBeat,
   $petMotion,
+  $petRoamPaused,
   $petState,
   derivePetState,
   flashPetActivity,
@@ -73,6 +74,57 @@ describe('roam motion', () => {
     expect($petState.get()).toBe('idle')
 
     $petActivity.set({})
+  })
+})
+
+describe('$petRoamPaused (running-into-a-wall fix)', () => {
+  it('shows idle instead of a stuck running pose when roam settles while still busy', () => {
+    // Regression: the pet strolls into a wall/settles while the agent is
+    // STILL busy. Roam correctly stops moving it ($petMotion -> null), but
+    // the busy signal alone can't tell "roam has nothing to show" apart from
+    // "roam isn't running at all" — so without $petRoamPaused the running-leg
+    // pose kept playing forever against a pet that had already stopped.
+    $petActivity.set({ busy: true })
+    $petMotion.set('run')
+    expect($petState.get()).toBe('run')
+
+    // Roam settles into a loafing beat (beginPause in use-pet-roam.ts).
+    $petMotion.set(null)
+    $petRoamPaused.set(true)
+    expect($petState.get()).toBe('idle')
+
+    // Roam picks a new stroll target and starts walking again — the running
+    // pose should resume even though the agent never stopped being busy.
+    $petMotion.set('run')
+    $petRoamPaused.set(false)
+    expect($petState.get()).toBe('run')
+
+    $petActivity.set({})
+    $petMotion.set(null)
+    $petRoamPaused.set(false)
+  })
+
+  it('never affects the busy pose when roam is disabled ($petRoamPaused stays false)', () => {
+    // A roam-disabled pet (or the pop-out overlay / generate preview, neither
+    // of which mount usePetRoam) never sets $petRoamPaused — this asserts the
+    // fix is a no-op for that entire population.
+    $petActivity.set({ busy: true })
+    expect($petRoamPaused.get()).toBe(false)
+    expect($petState.get()).toBe('run')
+
+    $petActivity.set({})
+  })
+
+  it('does not interfere with non-run states (waiting/review/failed keep priority)', () => {
+    $petRoamPaused.set(true)
+    $petMotion.set(null)
+
+    expect(derivePetState({ awaitingInput: true })).toBe('waiting')
+    $petActivity.set({ awaitingInput: true })
+    expect($petState.get()).toBe('waiting')
+
+    $petActivity.set({})
+    $petRoamPaused.set(false)
   })
 })
 

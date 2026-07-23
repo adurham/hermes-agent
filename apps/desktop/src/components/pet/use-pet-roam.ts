@@ -1,6 +1,6 @@
 import { type RefObject, useEffect } from 'react'
 
-import { $petMotion, $petRoamAirborne, $petRoamDir, type PetState } from '@/store/pet'
+import { $petMotion, $petRoamAirborne, $petRoamDir, $petRoamPaused, type PetState } from '@/store/pet'
 
 import { chooseMove, dwellMs, jumpDurationMs, PAUSE_DWELL, pickStrollTarget } from './roam-behavior'
 import {
@@ -94,6 +94,7 @@ export function usePetRoam({
       $petMotion.set(null)
       $petRoamDir.set(0)
       $petRoamAirborne.set(false)
+      $petRoamPaused.set(false)
 
       return
     }
@@ -159,6 +160,10 @@ export function usePetRoam({
       pauseUntil = now + dwellMs(PAUSE_DWELL)
       signal(null, 0)
       $petRoamAirborne.set(false)
+      // A deliberate rest/loaf beat, not "roam isn't running" — see
+      // $petRoamPaused's doc comment for why $petState needs this distinct
+      // from a plain null motion.
+      $petRoamPaused.set(true)
       commit({ ...cur })
     }
 
@@ -185,6 +190,7 @@ export function usePetRoam({
       }
 
       $petRoamAirborne.set(true)
+      $petRoamPaused.set(false)
       signal('jump', 0)
     }
 
@@ -231,6 +237,7 @@ export function usePetRoam({
       }
 
       phase = 'walk'
+      $petRoamPaused.set(false)
       signal('run', signDir(walkTargetX - cur.x))
     }
 
@@ -251,6 +258,7 @@ export function usePetRoam({
         pauseUntil = now + DROP_SETTLE_MS
         signal(null, 0)
         $petRoamAirborne.set(false)
+        $petRoamPaused.set(true)
         raf = requestAnimationFrame(step)
 
         return
@@ -376,6 +384,7 @@ export function usePetRoam({
       resizeObserver?.disconnect()
       signal(null, 0)
       $petRoamAirborne.set(false)
+      $petRoamPaused.set(false)
       // Hand the final position back to React so its `style` matches the DOM once
       // the loop stops re-asserting it.
       commit({ ...cur })
