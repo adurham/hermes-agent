@@ -4655,3 +4655,48 @@ existing Tool Availability loop, three new tests. No upstream equivalent
 (upstream's doctor doesn't have this section at all in the same form), so
 should apply cleanly on future syncs.
 
+### Fork-only fix — 2026-07-23 (pet: jump hop looked abrupt/teleport-y)
+
+**Symptom:** user reported the desktop pet's roam animation is "very
+abrupt," particularly the jump between ledges (walking traced back to
+the same root once investigated — see below).
+
+**Investigation:** decoded the active pet's (`hatsune-miku`)
+`spritesheet.webp` directly (1536x1872, 8 cols x 9 rows) with
+`agent.pet.render.state_frame_counts` / a manual per-cell alpha scan.
+Frame budget was NOT the problem: `running-left`/`running-right` are
+fully populated (8/8 real columns), `jumping` has 5/8 real frames —
+neither is starved. The bug was a timing mismatch between the visual
+frame cadence and the physical motion:
+
+- `PetSprite` (`pet-sprite.tsx`) steps a state's real frame count evenly
+  across `loopMs` (`stepMs = loopMs / realFrameCount`) — for jump's 5
+  frames at the default `loopMs=1100`, that's ~220ms/frame, so the pose
+  needs ~1100ms to read as an actual spring.
+- `use-pet-roam.ts`'s hop arc used a flat `JUMP_DUR_MS = 460` completely
+  decoupled from `loopMs`/frame count. The position tween (physics)
+  finished in 460ms while only ~2 of 5 jump frames had time to display,
+  and landing immediately calls `beginPause()` → `signal(null, 0)`,
+  cutting the pose back to idle — reads as a teleport/flash, not a hop.
+  This affects every installed pet, not just Miku (the constant never
+  scaled with `loopMs` since the roam feature was introduced).
+
+Walking's abruptness is a separate, smaller issue not fixed here: `PetSprite`
+resets `frame = 0` the instant the active row changes with no
+blend/settle frame — a design/UX polish item, not a config or missing-asset
+bug.
+
+**Fix:** added `jumpDurationMs(loopMs)` to `roam-behavior.ts` — the hop
+duration is now `loopMs * 0.75`, clamped to `[260ms, 900ms]`, so the jump
+pose gets enough wall-clock time to play its real frames before the loop
+lands and cuts back to idle. `use-pet-roam.ts` computes this once per
+roam-effect setup (alongside the existing `walkSpeedPxS` pacing) and uses
+it in place of the old flat constant.
+
+**Files:** `apps/desktop/src/components/pet/roam-behavior.ts` (new
+`jumpDurationMs` + 3 tests in `roam-behavior.test.ts`),
+`apps/desktop/src/components/pet/use-pet-roam.ts` (removed
+`JUMP_DUR_MS`, wired `jumpDurationMs(loopMs)` in its place).
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict risk.
+

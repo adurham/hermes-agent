@@ -5,6 +5,7 @@ import {
   dwellMs,
   type DwellRange,
   HOP_CHANCE,
+  jumpDurationMs,
   pickStrollTarget,
   REST_CHANCE,
   type Rng
@@ -101,5 +102,21 @@ describe('pickStrollTarget', () => {
     // rare double-back coin ⇒ it commits to the roomy (left) side ⇒ target < x.
     const x = pickStrollTarget(ledge(0, 1000), 950, seq(0.5, 0))
     expect(x).toBeLessThan(950)
+  })
+})
+
+describe('jumpDurationMs', () => {
+  it('scales with loopMs instead of a flat guess', () => {
+    // A slower sprite loop (fewer, longer-held frames) gets a longer hop so the
+    // jump pose actually has time to play before landing snaps back to idle.
+    expect(jumpDurationMs(2000)).toBeGreaterThan(jumpDurationMs(500))
+  })
+
+  it('clamps to a readable floor for a very fast loopMs', () => {
+    expect(jumpDurationMs(1)).toBeGreaterThanOrEqual(260)
+  })
+
+  it('clamps to a ceiling so a slow loopMs never floats', () => {
+    expect(jumpDurationMs(100000)).toBeLessThanOrEqual(900)
   })
 })
