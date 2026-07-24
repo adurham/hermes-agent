@@ -1681,6 +1681,157 @@ class TestShutdown:
 
 
 # ---------------------------------------------------------------------------
+# Regression: orphaned parked task after a failed _connect_server (#63412)
+# ---------------------------------------------------------------------------
+
+class TestConnectServerOrphanReaping:
+    """_connect_server must not leak a live, unreferenced background task.
+
+    Root cause of the "Exception ignored in: <coroutine ... run>" /
+    "RuntimeError: Event loop is closed" crash seen at CLI exit: when
+    ``MCPServerTask.start()`` raises ``server._error`` (auth failure, bad
+    URL, or exhausting ``_MAX_INITIAL_CONNECT_RETRIES``), ``server._task`` is
+    still alive and has already moved on to parking in
+    ``_wait_for_reconnect_or_shutdown()``. If ``_connect_server`` doesn't
+    reap it, nothing ever holds a reference to call ``shutdown()`` — the
+    background task self-probes forever, invisible to
+    ``shutdown_mcp_servers()`` (never added to ``_servers``), and gets
+    abandoned when the MCP loop closes at process exit rather than exiting
+    cleanly.
+    """
+
+    def test_start_raising_error_reaps_orphaned_task(self):
+        """A server that fails to connect must have its task fully stopped."""
+        from tools.mcp_tool import MCPServerTask, _connect_server
+
+        async def _test():
+            server_holder = {}
+
+            # Simulate the "parked after exhausting initial retries" case:
+            # _ready is set (start() will return once it's set) and _error
+            # is populated, but the run() task keeps going past that point
+            # (mirrors the real run() loop, which parks rather than exits).
+            async def fake_run(self_srv, config):
+                server_holder["server"] = self_srv
+                self_srv._error = ConnectionError("could not connect")
+                self_srv._ready.set()
+                # Real run() doesn't return here — it parks waiting on
+                # reconnect/shutdown. Block the same way so the task is
+                # still very much alive when start() raises below.
+                await self_srv._wait_for_reconnect_or_shutdown()
+
+            # MCPServerTask uses __slots__, so instance-level patching of a
+            # class method isn't possible — patch on the class instead.
+            with patch.object(MCPServerTask, "run", fake_run):
+                with pytest.raises(ConnectionError):
+                    await _connect_server("broken_srv", {"command": "test"})
+
+            server = server_holder["server"]
+            # The orphan must be fully reaped: task finished, not just
+            # cancellation-requested-and-abandoned.
+            assert server._task is not None
+            assert server._task.done()
+            assert server._shutdown_event.is_set()
+
+        asyncio.run(_test())
+
+    def test_start_cancelled_still_reaps_task(self):
+        """The pre-existing CancelledError path (#59349) still cancels cleanly."""
+        from tools.mcp_tool import MCPServerTask, _connect_server
+
+        async def _test():
+            server_holder = {}
+
+            async def hang_forever(self_srv, config):
+                server_holder["server"] = self_srv
+                await asyncio.Event().wait()  # never completes on its own
+
+            with patch.object(MCPServerTask, "run", hang_forever):
+                connect_coro = _connect_server("slow_srv", {"command": "test"})
+                task = asyncio.ensure_future(connect_coro)
+                # Let start() create server._task and begin awaiting _ready.
+                await asyncio.sleep(0.05)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+            server = server_holder["server"]
+            assert server._task is not None
+            assert server._task.done()
+
+        asyncio.run(_test())
+
+
+class TestLifecycleWaitFinallySurvivesClosedLoop:
+    """_cancel_lifecycle_wait_tasks must not let cancel() escape uncaught.
+
+    Direct regression test for #63412: the shared cleanup helper used by
+    all three lifecycle-wait ``finally`` blocks (``_wait_for_lifecycle_event``,
+    ``_wait_for_reconnect_or_shutdown``, ``_wait_for_lazy_reconnect``) used
+    to call ``task.cancel()`` OUTSIDE its guarding ``try/except`` in each of
+    those call sites — so if ``cancel()`` itself raised (it schedules via
+    ``loop.call_soon`` internally, which raises
+    ``RuntimeError('Event loop is closed')`` once the owning loop has been
+    closed), the exception escaped uncaught. This is exactly what happens
+    when an orphaned parked task's coroutine is closed by the garbage
+    collector after ``_stop_mcp_loop()`` already closed the MCP background
+    loop.
+    """
+
+    def test_cancel_raising_runtime_error_does_not_escape(self):
+        from tools.mcp_tool import _cancel_lifecycle_wait_tasks
+
+        class _FlakyTask:
+            """Duck-typed stand-in for asyncio.Task (which is immutable in
+            CPython and can't have .cancel patched directly on instances)."""
+
+            def __init__(self):
+                self.cancel_calls = 0
+                self._done = False
+
+            def done(self):
+                return self._done
+
+            def cancel(self):
+                self.cancel_calls += 1
+                raise RuntimeError("Event loop is closed")
+
+            def __await__(self):
+                # Never reached: cancel() raises before await is attempted,
+                # matching the real bug (cancel() itself blows up).
+                if False:
+                    yield
+
+        async def _test():
+            t1, t2 = _FlakyTask(), _FlakyTask()
+            # Should not raise despite cancel() blowing up on both tasks.
+            await _cancel_lifecycle_wait_tasks(t1, t2)
+            assert t1.cancel_calls == 1
+            assert t2.cancel_calls == 1
+
+        asyncio.run(_test())
+
+    def test_normal_cancellation_still_works(self):
+        """Sanity check: a task that cancels cleanly is still awaited out."""
+        from tools.mcp_tool import _cancel_lifecycle_wait_tasks
+
+        async def _test():
+            async def _never_finishes():
+                await asyncio.Event().wait()
+
+            task = asyncio.ensure_future(_never_finishes())
+            await asyncio.sleep(0.01)
+            assert not task.done()
+
+            await _cancel_lifecycle_wait_tasks(task)
+
+            assert task.done()
+            assert task.cancelled()
+
+        asyncio.run(_test())
+
+
+# ---------------------------------------------------------------------------
 # _build_safe_env
 # ---------------------------------------------------------------------------
 
