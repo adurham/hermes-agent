@@ -75,7 +75,14 @@ import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
-import { $workspaceIsPage, CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
+import {
+  $workspaceIsPage,
+  CRON_ROUTE,
+  routeSessionId,
+  sessionRoute,
+  SETTINGS_ROUTE,
+  syncWorkspaceIsPage
+} from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'

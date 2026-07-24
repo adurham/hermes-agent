@@ -196,7 +196,12 @@ export function SidebarSessionsSection({
   const sessionsDraggable = sortable && !!onReorderSessions
   const displayEntries = useMemo(() => flattenSessionsWithBranches(sessions), [sessions])
 
-  const renderRow = (session: SessionInfo, draggable: boolean, branchStem?: string, sortData?: Record<string, unknown>) => {
+  const renderRow = (
+    session: SessionInfo,
+    draggable: boolean,
+    branchStem?: string,
+    sortData?: Record<string, unknown>
+  ) => {
     const rowProps = {
       branchStem,
       isPinned: pinned,

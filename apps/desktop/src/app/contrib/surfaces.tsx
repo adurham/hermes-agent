@@ -11,9 +11,9 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo, useRef } from 'react'
 import { Navigate, Route, Routes, useParams } from 'react-router-dom'
 
+import { FloatingPet } from '@/components/pet/floating-pet'
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
-import { FloatingPet } from '@/components/pet/floating-pet'
 import { $petZoneEnabled } from '@/store/pet'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
 
@@ -72,11 +72,7 @@ export const PetZoneSurface = memo(function PetZoneSurface() {
   const zoneEnabled = useStore($petZoneEnabled)
 
   return (
-    <div
-      className="relative h-full min-h-0 overflow-hidden bg-(--ui-bg-chrome)"
-      data-slot="pet-zone"
-      ref={zoneRef}
-    >
+    <div className="relative h-full min-h-0 overflow-hidden bg-(--ui-bg-chrome)" data-slot="pet-zone" ref={zoneRef}>
       {zoneEnabled && <FloatingPet zoneContainer={zoneRef} />}
     </div>
   )

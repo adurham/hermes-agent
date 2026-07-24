@@ -174,14 +174,9 @@ function RepoFlatSection({
   // ids don't intersect this repo's lanes (another repo's saved order).
   const laneIdSet = useMemo(() => new Set(defaultOrdered.map(group => group.id)), [defaultOrdered])
 
-  const repoLaneOrder = useMemo(
-    () => workspaceOrderIds.filter(id => laneIdSet.has(id)),
-    [workspaceOrderIds, laneIdSet]
-  )
+  const repoLaneOrder = useMemo(() => workspaceOrderIds.filter(id => laneIdSet.has(id)), [workspaceOrderIds, laneIdSet])
 
-  const ordered = repoLaneOrder.length
-    ? orderByIds(defaultOrdered, group => group.id, repoLaneOrder)
-    : defaultOrdered
+  const ordered = repoLaneOrder.length ? orderByIds(defaultOrdered, group => group.id, repoLaneOrder) : defaultOrdered
 
   // Drop stale per-lane session orders once the live lane set is known —
   // repo deletion / worktree removal / branch rename shouldn't leave orphaned

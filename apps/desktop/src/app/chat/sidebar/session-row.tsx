@@ -22,7 +22,12 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
-import { type SessionDotState, sessionDotState, sessionShowsRunningArc, splitDragHandleProps } from './session-row-state'
+import {
+  type SessionDotState,
+  sessionDotState,
+  sessionShowsRunningArc,
+  splitDragHandleProps
+} from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {

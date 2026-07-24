@@ -122,7 +122,12 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
             return (
               <ContextMenu key={tab.id}>
                 <ContextMenuTrigger asChild>
-                  <PaneTab active={active} closeLabel={t.preview.closeTab(tab.label)} dirty={dirty} onClose={() => closeRightRailTab(tab.id)}>
+                  <PaneTab
+                    active={active}
+                    closeLabel={t.preview.closeTab(tab.label)}
+                    dirty={dirty}
+                    onClose={() => closeRightRailTab(tab.id)}
+                  >
                     <Tip label={tab.target.path || tab.target.url || tab.label}>
                       <PaneTabLabel
                         aria-selected={active}

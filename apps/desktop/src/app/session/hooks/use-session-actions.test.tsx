@@ -1074,7 +1074,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
   // with Date.now() (the moment of the switch), so the statusbar's session
   // timer reset to ~0 every time you clicked a different session tab instead
   // of showing how long that session has actually been running.
-  it('sets the session timer from the stored session\'s real started_at, not the resume time (warm cache)', async () => {
+  it("sets the session timer from the stored session's real started_at, not the resume time (warm cache)", async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
     }
@@ -1122,7 +1122,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
   // Regression: session.activate's warm-cache fast path also used to drop the
   // in-flight turn's real start time, so resuming into a still-running warm
   // session restarted its "thinking" activity timer from 0.
-  it('restores the running turn\'s real start time from session.activate\'s inflight snapshot (warm cache)', async () => {
+  it("restores the running turn's real start time from session.activate's inflight snapshot (warm cache)", async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
     }
@@ -1132,6 +1132,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     }
 
     let resumedState: ClientSessionState | undefined
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.activate') {
         return {
@@ -1166,7 +1167,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(resumedState?.turnStartedAt).toBe(5_000_000)
   })
 
-  it('sets the session timer from the stored session\'s real started_at, not the resume time (cold path)', async () => {
+  it("sets the session timer from the stored session's real started_at, not the resume time (cold path)", async () => {
     setSessions([storedSession({ id: 'stored-1', started_at: 54_321 })])
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
