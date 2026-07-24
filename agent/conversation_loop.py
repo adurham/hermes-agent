@@ -3465,12 +3465,16 @@ def run_conversation(
                             # so the retry sends none.
                             _m.pop("anthropic_content_blocks", None)
                             _api_stripped += 1
-                    agent._vprint(
-                        f"{agent.log_prefix}⚠️  Thinking block signature invalid, "
-                        f"stripped reasoning_details from api_messages for retry...",
-                        force=True,
-                    )
-                    logger.warning(
+                    # This is a one-shot, self-healing recovery — Anthropic
+                    # signs thinking blocks against the exact turn content,
+                    # and an interrupt/restart mid-turn (or any other upstream
+                    # mutation) invalidates that signature. Stripping the
+                    # dead blocks and retrying always succeeds; nothing is
+                    # lost (the canonical, DB-persisted ``messages`` list is
+                    # untouched — only the wire-payload copy is stripped, see
+                    # the comment above). Not actionable by the user, so this
+                    # is a debug-level trace rather than a forced warning.
+                    logger.debug(
                         "%sThinking block signature recovery: stripped "
                         "reasoning_details from %d api_messages "
                         "(canonical messages unchanged)",

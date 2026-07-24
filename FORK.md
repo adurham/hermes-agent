@@ -27,6 +27,55 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-24 (thinking-signature retry recovery no longer forces a user-facing ⚠️ warning)
+
+**Reported:** user kept seeing "⚠️  Thinking block signature invalid, stripped
+reasoning_details from api_messages for retry..." repeatedly during normal
+desktop-app use and asked for it to be found and fixed.
+
+**Investigation:** traced the recovery path in
+`agent/conversation_loop.py` (`FailoverReason.thinking_signature`, classified
+in `agent/error_classifier.py` from an Anthropic 400 containing "thinking" +
+"signature"/"cannot be modified"/"must remain as they were"). Anthropic signs
+extended-thinking blocks against the exact content of the turn they came
+from; any upstream mutation of that turn (interrupting the response mid-flight,
+the desktop backend restarting mid-turn, orphaned tool_use stripping,
+message-role merging) invalidates the signature and the next replay 400s.
+The recovery is a one-shot, self-healing strip of `reasoning_details` /
+`anthropic_content_blocks` from `api_messages` — the **wire-payload copy
+only**, never the canonical DB-persisted `messages` list (this distinction
+was deliberately fixed upstream in commit `9f95f72b98` after an earlier
+version popped the field from `messages` directly and permanently corrupted
+stored sessions). Correlated the desktop.log occurrences against
+`⚡ Interrupted during API call.` / backend-restart (`HERMES_BACKEND_READY`)
+lines — every occurrence in the user's logs immediately follows one of those,
+consistent with the known "interrupt/restart lands between thinking+tool_use
+capture and persist" gap that the pre-emptive `_thinking_signature_invalidated`
+guard (`agent/anthropic_adapter.py` / `agent/fork/anthropic_messages.py`)
+already targets but can't fully close for genuinely mid-flight kills. Checked
+`agent/context_compressor.py` for a second, unflagged mutation path (compression
+stripping/merging thinking blocks without setting the invalidation flag) —
+compression only prunes tool_calls/tool_results, and the final orphan-check in
+`convert_messages_to_anthropic` runs over the fully assembled list regardless
+of source, so that path is already covered.
+
+**Verdict:** working-as-designed, no data loss — but the recovery was printed
+via `agent._vprint(..., force=True)` (always shown, even in quiet/streaming
+modes) as a scary `⚠️` despite requiring zero user action. Per user request,
+downgraded it: dropped the forced `_vprint` call entirely and changed the
+paired `logger.warning` to `logger.debug` (still fully traceable in
+`agent.log` at debug level, just not surfaced to the live UI/terminal as an
+alarm). The strip/retry mechanics are unchanged.
+
+Files: `agent/conversation_loop.py` (~line 3454-3479).
+Verified: `tests/run_agent/test_thinking_sig_recovery_persistence.py` (4/4
+pass, asserts the strip still targets `api_messages` only and leaves
+canonical `messages` untouched — untouched by this change since only the
+print/log calls moved); `tests/agent/test_turn_retry_state.py` +
+`tests/run_agent/` full pass modulo 5 pre-existing failures confirmed
+unrelated (streaming/Bedrock credential-refresh mocks, reproduced identically
+on a clean `git stash` of this change).
+
 ### Fork-only fix — 2026-07-24 (profile clone: `--clone`/`--clone-config` never copied installed pets)
 
 **Reported:** user cloned a new profile (`exo`) from `default` with
