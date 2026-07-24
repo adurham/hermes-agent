@@ -598,7 +598,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       if (promote.startsWith('session-tile:')) {
         const storedSessionId = promote.slice('session-tile:'.length)
 
-        void resumeSession(storedSessionId).then(() => closeSessionTile(storedSessionId))
+        // A rejected/thrown resumeSession (stale id, mid-swap gateway) must
+        // not silently eat the whole ⌘W / × press — log it so "nothing
+        // happened" is diagnosable, and drop the redundant tile regardless
+        // so the strip still shrinks by one even on a failed resume (matches
+        // what closing a session tile directly does on its own load errors).
+        resumeSession(storedSessionId)
+          .catch(err => console.error('[workspace tab close] resumeSession failed while promoting a tab', err))
+          .finally(() => closeSessionTile(storedSessionId))
       }
     })
   }, [resumeSession, startFreshSessionDraft])

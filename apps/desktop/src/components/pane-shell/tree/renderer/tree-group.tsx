@@ -184,11 +184,14 @@ export function TreeGroup({
   // chips. EXCEPTIONS force a lone pane to keep its header (tab + close X):
   //  - a TILE (closeable, placement 'main' — a session/page split), else a
   //    tile in its own zone is unclosable (the "3rd tile has no tab" trap);
+  //  - the MAIN zone's own workspace pane — it always has a registered closer
+  //    (browser-tab promote-or-reset semantics, wiring.tsx), so hiding its
+  //    header would hide its only ✕ and make the lone open tab unclosable;
   //  - a TOOL PANEL (terminal/logs — a collapse pane) dragged out of the main
   //    stack, else it's a dead zone with no tab to grab or ✕ to close.
-  // The uncloseable workspace and side chrome (sessions/files) keep the clean
-  // no-tab default. Double-click toggles it either way; a minimized group
-  // always shows its header (it IS the header).
+  // Side chrome (sessions/files) keeps the clean no-tab default. Double-click
+  // toggles it either way; a minimized group always shows its header (it IS
+  // the header).
   // Session-tile ids force the header even before chrome registers — cycling
   // onto a freshly-split tile used to land headerless ("name card missing").
   const forceLoneHeader = forceLoneHeaderForPanes(shown, id => paneChrome(paneFor(id)), isCollapsePane)
