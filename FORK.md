@@ -27,6 +27,70 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-24 (desktop: tab drag lit up the layout-edit dashed zone overlay)
+
+**Reported:** after fixing the tab-reorder no-op (see the entry above), the
+user confirmed reordering works, but asked to stop the "dotted UI that
+indicates entire panes can be moved around" from appearing while dragging a
+session tab — they only want that surface reachable via the titlebar's
+layout-editor button (⌘⇧\\ / ⌘K stay fine as-is).
+
+**Root cause:** a session tab's own drag (`session-tile.tsx`'s `tabDrag` +
+`controller.tsx`'s `workspaceTabDrag`, both routed through the shared
+`startSessionDrag` resolver in `app/chat/session-drag.ts`) always ran the
+SAME resolver as a sidebar-row drag — full stack/split/composer-link
+targeting. `onEngage` unconditionally set `$treeDragging.set(SESSION_TILE_DRAG)`,
+which is exactly the sentinel `ZoneDropOverlay` (`tree-group.tsx`) keys off
+to light the dashed drop-target sheet over every zone. So dragging a TAB
+even a few pixels — not just past its strip — always entered the full
+zone-targeting drop language and painted the layout-editor-style dashed
+overlay, which is not what a browser-tab reorder gesture should ever show.
+This is a different bug from the earlier reorder-no-op fix: that one made
+the drag DO something; this one is about what it visually enters into.
+
+A plain (non-session) pane tab already has the right shape for this —
+`startPaneDrag`/`drag-session.ts`'s `reorder` context confines an in-strip
+drag to `mode: 'reorder'` and only escalates to zone mode on tear-off past
+`TEAR_OFF_SLACK_PX`. Session tabs never had an equivalent: `startSessionDrag`
+had no `reorder` concept at all, so there was no way for a tab drag to stay
+strip-confined.
+
+**Fix:** added an optional `reorder: { groupId, strip }` param to
+`startSessionDrag`, populated only for TAB drags (session tiles + the
+workspace tab), never for sidebar-row drags. When set, the whole drag is
+confined to its own strip for its entire lifetime — `onEngage` skips the
+zone/strip/composer snapshots and NEVER sets `$treeDragging`, `resolveMove`
+unconditionally resolves an insertion slot via `slotBefore` (mirroring
+`startPaneDrag`'s in-strip branch, no tear-off escalation), and `onCommit`
+calls `reorderTreePane` directly instead of `openSessionTile`. Per the
+user's explicit choice, this is NOT "hide the overlay while still allowing
+the drop" — dragging a session tab now literally cannot leave its strip or
+enter zone-move mode at all; docking/splitting/linking a session elsewhere
+remains a SIDEBAR ROW drag's job (unchanged, still lights the full overlay).
+Threaded the new `reorder` param through the `PaneChrome.tabDrag` /
+`PaneMirror.tabDrag` type signatures (`track-model.ts`, `pane-mirror.ts`)
+and their two call sites (`session-tile.tsx`'s tile tabDrag,
+`controller.tsx`'s `workspaceTabDrag`) so both the workspace tab and every
+session tile tab pick up the confinement; exported `stripSlots`/`StripSlot`
+from `drag-session.ts` so `session-drag.ts` could reuse the same strip-slot
+geometry helper `startPaneDrag` uses internally.
+
+Files: `apps/desktop/src/app/chat/session-drag.ts` (`reorder` mode),
+`apps/desktop/src/app/chat/session-tile.tsx` + `apps/desktop/src/app/contrib/controller.tsx`
+(pass `reorder` through), `apps/desktop/src/app/chat/pane-mirror.ts` +
+`apps/desktop/src/components/pane-shell/tree/renderer/track-model.ts`
+(`tabDrag` signature), `apps/desktop/src/components/pane-shell/tree/renderer/drag-session.ts`
+(export `stripSlots`/`StripSlot`), `apps/desktop/src/components/pane-shell/tree/renderer/tree-group.tsx`
+(pass strip/groupId into `chrome.tabDrag`).
+
+Verified: `tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit`
+clean; `eslint` clean on every touched file (one pre-existing unrelated
+import-order lint error in `controller.tsx`, reproduced identically on a
+clean `git stash`, left untouched); full `vitest run` — 2107 passed / 104
+failed, byte-identical failure count/file set to a clean `main` run before
+this change (same pre-existing `window.localStorage` jsdom setup issue);
+real `vite build` production build succeeds.
+
 ### Fork-only fix — 2026-07-24 (desktop: session/tab drag-to-reorder didn't work at all, or silently reverted)
 
 **Reported:** two related bugs in the desktop app — (1) can't drag to

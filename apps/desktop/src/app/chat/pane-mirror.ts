@@ -37,13 +37,14 @@ export interface PaneMirror<T> {
   render: (key: string) => ReactNode
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
-  /** Override the tile's TAB drag (session drop language: stack/split/link).
-   *  Returns whether it took the drag (see PaneChrome.tabDrag). */
+  /** Override the tile's TAB drag (session drop language: reorder within its
+   *  own strip only). Returns whether it took the drag (see PaneChrome.tabDrag). */
   tabDrag?: (
     key: string,
     event: ReactPointerEvent<HTMLElement>,
     onTap: () => void,
-    double?: DoubleTapContext
+    double: DoubleTapContext | undefined,
+    reorder: { groupId: string; strip: HTMLElement }
   ) => boolean
   /** Wired as the pane's closer (tab Close). */
   close: (key: string) => void
@@ -84,8 +85,12 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
           minWidth: cfg.minWidth,
           placement: 'main',
           tabDrag: cfg.tabDrag
-            ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) =>
-                cfg.tabDrag!(key, event, onTap, double)
+            ? (
+                event: ReactPointerEvent<HTMLElement>,
+                onTap: () => void,
+                double: DoubleTapContext | undefined,
+                reorder: { groupId: string; strip: HTMLElement }
+              ) => cfg.tabDrag!(key, event, onTap, double, reorder)
             : undefined, // returns boolean (handled) — see PaneChrome.tabDrag
           tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
         },

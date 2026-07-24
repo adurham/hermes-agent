@@ -83,12 +83,12 @@ export function subZonePosition(zones: EngineZone[], groupId: string, x: number,
 }
 
 /** One tab's insertion geometry: its pane id + horizontal midpoint. */
-interface StripSlot {
+export interface StripSlot {
   id: string
   mid: number
 }
 
-const stripSlots = (strip: HTMLElement): StripSlot[] =>
+export const stripSlots = (strip: HTMLElement): StripSlot[] =>
   [...strip.querySelectorAll<HTMLElement>('[data-tree-tab]')].map(tab => {
     const r = tab.getBoundingClientRect()
 

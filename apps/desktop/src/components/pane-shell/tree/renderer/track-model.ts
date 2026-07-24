@@ -49,11 +49,19 @@ interface PaneChrome {
    *  interactive child; the zone's own strip menu still owns non-tab space. */
   tabWrap?: (tab: React.ReactElement) => React.ReactNode
   /** Override this pane's TAB drag (a session tab drags like a sidebar row —
-   *  stack / split / composer-link — not the generic pane move). Given the
-   *  tab's tap (activate) + double-tap (hide header) so those gestures survive.
-   *  Returns whether it took the drag; `false` (or absent) defers to
-   *  `startPaneDrag` — e.g. the workspace tab on a fresh draft, nothing to link. */
-  tabDrag?: (event: React.PointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) => boolean
+   *  reorder within its own strip only; never the zone-move/split/link
+   *  drop language a sidebar row's drag speaks). Given the tab's tap
+   *  (activate) + double-tap (hide header) so those gestures survive, and
+   *  the strip it lives in (own-slot exclusion + same-strip reorder target,
+   *  mirrors `startPaneDrag`'s `reorder` param). Returns whether it took
+   *  the drag; `false` (or absent) defers to `startPaneDrag` — e.g. the
+   *  workspace tab on a fresh draft, nothing to link. */
+  tabDrag?: (
+    event: React.PointerEvent<HTMLElement>,
+    onTap: () => void,
+    double: DoubleTapContext | undefined,
+    reorder: { groupId: string; strip: HTMLElement }
+  ) => boolean
   /** Suppress the zone header while THIS pane is active — full-page views
    *  (artifacts/skills/plugin pages) are not tab-able surfaces. The flag is
    *  live: the workspace contribution re-registers it on route changes. */

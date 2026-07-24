@@ -456,10 +456,12 @@ export const watchSessionTiles = paneMirror<SessionTile>({
       {tab}
     </SessionTabMenu>
   ),
-  // A tile's tab drags like a sidebar row — stack / split / drop-to-link — with
-  // its tap (activate) + double-tap (hide bar) preserved. Always takes the drag.
-  tabDrag: (storedSessionId, event, onTap, double) => {
-    startSessionDrag(tileDragPayload(storedSessionId), event, { double, onTap })
+  // A tile's tab drags like a sidebar row's tap (activate) + double-tap (hide
+  // bar) gestures, but its OWN drag is reorder-only (never the sidebar row's
+  // full stack/split/link language) — see startSessionDrag's `reorder` mode.
+  // Always takes the drag.
+  tabDrag: (storedSessionId, event, onTap, double, reorder) => {
+    startSessionDrag(tileDragPayload(storedSessionId), event, { double, onTap, reorder })
 
     return true
   },

@@ -15,6 +15,13 @@
  * Zones that don't host a chat surface are NOT targets — the overlay never
  * lights them, so a release there must not commit either (one truth).
  *
+ * A TAB's own drag (`reorder` set — see `session-tile.tsx`/`controller.tsx`)
+ * is confined to its own strip: reorder-only, exactly like a plain pane tab
+ * drag's in-strip mode (drag-session.ts). It never enters the zone-move
+ * mode (no zone/edge/link targeting, no `$treeDragging` sentinel, no dashed
+ * drop overlay) — tearing a tab out to dock/link it elsewhere is a sidebar
+ * ROW drag's job, not a tab's.
+ *
  * This replaced the native-HTML5 drag + SessionTileDropBridge: riding the
  * native DnD layer meant macOS's cancel snap-back animation, a `dragend`
  * held hostage until that animation finished, an Esc the page never even
@@ -35,6 +42,7 @@ import {
   snapshotStrips,
   snapshotZones,
   startDragSession,
+  stripSlots,
   type StripSnapshot,
   subZonePosition
 } from '@/components/pane-shell/tree/renderer/drag-session'
@@ -42,10 +50,12 @@ import {
   $layoutTree,
   $treeDragging,
   type DropHint,
+  reorderTreePane,
   revealTreePane,
   SESSION_TILE_DRAG
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
+import { reorderCommitHaptic } from '@/lib/reorder'
 import { $selectedStoredSessionId } from '@/store/session'
 import { openSessionTile, type TileDock } from '@/store/session-states'
 
@@ -85,17 +95,20 @@ function chatZonePane(groupId: string): null | string {
 }
 
 /**
- * Begin dragging a session — a sidebar row OR a tile's own tab (same drop
- * language either way: stack, split, or composer link). Sub-threshold releases
- * stay ordinary clicks, so `opts.onTap` (activate the tile) and `opts.double`
- * (hide the tab bar) ride the tab's gestures; Esc aborts instantly. A stack/
- * split commits through `openSessionTile`, which OPENS a new tile from a sidebar
- * row and MOVES the existing one when its tab is the drag source.
+ * Begin dragging a session — a sidebar row (full drop language: stack,
+ * split, or composer link) OR a tile's/the workspace's own TAB (`reorder`
+ * set — reorder within its own strip only, never zone/split/link). Sub-
+ * threshold releases stay ordinary clicks, so `opts.onTap` (activate the
+ * tile) and `opts.double` (hide the tab bar) ride the tab's gestures; Esc
+ * aborts instantly. A sidebar-row stack/split commits through
+ * `openSessionTile`, which OPENS a new tile or MOVES an existing one; a
+ * tab's reorder commits through `reorderTreePane` directly (its own strip
+ * only — no possibility of ending up in another zone).
  */
 export function startSessionDrag(
   payload: SessionDragPayload,
   e: ReactPointerEvent<HTMLElement>,
-  opts?: { double?: DoubleTapContext; onTap?: () => void }
+  opts?: { double?: DoubleTapContext; onTap?: () => void; reorder?: { groupId: string; strip: HTMLElement } }
 ) {
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
@@ -116,6 +129,11 @@ export function startSessionDrag(
   // move before commit, so these always match the released-at position).
   let split: { anchor: string; before?: null | string; pos: TileDock } | null = null
   let link: null | string = null
+  // Tab-reorder mode: the strip's own slot geometry, snapshotted once (same
+  // fixed-layout guarantee zone/strip snapshots rely on), and the pending
+  // insertion slot (flushed on commit — never a live shuffle mid-drag).
+  const reorderStrip = opts?.reorder ? { groupId: opts.reorder.groupId, slots: stripSlots(opts.reorder.strip) } : null
+  let reorderBefore: null | string | undefined
 
   // The drag SOURCE (sidebar row or tile tab). Captured synchronously — React
   // clears `currentTarget` after the pointerdown handler returns, but this runs
@@ -130,12 +148,20 @@ export function startSessionDrag(
     onTap: opts?.onTap,
 
     onEngage() {
+      source?.style.setProperty('opacity', '0.45')
+
+      // Tab-reorder drags never enter zone mode — no zone/strip snapshots,
+      // no $treeDragging sentinel, so the dashed zone-move overlay never
+      // lights up for a tab's own drag (only a sidebar row's).
+      if (reorderStrip) {
+        return
+      }
+
       zones = snapshotZones()
       strips = snapshotStrips()
       surfaces = snapshotSurfaces()
       composers = [...document.querySelectorAll<HTMLElement>('[data-slot="composer-root"]')].map(snapRect)
       zoneHost = new Map(zones.map(zone => [zone.id, chatZonePane(zone.id)]))
-      source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the
       // whole drop language (sheets, pills, caret, link overlay) lights up.
       $treeDragging.set(SESSION_TILE_DRAG)
@@ -148,6 +174,17 @@ export function startSessionDrag(
     },
 
     resolveMove(x, y): DropHint | null {
+      // Tab-reorder mode: ALWAYS resolves inside its own strip — there is no
+      // tear-off, no zone targeting, no deny area. The strip renders its own
+      // insertion divider off this same hint (StripDropCaret).
+      if (reorderStrip) {
+        const stack = slotBefore(reorderStrip.slots, x, ownPaneId)
+
+        reorderBefore = stack.before
+
+        return { kind: 'group', groupId: reorderStrip.groupId, groupIds: [reorderStrip.groupId], pos: 'center', stack }
+      }
+
       const zone = zones.find(z => rectContains(z.rect, x, y))
       const host = zone ? zoneHost.get(zone.id) : null
 
@@ -188,6 +225,19 @@ export function startSessionDrag(
     },
 
     onCommit() {
+      if (reorderStrip) {
+        // Slot -> index among the OTHER tabs (reorderTreePane inserts there).
+        const others = reorderStrip.slots.map(slot => slot.id).filter(id => id !== ownPaneId)
+        const toIndex = reorderBefore ? others.indexOf(reorderBefore) : others.length
+
+        if (toIndex >= 0) {
+          reorderTreePane(reorderStrip.groupId, ownPaneId, toIndex)
+          reorderCommitHaptic()
+        }
+
+        return
+      }
+
       if (split) {
         openSessionTile(payload.id, split.pos, split.anchor, split.before)
         // A tile for this session may already exist (openSessionTile is
