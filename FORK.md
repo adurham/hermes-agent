@@ -117,6 +117,163 @@ landing the root-cause fix.
 **Merge note:** fork-only file, no upstream equivalent for the pets
 feature — no conflict risk.
 
+### Fork-only fix — 2026-07-24 (invisible token/cost doubling from native `web_search_20250305` server-tool passes; sibling fail-closed evidence-scrubber in `_sanitize_replay_block`)
+
+**Reported:** a live session's status bar showed a "720K new" token jump on a
+single turn (from ~670K to ~1.39M), which looked like — and was initially
+suspected to be — a session-corrupting bug (compaction fired immediately
+after, treated as an emergency). Full forensic trail: session
+`20260723_211736_99ee22`, API call #26, 2026-07-24.
+
+**Root cause:** `agent/fork/anthropic_native_web_search.py` (an existing
+fork-only feature, not new) unconditionally swaps the client-side
+`web_search` tool for Anthropic's native server-side `web_search_20250305`
+tool on every first-party-Anthropic API call. When the model actually invokes
+that native tool mid-turn, Anthropic runs a **second internal inference
+pass** over the same (by-then-warm) prompt prefix — pass 1 reads
+`cache_read=R` tokens and writes `cache_creation=C` new ones; pass 2 (after
+the search result returns) reads the now-warm `R+C` prefix with zero new
+creation. Anthropic's cumulative `usage` object in the final
+`get_final_message()` sums both passes: `cache_read = R + (R+C) = 2R+C`.
+Verified exactly against the real numbers: `1,385,062 == 2×691,645 + 1,772`,
+an *exact* integer match, not approximate. This is genuine Anthropic billing
+for a real second pass the model chose to trigger — not a Hermes accounting
+bug — but it was **completely invisible** in Hermes's own logs: the per-call
+line (`conversation_loop.py`, "API call #N: in=X") showed only the summed
+total with no indication a server-side tool had run, making a real,
+explicable cost multiplier look like an unexplained context-tracking
+malfunction.
+
+Ruled out before landing on the real cause (each with hard evidence, not
+just plausibility): cross-session/cross-thread contamination (a second
+session was concurrently in-flight on the same model, but
+`691,645 + 444,988 = 1,136,633 != 1,385,062` — arithmetic rules out simple
+additive contamination); Hermes's own stream-retry loop (no
+`_emit_stream_drop`/`_log_stream_retry`/"Reconnected after a dropped
+stream" log lines anywhere in the window); MoA reference-usage folding (no
+MoA preset configured for this session); an Anthropic SDK-level
+accumulation bug (`anthropic/lib/streaming/_messages.py`
+`accumulate_event()` uses plain assignment, not `+=`, for usage fields —
+confirmed by reading the installed SDK source, v0.87.0); and the
+already-known `tool_search` server-tool re-billing mechanism from a prior
+2026-05-13 incident (case 00271597) — that one is gated behind
+`tool_search.mode: server_side` (non-default, warned-on-opt-in), and this
+session used the safe `client_side` mode, so it's a different (if
+structurally similar) mechanism.
+
+**Compounding discovery — a second, independent bug that hid the evidence:**
+When first checking whether a server-side web search had actually occurred,
+querying `~/.hermes/state.db`'s `messages.anthropic_content_blocks` for the
+resulting assistant message showed only 4 clean blocks (`text`, `thinking`,
+`text`, `tool_use`) — no `server_tool_use` or `web_search_tool_result` block
+— which looked like it *ruled out* a server-side search. It didn't.
+`agent/anthropic_adapter.py::_sanitize_replay_block()` (the function that
+prepares a stored response block for replay as request input) was a strict
+**fail-closed** whitelist: `text` / `thinking` / `redacted_thinking` /
+`tool_use` / `image` only, silently `return None`-ing (dropping) anything
+else — including `server_tool_use` and `web_search_tool_result` — before
+persistence. Its sibling function, `_sanitize_block_for_anthropic_input()`
+(used for the *same class* of problem, sanitizing tool_result inner blocks),
+already has the **correct, fail-open** contract: unrecognized block types
+pass through unchanged rather than being dropped, specifically so a future
+SDK-added block type "doesn't silently get stripped before this map is
+updated" (its own docstring). The asymmetry between the two sibling
+functions was itself the bug: `_sanitize_replay_block` erased the only
+on-disk evidence that a server-side tool call had happened, making the
+real cost-multiplier bug above look unfalsifiable by DB inspection alone.
+
+**Fix:**
+1. `agent/usage_pricing.py` — `CanonicalUsage` gained
+   `server_tool_web_search_requests` / `server_tool_web_fetch_requests`
+   fields (+ a `server_tool_requests` convenience property and `__add__`
+   support), populated in `normalize_usage()` from Anthropic's own
+   authoritative `response.usage.server_tool_use.{web_search,web_fetch}_requests`
+   counter — no re-derivation from content blocks needed.
+2. `agent/conversation_loop.py` — the per-call `logger.info("API call #%d: ...")`
+   line now appends `server_tool_passes=N (web_search=X web_fetch=Y — each is
+   an extra Anthropic-side inference pass folded into this usage figure)`
+   whenever a call actually invoked a native server tool, so a doubled/
+   inflated call is immediately self-explanatory instead of looking like an
+   inexplicable spike.
+3. `agent/anthropic_adapter.py::_sanitize_replay_block()` — flipped from
+   fail-closed to fail-open: the four hand-reconstructed types (`text`,
+   `thinking`, `redacted_thinking`, `tool_use`, `image` — these need custom
+   logic, e.g. tool-id sanitizing, dropping empty `redacted_thinking`) are
+   unchanged, but anything else now delegates to
+   `_sanitize_block_for_anthropic_input()` (the already-correct, SDK-derived,
+   fail-open sibling) instead of being dropped. This can never be *more*
+   lossy than the old behavior — only strictly less so — and closes the
+   blind spot for `server_tool_use` / `web_search_tool_result` /
+   `tool_search_tool_*` blocks today, and any future SDK server-tool block
+   type Hermes hasn't special-cased yet.
+
+**Deliberately NOT changed (left for a human/policy decision, not a pure bug
+fix):** `agent/context_compressor.py::update_from_response()` still reads
+the (correctly-reported, but still large) `prompt_tokens` figure and will
+still trigger auto-compaction on a genuinely large server-tool-inflated
+turn. Whether compaction should discount server-tool-caused inflation is a
+policy call (the next turn's real prompt may legitimately still be huge if
+another search fires) — the fix here is about *attribution*, not about
+suppressing/discounting real, billed token growth.
+
+**Also confirmed NOT the same live bug, but same *bug class*, lower
+priority (found via a full-codebase scrub after the fix above, not yet
+acted on):**
+- `_apply_tool_search`'s `server_side` mode (`agent/anthropic_adapter.py`,
+  `_apply_tool_search`) has the identical "server-tool re-bills the full
+  prompt per iteration" mechanism (already documented in that function's own
+  docstring, referencing the 2026-05-13 case). Dormant: `client_side` is the
+  default and `cli.py` warns on opt-in to `server_side`.
+- MoA advisor-fanout usage (`conversation_loop.py`'s
+  `_moa_client.consume_reference_usage()` fold) sums N advisor passes into
+  one log line with no "N passes" breakdown — same *attribution* gap as the
+  fixed bug, different mechanism (client-side fan-out, not a server-side
+  tool), not fixed this round.
+- `pause_turn` retry recovery and stream-abandon retries *discard* the
+  rejected attempt's usage entirely (opposite direction: under-reporting,
+  not over-reporting) — same "attribution missing from logs" root class, not
+  fixed this round.
+- No native `web_fetch` / `code_execution` / `bash_20250124` /
+  `computer_use`-style server tool is currently wired in (zero hits for
+  those type strings outside `computer_use`, which is deliberately kept on
+  the generic OpenAI-compatible client-side schema, per its own module
+  docstring and `tests/tools/test_computer_use.py`). If a `web_fetch` twin
+  of `anthropic_native_web_search.py` is ever added (its own docstring at
+  line ~42-44 already anticipates this), it will need the same
+  `server_tool_web_fetch_requests` attribution wired through — the plumbing
+  added in this fix already supports it (the field exists;
+  `normalize_usage()` already reads `web_fetch_requests` from the SDK's
+  `ServerToolUsage` model), it just needs a real fetch to occur to exercise
+  it.
+
+**Files touched:** `agent/usage_pricing.py`, `agent/conversation_loop.py`,
+`agent/anthropic_adapter.py`, `tests/agent/test_anthropic_output_field_leak.py`.
+
+**Verification:** `ast.parse()` clean on all three modified `agent/` files.
+Full targeted test sweep: `tests/agent/test_usage_pricing.py`,
+`tests/agent/test_context_engine_host_contract.py`,
+`tests/run_agent/test_moa_loop_mode.py` (82 tests, all constructing
+`CanonicalUsage` directly) — all pass, confirming the new dataclass fields
++ extended `__add__` don't break existing consumers. Manual construction of
+a synthetic Anthropic-shaped `usage` object (matching the real captured
+numbers: `cache_read_input_tokens=1385062`, `cache_creation_input_tokens=1772`,
+`server_tool_use.web_search_requests=2`) through `normalize_usage()`
+confirmed `server_tool_requests=2`, correct `prompt_tokens`, and correct
+summing through `__add__`. `tests/agent/test_anthropic_output_field_leak.py`
+— replaced the one existing test that asserted the *old, buggy* fail-closed
+behavior (`test_unknown_type_dropped`, asserting
+`_sanitize_replay_block({"type": "server_tool_use", ...}) is None`) with
+three new regression tests: `server_tool_use` survives sanitization with
+known fields intact and unknown fields stripped;
+`web_search_tool_result` survives identically; and a genuinely novel/future
+block type passes through completely unchanged. All 9 tests in that file
+pass. Broader regression check: `pytest tests/agent/ -k anthropic` — 603
+passed, 2 failed, 2 skipped; the 2 failures
+(`test_auxiliary_anthropic_pool_fallback_regression.py`, a mock-signature
+mismatch unrelated to any change here) were confirmed **pre-existing** by
+stashing this change and re-running against clean `main` — identical
+failure, so not introduced by this fix.
+
 ### Fork-only fix — 2026-07-24 (desktop: replaced deprecated `rcedit` dep with `resedit`)
 
 **Reported:** `hermes desktop` printed an npm deprecation warning on every
