@@ -2923,8 +2923,9 @@ function Install-Desktop {
     # invokes signtool and therefore never fetches/extracts winCodeSign
     # (whose macOS symlinks crash 7-Zip on non-admin Windows -- a dead end we
     # are NOT trying to work around). The Hermes icon + product name are
-    # stamped onto Hermes.exe by our own rcedit step (Set-DesktopExeIdentity)
-    # AFTER this build, completely decoupled from electron-builder signing.
+    # stamped onto Hermes.exe by our own resedit-based identity step
+    # (Set-DesktopExeIdentity) AFTER this build, completely decoupled from
+    # electron-builder signing.
     #
     # WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD explicitly cleared as
     # belt-and-suspenders: if the user's environment has them set
@@ -3060,9 +3061,10 @@ function Install-Desktop {
     #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.mjs)
     #     during `npm run pack` above -- for every build, so the installer's
     #     --update rebuild stays branded too. No separate stamp step needed here.
-    #     electron-builder's own rcedit step stays disabled (signAndEditExecutable
-    #     =false) because enabling it drags in signtool -> winCodeSign -> the
-    #     unfixable symlink crash; the afterPack hook runs rcedit directly.
+    #     electron-builder's own resource-edit step stays disabled
+    #     (signAndEditExecutable=false) because enabling it drags in
+    #     signtool -> winCodeSign -> the unfixable symlink crash; the
+    #     afterPack hook edits the exe's PE resources directly via resedit.
 
     # 3c. Grant ALL APPLICATION PACKAGES (S-1-15-2-2) RX on the unpacked app
     #     directory. Chromium's GPU/renderer sandboxes CHECK-fail with

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // set-exe-identity.mjs — stamp the Hermes icon + version metadata onto the
-// built Hermes.exe using rcedit, completely decoupled from electron-builder's
+// built Hermes.exe using resedit, completely decoupled from electron-builder's
 // signing path.
 //
 // WHY THIS EXISTS
@@ -13,10 +13,16 @@
 // try to extract winCodeSign.
 //
 // The cost of disabling signAndEditExecutable is that electron-builder also
-// skips rcedit, so the unpacked Hermes.exe keeps the stock Electron icon and
-// "Electron" taskbar name. This script restores the icon + identity by calling
-// rcedit DIRECTLY. rcedit is a pure PE resource editor: no signing, no certs,
-// no winCodeSign, no symlinks.
+// skips its resource-editing step, so the unpacked Hermes.exe keeps the stock
+// Electron icon and "Electron" taskbar name. This script restores the icon +
+// identity by editing the PE resources directly with `resedit`. resedit is a
+// pure-JS PE resource editor (no native binary, no wine/signtool, no certs) —
+// it's the same library electron-builder's own app-builder-lib uses
+// internally for this exact job (see node_modules/app-builder-lib/out/util/
+// resEdit.js), so this script mirrors that implementation rather than
+// inventing a new one. It replaced `rcedit` (deprecated upstream, shipped a
+// native rcedit.exe run under Wine on macOS/Linux) with zero new footprint —
+// resedit is already pulled in transitively via electron-builder.
 //
 // HOW IT RUNS
 // -----------
@@ -37,14 +43,15 @@
 
 import { resolve, join } from 'node:path'
 import { existsSync } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
 
-import { rcedit } from 'rcedit'
+import { NtExecutable, NtExecutableResource, Resource, Data } from 'resedit'
 
 import { isMain } from './utils.mjs'
 
 // Stamp the Hermes icon + identity onto `exe`. Resolves on success, throws on
-// failure. `desktopRoot` defaults to this script's package root so the icon and
-// the rcedit dependency resolve regardless of cwd.
+// failure. `desktopRoot` defaults to this script's package root so the icon
+// resolves regardless of cwd.
 async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, '..')) {
   if (!exe || !existsSync(exe)) {
     throw new Error(`target exe not found: ${exe}`)
@@ -59,15 +66,42 @@ async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, 
   console.log(`[set-exe-identity] stamping ${exe}`)
   console.log(`[set-exe-identity] icon: ${icon}`)
 
-  await rcedit(exe, {
-    icon,
-    'version-string': {
-      ProductName: 'Hermes',
-      FileDescription: 'Hermes',
-      CompanyName: 'Nous Research',
-      LegalCopyright: 'Copyright (c) 2026 Nous Research'
-    }
+  const buffer = await readFile(exe)
+  const executable = NtExecutable.from(buffer)
+  const res = NtExecutableResource.from(executable)
+
+  // Use the exe's existing version resource if present (preserves the numeric
+  // file/product version Electron already stamped); only create one from
+  // scratch if none exists at all. We deliberately do NOT touch
+  // setFileVersion/setProductVersion — this stamp only overlays display
+  // strings + icon, matching what the old rcedit call did.
+  const viList = Resource.VersionInfo.fromEntries(res.entries)
+  const vi = viList.length > 0 ? viList[0] : Resource.VersionInfo.createEmpty()
+
+  // Default to en-US (1033) / codepage 1200 if no language entries exist yet,
+  // mirroring rcedit's own fallback behavior.
+  const languages = vi.getAllLanguagesForStringValues()
+  const lang = languages.length > 0 ? languages[0] : { lang: 1033, codepage: 1200 }
+
+  vi.setStringValues(lang, {
+    ProductName: 'Hermes',
+    FileDescription: 'Hermes',
+    CompanyName: 'Nous Research',
+    LegalCopyright: 'Copyright (c) 2026 Nous Research'
   })
+  vi.outputToResourceEntries(res.entries)
+
+  const iconBuf = await readFile(icon)
+  const iconFile = Data.IconFile.from(iconBuf)
+  Resource.IconGroupEntry.replaceIconsForResource(
+    res.entries,
+    1,
+    lang.lang,
+    iconFile.icons.map(item => item.data)
+  )
+
+  res.outputResource(executable)
+  await writeFile(exe, Buffer.from(executable.generate()))
 
   console.log('[set-exe-identity] done — Hermes icon + identity stamped')
 }
