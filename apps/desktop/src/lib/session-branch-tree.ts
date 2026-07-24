@@ -7,8 +7,16 @@ export interface SidebarSessionEntry {
 
 const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
 
-/** Flat list with branch/fork sessions nested visually under their parent. */
-export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): SidebarSessionEntry[] {
+/** Flat list with branch/fork sessions nested visually under their parent.
+ *  Top-level sessions default to freshest-group-first (activity on any
+ *  branch lifts the whole cluster); pass `preserveOrder` when the caller's
+ *  array is already under an active MANUAL order (a drag-reorder result) —
+ *  the recency re-sort would otherwise silently discard that order on the
+ *  very next render. Branch nesting itself is unaffected either way. */
+export function flattenSessionsWithBranches(
+  sessions: readonly SessionInfo[],
+  opts?: { preserveOrder?: boolean }
+): SidebarSessionEntry[] {
   if (sessions.length < 2) {
     return sessions.map(session => ({ session }))
   }
@@ -95,7 +103,9 @@ export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): S
   sessions
     .filter(session => !nestedIds.has(session.id))
     .map((session, index) => ({ index, session }))
-    .sort((a, b) => groupRecency(b.session) - groupRecency(a.session) || a.index - b.index)
+    .sort((a, b) =>
+      opts?.preserveOrder ? a.index - b.index : groupRecency(b.session) - groupRecency(a.session) || a.index - b.index
+    )
     .forEach(({ session }) => emit(session))
 
   for (const session of sessions) {

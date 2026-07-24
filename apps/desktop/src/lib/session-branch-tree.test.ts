@@ -50,4 +50,35 @@ describe('flattenSessionsWithBranches', () => {
 
     expect(flattenSessionsWithBranches([branch])).toEqual([{ session: branch }])
   })
+
+  it('re-sorts top-level sessions by group recency by default', () => {
+    const stale = session('stale', { last_active: 5 })
+    const fresh = session('fresh', { last_active: 50 })
+
+    // Input order is stale-first; default behavior re-sorts freshest-first.
+    expect(flattenSessionsWithBranches([stale, fresh])).toEqual([{ session: fresh }, { session: stale }])
+  })
+
+  it('keeps the given order when preserveOrder is set, ignoring recency', () => {
+    const stale = session('stale', { last_active: 5 })
+    const fresh = session('fresh', { last_active: 50 })
+
+    // A manual drag-order hands in stale-first deliberately; it must survive.
+    expect(flattenSessionsWithBranches([stale, fresh], { preserveOrder: true })).toEqual([
+      { session: stale },
+      { session: fresh }
+    ])
+  })
+
+  it('still nests branches under their parent when preserveOrder is set', () => {
+    const parent = session('parent', { last_active: 5 })
+    const branchA = session('branch-a', { last_active: 20, parent_session_id: 'parent' })
+    const branchB = session('branch-b', { last_active: 10, parent_session_id: 'parent' })
+
+    expect(flattenSessionsWithBranches([parent, branchA, branchB], { preserveOrder: true })).toEqual([
+      { session: parent },
+      { branchStem: '├─ ', session: branchA },
+      { branchStem: '└─ ', session: branchB }
+    ])
+  })
 })

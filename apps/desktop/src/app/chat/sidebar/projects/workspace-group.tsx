@@ -19,7 +19,12 @@ import { WorkspaceAddButton, WorkspaceHeader, WorkspaceMenu, WorkspaceShowMoreBu
 
 interface SidebarWorkspaceGroupProps {
   group: SidebarSessionGroup
-  renderRows: (sessions: SessionInfo[], draggable?: boolean, sortData?: Record<string, unknown>) => React.ReactNode
+  renderRows: (
+    sessions: SessionInfo[],
+    draggable?: boolean,
+    sortData?: Record<string, unknown>,
+    preserveOrder?: boolean
+  ) => React.ReactNode
   onNewSession?: (path: null | string) => void
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
@@ -155,7 +160,12 @@ export function SidebarWorkspaceGroup({
     visibleSessions.length === 0 ? (
       <div className="min-h-7 pl-2 text-[0.75rem] leading-7 text-(--ui-text-quaternary)">{s.noSessions}</div>
     ) : (
-      renderRows(visibleSessions, sessionsSortable, sessionsSortable ? { laneId: group.id, type: 'session' } : undefined)
+      renderRows(
+        visibleSessions,
+        sessionsSortable,
+        sessionsSortable ? { laneId: group.id, type: 'session' } : undefined,
+        Boolean(laneSessionOrder?.length)
+      )
     )
 
   return (
