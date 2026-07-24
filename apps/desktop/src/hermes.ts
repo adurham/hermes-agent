@@ -1405,6 +1405,30 @@ export function getElevenLabsVoices(): Promise<ElevenLabsVoicesResponse> {
   })
 }
 
+export interface PetDialogueResponse {
+  ok: boolean
+  line: string
+}
+
+// Short client timeout: this is decorative UI, not a task the user waits on.
+// The caller ALWAYS has a static line pool to fall back to on any rejection
+// (timeout, network error, or a clean 404 when auxiliary.pet_dialogue.enabled
+// is false) — see pet-bubble.tsx's speakAnnouncedBeat().
+const PET_DIALOGUE_TIMEOUT_MS = 6_000
+
+export function fetchPetDialogue(params: {
+  context: string
+  beat: 'completed' | 'waiting'
+  petSlug: string
+}): Promise<PetDialogueResponse> {
+  return window.hermesDesktop.api<PetDialogueResponse>({
+    path: '/api/pet/dialogue',
+    method: 'POST',
+    body: { beat: params.beat, context: params.context, pet_slug: params.petSlug },
+    timeoutMs: PET_DIALOGUE_TIMEOUT_MS
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Skills hub — search / preview / scan / install (parity with `hermes skills`
 // and the dashboard's Browse-hub tab). Installs spawn background actions whose

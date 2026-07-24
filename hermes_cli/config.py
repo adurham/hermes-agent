@@ -1821,6 +1821,27 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
+        # Desktop pet dialogue — generates a short, in-character status line
+        # for the floating petdex mascot's two ANNOUNCED voice/bubble beats
+        # (turn finished, agent needs the user) — never the continuous
+        # run/review "working…"/"thinking…" chatter, which stays a static
+        # local line pool (see apps/desktop/src/components/pet/pet-bubble.tsx)
+        # to avoid an LLM call on a 2.6s rotation cadence. Cheap/fast model
+        # recommended (e.g. gemini-flash, haiku) — this is decorative UI, not
+        # a task the user is waiting on. On any error/timeout, the desktop
+        # falls back to the static line pool so the feature never blocks or
+        # breaks. Invoked via POST /api/pet/dialogue (hermes_cli/web_server.py).
+        "pet_dialogue": {
+            "enabled": False,      # off by default — opt-in alongside display.pet.voice_enabled
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 8,          # short — a slow response just falls back to the static pool
+            "extra_body": {},
+            "reasoning_effort": "none",  # this is a one-liner, not a reasoning task
+            "max_context_chars": 400,    # cap on the "what just happened" context passed in the prompt
+        },
         # Profile describer — auto-generates a 1-2 sentence description
         # of what a profile is good at. Invoked by
         # ``hermes profile describe <name> --auto`` and the dashboard's

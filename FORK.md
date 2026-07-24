@@ -393,6 +393,140 @@ updated doc comment explaining the producer-address restriction).
 **Merge note:** additive/data-only change to an existing file, no upstream
 conflict expected.
 
+### Fork-only feature — 2026-07-24 (miku voice pipeline: warm daemon cuts latency 8x)
+
+**Reported:** the Miku voice pipeline "worked" but "took longer than I
+thought it would and was a bit short/hard to understand." Investigated:
+two genuinely separate problems bundled into one complaint.
+
+**Latency root cause:** `speak.sh` spawned a fresh Python process per pet
+voice line, which cold-loaded the RVC model (~0.3s), ContentVec (~1s), and
+lazy-loaded RMVPE (~1s) from scratch EVERY call — ~2.4s of pure model-load
+overhead before any conversion even started, on top of ~0.5-0.7s of Python
+startup + edge-tts network round-trip. Measured breakdown confirmed model
+loading, not the actual conversion (~0.29s once warm), dominated the cold
+path 8-to-1.
+
+**Fix:** built a warm background daemon
+(`~/.hermes/pets/voices/miku/daemon.py`) that loads the RVC pipeline once
+and keeps it resident, talking newline-delimited JSON over a Unix socket.
+`speak_client.py` tries the socket first (~0.3-0.8s once warm, dominated by
+the edge-tts network call, not RVC); on any failure (daemon never started,
+idled out) it falls back to synthesizing that ONE request cold in-process
+(same latency as before this daemon existed — never a regression) and
+spawns the daemon detached for next time. The daemon self-exits after 5
+minutes of no requests (`MIKU_VOICE_IDLE_TIMEOUT`, default 300s) so it
+doesn't sit at ~1.9-2.2GB RSS indefinitely on a machine not actively using
+the feature — verified the watchdog actually fires and cleans up its
+socket/lock files via a real 5s-timeout run, not just code review.
+`speak.sh` now just delegates to `speak_client.py`; the old inline
+`rvc_convert_fixed.py` one-shot script was split into `miku_voice.py`
+(shared synth logic, importable by both the daemon and the cold-fallback
+path) so there's exactly one copy of the RVC-bug workaround.
+
+**Expressiveness, separately:** "yay, done!" sounded flat because RVC only
+carries through whatever expression the SOURCE Edge-TTS recording had, and
+Edge-TTS's baseline reading of a short exclamation is flat by default. A/B
+iterated with the user through several rounds (edge-tts `rate`/`pitch`
+prosody knobs at three intensity levels, then punctuation/pacing variants
+to land a "YAY!" *(pause)* "done" rhythm) and landed on `+20%` rate /
+`+30Hz` pitch (source-TTS prosody, distinct from the existing `+2` semitone
+RVC pitch shift) plus rewriting the Miku completion line to `"Yay!...
+done!"` so the punctuation itself carries the pause. Locked in as
+`EDGE_RATE`/`EDGE_PITCH` constants in `miku_voice.py`.
+
+**Verification:** confirmed cold-path latency parity (no regression) and
+warm-path speedup with real `time`/timestamped runs, not estimates — cold
+~3.2-3.9s (matches pre-daemon baseline), warm ~0.77-1.6s (includes ~0.3-1s
+of test-harness Python subprocess overhead the real desktop call site
+doesn't pay). Verified through the actual `text_to_speech_tool(...,
+provider_override='miku')` path against the real `~/.hermes/config.yaml`,
+not a mock. Idle-timeout self-shutdown verified via a live 5s-timeout run
+(watched the daemon actually exit + clean up its socket/lock without a
+manual kill).
+
+**Files (all outside the repo, user machine-local — see the original
+pet-voice entry's rationale):** `~/.hermes/pets/voices/miku/miku_voice.py`
+(new — shared synth logic), `daemon.py` (new), `speak_client.py` (new),
+`speak.sh` (rewritten to delegate), `rvc_convert_fixed.py` (removed,
+folded into `miku_voice.py`).
+
+**Merge note:** no repo files touched — this entry documents machine-local
+tooling for completeness, matching the original pet-voice entry's pattern.
+
+### Fork-only feature — 2026-07-24 (desktop: LLM-generated pet dialogue, opt-in, two beats only)
+
+**Follow-up idea from the user** while discussing the voice feature: "maybe
+we should have some of the text or responses here come from a cheap LLM?"
+
+**Scoping decision:** the continuous run/review bubble rotation (fires every
+2.6s while a turn is in flight) stays 100% local/static — an LLM call on
+that cadence would be real, avoidable cost + latency for decorative UI, and
+AGENTS.md's cost-consciousness applies. LLM generation is wired ONLY into
+the two ANNOUNCED beats (turn finished, needs user), which already fire at
+most once per turn — the same scope discipline as the earlier voice-gating
+refinement.
+
+**Approach — new `auxiliary.pet_dialogue` task, following the existing
+pattern used by `approval`/`title_generation`/`profile_describer`/etc.:**
+`hermes_cli/config.py` gained `auxiliary.pet_dialogue` (off by default,
+`enabled: false`; `timeout: 8`, `reasoning_effort: "none"` — this is a
+one-liner, not a reasoning task; `max_context_chars: 400` caps the
+"what just happened" context server-side). `hermes_cli/web_server.py` gained
+`POST /api/pet/dialogue`: reads the task's `enabled` flag (clean 404 when
+off — the desktop's failure handling treats this identically to a
+timeout/network error), builds a persona + beat-specific prompt (Miku
+persona reserves "producer" address for genuine direct-address beats, same
+restriction as the earlier phrasing-pass entry), and calls
+`agent.auxiliary_client.call_llm(task="pet_dialogue", ...)` — the same
+central resolution chain (auto → main provider → OpenRouter → Nous Portal →
+...) every other auxiliary task uses, so it picks up the user's main
+provider/model with zero extra config when `provider: auto`.
+
+**Desktop wiring:** `apps/desktop/src/hermes.ts` gained `fetchPetDialogue()`
+(6s client timeout — decorative UI, not worth a long hang). `pet-bubble.tsx`
+gained a shared `speakAnnouncedBeat()` helper: tries the LLM line first,
+falls back to a random pick from the existing static pool on ANY rejection
+(disabled/404, timeout, network error, empty response) — the static pool
+from the earlier phrasing-pass entries is now a fallback, not deleted.
+`store/pet.ts`'s `$petTurnCompletedBeat` changed shape from a bare
+`atom<number>` nonce to `{ seq, context }`, threading the assistant's final
+reply text (already computed at the gateway-event completion call site for
+the message store — no new extraction needed) through as "what just
+happened" context for the completion beat. The `waiting` beat intentionally
+passes empty context — the line is about the STATE (it's your turn), not
+which specific prompt is blocking, and extracting prompt text from three
+different prompt-store shapes (clarify/approval/sudo/secret) wasn't worth
+the complexity for that beat.
+
+**Verification:** exercised `POST /api/pet/dialogue` through the REAL
+FastAPI `TestClient` (not a mock) against the actual auth middleware and
+the actual `call_llm` resolution chain — confirmed both beats produce
+genuinely context-aware, in-character lines (e.g. "Login bug squashed,
+producer~ all green!" for a login-fix context), confirmed the disabled path
+returns a clean 404, confirmed re-enabling round-trips correctly. Desktop
+`tsc --noEmit` clean (both configs), `eslint` clean on every touched file,
+`pet.test.ts` 13/13 + `gateway-events.test.ts` 6/6 unaffected. Ran the
+broader desktop suite and confirmed a batch of unrelated failures
+(composer/panes/onboarding/projects/sidebar, all `localStorage.clear`
+errors) are pre-existing on a clean `main` with zero changes applied —
+verified via `git stash` + re-run, not assumed.
+
+**Files:** `hermes_cli/config.py` (new `auxiliary.pet_dialogue` task),
+`hermes_cli/web_server.py` (new `POST /api/pet/dialogue` +
+`PetDialogueRequest`), `apps/desktop/src/hermes.ts` (new
+`fetchPetDialogue()` + `PetDialogueResponse`),
+`apps/desktop/src/store/pet.ts` (`$petTurnCompletedBeat` shape change +
+`context` param on `triggerPetTurnCompleted`),
+`apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.ts`
+(threads `finalText` through), `apps/desktop/src/components/pet/pet-bubble.tsx`
+(new `speakAnnouncedBeat()` helper, both voice effects rewired to use it).
+
+**Merge note:** additive changes to existing files (new config task, new
+endpoint, new client function) plus one shape change to an in-tree-only
+atom (`$petTurnCompletedBeat`) with exactly one producer and one consumer,
+both updated in the same commit. No upstream conflict expected.
+
 ### Fork-only fix — 2026-07-24 (desktop: tab drag lit up the layout-edit dashed zone overlay)
 
 **Reported:** after fixing the tab-reorder no-op (see the entry above), the
