@@ -469,7 +469,7 @@ export const zh: Translations = {
         zoneTitle: '宠物区域',
         zoneDesc: '将宠物限制在布局中的专用窗格内，而非整个窗口。',
         voiceTitle: '宠物语音',
-        voiceDesc: '让吉祥物使用你配置的 TTS 提供商朗读它的状态提示。'
+        voiceDesc: '当一轮任务完成或需要你输入时朗读提示——不包括运行中的状态提示。'
       }
     },
     fieldLabels: defineFieldCopy({

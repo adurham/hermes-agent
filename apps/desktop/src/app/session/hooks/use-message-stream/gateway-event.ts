@@ -20,7 +20,7 @@ import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
+import { flashPetActivity, markPetUnread, setPetActivity, triggerPetTurnCompleted } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -497,6 +497,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // frame leaks to the sprite — including the popped-out overlay, which
           // mirrors each activity change. The jump runs ~2 loops, then settles.
           flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
+          // Distinct from the celebrate/jump pose above: this nonce fires ONLY
+          // on a genuine turn completion, not on a manual pet/click (which also
+          // triggers celebrate via burstVibeHearts). Voice announcements key
+          // off this so "all done!" never narrates an affectionate pet.
+          triggerPetTurnCompleted()
 
           // Light up the pet's mail icon if the user wasn't looking when the turn
           // finished — a glanceable "new message" hint on the popped-out overlay.

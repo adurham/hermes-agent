@@ -140,6 +140,65 @@ user-specific `config.yaml` entries, not repo defaults.
 **Merge note:** additive changes to existing files, no upstream conflict
 expected. The new `store/pet-voice.ts` file has no upstream equivalent.
 
+### Fork-only refinement — 2026-07-24 (desktop: narrow pet voice to "needs you" + "turn done", not running chatter)
+
+**Follow-up to the same-day pet-voice entry above.** User clarified after
+trying it: don't narrate everything the pet's status bubble shows — only
+speak up when the agent needs the user, or when a prompt finishes running.
+
+**Problem with the first cut:** `PetBubble`'s original voice wiring spoke
+*every* bubble line on every mood transition, including the continuous
+`run`/`review` rotation ("working…", "thinking…", "crunching…", etc.) — so a
+long tool-heavy turn meant constant narration, not the two specific beats the
+user actually wanted.
+
+**Real bug caught before it shipped:** my first fix attempt keyed the
+"turn finished" announcement off `state === 'jump'` (the sprite's
+celebrate/jump pose). That pose is NOT unique to a finished turn — clicking/
+petting the mascot (`vibe-hearts.tsx`'s `burstVibeHearts` → `flashPetActivity
+({ celebrate: true })`) fires the exact same pose. Shipping that as-is would
+have announced "all done!" every time the user pets their own mascot, not
+just on real completions. Also found `justCompleted`/`'wave'` is dead code —
+grepped for `justCompleted: true` across the desktop tree and nothing sets it
+outside tests, so a `state === 'wave'` branch would never fire.
+
+**Fix:**
+- Added a dedicated `$petTurnCompletedBeat` nonce in `store/pet.ts`, bumped
+  ONLY by the gateway's real turn-completion handler
+  (`use-message-stream/gateway-event.ts`, right next to the existing
+  `flashPetActivity({ celebrate: true, ... })` call) — never by
+  `burstVibeHearts`/manual petting, which still drives the shared
+  celebrate/jump sprite pose but no longer implies "spoken as done."
+- `PetBubble` now has two independent, narrowly-scoped voice effects instead
+  of one broad one: (1) speaks a "needs you" line once per transition INTO
+  `specKey === 'waiting'` (a real approval/clarify/sudo prompt or plain
+  end-of-turn idle blocking on the user); (2) speaks a "turn finished" line
+  keyed off `$petTurnCompletedBeat` changing, skipping the initial mount value
+  so opening the app never announces a stale completion from a prior turn.
+  `run`/`review` bubble text rotation is now 100% silent — the visual bubble
+  is unchanged, only the voice gating changed.
+- Config default description (`hermes_cli/config.py`) and the Settings
+  toggle copy (`pet-settings.tsx` via en/zh/zh-hant/ja i18n) updated to state
+  the narrower behavior so the toggle's own description isn't misleading.
+
+**Verification:** desktop `tsc --noEmit` clean (both configs), `eslint`
+clean on every touched file, `pet.test.ts` 13/13 unaffected,
+`gateway-events.test.ts` 6/6 unaffected. No new automated test added for the
+voice-announcement gating itself (it's a thin React-effect wrapper around
+already-tested state; the meaningful logic — dead-code elimination of
+`justCompleted`/`wave`, and the celebrate-vs-completion disambiguation — was
+verified by grep + code reading, not by new assertions).
+
+**Files:** `apps/desktop/src/components/pet/pet-bubble.tsx`,
+`apps/desktop/src/store/pet.ts` (new `$petTurnCompletedBeat` +
+`triggerPetTurnCompleted`), `apps/desktop/src/app/session/hooks/
+use-message-stream/gateway-event.ts` (fires the new trigger alongside the
+existing celebrate flash), `hermes_cli/config.py`,
+`apps/desktop/src/i18n/{en,zh,zh-hant,ja}.ts`.
+
+**Merge note:** additive changes to existing files, no upstream conflict
+expected.
+
 ### Fork-only fix — 2026-07-24 (desktop: tab drag lit up the layout-edit dashed zone overlay)
 
 **Reported:** after fixing the tab-reorder no-op (see the entry above), the

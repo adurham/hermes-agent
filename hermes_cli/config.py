@@ -2170,12 +2170,15 @@ DEFAULT_CONFIG = {
             # scale); set a positive int only to pin the half-block/kitty width
             # independently of scale.
             "unicode_cols": 0,
-            # Desktop-only: let the mascot speak its status-bubble lines aloud
-            # (TTS) instead of just showing text. Off by default — opt-in like
-            # `voice.auto_tts`. Uses `pet.voice_provider` if set, otherwise the
-            # user's normal `tts.provider`. No effect on prompt caching (display
-            # concern only) and no effect on CLI/TUI, which have no audio output
-            # path for this.
+            # Desktop-only: let the mascot speak aloud (TTS) at two moments —
+            # when a turn genuinely finishes and when it needs the user
+            # (approval/clarify/sudo prompt or end-of-turn idle) — NOT the
+            # continuous "working…"/"thinking…" status-bubble chatter shown
+            # while a turn runs. Off by default — opt-in like `voice.auto_tts`.
+            # Uses `pet.voice_provider` if set, otherwise the user's normal
+            # `tts.provider`. No effect on prompt caching (display concern
+            # only) and no effect on CLI/TUI, which have no audio output path
+            # for this.
             "voice_enabled": False,
             # Optional tts.providers.<name> command-provider override so the
             # pet can use a distinct voice (e.g. a custom "miku" command

@@ -482,7 +482,7 @@ export const en: Translations = {
         zoneTitle: 'Pet Zone',
         zoneDesc: 'Confine the pet to a dedicated pane in the layout instead of the full window.',
         voiceTitle: 'Pet voice',
-        voiceDesc: 'Let the mascot speak its status lines aloud using your configured TTS provider.'
+        voiceDesc: 'Announce aloud when a turn finishes or needs your input — not the running status chatter.'
       }
     },
     fieldLabels: FIELD_LABELS,

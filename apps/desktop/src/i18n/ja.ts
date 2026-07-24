@@ -369,7 +369,7 @@ export const ja = defineLocale({
         zoneTitle: 'ペットゾーン',
         zoneDesc: 'ペットをウィンドウ全体ではなく、レイアウト内の専用ペインに閉じ込めます。',
         voiceTitle: 'ペットの声',
-        voiceDesc: '設定したTTSプロバイダーを使って、マスコットのステータス表示を読み上げさせます。'
+        voiceDesc: 'ターン完了時やユーザーの入力が必要なときに読み上げます（作業中の状態メッセージは読み上げません）。'
       }
     },
     fieldLabels: defineFieldCopy({
