@@ -3716,7 +3716,7 @@ def _estimate_tui_input_height(
     terminal.
     """
     try:
-        from prompt_toolkit.utils import get_cwidth
+        from agent.display import display_cwidth as get_cwidth
     except Exception:
         get_cwidth = lambda value: len(value or "")  # type: ignore[assignment]
 
@@ -5205,22 +5205,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         glyphs can render wider than one Python codepoint. Keeping the status
         bar within the real display width prevents it from wrapping onto a
         second line and leaving behind duplicate rows.
+
+        Delegates to ``agent.display.display_cwidth()`` rather than calling
+        ``get_cwidth`` directly: several registered tool emoji (e.g.
+        process's "⚙️") are an emoji base codepoint + VARIATION SELECTOR-16,
+        which plain ``get_cwidth`` undercounts by 1 cell. Fed into this
+        status bar's wrap-height math (``_spinner_widget_height``), that
+        1-cell undercount lands the reserved ``Window`` height 1 row short
+        exactly at a wrap boundary — the wrapped continuation then overlaps
+        the row below instead of getting its own, producing the recurring
+        "garbled/duplicated digit" live-timer corruption (e.g.
+        ``process(action="wait")``'s duration rendering as "4m170s" instead
+        of "4m17s"). See ``display_cwidth``'s docstring for the full
+        analysis of why this specific glyph shape was missed by the two
+        earlier ``len()`` vs ``get_cwidth()`` fixes in this same file.
         """
-        try:
-            from prompt_toolkit.utils import get_cwidth
-            return get_cwidth(text or "")
-        except Exception:
-            return len(text or "")
+        from agent.display import display_cwidth
+        return display_cwidth(text)
 
     @classmethod
     def _trim_status_bar_text(cls, text: str, max_width: int) -> str:
         """Trim status-bar text to a single terminal row."""
         if max_width <= 0:
             return ""
-        try:
-            from prompt_toolkit.utils import get_cwidth
-        except Exception:
-            get_cwidth = None
+        from agent.display import display_cwidth
 
         if cls._status_bar_display_width(text) <= max_width:
             return text
@@ -5233,7 +5241,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         out = []
         width = 0
         for ch in text:
-            ch_width = get_cwidth(ch) if get_cwidth else len(ch)
+            ch_width = display_cwidth(ch)
             if width + ch_width + ellipsis_width > max_width:
                 break
             out.append(ch)
@@ -5243,12 +5251,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     @staticmethod
     def _panel_cwidth(text: str) -> int:
         """Terminal cell width of ``text`` — see ``_panel_ljust`` docstring
-        for why plain ``len()`` undercounts wide glyphs in panel sizing."""
-        try:
-            from prompt_toolkit.utils import get_cwidth
-            return get_cwidth(text or "")
-        except Exception:
-            return len(text or "")
+        for why plain ``len()`` undercounts wide glyphs in panel sizing.
+        Delegates to ``agent.display.display_cwidth()`` — see that
+        function's docstring for why plain ``get_cwidth`` also undercounts
+        emoji+VS-16 tool glyphs specifically."""
+        from agent.display import display_cwidth
+        return display_cwidth(text)
 
     @staticmethod
     def _panel_ljust(text: str, inner_width: int) -> str:
