@@ -174,4 +174,90 @@ describe('ensureProjectTerminal', () => {
     expect(ensureProjectTerminal('p_a', '/repo/a')).toBe(first)
     expect($activeTerminalId.get()).toBe(first)
   })
+
+  // Regression for the "3 tabs instead of 2" report: the pane's very first
+  // tab (opened blind, before any project had ever been entered) has no
+  // projectId. Re-entering the project it happens to sit in must adopt that
+  // tab, not spawn a duplicate next to it.
+  it('adopts a pre-existing unbound tab whose cwd already sits under the project root', async () => {
+    const { $terminals, createTerminal, ensureProjectTerminal } = await loadTerminalStore()
+
+    const blind = createTerminal('/repo/exo')
+    const hermes = ensureProjectTerminal('p_hermes', '/repo/hermes-agent')
+    const exo = ensureProjectTerminal('p_exo', '/repo/exo')
+
+    expect(exo).toBe(blind)
+    expect($terminals.get()).toHaveLength(2)
+    expect($terminals.get().find(t => t.id === blind)?.projectId).toBe('p_exo')
+    expect(hermes).not.toBe(blind)
+  })
+
+  it('stays at two tabs across repeated switches once a blind tab has been adopted', async () => {
+    const { $activeTerminalId, $terminals, ensureProjectTerminal } = await loadTerminalStore()
+
+    ensureProjectTerminal('p_exo', '/repo/exo') // adopts the pane's initial blind tab in the real flow
+    ensureProjectTerminal('p_hermes', '/repo/hermes-agent')
+    ensureProjectTerminal('p_exo', '/repo/exo')
+    ensureProjectTerminal('p_hermes', '/repo/hermes-agent')
+    const finalId = ensureProjectTerminal('p_exo', '/repo/exo')
+
+    expect($terminals.get()).toHaveLength(2)
+    expect($activeTerminalId.get()).toBe(finalId)
+  })
+
+  it('adopts a tab whose live shell cd-d into the project root (restoreCwd), not just its launch cwd', async () => {
+    const { $terminals, createTerminal, ensureProjectTerminal, updateTerminalRestoreCwd } = await loadTerminalStore()
+
+    const blind = createTerminal('/detached/start')
+    updateTerminalRestoreCwd(blind, '/repo/exo/packages/api')
+
+    const exo = ensureProjectTerminal('p_exo', '/repo/exo')
+
+    expect(exo).toBe(blind)
+    expect($terminals.get()).toHaveLength(1)
+  })
+
+  it('does not adopt an unbound tab outside the project root', async () => {
+    const { $terminals, createTerminal, ensureProjectTerminal } = await loadTerminalStore()
+
+    const unrelated = createTerminal('/repo/unrelated')
+    const exo = ensureProjectTerminal('p_exo', '/repo/exo')
+
+    expect(exo).not.toBe(unrelated)
+    expect($terminals.get()).toHaveLength(2)
+  })
+})
+
+describe('ensureTerminal', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('creates a plain unbound tab when no project is passed', async () => {
+    const { $terminals, ensureTerminal } = await loadTerminalStore()
+
+    ensureTerminal()
+
+    expect($terminals.get()).toHaveLength(1)
+    expect($terminals.get()[0]?.projectId).toBeUndefined()
+  })
+
+  it('creates the first-ever tab already bound to the active project, not a blind tab needing later adoption', async () => {
+    const { $terminals, ensureTerminal } = await loadTerminalStore()
+
+    ensureTerminal({ id: 'p_exo', cwd: '/repo/exo' })
+
+    expect($terminals.get()).toHaveLength(1)
+    expect($terminals.get()[0]).toMatchObject({ cwd: '/repo/exo', projectId: 'p_exo' })
+  })
+
+  it('is a no-op once a tab already exists, even with a project passed', async () => {
+    const { $terminals, ensureTerminal } = await loadTerminalStore()
+
+    ensureTerminal()
+    ensureTerminal({ id: 'p_exo', cwd: '/repo/exo' })
+
+    expect($terminals.get()).toHaveLength(1)
+  })
 })

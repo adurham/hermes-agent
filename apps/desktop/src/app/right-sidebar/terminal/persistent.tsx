@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
+import { $projectScope, ALL_PROJECTS, projectRootCwd } from '@/store/projects'
+
 import { $terminalTakeover } from '../store'
 
 import { ensureTerminal } from './terminals'
@@ -70,7 +72,9 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
   useEffect(() => {
     if (terminalTakeover && ready) {
       setMounted(true)
-      ensureTerminal()
+      const scope = $projectScope.get()
+      const cwd = scope !== ALL_PROJECTS ? projectRootCwd(scope) : ''
+      ensureTerminal(cwd ? { id: scope, cwd } : undefined)
     }
   }, [terminalTakeover, ready])
 
