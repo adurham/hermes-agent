@@ -480,7 +480,9 @@ export const en: Translations = {
         turnOnFailed: 'Could not turn the pet on.',
         turnOffFailed: 'Could not turn the pet off.',
         zoneTitle: 'Pet Zone',
-        zoneDesc: 'Confine the pet to a dedicated pane in the layout instead of the full window.'
+        zoneDesc: 'Confine the pet to a dedicated pane in the layout instead of the full window.',
+        voiceTitle: 'Pet voice',
+        voiceDesc: 'Let the mascot speak its status lines aloud using your configured TTS provider.'
       }
     },
     fieldLabels: FIELD_LABELS,

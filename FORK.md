@@ -27,6 +27,119 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only feature — 2026-07-24 (desktop: pet voice via Miku RVC voice-conversion pipeline)
+
+**Request:** user has the Hatsune Miku petdex mascot active in Hermes Desktop
+and asked to wire its status-bubble lines (PetBubble's "working…"/"thinking…"
+text) up to actual Miku-voiced audio, based on her real voicebank rather than
+a from-scratch TTS voice.
+
+**Approach — command-type TTS provider, zero core-tool footprint:**
+Hermes already supports `tts.providers.<name>: type: command`, a shell-
+template mechanism (`tools/tts_tool.py::_generate_command_tts`) for wiring any
+local CLI into the TTS dispatch chain. Built the whole pipeline as one such
+provider instead of adding a new core tool or touching the model-facing
+`text_to_speech` tool schema:
+
+```
+edge-tts (free "Ana" voice, synthesizes raw text)
+  -> ffmpeg (resample to 44.1kHz mono WAV)
+  -> mlx-rvc (RVC voice-conversion, Apple Silicon MLX, no CUDA/GPU needed)
+       using a community Hatsune Miku RVC model trained directly on official
+       VOCALOID V4X demo-track samples (not fan covers)
+  -> ffmpeg (encode to caller's requested format: mp3/ogg/wav)
+```
+
+Wrapper script + Python driver live outside the repo, at
+`~/.hermes/pets/voices/miku/` (`speak.sh`, `rvc_convert_fixed.py`) — these are
+user machine-local assets (a downloaded third-party model file + a small glue
+script), not something that belongs in the Hermes tree. `tts.providers.miku`
+in `config.yaml` points at `speak.sh`.
+
+**Real upstream bug found and worked around, not patched in-place:**
+`mlx-rvc` 0.1.0 (`pip install git+https://github.com/lextoumbourou/mlx-rvc`)
+has a genuine bug in `RVCPipeline.convert()`: ContentVec emits phone features
+at 50fps but F0 extraction runs at 100fps, and upstream RVC's reference
+implementation repeats each phone frame twice (`F.interpolate(...,
+scale_factor=2)`) before synthesis so the two timelines match. mlx-rvc's
+`pipeline.py` skips that step and just truncates `min(len(phone), len(f0))` —
+since `len(f0) ≈ 2×len(phone)`, this silently drops ~half of every phone
+frame's information and outputs audio at half the correct duration (heard as
+2x-speed garbled speech; confirmed via `ffprobe` duration comparison: 5.57s
+input -> 2.78s broken output -> 5.56s fixed output). Fix: a standalone
+`rvc_convert_fixed.py` that duplicates `RVCPipeline.convert()` but inserts
+`np.repeat(phone, 2, axis=1)` before the F0 alignment step — NOT a monkeypatch
+of the installed pip package, so a future `mlx-rvc` reinstall/upgrade can't
+silently reintroduce or double-apply the fix. `speak.sh` calls this script
+instead of the `mlx-rvc convert` CLI directly, with an explicit comment
+pointing back at this root cause.
+
+**Pitch tuned by objective measurement, not vibes:** pulled an official
+Miku V4X reference sample (Wikimedia Commons, freely licensed, "Kimigayo"
+EVEC demo) and used `librosa.pyin` to measure its median F0 (392Hz / G4).
+Measured our pipeline's output at several pitch-shift settings and models,
+then had the user A/B the two candidates that measured closest to the
+reference. Settled on the vocaloid-sample-trained model (`aple/HatsuneMikuRVC`
+family member trained on 36min of audio sampled directly from VOCALOID demo
+tracks, not fan covers) at +2 semitones (measured median ~364Hz) over an
+alternative "on par with original voicebank" model at +4 (~405Hz) — the lower
+measured-closer candidate lost the user's ear test, confirming pitch alone
+doesn't fully capture timbre fit.
+
+**Core-repo changes (all additive, no existing behavior changed):**
+- `tools/tts_tool.py`: `text_to_speech_tool()` gained an internal-only
+  `provider_override` kwarg that bypasses `tts.provider` for one call. NOT
+  exposed on the model-facing tool schema (the `registry.register()` call
+  site for the agent tool is untouched) — only the desktop's own REST
+  endpoint uses it, so the main "read replies aloud" TTS behavior for
+  everyone else is completely unaffected.
+- `hermes_cli/web_server.py`: `/api/audio/speak`'s `TTSSpeakRequest` gained an
+  optional `provider` field, threaded into `text_to_speech_tool(...,
+  provider_override=payload.provider)`.
+- `hermes_cli/config.py`: `display.pet.voice_enabled` (bool, default False —
+  opt-in like `voice.auto_tts`) and `display.pet.voice_provider` (string,
+  default "") added to `DEFAULT_CONFIG`. No `_config_version` bump — new keys
+  under an existing section, handled by the deep-merge.
+- Desktop (`apps/desktop/src/`): new `store/pet-voice.ts` (mirrors
+  `voice-prefs.ts`'s pattern exactly — atoms seeded from config, optimistic
+  read-modify-write persistence). `PetBubble` speaks its line via the
+  existing `playSpeechText()`/`voice-playback.ts` pipeline once per mood
+  TRANSITION (not on every 2.6s line-rotation tick) when the toggle is on.
+  `voice-playback.ts`/`hermes.ts`'s `speakText()` gained an optional
+  `provider` passthrough. `VoicePlaybackSource` gained a `'pet'` variant.
+  New Settings toggle in `pet-settings.tsx` alongside Roam/Zone, i18n strings
+  added to en/zh/zh-hant/ja + `i18n/types.ts`.
+
+**Verification:** `text_to_speech_tool(text, provider_override='miku')`
+exercised end-to-end against the REAL `~/.hermes/config.yaml` (not a mock),
+confirmed correct command-provider resolution + audio output. Targeted
+pytest (`test_tts_command_providers.py` 52/52, `test_tts_registry.py`,
+`test_tts_media_routing.py`, `test_tts_picker.py`,
+`test_plugins_tts_registration.py` — 64 more, all green). Desktop `tsc
+--noEmit` clean (both configs), `eslint` clean on every touched file.
+
+**Files:** `tools/tts_tool.py`, `hermes_cli/web_server.py`,
+`hermes_cli/config.py`, `apps/desktop/src/store/pet-voice.ts` (new),
+`apps/desktop/src/components/pet/pet-bubble.tsx`,
+`apps/desktop/src/app/settings/pet-settings.tsx`,
+`apps/desktop/src/lib/voice-playback.ts`,
+`apps/desktop/src/store/voice-playback.ts`, `apps/desktop/src/hermes.ts`,
+`apps/desktop/src/types/hermes.ts`,
+`apps/desktop/src/app/session/hooks/use-hermes-config.ts`,
+`apps/desktop/src/i18n/{en,zh,zh-hant,ja,types}.ts`.
+
+**Not in the repo (user machine-local, by design):** `~/.hermes/pets/voices/
+miku/speak.sh` + `rvc_convert_fixed.py` (the actual voice pipeline glue —
+references a locally-downloaded third-party RVC model file, so it can't be
+portable repo content), `~/.hermes/pets/voices/miku_vocaloid/MikuAI.pth` +
+its FAISS index (the downloaded community RVC model itself, per its OpenRAIL-
+style license — user attribution: credit to the model's uploader per its
+source page). `tts.providers.miku` + `display.pet.voice_*` values are
+user-specific `config.yaml` entries, not repo defaults.
+
+**Merge note:** additive changes to existing files, no upstream conflict
+expected. The new `store/pet-voice.ts` file has no upstream equivalent.
+
 ### Fork-only fix — 2026-07-24 (desktop: tab drag lit up the layout-edit dashed zone overlay)
 
 **Reported:** after fixing the tab-reorder no-op (see the entry above), the

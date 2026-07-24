@@ -35,6 +35,8 @@ function currentState(
 export interface VoicePlaybackOptions {
   messageId?: string | null
   source: VoicePlaybackSource
+  /** Bypass the user's configured tts.provider for this call (e.g. the pet's own voice). */
+  provider?: string
 }
 
 export function stopVoicePlayback() {
@@ -73,7 +75,7 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
   setVoicePlaybackState(currentState('preparing', options))
 
   try {
-    const response = await speakText(speakableText)
+    const response = await speakText(speakableText, options.provider)
 
     if (!isCurrent()) {
       return false

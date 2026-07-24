@@ -257,6 +257,10 @@ export interface HermesConfig {
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
+    pet?: {
+      voice_enabled?: boolean
+      voice_provider?: string
+    }
   }
   terminal?: {
     cwd?: string

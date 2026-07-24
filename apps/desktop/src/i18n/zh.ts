@@ -467,7 +467,9 @@ export const zh: Translations = {
         turnOnFailed: '无法开启宠物。',
         turnOffFailed: '无法关闭宠物。',
         zoneTitle: '宠物区域',
-        zoneDesc: '将宠物限制在布局中的专用窗格内，而非整个窗口。'
+        zoneDesc: '将宠物限制在布局中的专用窗格内，而非整个窗口。',
+        voiceTitle: '宠物语音',
+        voiceDesc: '让吉祥物使用你配置的 TTS 提供商朗读它的状态提示。'
       }
     },
     fieldLabels: defineFieldCopy({

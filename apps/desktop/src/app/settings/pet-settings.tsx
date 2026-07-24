@@ -34,6 +34,7 @@ import {
   setPetEnabled,
   setPetScale
 } from '@/store/pet-gallery'
+import { $petVoiceEnabled, setPetVoiceEnabled } from '@/store/pet-voice'
 import { $gatewayState } from '@/store/session'
 
 import { ListRow, SectionHeading } from './primitives'
@@ -57,6 +58,7 @@ export function PetSettings() {
   const petInfo = useStore($petInfo)
   const roam = useStore($petRoam)
   const zoneEnabled = useStore($petZoneEnabled)
+  const voiceEnabled = useStore($petVoiceEnabled)
   const [query, setQuery] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<GalleryPet | null>(null)
   const [renameTarget, setRenameTarget] = useState<GalleryPet | null>(null)
@@ -320,6 +322,24 @@ export function PetSettings() {
             }
             description={copy.zoneDesc}
             title={copy.zoneTitle}
+          />
+        )}
+        {enabled && (
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  void setPetVoiceEnabled(id === 'on').then(() => triggerHaptic('crisp'))
+                }}
+                options={[
+                  { id: 'off', label: copy.off },
+                  { id: 'on', label: copy.on }
+                ]}
+                value={voiceEnabled ? 'on' : 'off'}
+              />
+            }
+            description={copy.voiceDesc}
+            title={copy.voiceTitle}
           />
         )}
       </div>
