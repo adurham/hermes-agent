@@ -1710,6 +1710,36 @@ class ElicitationHandler:
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
+async def _cancel_lifecycle_wait_tasks(*tasks: "asyncio.Task") -> None:
+    """Cancel and await a set of lifecycle-wait sub-tasks, leak-safe.
+
+    Shared cleanup for the ``finally`` blocks of
+    :meth:`MCPServerTask._wait_for_lifecycle_event`,
+    :meth:`MCPServerTask._wait_for_reconnect_or_shutdown`, and
+    :meth:`MCPServerTask._wait_for_lazy_reconnect` — all three create a
+    ``shutdown_task``/``reconnect_task`` pair with :func:`asyncio.wait` and
+    need to tear down whichever one didn't win the race.
+
+    Critically, ``task.cancel()`` itself must be inside the ``try``, not
+    just the subsequent ``await`` — ``cancel()`` schedules work via
+    ``loop.call_soon()`` internally, which raises
+    ``RuntimeError('Event loop is closed')`` if the owning loop has already
+    been closed. That happens when this runs during interpreter-shutdown
+    garbage collection of a task that was still parked (e.g. in
+    ``_wait_for_reconnect_or_shutdown``'s self-probe) when
+    ``_stop_mcp_loop()`` closed the MCP background loop out from under it —
+    previously this escaped uncaught as an "Exception ignored in: <coroutine
+    ... run>" trace at process exit (#63412).
+    """
+    for t in tasks:
+        if not t.done():
+            try:
+                t.cancel()
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
 class MCPServerTask:
     """Manages a single MCP server connection in a dedicated asyncio Task.
 
@@ -2157,13 +2187,7 @@ class MCPServerTask:
                         self._reconnect_event.set()
                         break
         finally:
-            for t in (shutdown_task, reconnect_task):
-                if not t.done():
-                    t.cancel()
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
+            await _cancel_lifecycle_wait_tasks(shutdown_task, reconnect_task)
 
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -2201,13 +2225,7 @@ class MCPServerTask:
                 timeout=timeout,
             )
         finally:
-            for t in (shutdown_task, reconnect_task):
-                if not t.done():
-                    t.cancel()
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
+            await _cancel_lifecycle_wait_tasks(shutdown_task, reconnect_task)
         if self._shutdown_event.is_set():
             return "shutdown"
         self._reconnect_event.clear()
@@ -3157,13 +3175,7 @@ class MCPServerTask:
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
-            for task in (shutdown_task, reconnect_task):
-                if not task.done():
-                    task.cancel()
-                    try:
-                        await task
-                    except (asyncio.CancelledError, Exception):
-                        pass
+            await _cancel_lifecycle_wait_tasks(shutdown_task, reconnect_task)
 
 
 # ---------------------------------------------------------------------------
@@ -4488,7 +4500,30 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
         Exception: on connection or initialization failure.
     """
     server = MCPServerTask(name)
-    await server.start(config)
+    try:
+        await server.start(config)
+    except asyncio.CancelledError:
+        # start() already cancels/reaps server._task itself on this path
+        # (see the comment there, #59349) — nothing further to clean up.
+        raise
+    except Exception:
+        # start() raised server._error (auth failure, invalid URL, or the
+        # "parked after _MAX_INITIAL_CONNECT_RETRIES failures" case). In all
+        # of these, server._ready was set but server._task is still alive —
+        # it has already moved on to _wait_for_reconnect_or_shutdown() to
+        # self-probe every _PARKED_RETRY_INTERVAL. Since we never return
+        # `server` to the caller on this path, nothing would ever hold a
+        # reference to call shutdown() on it: the task would run forever as
+        # an orphan invisible to shutdown_mcp_servers() (never added to
+        # _servers), and get abandoned rather than cleanly finished when the
+        # MCP loop is closed at process exit — surfacing as a spurious
+        # "RuntimeError: Event loop is closed" from its finally block when
+        # eventually garbage-collected. Reap it here before propagating.
+        try:
+            await server.shutdown()
+        except Exception:  # noqa: BLE001 — best-effort cleanup, don't mask the real error
+            pass
+        raise
     return server
 
 

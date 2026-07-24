@@ -27,6 +27,69 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-23 (spurious "Event loop is closed" traceback on /exit)
+
+**Symptom:** on `/exit`, after the "(cleaning up — press Ctrl+C to quit
+immediately)" message, the CLI process occasionally printed a Python
+"Exception ignored in: <coroutine object MCPServerTask.run at ...>" /
+`RuntimeError: Event loop is closed` traceback pointing at
+`_wait_for_reconnect_or_shutdown` in `tools/mcp_tool.py`, during interpreter
+teardown right before the process actually exited.
+
+**Root cause — two compounding bugs in `tools/mcp_tool.py`:**
+
+1. **Orphaned parked task.** `_connect_server()` calls `MCPServerTask.start()`,
+   which awaits `self._ready` and then re-raises `self._error` on failure —
+   but by design `run()` doesn't exit on every error path: when the initial
+   connection fails `_MAX_INITIAL_CONNECT_RETRIES` times (or hits certain
+   OAuth/URL-validation failures), `run()` sets `_error`/`_ready` and then
+   *parks* in `_wait_for_reconnect_or_shutdown(timeout=_PARKED_RETRY_INTERVAL)`
+   to self-probe every 5 minutes, rather than returning. `_connect_server`
+   propagated the exception without ever returning the `MCPServerTask`
+   instance to its caller, so nothing held a reference to it — the parked
+   task ran forever, invisible to `shutdown_mcp_servers()` (never inserted
+   into `_servers`), a live orphan on the MCP background loop.
+2. **Unguarded `cancel()` in cleanup `finally` blocks.** Three near-identical
+   lifecycle-wait helpers (`_wait_for_lifecycle_event`,
+   `_wait_for_reconnect_or_shutdown`, `_wait_for_lazy_reconnect`) each had a
+   `finally:` block that called `task.cancel()` *outside* its guarding
+   `try/except`. `Task.cancel()` schedules internally via
+   `loop.call_soon()`, which raises `RuntimeError('Event loop is closed')`
+   once the owning loop has actually been closed. At `/exit`,
+   `_stop_mcp_loop()` calls `loop.close()` on the MCP background loop
+   regardless of whether the orphaned parked task (bug 1) is still alive on
+   it. When the orphan's coroutine was later garbage-collected, Python threw
+   `GeneratorExit` into it to run `close()`, resuming this `finally:` block
+   — whose unguarded `cancel()` then raised past the `try/except` below it,
+   surfacing as the "Exception ignored in" trace.
+
+**Fix:**
+- `tools/mcp_tool.py`: `_connect_server()` now wraps `await server.start(config)`
+  in `try/except Exception` (the pre-existing `CancelledError` re-raise path
+  from #59349 is preserved separately) and calls `await server.shutdown()`
+  before re-raising, reaping the orphaned task instead of abandoning it.
+- Extracted the duplicated cancel-and-await cleanup from all three lifecycle
+  wait helpers into one shared `_cancel_lifecycle_wait_tasks()` function,
+  with `task.cancel()` correctly inside the `try` alongside the `await` so
+  `RuntimeError('Event loop is closed')` is caught by the existing
+  `except (asyncio.CancelledError, Exception)`.
+
+**Tests:** `tests/tools/test_mcp_tool.py` — added
+`TestConnectServerOrphanReaping` (2 tests: a `start()` failure via
+`server._error` now leaves `server._task` fully done and
+`_shutdown_event` set rather than orphaned; the pre-existing
+`CancelledError` path from #59349 still reaps cleanly) and
+`TestLifecycleWaitFinallySurvivesClosedLoop` (2 tests against the new
+shared helper directly, using a duck-typed fake task since real
+`asyncio.Task` is immutable in CPython and can't have `.cancel` patched:
+confirms `cancel()` raising `RuntimeError('Event loop is closed')` on both
+tasks doesn't escape, and confirms normal cancellation still awaits the
+task out to `cancelled()`). Full `tests/tools/test_mcp_tool.py` suite:
+218 passed (214 pre-existing + 4 new — `test_register_wakes_stale_cached_server`
+in the sibling `test_mcp_register_wakes_stale.py` fails identically on
+unmodified `main` when run in the same session, a pre-existing order-dependent
+flake unrelated to this change, confirmed via `git stash`).
+
 ### Fork-only feature — 2026-07-23 (desktop: sidebar click opens browser-like tabs instead of always replacing the middle pane)
 
 **Ask:** user wanted the middle chat pane's tab strip to behave like a
