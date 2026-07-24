@@ -19,7 +19,8 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
-import { revealTreePane } from '@/components/pane-shell/tree/store'
+import { findGroupOfPane } from '@/components/pane-shell/tree/model'
+import { $layoutTree, registerPaneCloser, revealTreePane } from '@/components/pane-shell/tree/store'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -30,8 +31,8 @@ import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
-import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { $petZoneEnabled } from '@/store/pet'
+import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
 import {
@@ -57,7 +58,7 @@ import {
   setCurrentProvider,
   setMessages
 } from '@/store/session'
-import { focusOpenSession, openSessionTile } from '@/store/session-states'
+import { closeSessionTile, focusOpenSession, openSessionTile } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -564,6 +565,43 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     sessionStateByRuntimeIdRef,
     updateSessionState
   })
+
+  // Workspace tab Close — browser-tab semantics for the one pane that can
+  // never structurally leave the tree (dock anchor, drag payload target,
+  // `findGroupOfPane(tree, 'workspace')` assumed live everywhere). Promote an
+  // adjacent tab into it when one exists (load that session into main, then
+  // drop the now-redundant tile — exactly what closing a browser tab does:
+  // the strip shrinks by one and focus lands on a neighbor); with no sibling
+  // tab left, there's nothing to promote, so it resets to a blank draft
+  // instead (same effect as ⌘N). Routed through `registerPaneCloser` so
+  // `closeTreePane('workspace')` — used by the tab's × / ⌘W / right-click
+  // Close / "Close all" — never falls through to the generic dismiss-from-
+  // tree path, which would rip the anchor pane out of the layout.
+  useEffect(() => {
+    registerPaneCloser('workspace', () => {
+      const tree = $layoutTree.get()
+      const group = tree ? findGroupOfPane(tree, 'workspace') : null
+      const siblings = group?.panes.filter(id => id !== 'workspace') ?? []
+
+      if (siblings.length === 0) {
+        startFreshSessionDraft()
+
+        return
+      }
+
+      // Same neighbor pick as a real tab close (removePane in model.ts):
+      // the previous tab, falling back to the next one when workspace was
+      // first — never a jump to the strip's start.
+      const at = group!.panes.indexOf('workspace')
+      const promote = group!.panes[at - 1] ?? siblings[0]
+
+      if (promote.startsWith('session-tile:')) {
+        const storedSessionId = promote.slice('session-tile:'.length)
+
+        void resumeSession(storedSessionId).then(() => closeSessionTile(storedSessionId))
+      }
+    })
+  }, [resumeSession, startFreshSessionDraft])
 
   // The popped-out pet overlay's bridge back into the app.
   usePetBridge({ requestGateway, resumeSession, submitText })
