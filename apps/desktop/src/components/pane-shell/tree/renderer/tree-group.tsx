@@ -436,10 +436,13 @@ export function TreeGroup({
                       }
 
                       // A pane may own its tab drag (a session tab speaks the
-                      // session drop language — link/stack/split); `false` defers
-                      // to the generic pane move (the workspace tab on a fresh
-                      // draft has no session to link).
-                      if (!chrome.tabDrag?.(e, onTap, hideHeaderDoubleTap)) {
+                      // session drop language — reorder within its own strip);
+                      // `false` defers to the generic pane move (the workspace
+                      // tab on a fresh draft has no session to link).
+                      if (
+                        !stripRef.current ||
+                        !chrome.tabDrag?.(e, onTap, hideHeaderDoubleTap, { groupId: node.id, strip: stripRef.current })
+                      ) {
                         startPaneDrag(
                           paneId,
                           e,

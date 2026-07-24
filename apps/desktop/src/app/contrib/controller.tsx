@@ -114,17 +114,23 @@ const workspaceDragPayload = (): SessionDragPayload | null => {
   return { id: selected, profile: stored?.profile ?? '', title: stored ? storedSessionTitle(stored) : '' }
 }
 
-// The main tab drags like a session tile — drop it on a composer to link the
-// chat, on a zone/edge to stack/split. Defers (`false`) to the generic pane
-// move when there's no loaded session to carry.
-const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) => {
+// The main tab's own drag is reorder-only within its strip — never the
+// sidebar row's zone/split/composer-link language (see startSessionDrag's
+// `reorder` mode). Defers (`false`) to the generic pane move when there's
+// no loaded session to carry.
+const workspaceTabDrag = (
+  event: ReactPointerEvent<HTMLElement>,
+  onTap: () => void,
+  double: DoubleTapContext | undefined,
+  reorder: { groupId: string; strip: HTMLElement }
+) => {
   const payload = workspaceDragPayload()
 
   if (!payload) {
     return false
   }
 
-  startSessionDrag(payload, event, { double, onTap })
+  startSessionDrag(payload, event, { double, onTap, reorder })
 
   return true
 }
