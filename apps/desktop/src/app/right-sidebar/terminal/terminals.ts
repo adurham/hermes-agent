@@ -14,10 +14,11 @@ export interface TerminalEntry {
   /** Display label. `auto` adopts the resolved shell name until the user renames. */
   title: string
   auto: boolean
-  /** Working directory, snapshotted once at creation. Terminals live outside
-   *  session/project state — the only thing they inherit is this initial cwd
-   *  (the project root if opened in one, else the backend's default). Switching
-   *  sessions never moves or recreates a terminal. */
+  /** Working directory, snapshotted once at creation. A plain terminal lives
+   *  outside session/project state — the only thing it inherits is this
+   *  initial cwd. A `projectId`-bound tab (see `ensureProjectTerminal`) is the
+   *  one exception: switching to that project re-selects this tab. Switching
+   *  *sessions* never moves or recreates a terminal either way. */
   cwd: string
   /** Last observed working directory of the live shell (tracked via the PTY
    *  cwd probe / OSC 7). Used to reopen the tab where the user last `cd`'d
@@ -32,12 +33,19 @@ export interface TerminalEntry {
    *  background process (`terminal(background=true)`), keyed by `procId`. */
   kind: 'user' | 'agent'
   procId?: string
+  /** The sidebar project ($projectScope id) this tab is bound to, if it was
+   *  created via `ensureProjectTerminal` (opening/switching to a scoped
+   *  project). Unlike `cwd`, this ties the tab to the project going forward:
+   *  entering that project again re-selects this same tab instead of the
+   *  cwd-only match `createTerminal` gives every other tab. User tabs only. */
+  projectId?: string
 }
 
 interface PersistedTerminalEntry {
   auto: boolean
   cwd: string
   id: string
+  projectId?: string
   restoreCwd?: string
   reviveBuffer?: string
   title: string
@@ -64,6 +72,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
   const id = typeof record.id === 'string' ? record.id.trim() : ''
   const title = typeof record.title === 'string' ? record.title.trim() : ''
   const cwd = typeof record.cwd === 'string' ? record.cwd : ''
+  const projectId = typeof record.projectId === 'string' && record.projectId ? record.projectId : undefined
   const restoreCwd = typeof record.restoreCwd === 'string' && record.restoreCwd ? record.restoreCwd : undefined
   const reviveBuffer = typeof record.reviveBuffer === 'string' ? record.reviveBuffer : undefined
 
@@ -75,6 +84,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
     auto: typeof record.auto === 'boolean' ? record.auto : true,
     cwd,
     id,
+    ...(projectId ? { projectId } : {}),
     ...(restoreCwd ? { restoreCwd } : {}),
     ...(reviveBuffer ? { reviveBuffer } : {}),
     title: title || 'Terminal'
@@ -123,6 +133,7 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
       auto: term.auto,
       cwd: term.cwd,
       id: term.id,
+      ...(term.projectId ? { projectId: term.projectId } : {}),
       ...(term.restoreCwd ? { restoreCwd: term.restoreCwd } : {}),
       ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
       title: term.title
@@ -157,13 +168,56 @@ const newId = () =>
   globalThis.crypto?.randomUUID?.() ?? `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 
 /** Append a fresh terminal and focus it. Captures the current cwd once (its only
- *  tie to session/project state); pass an explicit cwd to override. Returns the id. */
-export function createTerminal(cwd: string = $currentCwd.get()): string {
+ *  tie to session/project state); pass an explicit cwd to override. Pass
+ *  `projectId` to bind the tab to a sidebar project (see `ensureProjectTerminal`).
+ *  Returns the id. */
+export function createTerminal(cwd: string = $currentCwd.get(), projectId?: string): string {
   const id = newId()
-  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user' }])
+  $terminals.set([
+    ...$terminals.get(),
+    { id, title: 'Terminal', auto: true, cwd, kind: 'user', ...(projectId ? { projectId } : {}) }
+  ])
   $activeTerminalId.set(id)
 
   return id
+}
+
+// The most-recently-active tab per bound project, so re-entering a project
+// resumes wherever the user left it there rather than always the first match.
+// Runtime-only (not persisted) — a fresh app launch falls back to "first tab
+// bound to this project" via ensureProjectTerminal below.
+const lastActiveTerminalByProject = new Map<string, string>()
+
+$activeTerminalId.subscribe(id => {
+  const term = id ? $terminals.get().find(t => t.id === id) : undefined
+
+  if (term?.kind === 'user' && term.projectId) {
+    lastActiveTerminalByProject.set(term.projectId, term.id)
+  }
+})
+
+/** Switch to the terminal tab bound to `projectId` (from a previous call here),
+ *  or create one anchored at `cwd` if none exists yet. Called when the sidebar
+ *  project scope changes, so each project keeps — and returns to — its own
+ *  terminal tab instead of a single shell drifting between working
+ *  directories. Store-only: the underlying PTY spawns lazily when the pane
+ *  actually mounts (see PersistentTerminal), so this is cheap even while the
+ *  terminal pane is closed. Returns the tab id. */
+export function ensureProjectTerminal(projectId: string, cwd: string): string {
+  const list = $terminals.get()
+  const remembered = lastActiveTerminalByProject.get(projectId)
+
+  const target =
+    (remembered && list.find(term => term.id === remembered && term.kind === 'user')) ||
+    list.find(term => term.kind === 'user' && term.projectId === projectId)
+
+  if (target) {
+    $activeTerminalId.set(target.id)
+
+    return target.id
+  }
+
+  return createTerminal(cwd, projectId)
 }
 
 // Procs we've already surfaced a tab for — so closing an agent tab doesn't

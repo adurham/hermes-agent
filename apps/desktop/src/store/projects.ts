@@ -1,6 +1,8 @@
 import { atom } from 'nanostores'
 
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import { $terminalTakeover } from '@/app/right-sidebar/store'
+import { ensureProjectTerminal } from '@/app/right-sidebar/terminal/terminals'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
@@ -124,24 +126,46 @@ export function enterProject(id: string): void {
   if (id.startsWith('p_')) {
     void setActiveProject(id).catch(() => undefined)
   }
+
+  // Follow the terminal pane into the project too, so "switch project" reads
+  // as one workspace move rather than sessions and shell drifting apart. Only
+  // once the user has opened the pane at least once ($terminalTakeover) —
+  // entering a project shouldn't spawn a PTY nobody asked to see yet. Each
+  // project keeps its own tab (ensureProjectTerminal reuses/creates by
+  // projectId), so this never disturbs an unrelated tab's live shell.
+  if ($terminalTakeover.get()) {
+    const cwd = projectRootCwd(id)
+
+    if (cwd) {
+      ensureProjectTerminal(id, cwd)
+    }
+  }
 }
 
 export function exitProjectScope(): void {
   $projectScope.set(ALL_PROJECTS)
 }
 
+// A project's root path (its primary repo = the default-branch checkout), by
+// id — '' when the id isn't a known project or carries no path yet. Shared by
+// resolveNewSessionCwd and the terminal pane's project-follow logic below, so
+// both agree on exactly where "that project's root" is.
+export function projectRootCwd(id: string): string {
+  const project = $projectTree.get().find(node => node.id === id)
+
+  return (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+}
+
 // The cwd a NEW chat should start in. The "active project" is just an atom
 // ($projectScope) — so when you're inside a project, a new session (cmd-n, the
-// trunk "+") starts at that project's root (its primary repo = the default-branch
-// checkout) instead of inheriting whatever unrelated worktree the live cwd
-// drifted into. Outside a project it falls back to the plain default (detached),
-// so a bare new chat shows no branch.
+// trunk "+") starts at that project's root instead of inheriting whatever
+// unrelated worktree the live cwd drifted into. Outside a project it falls
+// back to the plain default (detached), so a bare new chat shows no branch.
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
   if (scope !== ALL_PROJECTS) {
-    const project = $projectTree.get().find(node => node.id === scope)
-    const cwd = (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+    const cwd = projectRootCwd(scope)
 
     if (cwd) {
       return cwd

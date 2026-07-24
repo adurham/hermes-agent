@@ -27,6 +27,66 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only feature — 2026-07-24 (desktop: terminal pane follows the active sidebar project)
+
+**Request:** user wants the desktop's embedded terminal pane to switch
+alongside the sidebar's project scope — switching from e.g. `hermes-agent` to
+`exo` should switch the terminal to a shell already sitting at that project's
+root, not leave the pane on whatever cwd it happened to be in.
+
+**Design choice (per-project tab, confirmed with user over the 3 alternatives
+— reuse-one-tab / per-project-tab / new-tabs-only):** each project keeps its
+own terminal tab. Switching into a project reuses its existing tab (or spawns
+one at the project root if it doesn't have one yet) instead of `cd`-ing a
+single shared shell, so a live process in one project's terminal is never
+disturbed by switching to another project and back.
+
+**Why not just repurpose the existing cwd-snapshot-only terminal model:**
+`terminals.ts` documents on purpose that terminal tabs live outside
+session/project state (`cwd` is captured once at creation, switching
+*sessions* never moves a terminal) — that's deliberate insulation so an
+in-flight shell command survives session switches. Project scope is a
+different, coarser axis than session, so this adds a *new*, opt-in binding
+(`TerminalEntry.projectId`) rather than touching that existing invariant.
+
+**Implementation:**
+- `TerminalEntry` gains an optional `projectId`, persisted alongside the
+  existing fields (`sanitizePersistedTerminal` / `persistTerminals`).
+- New `ensureProjectTerminal(projectId, cwd)` in `terminals.ts`: reuses the
+  project's last-active tab if one exists (tracked via a runtime-only
+  `lastActiveTerminalByProject` map, updated on every `$activeTerminalId`
+  change), else creates a fresh tab pinned to that project via
+  `createTerminal(cwd, projectId)`. Store-only — the PTY spawns lazily when
+  the pane mounts (`PersistentTerminal`'s existing latch), so calling this
+  while the pane is closed is free.
+- `projects.ts`'s `enterProject(id)` — the single call site the sidebar uses
+  when the user clicks into a project — now also calls
+  `ensureProjectTerminal(id, projectRootCwd(id))`, gated on
+  `$terminalTakeover` (only follows if the user has opened the terminal pane
+  at least once, so entering a project never silently spawns a PTY nobody
+  asked to see). `projectRootCwd(id)` is `resolveNewSessionCwd`'s existing
+  root-path lookup, extracted to a standalone exported helper so both call
+  sites share one definition of "that project's root."
+
+**Verification:** desktop `tsc --noEmit` clean; `eslint` clean (one
+auto-fixed blank-line warning); 4 new `ensureProjectTerminal` tests
+(create-and-focus, dedupe-on-repeat, per-project isolation/switching,
+resume-last-active-tab-over-extra-tabs) plus the existing 7
+`terminals.test.ts` + all `projects.test.ts` tests pass (28/28 in the touched
+files); full desktop suite unaffected — 209 files / 1746 tests passing (run
+with `NODE_OPTIONS=--no-experimental-webstorage` to route around a pre-
+existing, unrelated Node 26 jsdom `window.localStorage` collision that also
+reproduces on unmodified `main`).
+
+**Files:** `apps/desktop/src/app/right-sidebar/terminal/terminals.ts` (new
+`projectId` field + `ensureProjectTerminal`), `apps/desktop/src/store/
+projects.ts` (`projectRootCwd` extraction + `enterProject` hook),
+`apps/desktop/src/app/right-sidebar/terminal/terminals.test.ts` (4 new
+tests).
+
+**Merge note:** fork-only desktop app, no upstream equivalent — no conflict
+risk.
+
 ### Fork-only feature — 2026-07-24 (desktop: pet voice via Miku RVC voice-conversion pipeline)
 
 **Request:** user has the Hatsune Miku petdex mascot active in Hermes Desktop
