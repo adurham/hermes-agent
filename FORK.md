@@ -199,6 +199,42 @@ existing celebrate flash), `hermes_cli/config.py`,
 **Merge note:** additive changes to existing files, no upstream conflict
 expected.
 
+### Fork-only feature — 2026-07-24 (desktop: Vocaloid-themed pet phrasing for the Miku bubble + voice)
+
+**Follow-up to the two pet-voice entries above.** User asked to make both the
+status-bubble TEXT and the spoken voice lines sound more "Miku-like" instead
+of generic status words ("working…", "thinking…").
+
+**Approach:** `PetBubble` previously had one hardcoded `SPECS` line set (plus
+`COMPLETION_LINES` for the spoken-only "turn done" beat) shared by every pet.
+Split into a default set (`DEFAULT_SPECS`/`DEFAULT_COMPLETION_LINES` —
+unchanged generic phrasing, used by any pet) and a Vocaloid-flavored set
+(`MIKU_SPECS`/`MIKU_COMPLETION_LINES`), selected by the ACTIVE pet's slug
+(`$petInfo.slug`, matched case-insensitively against `hatsune-miku`/`miku`/
+`hatsunemiku`) via new `specsForSlug()`/`completionLinesForSlug()` helpers.
+Both the bubble text (`run`/`review`/`failed`/`waiting` states) and the
+spoken lines read from the same flavored lookup, so picking the Miku pet
+changes both surfaces from one selection — no separate "voice phrasing"
+config needed.
+
+Miku phrasing draws on real Vocaloid/fan-culture terms rather than invented
+character traits: "producer" (プロデューサー / "P") is the actual term her
+community uses for whoever's directing her, and "39"/"san-kyuu" is a
+long-established "thank you" pun (most visibly in her "Miku's Day", 3/9). Any
+other installed pet keeps the exact original generic phrasing — this is
+additive, not a replacement of the default line sets.
+
+**Verification:** desktop `tsc --noEmit` clean, `eslint` clean,
+`pet.test.ts` 13/13 + `gateway-events.test.ts` 6/6 unaffected (this feature
+touches only local component state/lookups, no store contract changed).
+
+**Files:** `apps/desktop/src/components/pet/pet-bubble.tsx` (full rewrite of
+the SPECS/COMPLETION_LINES section into slug-keyed default + Miku sets, plus
+reading `$petInfo.slug`).
+
+**Merge note:** additive change to an existing file, no upstream conflict
+expected.
+
 ### Fork-only fix — 2026-07-24 (desktop: tab drag lit up the layout-edit dashed zone overlay)
 
 **Reported:** after fixing the tab-reorder no-op (see the entry above), the
