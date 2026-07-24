@@ -4147,6 +4147,27 @@ async def pet_dialogue(payload: PetDialogueRequest):
         if payload.pet_slug.lower() in ("hatsune-miku", "miku", "hatsunemiku")
         else "You are voicing a small, upbeat desktop pet mascot for an AI coding agent."
     )
+    # DELIVERY rules, not just content rules: this line is SPOKEN through a
+    # TTS -> RVC voice-conversion pipeline, not just displayed as text — see
+    # FORK.md's pet-voice entries for the tuning history behind these. The
+    # LLM has zero built-in awareness of that, so cadence/word-choice
+    # guidance has to be explicit or every generated line reads flat next to
+    # the hand-tuned static pool ("Yay!... done!") it's meant to complement.
+    delivery_rules = (
+        "This line will be SPOKEN aloud through text-to-speech, not just "
+        "displayed — write for the ear, not the eye:\n"
+        "- Use punctuation to control pacing: \"!\" for a punchy beat, \"...\" "
+        "for a short pause between two beats (e.g. \"Yay!... done!\" has an "
+        "excited burst, a beat, then a calmer landing — copy that shape, "
+        "don't just write a flat sentence with an exclamation point stuck on "
+        "the end).\n"
+        "- Prefer short, simple, high-energy words over long or complex "
+        "ones — the voice synthesis renders short punchy words far more "
+        "clearly than long ones.\n"
+        "- Avoid commas, semicolons, or subordinate clauses — those read as "
+        "flat/monotone once spoken. Two short beats separated by \"...\" or "
+        "\"!\" beats a single long sentence."
+    )
     beat_instruction = (
         "The agent just finished a task. Write ONE short, cheerful exclamation "
         "(2-6 words) celebrating that it's done."
@@ -4162,7 +4183,13 @@ async def pet_dialogue(payload: PetDialogueRequest):
         response = call_llm(
             task="pet_dialogue",
             messages=[
-                {"role": "system", "content": f"{persona} Respond with ONLY the line itself — no quotes, no extra commentary."},
+                {
+                    "role": "system",
+                    "content": (
+                        f"{persona} {delivery_rules} Respond with ONLY the line "
+                        "itself — no quotes, no extra commentary."
+                    ),
+                },
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.9,
