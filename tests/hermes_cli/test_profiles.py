@@ -254,6 +254,32 @@ class TestCreateProfile:
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
 
+    def test_clone_config_copies_installed_pets(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        pet_dir = default_home / "pets" / "hatsune-miku"
+        pet_dir.mkdir(parents=True)
+        (pet_dir / "pet.json").write_text('{"slug": "hatsune-miku"}')
+        (pet_dir / "spritesheet.webp").write_bytes(b"fake-webp-bytes")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir / "pets" / "hatsune-miku" / "pet.json"
+        ).read_text() == '{"slug": "hatsune-miku"}'
+        assert (
+            profile_dir / "pets" / "hatsune-miku" / "spritesheet.webp"
+        ).read_bytes() == b"fake-webp-bytes"
+
+    def test_clone_config_missing_pets_dir_skipped(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        assert not (default_home / "pets").exists()
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert not (profile_dir / "pets").exists()
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"

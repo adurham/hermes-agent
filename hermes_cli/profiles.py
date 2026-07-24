@@ -1098,6 +1098,16 @@ def create_profile(
             if source_skills.is_dir():
                 shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
 
+            # Clone installed petdex mascots from the source profile. Without
+            # this, config.yaml's display.pet.slug still points at a pet the
+            # new profile never downloaded — the sprite assets live in
+            # pets/<slug>/ (spritesheet.webp + pet.json), not in config.yaml.
+            # Copying them here keeps the clone's active pet immediately
+            # renderable instead of silently falling back to "no pet".
+            source_pets = source_dir / "pets"
+            if source_pets.is_dir():
+                shutil.copytree(source_pets, profile_dir / "pets", symlinks=True, dirs_exist_ok=True)
+
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
                 src = source_dir / relpath
