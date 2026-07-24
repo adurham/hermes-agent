@@ -27,6 +27,46 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-24 (desktop: replaced deprecated `rcedit` dep with `resedit`)
+
+**Reported:** `hermes desktop` printed an npm deprecation warning on every
+launch (`rcedit@5.0.2: Package no longer supported`) during the workspace
+dependency install step.
+
+**Root cause:** `apps/desktop/scripts/set-exe-identity.mjs` (the afterPack
+hook that stamps the Hermes icon + version-info strings onto the packed
+Windows `Hermes.exe`, since `build.win.signAndEditExecutable=false` disables
+electron-builder's own resource-editing step) depended directly on
+`rcedit@^5.0.2`, whose npm listing is marked "no longer supported."
+
+**Fix:** rewrote `set-exe-identity.mjs` to call `resedit` (pure-JS PE
+resource editor, actively maintained, MIT) directly instead of shelling out
+to `rcedit`'s bundled native `rcedit(-x64).exe` under Wine. `resedit` was
+already present in the tree as a transitive dependency of `electron-builder`
+→ `app-builder-lib` (which uses it internally for the identical job — see
+`node_modules/app-builder-lib/out/util/resEdit.js`), so this is a like-for-
+like swap with **zero new dependency footprint**. Updated
+`apps/desktop/package.json` (`rcedit` → `resedit@^1.7.2`), ran `npm install`
+to regenerate the root lockfile (rcedit fully removed from
+`package-lock.json` and `node_modules`), and updated stale `rcedit`
+references in comments (`after-pack.mjs`, `scripts/install.ps1`).
+
+**Files touched:** `apps/desktop/scripts/set-exe-identity.mjs` (rewritten),
+`apps/desktop/scripts/after-pack.mjs` (comment only), `scripts/install.ps1`
+(comment only), `apps/desktop/package.json`, `package-lock.json`.
+
+**Verification:** downloaded the real Windows Electron 40.10.2 build
+(`electron-v40.10.2-win32-x64.zip`) to get an actual PE32+ exe, ran the
+rewritten script against it end-to-end on macOS
+(`node scripts/set-exe-identity.mjs <exe>`) — exited 0, then re-parsed the
+stamped exe with `resedit` to confirm `ProductName`/`FileDescription`/
+`CompanyName`/`LegalCopyright` all landed correctly and the icon resource
+entries changed (5 → 7, reflecting Hermes's `.ico` frame count), i.e. the
+icon was actually replaced, not just the version strings. Also confirmed
+`npm run typecheck` and `npx eslint scripts/set-exe-identity.mjs
+scripts/after-pack.mjs` pass clean, and `npm install` no longer prints the
+rcedit deprecation warning.
+
 ### Fork-only fix — 2026-07-24 (root cause found: recurring "garbled/duplicate digit" spinner-timer corruption — `get_cwidth()` blind to emoji+VS-16)
 
 **Reported (again):** the live tool-call status line showed a corrupted
