@@ -356,7 +356,9 @@ export const zhHant = defineLocale({
         turnOnFailed: '無法開啟寵物。',
         turnOffFailed: '無法關閉寵物。',
         zoneTitle: '寵物區域',
-        zoneDesc: '將寵物限制在佈局中的專用窗格內，而非整個視窗。'
+        zoneDesc: '將寵物限制在佈局中的專用窗格內，而非整個視窗。',
+        voiceTitle: '寵物語音',
+        voiceDesc: '讓吉祥物使用你設定的 TTS 提供者朗讀牠的狀態提示。'
       }
     },
     fieldLabels: defineFieldCopy({

@@ -2,7 +2,9 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { AlertCircle, Clock, type IconComponent } from '@/lib/icons'
+import { playSpeechText } from '@/lib/voice-playback'
 import { $petActivity, $petRealState, type PetState } from '@/store/pet'
+import { $petVoiceEnabled, $petVoiceProvider } from '@/store/pet-voice'
 
 /**
  * Speech bubble + status glyph for the popped-out pet overlay — the
@@ -93,6 +95,8 @@ function pick(lines: string[], prev: string): string {
 export function PetBubble() {
   const state = useStore($petRealState)
   const activity = useStore($petActivity)
+  const voiceEnabled = useStore($petVoiceEnabled)
+  const voiceProvider = useStore($petVoiceProvider)
   const [line, setLine] = useState('')
 
   // Finish beats are carried by the sprite/mail icon; idle only speaks up when
@@ -103,25 +107,40 @@ export function PetBubble() {
   const rotating = specKey === 'run' || specKey === 'review'
 
   // Pick a fresh line on every mood change, then keep rotating (random, no
-  // repeat) only while the agent is actively working/thinking.
+  // repeat) only while the agent is actively working/thinking. Speaks the
+  // line aloud (once per mood TRANSITION, not on every rotation tick) when
+  // the desktop-only `display.pet.voice_enabled` opt-in is on — mirrors the
+  // "read replies aloud" TTS pipeline via the same `playSpeechText`, just
+  // with `pet.voice_provider` instead of the user's default `tts.provider`.
   useEffect(() => {
     const spec = specKey ? SPECS[specKey] : null
 
     if (!spec) {
       setLine('')
 
-      return
+      return undefined
     }
 
-    setLine(prev => pick(spec.lines, prev))
+    setLine(prev => {
+      const next = pick(spec.lines, prev)
+
+      if (voiceEnabled) {
+        void playSpeechText(next, { provider: voiceProvider || undefined, source: 'pet' }).catch(() => {
+          // Cosmetic feature — a TTS hiccup shouldn't surface an error toast.
+        })
+      }
+
+      return next
+    })
 
     if (!rotating || spec.lines.length <= 1) {
-      return
+      return undefined
     }
 
     const id = window.setInterval(() => setLine(prev => pick(spec.lines, prev)), 2600)
 
     return () => window.clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally re-runs only on mood change, not on every voiceEnabled/voiceProvider tick or the interval's own line rotation.
   }, [specKey, rotating])
 
   const spec = specKey ? SPECS[specKey] : null

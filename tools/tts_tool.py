@@ -2284,6 +2284,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    provider_override: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2298,6 +2299,11 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        provider_override: Internal-only. Bypasses ``tts.provider`` for this
+            call (e.g. the desktop pet's own voice, distinct from the user's
+            main "read replies aloud" provider). NOT exposed on the model
+            tool schema — only internal callers like the desktop REST
+            endpoint pass this.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2306,7 +2312,7 @@ def text_to_speech_tool(
         return tool_error("Text is required", success=False)
 
     tts_config = _load_tts_config()
-    provider = _get_provider(tts_config)
+    provider = provider_override or _get_provider(tts_config)
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here

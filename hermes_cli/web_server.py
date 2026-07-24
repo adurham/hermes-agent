@@ -3994,6 +3994,12 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
 
 class TTSSpeakRequest(BaseModel):
     text: str
+    # Optional: bypass the user's configured tts.provider for this call only.
+    # Used by the desktop pet's own voice line (a command-type provider under
+    # tts.providers.<name>) so the pet can speak in a distinct voice from
+    # the user's main "read replies aloud" TTS provider without touching
+    # tts.provider itself.
+    provider: Optional[str] = None
 
 
 def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
@@ -4109,7 +4115,9 @@ async def speak_text(payload: TTSSpeakRequest):
     try:
         from tools.tts_tool import text_to_speech_tool
         loop = asyncio.get_running_loop()
-        result_json = await loop.run_in_executor(None, text_to_speech_tool, text)
+        result_json = await loop.run_in_executor(
+            None, lambda: text_to_speech_tool(text, provider_override=payload.provider)
+        )
     except Exception as exc:
         _log.exception("Desktop voice TTS failed")
         raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {exc}")

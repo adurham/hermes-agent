@@ -393,6 +393,8 @@ export interface Translations {
         turnOffFailed: string
         zoneTitle: string
         zoneDesc: string
+        voiceTitle: string
+        voiceDesc: string
       }
     }
     fieldLabels: Record<string, string>
