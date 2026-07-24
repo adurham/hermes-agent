@@ -235,6 +235,48 @@ reading `$petInfo.slug`).
 **Merge note:** additive change to an existing file, no upstream conflict
 expected.
 
+### Fork-only refinement — 2026-07-24 (desktop: Miku phrasing pass 2 — idol/performer voice, not studio-engineer)
+
+**Follow-up to the Vocaloid-phrasing entry above.** User said the phrasing
+"doesn't quite feel right" without specifying what. Rather than guess-and-
+check against the user, ran the line sets past a second model (Claude Fable,
+via `consult`) for a persona/authenticity read.
+
+**Diagnosis (from consult):** the first pass framed Miku as a studio
+engineer narrating her own signal chain ("recording…", "mixing it in…",
+"vocal sync in progress…") rather than a performer/idol — the actual
+persona. It also stapled "producer" onto RUN-state lines where she's
+narrating her own action, which doesn't logically track: direct address
+("producer") only makes sense where she's actually speaking TO the user
+(WAITING/completion), not describing what she herself is doing. The
+consistent trailing "…" on every line (including active-work RUN) read as
+hesitant rather than her actual upbeat/confident energy. Two lines were
+flagged as already working and used as the calibration bar for the rewrite:
+"san-kyuu for waiting!" (genuine fandom pun, kept as completion anchor) and
+"ah, glitchy" (self-aware nod to being software, on-brand, kept in FAILED).
+
+**Fix:** rewrote `MIKU_SPECS.run` and `.review` to drop "producer" entirely
+(reserved for `waiting`/completion, where she's genuinely addressing the
+user) and reframe as an idol prepping/mid-performance rather than an
+engineer at a mixing desk ("here we go~", "let's roll!", "cueing up…",
+"warming up…" replacing "recording…"/"mixing it in…"/"vocal sync in
+progress…"). Trimmed FAILED's "missed a note"/"that flopped" (generic) in
+favor of "system hiccup"/"oof, rewind" (keeps the self-aware software wink).
+Reordered `MIKU_COMPLETION_LINES` to lead with "san-kyuu for waiting!" and
+added "yay, done!" for more idol-cheer energy. WAITING kept unchanged — it
+was already correct (genuine direct address to "producer").
+
+**Verification:** desktop `tsc --noEmit` clean, `eslint` clean, `pet.test.ts`
+13/13 + `gateway-events.test.ts` 6/6 unaffected (data-only change, no logic
+touched).
+
+**Files:** `apps/desktop/src/components/pet/pet-bubble.tsx` (`MIKU_SPECS`
+run/review/failed line arrays, `MIKU_COMPLETION_LINES` reorder + addition,
+updated doc comment explaining the producer-address restriction).
+
+**Merge note:** additive/data-only change to an existing file, no upstream
+conflict expected.
+
 ### Fork-only fix — 2026-07-24 (desktop: tab drag lit up the layout-edit dashed zone overlay)
 
 **Reported:** after fixing the tab-reorder no-op (see the entry above), the

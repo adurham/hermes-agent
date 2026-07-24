@@ -97,44 +97,47 @@ const DEFAULT_SPECS: SpecSet = {
 // animation. Picked the same random-no-repeat way as the bubble lines.
 const DEFAULT_COMPLETION_LINES = ['all done!', 'finished!', 'wrapped up!', 'done and done!', 'all set!']
 
-// Hatsune Miku flavor: Vocaloid/producer-culture phrasing instead of generic
-// status words. "Producer" (プロデューサー / "P") is the real term her
-// community uses for whoever's directing her — not a Hermes invention — and
-// "39" ("san-kyuu" ≈ "thank you") is a long-established fan pun, most visibly
-// in her "Miku's Day" (3/9) tradition. Kept short for the same bubble-width
-// constraint as the default set.
+// Hatsune Miku flavor: idol/performer-persona phrasing, not a studio-engineer
+// narrating her own signal chain. "Producer" (プロデューサー / "P") is the
+// real term her community uses for whoever's directing her — genuine, not a
+// Hermes invention — but it's direct address (she's speaking TO you), so it's
+// reserved for `waiting`/completion where she's actually addressing the user,
+// not `run`/`review` where she's narrating her own action. "39" ("san-kyuu" ≈
+// "thank you") is a long-established fan pun, most visibly in her "Miku's
+// Day" (3/9) tradition — kept as the anchor completion line. Kept short for
+// the same bubble-width constraint as the default set.
 const MIKU_SPECS: SpecSet = {
   run: {
     lines: [
-      'singing it up…',
-      'on the case, producer…',
+      'here we go~',
+      'showtime prep…',
+      "let's roll!",
+      'cueing up…',
+      'warming up…',
+      'on it!',
+      'diving in!',
+      'getting groovy…',
       'tuning it up…',
-      'composing…',
-      'mixing it in…',
-      'recording…',
-      'vocal sync in progress…',
-      'plugging away…',
-      'diving in…',
-      'kicking it off…'
+      'composing…'
     ]
   },
   review: {
     lines: [
+      'hmm, gimme a sec…',
       'humming it over…',
       'listening close…',
-      'reading the score…',
       'thinking it through…',
       'checking the notes…',
       'in tune with it…',
       'rehearsing…',
       'sound-checking…',
       'piecing it together…',
-      'hmm, one sec…'
+      'one sec…'
     ]
   },
   failed: {
     glyph: AlertCircle,
-    lines: ['off-key, oops', 'missed a note', 'that flopped', 'needs a retake', 'ah, glitchy'],
+    lines: ['off-key, oops', 'system hiccup', 'oof, rewind', 'needs a retake', 'ah, glitchy'],
     tone: 'error'
   },
   waiting: {
@@ -145,11 +148,11 @@ const MIKU_SPECS: SpecSet = {
 }
 
 const MIKU_COMPLETION_LINES = [
-  'all done, producer!',
-  'take’s a wrap!',
   'san-kyuu for waiting!',
   'take a bow!',
-  'encore-ready!'
+  'encore-ready!',
+  "that's a wrap!",
+  'yay, done!'
 ]
 
 // Slugs whose active pet gets the Vocaloid-flavored phrasing above. Petdex
