@@ -155,6 +155,64 @@ succeeds; `store/session-states.test.ts` (6/6, unchanged) passes.
 diff inside one callback; low conflict risk but worth a careful look on
 next upstream sync.
 
+### Fork-only feature — 2026-07-23 (desktop: visible × close button on every pane tab)
+
+**Follow-up to the browser-tab feature above:** once sidebar clicks could
+open multiple session tabs, the user noticed there was no visible way to
+close one — `PaneTab`'s design had deliberately shipped without a hover-X
+("too easy to hit on small tabs" — the close gesture was middle-click or
+⌘-click only, discovered via the code comment, not obvious from the UI).
+Asked to add one back.
+
+**Design:** a single reserved trailing slot in every `PaneTab` (`components/ui/pane-tab.tsx`)
+that holds the dirty-dot and the close × as two absolutely-positioned layers
+in the *same* footprint, cross-fading between them — VS Code's dirty-dot/close
+swap. The slot is a REAL flex child (`shrink-0`), so the label truncates
+around it instead of an indicator floating over live tab text.
+- **Active tab:** × always visible (an open tab's close affordance
+  shouldn't depend on a hover state that isn't currently true).
+- **Inactive tab:** × hover/focus-reveal only, so a dense tab strip doesn't
+  turn into a field of × buttons at rest — matches the app's existing
+  hover-reveal pattern (e.g. the zone header's minimize chevron in
+  `tree-group.tsx`).
+- Click handler calls `preventDefault`/`stopPropagation` before `onClose()`
+  so it can never also fire the tab's own activate/drag pointerdown handler
+  (same pattern the existing ⌘-click-to-close branch already used).
+- Existing gestures (middle-click, ⌘-click, right-click → Close/Close
+  others/Close to the right) are untouched — the button is one more way in,
+  not a replacement.
+- New `closeLabel?: string` prop for a per-tab accessible name (e.g. "Close
+  My Session Title"); falls back to a generic `t.common.close`. Wired at both
+  real call sites (`tree-group.tsx`'s horizontal + vertical-rail tab strips
+  via a new `zones.closeTab(label)` i18n key, mirrored into en/ja/zh/zh-hant
+  — other shipped locales deep-merge onto `en` per `defineLocale`, so a
+  missing key falls back automatically; `right-rail/preview.tsx`'s file tabs
+  via the existing `preview.closeTab(label)` key).
+
+**Verification:** `tsc --noEmit` clean; `eslint` clean (0 warnings after
+`--fix` on 2 blank-line-before-statement nits in the new tests); production
+build succeeds with no new warnings. `pane-tab.test.tsx` grew from 6 to 10
+tests (renders/hides the button correctly, click closes without activating,
+its pointerdown doesn't leak into the tab-strip drag handler, `closeLabel`
+resolves the accessible name with a generic fallback) — all pass.
+`preview-pane.test.tsx` (2/2) and `session-states.test.ts` (6/6) unchanged.
+Confirmed pre-existing unrelated `window.localStorage` failures in
+`bind-order-front.test.ts` / `focus-tab-hijack.test.ts` / `reactive-unhide.test.ts`
+are identical on `main` before this change (`git stash` A/B).
+
+**Files:** `apps/desktop/src/components/ui/pane-tab.tsx` (close button +
+`closeLabel` prop), `apps/desktop/src/components/ui/pane-tab.test.tsx` (4 new
+tests), `apps/desktop/src/components/pane-shell/tree/renderer/tree-group.tsx`
+(`closeLabel` at both `PaneTab` call sites), `apps/desktop/src/app/chat/right-rail/preview.tsx`
+(`closeLabel` at its `PaneTab` call site), `apps/desktop/src/i18n/{types,en,ja,zh,zh-hant}.ts`
+(new `zones.closeTab` key).
+
+**Merge note:** touches upstream files (`pane-tab.tsx`, `tree-group.tsx`,
+`preview.tsx`, the i18n locale files) — moderate diff size (new prop +
+button markup) but additive/non-breaking; existing close gestures and tests
+are unchanged. Worth a careful look on next upstream sync in case upstream
+also touches `pane-tab.tsx`.
+
 ### Fork-only fix — 2026-07-23 (desktop: malformed CSS comment tripped a build-time lightningcss warning)
 
 **Symptom:** `npm run build` in `apps/desktop` prints `Found 1 warning while optimizing generated CSS: Unexpected token Delim('*')`, pointing at `.btn-arc`'s `text-*` comment text.

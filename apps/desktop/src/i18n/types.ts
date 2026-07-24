@@ -1990,6 +1990,7 @@ export interface Translations {
     hideHeader: string
     minimize: string
     restore: string
+    closeTab: (label: string) => string
     closeRunningTitle: string
     closeRunningBody: string
     closeRunningConfirm: string

@@ -2292,6 +2292,7 @@ export const ja = defineLocale({
     hideHeader: 'ヘッダーを隠す',
     minimize: '最小化',
     restore: '復元',
+    closeTab: label => `${label} を閉じる`,
     closeOthers: '他を閉じる',
     closeToRight: '右側を閉じる',
     closeAll: 'すべて閉じる',
