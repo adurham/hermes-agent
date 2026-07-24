@@ -283,6 +283,35 @@ unrelated `window.localStorage` failures in `bind-order-front.test.ts` /
 (the registered workspace closer), `apps/desktop/src/components/pane-shell/tree/workspace-closer.test.ts`
 (new, 4 tests).
 
+**Correction — same day.** User reported ⌘W stopped working entirely and
+the lone open tab still had no × to click. Root cause: `isPaneCloseable`
+was wired into every close-*resolution* site, but `forceLoneHeaderForPanes`
+(the switch that decides whether the tab STRIP even renders when only one
+pane is shown) was deliberately left reading the raw `uncloseable` flag —
+that was the right call for the zone-never-minimize guard, but wrong here.
+With `shown = ['workspace']` alone, `uncloseable:true` meant
+`forceLoneHeader` stayed `false`, so `headerHidden` defaulted to `true` —
+the header (and its only ×) never rendered at all. ⌘W's resolution chain
+(`closeWorkspaceTab` → `closeTreePane` → registered closer → `resumeSession`)
+was actually intact and unaffected by that; a `consult` second-opinion
+pass confirmed the missing header fully explains "can't close the only
+tab" with no other plausible cause in the traced code, and flagged the
+unhandled-rejection risk in the promote path as the ⌘W-specific concern
+even though the wiring itself was sound.
+
+Fix: `forceLoneHeaderForPanes` now forces the header for ANY
+`placement:'main'` pane, full stop — dropped the `!chrome.uncloseable`
+condition since workspace always has a registered closer once one exists
+and is therefore always effectively closeable. Also hardened the promote
+path's `resumeSession(...).then(...)` into `.catch(...).finally(...)` so a
+failed/rejected resume (stale id, mid-swap gateway) logs instead of
+silently eating the whole ⌘W/× press, and the redundant tile still drops
+either way. Updated `lone-header.test.ts`'s two workspace cases to assert
+`true` (header always forced) instead of `false`; `workspace-closer.test.ts`
+unaffected. `tsc`/`eslint`/build/tests all re-verified clean. No
+`computer_use` used for this pass — traced statically + one `consult` call
+per explicit user instruction not to drive the GUI for this task.
+
 **Merge note:** touches upstream files (`store.ts`, `tree-group.tsx`,
 `wiring.tsx`) — the riskiest of the three tab-strip changes so far, since it
 changes what Close actually DOES for the app's one structurally-special

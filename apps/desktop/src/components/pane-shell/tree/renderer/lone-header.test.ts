@@ -14,7 +14,6 @@ describe('forceLoneHeaderForPanes', () => {
   })
 
   it('forces a header for closeable placement:main panes', () => {
-    expect(forceLoneHeaderForPanes(['workspace'], chrome('main', true), noCollapse)).toBe(false)
     expect(forceLoneHeaderForPanes(['some-page'], chrome('main', false), noCollapse)).toBe(true)
   })
 
@@ -28,7 +27,7 @@ describe('forceLoneHeaderForPanes', () => {
     ).toBe(true)
   })
 
-  it('leaves a lone uncloseable workspace headerless', () => {
-    expect(forceLoneHeaderForPanes(['workspace'], chrome('main', true), noCollapse)).toBe(false)
+  it('forces a header even for a lone uncloseable-by-flag workspace, since it always has a registered closer', () => {
+    expect(forceLoneHeaderForPanes(['workspace'], chrome('main', true), noCollapse)).toBe(true)
   })
 })
