@@ -67,8 +67,26 @@ succeeds; `store/session-states.test.ts` (6/6, unchanged) passes. Full
 (`window.localStorage` unavailable under this Node/vitest config) — confirmed
 identical failure count on `main` before this change via `git stash`.
 
+**Follow-up same day:** user reported the new tab opened but didn't come to
+the foreground. Root cause: `insertAtGroup` in
+`components/pane-shell/tree/model.ts` takes an `activate` flag that defaults
+`true` for a real drop/gesture but is explicitly `false` for *silent*
+adoption (`adoptContributedPanes` in `store.ts` calls it with
+`activate=false` so a background pane — e.g. logs stacking into an existing
+terminal zone — can't steal an already-focused tab). A brand-new session tile
+pane is adopted through that same silent path the instant it's registered,
+so `openSessionTile()` alone opens the tab behind whatever's already showing.
+The existing drag-to-open-tile flow (`app/chat/session-drag.ts`) already
+compensates for this by calling `revealTreePane()` right after
+`openSessionTile()` — added the same call to `onResumeSession`'s new-tab
+branch (front the tab a sidebar click just opened, since a click is an
+explicit user gesture, exactly like the drag case).
+
 **Files:** `apps/desktop/src/app/contrib/wiring.tsx` (`onResumeSession`
-branch + `$workspaceIsPage`/`openSessionTile` imports).
+branch + `$workspaceIsPage`/`openSessionTile`/`revealTreePane` imports).
+
+**Verification (follow-up):** `tsc --noEmit` clean; production build
+succeeds; `store/session-states.test.ts` (6/6, unchanged) passes.
 
 **Merge note:** touches an upstream file (`wiring.tsx`) — small, isolated
 diff inside one callback; low conflict risk but worth a careful look on

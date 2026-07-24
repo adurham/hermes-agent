@@ -19,6 +19,7 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -772,6 +773,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         navigate(sessionRoute(sessionId))
       } else {
         openSessionTile(sessionId, 'center')
+        // New tiles adopt SILENTLY (insertAtGroup's activate:false — a
+        // background pane must not steal an already-visible tab out from
+        // under a drag/plugin adoption). A sidebar click is an explicit
+        // gesture, so front it — otherwise the tab opens behind the one
+        // already showing and looks like nothing happened.
+        revealTreePane(`session-tile:${sessionId}`)
       }
     },
     onRetryResume: sessionId => void resumeSession(sessionId, true),
