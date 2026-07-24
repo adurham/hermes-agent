@@ -2639,11 +2639,32 @@ def run_conversation(
                     _cache_pct = ""
                     if canonical_usage.cache_read_tokens and prompt_tokens:
                         _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
+                    # Anthropic native server-tool calls (web_search_20250305 /
+                    # web_fetch) each run a SEPARATE internal inference pass
+                    # over the (by-then-warm) prompt prefix, and Anthropic
+                    # folds every pass's cache_read/cache_creation into this
+                    # one cumulative usage figure with no other marker. A
+                    # turn with N server-tool calls can show ~(N+1)x the
+                    # in= figure of a plain call while looking identical to
+                    # a single-pass request. Surface the count so an
+                    # otherwise-inexplicable multiplier is explained right
+                    # in the log line instead of looking like a context-
+                    # tracking bug (root-caused 2026-07-24, session
+                    # 20260723_211736_99ee22, warm memory fact 1486).
+                    _server_tool_note = ""
+                    if canonical_usage.server_tool_requests:
+                        _server_tool_note = (
+                            f" server_tool_passes={canonical_usage.server_tool_requests}"
+                            f" (web_search={canonical_usage.server_tool_web_search_requests}"
+                            f" web_fetch={canonical_usage.server_tool_web_fetch_requests}"
+                            f" — each is an extra Anthropic-side inference pass"
+                            f" folded into this usage figure)"
+                        )
                     logger.info(
-                        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
+                        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
                         agent.session_api_calls, agent.model, agent.provider or "unknown",
                         prompt_tokens, completion_tokens, total_tokens,
-                        api_duration, _cache_pct,
+                        api_duration, _cache_pct, _server_tool_note,
                     )
 
                     # Fast mode (Anthropic Opus 4.6 only) charges 6x

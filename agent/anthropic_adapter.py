@@ -3268,8 +3268,24 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     etc. ``normalize_response`` captured blocks verbatim via ``_to_plain_data``,
     so these leak back as input on the next turn → HTTP 400.
 
-    Whitelist per type (NOT a blacklist) so future SDK output-only fields can't
-    reintroduce the bug. Returns a clean block, or None to drop it.
+    Explicit reconstruction for the common types below (needs custom logic —
+    e.g. tool_id sanitizing, dropping empty redacted_thinking). Any OTHER type
+    (``server_tool_use``, ``web_search_tool_result``, ``tool_search_tool_*``,
+    future SDK server-tool blocks, …) falls through to
+    ``_sanitize_block_for_anthropic_input`` — the SAME generic, SDK-derived
+    allowlist used for tool_result inner blocks — which fails OPEN (passes an
+    unrecognized type through unchanged) rather than dropping it.
+
+    This used to fail CLOSED here (return None for anything not in a tiny
+    hardcoded list), which silently erased server-side tool evidence
+    (server_tool_use / web_search_tool_result) from the persisted
+    ``anthropic_content_blocks`` column with no trace — the exact thing that
+    made a real invisible-cost-multiplier bug (native web_search causing a
+    second Anthropic-side inference pass, root-caused 2026-07-24, session
+    20260723_211736_99ee22, warm memory fact 1486) look "not backed by any
+    evidence" when the DB was queried for it. Fail-open here matches the
+    already-correct contract of ``_sanitize_block_for_anthropic_input`` so a
+    future server-tool type doesn't inherit the same blind spot.
     """
     if not isinstance(b, dict):
         return None
@@ -3305,9 +3321,13 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if btype == "image":
         src = b.get("source")
         return {"type": "image", "source": src} if isinstance(src, dict) else None
-    # Unknown/unsupported block type on the input path — drop rather than risk
-    # another "Extra inputs are not permitted".
-    return None
+    # Any other type (including server_tool_use / web_search_tool_result /
+    # tool_search_tool_*_tool_result and anything future SDK versions add):
+    # delegate to the generic, SDK-derived allowlist rather than dropping.
+    # _sanitize_block_for_anthropic_input already passes genuinely unknown
+    # types through unchanged, so this can never be MORE lossy than the old
+    # fail-closed behavior — only strictly less so.
+    return _sanitize_block_for_anthropic_input(b)
 
 
 def _apply_assistant_cache_control_to_last_cacheable_block(

@@ -57,8 +57,53 @@ class TestSanitizeReplayBlock:
         out = _sanitize_replay_block({"type": "text", "text": "t", "citations": real})
         assert out["citations"] == real
 
-    def test_unknown_type_dropped(self):
-        assert _sanitize_replay_block({"type": "server_tool_use", "foo": 1}) is None
+    def test_server_tool_use_sanitized_not_dropped(self):
+        """Regression guard for the fail-open fix (2026-07-24).
+
+        _sanitize_replay_block used to fail CLOSED for any type outside its
+        tiny hardcoded whitelist, silently dropping server_tool_use /
+        web_search_tool_result blocks from persisted anthropic_content_blocks
+        with no trace. That masked a real invisible-cost-multiplier bug
+        (native web_search causing a second Anthropic-side inference pass —
+        session 20260723_211736_99ee22, warm memory fact 1486) by erasing the
+        only on-disk evidence a server-side tool call had happened. Fixed to
+        delegate to _sanitize_block_for_anthropic_input (fail-open, same
+        contract already used for tool_result inner blocks): known input
+        fields survive, unrecognized fields are stripped, but the block
+        itself is never dropped.
+        """
+        poisoned = {
+            "type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search",
+            "input": {"query": "x"}, "foo": 1,
+        }
+        out = _sanitize_replay_block(poisoned)
+        assert out is not None, "server_tool_use must survive replay sanitization"
+        assert out["type"] == "server_tool_use"
+        assert out["id"] == "srvtoolu_1"
+        assert out["name"] == "web_search"
+        assert out["input"] == {"query": "x"}
+        assert "foo" not in out, "unknown fields must still be stripped"
+
+    def test_web_search_tool_result_sanitized_not_dropped(self):
+        poisoned = {
+            "type": "web_search_tool_result", "tool_use_id": "srvtoolu_1",
+            "content": [{"type": "web_search_result", "url": "https://x"}],
+            "foo": 1,
+        }
+        out = _sanitize_replay_block(poisoned)
+        assert out is not None, "web_search_tool_result must survive replay sanitization"
+        assert out["type"] == "web_search_tool_result"
+        assert out["tool_use_id"] == "srvtoolu_1"
+        assert "foo" not in out
+
+    def test_genuinely_novel_type_passes_through_unchanged(self):
+        """A block type the SDK map has never heard of falls all the way
+        through to the generic allowlist's own fail-open branch — passed
+        through unchanged rather than dropped, so a brand-new SDK block type
+        never silently vanishes from persisted state again."""
+        novel = {"type": "some_future_block_type", "x": 1}
+        out = _sanitize_replay_block(novel)
+        assert out == novel
 
 
 class TestContentPartConversion:

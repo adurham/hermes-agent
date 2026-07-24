@@ -44,6 +44,18 @@ class CanonicalUsage:
     cache_write_1h_tokens: int = 0
     reasoning_tokens: int = 0
     request_count: int = 1
+    # Anthropic-native server-side tool invocations folded into THIS usage
+    # figure (response.usage.server_tool_use.{web_search,web_fetch}_requests).
+    # Each one is a SEPARATE internal inference pass over the (by then warm)
+    # prompt prefix — Anthropic sums every pass's cache_read/cache_creation
+    # into one cumulative usage object with no other marker that more than
+    # one pass occurred. Surfacing the count here lets the per-call log line
+    # explain an otherwise-inexplicable ~2x (or more) token/cost jump instead
+    # of it looking like a context-tracking malfunction. See
+    # agent/fork/anthropic_native_web_search.py and the 2026-07-24
+    # investigation (session 20260723_211736_99ee22, warm memory fact 1486).
+    server_tool_web_search_requests: int = 0
+    server_tool_web_fetch_requests: int = 0
     raw_usage: Optional[dict[str, Any]] = None
 
     @property
@@ -53,6 +65,11 @@ class CanonicalUsage:
     @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.output_tokens
+
+    @property
+    def server_tool_requests(self) -> int:
+        """Total server-side tool invocations folded into this usage figure."""
+        return self.server_tool_web_search_requests + self.server_tool_web_fetch_requests
 
     def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
         """Sum two usage buckets (e.g. MoA advisor fan-out + aggregator).
@@ -70,6 +87,12 @@ class CanonicalUsage:
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             request_count=self.request_count + other.request_count,
+            server_tool_web_search_requests=(
+                self.server_tool_web_search_requests + other.server_tool_web_search_requests
+            ),
+            server_tool_web_fetch_requests=(
+                self.server_tool_web_fetch_requests + other.server_tool_web_fetch_requests
+            ),
             raw_usage=None,
         )
 
@@ -1214,6 +1237,8 @@ def normalize_usage(
 
     cache_write_5m_tokens = 0
     cache_write_1h_tokens = 0
+    server_tool_web_search_requests = 0
+    server_tool_web_fetch_requests = 0
     if mode == "anthropic_messages" or provider_name == "anthropic":
         input_tokens = _to_int(getattr(response_usage, "input_tokens", 0))
         output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
@@ -1230,6 +1255,27 @@ def normalize_usage(
             )
             cache_write_1h_tokens = _to_int(
                 getattr(cache_creation, "ephemeral_1h_input_tokens", 0)
+            )
+        # response.usage.server_tool_use.{web_search,web_fetch}_requests —
+        # each one is a SEPARATE Anthropic-side inference pass (the native
+        # web_search_20250305/web_fetch server tools re-sample after the
+        # tool result returns). Anthropic folds every pass's cache_read/
+        # cache_creation into this ONE cumulative usage object with no
+        # other marker, so a turn with N server-tool calls can show
+        # roughly (N+1)x the token/cost of a plain turn while looking
+        # identical to a single-pass call. Surfacing the request count
+        # lets callers (the per-call log line, cost estimates) explain
+        # that inflation instead of it looking like a tracking bug. See
+        # agent/fork/anthropic_native_web_search.py and the 2026-07-24
+        # investigation (session 20260723_211736_99ee22, warm memory
+        # fact 1486) where this was root-caused.
+        server_tool_use = getattr(response_usage, "server_tool_use", None)
+        if server_tool_use is not None:
+            server_tool_web_search_requests = _to_int(
+                getattr(server_tool_use, "web_search_requests", 0)
+            )
+            server_tool_web_fetch_requests = _to_int(
+                getattr(server_tool_use, "web_fetch_requests", 0)
             )
     elif mode == "codex_responses":
         input_total = _to_int(getattr(response_usage, "input_tokens", 0))
@@ -1297,6 +1343,8 @@ def normalize_usage(
         cache_write_5m_tokens=cache_write_5m_tokens,
         cache_write_1h_tokens=cache_write_1h_tokens,
         reasoning_tokens=reasoning_tokens,
+        server_tool_web_search_requests=server_tool_web_search_requests,
+        server_tool_web_fetch_requests=server_tool_web_fetch_requests,
     )
 
 
