@@ -27,6 +27,62 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-24 (desktop: project-terminal follow duplicated tabs on repeated switches)
+
+**Symptom (user report):** with the "terminal pane follows the active
+sidebar project" feature (same-day entry below), switching `exo` →
+`hermes-agent` → `exo` left 3 terminal tabs instead of the expected 2 — a
+duplicate tab spawned every time you returned to a project.
+
+**Root cause:** two gaps in `ensureProjectTerminal`'s matching, both stemming
+from the same blind spot — it only ever recognized a tab as "this project's"
+by an exact `projectId` stamp:
+1. The pane's very first tab (created by `ensureTerminal()` the first time
+   the user ever opened the terminal pane, before entering any project) is
+   plain and unbound — no `projectId`. Re-entering the project that tab
+   happens to sit in couldn't recognize it as already covering that project,
+   so it spawned a second, redundant bound tab right next to it.
+2. `ensureTerminal()` itself had no project awareness at all, so it always
+   produced that first unbound tab even when a project was already the
+   active sidebar scope at pane-open time.
+
+**Fix:**
+- `ensureProjectTerminal` now has a 3-rung lookup: (1) the remembered/bound
+  tab for this `projectId`, (2) failing that, *adopt* an existing unbound
+  user tab whose `cwd` (or live `restoreCwd`, so a shell that's since `cd`'d
+  into the project also counts) sits at-or-under the project root — stamping
+  it with `projectId` in place rather than creating a new one, (3) only then
+  create a fresh tab. Path containment reuses the same `underPath` semantics
+  as `store/projects.ts`'s `projectIdForCwd` (duplicated locally — importing
+  from `projects.ts` here would cycle, since `projects.ts` already imports
+  `ensureProjectTerminal`).
+- `ensureTerminal()` now takes an optional `{ id, cwd }` for the
+  currently-scoped project; when passed, the pane's first-ever tab is created
+  already bound via `ensureProjectTerminal` instead of blind, closing the gap
+  at the source instead of only patching it on the next switch.
+  `PersistentTerminal` (the pane-mount effect) now reads `$projectScope` +
+  `projectRootCwd` and passes it through.
+
+**Verification:** desktop `tsc --noEmit` clean; `eslint` clean (two
+auto-fixed import-order/blank-line nits); 7 new tests covering exact-tab
+reuse, blind-tab adoption (including via `restoreCwd`), non-adoption of
+tabs outside the project root, tab count staying flat across repeated
+switches, and `ensureTerminal`'s new project-bound-first-tab path — full
+`terminals.test.ts` + `projects.test.ts` pass (39/39 in the touched files);
+full desktop suite unaffected — 209 files / 1753 tests passing (Node 26
+`window.localStorage`/jsdom collision worked around with
+`NODE_OPTIONS=--no-experimental-webstorage`, same pre-existing issue noted in
+the original feature entry, reproduces on unmodified `main` too).
+
+**Files:** `apps/desktop/src/app/right-sidebar/terminal/terminals.ts`
+(`ensureProjectTerminal` adopt-rung + `underPath`, `ensureTerminal(project?)`),
+`apps/desktop/src/app/right-sidebar/terminal/persistent.tsx` (passes the
+active project scope into `ensureTerminal`), `apps/desktop/src/app/
+right-sidebar/terminal/terminals.test.ts` (7 new tests).
+
+**Merge note:** fork-only desktop app, no upstream equivalent — no conflict
+risk.
+
 ### Fork-only feature — 2026-07-24 (desktop: terminal pane follows the active sidebar project)
 
 **Request:** user wants the desktop's embedded terminal pane to switch

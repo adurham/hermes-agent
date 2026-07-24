@@ -196,10 +196,22 @@ $activeTerminalId.subscribe(id => {
   }
 })
 
+// True when `child` is `parent` itself or a path nested under it. Mirrors the
+// identically-named helper in store/projects.ts — duplicated rather than
+// imported, since projects.ts imports ensureProjectTerminal from this module
+// and importing back would form a cycle.
+const underPath = (parent: string, child: string): boolean =>
+  child === parent || child.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
+
 /** Switch to the terminal tab bound to `projectId` (from a previous call here),
- *  or create one anchored at `cwd` if none exists yet. Called when the sidebar
- *  project scope changes, so each project keeps — and returns to — its own
- *  terminal tab instead of a single shell drifting between working
+ *  adopt an existing *unbound* tab already sitting inside `cwd` (the project
+ *  root), or create a fresh one anchored there if neither exists. The adopt
+ *  step matters: the pane's very first tab (opened via `ensureTerminal` before
+ *  any project was ever entered, or spawned via the plain "+" control) has no
+ *  `projectId` — without adopting it, entering that project would spawn a
+ *  redundant duplicate right next to a tab that already covers it. Called when
+ *  the sidebar project scope changes, so each project keeps — and returns to —
+ *  its own terminal tab instead of a single shell drifting between working
  *  directories. Store-only: the underlying PTY spawns lazily when the pane
  *  actually mounts (see PersistentTerminal), so this is cheap even while the
  *  terminal pane is closed. Returns the tab id. */
@@ -207,14 +219,29 @@ export function ensureProjectTerminal(projectId: string, cwd: string): string {
   const list = $terminals.get()
   const remembered = lastActiveTerminalByProject.get(projectId)
 
-  const target =
+  const bound =
     (remembered && list.find(term => term.id === remembered && term.kind === 'user')) ||
     list.find(term => term.kind === 'user' && term.projectId === projectId)
 
-  if (target) {
-    $activeTerminalId.set(target.id)
+  if (bound) {
+    $activeTerminalId.set(bound.id)
 
-    return target.id
+    return bound.id
+  }
+
+  const root = cwd.trim()
+
+  const adoptable =
+    root &&
+    list.find(
+      term => term.kind === 'user' && !term.projectId && underPath(root, (term.restoreCwd || term.cwd).trim())
+    )
+
+  if (adoptable) {
+    $terminals.set(list.map(term => (term.id === adoptable.id ? { ...term, projectId } : term)))
+    $activeTerminalId.set(adoptable.id)
+
+    return adoptable.id
   }
 
   return createTerminal(cwd, projectId)
@@ -262,12 +289,21 @@ export function openAgentTerminal(procId: string, title: string): void {
   setTerminalTakeover(true)
 }
 
-/** Guarantee at least one tab exists when the pane opens.
- *  If a status-stack click already opened an agent tab, don't create a
- *  second, unrelated user shell just because the pane became visible. */
-export function ensureTerminal(): void {
+/** Guarantee at least one tab exists when the pane opens for the very first
+ *  time. If a status-stack click already opened an agent tab, don't create a
+ *  second, unrelated user shell just because the pane became visible. Pass
+ *  `project` (a currently-scoped sidebar project's id + root cwd) so that
+ *  first tab comes up already bound to it — otherwise a user who launches the
+ *  app already inside a project and opens the terminal pane for the first
+ *  time would get a blind, unbound tab that a later project switch has to
+ *  detect and adopt instead of just starting out right. */
+export function ensureTerminal(project?: { id: string; cwd: string }): void {
   if ($terminals.get().length === 0) {
-    createTerminal()
+    if (project?.cwd) {
+      ensureProjectTerminal(project.id, project.cwd)
+    } else {
+      createTerminal()
+    }
   }
 }
 
