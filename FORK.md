@@ -27,6 +27,47 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-24 (profile clone: `--clone`/`--clone-config` never copied installed pets)
+
+**Reported:** user cloned a new profile (`exo`) from `default` with
+`--clone`, and the resulting profile lost its petdex mascot — the sprite
+just didn't render even though `config.yaml`'s `display.pet.slug` was
+correctly copied over as `hatsune-miku`, `enabled: true`.
+
+**Root cause:** `create_profile()`'s `clone_config` path (`hermes profile
+create --clone`) copies `_CLONE_CONFIG_FILES` (`config.yaml`, `.env`,
+`SOUL.md`) and the source's `skills/` tree, but never touched the source's
+`pets/` directory. Pet identity is split across two places: `config.yaml`
+stores which pet slug is *active* (`display.pet.slug`), but the actual
+downloaded asset — `pets/<slug>/pet.json` + `spritesheet.webp` — lives
+under the profile root, sibling to `skills/`, not inside `config.yaml`.
+Copying the config half without the asset half left the clone pointed at a
+pet slug it had never downloaded, so pet rendering silently fell back to
+"no pet" with no error surfaced anywhere (this is the same class of gap
+`test_clone_config_copies_source_skills` already guards for skills — pets
+just weren't in the mirrored list). `--clone-all` was unaffected since it
+does a full `shutil.copytree` of the entire source profile including
+`pets/`.
+
+**Fix:** added a `pets/` copytree step to the `clone_config` branch in
+`hermes_cli/profiles.py::create_profile()`, immediately after the existing
+skills copytree and gated the same way (`if source_pets.is_dir(): ...`, a
+no-op when the source profile has no pets installed).
+
+**Verification:** `scripts/run_tests.sh tests/hermes_cli/test_profiles.py`
+— 158/158 passing (156 existing + 2 new:
+`test_clone_config_copies_installed_pets`,
+`test_clone_config_missing_pets_dir_skipped`). Manually reproduced against
+the user's real `exo` profile (`hermes -p exo pets install hatsune-miku
+--select` restored the missing asset as an immediate workaround) before
+landing the root-cause fix.
+
+**Files touched:** `hermes_cli/profiles.py` (clone_config pets copytree),
+`tests/hermes_cli/test_profiles.py` (2 new tests).
+
+**Merge note:** fork-only file, no upstream equivalent for the pets
+feature — no conflict risk.
+
 ### Fork-only fix — 2026-07-24 (desktop: replaced deprecated `rcedit` dep with `resedit`)
 
 **Reported:** `hermes desktop` printed an npm deprecation warning on every
