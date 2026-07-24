@@ -151,16 +151,23 @@ export const $petJumpBeat = atom<number>(0)
 export const triggerPetJumpBeat = () => $petJumpBeat.set($petJumpBeat.get() + 1)
 
 /**
- * Monotonic nonce bumped ONLY when a turn genuinely finishes (the gateway's
- * completion event), never by petting/clicking the mascot — which also
- * drives the shared `celebrate`/`jump` pose via {@link flashPetActivity} and
- * would otherwise be indistinguishable from a real completion to any
- * consumer keyed off `$petState`/`$petRealState` alone. Exists specifically
- * so voice-announcement consumers (PetBubble's "all done!" line) can
- * announce a completed turn without also narrating every affectionate pet.
+ * Fires ONLY when a turn genuinely finishes (the gateway's completion
+ * event), never by petting/clicking the mascot — which also drives the
+ * shared `celebrate`/`jump` pose via {@link flashPetActivity} and would
+ * otherwise be indistinguishable from a real completion to any consumer
+ * keyed off `$petState`/`$petRealState` alone. `seq` lets a listener detect
+ * "another completion happened" even when `context` repeats; `context` is a
+ * short summary of what just finished (e.g. the assistant's final reply
+ * text), used to ask an optional LLM-generated pet line for something
+ * genuinely relevant instead of only ever picking from the static pool.
  */
-export const $petTurnCompletedBeat = atom<number>(0)
-export const triggerPetTurnCompleted = () => $petTurnCompletedBeat.set($petTurnCompletedBeat.get() + 1)
+export interface PetTurnCompletedBeat {
+  seq: number
+  context: string
+}
+export const $petTurnCompletedBeat = atom<PetTurnCompletedBeat>({ seq: 0, context: '' })
+export const triggerPetTurnCompleted = (context = '') =>
+  $petTurnCompletedBeat.set({ seq: $petTurnCompletedBeat.get().seq + 1, context })
 
 /** Fire a transient reaction beat (error / celebrate / justCompleted) that
  *  decays back to the steady state after `ms`.

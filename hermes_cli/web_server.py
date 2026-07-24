@@ -4099,6 +4099,87 @@ async def get_elevenlabs_voices():
     return {"available": True, "voices": voices}
 
 
+class PetDialogueRequest(BaseModel):
+    # What just happened / what's blocking — e.g. the last tool name + a
+    # short summary, or the approval/clarify prompt text. Free text, capped
+    # server-side by auxiliary.pet_dialogue.max_context_chars.
+    context: str = ""
+    # "completed" | "waiting" — which of the two announced beats this is for.
+    beat: str = "completed"
+    # Slug of the active pet (e.g. "hatsune-miku") so the prompt can ask for
+    # persona-appropriate phrasing without the desktop needing to know the
+    # persona details itself.
+    pet_slug: str = ""
+
+
+@app.post("/api/pet/dialogue")
+async def pet_dialogue(payload: PetDialogueRequest):
+    """Generate a short, in-character line for the desktop pet's voice/bubble
+    at a turn-completed or needs-user beat, via a cheap auxiliary LLM call.
+
+    Opt-in (``auxiliary.pet_dialogue.enabled``, off by default) and layered
+    on TOP of the existing static line pool in
+    ``apps/desktop/src/components/pet/pet-bubble.tsx`` — the desktop always
+    has a static fallback ready and calls this endpoint with a short client
+    timeout, so an LLM hiccup or feature-disabled response never blocks or
+    breaks the pet's status display. Only ever called for the two ANNOUNCED
+    beats (turn finished / needs user), never the continuous run/review
+    rotation, which stays fully local to avoid an LLM call on a ~2.6s
+    cadence.
+    """
+    from hermes_cli.config import load_config_readonly
+    from utils import is_truthy_value
+
+    config = load_config_readonly()
+    task_config = (config.get("auxiliary") or {}).get("pet_dialogue") or {}
+
+    if not is_truthy_value(task_config.get("enabled"), default=False):
+        raise HTTPException(status_code=404, detail="auxiliary.pet_dialogue.enabled is false")
+
+    max_context_chars = int(task_config.get("max_context_chars", 400) or 400)
+    context = (payload.context or "").strip()[:max_context_chars]
+    beat = payload.beat if payload.beat in ("completed", "waiting") else "completed"
+    persona = (
+        "You are voicing Hatsune Miku, the Vocaloid virtual idol, as a desktop "
+        "mascot for an AI coding agent. She's upbeat and a little playful, and "
+        "refers to the user as \"producer\" (a real term from her fandom for "
+        "whoever's directing her) ONLY when a beat is direct address to them."
+        if payload.pet_slug.lower() in ("hatsune-miku", "miku", "hatsunemiku")
+        else "You are voicing a small, upbeat desktop pet mascot for an AI coding agent."
+    )
+    beat_instruction = (
+        "The agent just finished a task. Write ONE short, cheerful exclamation "
+        "(2-6 words) celebrating that it's done."
+        if beat == "completed"
+        else "The agent needs the user's input/approval right now. Write ONE "
+        "short line (2-6 words) letting them know it's their turn."
+    )
+    user_prompt = f"{beat_instruction}\n\nWhat just happened: {context or '(no details given)'}"
+
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task="pet_dialogue",
+            messages=[
+                {"role": "system", "content": f"{persona} Respond with ONLY the line itself — no quotes, no extra commentary."},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.9,
+            max_tokens=24,
+        )
+        line = (response.choices[0].message.content or "").strip().strip('"').strip("'")
+
+        if not line:
+            raise HTTPException(status_code=502, detail="Empty response from pet_dialogue model")
+
+        return {"ok": True, "line": line}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"pet_dialogue call failed: {exc}")
+
+
 @app.post("/api/audio/speak")
 async def speak_text(payload: TTSSpeakRequest):
     """Synthesize speech and return audio as base64 data URL.

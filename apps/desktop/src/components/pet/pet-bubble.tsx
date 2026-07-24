@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { fetchPetDialogue } from '@/hermes'
 import { AlertCircle, Clock, type IconComponent } from '@/lib/icons'
 import { playSpeechText } from '@/lib/voice-playback'
 import { $petActivity, $petInfo, $petRealState, $petTurnCompletedBeat, type PetState } from '@/store/pet'
@@ -26,6 +27,15 @@ import { $petVoiceEnabled, $petVoiceProvider } from '@/store/pet-voice'
  * continuous "working…"/"thinking…" chatter the bubble shows while a turn
  * runs. That distinction is why voice can't just watch the bubble's own
  * `specKey`/`line` state: `run`/`review` intentionally never speak.
+ *
+ * OPTIONAL LLM DIALOGUE (`auxiliary.pet_dialogue.enabled`, off by default):
+ * for those same two announced beats, first tries a short cheap-model call
+ * (`POST /api/pet/dialogue`) for a fresh, context-aware line — e.g.
+ * referencing what the agent just did instead of a generic "all done!". On
+ * any failure (disabled, timeout, network error) it falls back to the
+ * static pool below, so the feature never blocks or breaks. Never used for
+ * the continuous run/review rotation — that stays 100% local regardless of
+ * this setting, to avoid an LLM call on a ~2.6s cadence.
  *
  * PHRASING flavors by active pet (`$petInfo.slug`): the Hatsune Miku pet gets
  * a Vocaloid-themed line set (drawing on real fan-culture terms — "producer"
@@ -152,7 +162,7 @@ const MIKU_COMPLETION_LINES = [
   'take a bow!',
   'encore-ready!',
   "that's a wrap!",
-  'yay, done!'
+  'Yay!... done!'
 ]
 
 // Slugs whose active pet gets the Vocaloid-flavored phrasing above. Petdex
@@ -187,6 +197,41 @@ function pick(lines: string[], prev: string): string {
   }
 
   return next
+}
+
+/**
+ * Speak one of the two ANNOUNCED beats. Tries the optional LLM-generated
+ * line first (`fetchPetDialogue`); on ANY rejection — disabled (404),
+ * timeout, network error, empty response — falls back to a random pick from
+ * the static pool, so the feature degrades gracefully rather than going
+ * silent. Never awaited by the caller; fire-and-forget with its own
+ * catch-all, same as the rest of this component's TTS calls.
+ */
+function speakAnnouncedBeat(params: {
+  beat: 'completed' | 'waiting'
+  context: string
+  fallbackLines: string[]
+  petSlug: string
+  voiceProvider: string
+}): void {
+  const { beat, context, fallbackLines, petSlug, voiceProvider } = params
+
+  const speak = (text: string) =>
+    playSpeechText(text, { provider: voiceProvider || undefined, source: 'pet' }).catch(() => {
+      // Cosmetic feature — a TTS hiccup shouldn't surface an error toast.
+    })
+
+  void fetchPetDialogue({ beat, context, petSlug })
+    .then(response => {
+      const llmLine = response.ok ? response.line.trim() : ''
+
+      void speak(llmLine || pick(fallbackLines, ''))
+    })
+    .catch(() => {
+      // Disabled (404), timeout, or network error — all treated the same:
+      // fall back to the static pool so the feature never goes silent.
+      void speak(pick(fallbackLines, ''))
+    })
 }
 
 export function PetBubble() {
@@ -247,30 +292,40 @@ export function PetBubble() {
       return
     }
 
-    const toSpeak = pick(specs.waiting!.lines, '')
-
-    void playSpeechText(toSpeak, { provider: voiceProvider || undefined, source: 'pet' }).catch(() => {
-      // Cosmetic feature — a TTS hiccup shouldn't surface an error toast.
+    speakAnnouncedBeat({
+      beat: 'waiting',
+      // No task-specific context passed for `waiting` — the line is about
+      // the STATE (it's your turn), not about which specific prompt is
+      // blocking, so there's little payoff versus the added complexity of
+      // extracting prompt text from three different prompt-store shapes.
+      context: '',
+      fallbackLines: specs.waiting!.lines,
+      petSlug: petSlug ?? '',
+      voiceProvider
     })
-  }, [specKey, voiceEnabled, voiceProvider, specs])
+  }, [specKey, voiceEnabled, voiceProvider, specs, petSlug])
 
   // Voice announces "turn finished" — keyed off a dedicated nonce
-  // (`$petTurnCompletedBeat`, bumped only by the gateway's real completion
-  // event), NOT the shared `celebrate`/`jump` pose, which also fires when the
-  // user just pets/clicks the mascot. Skips the initial mount (beat === 0)
-  // so opening the app never announces a stale "done" from a previous turn.
-  const mountedTurnBeatRef = useRef(turnCompletedBeat)
+  // (`$petTurnCompletedBeat.seq`, bumped only by the gateway's real
+  // completion event), NOT the shared `celebrate`/`jump` pose, which also
+  // fires when the user just pets/clicks the mascot. Skips the initial
+  // mount (seq === 0) so opening the app never announces a stale "done"
+  // from a previous turn. `.context` (the assistant's final reply text)
+  // feeds the optional LLM line so it can reference what actually happened.
+  const mountedTurnSeqRef = useRef(turnCompletedBeat.seq)
   useEffect(() => {
-    if (!voiceEnabled || turnCompletedBeat === mountedTurnBeatRef.current) {
+    if (!voiceEnabled || turnCompletedBeat.seq === mountedTurnSeqRef.current) {
       return
     }
 
-    mountedTurnBeatRef.current = turnCompletedBeat
+    mountedTurnSeqRef.current = turnCompletedBeat.seq
 
-    const toSpeak = pick(completionLinesForSlug(petSlug), '')
-
-    void playSpeechText(toSpeak, { provider: voiceProvider || undefined, source: 'pet' }).catch(() => {
-      // Cosmetic feature — a TTS hiccup shouldn't surface an error toast.
+    speakAnnouncedBeat({
+      beat: 'completed',
+      context: turnCompletedBeat.context,
+      fallbackLines: completionLinesForSlug(petSlug),
+      petSlug: petSlug ?? '',
+      voiceProvider
     })
   }, [turnCompletedBeat, voiceEnabled, voiceProvider, petSlug])
 
