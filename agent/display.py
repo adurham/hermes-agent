@@ -144,6 +144,67 @@ def get_skin_tool_prefix() -> str:
     return "┊"
 
 
+def display_cwidth(text: str | None) -> int:
+    """Terminal cell width of ``text``, correcting a real gap in
+    ``prompt_toolkit.utils.get_cwidth()``: emoji base codepoints followed by
+    VARIATION SELECTOR-16 (U+FE0F) are undercounted.
+
+    U+FE0F is Unicode category ``Mn`` (nonspacing mark), so wcwidth-family
+    width tables — which ``get_cwidth`` mirrors — assign it width 0. Several
+    of Hermes's own registered tool emoji are exactly this shape (e.g.
+    process's "⚙️" = U+2699 GEAR + U+FE0F, "⌨️", "◀️", "🖼️", "👁️", "🖥️", "✍️",
+    "✉️", "⚠️"). Their *base* codepoint alone is narrow (East Asian Width
+    ``Neutral``, width 1), so ``get_cwidth`` reports the whole 2-codepoint
+    sequence as width 1. But VS-16's entire purpose (UTR#51) is to force
+    emoji (wide, 2-cell) presentation, and essentially every terminal emoji
+    font Hermes users run (iTerm2, Kitty, WezTerm, Terminal.app, Windows
+    Terminal) honors that and renders 2 cells.
+
+    That 1-cell undercount, fed into a reserved prompt_toolkit ``Window``
+    height or a \\r-redraw pad calculation, comes out exactly 1 row/column
+    short right at a wrap boundary — the wrapped continuation then overlaps
+    whatever renders on the line below instead of getting its own row,
+    which is what produces "garbled/duplicated digit" corruption in the
+    live tool-call spinner/status line (e.g. a `process(action="wait")`
+    duration rendering as "4m170s" instead of "4m17s"). Two earlier fixes
+    (``HermesCLI._status_bar_display_width`` and
+    ``KawaiiSpinner._display_width``) already replaced ``len()`` with
+    ``get_cwidth()`` for the *aggregate string vs len()* mismatch, but both
+    still called ``get_cwidth`` directly — a glyph-level blind spot in that
+    "trusted" width oracle survived both patches untouched, which is why
+    this bug class kept resurfacing after being "fixed" more than once.
+
+    This is a pure additive correction: for any character NOT immediately
+    preceded by an emoji-forcing VS-16, behavior is identical to
+    ``get_cwidth``.
+    """
+    try:
+        from prompt_toolkit.utils import get_cwidth
+    except Exception:
+        get_cwidth = None
+
+    if not text:
+        return 0
+
+    if get_cwidth is None:
+        return len(text)
+
+    width = 0
+    for ch in text:
+        if ch == "\ufe0f":
+            # VS-16 forces wide (2-cell) emoji presentation in virtually
+            # every terminal Hermes runs in, but get_cwidth (correctly, per
+            # raw Unicode category Mn) reports it as width 0. The preceding
+            # base codepoint was already counted as its own (narrow) width
+            # by this same loop, so add the 1-cell delta here rather than
+            # rewinding — net effect: base(1) + VS16(+1) == 2, matching
+            # real terminal rendering.
+            width += 1
+            continue
+        width += get_cwidth(ch)
+    return width
+
+
 def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     """Get the display emoji for a tool.
 
@@ -1097,12 +1158,14 @@ class KawaiiSpinner:
         on screen after the real text shrank to "(...1s)"). Mirrors the
         same fix already applied to the CLI status bar
         (``HermesCLI._status_bar_display_width``) for the identical reason.
+
+        Delegates to ``display_cwidth()`` (module-level, this file) rather
+        than calling ``get_cwidth`` directly, so emoji+VS-16 tool glyphs
+        (e.g. the process tool's "⚙️") are also counted at their true
+        2-cell width — see that function's docstring for why plain
+        ``get_cwidth`` still undercounts those specifically.
         """
-        try:
-            from prompt_toolkit.utils import get_cwidth
-            return get_cwidth(text or "")
-        except Exception:
-            return len(text or "")
+        return display_cwidth(text)
 
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message

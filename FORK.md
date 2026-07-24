@@ -27,6 +27,96 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-24 (root cause found: recurring "garbled/duplicate digit" spinner-timer corruption — `get_cwidth()` blind to emoji+VS-16)
+
+**Reported (again):** the live tool-call status line showed a corrupted
+elapsed duration for a `process(action="wait", timeout=280)` call —
+`wait proc_e0efad4683 280s (4m170s)` instead of `(4m17s)`. This is the
+same bug class documented as unreproduced/unresolved in the 2026-07-19
+entry below ("unreproduced spinner-timer anomaly — forensic logging
+added, not yet root-caused"), and is at least the third time a
+variant of this symptom has been reported after two prior "fixes"
+(2026-07-06 status-bar timer, 2026-07-18 `KawaiiSpinner` redraw
+padding) — both of which correctly diagnosed *len() vs get_cwidth()*
+mismatches but left the underlying bug able to resurface.
+
+**Root cause, finally isolated:** `prompt_toolkit.utils.get_cwidth()`
+itself undercounts a specific glyph shape by 1 cell — an emoji base
+codepoint followed by VARIATION SELECTOR-16 (U+FE0F). U+FE0F is Unicode
+category `Mn` (nonspacing mark), so wcwidth-family width tables (which
+`get_cwidth` mirrors) assign it width 0. But VS-16's entire purpose
+(UTR#51) is to force emoji (wide, 2-cell) presentation, and virtually
+every terminal Hermes runs in (iTerm2, Kitty, WezTerm, Terminal.app,
+Windows Terminal) honors that and renders 2 cells. Confirmed live:
+`get_cwidth("⚙️")` (process tool's registered emoji, U+2699 GEAR +
+U+FE0F) returns `1`, not `2`. Eight other registered tool emoji are the
+identical shape: `⌨️`/`◀️`/`🖼️`/`👁️`/`🖥️` (browser tools),
+`✍️` (write_file), `✉️` (feishu), `⚠️` (skills warning).
+
+That 1-cell undercount feeds directly into `_spinner_widget_height()`'s
+wrap-height math (`ceil(_status_bar_display_width(spinner_line) /
+terminal_width)`) — the reserved prompt_toolkit `Window` height comes out
+exactly 1 row short whenever the undercounted spinner line's true width
+lands right at a wrap boundary. The wrapped continuation then overlaps
+whatever renders on the row below instead of getting its own row —
+producing the visually-concatenated "duplicate/garbled digit" corruption
+(a stale "0" from the row below bleeding into the new duration string,
+read as "170s" instead of "17s"). This also explains the "impossible"
+finding in the 2026-07-19 forensic entry: the duration-formatting
+arithmetic (`elapsed // 60`, `elapsed % 60`) was never broken — the
+corruption is a real terminal-side row overlap, not a computed value.
+
+Crucially, this is a glyph-level blind spot *inside* `get_cwidth` itself
+— both prior fixes (2026-07-06, 2026-07-18) correctly replaced `len()`
+with `get_cwidth()` for the *aggregate-string-vs-len()* mismatch, but
+both still called `get_cwidth` directly, so this bug survived untouched
+through two "fixes" of the same symptom family. That's why it kept
+coming back.
+
+**Fix:** new shared helper `agent.display.display_cwidth()` — wraps
+`get_cwidth()` per-codepoint and adds the missing 1-cell width whenever
+it encounters a bare `\ufe0f`, leaving every other glyph byte-identical
+to plain `get_cwidth()`. Wired into every call site that previously
+called `get_cwidth` directly for display-width purposes, so the fix
+applies uniformly instead of as another one-off patch:
+- `agent/display.py`: `KawaiiSpinner._display_width()` now delegates to
+  `display_cwidth()`.
+- `cli.py`: `_status_bar_display_width()`, `_trim_status_bar_text()`,
+  `_panel_cwidth()`, and module-level `_estimate_tui_input_height()` all
+  now delegate to `display_cwidth()` instead of calling
+  `prompt_toolkit.utils.get_cwidth()` directly.
+
+Verified numerically before/after: `get_cwidth("⚙️")` → `1`;
+`display_cwidth("⚙️")` → `2`. All 9 affected VS-16 tool emoji now
+measure correctly; all previously-correct emoji (astral wide emoji with
+no VS-16, e.g. `🌐`/`💻`/`📖`) are unaffected — `display_cwidth ==
+get_cwidth` for those, confirmed by test.
+
+**Tests:** new `tests/agent/test_display_cwidth_vs16.py` (8 tests) —
+direct measurement of all 9 affected VS-16 tool emoji, confirmation that
+non-VS-16 emoji and plain ASCII are unaffected, an end-to-end status-line
+string assertion (`display_cwidth(line) == get_cwidth(line) + 1` for a
+line containing exactly one VS-16 tool emoji), and confirmation that
+`KawaiiSpinner._display_width` delegates to the shared helper. Full
+`tests/agent/test_display_cwidth_vs16.py` + `tests/cli/test_cli_status_bar.py`
++ `tests/agent/test_kawaii_spinner_display_width.py` +
+`tests/agent/test_display.py` + `tests/agent/test_display_tool_failure.py`
++ `tests/agent/test_display_todo_progress.py`: 197 passed (8 new), 0
+failed. Broader `tests/cli/` + `tests/agent/` run surfaced 14 pre-existing
+failures across 8 unrelated files (service_tier config, exit-summary
+resume hint, credential pool auth-type, auxiliary runtime cache key) —
+confirmed identical on a clean unmodified clone of current `main` via a
+separate checkout, unrelated to this change. Zero new failures.
+
+**Still open:** the 2026-07-19 forensic warning latch
+(`_spinner_elapsed_anomaly_logged` in `cli.py`) is left in place — it
+guards against a *different* failure mode (elapsed exceeding session age,
+an actual arithmetic/state bug) and never fired for this incident, so it
+remains a valid tripwire for a genuinely different anomaly if one occurs.
+
+Files: `agent/display.py` (+ new `tests/agent/test_display_cwidth_vs16.py`),
+`cli.py`.
+
 ### Fork-only fix — 2026-07-23 (spurious "Event loop is closed" traceback on /exit)
 
 **Symptom:** on `/exit`, after the "(cleaning up — press Ctrl+C to quit
