@@ -213,6 +213,83 @@ button markup) but additive/non-breaking; existing close gestures and tests
 are unchanged. Worth a careful look on next upstream sync in case upstream
 also touches `pane-tab.tsx`.
 
+### Fork-only feature — 2026-07-24 (desktop: workspace tab's × was missing and its "close" would have ripped the app's anchor pane out of the tree)
+
+**Follow-up to the two features above.** After adding the × close button,
+the user reported it showed on the 2nd (session-tile) tab but not the 1st —
+"needs to be on all tabs. and yes that means you can close all tabs."
+
+**Root cause, once traced:** the middle zone always has exactly ONE
+`workspace` pane (`placement:'main'`, `uncloseable:true` in the contribution
+registry — the app's structural anchor: dock target for splits, drag-payload
+carrier, assumed live everywhere `findGroupOfPane(tree, 'workspace')` is
+called) plus zero or more closeable `session-tile:<id>` panes. `uncloseable`
+was overloaded to drive THREE things at once: (1) the tab's × visibility,
+(2) whether the hosting zone can ever minimize (must not — collapsing MAIN
+strands the app), (3) whether a lone pane forces its tab strip to show at
+all. Every close-button/close-menu site keyed directly off the raw flag, so
+workspace could never show a ×. Worse: `closeTreePane('workspace')` had no
+registered closer for it, so blindly flipping the flag would have fallen
+through to the generic dismiss-from-tree path and actually removed the
+anchor pane from the layout — silently breaking every downstream assumption
+that `workspace` always resolves.
+
+**Design (validated via `consult` before writing code — B was the right
+call over "just reset to a blank draft"):** real browser-tab close
+semantics. Workspace can't structurally leave the tree, so "closing" it
+means promoting an adjacent tab into it — load that session into main
+(`resumeSession`), then drop the now-redundant tile (`closeSessionTile`) —
+exactly what closing a browser tab does: the strip shrinks by one, focus
+lands on a neighbor. Only when no sibling tab remains does it fall back to
+resetting to a blank draft (`startFreshSessionDraft` — same as ⌘N).
+
+- `components/pane-shell/tree/store.ts`: new `isPaneCloseable(paneId)` —
+  true when a closer is registered for the pane (mirrors `closeTreePane`'s
+  own resolution order) OR the pane isn't `uncloseable` at all. Every
+  close-button/close-menu/⌘W site now reads through this instead of the raw
+  flag: `closeWorkspaceTab` (⌘W), `closeableTreeSiblings` /
+  `treeTabCloseTargets` (right-click Close others/right/all + their
+  enablement counts), `closeAllTreeTabs`. The zone-never-minimize guard and
+  `forceLoneHeaderForPanes` (lone-header.ts) deliberately still read the RAW
+  `uncloseable` flag, untouched — a fresh single-session/no-tiles user still
+  gets the clean no-tab-strip default (covered by the existing
+  `lone-header.test.ts` case, unmodified and still green).
+- `components/pane-shell/tree/renderer/tree-group.tsx`: both tab-render
+  sites (horizontal strip + vertical-rail minimized form) and the zone
+  menu's `closable()` now compute from `isPaneCloseable` instead of the raw
+  flag.
+- `app/contrib/wiring.tsx`: registers the actual promote-or-reset closer via
+  `registerPaneCloser('workspace', …)` — the same inversion-of-control
+  pattern `sessions`/`files`' side-collapse closers already use. Picks the
+  adjacent pane the same way a real tab close does (`removePane` in
+  model.ts: previous tab, falling back to the next one when workspace was
+  first).
+
+**Verification:** `tsc --noEmit` clean; `eslint` clean; production build
+succeeds. New `components/pane-shell/tree/workspace-closer.test.ts` (4
+tests: not-closeable-until-registered / closer-fires-and-pane-survives for
+`closeTreePane` / ⌘W no-ops-then-fires / "Close all" count includes
+workspace once registered) — all pass. `lone-header.test.ts` (4/4,
+unmodified) still confirms the single-session/no-tiles default is
+unaffected. `pane-tab.test.tsx` (10/10), `preview-pane.test.tsx` (2/2),
+`session-states.test.ts` (6/6) unchanged. Confirmed the pre-existing
+unrelated `window.localStorage` failures in `bind-order-front.test.ts` /
+`focus-tab-hijack.test.ts` / `reactive-unhide.test.ts` are identical to
+`main`.
+
+**Files:** `apps/desktop/src/components/pane-shell/tree/store.ts`
+(`isPaneCloseable` + every close-resolution site), `apps/desktop/src/components/pane-shell/tree/renderer/tree-group.tsx`
+(both tab-render sites + `closable()`), `apps/desktop/src/app/contrib/wiring.tsx`
+(the registered workspace closer), `apps/desktop/src/components/pane-shell/tree/workspace-closer.test.ts`
+(new, 4 tests).
+
+**Merge note:** touches upstream files (`store.ts`, `tree-group.tsx`,
+`wiring.tsx`) — the riskiest of the three tab-strip changes so far, since it
+changes what Close actually DOES for the app's one structurally-special
+pane. Worth a very careful look on next upstream sync; if upstream reworks
+the tile/workspace model, re-verify `isPaneCloseable`'s resolution order
+still matches `closeTreePane`'s.
+
 ### Fork-only fix — 2026-07-23 (desktop: malformed CSS comment tripped a build-time lightningcss warning)
 
 **Symptom:** `npm run build` in `apps/desktop` prints `Found 1 warning while optimizing generated CSS: Unexpected token Delim('*')`, pointing at `.btn-arc`'s `text-*` comment text.

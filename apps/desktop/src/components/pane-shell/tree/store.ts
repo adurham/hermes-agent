@@ -281,14 +281,27 @@ const isUncloseablePane = (paneId: string): boolean =>
     (registry.getArea('panes').find(c => c.id === paneId)?.data as { uncloseable?: boolean } | undefined)?.uncloseable
   )
 
-/** ⌘W "main tabs always": close the MAIN (workspace) zone's active tab, unless
- *  it's the uncloseable workspace itself. Returns false when there's nothing to
- *  close, so ⌘W stays a no-op — it never closes the window. */
+/** Whether Close does something useful for this pane: either a registered
+ *  closer exists (workspace's own promote-or-reset logic, sessions/files
+ *  side-collapse, a session/route tile's removal, …) or the pane isn't
+ *  flagged `uncloseable` at all (the generic dismiss-from-tree fallback in
+ *  `closeTreePane`). Mirrors `closeTreePane`'s own resolution order so a
+ *  tab's × / ⌘W / right-click Close are never a dead click — including the
+ *  structurally-uncloseable `workspace` pane once a closer is registered for
+ *  it. Deliberately NOT used by the zone-never-minimize guard or lone-header
+ *  forcing below — those two stay keyed on the raw `uncloseable` flag. */
+export function isPaneCloseable(paneId: string): boolean {
+  return Boolean(paneClosers[paneId]) || !isUncloseablePane(paneId)
+}
+
+/** ⌘W "main tabs always": close the MAIN (workspace) zone's active tab.
+ *  Returns false when there's nothing to close, so ⌘W stays a no-op — it
+ *  never closes the window. */
 export function closeWorkspaceTab(): boolean {
   const tree = $layoutTree.get()
   const active = tree ? findGroupOfPane(tree, 'workspace')?.active : null
 
-  if (!active || isUncloseablePane(active)) {
+  if (!active || !isPaneCloseable(active)) {
     return false
   }
 
@@ -305,8 +318,8 @@ function closeableTreeSiblings(paneId: string): { others: string[]; right: strin
   const idx = panes.indexOf(paneId)
 
   return {
-    others: panes.filter(id => id !== paneId && !isUncloseablePane(id)),
-    right: panes.filter((id, i) => i > idx && !isUncloseablePane(id))
+    others: panes.filter(id => id !== paneId && isPaneCloseable(id)),
+    right: panes.filter((id, i) => i > idx && isPaneCloseable(id))
   }
 }
 
@@ -314,7 +327,7 @@ function closeableTreeSiblings(paneId: string): { others: string[]; right: strin
 export function treeTabCloseTargets(paneId: string): { all: number; others: number; right: number } {
   const { others, right } = closeableTreeSiblings(paneId)
 
-  return { all: others.length + (isUncloseablePane(paneId) ? 0 : 1), others: others.length, right: right.length }
+  return { all: others.length + (isPaneCloseable(paneId) ? 1 : 0), others: others.length, right: right.length }
 }
 
 export function closeOtherTreeTabs(paneId: string): void {
@@ -325,7 +338,9 @@ export function closeTreeTabsToRight(paneId: string): void {
   closeableTreeSiblings(paneId).right.forEach(closeTreePane)
 }
 
-/** Close every closeable tab in `paneId`'s group (the uncloseable workspace stays). */
+/** Close every closeable tab in `paneId`'s group — workspace included once a
+ *  closer is registered for it (promote-or-reset), so "Close all" genuinely
+ *  empties the strip instead of always leaving one tab stranded. */
 export function closeAllTreeTabs(paneId: string): void {
   const tree = $layoutTree.get()
   const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
