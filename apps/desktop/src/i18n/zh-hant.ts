@@ -2222,6 +2222,7 @@ export const zhHant = defineLocale({
     hideHeader: '隱藏標題列',
     minimize: '最小化',
     restore: '還原',
+    closeTab: label => `關閉 ${label}`,
     closeOthers: '關閉其他',
     closeToRight: '關閉右側',
     closeAll: '全部關閉',

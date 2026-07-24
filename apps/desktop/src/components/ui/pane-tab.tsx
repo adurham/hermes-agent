@@ -1,6 +1,9 @@
 import * as React from 'react'
 
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+
+import { Codicon } from './codicon'
 
 /** Inset bottom stroke for a horizontal tab strip — titlebar color, cut by the active tab. */
 export const PANE_TAB_STRIP_LINE = 'shadow-[inset_0_-1px_0_var(--ui-stroke-tertiary)]'
@@ -27,9 +30,15 @@ const TAB_IDLE =
 interface PaneTabProps extends React.ComponentProps<'div'> {
   active?: boolean
   dirty?: boolean
-  /** Close gesture, no hover X (too easy to hit on small tabs): middle-click,
-   *  or ⌘-click as the trackpad-friendly Mac equivalent. */
+  /** Close gesture: a small × button (hover-reveal on an inactive tab, always
+   *  shown on the active one — so the active tab's affordance never depends
+   *  on a hover state that isn't currently true), PLUS middle-click and
+   *  ⌘-click (the trackpad-friendly Mac equivalent) as faster alternatives. */
   onClose?: () => void
+  /** Accessible label for the close button (e.g. "Close My Session"). Falls
+   *  back to a generic "Close" when the caller doesn't have a per-tab title
+   *  handy. */
+  closeLabel?: string
   /** Vertical rail form (collapsed sidebar zones). */
   vertical?: boolean
   /** Content-facing edge of a vertical rail — the strip line the active tab cuts. */
@@ -54,6 +63,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
     active = false,
     dirty = false,
     onClose,
+    closeLabel,
     onAuxClick,
     onMouseDown,
     onPointerDown,
@@ -66,6 +76,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
   },
   ref
 ) {
+  const { t } = useI18n()
   // Content-facing edge: horizontal cuts the bottom strip line; vertical cuts
   // the side that faces the editor (left rail → right edge, right rail → left).
   const edge = vertical ? (side === 'right' ? 'border-l' : 'border-r') : 'border-b'
@@ -127,15 +138,50 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
       {...props}
     >
       {children}
-      {dirty && (
+      {(dirty || onClose) && (
+        // A single reserved slot at the trailing edge — a REAL flex child
+        // (shrink-0), so the label truncates around it instead of the two
+        // indicators floating over live text. Dirty dot and close button
+        // stack inside it (absolute, same footprint) and cross-fade: the dot
+        // is the resting state, the × takes over on hover/focus/active —
+        // exactly one shows at a time, VS Code's dirty-dot/close swap.
+        // [writing-mode:horizontal-tb] keeps the × glyph upright inside a
+        // vertical (rotated-text) rail tab.
         <span
-          aria-hidden
           className={cn(
-            'pointer-events-none absolute grid size-4 place-items-center',
-            vertical ? 'bottom-1.5 left-1/2 -translate-x-1/2' : 'right-1.5 top-1/2 -translate-y-1/2'
+            'relative grid shrink-0 place-items-center [writing-mode:horizontal-tb]',
+            vertical ? 'h-4 w-full' : 'ml-1 h-4 w-4'
           )}
         >
-          <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_2px_var(--tab-bg),0_1px_2px_rgba(0,0,0,0.45)] dark:bg-amber-400" />
+          {dirty && (
+            <span
+              aria-hidden
+              className={cn(
+                'pointer-events-none absolute inset-0 grid place-items-center transition-opacity',
+                onClose && (active ? 'opacity-0' : 'opacity-100 group-hover/tab:opacity-0')
+              )}
+            >
+              <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_2px_var(--tab-bg),0_1px_2px_rgba(0,0,0,0.45)] dark:bg-amber-400" />
+            </span>
+          )}
+          {onClose && (
+            <button
+              aria-label={closeLabel ?? t.common.close}
+              className={cn(
+                'absolute inset-0 grid place-items-center rounded-sm text-(--ui-text-tertiary) transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                active ? 'opacity-100' : 'opacity-0 group-hover/tab:opacity-100 focus-visible:opacity-100'
+              )}
+              onClick={event => {
+                event.preventDefault()
+                event.stopPropagation()
+                onClose()
+              }}
+              onPointerDown={event => event.stopPropagation()}
+              type="button"
+            >
+              <Codicon name="close" size="0.65rem" />
+            </button>
+          )}
         </span>
       )}
     </div>
