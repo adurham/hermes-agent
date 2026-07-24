@@ -46,6 +46,7 @@ import {
   SESSION_TILE_DRAG
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
+import { $selectedStoredSessionId } from '@/store/session'
 import { openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
@@ -102,6 +103,15 @@ export function startSessionDrag(
   let composers: ZoneRect[] = []
   let zoneHost = new Map<string, null | string>()
 
+  // The pane THIS session actually occupies on screen right now — the loaded
+  // main session lives at 'workspace', every other open session at its own
+  // 'session-tile:<id>'. Re-dropping a tab in its OWN strip must exclude
+  // itself from the slot list (and the post-commit reveal must front the
+  // pane that's really there) — using the tile-prefixed id unconditionally
+  // was wrong for the main tab, so its own strip never excluded it and the
+  // reveal targeted a pane that doesn't exist for it.
+  const ownPaneId = payload.id === $selectedStoredSessionId.get() ? 'workspace' : `session-tile:${payload.id}`
+
   // Commit intent, updated per resolved move (the machinery flushes the final
   // move before commit, so these always match the released-at position).
   let split: { anchor: string; before?: null | string; pos: TileDock } | null = null
@@ -154,7 +164,7 @@ export function startSessionDrag(
       if (strip) {
         // Exclude the tile's OWN tab from the slots so re-dropping it in its
         // home strip reorders cleanly (a no-op for a sidebar-row drag).
-        const stack = slotBefore(strip.slots, x, `session-tile:${payload.id}`)
+        const stack = slotBefore(strip.slots, x, ownPaneId)
         split = { anchor: host, before: stack.before, pos: 'center' }
         link = null
 
@@ -182,8 +192,12 @@ export function startSessionDrag(
         openSessionTile(payload.id, split.pos, split.anchor, split.before)
         // A tile for this session may already exist (openSessionTile is
         // idempotent — e.g. persisted from an earlier run): a drop must never
-        // feel dead, so front/unhide/un-dismiss it either way.
-        revealTreePane(`session-tile:${payload.id}`)
+        // feel dead, so front/unhide/un-dismiss it either way. Reveal the
+        // pane that ACTUALLY carries this session (workspace for the loaded
+        // main session, its own tile pane otherwise) — revealing a
+        // `session-tile:` pane that doesn't exist for the main session was a
+        // silent no-op.
+        revealTreePane(ownPaneId)
       } else if (link) {
         // The "link to chat" drop: an @session chip in that surface's composer.
         requestComposerInsertRefs([sessionInlineRef(payload)], { target: link })

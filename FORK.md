@@ -27,6 +27,87 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-24 (desktop: session/tab drag-to-reorder didn't work at all, or silently reverted)
+
+**Reported:** two related bugs in the desktop app — (1) can't drag to
+rearrange the browser-style tabs at the top of a chat/session (the workspace
+tab + session tile strip), and (2) session rows in the sidebar Recents/Pinned
+list drag fine but snap back to their old position instead of staying where
+dropped.
+
+**Bug 1 — tab drag no-ops for the loaded MAIN session.** `startSessionDrag`
+(`app/chat/session-drag.ts`) is the shared resolver for both sidebar-row
+drags and tab drags (`session-tile.tsx`'s `tabDrag` + `controller.tsx`'s
+`workspaceTabDrag`, both wired through `pane-mirror.ts`/`tree-group.tsx`).
+Its commit path always called `openSessionTile(payload.id, ...)`, and
+`openSessionTile` (`store/session-states.ts`) early-returns a no-op whenever
+`payload.id === $selectedStoredSessionId.get()` — i.e. whenever the dragged
+tab IS the loaded main session (the most common tab to drag: it's always
+present, always first). Every reorder/split/stack drag of the main
+workspace tab silently did nothing. A second, compounding bug: the strip
+divider math (`slotBefore`) and the post-commit `revealTreePane` call both
+hardcoded the tile-prefixed pane id `session-tile:${payload.id}`, which is
+correct for a session TILE but wrong for the main session (which lives at
+pane id `'workspace'`, no prefix) — so even fixing the first bug alone would
+have left the main tab's own-slot exclusion and reveal targeting a
+non-existent pane.
+
+**Fix:** `openSessionTile` now resolves the anchor's group and calls
+`moveTreePane('workspace', ...)` instead of no-op'ing when the dragged
+session is the loaded main session — mirroring the tile-move path one branch
+up. `session-drag.ts` derives `ownPaneId` (`'workspace'` when dragging the
+loaded main session, `session-tile:<id>` otherwise) once per drag and uses
+it for both the strip's own-slot exclusion (`slotBefore`) and the
+post-commit `revealTreePane` call, replacing the two now-wrong hardcoded
+`session-tile:` references.
+
+**Bug 2 — sidebar drag order gets discarded on the next render.**
+`flattenSessionsWithBranches` (`lib/session-branch-tree.ts`), used to nest
+branch/fork sessions under their parent for BOTH the flat Recents/Pinned
+list (`sessions-section.tsx`) and each project/worktree lane
+(`workspace-group.tsx` → `renderRows`), unconditionally re-sorts top-level
+(non-nested) rows by `groupRecency` (freshest-branch-in-cluster wins) on
+every call — including immediately after a drop, when the caller's `sessions`
+prop is *already* the exact order the drag just produced
+(`agentOrderManual`-gated `orderByIds(...)` upstream in `sidebar/index.tsx`,
+or a lane's `laneSessionOrder` in `workspace-group.tsx`). The re-sort
+silently discarded that manual order on the very next render, so a
+successful drag+drop reverted a frame later. A second, independent bug in
+the same code path: the flat (non-virtualized) `ReorderableList` instances
+passed `ids={sessions.map(s => s.id)}` (pre-flatten order) as dnd-kit's
+`SortableContext` items while rendering `displayEntries` (post-flatten,
+branch-nested) children — any divergence between the two orders corrupts
+dnd-kit's from/to index math independently of the recency bug.
+
+**Fix:** `flattenSessionsWithBranches` takes an optional `{ preserveOrder }`
+— when true, the top-level `.sort(...)` is skipped entirely (branch nesting
+via the existing recursive `emit()` is untouched either way). Threaded a new
+`manualOrder` prop through `SidebarSessionsSection` (`true` for Pinned,
+`agentOrderManual` for Recents) and a `preserveOrder` argument through
+`renderRows` (`Boolean(laneSessionOrder?.length)` from
+`SidebarWorkspaceGroup`) so every call site that already holds an
+authoritative manual order tells the flattener to keep it. Also fixed the
+`ReorderableList` `ids` mismatch in both the flat and virtualized branches to
+derive from `displayEntries` instead of the raw `sessions` prop, so dnd-kit's
+index space always matches rendered DOM order.
+
+Files: `apps/desktop/src/store/session-states.ts` (`openSessionTile`),
+`apps/desktop/src/app/chat/session-drag.ts` (`ownPaneId`),
+`apps/desktop/src/lib/session-branch-tree.ts` (`preserveOrder`),
+`apps/desktop/src/app/chat/sidebar/sessions-section.tsx` (`manualOrder` prop
++ `ids` fix), `apps/desktop/src/app/chat/sidebar/index.tsx` (wiring),
+`apps/desktop/src/app/chat/sidebar/projects/workspace-group.tsx` +
+`entered-content.tsx` (`renderRows` signature).
+
+Verified: `tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit`
+clean; `eslint` clean on every touched file; added 3 new regression tests to
+`lib/session-branch-tree.test.ts` (default recency sort still applies,
+`preserveOrder` keeps input order, branch nesting still works under
+`preserveOrder`) — 6/6 pass; full `vitest run` — 2107 passed / 104 failed,
+identical failure count and file set reproduced on a clean `git stash` of
+this change (pre-existing `window.localStorage` jsdom setup issue, unrelated
+to this fix); real `vite build` production build succeeds.
+
 ### Fork-only fix — 2026-07-24 (thinking-signature retry recovery no longer forces a user-facing ⚠️ warning)
 
 **Reported:** user kept seeing "⚠️  Thinking block signature invalid, stripped

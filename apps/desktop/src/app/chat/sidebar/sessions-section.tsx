@@ -130,6 +130,12 @@ interface SidebarSessionsSectionProps {
   // The flat session list is the only hand-reorderable surface (grouped/project
   // views sort deterministically), so it owns the one ReorderableList.
   onReorderSessions?: (ids: string[]) => void
+  // True when `sessions` is already under an ACTIVE manual drag-order (Pinned
+  // is always explicit; Recents only once the user has dragged). Tells
+  // flattenSessionsWithBranches to keep that order instead of re-sorting
+  // top-level rows by recency — otherwise a drop's new order gets silently
+  // discarded on the very next render.
+  manualOrder?: boolean
   // Drag-to-reorder for the project overview list (top-level projects).
   onReorderProjects?: (ids: string[]) => void
   // Rendered atop the entered-project body (a "back to overview" row).
@@ -176,6 +182,7 @@ export function SidebarSessionsSection({
   collapsible = true,
   sortable = false,
   onReorderSessions,
+  manualOrder = false,
   onReorderProjects,
   projectBackRow,
   dndSensors,
@@ -194,7 +201,11 @@ export function SidebarSessionsSection({
   // The flat recents/pinned list is the only place sessions reorder by hand;
   // grouped/tree views always sort by creation date and never drag.
   const sessionsDraggable = sortable && !!onReorderSessions
-  const displayEntries = useMemo(() => flattenSessionsWithBranches(sessions), [sessions])
+
+  const displayEntries = useMemo(
+    () => flattenSessionsWithBranches(sessions, { preserveOrder: manualOrder }),
+    [sessions, manualOrder]
+  )
 
   const renderRow = (session: SessionInfo, draggable: boolean, branchStem?: string, sortData?: Record<string, unknown>) => {
     const rowProps = {
@@ -225,8 +236,17 @@ export function SidebarSessionsSection({
   // `sortData` tags each row's sortable binding ({type:'session', laneId}) so
   // the ONE shared DndContext up in RepoFlatSection can tell which array a
   // dragged session belongs to; unused outside the project/lane view.
-  const renderRows = (items: SessionInfo[], draggable = false, sortData?: Record<string, unknown>) =>
-    flattenSessionsWithBranches(items).map(({ branchStem, session }) =>
+  // `preserveOrder` mirrors the flat list's `manualOrder`: true when the
+  // caller's array is already under an ACTIVE per-lane manual order (see
+  // SidebarWorkspaceGroup's `laneSessionOrder`) — otherwise the recency
+  // re-sort below would discard it on the next render.
+  const renderRows = (
+    items: SessionInfo[],
+    draggable = false,
+    sortData?: Record<string, unknown>,
+    preserveOrder = false
+  ) =>
+    flattenSessionsWithBranches(items, { preserveOrder }).map(({ branchStem, session }) =>
       renderRow(session, draggable, branchStem, sortData)
     )
 
@@ -335,7 +355,11 @@ export function SidebarSessionsSection({
 
     inner =
       sessionsDraggable && onReorderSessions ? (
-        <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
+        <ReorderableList
+          ids={displayEntries.map(({ session }) => session.id)}
+          onReorder={onReorderSessions}
+          sensors={dndSensors}
+        >
           {virtual}
         </ReorderableList>
       ) : (
@@ -343,7 +367,11 @@ export function SidebarSessionsSection({
       )
   } else if (sessionsDraggable && onReorderSessions) {
     inner = (
-      <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
+      <ReorderableList
+        ids={displayEntries.map(({ session }) => session.id)}
+        onReorder={onReorderSessions}
+        sensors={dndSensors}
+      >
         {displayEntries.map(({ branchStem, session }) => renderRow(session, true, branchStem))}
       </ReorderableList>
     )

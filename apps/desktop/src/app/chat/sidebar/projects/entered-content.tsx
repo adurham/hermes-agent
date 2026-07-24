@@ -67,7 +67,12 @@ export function EnteredProjectContent({
   dndSensors
 }: {
   project: SidebarProjectTree
-  renderRows: (sessions: SessionInfo[], draggable?: boolean, sortData?: Record<string, unknown>) => React.ReactNode
+  renderRows: (
+    sessions: SessionInfo[],
+    draggable?: boolean,
+    sortData?: Record<string, unknown>,
+    preserveOrder?: boolean
+  ) => React.ReactNode
   onNewSession?: (path: null | string) => void
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
@@ -114,7 +119,12 @@ function RepoFlatSection({
 }: {
   repo: SidebarWorkspaceTree
   showHeader: boolean
-  renderRows: (sessions: SessionInfo[], draggable?: boolean, sortData?: Record<string, unknown>) => React.ReactNode
+  renderRows: (
+    sessions: SessionInfo[],
+    draggable?: boolean,
+    sortData?: Record<string, unknown>,
+    preserveOrder?: boolean
+  ) => React.ReactNode
   onNewSession?: (path: null | string) => void
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]

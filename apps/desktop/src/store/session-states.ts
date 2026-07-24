@@ -517,6 +517,20 @@ export function openSessionTile(
   const tiles = $sessionTiles.get()
 
   if (storedSessionId === $selectedStoredSessionId.get()) {
+    // Already the loaded MAIN session: never duplicate it as a tile, but its
+    // own tab (or a sidebar row dragged for it) still needs to DO something —
+    // relocate/reorder the WORKSPACE pane itself, since that's what carries
+    // this session on screen. Without this, every drag of the loaded main
+    // tab (reorder within its strip, split into an edge, stack elsewhere)
+    // silently no-op'd.
+    const tree = $layoutTree.get()
+    const target = tree && anchor ? findGroupOfPane(tree, anchor)?.id : null
+
+    if (target) {
+      moveTreePane('workspace', { before: before ?? null, groupId: target, pos: dir })
+      syncTileStripOrder()
+    }
+
     return
   }
 
