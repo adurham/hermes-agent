@@ -399,14 +399,28 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
 
 
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
-    """Warn when a relative path resolved OUTSIDE the task's workspace root.
+    """Warn when a path resolved OUTSIDE the task's workspace root.
 
     Surfaces the worktree-cwd divergence the moment it would matter: if the
     agent passes a relative path but it resolves under a directory that is not
     the workspace root (i.e. the edit is about to land in a different checkout
     than the one the agent is working in), return a message naming the absolute
-    target. ``None`` when the path is absolute, the base is unknown, or the
-    resolved path is correctly under the workspace root.
+    target. ``None`` when the base is unknown or the resolved path is correctly
+    under the workspace root.
+
+    Also covers ABSOLUTE paths (2026-07-24): a model can silently mangle an
+    absolute path it must copy near-verbatim from its own system prompt (e.g.
+    the "Current working directory: ..." line) into a tool-call argument —
+    confirmed live on exo/DSv4-Flash, a well-formed tool call with a subtly
+    wrong path (a whole word dropped, e.g. "cached_server" -> "cached"), no
+    error thrown, file silently written to the wrong place. An absolute path
+    is therefore checked the same way a relative one already was: if it
+    resolves outside the known workspace root, warn — this doesn't prevent
+    the model from choosing a genuinely different absolute location on
+    purpose, but it surfaces the far more common case (an unintentional
+    near-miss copy of the workspace root itself) as a visible warning in the
+    same turn, so the model/user can catch and correct it immediately instead
+    of a file silently landing in the wrong directory with zero signal.
 
     The workspace root is the live terminal cwd when known, else a registered
     task/session cwd override, else a sentinel-free absolute ``$TERMINAL_CWD``
@@ -414,8 +428,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(_expand_tilde(filepath)).is_absolute():
-            return None
+        is_absolute = Path(_expand_tilde(filepath)).is_absolute()
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
             return None  # No authoritative workspace root to compare against.
@@ -428,6 +441,15 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             resolved.relative_to(root)
             return None  # Inside the workspace — expected.
         except ValueError:
+            if is_absolute:
+                return (
+                    f"Absolute path {filepath!r} is OUTSIDE the active workspace "
+                    f"({str(root)!r}). If this path was meant to be built from the "
+                    f"workspace's cwd, double-check it wasn't mistyped/mis-copied — "
+                    f"a single dropped word in a long path silently writes to the "
+                    f"wrong location with no error. If a different location is "
+                    f"genuinely intended, this warning is a false positive."
+                )
             return (
                 f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
                 f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "

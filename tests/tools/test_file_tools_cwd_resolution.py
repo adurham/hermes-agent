@@ -208,11 +208,31 @@ def test_no_warning_when_relative_path_inside_workspace(_isolated_cwd, monkeypat
     assert warn is None
 
 
-def test_no_warning_for_absolute_input(_isolated_cwd, monkeypatch):
+def test_warning_fires_for_absolute_path_outside_workspace(_isolated_cwd, monkeypatch):
+    """Absolute path resolving outside the live workspace must warn too
+    (2026-07-24): a model can silently mangle an absolute path built from its
+    own system-prompt cwd line into a tool-call argument (confirmed live on
+    exo/DSv4-Flash — a whole word dropped from the path, no error thrown,
+    file silently written to the wrong place). This mirrors the existing
+    relative-path divergence warning so the wrong-location case is visible
+    in the same turn instead of a silent misroute.
+    """
     workspace, decoy = _isolated_cwd
     terminal_tool.record_session_cwd("default", str(workspace))
 
     warn = ft._path_resolution_warning(str(decoy / "target.py"), decoy / "target.py", task_id="default")
+
+    assert warn is not None
+    assert "OUTSIDE the active workspace" in warn
+    assert str(workspace) in warn
+
+
+def test_no_warning_for_absolute_path_inside_workspace(_isolated_cwd, monkeypatch):
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("default", str(workspace))
+    resolved_in_workspace = workspace / "target.py"
+
+    warn = ft._path_resolution_warning(str(resolved_in_workspace), resolved_in_workspace, task_id="default")
 
     assert warn is None
 
