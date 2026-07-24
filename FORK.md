@@ -27,6 +27,98 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-24 (desktop: Miku pet voice — sluggish/draggy cadence + always-instant speech)
+
+**Symptom (user report):** the Miku pet voice felt "slow" — both overall
+response time before she started speaking, and the cadence/rhythm of the
+speech itself felt "kinda both" rushed and draggy at once.
+
+**Two independent root causes found and fixed, one in each half of the
+pipeline:**
+
+**1. Cadence (audio itself) — fixed in `~/.hermes/pets/voices/miku/miku_voice.py`,
+machine-local pipeline state, not this repo.** Measured directly: edge-tts
+bakes in ~0.8-1.1s of fixed leading/trailing silence per clip (on a 2-word
+line like "all set!" that's over half the total clip), and renders a literal
+`"..."` (used in lines like "Yay!... done!") as an internal pause of ~0.82s —
+almost as long as the words on either side of it. Confirmed on the RAW
+pre-RVC edge-tts output (not an RVC-introduced artifact) via
+`ffmpeg silencedetect`. Fix: `_synthesize_source_audio` now splits a line on
+`"..."`/`"…"` into separate edge-tts calls (fired concurrently via
+`asyncio.gather`, not sequentially, so a 2-beat line only pays one network
+round trip), trims each segment's fixed leading/trailing silence to its real
+speech boundary via `ffmpeg atrim` (guided by `silencedetect`, with a small
+tail pad so a trailing consonant isn't clipped, and a safe copy-through
+fallback on any detection failure or degenerate all-silence clip), then
+re-splices with a short controlled 0.18s gap (`_splice_with_gaps`, an ffmpeg
+`apad`+`concat` filter graph) instead of trusting edge-tts's own pause/tail.
+Measured result: "Yay!... done!" duration dropped from 2.28s → 0.86s (62%
+reduction), gap shrank from 0.82s → ~0.25s, and a plain no-ellipsis line's
+duration also dropped (removing the fixed dead air alone helps every line,
+not just multi-beat ones).
+
+**2. Perceived latency (time-to-first-sound) — fixed in
+`apps/desktop/src/components/pet/pet-bubble.tsx` (this repo).** The optional
+LLM-flavored dialogue feature (`auxiliary.pet_dialogue.enabled`) was
+SEQUENTIAL: `speakAnnouncedBeat` awaited `fetchPetDialogue()` (a real Haiku
+round-trip, measured ~2.3s live against the actual auxiliary client) before
+speech started at all — so on top of the ~3-5s TTS pipeline itself (worse
+when the RVC daemon had idled out), the user was also waiting out an LLM
+call before anything played. Confirmed the model was already the cheap
+choice (`claude-haiku-4-5` via `auxiliary.anthropic.default`, no
+`pet_dialogue`-specific override in the user's config) — the ~2.3s is
+Haiku's real latency, not a wrong-model bug.
+
+User explicitly chose (after ruling out simpler options — disable
+pet_dialogue entirely, or accept the wait) an architecturally faster shape:
+speech must be instant, EVERY time, with the LLM-generated line still used
+whenever available — explicitly accepting that a "completed" beat's spoken
+line may occasionally describe the PREVIOUS finished task rather than the
+current one on rapid back-to-back completions (the "waiting" beat carries no
+task-specific context, so it has no such risk).
+
+**Design (validated via `consult` against claude-fable-5 before building —
+confirmed the stale-while-revalidate/double-buffering shape was correct, and
+surfaced one real bug in the first draft):** a per-beat (`completed` |
+`waiting`) single-slot cache. `speakAnnouncedBeat` now speaks WHATEVER'S
+CACHED right now (falling back to the static pool if nothing's cached yet)
+before doing anything else, then fires `fetchPetDialogue()` in the
+background — its result is stored into the cache for the NEXT occurrence of
+that beat type, never spoken for the current call. Fable caught a genuine
+correctness gap in the first draft: network resolution order doesn't match
+launch order, so on rapid beats an OLDER, slower in-flight fetch could
+resolve AFTER a newer one and silently clobber the cache with a stale
+result, breaking the intended "one beat behind" bound into "unboundedly
+stale." Fixed with a monotonic per-beat sequence number
+(`beatLineSeq`/`beatLineCommittedSeq`): each fetch captures the sequence in
+effect at launch and only commits to the cache if no fetch with an
+equal-or-higher sequence has already committed (compare-and-swap by
+sequence, not last-write-wins).
+
+**Verification:** desktop `tsc --noEmit` clean; `eslint` clean; 5 new tests
+in `pet-bubble.test.ts` covering instant-speak-with-empty-cache,
+speak-prior-beat's-cached-line-not-current-in-flight-one,
+never-speak-the-LLM-result-for-the-SAME-call, the out-of-order-resolution
+regression Fable's review caught (an older slow fetch resolving after a
+newer fast one must not overwrite the fresher cached line), and
+cache-untouched-on-rejection — all 5 pass; full desktop suite unaffected —
+210 files / 1758 tests passing. Cadence fix verified directly against the
+live pipeline (not just unit-level): restarted the daemon to pick up the
+new module, ran cold + warm calls through the real `speak.sh` entry point,
+confirmed consistent 0.86s output duration across repeated warm calls (was
+2.28s, and varied run-to-run before the fix) and clean daemon logs
+throughout.
+
+**Files:** `apps/desktop/src/components/pet/pet-bubble.tsx` (per-beat cache +
+sequence-guarded background refresh in `speakAnnouncedBeat`, new
+`_resetBeatLineCacheForTests` test hook), `apps/desktop/src/components/pet/
+pet-bubble.test.ts` (new, 5 tests). `~/.hermes/pets/voices/miku/miku_voice.py`
+(cadence fix — machine-local pipeline state per the
+`custom-tts-voice-pipelines` skill's guidance, not tracked in this repo).
+
+**Merge note:** fork-only desktop app, no upstream equivalent — no conflict
+risk.
+
 ### Fork-only fix — 2026-07-24 (desktop: project-terminal follow duplicated tabs on repeated switches)
 
 **Symptom (user report):** with the "terminal pane follows the active

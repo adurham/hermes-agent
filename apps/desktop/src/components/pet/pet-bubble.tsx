@@ -31,9 +31,14 @@ import { $petVoiceEnabled, $petVoiceProvider } from '@/store/pet-voice'
  * OPTIONAL LLM DIALOGUE (`auxiliary.pet_dialogue.enabled`, off by default):
  * for those same two announced beats, first tries a short cheap-model call
  * (`POST /api/pet/dialogue`) for a fresh, context-aware line — e.g.
- * referencing what the agent just did instead of a generic "all done!". On
- * any failure (disabled, timeout, network error) it falls back to the
- * static pool below, so the feature never blocks or breaks. Never used for
+ * referencing what the agent just did instead of a generic "all done!". The
+ * SPOKEN line is always instant, though — never delayed waiting on that call
+ * (see `speakAnnouncedBeat`'s per-beat cache below): each beat speaks
+ * whatever LLM line resolved from the PREVIOUS occurrence of that beat type
+ * (or falls back to the static pool if none has resolved yet), while a fresh
+ * background call refreshes the cache for next time. A completion line can
+ * therefore read one beat "behind" — describing the task before this one —
+ * an explicit, user-confirmed tradeoff for zero-wait speech. Never used for
  * the continuous run/review rotation — that stays 100% local regardless of
  * this setting, to avoid an LLM call on a ~2.6s cadence.
  *
@@ -199,15 +204,52 @@ function pick(lines: string[], prev: string): string {
   return next
 }
 
+// Per-beat cache of the last LLM-generated line (see speakAnnouncedBeat below)
+// — the SPOKEN line is always instant, so a live LLM call (~2s Haiku
+// round-trip) can never delay playback. Instead: speak whatever's cached for
+// THIS beat type right now, then kick off a fresh fetchPetDialogue() in the
+// background whose result only feeds the NEXT occurrence of the same beat
+// type. A spoken completion line therefore reads one beat "behind" the LLM
+// (describes whichever task most recently finished BEFORE this one) — an
+// explicit, accepted tradeoff (confirmed with the user) for zero-wait speech.
+// `waiting` never carries task-specific context (see the caller), so
+// staleness there is a non-issue; `completed` is where a rapid back-to-back
+// pair of completions could occasionally speak a line describing the wrong
+// task.
+//
+// `beatLineSeq`/`beatLineCommittedSeq` guard against out-of-order network
+// resolution: a background fetch launched for beat N can resolve AFTER a
+// later beat N+1's fetch (network jitter doesn't preserve launch order), and
+// a naive last-write-wins cache would let that late arrival silently
+// overwrite a fresher line, breaking the "one beat stale" bound. Each fetch
+// captures the sequence number in effect at launch and only commits to the
+// cache if no fetch with an equal-or-higher sequence has already committed.
+const beatLineCache: Record<'completed' | 'waiting', string | null> = { completed: null, waiting: null }
+const beatLineSeq: Record<'completed' | 'waiting', number> = { completed: 0, waiting: 0 }
+const beatLineCommittedSeq: Record<'completed' | 'waiting', number> = { completed: 0, waiting: 0 }
+
+// Test-only: reset the module-level cache between test cases (it otherwise
+// persists for the process lifetime, same as any other module-level cache).
+export function _resetBeatLineCacheForTests(): void {
+  beatLineCache.completed = null
+  beatLineCache.waiting = null
+  beatLineSeq.completed = 0
+  beatLineSeq.waiting = 0
+  beatLineCommittedSeq.completed = 0
+  beatLineCommittedSeq.waiting = 0
+}
+
 /**
- * Speak one of the two ANNOUNCED beats. Tries the optional LLM-generated
- * line first (`fetchPetDialogue`); on ANY rejection — disabled (404),
- * timeout, network error, empty response — falls back to a random pick from
- * the static pool, so the feature degrades gracefully rather than going
- * silent. Never awaited by the caller; fire-and-forget with its own
- * catch-all, same as the rest of this component's TTS calls.
+ * Speak one of the two ANNOUNCED beats. Always speaks IMMEDIATELY — from the
+ * per-beat cache above, falling back to a random pick from the static pool
+ * when nothing's cached yet (first beat of the session, or pet_dialogue
+ * disabled/never resolved) — never blocks on the LLM call. Fires
+ * fetchPetDialogue() in the background purely to refresh the cache for the
+ * NEXT occurrence of this beat type; any failure (disabled/404, timeout,
+ * network error) just leaves the cache as-is, so the feature degrades
+ * gracefully rather than going silent or stale-forever.
  */
-function speakAnnouncedBeat(params: {
+export function speakAnnouncedBeat(params: {
   beat: 'completed' | 'waiting'
   context: string
   fallbackLines: string[]
@@ -221,16 +263,22 @@ function speakAnnouncedBeat(params: {
       // Cosmetic feature — a TTS hiccup shouldn't surface an error toast.
     })
 
+  void speak(beatLineCache[beat] || pick(fallbackLines, ''))
+
+  const mySeq = ++beatLineSeq[beat]
+
   void fetchPetDialogue({ beat, context, petSlug })
     .then(response => {
       const llmLine = response.ok ? response.line.trim() : ''
 
-      void speak(llmLine || pick(fallbackLines, ''))
+      if (llmLine && mySeq >= beatLineCommittedSeq[beat]) {
+        beatLineCache[beat] = llmLine
+        beatLineCommittedSeq[beat] = mySeq
+      }
     })
     .catch(() => {
-      // Disabled (404), timeout, or network error — all treated the same:
-      // fall back to the static pool so the feature never goes silent.
-      void speak(pick(fallbackLines, ''))
+      // Leave the cache untouched — the next beat just reuses whatever was
+      // already there (or the static pool, if nothing's ever resolved).
     })
 }
 
