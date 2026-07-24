@@ -27,6 +27,62 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-24 (Miku pet voice: leading-edge trim clipped word onsets, made speech unintelligible)
+
+**Symptom (user report, immediately after the previous cadence-fix entry
+shipped):** "I couldn't understand what she said" — the cadence fix landed
+but broke intelligibility.
+
+**Root cause:** the trailing-silence trim added in the prior entry also
+trimmed the LEADING edge, with a hard cut at the exact `-30dB` silencedetect
+boundary and (unlike the trailing edge) zero lead-in pad. Verified with
+`faster-whisper` word-level timestamps that a line like "on it!" has real
+speech starting at `t=0.000`, but the trim cut in at `t=0.168s` — silence-
+detect was flagging the word's own quiet initial phoneme as "silence" under
+the same threshold that correctly flagged real dead air, and the hard cut
+sliced directly into the word onset. Every `"..."`-split segment (introduced
+by the same prior fix) got this treatment, and multi-beat lines got it
+twice, so it fired far more often than the single-clip pre-cadence-fix
+pipeline ever hit a leading-edge risk at all.
+
+**Fix:** `_trim_to_speech` (in `~/.hermes/pets/voices/miku/miku_voice.py`,
+machine-local pipeline state, not this repo) no longer touches the leading
+edge at all — only the trailing silence is trimmed, which was ~0.8-1.1s (the
+actual dead-air problem) vs. the leading gap's ~0.15-0.2s (tiny, and risky
+to cut given amplitude-based detection can't distinguish "real silence"
+from "a word's quiet onset").
+
+**Verification methodology (can't hear the audio directly, so verified
+objectively via `faster-whisper` local transcription instead of guessing):**
+1. Regenerated a battery of real pet lines (both default + Miku-flavored
+   pools) through OLD (pre-cadence-fix) vs. buggy-NEW (leading+trailing
+   trim) vs. fixed-NEW (trailing-only trim) pipelines, transcribed all
+   three with `faster-whisper` (`language="en"` forced — auto-detect
+   sometimes mis-picked Japanese/Chinese on short exclamations).
+2. Found two lines ("thinking…", "on it!") that transcribed as EMPTY or
+   near-empty under the buggy-NEW pipeline — a hard signal something was
+   badly wrong, not just quality variance.
+3. Confirmed via word-timestamps the leading clip was landing inside real
+   speech, not silence.
+4. After the leading-edge-untouched fix, durations normalized (no more
+   near-empty transcripts) and the two previously-empty lines transcribed
+   correctly again.
+5. Isolated one line that STILL sounds garbled ("here we go~" → "Kyo-yo")
+   by running it through the RAW, completely untrimmed, unsplit RVC
+   conversion — it garbles identically with zero trim/splice logic
+   involved, proving that specific badness is a pre-existing RVC voice-
+   conversion artifact unrelated to either fix in this or the prior entry.
+   Not fixed here — flagged as a separate, deeper RVC-quality limitation if
+   the user wants to chase it further (candidates: index_rate tuning,
+   trying the alternate candidate model from the original pitch-tuning
+   A/B, or accepting some invented/Miku-fandom terms just don't convert
+   cleanly through this checkpoint).
+
+**Files:** `~/.hermes/pets/voices/miku/miku_voice.py` only — no repo files
+changed, hence no commit for this entry (see the mandatory-workflow note
+above: FORK.md still records it here since this pipeline's tuning history is
+explicitly cross-referenced from the script's own comments).
+
 ### Fork-only fix — 2026-07-24 (desktop: Miku pet voice — sluggish/draggy cadence + always-instant speech)
 
 **Symptom (user report):** the Miku pet voice felt "slow" — both overall
