@@ -527,6 +527,42 @@ endpoint, new client function) plus one shape change to an in-tree-only
 atom (`$petTurnCompletedBeat`) with exactly one producer and one consumer,
 both updated in the same commit. No upstream conflict expected.
 
+### Fork-only fix — 2026-07-24 (pet_dialogue prompt taught nothing about spoken delivery)
+
+**Reported:** user asked "This LLM integration knows to output text for
+cadence and expressiveness and such yeah?" — it did not. The prompt from
+the entry above only told the model length (2-6 words) and tone
+(cheerful/direct); it had zero knowledge that this line gets spoken through
+TTS -> RVC, or of the punctuation-for-pacing trick ("Yay!... done!" — the
+ellipsis IS the pause) hand-tuned into the static fallback pool a few
+entries up. A generated line could easily come out as a flat, comma-laden
+sentence that reads fine as text but sounds monotone once synthesized —
+exactly the gap the earlier voice-tuning work was trying to close.
+
+**Fix:** added an explicit `delivery_rules` block to the system prompt in
+`POST /api/pet/dialogue` (`hermes_cli/web_server.py`): use "!" for a punchy
+beat and "..." for a short pause between two beats, mirroring the shape of
+"Yay!... done!" directly (told the model to copy that exact example's
+shape); prefer short/simple/high-energy words (TTS renders those more
+clearly than long ones); avoid commas/semicolons/subordinate clauses, which
+read flat once spoken.
+
+**Verification:** re-ran `POST /api/pet/dialogue` through the real FastAPI
+`TestClient` against the actual `call_llm` chain for three cases (two
+completion contexts, one waiting context) — confirmed the burst/pause
+punctuation pattern now shows up consistently rather than only in the
+one-shot example the prompt happened to mention. Synthesized all three
+through the real Miku voice pipeline (`text_to_speech_tool(...,
+provider_override='miku')`) and had the user confirm by ear that the
+delivery now matches the hand-tuned static lines' energy, not a flatter
+LLM default.
+
+**Files:** `hermes_cli/web_server.py` (`delivery_rules` addition to the
+`pet_dialogue` system prompt).
+
+**Merge note:** small additive change to an existing endpoint, no upstream
+conflict expected.
+
 ### Fork-only fix — 2026-07-24 (desktop: tab drag lit up the layout-edit dashed zone overlay)
 
 **Reported:** after fixing the tab-reorder no-op (see the entry above), the
