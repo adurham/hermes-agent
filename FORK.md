@@ -27,6 +27,89 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only feature — 2026-07-25 (agent.pin_anthropic_token: opt-in override to make a static Anthropic setup-token win over a refreshable Claude Code credential)
+
+**Motivation:** user wants Hermes pinned to a dedicated long-lived
+`claude setup-token` (valid ~1 year) on each machine, independent of the
+Anthropic account the user is interactively logged into via `claude` for
+normal Claude Code CLI work. On the LXC gateway (headless, no interactive
+login) this already worked with zero changes — nothing competed with the
+static token. On macOS this did not work, and multiple attempts to force it
+via credential-file/Keychain isolation caused real breakage (see the warm
+memory note "Claude Code (CLI) multi-account/setup-token isolation
+gotchas", fact 1083, for the full incident writeup) before we accepted the
+platform constraint and added a proper config option instead.
+
+**Root cause / platform constraint:** `resolve_anthropic_token()` in
+`agent/anthropic_adapter.py` has always deliberately preferred a refreshable
+Claude Code credential (`~/.claude/.credentials.json` or, on macOS, the
+`"Claude Code-credentials"` Keychain entry) over a static persisted
+`ANTHROPIC_TOKEN`/`CLAUDE_CODE_OAUTH_TOKEN`, via
+`_prefer_refreshable_claude_code_token()`. This is intentional and was
+previously protected by two tests
+(`test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token`,
+`test_static_env_oauth_token_does_not_block_refreshable_claude_creds` — see
+warm memory fact 266, "parked change... permanently discarded") specifically
+so a stale static token can never silently block auto-refresh for a user who
+didn't opt into a static token. That default is correct and stays correct.
+
+The actual blocker for this user's use case: on macOS, Claude Code CLI
+stores OAuth credentials in Keychain **only** — `CLAUDE_CONFIG_DIR` isolates
+config/skills/sessions but does not redirect credential storage the way it
+does on Linux/Windows (confirmed against Anthropic's own docs). So a normal
+interactive `claude` login and Hermes's setup-token read from the exact same
+shared Keychain slot on macOS, and the always-prefer-refreshable default
+meant the interactive login always won, no matter what token was persisted
+in `.env`. There is no clean OS-level way to keep the two credentials
+separate on macOS; every attempt to force separation via Keychain surgery
+(deleting/rewriting the shared entry) broke the user's daily-driver login
+twice during diagnosis, because non-interactive `security add-generic-password`
+writes don't carry the ACL that gives the `claude` binary read access — only
+a real interactive `/login` from `claude` itself writes a usable entry.
+
+**Fix:** added an explicit opt-in config key, `agent.pin_anthropic_token`
+(default `false`, preserving all existing behavior and both protective
+tests unchanged). When set `true`, `resolve_anthropic_token()` skips the
+`_prefer_refreshable_claude_code_token()` call for both `ANTHROPIC_TOKEN`
+and `CLAUDE_CODE_OAUTH_TOKEN` sources and returns the static token directly,
+regardless of what refreshable credential Claude Code holds. This is a
+per-machine opt-in via `hermes config set agent.pin_anthropic_token true` —
+it does not change resolution order for anyone who hasn't explicitly set it.
+
+**Files touched:**
+- `agent/anthropic_adapter.py` — new `_pin_static_anthropic_token()` helper
+  (lazy `hermes_cli.config.load_config()` read, same pattern as
+  `_system_prompt_mode_compact()`); `resolve_anthropic_token()` now checks
+  it before calling `_prefer_refreshable_claude_code_token()` for both env
+  sources.
+- `hermes_cli/config.py` — `DEFAULT_CONFIG["agent"]["pin_anthropic_token"]
+  = False`.
+- `tests/agent/test_anthropic_adapter.py` — 2 new tests:
+  `test_pin_anthropic_token_config_makes_static_token_win` (flag true →
+  static token wins over a live refreshable credential) and
+  `test_pin_anthropic_token_false_preserves_default_behavior` (flag
+  explicitly false → identical to flag absent, refreshable credential still
+  wins).
+
+**Verification:**
+1. `scripts/run_tests.sh tests/agent/test_anthropic_adapter.py` — 208/208
+   passed, including both pre-existing protective tests unchanged.
+2. Live end-to-end on this Mac: with the flag unset, ran
+   `resolve_anthropic_token()` directly against the real `~/.hermes/.env`
+   and real Keychain — resolved to the personal-login token (SHA256 hash
+   compared, not the raw value). Ran `hermes config set
+   agent.pin_anthropic_token true`, re-ran the same resolver call — resolved
+   to the setup-token instead (hash match confirmed). Flipped back
+   confirmed default restored.
+
+**Deployment note:** this flag only solves the "which credential does
+Hermes pick" half of the problem. Getting a dedicated setup-token onto a
+machine still requires `claude setup-token` run interactively (prints the
+token to stdout, does not reliably self-persist — see fact 1083) and saving
+it into `.env` via `hermes model` or manual edit. No Keychain surgery is
+required or recommended anymore — leave the interactive `claude` login
+alone entirely; this flag makes Hermes ignore it instead of needing it gone.
+
 ### Fork-only fix — 2026-07-24 (Miku pet voice: leading-edge trim clipped word onsets, made speech unintelligible)
 
 **Symptom (user report, immediately after the previous cadence-fix entry
