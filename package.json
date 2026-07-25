@@ -50,7 +50,9 @@
       }
     },
     "rimraf": "file:local-packages/rimraf-shim",
-    "boolean": "file:local-packages/boolean-shim"
+    "boolean": "file:local-packages/boolean-shim",
+    "minimatch": "^10.2.5",
+    "brace-expansion": "^5.0.8"
   },
   "engines": {
     "node": ">=20.0.0"
