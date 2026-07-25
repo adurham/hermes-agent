@@ -27,6 +27,82 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-25 (npm audit: 19 high-severity vulns → 0, react-router v7→v8 + minimatch/brace-expansion overrides)
+
+**Symptom:** `npm install` at repo root reported 19 high-severity
+vulnerabilities; `npm run pack` in `apps/desktop` (the packaged-build path)
+surfaced this on every fresh install.
+
+**Root cause (two independent vuln classes):**
+1. 17/19 were devDependency-only, all transitively pinned to old
+   `minimatch`/`brace-expansion` (`GHSA-mh99-v99m-4gvg` — DoS via
+   `expand()` producing unbounded-length results, uncatchable OOM crash)
+   via the `electron-builder` build toolchain (`@electron/asar`,
+   `@electron/universal`, `app-builder-lib`, `dmg-builder`, `ejs`, `jake`,
+   `filelist`, `electron-winstaller`, etc.) and the `eslint`/
+   `eslint-plugin-react` lint toolchain. These only ever process our own
+   source tree paths at build/lint time — no attacker-controlled input
+   reaches them — but electron-builder's real fix is v27, still
+   alpha-only on npm (no stable release), so bumping the top-level package
+   wasn't an option yet.
+2. 2/19 were `react-router`/`react-router-dom`, a real *production*
+   dependency shipped in the built app: `GHSA-qwww-vcr4-c8h2`, an RSC-mode
+   CSRF bypass. Confirmed via grep across all ~65 import sites in
+   `apps/desktop` and `web` that neither app uses any RSC/`unstable_`
+   APIs (plain SPA routing — `HashRouter`/`BrowserRouter`/`MemoryRouter`,
+   `useNavigate`, `Routes`/`Route`, no `RouterProvider`/data-router mode)
+   — the exploit path is unreachable as shipped — but since it's a real
+   prod dep on an EOL-track major, did the actual v8 migration rather than
+   accept the risk.
+
+**Fix:**
+- Root `package.json`: added `minimatch: "^10.2.5"` and
+  `brace-expansion: "^5.0.8"` to the existing `overrides` block, forcing
+  the whole dependency tree (electron-builder's toolchain + eslint's
+  toolchain) onto patched transitive versions without waiting on an
+  electron-builder major bump. Verified with a clean
+  `rm -rf node_modules && npm install` that the override actually takes
+  (npm doesn't always re-resolve overrides against an existing
+  `node_modules`/lockfile in place) — killed 17/19 vulns immediately.
+- `apps/desktop/package.json` + `web/package.json`: `react-router-dom`
+  `^7.17.0` → `react-router` `^8.3.0`. Rewrote all 41 files across both
+  apps that imported from `react-router-dom` to import from
+  `react-router` instead (mechanical text swap — every API in use,
+  `BrowserRouter`/`HashRouter`/`MemoryRouter`/`Link`/`Navigate`/`Route`/
+  `Routes`/`useLocation`/`useNavigate`/`useParams`/`useSearchParams`, is
+  exported directly from the `react-router` v8 package root; neither app
+  uses `RouterProvider`/`react-router/dom`, so no deeper migration was
+  needed). Confirmed prerequisites already satisfied: Node 26 (v8 needs
+  ≥22.22), React 19.2.8 (v8 needs ≥19.2.7), Vite 8.1.5 (v8 needs ≥7).
+
+**Verification:** clean reinstall → `npm audit` reports 0 vulnerabilities.
+`apps/desktop` and `web` both `tsc --noEmit` clean. `apps/desktop` `eslint`
+runs clean against the new minimatch/eslint-plugin-react chain (2
+pre-existing unrelated import-order errors, untouched by this change).
+Full `apps/desktop` `npm run pack` (build → electron-builder → app
+bundle) succeeds end-to-end, `Hermes.app` produced. `web` production
+build (`tsc -b && vite build`) succeeds. Desktop vitest suite: A/B tested
+via `git stash`/`stash pop` against unmodified `main` — identical 191
+passed / 19 failed on both baseline and with this change (the 19 are a
+pre-existing `window.localStorage.clear()` jsdom environment issue,
+unrelated to routing). All 52 tests across the 5 files that actually
+exercise `MemoryRouter`/router hooks (`approval-mode-menu.test.tsx`,
+`model-settings.test.tsx`, `toolset-config-panel.test.tsx`,
+`messaging/index.test.tsx`, `skills/index.test.tsx`) pass individually.
+
+**Files:** `package.json` (+2 overrides), `apps/desktop/package.json`,
+`web/package.json` (react-router-dom → react-router), 41 `.ts`/`.tsx`
+files across `apps/desktop/src` and `web/src` (import path only, no
+logic changes), `package-lock.json`.
+
+**Merge note:** the `overrides` block already existed pre-fork
+(upstream); this only appends two keys, low conflict risk on merge. The
+`react-router-dom` → `react-router` import rewrite touches files that
+exist upstream too — expect merge conflicts on any upstream PR that also
+touches routing imports in these files; resolve by keeping the
+`react-router` import path (upstream will eventually need this same v8
+migration once react-router-dom's compat shim ages out further).
+
 ### Fork-only feature — 2026-07-25 (agent.pin_anthropic_token: opt-in override to make a static Anthropic setup-token win over a refreshable Claude Code credential)
 
 **Motivation:** user wants Hermes pinned to a dedicated long-lived
