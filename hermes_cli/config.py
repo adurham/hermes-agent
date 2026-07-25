@@ -1041,6 +1041,19 @@ DEFAULT_CONFIG = {
         # provider hiccups on a single provider.
         "api_max_retries": 3,
         "service_tier": "",
+        # When true, a static Anthropic OAuth/setup token (ANTHROPIC_TOKEN or
+        # CLAUDE_CODE_OAUTH_TOKEN) always wins over a refreshable Claude Code
+        # credential (~/.claude/.credentials.json or macOS Keychain), instead
+        # of the default behavior where the refreshable credential preempts
+        # it. Opt in on a machine where a separate interactive `claude`
+        # login shares the same credential slot Hermes reads by default
+        # (macOS Keychain isn't scoped by CLAUDE_CONFIG_DIR, so a daily-driver
+        # `claude` login and Hermes's dedicated setup-token collide in one
+        # slot there) and you want Hermes pinned to its own long-lived token
+        # regardless of what the interactive login does. Default false
+        # preserves auto-refresh: leave this off unless you've deliberately
+        # set up a dedicated setup-token for Hermes.
+        "pin_anthropic_token": False,
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false

@@ -574,7 +574,7 @@ class TestResolveAnthropicToken:
 
     def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-fake-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
@@ -591,13 +591,61 @@ class TestResolveAnthropicToken:
 
     def test_keeps_static_anthropic_token_when_only_non_refreshable_claude_key_exists(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-fake-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         claude_json = tmp_path / ".claude.json"
-        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-managed-key"}))
+        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-managed-fake-key"}))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
-        assert resolve_anthropic_token() == "sk-ant-oat01-static-token"
+        assert resolve_anthropic_token() == "sk-ant-oat01-static-fake-token"
+
+    def test_pin_anthropic_token_config_makes_static_token_win(self, monkeypatch, tmp_path):
+        """agent.pin_anthropic_token: true inverts the default preference —
+        the static env token wins even when a refreshable Claude Code
+        credential is present. Opt-in only; default behavior (tested above)
+        is unaffected when the config key is absent or false."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-fake-token")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "cc-auto-token",
+                "refreshToken": "refresh-token",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"pin_anthropic_token": True}},
+        )
+
+        assert resolve_anthropic_token() == "sk-ant-oat01-static-fake-token"
+
+    def test_pin_anthropic_token_false_preserves_default_behavior(self, monkeypatch, tmp_path):
+        """Explicit agent.pin_anthropic_token: false behaves identically to
+        the key being absent — refreshable Claude Code creds still win."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-fake-token")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "cc-auto-token",
+                "refreshToken": "refresh-token",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"pin_anthropic_token": False}},
+        )
+
+        assert resolve_anthropic_token() == "cc-auto-token"
 
 
 class TestRefreshOauthToken:

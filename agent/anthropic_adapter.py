@@ -1783,6 +1783,32 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
     return None
 
 
+def _pin_static_anthropic_token() -> bool:
+    """Return True when the user has explicitly opted a static Anthropic
+    OAuth/setup token to win over any refreshable Claude Code credential.
+
+    Default is False, which preserves the safety net in
+    ``_prefer_refreshable_claude_code_token``: a stale persisted token can
+    never silently block auto-refresh for someone who didn't ask for a
+    pinned token. Opt in via ``agent.pin_anthropic_token: true`` in
+    config.yaml for machines where a separate interactive ``claude`` login
+    shares the same Keychain/credential-file slot Hermes reads by default,
+    and the user wants Hermes's dedicated long-lived setup-token to win
+    regardless (macOS Keychain isn't scoped by CLAUDE_CONFIG_DIR, so the two
+    credentials collide in one slot there — see FORK.md).
+
+    Cheap import — loads lazily so we don't pay for it on every request
+    unless the user opts in. Falls back to False (safe default) on any
+    config-load failure.
+    """
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        val = ((_load_cfg() or {}).get("agent") or {}).get("pin_anthropic_token")
+        return bool(val)
+    except Exception:
+        return False
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -1794,24 +1820,35 @@ def resolve_anthropic_token() -> Optional[str]:
       4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
       5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
+    By default, a refreshable Claude Code credential (source #3) preempts a
+    static token from #1/#2 so a stale persisted token never blocks
+    auto-refresh — see ``_prefer_refreshable_claude_code_token``. Set
+    ``agent.pin_anthropic_token: true`` in config.yaml to invert that for
+    this machine: the static token then always wins over any refreshable
+    credential, useful when a separate interactive ``claude`` login shares
+    the same credential slot Hermes would otherwise read.
+
     Returns the token string or None.
     """
     creds = read_claude_code_credentials()
+    pin_static = _pin_static_anthropic_token()
 
     # 1. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
-        preferred = _prefer_refreshable_claude_code_token(token, creds)
-        if preferred:
-            return preferred
+        if not pin_static:
+            preferred = _prefer_refreshable_claude_code_token(token, creds)
+            if preferred:
+                return preferred
         return token
 
     # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
-        preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
-        if preferred:
-            return preferred
+        if not pin_static:
+            preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
+            if preferred:
+                return preferred
         return cc_token
 
     # 3. Claude Code credential file
