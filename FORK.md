@@ -4211,6 +4211,129 @@ Specific things that **must never** be sent upstream:
 If a fork feature later seems genuinely upstream-worthy, file a separate
 clean PR built from upstream's tree, not a backport of fork code.
 
+## Upstream contribution candidates (audit, 2026-07-25)
+
+A full read-through of every dated entry in this file, sorted into what's a
+legitimate candidate to send upstream as a clean PR vs. what's tied to this
+fork's specific environment/preferences and should stay put. Nothing here is
+scheduled — this is a documented shortlist for later triage. Per the "Why a
+fork" rule above, any of these would be filed as a **separate clean PR built
+from upstream's tree**, never a backport of fork code as-is.
+
+### Bucket A — legitimate candidates for a clean upstream PR
+
+Security/correctness fixes, highest value first:
+
+* **Claude Code Keychain write-back on OAuth refresh** (2026-07-14) — without
+  this, any macOS user running both Hermes and Claude Code CLI hits a
+  permanent "/login every launch" loop once OAuth refresh-token rotation
+  strands the Keychain copy. Reproducible on any dual-consumer macOS setup,
+  not fork-specific.
+* **Bearer clients leak `ANTHROPIC_API_KEY` as `x-api-key`** (2026-07-14) — a
+  stale env var silently 401s a valid OAuth session; general SDK-interaction
+  bug in `build_anthropic_client`.
+* **`_sanitize_replay_block` fail-closed → fail-open** (2026-07-24, part of
+  the "invisible token/cost doubling" entry) — the function was silently
+  dropping `server_tool_use`/`web_search_tool_result` blocks before
+  persistence, hiding real evidence. The fail-open fix (matching its
+  already-correct sibling function's contract) stands on its own,
+  independent of the fork's native-search feature.
+* **MCP orphaned-task / "Event loop is closed" traceback on `/exit`**
+  (2026-07-23) — unguarded `cancel()` inside a `finally` block plus an
+  orphaned parked task never entering `_servers`; a real asyncio bug in
+  `tools/mcp_tool.py`.
+* **Background skill/memory review racing a live turn** (2026-07-22) —
+  doubled prompt-token accounting + a Ctrl+C-proof lockup from a background
+  review fork never being added to `_active_children`. Serious concurrency
+  bug in core turn-finalization, not fork-specific.
+
+General bug fixes (CLI/display/desktop), roughly in order of how many users
+would hit them:
+
+* `get_cwidth()` blind to emoji+VS-16 → `display_cwidth()` helper
+  (2026-07-24) — root-caused a recurring "garbled/duplicate digit" spinner
+  bug after two prior band-aid fixes.
+* Clarify/approval panel wide-glyph padding bug, `ljust()` vs. terminal cell
+  width (2026-07-07).
+* `/usage` NameError — `cache_read_tokens`/`cache_write_tokens` referenced
+  but never defined (2026-07-07).
+* Reasoning-block token estimator quadruple-counting `anthropic_content_blocks`
+  thinking text (2026-07-07).
+* Dangling `toolsets` NameError in `delegate_task` after upstream removed the
+  model-facing arg (2026-07-07).
+* tool_search sticky activation — flapping mid-conversation corrupts
+  tool-call history via `_strip_unknown_tool_blocks` (2026-07-07).
+* Desktop: session/tab drag-to-reorder completely broken, plus a nested
+  `DndContext` bug (2026-07-22).
+* Desktop: workspace tab had no close button, and naively adding one would
+  have removed the app's structurally-required anchor pane (2026-07-23/24).
+* Desktop: clicking into a still-running session showed a blank transcript —
+  an RAF-throttle bug when the window is backgrounded (2026-07-22).
+* Desktop: a queued composer message could be delivered into the wrong,
+  currently-viewed session (2026-07-22).
+* Desktop: profile deletion silently reverted after relaunch — zombie
+  backend process detection missed `python3 <hermes-shim>` argv shapes
+  (2026-07-22).
+* Desktop model picker hid Anthropic despite valid Claude Code credentials
+  (2026-07-22).
+* Desktop: terminal glyphs render as tofu boxes — missing Nerd Font fallback
+  in the xterm.js `fontFamily` chain (2026-07-22).
+* `resedit` replacing deprecated `rcedit`, and the `rimraf`/`boolean`
+  local-shim replacements (2026-07-22/24) — routine dependency hygiene, easy
+  wins with no behavior change.
+* Exit-summary/cleanup ordering + cost-accounting fixes: exit watchdog
+  swallowing the cost report, memory-confirm cost not counted, background
+  curator cost not counted (2026-07-14, three related entries).
+
+Generalizable features (sound mechanism, would need light de-forking — a
+config key rename, dropping an exo-specific default — before filing):
+
+* **`consult` tool** (second-opinion from a reference model, 2026-07-07) —
+  general-purpose, already a core workflow habit.
+* **Opt-in toolset deferral via `tool_search`** (`defer_toolsets`/
+  `defer_tools`/`keep_eager_tools`, 2026-06-22) — pure config, meaningfully
+  cuts prompt bloat for anyone with toolsets registered but rarely used.
+* **`trafilatura` free `web_extract` backend** (2026-07-18) — closes a real
+  gap: every extract-capable provider in the registry needs a paid key or a
+  self-hosted service.
+* **Hot-tier memory audit** (stale-path detection + optional LLM
+  classification, 2026-07-14, three entries) — generalizable memory-hygiene
+  feature, not exo/Anthropic-specific.
+* **Delegate auto-route to model tier + persona** (2026-07-07) — useful
+  default-routing behavior for any `delegate_task` caller that doesn't pass
+  an explicit model/agent_type.
+
+### Bucket B — needs de-forking first (sound idea, personal-coupled implementation)
+
+* `agent.pin_anthropic_token` (2026-07-25) — solves a real macOS
+  Keychain-sharing problem (interactive `claude` login and a dedicated
+  setup-token read from the same Keychain slot), but the motivating scenario
+  is niche (a dedicated long-lived setup-token separate from daily-driver
+  login). Could genuinely help others with the same dual-credential setup;
+  would need generalized framing in the config docs, not fork-specific
+  wording, before filing.
+* Pet-bubble's stale-while-revalidate + monotonic-sequence-guard cache
+  pattern (2026-07-24, "sluggish/draggy cadence" entry) — the caching
+  *pattern* (speak-cached-now, fetch-in-background, sequence-guarded commit
+  so an older slow fetch can't clobber a newer one) is a reusable UI
+  technique independent of the Miku voice feature it was built for. Would
+  need extraction into a generic helper before it's upstream-shaped.
+
+### Bucket C — personal/fork-only, do not upstream
+
+* Everything in the Miku/Vocaloid/RVC voice pipeline (voice synthesis
+  pipeline, phrasing/persona passes, warm-daemon latency work) — cosmetic
+  character choice specific to this user's pet mascot pick.
+* exo-cluster-specific auxiliary routing: exo-scoped delegation, the
+  provider-first `auxiliary` config schema, the `fallback_models` map — built
+  around this fork's specific two-provider (exo/Anthropic) routing
+  preference, not a general-purpose design upstream would want verbatim.
+* MCP no-`mcp_`-prefix naming convention — a deliberate, permanent fork
+  divergence from upstream's `mcp__` normalization (see "Conflict guidance by
+  file" below), not a bug to fix.
+* Anything in `agent/fork/` and anything listed under "must never be sent
+  upstream" above — the PR #25234 lesson applies without exception.
+
 ## Future upstream merges
 
 **Cadence is the #1 conflict lever.** Conflict count scales with drift, measured:
