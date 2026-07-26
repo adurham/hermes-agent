@@ -1054,6 +1054,85 @@ def test_force_adhoc_signing_respects_explicit_caller_flag(monkeypatch):
     assert env["CSC_IDENTITY_AUTO_DISCOVERY"] == "true"
 
 
+# --- _desktop_macos_relaunchable_fixup entitlements parity ----------------
+#
+# Regression coverage for the self-update signing regression: a from-scratch
+# local build (npm run dist:mac/pack) is ad-hoc signed WITH entitlements +
+# hardened runtime (electron-builder's mac.entitlements / mac.hardenedRuntime),
+# but the self-updater's post-rebuild relaunch fixup used to re-sign with a
+# bare `codesign --force --deep --sign -` that dropped both, silently
+# regressing every self-updated app's capabilities (mic grant, node-pty
+# library-validation bypass) versus a fresh local build.
+
+
+def test_relaunch_fixup_signs_with_entitlements_and_hardened_runtime(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+    exe = app / "Contents" / "MacOS" / "Hermes"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("stub")
+    entitlements = desktop_dir / "electron" / "entitlements.mac.plist"
+    entitlements.parent.mkdir(parents=True)
+    entitlements.write_text("<plist/>")
+
+    monkeypatch.setattr(cli_main.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr(cli_main.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    assert calls[0] == ["xattr", "-cr", str(app)]
+    sign_cmd = calls[1]
+    assert sign_cmd[:3] == ["/usr/bin/codesign", "--force", "--deep"]
+    assert "--options" in sign_cmd and "runtime" in sign_cmd
+    assert "--entitlements" in sign_cmd
+    assert str(entitlements) in sign_cmd
+    assert sign_cmd[-3:] == ["--sign", "-", str(app)]
+
+
+def test_relaunch_fixup_falls_back_to_bare_adhoc_without_entitlements_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+    exe = app / "Contents" / "MacOS" / "Hermes"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("stub")
+    # No entitlements.mac.plist created — simulates a checkout where the file
+    # is unexpectedly missing; must not error, must not claim hardened runtime.
+
+    monkeypatch.setattr(cli_main.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr(cli_main.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    sign_cmd = calls[1]
+    assert sign_cmd == ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)]
+    assert "--options" not in sign_cmd
+    assert "--entitlements" not in sign_cmd
+
+
+def test_relaunch_fixup_noop_with_real_signing_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setenv("APPLE_SIGNING_IDENTITY", "Developer ID Application: Someone")
+
+    desktop_dir = tmp_path / "apps" / "desktop"
+    calls = []
+    monkeypatch.setattr(cli_main.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    assert calls == []
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+
+
 # --- desktop.* launch options (config.yaml) -------------------------------
 
 
