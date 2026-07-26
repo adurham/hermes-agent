@@ -4591,12 +4591,26 @@ blob, Miku pet bubble) even when the fix itself is generic:
   unlike the two prior candidates. Patch saved at
   `.upstream-candidates/reasoning-estimator-dedup-fix.diff`.
 * Dangling `toolsets` NameError in `delegate_task` after upstream removed the
-  model-facing arg (2026-07-07). Sounds like a real upstream-caused
-  regression on the fork's tree; verify `delegate_task`'s current upstream
-  shape still has the same gap.
+  model-facing arg (2026-07-07). **CHECKED 2026-07-26, ALREADY FIXED
+  UPSTREAM.** Both spots the fork's fix targeted (`tools/delegate_tool.py`
+  task_list construction + the per-task `_build_child_agent` call) already
+  read `toolsets=None` on current `upstream/main` — matching what the fix
+  would have changed them to. Ran `tests/tools/test_delegate.py` against a
+  clean `upstream/main` worktree: 159/159 passed (the fork's original commit
+  message cited 43 failures on the pre-fix code, which no longer reproduce).
+  Upstream must have landed its own equivalent fix independently sometime
+  after 2026-07-07. Nothing to file — `implemented_on_main`.
 * tool_search sticky activation — flapping mid-conversation corrupts
-  tool-call history via `_strip_unknown_tool_blocks` (2026-07-07). Plausibly
-  generic; verify against upstream's current tool_search implementation.
+  tool-call history via `_strip_unknown_tool_blocks` (2026-07-07).
+  **CHECKED 2026-07-26, DO NOT FILE.** The fork's own commit message
+  (`908ff9f252`) self-disqualifies this: "Fork-only change (tagged # FORK
+  throughout) — diverges from upstream's intentionally-stateless-per-call
+  design, which exists to avoid a past regression." This is the "intentional
+  design, not a gap" pattern — upstream's stateless-per-call tool activation
+  was a deliberate prior fix for a different regression (stale session-keyed
+  catalog), not an oversight. Not filed; no further verification needed
+  given the fix's own author already identified it as intentionally
+  diverging from upstream's design.
 * Desktop: session/tab drag-to-reorder completely broken, plus a nested
   `DndContext` bug (2026-07-22). Confirm this desktop UI surface exists in
   upstream in the same form (not a fork-added feature) before filing.
