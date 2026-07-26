@@ -4387,7 +4387,7 @@ Specific things that **must never** be sent upstream:
 If a fork feature later seems genuinely upstream-worthy, file a separate
 clean PR built from upstream's tree, not a backport of fork code.
 
-## Upstream contribution candidates (audit, 2026-07-25)
+## Upstream contribution candidates (audit, 2026-07-25; re-sorted 2026-07-26 per external review)
 
 A full read-through of every dated entry in this file, sorted into what's a
 legitimate candidate to send upstream as a clean PR vs. what's tied to this
@@ -4396,53 +4396,82 @@ scheduled — this is a documented shortlist for later triage. Per the "Why a
 fork" rule above, any of these would be filed as a **separate clean PR built
 from upstream's tree**, never a backport of fork code as-is.
 
+**CAVEAT (added 2026-07-26 after an external second-opinion review):** the
+original 2026-07-25 version of this audit was written by the same
+agent/context that produced the PR #25234 incident it's trying to avoid
+repeating — "I described it as clean in my own docs" is not independent
+verification, it's exactly the failure mode that got #25234 closed. Every
+bucket assignment below is a hypothesis, not a fact, until each item clears
+this checklist:
+
+1. **Does upstream have this feature/code path at all?** Ask this *before*
+   asking whether the bug is generic. A correctness fix to fork-only
+   infrastructure (CC-mimicry OAuth, exo routing, the memory/skill review
+   subsystem if it's fork-shaped) is not an upstream bug — it's a non-sequitur
+   patch with nothing to land on.
+2. **Diff against the actual upstream file**, not against this audit's prose
+   description. `git diff upstream/main...HEAD -- <file>` and confirm the
+   whole file — not just the target function — hasn't structurally diverged
+   in ways that make the fix non-portable.
+3. **Grep the isolated diff and its immediate context for fork-only
+   symbols** (CC alias names, `anthropic_adapter`, `agent/fork/`, `miku`,
+   exo-routing identifiers, `_decorate_xai_entitlement_error`). If any of
+   these appear even a few lines outside the intended hunk, stop and extract
+   further before filing.
+4. **Apply-test the isolated patch against a clean upstream clone**, not
+   this fork. If it doesn't apply cleanly, or applies but references
+   undefined names, the item is contaminated regardless of how it reads here.
+
+Re-sorted based on that checklist reasoning (not yet independently diffed —
+see per-item status):
+
 ### Bucket A — legitimate candidates for a clean upstream PR
 
-Security/correctness fixes, highest value first:
+Only items where the underlying code path plausibly exists in upstream
+independent of fork-only infrastructure. Still needs the diff/grep/apply-test
+verification above before filing — "plausible" is not "confirmed."
 
-* **Claude Code Keychain write-back on OAuth refresh** (2026-07-14) — without
-  this, any macOS user running both Hermes and Claude Code CLI hits a
-  permanent "/login every launch" loop once OAuth refresh-token rotation
-  strands the Keychain copy. Reproducible on any dual-consumer macOS setup,
-  not fork-specific.
-* **Bearer clients leak `ANTHROPIC_API_KEY` as `x-api-key`** (2026-07-14) — a
-  stale env var silently 401s a valid OAuth session; general SDK-interaction
-  bug in `build_anthropic_client`.
-* **`_sanitize_replay_block` fail-closed → fail-open** (2026-07-24, part of
-  the "invisible token/cost doubling" entry) — the function was silently
-  dropping `server_tool_use`/`web_search_tool_result` blocks before
-  persistence, hiding real evidence. The fail-open fix (matching its
-  already-correct sibling function's contract) stands on its own,
-  independent of the fork's native-search feature.
 * **MCP orphaned-task / "Event loop is closed" traceback on `/exit`**
   (2026-07-23) — unguarded `cancel()` inside a `finally` block plus an
   orphaned parked task never entering `_servers`; a real asyncio bug in
-  `tools/mcp_tool.py`.
-* **Background skill/memory review racing a live turn** (2026-07-22) —
-  doubled prompt-token accounting + a Ctrl+C-proof lockup from a background
-  review fork never being added to `_active_children`. Serious concurrency
-  bug in core turn-finalization, not fork-specific.
+  `tools/mcp_tool.py`. Generic MCP task-lifecycle code, most likely to exist
+  in the same shape upstream — but confirm `_servers`/task-parking structures
+  haven't been reshaped by fork-specific tool dispatch before trusting a
+  drop-in patch.
 
-General bug fixes (CLI/display/desktop), roughly in order of how many users
-would hit them:
+General bug fixes (CLI/display/desktop) — audit each individually before
+filing, do NOT batch-file as one PR. Several of these plausibly touch shared
+render/display code that may also serve fork-only overlays (CC identity
+blob, Miku pet bubble) even when the fix itself is generic:
 
 * `get_cwidth()` blind to emoji+VS-16 → `display_cwidth()` helper
   (2026-07-24) — root-caused a recurring "garbled/duplicate digit" spinner
-  bug after two prior band-aid fixes.
+  bug after two prior band-aid fixes. Plausibly generic; confirm the spinner
+  code path is shared with fork-only overlays before filing.
 * Clarify/approval panel wide-glyph padding bug, `ljust()` vs. terminal cell
-  width (2026-07-07).
+  width (2026-07-07). Plausibly generic display bug.
 * `/usage` NameError — `cache_read_tokens`/`cache_write_tokens` referenced
-  but never defined (2026-07-07).
+  but never defined (2026-07-07). Plausibly generic; verify the surrounding
+  usage-accounting function hasn't been reshaped by fork-only cost tracking.
 * Reasoning-block token estimator quadruple-counting `anthropic_content_blocks`
-  thinking text (2026-07-07).
+  thinking text (2026-07-07). Verify `anthropic_content_blocks` itself is an
+  upstream concept and not a fork-only column/field before trusting this is
+  portable — cross-reference against the fork's schema-version history in
+  this file, which suggests fork-only DB columns have been added before.
 * Dangling `toolsets` NameError in `delegate_task` after upstream removed the
-  model-facing arg (2026-07-07).
+  model-facing arg (2026-07-07). Sounds like a real upstream-caused
+  regression on the fork's tree; verify `delegate_task`'s current upstream
+  shape still has the same gap.
 * tool_search sticky activation — flapping mid-conversation corrupts
-  tool-call history via `_strip_unknown_tool_blocks` (2026-07-07).
+  tool-call history via `_strip_unknown_tool_blocks` (2026-07-07). Plausibly
+  generic; verify against upstream's current tool_search implementation.
 * Desktop: session/tab drag-to-reorder completely broken, plus a nested
-  `DndContext` bug (2026-07-22).
+  `DndContext` bug (2026-07-22). Confirm this desktop UI surface exists in
+  upstream in the same form (not a fork-added feature) before filing.
 * Desktop: workspace tab had no close button, and naively adding one would
   have removed the app's structurally-required anchor pane (2026-07-23/24).
+  Same caveat — confirm the anchor-pane structure is upstream's design, not
+  fork-specific desktop layout.
 * Desktop: clicking into a still-running session showed a blank transcript —
   an RAF-throttle bug when the window is backgrounded (2026-07-22).
 * Desktop: a queued composer message could be delivered into the wrong,
@@ -4451,36 +4480,59 @@ would hit them:
   backend process detection missed `python3 <hermes-shim>` argv shapes
   (2026-07-22).
 * Desktop model picker hid Anthropic despite valid Claude Code credentials
-  (2026-07-22).
+  (2026-07-22). **Caution:** this is adjacent to CC-mimicry credential
+  detection — verify the fix doesn't reference fork-only CC-credential
+  plumbing before assuming it's portable.
 * Desktop: terminal glyphs render as tofu boxes — missing Nerd Font fallback
   in the xterm.js `fontFamily` chain (2026-07-22).
 * `resedit` replacing deprecated `rcedit`, and the `rimraf`/`boolean`
-  local-shim replacements (2026-07-22/24) — routine dependency hygiene, easy
-  wins with no behavior change.
+  local-shim replacements (2026-07-22/24) — routine dependency hygiene, low
+  risk, but still confirm upstream hasn't already moved off `rcedit`
+  independently since this was written.
 * Exit-summary/cleanup ordering + cost-accounting fixes: exit watchdog
   swallowing the cost report, memory-confirm cost not counted, background
-  curator cost not counted (2026-07-14, three related entries).
+  curator cost not counted (2026-07-14, three related entries). Verify
+  "cost accounting" here is upstream's general cost-tracking, not the fork's
+  CC-mimicry billing-header path — the billing header is explicitly on the
+  never-upstream list, and cost-accounting code sits close to it.
 
-Generalizable features (sound mechanism, would need light de-forking — a
-config key rename, dropping an exo-specific default — before filing):
+### Bucket B — needs de-forking first, or unverified/likely-contaminated (do NOT file as-is)
 
-* **`consult` tool** (second-opinion from a reference model, 2026-07-07) —
-  general-purpose, already a core workflow habit.
-* **Opt-in toolset deferral via `tool_search`** (`defer_toolsets`/
-  `defer_tools`/`keep_eager_tools`, 2026-06-22) — pure config, meaningfully
-  cuts prompt bloat for anyone with toolsets registered but rarely used.
-* **`trafilatura` free `web_extract` backend** (2026-07-18) — closes a real
-  gap: every extract-capable provider in the registry needs a paid key or a
-  self-hosted service.
-* **Hot-tier memory audit** (stale-path detection + optional LLM
-  classification, 2026-07-14, three entries) — generalizable memory-hygiene
-  feature, not exo/Anthropic-specific.
-* **Delegate auto-route to model tier + persona** (2026-07-07) — useful
-  default-routing behavior for any `delegate_task` caller that doesn't pass
-  an explicit model/agent_type.
+Moved here from the original Bucket A after re-review: FORK.md's own
+description already admits these are tied to fork-only infrastructure, or
+the infrastructure they depend on doesn't obviously exist upstream in the
+same shape. "Light de-forking" is the same euphemism that hid 28K LOC in
+PR #25234 — treat every item here as needing full extraction work, not a
+quick rename, before it's upstream-shaped.
 
-### Bucket B — needs de-forking first (sound idea, personal-coupled implementation)
-
+* **Claude Code Keychain write-back on OAuth refresh** (2026-07-14) — this is
+  a bugfix *inside* the CC-mimicry OAuth/keychain system, which is on this
+  file's own "must never be sent upstream" list (`anthropic_adapter.py` CC
+  alias translation, metadata identity blob, billing header, SSE observer).
+  Upstream has no Hermes-mimics-Claude-Code keychain integration for this bug
+  to exist in — there is likely nothing to patch upstream. Do not file unless
+  you first confirm upstream independently has an equivalent OAuth-refresh
+  keychain-write code path with the same bug (unlikely).
+* **Bearer clients leak `ANTHROPIC_API_KEY` as `x-api-key`** (2026-07-14) —
+  only genuinely portable if upstream's `build_anthropic_client` has the same
+  bearer-token/API-key dual-auth branching. If that branching exists *because*
+  the fork added OAuth-bearer support for CC mimicry, this "fix" has nothing
+  to attach to upstream. Diff `build_anthropic_client` against
+  `upstream/main` before trusting this is a general SDK bug.
+* **`_sanitize_replay_block` fail-closed → fail-open** (2026-07-24) — FORK.md's
+  own description says this is "part of the invisible token/cost doubling
+  entry, tied to the fork's native-search feature" while separately claiming
+  it "stands on its own." That contradiction is the tell. Verify (a) whether
+  upstream's Anthropic adapter has `server_tool_use`/`web_search_tool_result`
+  replay logic at all, or whether native search is itself fork-only, and
+  (b) whether the isolated fail-open diff still references fork-only
+  cost-accounting/native-search state before assuming it's clean.
+* **Background skill/memory review racing a live turn** (2026-07-22) — likely
+  touches the same memory/skill-review subsystem already listed below as
+  "Hot-tier memory audit — needs de-forking first." If that subsystem is
+  fork infrastructure with no upstream equivalent, this concurrency bug has
+  no target upstream. Verify whether upstream has any background-review-vs-
+  live-turn concurrency mechanism at all before filing.
 * `agent.pin_anthropic_token` (2026-07-25) — solves a real macOS
   Keychain-sharing problem (interactive `claude` login and a dedicated
   setup-token read from the same Keychain slot), but the motivating scenario
@@ -4494,6 +4546,26 @@ config key rename, dropping an exo-specific default — before filing):
   so an older slow fetch can't clobber a newer one) is a reusable UI
   technique independent of the Miku voice feature it was built for. Would
   need extraction into a generic helper before it's upstream-shaped.
+* **`consult` tool** (second-opinion from a reference model, 2026-07-07) —
+  general-purpose mechanism, but explicitly flagged by external review as
+  needing "light de-forking" — do not batch this with genuine bugfix PRs.
+  Extract fully (config keys, no exo-specific defaults) before filing as its
+  own PR.
+* **Opt-in toolset deferral via `tool_search`** (`defer_toolsets`/
+  `defer_tools`/`keep_eager_tools`, 2026-06-22) — pure config, plausibly
+  generalizable, but same rule: verify no exo-specific default sneaks through
+  before filing, and file it standalone.
+* **`trafilatura` free `web_extract` backend** (2026-07-18) — closes a real
+  gap for users without a paid extract-capable provider key. Standalone
+  candidate once verified it doesn't import/depend on fork-only routing.
+* **Hot-tier memory audit** (stale-path detection + optional LLM
+  classification, 2026-07-14, three entries) — generalizable in principle,
+  but this is the same memory subsystem the background-review race item
+  above may depend on; verify upstream's memory architecture is similar
+  enough for this to be a portable feature, not a fork-only rewrite.
+* **Delegate auto-route to model tier + persona** (2026-07-07) — useful
+  default-routing behavior, but verify it doesn't hardcode or default toward
+  the fork's exo/Anthropic two-provider routing preference before filing.
 
 ### Bucket C — personal/fork-only, do not upstream
 
