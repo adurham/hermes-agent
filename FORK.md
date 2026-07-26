@@ -42,6 +42,58 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-26 (self-update relaunch fixup stripped mac entitlements + hardened runtime)
+
+**Symptom:** a from-scratch local macOS build (`npm run dist:mac`/`pack`, or
+`CSC_IDENTITY_AUTO_DISCOVERY=false ... -c.mac.identity='-'`) is ad-hoc signed
+WITH entitlements (`electron/entitlements.mac.plist`: JIT, unsigned-executable-
+memory, disable-library-validation, audio-input) and the hardened-runtime flag
+(`mac.hardenedRuntime: true` in `package.json`'s `build` config) —
+`codesign -dv` shows `flags=0x10002(adhoc,runtime)`. But every subsequent
+in-app self-update (`hermes update` → `hermes desktop --build-only` →
+electron-builder `--dir` rebuild → relaunch) silently regressed the packaged
+app back to `flags=0x2(adhoc)` with **zero entitlements** — confirmed via
+`codesign -d --entitlements -` on `/Applications/Hermes.app` immediately after
+an observed self-update cycle.
+
+**Root cause:** `hermes_cli/main.py`'s `_desktop_macos_relaunchable_fixup()`
+runs after every self-update rebuild to keep the bundle relaunchable (an
+ad-hoc signature has no stable Team ID, so a rebuilt bundle's new cdhash reads
+as tampering to Gatekeeper/LaunchServices otherwise, producing "Hermes is
+damaged and can't be opened"). Its re-sign command was a bare
+`codesign --force --deep --sign -` — no `--entitlements`, no
+`--options runtime` — so it clobbered whatever the original packaged build had
+signed in, on every single update.
+
+**Fix:** `_desktop_macos_relaunchable_fixup()` now re-signs with
+`--options runtime --entitlements electron/entitlements.mac.plist` (same
+inputs electron-builder used for the original packaged build), falling back to
+the prior bare ad-hoc re-sign only if the entitlements file can't be found
+(never worse than the prior behavior). No-op preserved for real signing
+identities (`CSC_LINK`/`APPLE_SIGNING_IDENTITY`). Neither entitlement is
+actually load-bearing without hardened runtime (mic access is TCC/Info.plist-
+driven regardless of the sandbox entitlement; library validation is only
+enforced under hardened runtime), so the prior behavior wasn't a functional
+break for this app's shape today — but this closes the gap so a self-updated
+build stays byte-for-byte equivalent, capability-wise, to a fresh local build
+as the app's needs grow (e.g. any future feature that DOES require hardened
+runtime + a specific entitlement).
+
+**Files:** `hermes_cli/main.py` (`_desktop_macos_relaunchable_fixup`),
+`tests/hermes_cli/test_gui_command.py` (3 new tests: entitlements+hardened-
+runtime re-sign, fallback to bare ad-hoc when the entitlements file is
+missing, no-op preserved for a real signing identity).
+
+**Verification:** manually reproduced the regression against a live
+`/Applications/Hermes.app` post-self-update (`codesign -dv` showed
+`flags=0x2(adhoc)`, zero entitlements); confirmed the new re-sign command
+(`codesign --force --deep --options runtime --entitlements ... --sign -`)
+against a scratch copy of that same regressed bundle restores
+`flags=0x10002(adhoc,runtime)` + all 4 entitlements, `codesign --verify --deep
+--strict` exits 0, and the re-signed bundle launches cleanly (no Gatekeeper
+"damaged" error). `tests/hermes_cli/test_gui_command.py` 65/65 passed (62
+pre-existing + 3 new); `py_compile` clean.
+
 ### Fork-only feature — 2026-07-26 (repoint all "get code/docs from here" links at the fork + scripts/sync-fork-branding.py)
 
 **Symptom:** the installed runtime at `~/.hermes/hermes-agent` lost all 97

@@ -5722,10 +5722,19 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     installer process chain. Both make the relaunch fail.
 
     Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
-    (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
-    signed/notarized build is never clobbered. Best-effort: never raises.
+    lets the rebuilt app relaunch. The re-sign now matches what electron-builder
+    produces on a from-scratch local build (mac.entitlements +
+    mac.hardenedRuntime in package.json's `build` config) instead of dropping
+    both: a bare ad-hoc re-sign with no entitlements and no hardened-runtime
+    flag silently regressed every self-updated app to zero of the capabilities
+    (mic access grant, node-pty's library-validation bypass) a fresh `npm run
+    dist:mac`/`pack` build gets — even though neither entitlement does anything
+    without hardened runtime, so this keeps a self-updated .app byte-for-byte
+    equivalent, capability-wise, to a fresh local build. Falls back to a bare
+    ad-hoc re-sign if the entitlements file isn't found (never worse than the
+    prior behavior). No-op when a real signing identity is configured
+    (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly signed/notarized build is
+    never clobbered. Best-effort: never raises.
     """
     if sys.platform != "darwin":
         return
@@ -5741,9 +5750,14 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     codesign = shutil.which("codesign")
     if not codesign:
         return
+    entitlements = desktop_dir / "electron" / "entitlements.mac.plist"
+    sign_cmd = [codesign, "--force", "--deep"]
+    if entitlements.is_file():
+        sign_cmd += ["--options", "runtime", "--entitlements", str(entitlements)]
+    sign_cmd += ["--sign", "-", str(app)]
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        subprocess.run(sign_cmd, check=False)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
