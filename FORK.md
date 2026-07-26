@@ -4722,6 +4722,70 @@ blob, Miku pet bubble) even when the fix itself is generic:
   - No existing issue found. 10/10 in the rewritten + updated test files,
     51/51 across adjacent exit/cleanup tests, 0 regressions.
 
+### Post-submission Fable review pass (2026-07-26)
+
+Ran all 7 filed PRs (#72054, #72087, #72151, #72152, #72153, #72155,
+#72164) back through external review with the real diffs, not summaries.
+Two came back with real, actionable findings; both were fixed and pushed
+as follow-up commits to the same PRs (not new PRs) before this note:
+
+- **#72054 (MCP orphan reap):** `except Exception: pass` around the
+  cleanup `shutdown()` call silently swallowed any failure in the reap
+  itself, with zero trace. Fixed: added a `logger.debug` line, matching
+  existing precedent elsewhere in the file. Also flagged: none of the 3
+  original tests exercised the REAL `shutdown()`/
+  `_wait_for_reconnect_or_shutdown()` machinery (all faked `shutdown()`
+  itself), so a hypothetical regression to polling/sleeping in the park
+  loop wouldn't have been caught. Verified directly by reading the real
+  implementation first — confirmed it's `asyncio.wait()` on real events,
+  not a blind sleep, so the theoretical stall risk doesn't apply — but
+  added a 4th test exercising the real machinery end-to-end anyway
+  (bounded by a tight `asyncio.wait_for(..., timeout=2.0)` so a future
+  regression to polling would fail the test, not just run slow). 220/220
+  passed after the fix (up from 219).
+- **#72152 (profile deletion hygiene):** the new argv[1] script-name
+  check reused the pre-existing loose `startswith("hermes")` pattern from
+  the exe_name check above it, but argv[1] can be ANY user-invoked python
+  script path when argv[0] is a bare interpreter (unlike a
+  directly-resolved executable name, where a false match is rare) — a
+  user's own script named e.g. `hermes-notes.py` would be misidentified
+  as the console-script shim and become killable by profile delete.
+  Fixed: match against the actual known entry points
+  (`pyproject.toml [project.scripts]`: `hermes`, `hermes-agent`,
+  `hermes-acp`) instead of a bare prefix. Added a regression test that
+  fails against the pre-fix loose match (confirmed via scripted revert)
+  plus one confirming the other 2 real entry points still match. 158/158
+  passed after the fix (up from 156).
+
+Two more findings were raised but resolved as **non-issues after checking
+the real code** (not accepted at face value, not dismissed either):
+
+- **#72087 (reasoning-estimator):** flagged risk that `content` could
+  diverge from `anthropic_content_blocks` after compression mutates a
+  message (found one real mutation site,
+  `context_compressor.py`'s orphaned-tool-call stripping, that rewrites
+  `content` without touching `anthropic_content_blocks`). Verified this
+  is architecturally safe: `anthropic_content_blocks` — not `content` —
+  is what `_convert_assistant_message`'s replay path actually sends to
+  the API whenever blocks are present, regardless of what `content` gets
+  rewritten to, so counting the blocks is still correct for token
+  estimation. Also flagged a missing image-strip on the blocks branch;
+  verified `anthropic_content_blocks` can structurally never contain
+  image-type blocks (it's populated only from the model's own
+  `thinking`/`redacted_thinking`/`tool_use` response blocks, per
+  `agent/transports/anthropic.py` — Anthropic's API never returns
+  `image` type in assistant-turn content). No code change needed.
+- **#72151 (RAF-throttle blank transcript):** flagged a possible
+  ordering bug (does `viewSessionIdRef` update before or after the new
+  `isSessionSwitch` check reads it?) and a scroll-jank risk on warm-cached
+  session resume. Verified by reading `flushPendingViewState()` directly:
+  the ref update (`viewSessionIdRef.current = pending.sessionId`) runs
+  synchronously inside the same critical-transition flush the check
+  gates, not deferred into an RAF callback — ordering is correct. The
+  scroll-jank concern is more architectural/speculative (no scroll-restore
+  mechanism found anywhere in this hook or its callers to race against);
+  noted but not acted on absent a concrete repro.
+
 ### Bucket B — needs de-forking first, or unverified/likely-contaminated (do NOT file as-is)
 
 Moved here from the original Bucket A after re-review: FORK.md's own
