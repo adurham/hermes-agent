@@ -4432,12 +4432,31 @@ independent of fork-only infrastructure. Still needs the diff/grep/apply-test
 verification above before filing — "plausible" is not "confirmed."
 
 * **MCP orphaned-task / "Event loop is closed" traceback on `/exit`**
-  (2026-07-23) — unguarded `cancel()` inside a `finally` block plus an
-  orphaned parked task never entering `_servers`; a real asyncio bug in
-  `tools/mcp_tool.py`. Generic MCP task-lifecycle code, most likely to exist
-  in the same shape upstream — but confirm `_servers`/task-parking structures
-  haven't been reshaped by fork-specific tool dispatch before trusting a
-  drop-in patch.
+  (2026-07-23) — **VERIFIED 2026-07-26, PR-ready.** Full checklist run: (1)
+  confirmed upstream has the identical code path (`_MAX_INITIAL_CONNECT_RETRIES`,
+  the park-instead-of-return behavior in `run()`, the unguarded
+  `await server.start(config)` in `_connect_server()`); (2) the fork's original
+  commit (`7b29c89a20`) does NOT apply to upstream — `tools/mcp_tool.py` has
+  diverged by ~1740 of ~2500 lines from unrelated fork features layered in
+  around the same line numbers (confirmed via `git worktree` + `git apply
+  --check` against a real `upstream/main` checkout, which failed); (3)
+  hand-isolated just the real fix (the `_connect_server()` try/except) plus 3
+  new regression tests, re-diffed and grepped for fork-only symbols (CC alias
+  names, `agent/fork/`, `miku`, exo-routing, `sanitize_mcp_name_component`
+  vs. upstream's `mcp_prefixed_tool_name`) — zero leaked into the isolated
+  diff; (4) applied cleanly to a fresh `upstream-pr/mcp-connect-server-orphan-reap`
+  branch (tracking `upstream/main`) and ran the full
+  `tests/tools/test_mcp_tool.py` suite there: 219 passed (216 pre-existing +
+  3 new). Also caught FORK.md's own description overstating the bug: the
+  original "unguarded `cancel()` in a `finally` block" claim (bug 2 of 2) is
+  **factually wrong** — diffing the fork's pre-fix file showed all three
+  lifecycle-wait helpers already had `cancel()` correctly inside
+  `try/except` before the "fix" commit; that half of the commit was a pure
+  refactor (deduplicating three near-identical blocks into
+  `_cancel_lifecycle_wait_tasks()`), not a bug fix. Only the orphaned-task
+  reaping in `_connect_server()` (bug 1) was real. Patch saved at
+  `.upstream-candidates/mcp-orphaned-task-fix.diff`; branch ready to push
+  and open as a PR.
 
 General bug fixes (CLI/display/desktop) — audit each individually before
 filing, do NOT batch-file as one PR. Several of these plausibly touch shared
