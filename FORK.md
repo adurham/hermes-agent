@@ -4458,6 +4458,35 @@ verification above before filing — "plausible" is not "confirmed."
   `.upstream-candidates/mcp-orphaned-task-fix.diff`; branch ready to push
   and open as a PR.
 
+  **SUBMITTED 2026-07-26 as upstream PR #72054.** Before submitting, got two
+  independent second opinions (a Claude subagent + external reference-model
+  consult) on whether to submit given upstream issue #60197 already had ~10
+  associated PRs. Both initially recommended deferring to the most complete-
+  looking one (#62026, "retain parked startup tasks for clean shutdown" —
+  a fuller fix via registry-adoption that also addresses revival + task-
+  accumulation, not just the traceback). Went to actually test that
+  recommendation (git apply --check against upstream/main) rather than take
+  it on faith: found `#62026`'s diff has drifted in a way deeper than a
+  mechanical rebase — 6/8 hunks apply cleanly (line drift only), but the 2
+  touching `_register_discovered_tools_if_needed()` conflict with `main`'s
+  own independently-landed fix for the same symptom (`106d1822e`,
+  2026-07-19, one week after #62026 went stale), which uses a different
+  ownership-tracking mechanism (`_servers.get(name) is self` vs. #62026's
+  `_connect_server_claim` contextvar). Reconciling two overlapping-but-
+  different design approaches is the PR author's/maintainers' call, not a
+  third party's — so did NOT force a rebase of someone else's branch.
+  Confirmed `_connect_server()`'s orphan leak itself (this fork's fix's
+  actual target) is untouched by `106d1822e` or anything else on `main` —
+  the fix and #62026 don't overlap in code, only in the same tracking
+  issue. Submitted #72054 scoped explicitly to just the leak (not revival),
+  named #62026 directly in the PR body with the `106d1822e` divergence
+  finding, and left an informational comment on #62026
+  (issuecomment-5084156368) so the reconciliation context isn't lost.
+  Confirmed 5 of the other ~10 PRs in the cluster (#60104, #69420, #64114,
+  #61466, #71846) propose a fix for a "cancel() outside try" symptom that
+  doesn't reproduce from that cause on current `main` — #72054 doesn't
+  touch that code path, so it isn't a duplicate of those either.
+
 General bug fixes (CLI/display/desktop) — audit each individually before
 filing, do NOT batch-file as one PR. Several of these plausibly touch shared
 render/display code that may also serve fork-only overlays (CC identity
