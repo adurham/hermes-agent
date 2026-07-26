@@ -363,6 +363,49 @@ def test_desktop_build_stamp_skips_build_when_up_to_date(tmp_path, monkeypatch):
     mock_run.assert_called_once()  # only the launch call, no build
 
 
+def test_relaunch_fixup_runs_even_when_stamp_skips_rebuild(tmp_path, monkeypatch):
+    """The relaunch fixup must run on the "content stamp matches" skip path too.
+
+    A fix to the fixup itself (or to entitlements.mac.plist, its input) must
+    reach an already-packaged bundle without waiting for an unrelated future
+    rebuild to trigger it — otherwise a signing regression, once shipped,
+    stays regressed on every machine that never triggers a real rebuild again.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    launch_ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup") as mock_fixup, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    mock_install.assert_not_called()  # confirms no rebuild happened
+    mock_fixup.assert_called_once()
+
+
+def test_relaunch_fixup_runs_on_skip_build_flag(tmp_path, monkeypatch):
+    """--skip-build also bypasses the rebuild entirely; fixup must still run."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    launch_ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup") as mock_fixup, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_fixup.assert_called_once()
+
+
 def test_desktop_force_build_overrides_stamp(tmp_path, monkeypatch):
     """--force-build forces a rebuild even when the stamp says up-to-date."""
     root = _make_desktop_tree(tmp_path)

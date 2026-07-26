@@ -94,6 +94,53 @@ against a scratch copy of that same regressed bundle restores
 "damaged" error). `tests/hermes_cli/test_gui_command.py` 65/65 passed (62
 pre-existing + 3 new); `py_compile` clean.
 
+### Fork-only fix — 2026-07-26 (relaunch fixup only ran on the "rebuild happened" branch, not the "already up to date" skip branch)
+
+**Symptom:** the fix above landed, but a subsequent self-update cycle still
+relaunched `/Applications/Hermes.app` with `flags=0x2(adhoc)` and zero
+entitlements — the fixed code hadn't actually run yet.
+
+**Root cause:** `cmd_gui()`'s call to `_desktop_macos_relaunchable_fixup()` was
+nested inside the `if build_needed:` branch of the content-hash stamp check.
+When the stamp matches (nothing under `apps/desktop/` or the lockfiles
+changed since the last successful build — the common case for a self-update
+that only pulled backend/Python changes), the entire rebuild, including the
+fixup call, is skipped and `hermes desktop --build-only` just re-signs
+nothing and relaunches whatever bundle is already on disk. A signing fix
+shipped in `_desktop_macos_relaunchable_fixup()` itself therefore couldn't
+reach an already-packaged bundle until some unrelated future change happened
+to invalidate the content-hash stamp and force a real rebuild — which could
+be arbitrarily long, or never, on a machine that keeps working from Python
+code changes alone.
+
+**Fix:** moved the `_desktop_macos_relaunchable_fixup()` call out from inside
+the `if build_needed:` branch to right after the whole `if skip_build: ...
+else: ...` block, gated only on `not source_mode and packaged_executable is
+not None`. It now runs unconditionally on every `hermes desktop` invocation
+that has (or produces) a packaged executable — whether that came from
+`--skip-build`, the stamp-match skip, or a fresh rebuild. Re-signing an
+already-correctly-signed bundle is a cheap, idempotent no-op, so this has no
+functional cost on the common case where nothing was actually wrong.
+
+**Immediate remediation:** re-signed the live, already-regressed
+`/Applications/Hermes.app` in place by hand (`xattr -cr` + the same
+`codesign --force --deep --options runtime --entitlements ... --sign -`
+command the fixed code now runs) so the fix takes effect immediately rather
+than waiting for a future rebuild trigger. Confirmed
+`flags=0x10002(adhoc,runtime)` + all 4 entitlements restored,
+`codesign --verify --deep --strict` exits 0.
+
+**Files:** `hermes_cli/main.py` (`cmd_gui`'s desktop build flow),
+`tests/hermes_cli/test_gui_command.py` (2 new tests proving the fixup is
+called on both the stamp-match skip path and the `--skip-build` path — both
+fail against the pre-fix code).
+
+**Verification:** `tests/hermes_cli/test_gui_command.py` 67/67 passed (65
+pre-existing + 2 new); full `tests/hermes_cli/` suite run — 19 pre-existing
+unrelated failures (model-switch/TTS/kanban/service-manager tests) confirmed
+identical with this change stashed out via `git stash`, i.e. not caused by
+this diff; `py_compile` clean.
+
 ### Fork-only feature — 2026-07-26 (repoint all "get code/docs from here" links at the fork + scripts/sync-fork-branding.py)
 
 **Symptom:** the installed runtime at `~/.hermes/hermes-agent` lost all 97
