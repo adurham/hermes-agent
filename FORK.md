@@ -3,6 +3,21 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+## Merging upstream
+
+1. `python scripts/fork-merge-plan.py --fetch` — predicts conflicts before you merge.
+2. `git merge upstream/main`, resolve conflicts.
+3. `python scripts/sync-fork-branding.py` — re-applies the adurham/hermes-agent
+   repo-link rebrand. Upstream's own files always say `NousResearch/hermes-agent`;
+   merging them back in reintroduces those links, including ones that are the
+   installer/updater's *source of truth* for where to clone code from (this is
+   what caused the 2026-07-25 incident where an install repair silently
+   reverted to vanilla upstream, losing every fork commit from the live
+   checkout). Run this **every time**, not just once. `--dry-run` to preview,
+   `--verbose` to see every changed line. It's idempotent and reports anything
+   it can't safely auto-resolve at the end — check that list by hand.
+4. Run tests, push.
+
 ## Mandatory workflow for every fork-only change
 
 Every fork-only fix/feature landed in this repo — no exceptions — must complete
@@ -26,6 +41,68 @@ all three of the following before the task is considered done:
 This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
+
+### Fork-only feature — 2026-07-26 (repoint all "get code/docs from here" links at the fork + scripts/sync-fork-branding.py)
+
+**Symptom:** the installed runtime at `~/.hermes/hermes-agent` lost all 97
+fork-only commits — its `origin` had silently ended up pointing at
+`NousResearch/hermes-agent` instead of the fork, and its git history had
+collapsed to the vanilla upstream tip. Recovered by repointing `origin` back
+at the fork and re-running `hermes update` (which correctly detected the
+divergence and reset to the fork tip).
+
+**Root cause:** `scripts/install.sh` / `install.ps1`'s fresh-clone path (and
+the desktop/Tauri bootstrap's `raw.githubusercontent.com` script downloader)
+hardcode `NousResearch/hermes-agent` with zero fork-awareness. Any repair/
+reinstall flow that wipes the checkout and re-runs the fresh-clone branch —
+which is exactly what happened — silently reverts to vanilla upstream. Traced
+via `~/.hermes/hermes-agent/.git`'s reflog (a literal `clone: from
+https://github.com/NousResearch/hermes-agent.git` entry) and
+`~/.hermes/logs/update.log` (a 00:42 run correctly said "Updating from
+fork..."; the 13:00 run had no such message — origin was already wrong by
+then).
+
+**Fix:**
+1. Repointed every "where do I get code/docs from" reference at
+   `adurham/hermes-agent` across ~184 files: `scripts/install.sh`/`install.ps1`/
+   `install.cmd`, the desktop/Tauri bootstrap downloaders, `hermes_cli/main.py`'s
+   ZIP-fallback + curl-recovery message, `model_catalog.py`, `package.json`,
+   `docusaurus.config.ts`, READMEs (4 languages), CONTRIBUTING, issue/PR
+   templates, Nix package metadata, User-Agent/Referer self-identification
+   strings, and the ~190 files under `website/docs/` + the zh-Hans i18n tree
+   (embedded docs-site links resolved to real `github.com/.../blob/main/...`
+   file paths, not guessed).
+2. Deliberately left untouched: fork-vs-upstream *detection* constants
+   (`OFFICIAL_REPO_URL`, `KNOWN_UPSTREAM_URLS`, `_CANONICAL_REPO`,
+   `update-remote.ts`'s equivalents — repointing these would make the tool
+   think its own fork IS upstream and disable the exact protection that
+   would've prevented this incident), live Nous services (portal, inference
+   API, Discord), legal attribution, historical issue/PR/security-advisory
+   citations, Docker Hub/Homebrew/Releases pointers (fork publishes none of
+   these yet), and `tools/skills_hub.py`'s `OFFICIAL_REPO` (skill-provenance
+   attribution, not a source pointer).
+3. Fixed a related bug found in passing: the in-app Docs page (`web/src/pages/DocsPage.tsx`)
+   iframed the docs link — harmless while it pointed at the hosted Docusaurus
+   site, but a GitHub tree URL refuses to be framed, so it would've rendered
+   permanently blank. Replaced the iframe with an "Open Documentation" button.
+4. Added `scripts/sync-fork-branding.py` to make this repeatable: every file
+   upstream still calls `NousResearch/hermes-agent`, so merging upstream back
+   in reintroduces exactly these links, source-of-truth ones included. Wired
+   into `scripts/fork-merge-plan.py`'s printed merge recipe and documented
+   under "Merging upstream" above — run it after every upstream merge, not
+   just once. Idempotent; reports anything it can't safely auto-resolve
+   instead of guessing.
+
+**Verification:** all fork-detection invariants confirmed unchanged via
+grep; `tests/test_install_*.py` (66), `apps/desktop/electron/update-remote.test.ts`
+(6), `tests/hermes_cli/test_model_catalog.py` + `test_web_server.py` +
+`tests/acp/test_registry_manifest.py` + `tests/tools/test_skills_hub.py`
+(591 combined) all pass; `tsc --noEmit` and `py_compile` clean across every
+touched file. One pre-existing, unrelated TTS test failure and one
+pre-existing fork_banner test-ordering flake both reproduce identically on
+unmodified `main` (confirmed via `git stash`) — not caused by this change.
+`scripts/sync-fork-branding.py --dry-run` run twice in a row produces zero
+changes the second time (idempotency confirmed).
 
 ### Fork-only fix — 2026-07-25 (npm audit: 19 high-severity vulns → 0, react-router v7→v8 + minimatch/brace-expansion overrides)
 
