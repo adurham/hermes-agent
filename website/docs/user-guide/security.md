@@ -255,7 +255,7 @@ Safe-root violations return `Write denied: '…' is outside HERMES_WRITE_SAFE_RO
 
 When set, `write_file` and `patch` may only target paths inside the listed directory prefix(es). Anything outside is **hard-blocked** — not routed through dangerous-command approval.
 
-- Set automatically in the [official Docker image](https://github.com/NousResearch/hermes-agent) (`HERMES_WRITE_SAFE_ROOT=/opt/data`)
+- Set automatically in the [official Docker image](https://github.com/adurham/hermes-agent) (`HERMES_WRITE_SAFE_ROOT=/opt/data`)
 - Supports multiple roots separated by `:` on Unix or `;` on Windows
 - **Do not add to `~/.hermes/.env` casually.** If you set it to a project directory, the agent cannot write to `~/.hermes/cron/jobs.json`, profile skills, or other Hermes state outside that prefix
 

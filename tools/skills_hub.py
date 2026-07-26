@@ -3772,7 +3772,7 @@ def check_for_skill_updates(
 # Hermes centralized index source
 # ---------------------------------------------------------------------------
 
-HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
+HERMES_INDEX_URL = "https://raw.githubusercontent.com/adurham/hermes-agent/main/website/static/api/skills-index.json"
 HERMES_INDEX_TTL = 6 * 3600  # 6 hours
 
 
@@ -4073,7 +4073,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     sources: List[SkillSource] = [
         OptionalSkillSource(),        # Local: optional-skills/ in this repo
         UrlSource(),                  # Explicit: user-provided HTTP(S) URL only
-        # HermesIndexSource — disabled: phones home to hermes-agent.nousresearch.com
+        # HermesIndexSource — disabled: phones home to raw.githubusercontent.com
         # SkillsShSource — disabled: third-party registry (skills.sh)
         # WellKnownSkillSource — disabled: fetches /.well-known/skills/ from arbitrary domains
         # GitHubSource — disabled: fetches arbitrary GitHub repos via api.github.com

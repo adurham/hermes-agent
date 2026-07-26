@@ -192,13 +192,17 @@ def main():
             else:
                 hint = "review case by case"
             print(f"     - {f}: {hint}")
-        print("  4. Run tests: source .venv/bin/activate && pytest tests/run_agent tests/agent -x")
-        print("  5. Push merge branch and FF main locally before pushing main")
+        print("  4. Re-apply fork branding: python scripts/sync-fork-branding.py")
+        print("  5. Run tests: source .venv/bin/activate && pytest tests/run_agent tests/agent -x")
+        print("  6. Push merge branch and FF main locally before pushing main")
         return 1
     else:
         print("VERDICT: No conflicts predicted. Should merge cleanly.")
         print("Quick merge command:")
-        print(f"  git merge {args.upstream} && pytest tests/run_agent tests/agent -x && git push origin main")
+        print(
+            f"  git merge {args.upstream} && python scripts/sync-fork-branding.py "
+            "&& pytest tests/run_agent tests/agent -x && git push origin main"
+        )
         return 0
 
 
