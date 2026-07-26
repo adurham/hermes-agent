@@ -4493,9 +4493,33 @@ render/display code that may also serve fork-only overlays (CC identity
 blob, Miku pet bubble) even when the fix itself is generic:
 
 * `get_cwidth()` blind to emoji+VS-16 → `display_cwidth()` helper
-  (2026-07-24) — root-caused a recurring "garbled/duplicate digit" spinner
-  bug after two prior band-aid fixes. Plausibly generic; confirm the spinner
-  code path is shared with fork-only overlays before filing.
+  (2026-07-24) — **CHECKED 2026-07-26, DO NOT FILE.** The reported symptom
+  (spinner-timer digit corruption from tool emoji like `⚙️`) cannot reproduce
+  on upstream at all: diffed `agent/display.py` against `upstream/main` and
+  found upstream's `KawaiiSpinner` redraw/pad math uses plain `len(line)`,
+  not `get_cwidth()` — it never had the VS-16 blind spot to begin with.
+  `KawaiiSpinner._display_width`, `_panel_cwidth`, and `_panel_ljust` (3 of
+  the 4 sites the fork's fix touches) don't exist upstream at all; they're
+  artifacts of an earlier fork-only spinner refactor (`0a32275ff0`) that
+  introduced `get_cwidth` usage in the first place. Only `cli.py`'s
+  `_status_bar_display_width`/`_trim_status_bar_text`/
+  `_estimate_tui_input_height` genuinely exist upstream with the same
+  `get_cwidth` VS-16 gap — but traced their actual call sites and confirmed
+  none of them ever measure a tool-progress emoji (those print via a
+  separate `_cprint()` path the cwidth functions don't touch);
+  `_estimate_tui_input_height` only measures user-*typed* input text, so the
+  gap there is real but triggers only if a user literally types a VS-16
+  emoji into their own prompt — a much narrower edge case with no actual
+  observed upstream bug report behind it. Per external review: submitting
+  this would lead with a bug narrative that's fork-fabricated (doesn't
+  reproduce as described) even though a real, much smaller correctness gap
+  exists underneath — exactly the "solution looking for a problem" pattern
+  to route around. Would need an actual reproduced upstream artifact (a
+  real height-miscalculation, not just the raw `get_cwidth("⚙️ hello") == 7
+  vs true 8` arithmetic, confirmed via a quick script) before this is worth
+  a PR, scoped to just the `cli.py` input-height gap with no reference to
+  the spinner bug. Not pursued further — low value/evidence relative to
+  other candidates.
 * Clarify/approval panel wide-glyph padding bug, `ljust()` vs. terminal cell
   width (2026-07-07). Plausibly generic display bug.
 * `/usage` NameError — `cache_read_tokens`/`cache_write_tokens` referenced
