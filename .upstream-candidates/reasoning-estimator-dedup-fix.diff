@@ -1,0 +1,148 @@
+diff --git a/agent/model_metadata.py b/agent/model_metadata.py
+index 296fe0aed..63b19449a 100644
+--- a/agent/model_metadata.py
++++ b/agent/model_metadata.py
+@@ -2809,14 +2809,42 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
+ 
+ 
+ def _estimate_message_tokens_without_images(msg: Dict[str, Any]) -> int:
+-    """Token estimate for a message shadow with image payloads stripped."""
++    """Token estimate for a message shadow with image payloads stripped.
++
++    When an assistant message carries ``anthropic_content_blocks`` (Anthropic's
++    interleaved-thinking replay channel -- the raw provider content array
++    stashed onto the message so ``_convert_assistant_message`` in
++    ``agent/anthropic_adapter.py`` can replay it verbatim on the next API
++    call), the ``content`` string and the ``reasoning`` / ``reasoning_content``
++    / ``reasoning_details`` fields are all pure duplicates of the same
++    thinking text already inside ``anthropic_content_blocks`` -- the replay
++    path reads ``anthropic_content_blocks`` alone for these turns and never
++    touches the other four. Counting all of them inflates a single thinking
++    block's token cost by up to ~4-5x, which is the dominant driver of a
++    preflight/compaction-trigger estimate running far ahead of the real
++    provider-reported ``prompt_tokens`` on any session with interleaved
++    thinking enabled.
++    """
+     if not isinstance(msg, dict):
+         return estimate_tokens_rough(str(msg))
++    has_anthropic_blocks = bool(msg.get("anthropic_content_blocks"))
+     shadow: Dict[str, Any] = {}
+     for k, v in msg.items():
+-        if k == "_anthropic_content_blocks":
++        if k == "anthropic_content_blocks":
++            shadow[k] = v
++            continue
++        if k in ("reasoning", "reasoning_content", "reasoning_details"):
++            # Skip the reasoning-field duplicates when blocks already carry
++            # the same thinking text for the provider (see docstring).
++            if has_anthropic_blocks:
++                continue
++            shadow[k] = v
+             continue
+         if k == "content":
++            if has_anthropic_blocks:
++                # Skip the text-extracted duplicate when blocks already
++                # represent the same content for the provider.
++                continue
+             if isinstance(v, list):
+                 cleaned = []
+                 for part in v:
+diff --git a/tests/agent/test_model_metadata.py b/tests/agent/test_model_metadata.py
+index 7a29178a4..f4f2445bb 100644
+--- a/tests/agent/test_model_metadata.py
++++ b/tests/agent/test_model_metadata.py
+@@ -121,6 +121,94 @@ class TestEstimateMessagesTokensRough:
+         assert result < 5000
+ 
+ 
++class TestAnthropicInterleavedThinkingDedup:
++    """anthropic_content_blocks (Anthropic's interleaved-thinking replay
++    channel) duplicates the same thinking text into content/reasoning/
++    reasoning_content/reasoning_details on the stored message, but
++    _convert_assistant_message (agent/anthropic_adapter.py) reads
++    anthropic_content_blocks alone on replay and never touches the other
++    four. Counting all of them inflated a single thinking block's token
++    cost by up to ~4-5x -- the dominant driver of a preflight/compaction
++    estimate running far ahead of the real provider prompt_tokens on any
++    session with interleaved thinking enabled.
++    """
++
++    def _thinking_msg(self, text: str) -> dict:
++        return {
++            "role": "assistant",
++            "content": text,
++            "anthropic_content_blocks": [{"type": "thinking", "thinking": text}],
++            "reasoning": text,
++            "reasoning_content": text,
++            "reasoning_details": [{"type": "reasoning.text", "text": text}],
++        }
++
++    def test_blocks_present_counts_thinking_text_once(self):
++        """With anthropic_content_blocks present, content/reasoning/
++        reasoning_content/reasoning_details duplicates must not inflate
++        the estimate -- only the blocks copy (plus small dict overhead)
++        should count.
++        """
++        text = "x" * 4000
++        msg = self._thinking_msg(text)
++        result = estimate_messages_tokens_rough([msg])
++        once_only_estimate = (len(text) + 3) // 4
++        # Allow headroom for dict-repr overhead (keys, braces, role, the
++        # blocks list wrapper) without allowing anywhere near a 2x+ multiple
++        # of the once-only estimate, which is what the bug produced.
++        assert result < once_only_estimate * 1.5
++
++    def test_blocks_absent_still_counts_reasoning_fields_in_full(self):
++        """Non-Anthropic providers (no anthropic_content_blocks) must be
++        unaffected -- reasoning fields are their only copy and must still
++        be counted, not silently dropped.
++        """
++        msg = {
++            "role": "assistant",
++            "content": "hello",
++            "reasoning_content": "thinking about it at length " * 20,
++        }
++        with_reasoning = estimate_messages_tokens_rough([msg])
++        without_reasoning = estimate_messages_tokens_rough(
++            [{"role": "assistant", "content": "hello"}]
++        )
++        assert with_reasoning > without_reasoning
++
++    def test_blocks_present_without_reasoning_fields_unaffected(self):
++        """A message with only content + blocks (no reasoning fields at
++        all) must still dedupe content against blocks -- this path existed
++        before reasoning-field dedup was added and must not regress.
++        """
++        text = "y" * 4000
++        msg = {
++            "role": "assistant",
++            "content": text,
++            "anthropic_content_blocks": [{"type": "thinking", "thinking": text}],
++        }
++        result = estimate_messages_tokens_rough([msg])
++        once_only_estimate = (len(text) + 3) // 4
++        assert result < once_only_estimate * 1.5
++
++    def test_quadruple_counting_regression_guard(self):
++        """End-to-end: the old unstripped behavior would count the same
++        thinking text 4 times over (content + 3 reasoning fields + the
++        blocks copy itself). Confirm the fixed estimate is meaningfully
++        smaller than that old behavior would have produced, not just
++        smaller than some arbitrary bound.
++        """
++        text = "z" * 4000
++        msg = self._thinking_msg(text)
++        fixed_result = estimate_messages_tokens_rough([msg])
++
++        # Reconstruct what the old (buggy) shadow would have produced:
++        # every field walked in full, nothing deduped against blocks.
++        old_shadow = dict(msg)
++        old_str_len = len(str(old_shadow))
++        old_buggy_estimate = (old_str_len + 3) // 4
++
++        assert fixed_result < old_buggy_estimate / 2
++
++
+ class TestEstimateRequestTokensRough:
+     def test_caches_tools_estimate(self):
+         messages = [{"role": "user", "content": "hello"}]

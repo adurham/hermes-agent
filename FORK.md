@@ -4558,10 +4558,38 @@ blob, Miku pet bubble) even when the fix itself is generic:
   bug upstream because the surrounding cost-estimation feature it lives in
   doesn't exist there. Not a portable fix; not filed.
 * Reasoning-block token estimator quadruple-counting `anthropic_content_blocks`
-  thinking text (2026-07-07). Verify `anthropic_content_blocks` itself is an
-  upstream concept and not a fork-only column/field before trusting this is
-  portable — cross-reference against the fork's schema-version history in
-  this file, which suggests fork-only DB columns have been added before.
+  thinking text (2026-07-07) — **SUBMITTED 2026-07-26 as upstream PR #72087.**
+  Verification found more than expected: `anthropic_content_blocks` IS a real
+  upstream concept (confirmed: `_convert_assistant_message` in
+  `agent/anthropic_adapter.py` reads it, no underscore, for interleaved-
+  thinking replay), but upstream's `_estimate_message_tokens_without_images()`
+  checks for `_anthropic_content_blocks` (WITH a leading underscore) — a
+  field name that's never actually written anywhere in that context, so the
+  exclusion never fires. Also found the fork's own commit message overstated
+  its baseline ("mirroring the existing dedup logic already applied to
+  `content`") — that content-dedup was itself added by an *earlier, separate,
+  fork-only* commit (`7eee5efd3e`, 2026-05-13) that never went upstream
+  either; confirmed via `git log -S` that upstream never had any form of this
+  dedup. So the portable fix needed to cover MORE ground than the fork's
+  isolated diff assumed (both the content-dedup AND the reasoning-field
+  dedup, not just the latter layered on an existing former). Reproduced the
+  bug live against a real upstream worktree before writing anything: a
+  message with one thinking block duplicated across all 5 fields estimated
+  at ~4x the correct token count (4053 vs ~1000). Confirmed
+  `_estimate_message_tokens_without_images` (unlike its sibling
+  `_estimate_message_chars`, which is dead code — zero call sites upstream)
+  is the live path, called from `context_compressor.py`/`conversation_loop.py`/
+  `turn_context.py`/`context_breakdown.py` via `estimate_messages_tokens_rough()`
+  — i.e. this feeds real compaction-trigger decisions, not just a cosmetic
+  number. Got a second-opinion consult on how to handle the larger-than-
+  expected scope; wrote and tested the combined fix against a clean
+  `upstream/main` worktree: 136/136 passed in the estimator's own test file
+  (132 pre-existing + 4 new), 302/302 passed across every real caller
+  (context_compressor + 5 variants, context_breakdown, turn_context + 1
+  variant). Zero fork-only symbols in the isolated diff. Searched
+  issues/PRs first (per CONTRIBUTING.md) — genuinely nothing existing,
+  unlike the two prior candidates. Patch saved at
+  `.upstream-candidates/reasoning-estimator-dedup-fix.diff`.
 * Dangling `toolsets` NameError in `delegate_task` after upstream removed the
   model-facing arg (2026-07-07). Sounds like a real upstream-caused
   regression on the fork's tree; verify `delegate_task`'s current upstream
