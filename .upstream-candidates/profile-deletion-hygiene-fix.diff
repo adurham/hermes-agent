@@ -1,0 +1,140 @@
+diff --git a/apps/desktop/src/app/chat/sidebar/profile-switcher.tsx b/apps/desktop/src/app/chat/sidebar/profile-switcher.tsx
+index 52fa8de19c..061c197bed 100644
+--- a/apps/desktop/src/app/chat/sidebar/profile-switcher.tsx
++++ b/apps/desktop/src/app/chat/sidebar/profile-switcher.tsx
+@@ -202,10 +202,32 @@ export function ProfileRail() {
+     }
+   }
+ 
+-  // Re-pull the running profile + list on mount so a profile created elsewhere
+-  // shows up; cheap and best-effort.
++  // Re-pull the running profile + list on mount, and again whenever the window
++  // regains focus/visibility -- a profile created, deleted, or renamed by
++  // another surface (Manage Profiles, another window, the CLI) leaves this
++  // rail's cached $profiles stale until something re-fetches it. Without this,
++  // a deleted profile's square lingered in the rail until the user happened to
++  // open Manage Profiles (whose own refresh() call was the only other reader).
++  // Cheap and best-effort, matching the focus/visibilitychange refresh pattern
++  // used elsewhere in the sidebar (see refreshProjects/refreshProjectTree).
+   useEffect(() => {
+     void refreshActiveProfile()
++
++    const onActive = () => {
++      if (document.visibilityState === 'hidden') {
++        return
++      }
++
++      void refreshActiveProfile()
++    }
++
++    window.addEventListener('focus', onActive)
++    document.addEventListener('visibilitychange', onActive)
++
++    return () => {
++      window.removeEventListener('focus', onActive)
++      document.removeEventListener('visibilitychange', onActive)
++    }
+   }, [])
+ 
+   // Open the create dialog when the `profile.create` hotkey fires (the dialog
+diff --git a/hermes_cli/profiles.py b/hermes_cli/profiles.py
+index 0ab0562dea..8fec2b6c13 100644
+--- a/hermes_cli/profiles.py
++++ b/hermes_cli/profiles.py
+@@ -1323,6 +1323,13 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
+ 
+     backend_tokens = {"serve", "dashboard", "gateway"}
+     hermes_markers = ("hermes_cli.main", "hermes-gateway", "tui_gateway")
++    # Matches python / python3 / python3.12 / pythonw(.exe) — the interpreter
++    # basenames a `#!/…/python3` console-script shim gets exec'd through when
++    # something (e.g. Electron's `findOnPath('hermes')` resolution) spawns the
++    # shim by handing the interpreter its path explicitly instead of running
++    # the shim directly. In that shape the OS-reported argv[0] is the
++    # interpreter, not "hermes", so the checks below would otherwise miss it.
++    _python_interpreter_re = re.compile(r"^python[\d.]*w?(\.exe)?$")
+     pids: list[int] = []
+ 
+     for proc in psutil.process_iter(["pid", "name", "username", "cmdline"]):
+@@ -1338,8 +1345,10 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
+             if not argv:
+                 continue
+ 
+-            # Must be a Hermes process: either an entrypoint marker in argv, or
+-            # a resolved executable named `hermes`.
++            # Must be a Hermes process: either an entrypoint marker in argv, a
++            # resolved executable named `hermes`, or a python interpreter
++            # directly exec'ing a `hermes`-named console-script shim (argv[0]
++            # is the interpreter, argv[1] is the shim's path).
+             joined = " ".join(argv)
+             exe_name = os.path.basename(argv[0]).lower()
+             is_hermes = (
+@@ -1347,6 +1356,9 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
+                 or exe_name == "hermes"
+                 or exe_name.startswith("hermes")
+             )
++            if not is_hermes and len(argv) >= 2 and _python_interpreter_re.match(exe_name):
++                script_name = os.path.basename(str(argv[1])).lower()
++                is_hermes = script_name == "hermes" or script_name.startswith("hermes")
+             if not is_hermes:
+                 continue
+ 
+diff --git a/tests/hermes_cli/test_profiles.py b/tests/hermes_cli/test_profiles.py
+index c61bc36dd4..f9d96b706e 100644
+--- a/tests/hermes_cli/test_profiles.py
++++ b/tests/hermes_cli/test_profiles.py
+@@ -669,6 +669,55 @@ class TestDeleteProfile:
+         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
+         assert pids == [101]
+ 
++    def test_backend_scan_matches_shebang_exec_of_hermes_shim(self, profile_env, monkeypatch):
++        """A `hermes` console-script shim spawned directly (e.g. Electron's
++        findOnPath('hermes') resolution) reports argv[0] as the interpreter
++        (python3) and argv[1] as the shim's path -- not "hermes" -- because
++        the OS execs the shebang. The scanner must still recognize it so
++        profile delete doesn't leave a zombie Desktop-spawned backend behind
++        (issue: deleting a Desktop profile kept reappearing after relaunch).
++        """
++        create_profile("coder", no_alias=True)
++        profile_dir = get_profile_dir("coder")
++
++        class FakeProc:
++            def __init__(self, pid, cmdline, username="me"):
++                self.pid = pid
++                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
++
++            def parent(self):
++                return None
++
++            def username(self):
++                return "me"
++
++            def environ(self):
++                return {}
++
++        self_pid = os.getpid()
++        procs = [
++            # Shebang-exec'd shim bound to coder → matched despite argv[0]
++            # being the python interpreter, not "hermes".
++            FakeProc(201, ["/usr/bin/python3", "/Users/x/.local/bin/hermes", "--profile", "coder", "serve",
++                            "--host", "127.0.0.1", "--port", "0"]),
++            # Same shape but a different profile → skipped.
++            FakeProc(202, ["/usr/bin/python3", "/Users/x/.local/bin/hermes", "--profile", "other", "serve"]),
++            # Non-hermes script run by python3 → skipped.
++            FakeProc(203, ["/usr/bin/python3", "/Users/x/some_script.py", "--profile", "coder", "serve"]),
++        ]
++
++        fake_psutil = types.SimpleNamespace(
++            process_iter=lambda attrs=None: iter(procs),
++            Process=lambda pid=None: FakeProc(self_pid, []),
++            NoSuchProcess=Exception,
++            AccessDenied=Exception,
++            ZombieProcess=Exception,
++        )
++        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
++
++        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
++        assert pids == [201]
++
+ 
+ # ===================================================================
+ # TestListProfiles

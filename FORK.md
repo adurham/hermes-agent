@@ -4612,25 +4612,73 @@ blob, Miku pet bubble) even when the fix itself is generic:
   given the fix's own author already identified it as intentionally
   diverging from upstream's design.
 * Desktop: session/tab drag-to-reorder completely broken, plus a nested
-  `DndContext` bug (2026-07-22). Confirm this desktop UI surface exists in
-  upstream in the same form (not a fork-added feature) before filing.
+  `DndContext` bug (2026-07-22). **CHECKED 2026-07-26, NEEDS
+  HAND-RECONCILIATION.** Confirmed the underlying files DO exist upstream
+  (not fork-only) and the feature itself is genuinely shared. But
+  `git apply --check` on the isolated fix rejects 4 of 12 touched files —
+  real semantic drift (changed import shapes, a new `dndSensors` prop
+  threading through multiple components), not just line-offset noise, per
+  a `git apply --reject` inspection. Would need real hand-porting onto the
+  current file shape, not a quick patch. Deprioritized in favor of items
+  that applied cleanly; revisit if time allows.
 * Desktop: workspace tab had no close button, and naively adding one would
   have removed the app's structurally-required anchor pane (2026-07-23/24).
-  Same caveat — confirm the anchor-pane structure is upstream's design, not
-  fork-specific desktop layout.
+  **CHECKED 2026-07-26, NEEDS HAND-RECONCILIATION.** Isolated fix rejects
+  on `apps/desktop/src/app/contrib/wiring.tsx` — real conflict, not
+  line-drift. Deprioritized alongside the drag-to-reorder item above.
 * Desktop: clicking into a still-running session showed a blank transcript —
   an RAF-throttle bug when the window is backgrounded (2026-07-22).
+  **SUBMITTED 2026-07-26 as upstream PR #72151.** Applied cleanly to a
+  fresh `upstream/main` worktree, 0 conflicts. Wrote 2 new regression
+  tests (one stubs `requestAnimationFrame` to never fire, confirming the
+  first paint after a session switch still flushes synchronously; the
+  other confirms a same-session repeat heartbeat still gets RAF-coalesced)
+  — the first fails against the pre-fix code, confirmed via a scripted
+  revert. Full `src/app/session` suite: 320 passed, 0 failed. No existing
+  issue found.
 * Desktop: a queued composer message could be delivered into the wrong,
-  currently-viewed session (2026-07-22).
+  currently-viewed session (2026-07-22). **CHECKED 2026-07-26, NEEDS
+  HAND-RECONCILIATION.** Isolated fix rejects on
+  `apps/desktop/src/app/session/hooks/use-prompt-actions/submit.ts` — real
+  conflict, not line-drift. Deprioritized alongside the two drag/close
+  items above; all three would need genuine hand-porting effort against
+  the desktop app's fast-churning session/composer code, not just a
+  rebase.
 * Desktop: profile deletion silently reverted after relaunch — zombie
   backend process detection missed `python3 <hermes-shim>` argv shapes
-  (2026-07-22).
+  (2026-07-22). **SUBMITTED 2026-07-26 as upstream PR #72152.** Search-
+  first turned up real complexity: closed issue #52279 (same headline
+  symptom) was already fixed via 2 merged PRs (#57329 respawn-routing +
+  rail-refresh on a DIFFERENT component; #49435 recreation guard in
+  `ensure_hermes_home()`). Got two rounds of external consult on whether
+  this fix still adds anything real. Verified directly (not assumed): (1)
+  `ProfileRail` subscribes reactively to the same `$profiles` atom
+  `refreshProfiles()` already updates on same-window delete, so that path
+  is NOT the gap this fix closes — the actual remaining gap is
+  cross-window/cross-process staleness, confirmed by reading the atom's
+  definition (no IPC sync); (2) a zombie backend surviving the argv[0]
+  detection gap still holds a bound uvicorn port even with the recreation
+  guard in place — confirmed by reading `hermes_cli/web_server.py`, not
+  inert as initially worried. Both pieces are genuinely real, distinct
+  from what's already merged. Python: 156/156 passed.
 * Desktop model picker hid Anthropic despite valid Claude Code credentials
-  (2026-07-22). **Caution:** this is adjacent to CC-mimicry credential
-  detection — verify the fix doesn't reference fork-only CC-credential
-  plumbing before assuming it's portable.
+  (2026-07-22). **SUBMITTED 2026-07-26 as upstream PR #72155.**
+  **Caution paid off as a genuine check, not just process**: confirmed the
+  fix's premise directly by reading `list_authenticated_providers()` in
+  `hermes_cli/model_switch.py` — it already has the exact same
+  `read_hermes_oauth_credentials()`/`read_claude_code_credentials()`
+  fallback pattern this fix extends into the desktop-only filter, citing
+  the same #4210 rationale. Confirms this is extending an
+  already-established upstream pattern, not inventing new CC-credential
+  plumbing. Python: 46/46 in the target test file, 117/117 across
+  adjacent credential-detection test files.
 * Desktop: terminal glyphs render as tofu boxes — missing Nerd Font fallback
-  in the xterm.js `fontFamily` chain (2026-07-22).
+  in the xterm.js `fontFamily` chain (2026-07-22). **SUBMITTED 2026-07-26
+  as upstream PR #72153.** Trivial, low-risk font-stack string extension;
+  applied cleanly, 0 conflicts. No dedicated unit test to extend (a
+  font-family constant isn't meaningfully unit-testable); ran the broader
+  `src/app/right-sidebar/terminal` suite instead — 25/25 passed, 0 new
+  failures.
 * `resedit` replacing deprecated `rcedit`, and the `rimraf`/`boolean`
   local-shim replacements (2026-07-22/24) — routine dependency hygiene, low
   risk, but still confirm upstream hasn't already moved off `rcedit`
