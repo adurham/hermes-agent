@@ -6082,14 +6082,23 @@ def cmd_gui(args: argparse.Namespace):
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
-            if not source_mode:
-                # Locally-built apps are ad-hoc signed; make them relaunchable after
-                # an in-place self-update (otherwise macOS reports "Hermes is
-                # damaged"). No-op on non-macOS and on real-identity builds.
-                _desktop_macos_relaunchable_fixup(desktop_dir)
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
+
+    if not source_mode and packaged_executable is not None:
+        # Locally-built apps are ad-hoc signed; make them relaunchable after an
+        # in-place self-update (otherwise macOS reports "Hermes is damaged").
+        # Runs regardless of whether a rebuild just happened above: the
+        # content-hash stamp intentionally skips rebuilding (and would
+        # otherwise skip this fixup too) when nothing in the source tree
+        # changed, but a fix to the fixup itself (or its inputs, like
+        # entitlements.mac.plist) needs to reach an already-packaged bundle
+        # without waiting for an unrelated future rebuild to trigger it.
+        # Cheap and idempotent — re-signing an already-correctly-signed
+        # bundle is a no-op in effect. No-op on non-macOS and on
+        # real-identity builds (checked inside the fixup itself).
+        _desktop_macos_relaunchable_fixup(desktop_dir)
 
     # --build-only: produce the artifact but do NOT launch. The installer's
     # --update flow drives the rebuild headlessly and then launches the desktop
