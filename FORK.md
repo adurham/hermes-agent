@@ -4521,10 +4521,42 @@ blob, Miku pet bubble) even when the fix itself is generic:
   the spinner bug. Not pursued further — low value/evidence relative to
   other candidates.
 * Clarify/approval panel wide-glyph padding bug, `ljust()` vs. terminal cell
-  width (2026-07-07). Plausibly generic display bug.
+  width (2026-07-07). **CHECKED 2026-07-26, DO NOT FILE.** Unlike the
+  previous two candidates, this one's diff genuinely applies cleanly to
+  upstream (0 conflicts, 39/39 tests pass, zero fork-only symbols) — the
+  bug and the fix are both fully portable. Did NOT file anyway: found the
+  exact matching upstream issue (#20621, open) and an **open PR with a real
+  maintainer review** (#20750, from `teknium1`) that already covers a
+  strict superset of this fix (5 dialog types incl. model picker, vs. this
+  fix's 3; module-level reusable helpers vs. per-closure duplication) and
+  has been given a concrete, specific spec by the maintainer for what's
+  still missing: (a) its wrapping helper breaks on unspaced CJK sentences
+  (`text.split()`-based, doesn't advance past a single unbroken "word"),
+  and (b) it misses the `/new`/`/clear` confirmation panel, which has the
+  identical bug at a different code location. Checked: this fix's own
+  `_wrap_panel_text` (untouched by the original fork commit) has the exact
+  same latent flaw — still plain `textwrap.wrap()`, no display-width
+  awareness — so submitting it wouldn't even be a strictly-more-correct
+  narrower alternative, just a strictly smaller one. A closed earlier PR
+  (#20641, same narrow 3-function scope as this fix) self-closed after a
+  week of no review, not because it was wrong. Per external review: a
+  maintainer engaged with a concrete stated spec is a much stronger signal
+  than mere staleness — submitting a fix that satisfies neither of their
+  named gaps would read as not having read their review, not as a genuine
+  alternative. Not filed. If revisited: the right contribution is fixing
+  #20750's two flagged gaps (CJK word-boundary wrapping + `/new`/`/clear`
+  panel) directly on that PR or as an explicit "supersedes/builds on
+  #20750" submission crediting the original author — not a narrower
+  competing patch.
 * `/usage` NameError — `cache_read_tokens`/`cache_write_tokens` referenced
-  but never defined (2026-07-07). Plausibly generic; verify the surrounding
-  usage-accounting function hasn't been reshaped by fork-only cost tracking.
+  but never defined (2026-07-07). **CHECKED 2026-07-26, DO NOT FILE.**
+  Confirmed by direct comparison against the fork's own pre-fix commit
+  (`a026c8a74~1`): the crashing `CanonicalUsage(...)`/`estimate_usage_cost()`
+  cost-estimation block inside `_show_usage()` is entirely fork-only —
+  upstream's current `_show_usage()` has no such call at all, just prints
+  raw token counts. The exact function this fix patches doesn't have the
+  bug upstream because the surrounding cost-estimation feature it lives in
+  doesn't exist there. Not a portable fix; not filed.
 * Reasoning-block token estimator quadruple-counting `anthropic_content_blocks`
   thinking text (2026-07-07). Verify `anthropic_content_blocks` itself is an
   upstream concept and not a fork-only column/field before trusting this is
