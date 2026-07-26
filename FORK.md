@@ -4680,15 +4680,47 @@ blob, Miku pet bubble) even when the fix itself is generic:
   `src/app/right-sidebar/terminal` suite instead — 25/25 passed, 0 new
   failures.
 * `resedit` replacing deprecated `rcedit`, and the `rimraf`/`boolean`
-  local-shim replacements (2026-07-22/24) — routine dependency hygiene, low
-  risk, but still confirm upstream hasn't already moved off `rcedit`
-  independently since this was written.
+  local-shim replacements (2026-07-22/24). **CHECKED 2026-07-26, SKIPPED —
+  can't verify.** Confirmed `rcedit` is still present unchanged in
+  upstream's `apps/desktop/package.json` (not independently fixed), and
+  the isolated diff applies cleanly (0 conflicts). But this is Windows-only
+  build tooling (PE resource stamping on the built `.exe`) — the original
+  fork commit's own verification was "against a real Windows Electron
+  40.10.2 PE exe," which isn't reproducible on this macOS machine. Diffing
+  clean isn't sufficient verification for a claim like "the icon/version
+  stamping still works" when the actual behavior can't be executed and
+  observed. Skipped rather than submit an unverified Windows-only build
+  change — user confirmed this call directly.
 * Exit-summary/cleanup ordering + cost-accounting fixes: exit watchdog
   swallowing the cost report, memory-confirm cost not counted, background
-  curator cost not counted (2026-07-14, three related entries). Verify
-  "cost accounting" here is upstream's general cost-tracking, not the fork's
-  CC-mimicry billing-header path — the billing header is explicitly on the
-  never-upstream list, and cost-accounting code sits close to it.
+  curator cost not counted (2026-07-14, three related entries).
+  **SPLIT 2026-07-26.** The "watchdog swallows cost report" piece is real,
+  portable, shared code — **SUBMITTED as upstream PR #72164**, split out
+  from the other two entirely fork-only pieces:
+  - Verified `_run_cleanup()`-before-`_print_exit_summary()` ordering and
+    the 30s watchdog default both genuinely exist unchanged in upstream's
+    current `cli.py`, alongside the exact same "`hermes --tui` alive ~47
+    min at 4% CPU" signal-arming fix (`c66891db08`) that IS already
+    merged — so only the ordering/timeout piece was still missing, not
+    the whole commit chain.
+  - The other two entries (memory-confirm cost tracking, curator cost
+    tracking) are genuinely fork-only: `hermes_cli/memory_confirm.py` and
+    `tools/memory_extraction/extractor.py` (the files they touch) don't
+    exist in upstream at all — different memory-review architecture.
+    Confirmed "cost accounting" here is specifically the fork's
+    Phase-2-memory-confirm/curator cost ledgers, not upstream's general
+    cost-tracking — not filed.
+  - Extracted a shared `_finish_interactive_exit()` helper as part of the
+    fix (both call sites had to stop duplicating the ordering) — this also
+    made the invariant unit-testable and replaced the original fix's
+    source-text-regex test (a banned antipattern per this file's own
+    testing rules) with a real behavioral one. That extraction caught a
+    genuine second bug the original fork commit missed: a
+    separately-hardcoded 30s default in
+    `_arm_exit_watchdog_on_shutdown_signal` that would have left the
+    signal-armed backstop's "2x headroom" computed from a stale base.
+  - No existing issue found. 10/10 in the rewritten + updated test files,
+    51/51 across adjacent exit/cleanup tests, 0 regressions.
 
 ### Bucket B — needs de-forking first, or unverified/likely-contaminated (do NOT file as-is)
 
