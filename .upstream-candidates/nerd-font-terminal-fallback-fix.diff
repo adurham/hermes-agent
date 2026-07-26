@@ -1,0 +1,35 @@
+diff --git a/apps/desktop/src/app/right-sidebar/terminal/use-agent-terminal.ts b/apps/desktop/src/app/right-sidebar/terminal/use-agent-terminal.ts
+index bb6aaeaff..28493467f 100644
+--- a/apps/desktop/src/app/right-sidebar/terminal/use-agent-terminal.ts
++++ b/apps/desktop/src/app/right-sidebar/terminal/use-agent-terminal.ts
+@@ -41,7 +41,11 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id:
+       convertEol: true,
+       cursorBlink: false,
+       disableStdin: true,
+-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
++      // Nerd Font fallbacks after JetBrains Mono — see the matching comment in
++      // use-terminal-session.ts. Keeps the read-only agent-output terminal
++      // consistent with the interactive terminal's glyph rendering.
++      fontFamily:
++        "'JetBrains Mono', 'Hack Nerd Font Mono', 'FiraCode Nerd Font Mono', 'Symbols Nerd Font Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+       fontSize: 11,
+       fontWeight: 'normal',
+       fontWeightBold: 'bold',
+diff --git a/apps/desktop/src/app/right-sidebar/terminal/use-terminal-session.ts b/apps/desktop/src/app/right-sidebar/terminal/use-terminal-session.ts
+index c1b09487c..c9a4c1c5d 100644
+--- a/apps/desktop/src/app/right-sidebar/terminal/use-terminal-session.ts
++++ b/apps/desktop/src/app/right-sidebar/terminal/use-terminal-session.ts
+@@ -501,7 +501,12 @@ export function useTerminalSession({
+       allowTransparency: false,
+       convertEol: true,
+       cursorBlink: true,
+-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
++      // Nerd Font fallbacks after JetBrains Mono so PUA glyphs (powerline
++      // separators, prompt icons — starship/oh-my-posh style) resolve instead
++      // of tofu boxes when the user's shell prompt assumes a Nerd Font is
++      // available. JetBrains Mono itself ships no such glyphs.
++      fontFamily:
++        "'JetBrains Mono', 'Hack Nerd Font Mono', 'FiraCode Nerd Font Mono', 'Symbols Nerd Font Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+       fontSize: 11,
+       // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
+       // (500) as the base, which reads a touch heavy at this size.
