@@ -7265,6 +7265,41 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
 
+  // Push real OS-level window visibility to the renderer over IPC. This app
+  // deliberately disables Chromium's own occlusion/backgrounding machinery
+  // (disable-renderer-backgrounding, disable-backgrounding-occluded-windows,
+  // disable-background-timer-throttling — see the switches near the top of
+  // this file) so a streaming chat reply doesn't stall on refocus. That's
+  // correct for timers/rAF continuing to fire, but it also means the
+  // Page Visibility API (document.hidden / visibilitychange) that those
+  // switches partially drive becomes unreliable in this configuration — a
+  // renderer created with `show: false` can get stuck reporting `hidden`
+  // forever even once genuinely shown, because the show→visible transition
+  // itself stops propagating correctly to Blink when occlusion tracking is
+  // off. Cosmetic per-renderer loops (pet sprite/roam) that want to pause
+  // while truly not on screen MUST use this IPC signal instead of
+  // document.hidden — see FORK.md 2026-07-26 entries for the regression this
+  // fixed. win.isVisible() + isMinimized() are native window-manager facts,
+  // untouched by the Chromium-side switches above.
+  const sendVisibility = () => {
+    if (win.isDestroyed()) {
+      return
+    }
+
+    const { webContents } = win
+
+    if (!webContents || webContents.isDestroyed()) {
+      return
+    }
+
+    webContents.send('hermes:window-visibility-changed', { visible: win.isVisible() && !win.isMinimized() })
+  }
+
+  win.on('show', sendVisibility)
+  win.on('hide', sendVisibility)
+  win.on('minimize', sendVisibility)
+  win.on('restore', sendVisibility)
+
   if (zoom) {
     installZoomShortcuts(win)
     // Re-apply persisted zoom on show/restore/resize/cross-display move

@@ -7695,3 +7695,76 @@ pre-existing skips, unrelated).
 
 **Merge note:** fork-only files, no upstream equivalent — no conflict risk.
 
+### Fork-only fix — 2026-07-26 (second regression on the same day: document.hidden itself is unreliable in this app, not just hasFocus())
+
+**Symptom:** after rebuilding with the `document.hidden`-only gate above, the
+pet was still stuck on a single frame from the moment the app launched, and
+the roam physics loop never ran at all (the pet didn't drop to the pet zone's
+floor on mount, as it should).
+
+**Root cause (confirmed via a second-opinion review before touching code
+again, since this was the second broken attempt at the same fix):**
+`electron/main.ts` deliberately disables Chromium's own occlusion tracking
+app-wide — `disable-renderer-backgrounding`, `disable-backgrounding-occluded-
+windows`, `disable-background-timer-throttling` — so a streaming chat reply
+doesn't stall on refocus. `document.hidden`/`visibilitychange` are partially
+driven by that same occlusion-tracking machinery. Disabling it doesn't just
+stop *occlusion* from flipping `document.hidden` (which was the intent) — it
+can leave Page Visibility stuck at whatever it was initialized to. Both
+windows are created with `show: false` and shown later via `win.show()` /
+`win.showInactive()` once ready; `document.hidden` starts `true` at that
+initial `show: false` mount, and with occlusion tracking off, the
+show→visible transition doesn't reliably propagate back to Blink to flip it
+to `false`. Both loops mount already paused and never receive a
+`visibilitychange` event to unpause them — permanently frozen from launch,
+matching the exact symptom (stuck sprite, roam physics never starts).
+
+This app's own architecture doctrine (`apps/desktop/AGENTS.md`, "Decide state
+by authority") says exactly this: Electron is authoritative for machine/
+runtime facts, the renderer's copy is a cache of that truth. `document.hidden`
+is a renderer-side derivation that this app has specifically broken by
+opting out of the machinery that keeps it honest — it was never a safe
+signal to use here for anything, not just the `hasFocus()` half.
+
+**Fix:** stopped using `document.hidden` entirely for this gate. Added a new
+main-process → renderer IPC channel, `hermes:window-visibility-changed`,
+pushed by `wireCommonWindowHandlers()` (shared by the main window, secondary
+session windows, and the pet overlay window) on native `show`/`hide`/
+`minimize`/`restore` events — `win.isVisible() && !win.isMinimized()` is a
+real OS window-manager fact, untouched by the Chromium command-line switches.
+Exposed via `preload.ts`'s `onWindowVisibilityChanged` (same pattern as the
+existing `onPowerResume`) and typed in `global.d.ts`. Added
+`use-window-visibility.ts`: a small `subscribeWindowVisibility()` helper the
+two pet loops now call instead of touching `document` directly. Both loops'
+local `paused`/`hidden` state now **defaults to `false` (running)** rather
+than probing an unreliable signal at mount — if `onWindowVisibilityChanged`
+is unavailable (tests, a non-Electron context) or the first IPC message
+hasn't landed yet, the loop runs rather than risking a permanent freeze; a
+real main-process push corrects it moments later if the window is actually
+hidden.
+
+Also fixes a self-inflicted mid-edit slip caught before commit: an early
+patch attempt on `preload.ts` accidentally deleted the
+`ipcRenderer.on('hermes:boot-progress', listener)` line inside the existing
+`onBootProgress` handler while inserting the new channel above it. Caught by
+re-reading the file after the edit (not by tsc/eslint — it was still valid
+JS, just dead) and restored before running any verification.
+
+**Verification:** `tsc --noEmit` clean across the whole desktop app, `eslint`
+clean on every touched file (`pet-sprite.tsx`, `use-pet-roam.ts`,
+`use-window-visibility.ts`, `global.d.ts`, `electron/main.ts`,
+`electron/preload.ts`), pet test suite 28/28, full desktop suite 256 files /
+2227 tests passing (2 pre-existing skips, unrelated) — including
+`main-window-lifecycle.test.ts` and the other `electron/*.test.ts` window
+lifecycle coverage.
+
+**Files:** `apps/desktop/electron/main.ts` (visibility push in
+`wireCommonWindowHandlers`), `apps/desktop/electron/preload.ts`
+(`onWindowVisibilityChanged` bridge), `apps/desktop/src/global.d.ts` (typing),
+`apps/desktop/src/components/pet/use-window-visibility.ts` (new — the
+subscription helper), `apps/desktop/src/components/pet/pet-sprite.tsx`,
+`apps/desktop/src/components/pet/use-pet-roam.ts` (both switched from
+`document.hidden` to the IPC signal, default-unpaused at mount).
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict risk.
+

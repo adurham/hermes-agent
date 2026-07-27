@@ -13,6 +13,7 @@ import {
   snapshotContainerLedges,
   snapshotLedges
 } from './roam-geometry'
+import { subscribeWindowVisibility } from './use-window-visibility'
 
 interface Point {
   x: number
@@ -134,23 +135,26 @@ export function usePetRoam({
     let raf = 0
 
     // Freeze the wander loop while the window is truly hidden (minimized, on
-    // another space, or occluded far enough that Chromium flips Page
-    // Visibility). electron/main.ts disables Chromium's normal
-    // renderer-backgrounding throttle app-wide so a streaming reply never
-    // stalls on refocus — but that also means an rAF loop with no gate of its
-    // own spins at 60Hz forever with nobody looking at it. This loop is purely
-    // cosmetic (idle wander), so pausing is safe; `last` is reset on resume so
-    // the dt clamp (MAX_DT_S) absorbs the gap instead of the pet teleporting.
+    // another space, or occluded). electron/main.ts disables Chromium's
+    // normal renderer-backgrounding throttle app-wide so a streaming reply
+    // never stalls on refocus — but that also means an rAF loop with no gate
+    // of its own spins at 60Hz forever with nobody looking at it. This loop
+    // is purely cosmetic (idle wander), so pausing is safe; `last` is reset
+    // on resume so the dt clamp (MAX_DT_S) absorbs the gap instead of the pet
+    // teleporting.
     //
-    // Deliberately NOT gated on document.hasFocus(): the pet is a background
-    // companion meant to keep wandering while glanced at, not a foreground
-    // interactive surface. hasFocus() goes false the moment any other app
-    // gets clicked into even though the pet is still fully visible on screen.
-    // document.hidden is the correct "can anyone actually see this" signal
-    // for a passive companion.
-    const isRoamPaused = () => typeof document !== 'undefined' && document.hidden
-
-    let hidden = isRoamPaused()
+    // Deliberately NOT document.hidden/visibilitychange, and NOT
+    // document.hasFocus(): this app's occlusion-throttle switches make Page
+    // Visibility unreliable here — a window created with `show: false` can
+    // get stuck reporting `hidden` forever even once genuinely shown, because
+    // the show→visible transition stops propagating correctly to Blink when
+    // occlusion tracking is off (verified regression: the roam loop never
+    // ran at all from launch — pet never dropped to the floor — see FORK.md
+    // 2026-07-26 entries). Use the real OS-level visibility pushed from the
+    // main process instead (see use-window-visibility.ts). Also not
+    // hasFocus(): the pet is a background companion meant to keep wandering
+    // while glanced at, not a foreground interactive surface.
+    let hidden = false
 
     const schedule = () => {
       if (!hidden && !raf) {
@@ -158,8 +162,8 @@ export function usePetRoam({
       }
     }
 
-    const onActivity = () => {
-      const next = isRoamPaused()
+    const onVisibilityChange = (visible: boolean) => {
+      const next = !visible
 
       if (next === hidden) {
         return
@@ -386,7 +390,7 @@ export function usePetRoam({
 
     schedule()
 
-    document.addEventListener('visibilitychange', onActivity)
+    const unsubVisibility = subscribeWindowVisibility(onVisibilityChange)
 
     // React immediately to a live pane resize — not just the re-measure baked
     // into each decision beat. Without this, a resize mid-pause (dwell up to
@@ -428,7 +432,7 @@ export function usePetRoam({
 
     return () => {
       cancelAnimationFrame(raf)
-      document.removeEventListener('visibilitychange', onActivity)
+      unsubVisibility()
       resizeObserver?.disconnect()
       signal(null, 0)
       $petRoamAirborne.set(false)
