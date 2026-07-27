@@ -40,7 +40,7 @@ def _resolve_token() -> tuple[str, str]:
         return env_token, "env CLAUDE_CODE_OAUTH_TOKEN"
 
     if ENV_PATH.exists():
-        for raw in ENV_PATH.read_text().splitlines():
+        for raw in ENV_PATH.read_text(encoding="utf-8").splitlines():
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
@@ -51,7 +51,8 @@ def _resolve_token() -> tuple[str, str]:
 
     if CREDS_PATH.exists():
         try:
-            data = json.load(open(CREDS_PATH))
+            with open(CREDS_PATH, encoding="utf-8") as f:
+                data = json.load(f)
             tok = (data.get("claudeAiOauth") or {}).get("accessToken")
             if tok:
                 return tok, f"file {CREDS_PATH}"
