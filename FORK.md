@@ -7970,3 +7970,104 @@ established earlier this session).
 tooling with no upstream equivalent, no conflict risk. `tests/conftest.py`
 is a shared file but this touches only the fixtures added in the prior
 entry above — low conflict risk.
+
+
+### Fork-only fix — 2026-07-27 (2 real intra-file test-order leaks in test_tui_gateway_server.py, surfaced by pytest-randomly's own CI run)
+
+**Symptom:** the second CI recovery push above (`61da986b1`) still failed
+1 Python test slice: `tests/test_tui_gateway_server.py::test_config_set_approval_mode_persists_three_way_value_and_emits_live_status`
+— `assert emitted[0][0:2] == ("session.info", "sid")` got `("session.info",
+"abx")` instead. Passed cleanly in isolation. Delegated to a subagent for
+root-cause investigation (matches the exact "passes solo, fails in a full
+randomized run" signature pytest-randomly exists to catch).
+
+**Root cause 1 (real intra-file leak — module-level dict, not env/ambient):**
+`server._sessions["abx"]` (seeded by
+`test_image_attach_bytes_writes_to_gateway_dir`) was never cleaned up on
+that test's exit path — most sibling tests in this file seed
+`server._sessions[<id>]` directly and clean up via their own
+`try/finally` + `.pop()`/`.clear()`, but this one didn't. A leftover
+`"abx"` entry becomes the FIRST value iterated/emitted by whichever later
+test runs next under a given random seed, corrupting that test's
+assertion about its own session id. Fixed at the module level with a new
+autouse `_isolate_server_sessions(monkeypatch)` fixture — a systemic
+safety net (snapshot/restore `server._sessions` around every test) rather
+than auditing all ~183 individual `server._sessions[...]` seed sites in
+this 11k-line file. Uses `monkeypatch.setattr(server, "_sessions",
+dict(server._sessions))` specifically (NOT a bare
+`try/finally: server._sessions.clear(); server._sessions.update(...)`) —
+the bare version raced
+`test_session_delete_fails_closed_when_active_snapshot_raises`'s OWN
+`monkeypatch.setattr(server, "_sessions", _ExplodingDict())` (a test
+double lacking `.clear()`), because pytest tears fixtures down LIFO
+relative to setup and there's no way to force "run after a fixture I
+don't depend on" without riding its actual mechanism — `monkeypatch`
+instances are cached per test call, so putting both patches on the same
+instance's single undo stack resolves the ordering correctly regardless
+of declaration order.
+
+**Root cause 2 (real bug, unrelated to the leak above, ALSO surfaced by
+random-seed reruns — this repo's own dev-shell ambient environment AND a
+genuine hermes_cli/main.py argv-parsing gap):**
+
+- 2a: this dev machine's shell exports `HERMES_DESKTOP=1` (running inside
+  the Hermes desktop app). `_resolve_session_platform()` in
+  `tui_gateway/server.py` reads that env var to distinguish "desktop"
+  from "tui", so any test not explicitly isolating it inherited the
+  ambient "desktop" value instead of the expected default "tui". Fixed
+  with a second autouse fixture, `_isolate_desktop_env`, that strips
+  `HERMES_DESKTOP`/`HERMES_DESKTOP_TERMINAL` for every test in this
+  module (individual tests that need the desktop branch still set these
+  explicitly via monkeypatch).
+- 2b: `hermes_cli/main.py`'s `_apply_profile_override()` runs at MODULE
+  IMPORT TIME, scanning the real process `sys.argv` for `-p`/`--profile`
+  — but "this module got imported" and "the hermes CLI was invoked" are
+  different events colliding here. `pytest -p randomly` (real pytest
+  plugin-activation syntax; matters now that pytest-randomly is a dev
+  dependency) gets misread as `hermes -p randomly` the instant any test
+  file importing `hermes_cli.main` runs inside that invocation, crashing
+  with `sys.exit(1)` ("Profile 'randomly' does not exist"). An existing
+  regex guard already special-cased `no:xdist`-shaped values (colon =
+  clearly invalid profile name) but a plain-word plugin name like
+  `randomly` is shaped exactly like a real profile and slips through.
+  Two guard attempts were WRONG and reverted before landing on the right
+  one (see the extensive comment on `_looks_like_hermes_invocation` in
+  the code): checking `PYTEST_VERSION` broke
+  `tests/hermes_cli/test_apply_profile_override.py`, which calls
+  `_apply_profile_override()` DIRECTLY with a test-controlled
+  `monkeypatch.setattr(sys, "argv", ["hermes", ...])` and legitimately
+  wants the override logic to run even under pytest; checking only
+  `sys.argv[0]`'s basename against `{hermes, hermes-agent, hermes-acp}`
+  broke the equally-real, documented `python -m hermes_cli.main`
+  invocation style (used by `hermes_cli/relaunch.py`'s own fallback,
+  `gateway.py`'s `--replace` re-exec argv builder, and a systemd
+  `ExecStart` doc example) — CPython rewrites `argv[0]` to the resolved
+  module file path under `-m`, not the script name. Final fix:
+  `_looks_like_hermes_invocation()` checks BOTH the console-script
+  basename AND the `.../hermes_cli/main.py` file-path shape, covering
+  real console-script invocations, real `-m`/direct-script invocations,
+  and the test file's own test-constructed `["hermes", ...]` argv, while
+  correctly rejecting pytest's own real process argv (never any of those
+  shapes).
+
+**Verification:** `tests/test_tui_gateway_server.py` — 385/385 passing
+across 11 of 12 random-seed reruns in a row (the 1 remaining failure,
+`test_notification_poller_live_loop_requeues_foreign_completion_for_owner`,
+passed cleanly in isolation and on 4 immediate reruns — a separate,
+pre-existing async-timing flake unrelated to this fix, not chased
+further). `tests/hermes_cli/test_apply_profile_override.py` (12/12),
+`test_startup_plugin_gating.py`, `test_gateway_command_line_matcher.py`
+(both also exercise `_apply_profile_override`/argv parsing) all still
+passing — confirmed the `-m hermes_cli.main` guard fix didn't regress
+any of them. Full CI-matching `scripts/run_tests.sh` across all 4 files:
+460 tests passed, 0 failed. `ruff check .` clean.
+
+**Files:** `tests/test_tui_gateway_server.py` (2 new autouse fixtures +
+try/finally cleanup on the one leaking test), `hermes_cli/main.py` (the
+argv-identity guard + its helper function).
+
+**Merge note:** `tests/test_tui_gateway_server.py` is test-only, low
+conflict risk. `hermes_cli/main.py`'s `_apply_profile_override()` is
+fork-specific profile-selection logic (upstream doesn't have Hermes'
+multi-profile system) — low conflict risk, but re-verify against
+upstream's own `-p`/`--profile` handling (if any) on next merge.
