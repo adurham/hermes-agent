@@ -7448,3 +7448,55 @@ signal across every phase transition).
 
 **Merge note:** fork-only files, no upstream equivalent — no conflict risk.
 
+### Fork-only fix — 2026-07-26 (pet: uncapped rAF loops kept running at full rate in the background, chewing battery)
+
+**Symptom:** user reported Hermes Desktop draining battery noticeably.
+`powermetrics --samplers tasks` showed the renderer process pegged at
+37–53% of a core, sustained, with Safari frontmost and Hermes fully
+occluded/backgrounded — the single hottest process on the machine, ahead of
+WindowServer and kernel_task.
+
+**Root cause:** `electron/main.ts` deliberately disables Chromium's normal
+renderer-backgrounding throttle app-wide (`disable-renderer-backgrounding`,
+`disable-backgrounding-occluded-windows`, `disable-background-timer-throttling`)
+so a streaming chat reply doesn't stall when the window loses focus (Chromium
+normally pauses `requestAnimationFrame` for a hidden/occluded renderer — see
+the `ad09bf387` upstream fix on the same theme). That's correct for the
+transcript stream, which now flushes off a timer, not rAF. But it means every
+*other* rAF loop in the renderer runs at a full, uncapped 60Hz forever,
+whether the window is visible or not, with no clamp to fall back on. Two pet
+loops were the biggest offenders: `pet-sprite.tsx`'s canvas render loop (ticks
+every frame even though the sprite itself only steps ~5Hz) and
+`use-pet-roam.ts`'s physics step loop (runs continuously whenever roam is on).
+`app/starmap/star-map.tsx` had already solved this exact problem for its own
+loop with a `document.hidden` / `document.hasFocus()` gate — the pet loops
+just never got the same treatment.
+
+**Fix:** ported star-map's pause/resume pattern to both pet loops. Each adds
+an `isPaused()` check (`document.hidden` or `!document.hasFocus()`), a
+`schedule()` wrapper that only calls `requestAnimationFrame` when not paused,
+and a `visibilitychange`/`blur`/`focus` listener that cancels the in-flight
+frame on hide and kicks a fresh one on show. `pet-sprite.tsx` also resets
+`drawnFrame` on resume so the next frame always repaints instead of relying on
+a stale "no change" skip; `use-pet-roam.ts` resets `last` on resume so the
+`MAX_DT_S` clamp absorbs the paused gap instead of teleporting the pet. Purely
+cosmetic loops — no visible behavior change while the window is actually in
+front of the user, since `document.hasFocus()` is true in that case
+regardless of the process-level throttle switches.
+
+Left `display.pet.enabled` on for the user in the meantime — this fix removes
+the need to keep it off. (User also set it to `false` as an immediate,
+no-rebuild mitigation while this fix was in flight; safe to re-enable once
+this build is running.)
+
+**Verification:** full desktop `tsc --noEmit` clean (no new errors in either
+file), `eslint` clean on both files, pet test suite 28/28 unchanged, full
+desktop suite unchanged at 256 files / 2227 tests passing (2 pre-existing
+skips, unrelated).
+
+**Files:** `apps/desktop/src/components/pet/pet-sprite.tsx` (visibility-gated
+render loop), `apps/desktop/src/components/pet/use-pet-roam.ts`
+(visibility-gated step loop).
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict risk.
+
