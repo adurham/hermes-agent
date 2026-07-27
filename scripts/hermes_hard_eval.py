@@ -86,7 +86,7 @@ PROBE_TIMEOUT = 600.0
 def _load_done(jsonl_path: Path) -> set[tuple[str, str, str, int]]:
     done = set()
     if jsonl_path.exists():
-        for line in jsonl_path.read_text().splitlines():
+        for line in jsonl_path.read_text(encoding="utf-8").splitlines():
             try:
                 r = json.loads(line)
                 done.add((r["mode"], r["provider"], r["task_id"], r["trial"]))
@@ -100,7 +100,7 @@ _write_lock = threading.Lock()
 
 def _append(jsonl_path: Path, rec: dict) -> None:
     with _write_lock:
-        with open(jsonl_path, "a") as f:
+        with open(jsonl_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
 
 
@@ -140,7 +140,7 @@ def run_cli_trial(pname: str, task, trial: int, workdir: Path) -> dict:
 
     usage = {}
     try:
-        usage = json.loads(usage_file.read_text())
+        usage = json.loads(usage_file.read_text(encoding="utf-8"))
     except Exception:
         pass
 
@@ -205,7 +205,7 @@ def run_probe_trial(pname: str, task, trial: int) -> dict:
 
 # ---------------------------------------------------------------- reporting
 def report(jsonl_path: Path, mode: str) -> None:
-    rows = [json.loads(l) for l in jsonl_path.read_text().splitlines() if l.strip()]
+    rows = [json.loads(l) for l in jsonl_path.read_text(encoding="utf-8").splitlines() if l.strip()]
     rows = [r for r in rows if r["mode"] == mode]
     for pname in sorted({r["provider"] for r in rows}):
         prows = [r for r in rows if r["provider"] == pname]

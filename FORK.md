@@ -8071,3 +8071,33 @@ conflict risk. `hermes_cli/main.py`'s `_apply_profile_override()` is
 fork-specific profile-selection logic (upstream doesn't have Hermes'
 multi-profile system) — low conflict risk, but re-verify against
 upstream's own `-p`/`--profile` handling (if any) on next merge.
+
+
+### Fork-only fix — 2026-07-27 (blocking CI lint failures from a concurrent session's commit — missing encoding= on 4 open()/.read_text() calls)
+
+**Symptom:** a concurrent Hermes session's commit
+(`38d36c0357`, "fix(tools): strip orphan tool-call TAIL leaking into final
+content") added `scripts/hermes_hard_eval.py` — despite the file's own
+docstring saying "NOTE: deliberately untracked — do not commit" — with 4
+`open()`/`.read_text()` calls missing the explicit `encoding=` argument
+required by this repo's blocking `ruff` (`unspecified-encoding`, PLW1514)
+and Windows-footgun checks. Landed on `main` via `git pull --ff-only`
+during this session's own CI-recovery work, turning the SAME blocking
+lint jobs I'd just fixed (in the two entries above) red again on the next
+push, for an unrelated reason.
+
+**Fix:** added `encoding="utf-8"` to all 4 call sites in
+`scripts/hermes_hard_eval.py` (2× `Path.read_text()`, 1× `open(..., "a")`,
+1× more `Path.read_text()` in a different function) — no logic changes,
+matches the identical fix pattern already documented in this file's
+2026-07-26 "CI Lint + uv.lock/CI Tests permanently red" entry.
+
+**Verification:** `ruff check .` and
+`scripts/check-windows-footguns.py --all` both clean (840 files scanned,
+0 footguns).
+
+**Files:** `scripts/hermes_hard_eval.py`.
+
+**Merge note:** the file's own docstring says it's meant to stay
+untracked/uncommitted — flagging for the user rather than untracking it
+myself, since that's a workflow decision outside a lint-fix's scope.
