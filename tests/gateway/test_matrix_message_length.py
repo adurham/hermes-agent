@@ -61,6 +61,23 @@ class TestMatrixMaxMessageLength:
         monkeypatch.delenv("MATRIX_MAX_MESSAGE_LENGTH", raising=False)
         _apply_yaml_config({}, {"max_message_length": 12000})
         assert os.getenv("MATRIX_MAX_MESSAGE_LENGTH") == "12000"
+        # _apply_yaml_config sets this env var directly via `os.environ[...] =
+        # ...` (by design -- see its docstring: "everything flows through
+        # env"). Clean it up with a RAW `os.environ.pop`, not another
+        # `monkeypatch.delenv` call -- monkeypatch.delenv snapshots whatever
+        # value is CURRENTLY present (here: "12000", the value the line
+        # above just set) and restores THAT on teardown, not the value from
+        # before this test started. A second monkeypatch.delenv() here would
+        # therefore push an undo entry that re-sets "12000" on teardown --
+        # the opposite of "clean up" -- which is exactly what leaked
+        # "12000" into whichever sibling test ran next under a given
+        # pytest-randomly ordering and didn't set its own value first (e.g.
+        # test_default_limit_is_16000 asserting the DEFAULT 16000 saw this
+        # test's leftover 12000 instead). A raw, untracked pop leaves
+        # monkeypatch's undo stack holding only the TRUE original state (or
+        # nothing, if it wasn't set before this test), so teardown restores
+        # correctly.
+        os.environ.pop("MATRIX_MAX_MESSAGE_LENGTH", None)
 
     def test_register_uses_default_limit(self):
         from plugins.platforms.matrix.adapter import DEFAULT_MAX_MESSAGE_LENGTH, register
