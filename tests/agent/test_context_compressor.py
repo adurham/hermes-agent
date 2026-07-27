@@ -118,6 +118,38 @@ class TestUpdateFromResponse:
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
+    def test_server_tool_requests_tracked(self, compressor):
+        compressor.update_from_response({
+            "prompt_tokens": 900_000,
+            "server_tool_requests": 4,
+        })
+        assert compressor.last_server_tool_requests == 4
+
+    def test_server_tool_requests_defaults_zero(self, compressor):
+        compressor.update_from_response({"prompt_tokens": 5000})
+        assert compressor.last_server_tool_requests == 0
+
+    def test_server_tool_inflated_reading_does_not_count_as_ineffective_compaction(self, compressor):
+        """A reading inflated by folded server-tool passes must not be judged
+        as proof compaction failed to clear the threshold — otherwise a
+        single web_search-heavy turn right after compaction falsely marks
+        compaction ineffective and can drive repeat compaction.
+        """
+        compressor._verify_compaction_cleared_threshold = True
+        compressor.update_from_response({
+            "prompt_tokens": 900_000,  # inflated, well above threshold (85000)
+            "server_tool_requests": 3,
+        })
+        assert compressor._ineffective_compression_count == 0
+        # The pending verdict is still consumed (bounded window), not left armed.
+        assert compressor._verify_compaction_cleared_threshold is False
+
+    def test_uninflated_reading_still_flags_ineffective_compaction(self, compressor):
+        """Sanity check that the guard above didn't disable the real check."""
+        compressor._verify_compaction_cleared_threshold = True
+        compressor.update_from_response({"prompt_tokens": 90000})
+        assert compressor._ineffective_compression_count == 1
+
 
 class TestDisplayPromptTokens:
     """display_prompt_tokens must return the last REAL provider count, never
@@ -147,6 +179,27 @@ class TestDisplayPromptTokens:
         compressor.last_real_prompt_tokens = -1  # parked at compression
         compressor.last_prompt_tokens = -1
         assert compressor.display_prompt_tokens() == 0
+
+    def test_server_tool_inflated_reading_does_not_overwrite_display_baseline(self, compressor):
+        """A folded-server-tool-pass reading must not balloon the status bar.
+
+        Without this guard, a turn with a few web_search/web_fetch calls
+        could make the context counter jump from e.g. 50K to 975K even
+        though the real conversation barely grew — the exact "Δ+975K new"
+        phantom this fix targets.
+        """
+        compressor.update_from_response({"prompt_tokens": 50_000, "completion_tokens": 300})
+        assert compressor.display_prompt_tokens() == 50_000
+        compressor.update_from_response({
+            "prompt_tokens": 975_000,  # inflated by folded server-tool passes
+            "completion_tokens": 300,
+            "server_tool_requests": 4,
+        })
+        # Display stays on the last trustworthy real reading, not the balloon.
+        assert compressor.display_prompt_tokens() == 50_000
+        # A subsequent clean reading updates it normally.
+        compressor.update_from_response({"prompt_tokens": 52_000, "completion_tokens": 300})
+        assert compressor.display_prompt_tokens() == 52_000
 
 
 class TestPreflightDeferral:

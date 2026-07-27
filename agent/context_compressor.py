@@ -1396,6 +1396,14 @@ class ContextCompressor(ContextEngine):
         self.last_cache_read_tokens = 0
         self.last_cache_write_tokens = 0
         self.last_real_prompt_tokens = 0
+        # Anthropic server-tool calls (web_search / web_fetch) each run a
+        # separate internal inference pass, and the provider folds every
+        # pass's usage into one cumulative prompt_tokens figure with no
+        # other marker. A turn with N passes can report ~(N+1)x the real
+        # next-request context size. Tracked so callers can distrust
+        # last_prompt_tokens as a context-size proxy for THIS reading
+        # (root-caused 2026-07-24, session 20260723_211736_99ee22).
+        self.last_server_tool_requests = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
@@ -1473,6 +1481,7 @@ class ContextCompressor(ContextEngine):
         """
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
+        self.last_server_tool_requests = usage.get("server_tool_requests", 0)
         if "input_tokens" in usage:
             self.last_input_tokens = usage.get("input_tokens", 0)
         if "cache_read_tokens" in usage:
@@ -1481,18 +1490,27 @@ class ContextCompressor(ContextEngine):
             self.last_cache_write_tokens = usage.get("cache_write_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         if self.last_prompt_tokens > 0:
-            self.last_real_prompt_tokens = self.last_prompt_tokens
-            if self.last_prompt_tokens < self.threshold_tokens:
-                if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
-                    self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
-                # Any real provider reading below the trigger proves the prompt
-                # fits again. Clear the real-usage effectiveness latch even
-                # when this response was not immediately after compaction. The
-                # independent fallback streak is boundary-scoped and survives
-                # ordinary fitting responses during context regrowth.
-                self._ineffective_compression_count = 0
-            else:
-                self.last_rough_tokens_when_real_prompt_fit = 0
+            # A reading inflated by folded server-tool passes (see
+            # last_server_tool_requests above) is not a valid context-size
+            # sample: it can read far above the threshold while the actual
+            # next-request context barely grew. Trusting it here would wipe
+            # last_real_prompt_tokens (the display/preflight-deferral
+            # baseline) with a phantom balloon, or wrongly reset the
+            # "prompt fits" fit-baseline. Leave both at their last
+            # trustworthy value and wait for a clean reading.
+            if not self.last_server_tool_requests:
+                self.last_real_prompt_tokens = self.last_prompt_tokens
+                if self.last_prompt_tokens < self.threshold_tokens:
+                    if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
+                        self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
+                    # Any real provider reading below the trigger proves the prompt
+                    # fits again. Clear the real-usage effectiveness latch even
+                    # when this response was not immediately after compaction. The
+                    # independent fallback streak is boundary-scoped and survives
+                    # ordinary fitting responses during context regrowth.
+                    self._ineffective_compression_count = 0
+                else:
+                    self.last_rough_tokens_when_real_prompt_fit = 0
 
             # Anti-thrashing verdict, judged HERE because this is the only place
             # that sees the provider's real prompt count for the just-compacted
@@ -1511,7 +1529,23 @@ class ContextCompressor(ContextEngine):
             # Keying on real usage compares like with like and fires exactly once
             # per compaction.
             if self._verify_compaction_cleared_threshold:
-                if self.last_prompt_tokens >= self.threshold_tokens:
+                if self.last_server_tool_requests:
+                    # This reading is inflated by N server-tool inference
+                    # passes folded into one prompt_tokens figure — it says
+                    # nothing about whether compaction actually cleared the
+                    # threshold. Judging it as "ineffective" here would let
+                    # server-tool traffic falsely drive repeat compaction.
+                    # Skip the verdict; it stays inconclusive until a clean
+                    # (non-server-tool) reading arrives.
+                    if not self.quiet_mode:
+                        logger.debug(
+                            "Skipping compaction-effectiveness verdict: reading "
+                            "inflated by %d server-tool pass(es) (%d tokens, "
+                            "threshold %d).",
+                            self.last_server_tool_requests,
+                            self.last_prompt_tokens, self.threshold_tokens,
+                        )
+                elif self.last_prompt_tokens >= self.threshold_tokens:
                     self._ineffective_compression_count += 1
                     if not self.quiet_mode:
                         logger.warning(

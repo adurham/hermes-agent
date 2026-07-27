@@ -2586,19 +2586,52 @@ def run_conversation(
                     prompt_tokens = canonical_usage.prompt_tokens
                     completion_tokens = canonical_usage.output_tokens
                     total_tokens = canonical_usage.total_tokens
+                    # Anthropic server-side tools (web_search, web_fetch,
+                    # tool_search_tool_regex/bm25 in legacy server_side mode)
+                    # ALL share the single content-block type
+                    # "server_tool_use" — only their `name` field differs.
+                    # response.usage.server_tool_use only exposes per-name
+                    # counters for web_search/web_fetch (canonical_usage.
+                    # server_tool_requests above), so a tool_search-only turn
+                    # would report 0 there despite the identical multi-pass
+                    # usage folding. Count the blocks directly so any current
+                    # or future Anthropic server tool is covered, not just the
+                    # two the usage object happens to name.
+                    _server_tool_block_count = 0
+                    if agent.api_mode == "anthropic_messages":
+                        for _blk in (getattr(response, "content", None) or []):
+                            _blk_type = (
+                                _blk.get("type") if isinstance(_blk, dict)
+                                else getattr(_blk, "type", None)
+                            )
+                            if _blk_type == "server_tool_use":
+                                _server_tool_block_count += 1
                     # Forward canonical token + cache buckets so context engines
                     # can make decisions on cache hit ratios / reasoning costs,
                     # not just legacy aggregate tokens. Legacy keys stay for
                     # back-compat with engines that only read prompt/completion/total.
+                    #
+                    # Fed from aggregator_usage (pre-MoA-reference-fold), not
+                    # the combined canonical_usage: MoA advisor fan-out usage
+                    # is real spend (correctly folded into prompt_tokens/
+                    # session_* counters below for cost tracking) but isn't
+                    # part of what actually lands in the conversation's next-
+                    # request context — feeding the combined figure here would
+                    # let N-advisor MoA turns trip compaction the same way
+                    # server-tool-inflated turns did.
                     usage_dict = {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": total_tokens,
-                        "input_tokens": canonical_usage.input_tokens,
-                        "output_tokens": canonical_usage.output_tokens,
-                        "cache_read_tokens": canonical_usage.cache_read_tokens,
-                        "cache_write_tokens": canonical_usage.cache_write_tokens,
-                        "reasoning_tokens": canonical_usage.reasoning_tokens,
+                        "prompt_tokens": aggregator_usage.prompt_tokens,
+                        "completion_tokens": aggregator_usage.output_tokens,
+                        "total_tokens": aggregator_usage.total_tokens,
+                        "input_tokens": aggregator_usage.input_tokens,
+                        "output_tokens": aggregator_usage.output_tokens,
+                        "cache_read_tokens": aggregator_usage.cache_read_tokens,
+                        "cache_write_tokens": aggregator_usage.cache_write_tokens,
+                        "reasoning_tokens": aggregator_usage.reasoning_tokens,
+                        "server_tool_requests": max(
+                            aggregator_usage.server_tool_requests,
+                            _server_tool_block_count,
+                        ),
                     }
                     agent.context_compressor.update_from_response(usage_dict)
                     agent._record_usage_history(canonical_usage)
@@ -5757,13 +5790,26 @@ def run_conversation(
                 # a session can grow unbounded after disconnects because
                 # should_compress(0) never fires.  (#2153)
                 _compressor = agent.context_compressor
-                if _compressor.last_prompt_tokens > 0:
+                if _compressor.last_prompt_tokens > 0 and not _compressor.last_server_tool_requests:
                     # Only use prompt_tokens — completion/reasoning
                     # tokens don't consume context window space.
                     # Thinking models (GLM-5.1, QwQ, DeepSeek R1)
                     # inflate completion_tokens with reasoning,
                     # causing premature compression.  (#12026)
                     _real_tokens = _compressor.last_prompt_tokens
+                elif _compressor.last_prompt_tokens > 0:
+                    # last_prompt_tokens is real but was inflated by N
+                    # Anthropic server-tool (web_search/web_fetch) inference
+                    # passes folded into one cumulative prompt_tokens figure
+                    # — it can read ~(N+1)x the actual next-request context
+                    # size and falsely trip compaction on a session that
+                    # hasn't meaningfully grown. Fall back to the message-
+                    # content-derived estimate, which server-tool passes
+                    # can't inflate (root-caused 2026-07-24, session
+                    # 20260723_211736_99ee22).
+                    _real_tokens = estimate_request_tokens_rough(
+                        messages, tools=agent.tools or None
+                    )
                 elif _compressor.last_prompt_tokens == -1:
                     # Compression just ran and no API-reported prompt count
                     # has arrived yet. Avoid treating a schema-heavy rough

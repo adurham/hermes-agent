@@ -16,15 +16,23 @@ import tools.delegate_tool as dt
 
 
 class _FakeCompressor:
-    def __init__(self, context_length, max_tokens):
+    def __init__(self, context_length, max_tokens, used_tokens=0):
         self.context_length = context_length
         self.max_tokens = max_tokens
+        self._used_tokens = used_tokens
+
+    def display_prompt_tokens(self):
+        return self._used_tokens
 
 
 class _FakeParent:
     def __init__(self, context_length, used_tokens, max_tokens):
-        self.context_compressor = _FakeCompressor(context_length, max_tokens)
-        self.session_prompt_tokens = used_tokens
+        self.context_compressor = _FakeCompressor(context_length, max_tokens, used_tokens)
+        # Deliberately NOT read by _parent_summary_char_budget (regression
+        # guard for the cumulative-vs-current bug: session_prompt_tokens only
+        # grows across the whole session and isn't the current context size —
+        # see agent/context_compressor.py's display_prompt_tokens() instead).
+        self.session_prompt_tokens = used_tokens * 7
 
 
 def test_small_summaries_pass_through_untouched():
@@ -115,6 +123,24 @@ def test_disabled_static_ceiling_and_unknown_context_leaves_summary_intact(monke
     dt._apply_summary_budget(results, _Bare())
     assert "summary_truncated" not in results[0]
     assert len(results[0]["summary"]) == 40_000
+
+
+def test_uses_current_context_not_cumulative_session_total():
+    """Regression guard: session_prompt_tokens is a cumulative sum across
+    every API call this session has ever made — it only grows, so after a
+    few turns it exceeds context_length even on a session compaction has
+    kept small, clamping every subsequent batch to the floor. The budget
+    must be sized off the CURRENT context (display_prompt_tokens()), not
+    that ever-growing counter.
+    """
+    parent = _FakeParent(context_length=131_000, used_tokens=10_000, max_tokens=8_000)
+    # A long-running session: cumulative session_prompt_tokens is huge
+    # (7x current, per the fixture) — if the bug were still present this
+    # would blow past context_length and clamp to the floor.
+    assert parent.session_prompt_tokens == 70_000
+    budget = dt._parent_summary_char_budget(parent, 3)
+    assert budget is not None
+    assert budget > dt._MIN_SUMMARY_CHARS
 
 
 def test_empty_results_is_noop():
