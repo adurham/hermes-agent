@@ -133,6 +133,46 @@ export function usePetRoam({
     let last = performance.now()
     let raf = 0
 
+    // Freeze the wander loop while the window is hidden/unfocused (minimized,
+    // occluded, backgrounded). electron/main.ts disables Chromium's normal
+    // renderer-backgrounding throttle app-wide so a streaming reply never
+    // stalls on refocus — but that also means an rAF loop with no gate of its
+    // own spins at 60Hz forever with nobody looking at it. This loop is purely
+    // cosmetic (idle wander), so pausing is safe; `last` is reset on resume so
+    // the dt clamp (MAX_DT_S) absorbs the gap instead of the pet teleporting.
+    // Mirrors the same pattern in app/starmap/star-map.tsx.
+    const isRoamPaused = () =>
+      (typeof document !== 'undefined' && document.hidden) ||
+      (typeof document.hasFocus === 'function' && !document.hasFocus())
+
+    let hidden = isRoamPaused()
+
+    const schedule = () => {
+      if (!hidden && !raf) {
+        raf = requestAnimationFrame(step)
+      }
+    }
+
+    const onActivity = () => {
+      const next = isRoamPaused()
+
+      if (next === hidden) {
+        return
+      }
+
+      hidden = next
+
+      if (hidden) {
+        if (raf) {
+          cancelAnimationFrame(raf)
+          raf = 0
+        }
+      } else {
+        last = performance.now()
+        schedule()
+      }
+    }
+
     let walkTargetX = cur.x
     let curLedge: Ledge | null = null
     let targetLedge: Ledge | null = null
@@ -259,7 +299,7 @@ export function usePetRoam({
         signal(null, 0)
         $petRoamAirborne.set(false)
         $petRoamPaused.set(true)
-        raf = requestAnimationFrame(step)
+        schedule()
 
         return
       }
@@ -336,10 +376,14 @@ export function usePetRoam({
         }
       }
 
-      raf = requestAnimationFrame(step)
+      schedule()
     }
 
-    raf = requestAnimationFrame(step)
+    schedule()
+
+    document.addEventListener('visibilitychange', onActivity)
+    window.addEventListener('blur', onActivity)
+    window.addEventListener('focus', onActivity)
 
     // React immediately to a live pane resize — not just the re-measure baked
     // into each decision beat. Without this, a resize mid-pause (dwell up to
@@ -381,6 +425,9 @@ export function usePetRoam({
 
     return () => {
       cancelAnimationFrame(raf)
+      document.removeEventListener('visibilitychange', onActivity)
+      window.removeEventListener('blur', onActivity)
+      window.removeEventListener('focus', onActivity)
       resizeObserver?.disconnect()
       signal(null, 0)
       $petRoamAirborne.set(false)

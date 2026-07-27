@@ -206,6 +206,47 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     let activeRow = -1
     let activeCount = -1
 
+    // Freeze the loop while the window is hidden/unfocused (minimized,
+    // occluded, backgrounded). electron/main.ts disables Chromium's normal
+    // renderer-backgrounding throttle app-wide so a streaming reply never
+    // stalls on refocus — but that also means an rAF loop with no gate of its
+    // own spins at 60Hz forever with nobody looking at it. This loop is purely
+    // cosmetic (idle sprite animation), so it can safely pause; resume + force
+    // a fresh frame the instant it's visible again. Mirrors the same pattern
+    // in app/starmap/star-map.tsx.
+    const isPaused = () =>
+      (typeof document !== 'undefined' && document.hidden) ||
+      (typeof document.hasFocus === 'function' && !document.hasFocus())
+
+    let paused = isPaused()
+
+    const schedule = () => {
+      if (!paused && !raf) {
+        raf = requestAnimationFrame(render)
+      }
+    }
+
+    const onActivity = () => {
+      const next = isPaused()
+
+      if (next === paused) {
+        return
+      }
+
+      paused = next
+
+      if (paused) {
+        if (raf) {
+          cancelAnimationFrame(raf)
+          raf = 0
+        }
+      } else {
+        lastStep = performance.now()
+        drawnFrame = -1
+        schedule()
+      }
+    }
+
     const rowIndexForState = (s: PetState): number => {
       for (const key of STATE_ALIASES[s] ?? [s]) {
         const idx = rows.indexOf(key)
@@ -282,11 +323,18 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       raf = requestAnimationFrame(render)
     }
 
-    raf = requestAnimationFrame(render)
+    schedule()
+
+    document.addEventListener('visibilitychange', onActivity)
+    window.addEventListener('blur', onActivity)
+    window.addEventListener('focus', onActivity)
 
     return () => {
       cancelAnimationFrame(raf)
       unsubState()
+      document.removeEventListener('visibilitychange', onActivity)
+      window.removeEventListener('blur', onActivity)
+      window.removeEventListener('focus', onActivity)
     }
   }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows])
 
