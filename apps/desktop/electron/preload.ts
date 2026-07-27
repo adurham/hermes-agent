@@ -221,6 +221,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:power-resume', listener)
   },
+  // Real OS-level window visibility (show/hide/minimize/restore), pushed from
+  // the main process — see wireCommonWindowHandlers's doc comment for why
+  // this exists instead of the renderer trusting document.hidden directly.
+  onWindowVisibilityChanged: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:window-visibility-changed', listener)
+
+    return () => ipcRenderer.removeListener('hermes:window-visibility-changed', listener)
+  },
   onBootProgress: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:boot-progress', listener)

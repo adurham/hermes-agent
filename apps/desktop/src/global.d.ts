@@ -195,6 +195,12 @@ declare global {
       // reload. Wipe session lists (skeletons) and re-dial.
       onConnectionApplied?: (callback: () => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
+      // Real OS-level window visibility (show/hide/minimize/restore), pushed
+      // from the main process. Cosmetic per-renderer animation loops (pet
+      // sprite/roam) that want to pause while truly off-screen must use this
+      // instead of document.hidden — see wireCommonWindowHandlers in
+      // electron/main.ts for why document.hidden is unreliable in this app.
+      onWindowVisibilityChanged?: (callback: (payload: { visible: boolean }) => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       resetBootstrap: () => Promise<{ ok: boolean }>

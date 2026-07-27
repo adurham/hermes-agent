@@ -3,6 +3,7 @@ import { memo, useEffect, useMemo, useRef } from 'react'
 import { $petJumpBeat, $petRoamAirborne, $petState, type PetInfo, type PetState } from '@/store/pet'
 
 import { jumpBobHeightPx, jumpDurationMs } from './roam-behavior'
+import { subscribeWindowVisibility } from './use-window-visibility'
 
 const DEFAULT_FRAME_W = 192
 const DEFAULT_FRAME_H = 208
@@ -207,28 +208,27 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     let activeCount = -1
 
     // Freeze the loop while the window is truly hidden (minimized, on another
-    // space, or occluded far enough that Chromium flips Page Visibility).
-    // electron/main.ts disables Chromium's normal renderer-backgrounding
-    // throttle app-wide so a streaming reply never stalls on refocus — but
-    // that also means an rAF loop with no gate of its own spins at 60Hz
-    // forever with nobody looking at it. This loop is purely cosmetic (idle
-    // sprite animation), so it can safely pause; resume + force a fresh frame
-    // the instant it's visible again.
+    // space, or occluded). electron/main.ts disables Chromium's normal
+    // renderer-backgrounding throttle app-wide so a streaming reply never
+    // stalls on refocus — but that also means an rAF loop with no gate of its
+    // own spins at 60Hz forever with nobody looking at it. This loop is purely
+    // cosmetic (idle sprite animation), so it can safely pause; resume + force
+    // a fresh frame the instant it's visible again.
     //
-    // Deliberately NOT gated on document.hasFocus(): the pet (both the
+    // Deliberately NOT document.hidden/visibilitychange, and NOT
+    // document.hasFocus(): this app's occlusion-throttle switches make Page
+    // Visibility unreliable here — a window created with `show: false` can
+    // get stuck reporting `hidden` forever even once genuinely shown, because
+    // the show→visible transition stops propagating correctly to Blink when
+    // occlusion tracking is off (verified regression: froze the sprite on
+    // frame 1 from launch — see FORK.md 2026-07-26 entries). Use the real
+    // OS-level visibility pushed from the main process instead (see
+    // use-window-visibility.ts). Also not hasFocus(): the pet (both the
     // in-window floating mascot and the popped-out overlay) is a background
     // companion meant to keep animating while glanced at, not a foreground
-    // interactive surface. hasFocus() goes false the moment any other app
-    // gets clicked into even though the pet is still fully visible on
-    // screen — and the popped-out overlay window is `focusable: false` /
-    // shown via `showInactive()` by design, so hasFocus() is PERMANENTLY
-    // false there, which froze that window's sprite on its first frame
-    // forever. document.hidden is the correct "can anyone actually see this"
-    // signal for a passive companion; only star-map's foreground interactive
-    // panel wants the stricter hasFocus() check too.
-    const isPaused = () => typeof document !== 'undefined' && document.hidden
-
-    let paused = isPaused()
+    // interactive surface, and the popped-out overlay window is
+    // `focusable: false` by design so hasFocus() is permanently false there.
+    let paused = false
 
     const schedule = () => {
       if (!paused && !raf) {
@@ -236,8 +236,8 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       }
     }
 
-    const onActivity = () => {
-      const next = isPaused()
+    const onVisibilityChange = (visible: boolean) => {
+      const next = !visible
 
       if (next === paused) {
         return
@@ -335,12 +335,12 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
 
     schedule()
 
-    document.addEventListener('visibilitychange', onActivity)
+    const unsubVisibility = subscribeWindowVisibility(onVisibilityChange)
 
     return () => {
       cancelAnimationFrame(raf)
       unsubState()
-      document.removeEventListener('visibilitychange', onActivity)
+      unsubVisibility()
     }
   }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows])
 
