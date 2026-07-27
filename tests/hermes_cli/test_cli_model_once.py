@@ -29,9 +29,14 @@ class _StubCLI:
     agent = None
     _pending_model_switch_note = None
     _pending_one_turn_model_restore = None
+    reasoning_config = None
+    _reasoning_effort_by_model: dict = {}
 
     def _confirm_expensive_model_switch(self, result):
         return True
+
+    def _apply_reasoning_for_new_model(self, new_model: str) -> None:
+        pass
 
 
 def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):

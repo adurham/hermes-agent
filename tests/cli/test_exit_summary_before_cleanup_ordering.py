@@ -59,11 +59,21 @@ def _bare_call_positions(call_text: str, src: str) -> list[int]:
     excluding occurrences inside comments/docstrings that merely mention
     the call by name (e.g. a docstring explaining why some other function
     must run before/after it).
+
+    If ``call_text`` ends with ``()``, also matches call sites that pass
+    keyword arguments (``foo(clear_screen=False)``) so a purely additive
+    parameter on the callee doesn't silently drop a real call site from
+    the tally.
     """
     positions = []
     offset = 0
+    accept_kwargs = call_text.endswith("()")
+    prefix = call_text[:-1] if accept_kwargs else None  # e.g. "foo("
     for line in src.splitlines(keepends=True):
-        if line.strip() == call_text:
+        stripped = line.strip()
+        if stripped == call_text:
+            positions.append(offset)
+        elif accept_kwargs and prefix and stripped.startswith(prefix) and stripped.endswith(")"):
             positions.append(offset)
         offset += len(line)
     return positions

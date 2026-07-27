@@ -1917,6 +1917,7 @@ def run_conversation(
                             "api_calls": api_call_count,
                             "error": _refusal_msg,
                             "failed": True,
+                            "final_response": _refusal_msg,
                         }
 
                     retry_count += 1
@@ -4469,13 +4470,14 @@ def run_conversation(
                             exc_info=api_error,
                         )
                         agent._persist_session(messages, conversation_history)
+                        _internal_err_msg = f"Internal error ({type(api_error).__name__}): {_internal_summary}"
                         return {
-                            "final_response": None,
+                            "final_response": _internal_err_msg,
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "failed": True,
-                            "error": f"Internal error ({type(api_error).__name__}): {_internal_summary}",
+                            "error": _internal_err_msg,
                         }
 
                     # Try fallback before aborting — a different provider may

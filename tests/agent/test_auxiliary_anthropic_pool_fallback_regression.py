@@ -40,8 +40,12 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
             "pool is present but has no usable entry (parity with openrouter/codex)"
         )
         assert isinstance(client, AnthropicAuxiliaryClient)
-        # Default aux model when none configured.
-        assert model == "claude-haiku-4-5-20251001"
+        # Default aux model when none configured. Deliberately upgraded from
+        # claude-haiku-4-5-20251001 to claude-sonnet-5 (see
+        # agent/auxiliary_client.py::_ANTHROPIC_DEFAULT_AUX_MODEL) -- Haiku
+        # was too weak for compression/summarization tasks and sonnet-5
+        # unlocks the 1M-context beta these tasks need.
+        assert model == "claude-sonnet-5"
         # Must have used the env/legacy token, not a pooled entry.
         assert mock_build.call_args.args[0] == "«redacted:sk-…»-oauth-token"
 
@@ -68,7 +72,7 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
         monkeypatch.setenv("ANTHROPIC_TOKEN", "«redacted:sk-…»-oauth-token")
         captured = {}
 
-        def _fake_build(token, base_url):
+        def _fake_build(token, base_url, model=None):
             captured["base_url"] = base_url
             return MagicMock()
 

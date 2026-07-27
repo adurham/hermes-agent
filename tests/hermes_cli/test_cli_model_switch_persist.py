@@ -117,6 +117,12 @@ def test_no_provider_change_leaves_endpoint_untouched(cli_mod):
         new_model="new-custom",
         target_provider="custom",
         provider_changed=False,
+        # model_switch.py seeds base_url/api_mode from the CURRENT values
+        # when the provider doesn't change (see model_switch.py's
+        # `base_url = current_base_url` before the provider_changed guard),
+        # so a realistic same-provider ModelSwitchResult always carries the
+        # existing endpoint forward rather than an empty string.
+        base_url="http://127.0.0.1:8080/v1",
     ))
 
     written = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["model"]

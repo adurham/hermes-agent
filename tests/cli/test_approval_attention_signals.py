@@ -35,7 +35,7 @@ def _make_cli(approvals_cfg=None):
     obj._invalidate = MagicMock()
     obj._capture_modal_input_snapshot = MagicMock()
     obj._restore_modal_input_snapshot = MagicMock()
-    obj._approval_choices = lambda command, allow_permanent=True: (
+    obj._approval_choices = lambda command, allow_permanent=True, smart_denied=False: (
         ["once", "session", "always", "deny"] if allow_permanent
         else ["once", "session", "deny"]
     )

@@ -41,6 +41,12 @@ class _StubCLI:
     _explicit_base_url = ""
     api_mode = ""
     _pending_model_switch_note = ""
+    conversation_history = []
+    reasoning_config = None
+    _reasoning_effort_by_model: dict = {}
+
+    def _apply_reasoning_for_new_model(self, new_model: str) -> None:
+        pass
 
 
 def _run_display(monkeypatch, result):

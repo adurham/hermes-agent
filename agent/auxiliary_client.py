@@ -5763,7 +5763,28 @@ def resolve_vision_provider_client(
     ``_clear_vision_resolution_cache()`` after a config or auth change
     to force re-resolution.
     """
-    cache_key = (provider, model, base_url, api_key, async_mode)
+    cache_key = (
+        provider, model, base_url, api_key, async_mode,
+        # main_runtime MUST participate in the key -- two callers with
+        # identical explicit args (the common case: most call sites pass
+        # all-default args and rely on ambient/context runtime) but
+        # DIFFERENT main_runtime would otherwise share one cached
+        # (provider, client, model) tuple. That silently leaked a stale
+        # session's vision endpoint/model into an unrelated session (see
+        # tests/agent/test_auxiliary_runtime_cache_key.py::
+        # test_explicit_vision_runtime_wins_over_stale_ambient_runtime,
+        # which caught this via cross-test cache pollution -- the same
+        # collision is reachable in production whenever two concurrent
+        # sessions/threads probe vision with an explicit main_runtime).
+        # Reuse the runtime-aware discriminator tuple _client_cache_key
+        # already builds for this exact purpose (its `runtime_key`, see
+        # the comment there) instead of hashing the raw dict, which may
+        # contain an unhashable callable api_key.
+        tuple(
+            _runtime_cache_discriminator(field, _normalize_main_runtime(main_runtime).get(field, ""))
+            for field in _MAIN_RUNTIME_FIELDS
+        ),
+    )
     cached = _vision_resolution_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -6704,7 +6725,7 @@ _BUILTIN_AUX_TASK_KEYS = frozenset({
     "kanban_decomposer", "profile_describer", "curator", "monitor",
     "session_search", "memory_extraction", "delegation_router",
     "background_review", "consult", "goal_judge", "memory_query_rewrite",
-    "moa_aggregator", "moa_reference",
+    "moa_aggregator", "moa_reference", "pet_dialogue",
 })
 
 # Reserved provider-first key holding per-task *settings* (timeout, extra_body,

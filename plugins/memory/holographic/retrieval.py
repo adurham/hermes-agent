@@ -602,7 +602,17 @@ class FactRetriever:
         # accidentally creating a malformed query.
         _FTS_SPECIAL = '"()*^:-+'
         tokens: list[str] = []
-        for raw in query.lower().split():
+        # Split on hyphens too, not just whitespace: FTS5's default
+        # (unicode61) tokenizer treats '-' as a word separator, so a stored
+        # value like "PLAT-15800" is indexed as two tokens ("plat", "15800").
+        # Splitting only on whitespace left a query token "plat-15800" whose
+        # hyphen the .translate() below then silently deleted (not replaced
+        # with a separator), producing "plat15800" -- a single glued token
+        # that can never match the index's two separate tokens. Replacing
+        # '-' with a space before the whitespace split keeps both sides as
+        # independent (OR-joined) tokens, matching how the content was
+        # actually indexed.
+        for raw in query.lower().replace("-", " ").split():
             cleaned = raw.strip(".,;:!?\"'()[]{}#@<>") .translate(
                 str.maketrans("", "", _FTS_SPECIAL)
             )

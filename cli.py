@@ -4071,9 +4071,9 @@ def _persist_global_model_switch(result) -> None:
         save_config_value("model.provider", result.target_provider)
         # Reconcile inline endpoint fields so the new provider doesn't inherit
         # the previous provider's base_url/api_key/api_mode.
-        save_config_value("model.base_url", getattr(result, "base_url", "") or "")
-        save_config_value("model.api_key", getattr(result, "api_key", "") or "")
-        save_config_value("model.api_mode", getattr(result, "api_mode", "") or "")
+        save_config_value("model.base_url", getattr(result, "base_url", None) or None)
+        save_config_value("model.api_key", getattr(result, "api_key", None) or None)
+        save_config_value("model.api_mode", getattr(result, "api_mode", None) or None)
     else:
         # base_url/api_mode are always freshly resolved for the target model
         # (see model_switch.py), so sync them even without a provider change;
@@ -11889,10 +11889,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             status = "fast" if self.service_tier == "priority" else "normal"
             _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
             return
 
-        arg = parts[1].strip().lower()
+        rest = parts[1].strip()
+        tokens = rest.split()
+        persist_global = False
+        filtered: list[str] = []
+        for tok in tokens:
+            if tok.lower() in {"--global", "-g"}:
+                persist_global = True
+            else:
+                filtered.append(tok)
+        arg = (filtered[0].lower() if filtered else "")
 
         if arg in {"fast", "on"}:
             self.service_tier = "priority"
@@ -11904,14 +11913,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             label = "NORMAL"
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
             return
 
         self.agent = None  # Force agent re-init with new service-tier config
-        if save_config_value("agent.service_tier", saved_value):
-            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
+        if persist_global:
+            if save_config_value("agent.service_tier", saved_value):
+                _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
+            else:
+                _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only — config save failed){_RST}")
         else:
-            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
+            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only; use --global to persist){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""

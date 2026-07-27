@@ -254,6 +254,17 @@ class MemoryStore:
             from plugins.memory.holographic.retrieval import FactRetriever
 
             match_query = FactRetriever._sanitize_fts_query(query)
+            if not match_query:
+                return []
+            # Pure-punctuation / all-stopword queries fall back to the raw
+            # (unsanitized) query inside ``_sanitize_fts_query``, which is
+            # not valid FTS5 MATCH syntax and would raise sqlite3's
+            # OperationalError instead of returning "no matches". Detect
+            # that fallback case (nothing looks like a quoted FTS5 phrase
+            # came out) and treat it the same as "no results" rather than
+            # letting it hit the database.
+            if '"' not in match_query:
+                return []
             params: list = [match_query, min_trust]
             category_clause = ""
             if category is not None:

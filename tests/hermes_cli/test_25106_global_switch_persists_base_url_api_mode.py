@@ -52,12 +52,17 @@ class _StubCLI:
     _explicit_base_url = ""
     conversation_history = []
     _pending_model_switch_note = ""
+    reasoning_config = None
+    _reasoning_effort_by_model: dict = {}
 
     def _confirm_expensive_model_switch(self, result) -> bool:
         return True
 
     def _open_model_picker(self, *a, **k):
         raise AssertionError("picker should not open when a model name is given")
+
+    def _apply_reasoning_for_new_model(self, new_model: str) -> None:
+        pass
 
 
 def _run_switch(monkeypatch, result, cmd="/model MiniMax-M3 --global"):

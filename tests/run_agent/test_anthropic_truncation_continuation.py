@@ -135,12 +135,20 @@ class TestTruncatedToolCallContinuationParity:
     def test_tool_call_retry_budget_is_three_not_one(self):
         src = self._loop_source()
         # The futile single-retry guard `truncated_tool_call_retries < 1` must be
-        # gone; recovery uses a 3-attempt budget.
+        # gone; recovery uses a multi-attempt budget (bumped 1 -> 3 -> 4 across
+        # separate deliberate commits — see git log on agent/conversation_loop.py
+        # for `truncated_tool_call_retries <`). Assert on "not the futile 1"
+        # rather than pinning an exact number, so the next legitimate budget
+        # bump doesn't require another test edit.
         assert "truncated_tool_call_retries < 1" not in src, (
             "tool-call truncation still uses the futile single same-request retry"
         )
-        assert "truncated_tool_call_retries < 3" in src, (
-            "tool-call truncation should retry up to 3x"
+        import re
+        m = re.search(r"truncated_tool_call_retries < (\d+)", src)
+        assert m, "expected a `truncated_tool_call_retries < N` retry-budget guard"
+        assert int(m.group(1)) >= 3, (
+            f"tool-call truncation retry budget regressed to {m.group(1)} "
+            "(expected >= 3x, matching the deliberate 1 -> 3 -> 4 bumps)"
         )
 
     def test_tool_call_path_boosts_ephemeral_output_budget(self):
