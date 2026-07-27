@@ -147,7 +147,7 @@ def iter_files(paths: Iterable[Path]) -> Iterable[Path]:
                         yield fpath
 
 
-def scan_file(path: Path) -> list[tuple[int, str]]:
+def scan_file(path: Path, only_lines: set[int] | None = None) -> list[tuple[int, str]]:
     """Return [(line_number, matched_line)] for unspecced SDK-client mocks.
 
     Heuristic, two-pass:
@@ -157,6 +157,12 @@ def scan_file(path: Path) -> list[tuple[int, str]]:
          chain SOMEWHERE LATER in the file (not just any mock named
          "client" — e.g. a plain business-logic fake named `db_client`
          never touching `.messages.stream` is not this checker's concern).
+
+    ``only_lines``, when given, restricts matches to those line numbers
+    (1-indexed) — used by --diff mode so a file merely CONTAINING an old,
+    pre-existing unspecced mock elsewhere doesn't block a PR that only
+    touched an unrelated part of the same file (this checker's job is
+    "stop the count from growing," not "retrofix on touch").
     """
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -166,6 +172,8 @@ def scan_file(path: Path) -> list[tuple[int, str]]:
 
     matches: list[tuple[int, str]] = []
     for i, line in enumerate(lines, start=1):
+        if only_lines is not None and i not in only_lines:
+            continue
         if SUPPRESS_MARKER.search(line):
             continue
         if "spec=" in line or "autospec" in line:
@@ -216,6 +224,46 @@ def get_diff_files(ref: str) -> list[Path]:
     return [REPO_ROOT / f for f in out.splitlines() if f.strip() and f.startswith("tests/")]
 
 
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def get_added_lines(diff_args: list[str], path: Path) -> set[int]:
+    """Return the set of 1-indexed line numbers ADDED (not just touched) in
+    ``path`` by the given git diff invocation.
+
+    Only lines actually inserted/changed count — this is what makes --diff
+    mode "stop the count from growing" rather than "flag anything in a
+    file I merely touched," which would false-positive on any pre-existing
+    unspecced mock sitting elsewhere in a file a PR only lightly edited
+    (see the 2026-07-27 CI failure this function was added to fix — a real
+    example: a file's own unrelated line 1732, untouched since April, got
+    flagged solely because the file appeared in the diff at all).
+    """
+    try:
+        rel = path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        rel = str(path)
+    try:
+        out = subprocess.check_output(
+            ["git", "diff", *diff_args, "--unified=0", "--", rel],
+            cwd=REPO_ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return set()
+
+    added: set[int] = set()
+    for line in out.splitlines():
+        m = _HUNK_HEADER.match(line)
+        if not m:
+            continue
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) is not None else 1
+        added.update(range(start, start + count))
+    return added
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Flag unspecced Mock()/MagicMock() at SDK client boundaries in tests/."
@@ -234,14 +282,17 @@ def main(argv: list[str]) -> int:
 
     args = parse_args(argv)
 
+    diff_args: list[str] | None = None
     if args.all:
         roots = [SCAN_ROOT]
     elif args.diff:
         roots = get_diff_files(args.diff)
+        diff_args = [f"{args.diff}...HEAD"]
     elif args.paths:
         roots = [p.resolve() for p in args.paths]
     else:
         roots = get_staged_files()
+        diff_args = ["--cached"]
         if not roots:
             print(
                 "No staged tests/ files to scan. Pass --all for a full-suite "
@@ -255,7 +306,8 @@ def main(argv: list[str]) -> int:
     files_scanned = 0
     for path in iter_files(roots):
         files_scanned += 1
-        matches = scan_file(path)
+        only_lines = get_added_lines(diff_args, path) if diff_args is not None else None
+        matches = scan_file(path, only_lines=only_lines)
         for lineno, line in matches:
             rel = path.relative_to(REPO_ROOT).as_posix()
             print(f"{rel}:{lineno}: unspecced SDK-client mock")

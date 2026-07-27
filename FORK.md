@@ -7909,3 +7909,64 @@ no production code changed).
 **Merge note:** test-only file, low conflict risk with upstream; this is a
 genuinely environment-dependent (basetemp ancestor group ownership) bug
 class, not fork-specific behavior.
+
+
+### Fork-only fix — 2026-07-27 (previous commit's own CI run caught 2 real bugs in the mock-audit work itself)
+
+**Symptom:** the push containing the pytest-randomly/spec'd-mock/lint-
+guardrail work above (commit `ff06cd7d0`) went green in every LOCAL
+verification this session ran, but real CI (`30282912663`) failed on 3
+jobs: the new `Unspecced SDK-client mocks` lint job itself, and 2 Python
+test slices.
+
+**Root cause 1 (lint job — checker design bug):**
+`scripts/check-unspecced-sdk-mocks.py --diff <ref>` flagged
+`tests/run_agent/test_streaming.py:1732` — a bare `mock_client =
+MagicMock()` for an OpenAI-shaped client (`.chat.completions.create`,
+`base_url="https://openrouter.ai/..."`), unrelated to the Anthropic-only
+migration in this same file, untouched since an April 2026 commit
+(confirmed via `git blame`). The checker's `--diff` mode determined which
+FILES changed but then scanned the WHOLE file for matches, so any
+pre-existing unspecced mock anywhere in a touched file blocked the PR —
+exactly the "retrofix on touch" behavior the checker's own docstring says
+it deliberately avoids. Fixed by teaching `scan_file()` an `only_lines`
+parameter and adding `get_added_lines()`, which parses `git diff
+--unified=0`'s hunk headers to restrict matches to lines actually
+added/changed by the diff being checked, not merely lines living inside a
+changed file.
+
+**Root cause 2 (2 test slices — real dependency bug in the new fixture):**
+`tests/conftest.py`'s `spec_anthropic_client`/`spec_async_anthropic_client`
+fixtures did a bare top-level `import anthropic` inside
+`_build_spec_anthropic_client()`. `anthropic` is a lazy-installed optional
+extra (see `pyproject.toml`'s `[all]` comment: deliberately removed from
+the always-installed set on 2026-05-12 specifically so a quarantined PyPI
+release of it can't break every fresh install or CI slice) — it is
+genuinely not guaranteed present. `ModuleNotFoundError: No module named
+'anthropic'` at fixture-setup time errored 3 tests in
+`tests/agent/test_auxiliary_client.py`'s `TestAnthropicOAuthFlag` class in
+whichever CI slice didn't have it installed. Fixed by swapping the bare
+import for `pytest.importorskip("anthropic")`, matching the project's
+existing convention for this exact situation (see
+`tests/hermes_cli/test_timeouts.py`'s own `pytest.importorskip("anthropic")`
+call) — cleanly skips affected tests instead of erroring when the optional
+SDK isn't installed.
+
+**Verification:** `check-unspecced-sdk-mocks.py --diff ff06cd7d0~1` now
+returns 0 matches on the exact commit that failed CI (previously 1);
+confirmed `pytest.importorskip` raises a clean `Skipped` (not an error)
+when `anthropic` import is blocked; `tests/agent/test_auxiliary_client.py`
++ `tests/run_agent/test_streaming.py` + `tests/conftest.py` +
+`tests/hermes_cli/test_timeouts.py` together: 390 tests passed, 0 failed
+via `scripts/run_tests.sh`. `ruff check .` and
+`check-windows-footguns.py --all` clean. The 2 other CI test-slice
+failures on the same run (`test_dashboard_auth_gate.py`) were confirmed
+pre-existing and unrelated (fails identically on unmodified `main`,
+established earlier this session).
+
+**Files:** `scripts/check-unspecced-sdk-mocks.py`, `tests/conftest.py`.
+
+**Merge note:** `scripts/check-unspecced-sdk-mocks.py` is fork-only
+tooling with no upstream equivalent, no conflict risk. `tests/conftest.py`
+is a shared file but this touches only the fixtures added in the prior
+entry above — low conflict risk.
