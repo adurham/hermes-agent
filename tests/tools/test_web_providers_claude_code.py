@@ -452,6 +452,19 @@ class TestClaudeCodeBackendAvailability:
         """``web.backend = claude-code`` + authenticated CLI is sufficient for
         ``check_web_api_key()`` to gate web tools as available."""
         from tools import web_tools
+        from plugins.web.claude_code.provider import ClaudeCodeWebProvider
+        from agent.web_search_registry import register_provider
+
+        # check_web_api_key() resolves an explicitly-configured backend via
+        # agent.web_search_registry.get_provider(), which only knows about
+        # providers whose plugin register(ctx) hook has actually run. In the
+        # full test suite that happens to be true by ambient import order,
+        # but a single-file/reordered run (as CI's parallel test slicing
+        # produces) can execute this test before anything else has
+        # registered "claude-code" -- register it directly so this test
+        # doesn't depend on suite-wide ordering (register_provider() is
+        # explicitly safe to call repeatedly; see its docstring).
+        register_provider(ClaudeCodeWebProvider())
         monkeypatch.setattr(web_tools, "_load_web_config",
                             lambda: {"backend": "claude-code"})
         with patch("plugins.web.claude_code.provider.shutil.which",
