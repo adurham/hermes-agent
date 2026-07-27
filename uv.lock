@@ -8,10 +8,10 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-07-20T05:00:00Z"
+exclude-newer = "2026-07-19T00:00:00Z"
 
 [options.exclude-newer-package]
-anthropic = "2026-05-08T05:00:00Z"
+anthropic = "2026-05-07T00:00:00Z"
 
 [[package]]
 name = "agent-client-protocol"

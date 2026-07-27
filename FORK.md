@@ -77,10 +77,20 @@ call time if that code path is ever reached on a Windows install.
 
 **Fix:**
 - `pyproject.toml`: `exclude-newer = "7 days"` → `exclude-newer =
-  "2026-07-19"` (absolute date). Comment added at the site explaining why a
-  relative string must never go back here, and pointing at this history.
-  Bump this date by hand + run `uv lock` when you want a newer cooldown
-  window.
+  "2026-07-19T00:00:00Z"` — a full RFC 3339 **UTC** timestamp, not just an
+  absolute date. First attempt used a bare date (`"2026-07-19"`, no time/
+  offset) which fixed the relative-duration drift but introduced a second,
+  subtler footgun: uv resolves a bare date in the *local system timezone*
+  of whatever machine runs `uv lock`/`uv sync`, not UTC — so `uv lock` on a
+  CDT (UTC-5) laptop baked in a different absolute cutoff than `uv sync
+  --locked` on GitHub Actions' UTC runners, reproducing the exact same
+  "lockfile needs updating" failure with a different root cause. Caught
+  when the first push's CI run still failed identically; confirmed the fix
+  by checking `uv lock --check` under `TZ=UTC`, `TZ=America/Los_Angeles`,
+  and `TZ=Asia/Tokyo` locally — all three now agree. Comment added at the
+  site explaining both footguns and pointing at this history. Bump this
+  timestamp by hand (always with a trailing `Z`) + run `uv lock` when you
+  want a newer cooldown window.
 - `uv lock` regenerated against the new absolute cutoff — also picked up a
   drifted `hermes-agent` self-version entry in `uv.lock` (0.18.2 vs
   `pyproject.toml`'s already-bumped 0.19.0) and a handful of genuine
