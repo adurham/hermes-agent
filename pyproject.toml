@@ -378,19 +378,30 @@ redundant-cast = "ignore"
 preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 
 [tool.uv]
-# Absolute date, NOT a relative duration ("7 days" etc). A relative duration
-# recomputes a different absolute cutoff on every `uv lock`/`uv sync --locked`
-# invocation, so `uv lock --check` (and the Docker build's `uv sync --frozen`)
-# drift out of sync with the committed uv.lock within hours — with zero real
-# dependency changes. This is a known upstream footgun: it was removed once
-# (PR #21221, May 7) then reintroduced the same day in the v0.13.0 release
-# commit, and reintroduced again since (see git log on this file). Bump this
-# date by hand + `uv lock` when you want a newer dependency cooldown window;
-# do NOT put a relative string back here.
-exclude-newer = "2026-07-19"
+# Absolute RFC 3339 UTC timestamp (with explicit "Z"), NOT a relative
+# duration ("7 days" etc) and NOT a bare date ("2026-07-19"). Two footguns
+# ruled out here, both confirmed the hard way on this exact line:
+#
+# 1. A relative duration recomputes a different absolute cutoff on every
+#    `uv lock`/`uv sync --locked` invocation, so the check drifts out of
+#    sync with the committed uv.lock within hours — with zero real
+#    dependency changes. Known upstream footgun: removed once (PR #21221,
+#    May 7) then reintroduced the same day in the v0.13.0 release commit,
+#    and reintroduced again since (see git log on this file).
+# 2. A bare date with no time/offset ("2026-07-19") is resolved in the
+#    LOCAL SYSTEM TIMEZONE of whatever machine runs `uv lock`/`uv sync`,
+#    not UTC. `uv lock` on a CDT (UTC-5) laptop bakes in a different
+#    absolute instant than `uv sync --locked` on GitHub Actions' UTC
+#    runners — same nominal date, different cutoff, same "lockfile needs
+#    updating" failure as (1).
+#
+# Bump this timestamp by hand + `uv lock` when you want a newer dependency
+# cooldown window. Always include the trailing "Z" — do NOT put a relative
+# string or a bare date back here.
+exclude-newer = "2026-07-19T00:00:00Z"
 # Allow anthropic past the cutoff: 0.100.0 (2026-05-06) ships fields
 # we mirror to match Claude Code's wire format. Selective override only.
-exclude-newer-package = { anthropic = "2026-05-07" }
+exclude-newer-package = { anthropic = "2026-05-07T00:00:00Z" }
 
 [tool.ruff.lint]
 # All other lints are intentionally disabled (see comment history on this
