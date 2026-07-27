@@ -206,17 +206,27 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     let activeRow = -1
     let activeCount = -1
 
-    // Freeze the loop while the window is hidden/unfocused (minimized,
-    // occluded, backgrounded). electron/main.ts disables Chromium's normal
-    // renderer-backgrounding throttle app-wide so a streaming reply never
-    // stalls on refocus — but that also means an rAF loop with no gate of its
-    // own spins at 60Hz forever with nobody looking at it. This loop is purely
-    // cosmetic (idle sprite animation), so it can safely pause; resume + force
-    // a fresh frame the instant it's visible again. Mirrors the same pattern
-    // in app/starmap/star-map.tsx.
-    const isPaused = () =>
-      (typeof document !== 'undefined' && document.hidden) ||
-      (typeof document.hasFocus === 'function' && !document.hasFocus())
+    // Freeze the loop while the window is truly hidden (minimized, on another
+    // space, or occluded far enough that Chromium flips Page Visibility).
+    // electron/main.ts disables Chromium's normal renderer-backgrounding
+    // throttle app-wide so a streaming reply never stalls on refocus — but
+    // that also means an rAF loop with no gate of its own spins at 60Hz
+    // forever with nobody looking at it. This loop is purely cosmetic (idle
+    // sprite animation), so it can safely pause; resume + force a fresh frame
+    // the instant it's visible again.
+    //
+    // Deliberately NOT gated on document.hasFocus(): the pet (both the
+    // in-window floating mascot and the popped-out overlay) is a background
+    // companion meant to keep animating while glanced at, not a foreground
+    // interactive surface. hasFocus() goes false the moment any other app
+    // gets clicked into even though the pet is still fully visible on
+    // screen — and the popped-out overlay window is `focusable: false` /
+    // shown via `showInactive()` by design, so hasFocus() is PERMANENTLY
+    // false there, which froze that window's sprite on its first frame
+    // forever. document.hidden is the correct "can anyone actually see this"
+    // signal for a passive companion; only star-map's foreground interactive
+    // panel wants the stricter hasFocus() check too.
+    const isPaused = () => typeof document !== 'undefined' && document.hidden
 
     let paused = isPaused()
 
@@ -326,15 +336,11 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     schedule()
 
     document.addEventListener('visibilitychange', onActivity)
-    window.addEventListener('blur', onActivity)
-    window.addEventListener('focus', onActivity)
 
     return () => {
       cancelAnimationFrame(raf)
       unsubState()
       document.removeEventListener('visibilitychange', onActivity)
-      window.removeEventListener('blur', onActivity)
-      window.removeEventListener('focus', onActivity)
     }
   }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows])
 
