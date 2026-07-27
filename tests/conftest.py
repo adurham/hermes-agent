@@ -1015,7 +1015,16 @@ collect_ignore = [
 # fixtures for the "did I patch the branch production code actually calls"
 # class of bug; keep hand-rolling the stream body itself.
 def _build_spec_anthropic_client(is_async: bool):
-    import anthropic
+    # `anthropic` is a lazy-installed optional extra (see pyproject.toml's
+    # `[all]` comment: removed from the always-installed set on 2026-05-12
+    # so a quarantined PyPI release of it can't break every fresh install
+    # or CI slice) — NOT a guaranteed-present dependency. A bare top-level
+    # `import anthropic` here broke CI test slices that don't have it
+    # installed (ModuleNotFoundError at fixture-setup time, not skip) —
+    # confirmed directly from a real CI failure. Skip cleanly instead,
+    # matching the existing project convention (see
+    # tests/hermes_cli/test_timeouts.py's own `pytest.importorskip`).
+    anthropic = pytest.importorskip("anthropic")
     from unittest.mock import create_autospec
 
     client_cls = anthropic.AsyncAnthropic if is_async else anthropic.Anthropic
