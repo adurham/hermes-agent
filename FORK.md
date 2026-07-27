@@ -8169,3 +8169,53 @@ sibling suite) still green. `ruff check .` and
 **Files:** `tests/gateway/test_matrix_message_length.py`.
 
 **Merge note:** test-only file, low conflict risk with upstream.
+
+
+### Fork-only fix — 2026-07-27 (pytest-randomly default-on turned CI into unbounded whack-a-mole — disabled by default, still available on demand)
+
+**Symptom:** after landing 6 real intra-file leak fixes today (all found
+via `pytest-randomly`, each documented in its own entry above), CI kept
+turning red on a NEW, unrelated, previously-never-seen test on every
+subsequent push — `test_slack_mention.py`, `test_deepinfra_provider.py`,
+etc. — each passing cleanly in isolation. Consulted a second opinion:
+`pytest-randomly`'s seed differs on every invocation unless explicitly
+pinned, and CI's test slices bundle ~200 files into ONE shared pytest
+process each (see `scripts/run_tests_parallel.py`'s own docstring on why
+per-FILE isolation exists but per-slice does not) — so a large,
+still-unaudited population of pre-existing intra-file leaks scattered
+across the whole suite was surfacing one new random failure per push,
+with no way to converge on green without auditing the entire suite in
+one sitting. Today's blocking-gate addition of `pytest-randomly` had
+turned net-positive bug-finding into an unbounded CI-blocking chase.
+
+**Fix:** added `-p no:randomly` to `pyproject.toml`'s `[tool.pytest.
+ini_options] addopts`, restoring pytest's normal deterministic
+(file-declaration) order for every default invocation — local and CI —
+while leaving `pytest-randomly` fully installed. An explicit `-p randomly`
+on the command line (exactly how this whole session's leak-hunting was
+done) still overrides the default and re-enables it, confirmed directly.
+This converts "blocking on an unknown-size pre-existing backlog" into
+"available on demand for a deliberate, bounded audit session" — the
+correct scope for a single day's fix-forward work, not an indefinite
+whole-suite remediation.
+
+**Verification:** confirmed default `pytest tests/gateway/
+test_matrix_message_length.py -v` shows no `--randomly-seed=` line
+(deterministic); confirmed `-p randomly` still activates it
+(`Using --randomly-seed=...` reappears). `tests/gateway/
+test_matrix_message_length.py` + `tests/hermes_cli/
+test_apply_profile_override.py` + `tests/test_tui_gateway_server.py`
+together: 406 passed, 1 skipped, deterministic order. `ruff check .` and
+`check-windows-footguns.py --all` clean.
+
+**Follow-up (not done today, tracked here):** a bounded, deliberate
+leak-audit session — pin a fixed `--randomly-seed`, run the full suite
+once, fix everything that seed surfaces, repeat for a few more fixed
+seeds to build confidence — is the right way to actually shrink the
+remaining backlog, rather than reactive one-at-a-time CI-push chasing.
+
+**Files:** `pyproject.toml`.
+
+**Merge note:** config-only change, no logic touched; trivial to
+re-apply or drop on next upstream merge depending on whether upstream
+also adopts pytest-randomly.
