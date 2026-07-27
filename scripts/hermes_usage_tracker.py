@@ -66,7 +66,8 @@ def _aggregate(cutoff: datetime | None) -> dict:
     turns = 0
     for path in glob.glob(str(SESSIONS_DIR / "session_*.json")):
         try:
-            d = json.load(open(path))
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
         except Exception:
             continue
         for u in d.get("usage_history") or []:
@@ -125,7 +126,7 @@ def _row_for_now() -> dict:
 def _append(row: dict) -> None:
     CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
     new_file = not CSV_PATH.exists()
-    with open(CSV_PATH, "a", newline="") as f:
+    with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         if new_file:
             w.writeheader()
@@ -135,7 +136,7 @@ def _append(row: dict) -> None:
 def _read_csv() -> list[dict]:
     if not CSV_PATH.exists():
         return []
-    with open(CSV_PATH, newline="") as f:
+    with open(CSV_PATH, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 

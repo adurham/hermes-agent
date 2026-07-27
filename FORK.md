@@ -42,6 +42,82 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-26 (CI Lint + uv.lock/CI Tests permanently red — relative exclude-newer + missing encoding=)
+
+**Symptom:** GitHub Actions "CI" workflow failing on every push to `main` for
+this fork — `Python lints / ruff enforcement (blocking)`,
+`Python lints / Windows footguns (blocking)`, `Python tests / Run tests slice
+N/8` (all 8 slices, at the `uv sync --locked` install step, before any test
+ran), and `Check uv.lock / uv lock --check` all red.
+
+**Root cause (uv.lock / tests):** `pyproject.toml`'s `[tool.uv]` had
+`exclude-newer = "7 days"` — a *relative* duration. uv resolves relative
+durations to an absolute cutoff timestamp at the moment `uv lock` (or `uv
+sync --locked`, which re-resolves to verify) runs, so the effective cutoff
+drifts forward every time CI runs, permanently out of sync with whatever
+absolute timestamp got baked into the committed `uv.lock` the last time
+someone ran `uv lock` locally. CI error was exactly this: `Resolving despite
+existing lockfile due to change of exclude newer timestamp ... error: The
+lockfile at uv.lock needs to be updated, but --locked was provided.` This is
+a known upstream footgun — it was removed once (PR #21221, 2026-05-07) then
+reintroduced hours later in the v0.13.0 release commit (498bfc7bc1), and has
+apparently been reintroduced again since (present on `upstream/main` as of
+2026-07-26).
+
+**Root cause (ruff / Windows footguns):** 6 `open()` calls across
+`scripts/hermes_token_check.py`, `scripts/hermes_usage_tracker.py`, and
+`tools/bridges/cc_proxy_mcp.py` were missing the explicit `encoding=`
+argument ruff's `PLW1514` rule requires (also a Windows footgun: default
+text-mode encoding is platform-dependent — cp1252 on Windows vs UTF-8 on
+macOS/Linux — so an unspecified-encoding `open()` can silently mis-decode
+non-ASCII bytes on Windows even though it "works" everywhere the author
+tested it). Separately, `hermes_cli/gateway.py:launchd_install()` called bare
+`os.getuid()`, which doesn't exist on Windows and raises `AttributeError` at
+call time if that code path is ever reached on a Windows install.
+
+**Fix:**
+- `pyproject.toml`: `exclude-newer = "7 days"` → `exclude-newer =
+  "2026-07-19"` (absolute date). Comment added at the site explaining why a
+  relative string must never go back here, and pointing at this history.
+  Bump this date by hand + run `uv lock` when you want a newer cooldown
+  window.
+- `uv lock` regenerated against the new absolute cutoff — also picked up a
+  drifted `hermes-agent` self-version entry in `uv.lock` (0.18.2 vs
+  `pyproject.toml`'s already-bumped 0.19.0) and a handful of genuine
+  upstream dependency bumps (honcho-ai, lark-oapi, nemo-relay,
+  slack-bolt/slack-sdk) that had accumulated since the lockfile was last
+  regenerated.
+- Added explicit `encoding="utf-8"` to all 6 flagged `open()`/`read_text()`
+  calls; also converted a bare `open()`-without-`with` in
+  `hermes_token_check.py` to a proper context manager while there (unrelated
+  leaked-fd bug, same line).
+- `hermes_cli/gateway.py`: `os.getuid() == 0` → `hasattr(os, "getuid") and
+  os.getuid() == 0`. `launchd_install` is only ever called from an
+  `is_macos()` guard today, so this can't currently fire on Windows, but the
+  bare call still trips the static checker (and would raise immediately if a
+  future call site loses that guard).
+
+**Files touched:** `pyproject.toml`, `uv.lock`, `scripts/hermes_token_check.py`,
+`scripts/hermes_usage_tracker.py`, `tools/bridges/cc_proxy_mcp.py`,
+`hermes_cli/gateway.py`.
+
+**Verification:** `PYTHONPATH= uvx ruff check .` → `All checks passed!`.
+`PYTHONPATH= python3 scripts/check-windows-footguns.py --all` → `No Windows
+footguns found (838 file(s) scanned)`. `PYTHONPATH= uv lock --check` → clean.
+`PYTHONPATH= uv sync --locked --python 3.11 --extra all --extra dev` →
+succeeds (matches the exact CI command). Ran the existing test suite
+targeting the changed files (`tests/tools/test_cc_proxy_mcp.py` — 5/5 pass;
+`tests/hermes_cli/test_gateway_service.py` — 183 pass / 6 skipped, including
+several tests that already `monkeypatch.setattr(os, "getuid", ...)` and
+exercise `launchd_install` directly, confirming the `hasattr` guard doesn't
+change behavior on platforms where `getuid` exists). A local unsharded
+`scripts/run_tests.sh` full-suite run surfaced pre-existing, unrelated
+macOS-local-environment failures (a sensitive-system-path guard tripping on
+pytest's `/private/var/folders` tmpdir, and a couple of test-order-dependent
+failures that don't reproduce when run individually or via CI's actual
+per-file-isolated slicing) — confirmed unrelated by reproducing the same
+failures on a clean `git stash` of this change.
+
 ### Fork-only fix — 2026-07-26 (self-update relaunch fixup stripped mac entitlements + hardened runtime)
 
 **Symptom:** a from-scratch local macOS build (`npm run dist:mac`/`pack`, or

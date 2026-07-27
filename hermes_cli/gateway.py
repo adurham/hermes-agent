@@ -4201,7 +4201,7 @@ def refresh_launchd_plist_if_needed() -> bool:
 
 
 def launchd_install(force: bool = False):
-    if os.getuid() == 0:
+    if hasattr(os, "getuid") and os.getuid() == 0:
         sudo_user = os.environ.get("SUDO_USER")
         hint = f"  Re-run as your user, e.g.: hermes gateway install{' --force' if force else ''}"
         if sudo_user and sudo_user != "root":

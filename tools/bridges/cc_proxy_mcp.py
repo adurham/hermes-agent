@@ -241,7 +241,7 @@ class CredStore:
         """Synchronous body — runs under cross-process flock."""
         import fcntl  # POSIX only; macOS / Linux fine.
 
-        with open(self._lockfile, "w") as lf:
+        with open(self._lockfile, "w", encoding="utf-8") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
                 raw = self._load_raw()

@@ -378,8 +378,17 @@ redundant-cast = "ignore"
 preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 
 [tool.uv]
-exclude-newer = "7 days"
-# Allow anthropic past the 7-day cutoff: 0.100.0 (2026-05-06) ships fields
+# Absolute date, NOT a relative duration ("7 days" etc). A relative duration
+# recomputes a different absolute cutoff on every `uv lock`/`uv sync --locked`
+# invocation, so `uv lock --check` (and the Docker build's `uv sync --frozen`)
+# drift out of sync with the committed uv.lock within hours — with zero real
+# dependency changes. This is a known upstream footgun: it was removed once
+# (PR #21221, May 7) then reintroduced the same day in the v0.13.0 release
+# commit, and reintroduced again since (see git log on this file). Bump this
+# date by hand + `uv lock` when you want a newer dependency cooldown window;
+# do NOT put a relative string back here.
+exclude-newer = "2026-07-19"
+# Allow anthropic past the cutoff: 0.100.0 (2026-05-06) ships fields
 # we mirror to match Claude Code's wire format. Selective override only.
 exclude-newer-package = { anthropic = "2026-05-07" }
 
