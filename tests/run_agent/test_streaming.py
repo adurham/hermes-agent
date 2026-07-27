@@ -1151,7 +1151,7 @@ class TestCodexStreamCallbacks:
 class TestAnthropicStreamCallbacks:
     """Verify Anthropic streaming refreshes activity on every event."""
 
-    def test_anthropic_stream_refreshes_activity_on_every_event(self):
+    def test_anthropic_stream_refreshes_activity_on_every_event(self, spec_anthropic_client):
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -1194,7 +1194,7 @@ class TestAnthropicStreamCallbacks:
         mock_stream.__iter__ = MagicMock(return_value=iter(events))
         mock_stream.get_final_message.return_value = final_message
 
-        agent._anthropic_client = MagicMock()
+        agent._anthropic_client = spec_anthropic_client
         # Force the plain (non-beta) `.messages.stream` code path — a bare
         # MagicMock() auto-vivifies `.beta.messages` as a truthy mock, so
         # without this the production code (agent/chat_completion_helpers.py's
@@ -1214,7 +1214,7 @@ class TestAnthropicStreamCallbacks:
     @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
-        self, mock_replace, mock_rebuild, monkeypatch,
+        self, mock_replace, mock_rebuild, monkeypatch, spec_anthropic_client,
     ):
         """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None.
 
@@ -1256,12 +1256,18 @@ class TestAnthropicStreamCallbacks:
         good_stream.__iter__ = MagicMock(return_value=iter([]))
         good_stream.get_final_message.return_value = final_message
 
-        agent._anthropic_client = MagicMock()
+        agent._anthropic_client = spec_anthropic_client
         agent._anthropic_client.beta = None  # see comment on first occurrence above
-        agent._anthropic_client.messages.stream.side_effect = [
+        # This test calls _interruptible_streaming_api_call({}) — an
+        # intentionally-empty params dict, so the built api_kwargs lack
+        # required SDK args (max_tokens, messages, model). The test exercises
+        # retry/cleanup behavior, not real call-signature validity, so swap
+        # in a plain (non-autospec'd) MagicMock for just this method to skip
+        # signature enforcement while the rest of the client stays spec'd.
+        agent._anthropic_client.messages.stream = MagicMock(side_effect=[
             _BadStream(),
             good_stream,
-        ]
+        ])
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
         response = agent._interruptible_streaming_api_call({})
@@ -1277,7 +1283,7 @@ class TestAnthropicStreamCallbacks:
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
-        self, mock_replace, monkeypatch,
+        self, mock_replace, monkeypatch, spec_anthropic_client,
     ):
         """Only known provider stream parser ValueErrors are treated as transient."""
         from run_agent import AIAgent
@@ -1295,10 +1301,13 @@ class TestAnthropicStreamCallbacks:
         agent._interrupt_requested = False
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
 
-        agent._anthropic_client = MagicMock()
+        agent._anthropic_client = spec_anthropic_client
         agent._anthropic_client.beta = None  # see comment on first occurrence above
-        agent._anthropic_client.messages.stream.side_effect = ValueError(
-            "invalid local request shape"
+        # See comment on the parser-valueerror-retries test above: called
+        # with an intentionally-empty params dict, so swap out just this
+        # method to skip real-signature enforcement.
+        agent._anthropic_client.messages.stream = MagicMock(
+            side_effect=ValueError("invalid local request shape")
         )
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
@@ -1312,7 +1321,7 @@ class TestAnthropicStreamCallbacks:
     @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_zero_event_stream_retried_as_transient(
-        self, mock_replace, mock_rebuild, mock_refresh,
+        self, mock_replace, mock_rebuild, mock_refresh, spec_anthropic_client,
     ):
         """An eventless Anthropic stream with an empty final Message gets the
         same transient retry budget as the chat_completions zero-chunk guard
@@ -1339,9 +1348,12 @@ class TestAnthropicStreamCallbacks:
         empty_stream.__iter__ = MagicMock(side_effect=lambda: iter([]))
         empty_stream.get_final_message.return_value = empty_message
 
-        agent._anthropic_client = MagicMock()
+        agent._anthropic_client = spec_anthropic_client
         agent._anthropic_client.beta = None  # see comment on first occurrence above
-        agent._anthropic_client.messages.stream.return_value = empty_stream
+        # See comment on the parser-valueerror-retries test above: called
+        # with an intentionally-empty params dict, so swap out just this
+        # method to skip real-signature enforcement.
+        agent._anthropic_client.messages.stream = MagicMock(return_value=empty_stream)
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
         with pytest.raises(EmptyStreamError):
@@ -1358,7 +1370,7 @@ class TestAnthropicStreamCallbacks:
     @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_eventless_sdk_assertion_normalized_to_empty_stream(
-        self, mock_replace, mock_rebuild, mock_refresh,
+        self, mock_replace, mock_rebuild, mock_refresh, spec_anthropic_client,
     ):
         """Real-SDK shape: an eventless stream has no message_start, so
         get_final_message() raises AssertionError (final snapshot is None).
@@ -1385,9 +1397,12 @@ class TestAnthropicStreamCallbacks:
         empty_stream.__iter__ = MagicMock(side_effect=lambda: iter([]))
         empty_stream.get_final_message.side_effect = AssertionError()
 
-        agent._anthropic_client = MagicMock()
+        agent._anthropic_client = spec_anthropic_client
         agent._anthropic_client.beta = None  # see comment on first occurrence above
-        agent._anthropic_client.messages.stream.return_value = empty_stream
+        # See comment on the parser-valueerror-retries test above: called
+        # with an intentionally-empty params dict, so swap out just this
+        # method to skip real-signature enforcement.
+        agent._anthropic_client.messages.stream = MagicMock(return_value=empty_stream)
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
         with pytest.raises(EmptyStreamError):

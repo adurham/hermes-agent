@@ -113,6 +113,23 @@ def test_profile_global_fallback_normalizes_in_memory_without_writing(tmp_path, 
     profile_home = global_root / "profiles" / "coder"
     profile_home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    # Isolate from ambient host state: without this, load_pool()'s
+    # _seed_from_singletons("anthropic") step can auto-discover a real
+    # Claude Code OAuth credential from this machine's macOS Keychain or
+    # env (CLAUDE_CODE_OAUTH_TOKEN) — a source of "changed" state this test
+    # doesn't intend to exercise. That seed would make load_pool() write to
+    # profile_home/auth.json for a reason unrelated to what's under test,
+    # making this test pass/fail depending on the *host machine's* auth
+    # state rather than on the fixture data below (also order-dependent
+    # under pytest-randomly since sibling tests mutate CLAUDE_CODE_OAUTH_TOKEN
+    # via monkeypatch.setenv). Mirrors the mocking sibling test
+    # test_load_heals_legacy_row_and_exposes_it_to_resolver already does.
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: None,
+    )
     token = "sk-ant-oat-global-fallback"
     global_auth = global_root / "auth.json"
     global_auth.write_text(json.dumps({
