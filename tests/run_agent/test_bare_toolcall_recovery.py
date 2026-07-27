@@ -73,3 +73,75 @@ class TestRecoverBareToolCalls:
     def test_empty_and_none_content(self):
         assert _recover_bare_tool_calls_from_content("") == []
         assert _recover_bare_tool_calls_from_content(None) == []
+
+
+class TestStripOrphanToolCallTail:
+    """Orphan tool-call TAIL stripping (``_strip_orphan_toolcall_tail``).
+
+    The 2026-07-26 hard_eval leak shape: exo's DSv4 backend lost a tool call's
+    OPENING tags upstream, so the final content was the parameter body (a whole
+    Python file) ending in bare ``</parameter>\\n</invoke>`` closers — a shape
+    ``_recover_bare_tool_calls_from_content`` cannot recover (no ``<invoke``
+    opener, tool name gone). The tail must be stripped from the final content
+    so raw tags never paint into the visible answer.
+    """
+
+    def test_strips_simple_tail(self):
+        """The code_lru_cache t1 shape: code + bare closers at the end."""
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        code = (
+            "            node = self._Node(key, value)\n"
+            "            self.cache[key] = node\n"
+            "            self._add_to_front(node)"
+        )
+        content = code + "\n</parameter>\n</invoke>\n"
+        assert _strip_orphan_toolcall_tail(content) == code
+
+    def test_strips_tail_with_trailing_path_parameter_block(self):
+        """The code_lru_cache t3 shape: body closer, complete typed path
+        parameter block, then </invoke>."""
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        code = "        del self._cache[lru.key]"
+        content = (
+            code
+            + "\n</parameter>\n"
+            + '<parameter name="path" string="true">/tmp/x/lru_cache.py</parameter>\n'
+            + "</invoke>\n"
+        )
+        assert _strip_orphan_toolcall_tail(content) == code
+
+    def test_untouched_when_invoke_opener_present(self):
+        """A full <invoke> block is the recovery function's job — never strip."""
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        content = (
+            '<invoke name="write_file">'
+            '<parameter name="content">x = 1</parameter>'
+            "</invoke>"
+        )
+        assert _strip_orphan_toolcall_tail(content) == content
+
+    def test_untouched_on_mid_text_closers(self):
+        """Closers not at the very end are prose — never strip."""
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        content = "The sequence is </parameter> then </invoke> and then EOS."
+        assert _strip_orphan_toolcall_tail(content) == content
+
+    def test_untouched_on_dsml_sentinel(self):
+        """Sentinel-bearing content is the backend parser's job."""
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        bar = "｜"
+        content = f"x = 1\n</{bar}DSML{bar}parameter>\n</parameter>\n</invoke>\n"
+        # contains the sentinel → leave alone entirely
+        assert _strip_orphan_toolcall_tail(content) == content
+
+    def test_untouched_on_plain_answers_and_empty(self):
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        assert _strip_orphan_toolcall_tail("normal answer") == "normal answer"
+        assert _strip_orphan_toolcall_tail("") == ""
+        assert _strip_orphan_toolcall_tail(None) is None

@@ -211,6 +211,54 @@ def _recover_bare_tool_calls_from_content(content: Optional[str]) -> list[Any]:
     return recovered
 
 
+# ── Orphan tool-call TAIL stripping ─────────────────────────────────────────
+#
+# Sibling net to the bare-XML recovery above, for the shape recovery CANNOT
+# handle: the model's final content is the TAIL of a tool call — the parameter
+# body (typically a whole write_file `content` arg) followed by bare closing
+# tags — with the OPENING tags lost upstream (exo's DSv4 backend routes them
+# into the reasoning stream or strips their sentinel-bearing forms when the
+# model degenerates mid-call; observed live 2026-07-26 on hermes hard_eval
+# coding tasks, e.g. a python answer ending `…\n</parameter>\n</invoke>\n`,
+# sometimes with a trailing `<parameter name="path" string="true">…</parameter>`
+# block before the </invoke>). With no ``<invoke`` opener the recovery regex
+# can't fire, so the raw tags painted into the final visible answer (breaking
+# e.g. the code fence they sat in). The backend clean-fails this shape now
+# (exo model_output_parsers._is_orphan_toolcall_tail); this is the client-side
+# net for backends that still leak it: strip the trailing closer fragments so
+# the surviving body reads as the clean answer it already is.
+#
+# Gating is strict to avoid mangling prose that quotes tool-call syntax: the
+# content must END with the `</parameter>…</invoke>` closer sequence, contain
+# NO ``<invoke`` opener anywhere (an opener is the recovery function's job),
+# and carry no ``｜DSML｜`` sentinel (backend parser's job).
+
+_ORPHAN_TOOLCALL_TAIL_RE = re.compile(
+    r"\s*</parameter>\s*"
+    r"(?:<parameter\s+name=\"[^\"]+\"[^>]*>.*?</parameter>\s*)*"
+    r"</invoke>\s*$",
+    re.DOTALL,
+)
+
+
+def _strip_orphan_toolcall_tail(content: Optional[str]) -> Optional[str]:
+    """Strip a trailing orphan `</parameter>…</invoke>` tool-call tail.
+
+    Returns the content unchanged unless the strict orphan-tail signature
+    matches (see module comment above). On a match, returns the content with
+    the trailing closer fragments (and any complete trailing ``<parameter>``
+    blocks between them) removed.
+    """
+    if not content or "</invoke>" not in content or "</parameter>" not in content:
+        return content
+    if "<invoke" in content or "｜DSML｜" in content:
+        return content
+    match = _ORPHAN_TOOLCALL_TAIL_RE.search(content)
+    if match is None:
+        return content
+    return content[: match.start()].rstrip()
+
+
 def _strip_cache_control(payload: Any) -> None:
     """Remove all cache_control keys from a nested dict/list payload in-place.
 
@@ -5334,6 +5382,24 @@ def run_conversation(
             if not assistant_message.tool_calls:
                 _leaked_content = getattr(assistant_message, "content", None)
                 if isinstance(_leaked_content, str):
+                    # Orphan TAIL first: closers with the opener lost upstream
+                    # can't be recovered as a call (the tool name is gone), but
+                    # the surviving body is the answer — strip the raw tag
+                    # fragments so they never paint into the final response.
+                    _stripped_content = _strip_orphan_toolcall_tail(_leaked_content)
+                    if _stripped_content != _leaked_content:
+                        agent._vprint(
+                            f"{agent.log_prefix}🔧 Stripped orphan tool-call "
+                            f"tail (</parameter>/</invoke> closers with no "
+                            f"opener) from final content"
+                        )
+                        logger.info(
+                            "Stripped orphan tool-call tail from final content "
+                            "(tail was: %r)",
+                            _leaked_content[len(_stripped_content or ""):][:160],
+                        )
+                        assistant_message.content = _stripped_content
+                        _leaked_content = _stripped_content
                     _recovered_calls = _recover_bare_tool_calls_from_content(_leaked_content)
                     if _recovered_calls:
                         agent._vprint(
