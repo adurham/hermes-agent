@@ -1945,7 +1945,16 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         if not isinstance(context_length, int) or context_length <= 0:
             return None
 
-        used_tokens = getattr(parent_agent, "session_prompt_tokens", 0)
+        # NOT session_prompt_tokens: that's a cumulative sum across every
+        # API call this session has ever made, not the current context
+        # size. It only grows, so after a few turns it exceeds
+        # context_length even on a session that compaction has kept small,
+        # and every subsequent batch clamps to the floor. display_prompt_tokens()
+        # is the last real provider-reported prompt size — the actual
+        # current-context proxy used everywhere else in the codebase for
+        # this kind of headroom decision (and immune to server-tool/MoA
+        # usage-folding inflation).
+        used_tokens = compressor.display_prompt_tokens()
         if not isinstance(used_tokens, (int, float)) or used_tokens < 0:
             used_tokens = 0
 
