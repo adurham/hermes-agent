@@ -980,3 +980,65 @@ collect_ignore = [
     "plugins/test_kanban_dashboard_plugin.py",
     "tools/test_tts_kittentts.py",
 ]
+
+
+# ---------------------------------------------------------------------------
+# spec'd Anthropic client mocks — see the 2026-07-27 mock-audit
+# (FORK.md's test-suite-comprehensiveness entry). A bare MagicMock() client
+# auto-vivifies EVERY attribute access as a truthy sub-mock, so a test that
+# patches e.g. ``client.messages.stream`` keeps silently "passing" even after
+# production code moves to ``client.beta.messages.stream`` (the OAuth
+# beta-path preference in agent/anthropic_adapter.py) — the wrong branch gets
+# hit, the mock swallows it, nothing fails. That exact bug shipped and went
+# undetected for an unknown period this session.
+#
+# ``create_autospec(Anthropic, instance=True)`` fixes the TOP level (typos on
+# client.foo raise AttributeError like the real SDK), but does NOT see through
+# ``.messages``/``.beta`` — both are ``functools.cached_property`` descriptors
+# on the class, and create_autospec specs the DESCRIPTOR OBJECT itself
+# (producing a mock with ``spec='cached_property'`` that has none of the real
+# Messages/Beta class's attributes) rather than resolving what the property
+# returns. Verified directly: ``type(create_autospec(Anthropic,
+# instance=True).messages)`` is a mock spec'd to ``cached_property``, not to
+# ``anthropic.resources.messages.Messages``. Rebuild both sub-resources
+# explicitly from a REAL throwaway client instance's runtime types instead of
+# hardcoding internal anthropic.resources.* module paths (those can move
+# between SDK versions; asking the object for its own type does not).
+#
+# Deliberately narrow scope: this specs the CLIENT SURFACE (which attributes
+# exist, so a typo'd or moved attribute path fails loudly) — it does NOT
+# autospec what ``.stream()``/``.create()`` themselves return. Tests already
+# hand-build realistic stream fakes (context-manager protocol, event
+# iteration) per-test because the shape of a fake stream is genuinely
+# test-specific; forcing every call site through one generic autospec'd
+# MessageStreamManager would fight that instead of helping it. Use these
+# fixtures for the "did I patch the branch production code actually calls"
+# class of bug; keep hand-rolling the stream body itself.
+def _build_spec_anthropic_client(is_async: bool):
+    import anthropic
+    from unittest.mock import create_autospec
+
+    client_cls = anthropic.AsyncAnthropic if is_async else anthropic.Anthropic
+    spec_client = create_autospec(client_cls, instance=True)
+
+    real = client_cls(api_key="test-key-not-a-real-secret")
+    spec_client.messages = create_autospec(type(real.messages), instance=True)
+    spec_client.beta = create_autospec(type(real.beta), instance=True)
+    spec_client.beta.messages = create_autospec(type(real.beta.messages), instance=True)
+    return spec_client
+
+
+@pytest.fixture
+def spec_anthropic_client():
+    """A create_autospec'd sync ``anthropic.Anthropic`` client, including a
+    correctly-shaped ``.beta.messages`` sub-resource. Configure
+    ``.messages.stream.return_value`` / ``.beta.messages.stream.return_value``
+    etc. as usual — only the ATTRIBUTE SURFACE is enforced, not return shapes.
+    """
+    return _build_spec_anthropic_client(is_async=False)
+
+
+@pytest.fixture
+def spec_async_anthropic_client():
+    """Async counterpart of ``spec_anthropic_client`` (``AsyncAnthropic``)."""
+    return _build_spec_anthropic_client(is_async=True)

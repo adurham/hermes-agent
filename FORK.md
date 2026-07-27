@@ -7768,3 +7768,144 @@ subscription helper), `apps/desktop/src/components/pet/pet-sprite.tsx`,
 
 **Merge note:** fork-only files, no upstream equivalent — no conflict risk.
 
+
+### Fork-only fix — 2026-07-27 (test-order-dependent failure: `test_profile_global_fallback_normalizes_in_memory_without_writing` leaked host Keychain/env state)
+
+**Symptom:** `pytest-randomly` (newly added dev dependency to catch exactly
+this class of bug) surfaced
+`tests/agent/test_credential_pool_oat_authtype.py::test_profile_global_fallback_normalizes_in_memory_without_writing`
+failing with `assert not (profile_home / "auth.json").exists()` — but only
+under certain random orderings, and it passed reliably run in isolation.
+
+**Root cause (test isolation bug, not production):** the test monkeypatches
+`Path.home()` and `HERMES_HOME` to point at fresh tmp dirs, but never mocks
+`agent.anthropic_adapter.read_claude_code_credentials()` the way its sibling
+test `test_load_heals_legacy_row_and_exposes_it_to_resolver` does. `load_pool()`
+calls `_seed_from_singletons("anthropic")`, which (when `CLAUDE_CODE_OAUTH_TOKEN`
+is unset and no explicit API-key path is signaled) tries to auto-discover a
+real Claude Code OAuth credential — from `~/.claude/.credentials.json` (safe,
+since `Path.home()` is mocked) **and from the macOS Keychain** (`security
+find-generic-password -s "Claude Code-credentials"`), which is an OS-level
+lookup unaffected by the `Path.home()` monkeypatch. On this dev machine a
+real Keychain entry exists, so `load_pool()` seeds a genuine `claude_code`
+OAuth entry into the pool, `changed=True`, and it writes `auth.json` into
+`profile_home` — exactly what the test asserts must not happen. This surfaced
+"order-dependent" under `pytest-randomly` because sibling tests also
+`monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", ...)`, and depending on run
+order that env var was sometimes already set (short-circuiting into the
+even-more-real `env:CLAUDE_CODE_OAUTH_TOKEN` seed path) or absent (falling
+through to the Keychain lookup) — both non-hermetic paths depending on
+ambient host state, not on genuine cross-test state leakage in
+`agent/credential_pool.py` itself (verified no unreset module-level caches
+there).
+
+**Fix:** in the test, explicitly `monkeypatch.delenv` the anthropic env vars
+(`ANTHROPIC_API_KEY`, `ANTHROPIC_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`) and
+`monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials",
+lambda: None)`, mirroring the existing hermetic pattern already used one test
+above it in the same file. No production code changed.
+
+**Verification:** `pytest tests/agent/test_credential_pool_oat_authtype.py -p
+randomly -q` passing 7/7 across 5 different random seeds (previously failed
+under seed `3464663842` and reproducibly with `-p no:randomly` too once
+`CLAUDE_CODE_OAUTH_TOKEN`/Keychain state was present); full
+`tests/agent/ -k credential_pool` suite (123 tests) still green; `ruff check`
+clean.
+
+**Files:** `tests/agent/test_credential_pool_oat_authtype.py` (test fixture
+isolation only).
+
+**Merge note:** test-only file, low conflict risk with upstream; if upstream
+carries the same test it likely has the identical gap (this is an
+environment-dependent bug class, not fork-specific behavior) and the same fix
+should apply cleanly.
+
+
+### Fork-only fix — 2026-07-27 (macOS-only failure: `test_media_files_routed_by_type` compared against an unresolved /tmp symlink path)
+
+**Symptom:** `pytest-randomly` flagged
+`tests/gateway/test_background_command.py::TestRunBackgroundTask::test_media_files_routed_by_type`
+as failing under one random ordering — but investigation showed it's not
+actually order-dependent; it fails deterministically on macOS in isolation
+too, regardless of run order. The random-seed run just happened to be the
+first time this session ran the file in a way that surfaced it.
+
+**Root cause (test-comparison artifact, not a production bug):**
+`gateway/platforms/base.py`'s `validate_media_delivery_path()` intentionally
+calls `Path.resolve(strict=True)` on every candidate path *before* its
+containment/denylist security checks — symlinks must be resolved before a
+containment check runs, not after, or a symlink could be used to escape the
+allowed-roots check. On macOS, `/tmp` and `/var/folders/...` are both
+symlinks into `/private/...`, so the path `_run_background_task` hands back
+after validation is the fully-resolved `/private/...` form. The test built
+its expected value from the raw `tempfile.mkdtemp()` return value (the
+unresolved `/tmp/...` or `/var/folders/...` form) and asserted equality
+against that — a real mismatch, but in the test's comparison, not in the
+security-motivated resolution behavior it was accidentally exercising.
+
+**Fix:** resolve the tmpdir once, up front in the test
+(`os.path.realpath(tempfile.mkdtemp(...))`), so the expected path already
+matches the form validate_media_delivery_path() will hand back — no change
+to `gateway/platforms/base.py`'s security logic. Documented inline at the
+call site (see comment above the `_tmpdir` assignment).
+
+**Verification:** `pytest tests/gateway/test_background_command.py -p
+randomly -q` passing 22/22 across 5+ different random seeds and in
+isolation; `pytest tests/gateway/ -k background -q` (full sibling suite)
+still green; `ruff check` clean.
+
+**Files:** `tests/gateway/test_background_command.py` (test fixture only —
+no production code changed).
+
+**Merge note:** test-only file, low conflict risk with upstream.
+
+
+### Fork-only fix — 2026-07-27 (test-order/environment-dependent failure: `test_seed_supervise_skeleton_*` setgid bit silently stripped depending on pytest's ambient basetemp group ownership)
+
+**Symptom:** `pytest-randomly` (via a full-suite run, not the file in
+isolation) surfaced
+`tests/hermes_cli/test_service_manager.py::test_seed_supervise_skeleton_creates_expected_layout`
+and `test_seed_supervise_skeleton_handles_log_subservice` failing with
+`assert stat.S_IMODE(...) == 0o3730` → `assert 984 == 2008` (984 = `0o1730`,
+missing the setgid bit `0o2000`). The whole file passes 66/66 in isolation.
+
+**Root cause (environment-dependent, not a leaking test/production bug):**
+`hermes_cli/service_manager.py`'s `_mkdir_owned()` sets mode
+(`0o3730` — setgid + sticky) via `path.chmod(mode)`. On macOS/BSD, a newly
+created directory inherits its GROUP from its *parent* directory (not from
+the creating process's egid, unlike SysV semantics) — and POSIX kernel
+semantics silently strip the setgid bit on chmod whenever the acting
+process is not a member of the directory's group (only root or a group
+member may set setgid for that group; no exception is raised, chmod just
+"succeeds" with a different resulting mode). Whether this bites depends
+entirely on which group owns the ancestor of pytest's `tmp_path` basetemp
+for a given run: the common case (`/private/var/folders/.../T/pytest-of-
+<user>/...`) is group `staff`, which the test user belongs to, so setgid
+sticks — but a full-suite run can end up with pytest's basetemp instead
+under `/tmp/pytest-of-<user>/...`, whose ancestor `/tmp` is group `wheel`,
+which the test user does NOT belong to, silently stripping setgid.
+Confirmed directly: `TMPDIR=/tmp uv run pytest ...` (forcing the bad
+ancestor) reproduces the failure deterministically; the same command
+without `TMPDIR` set passes. Not a bug in `_mkdir_owned` itself (which
+already handles the analogous `os.chown` `PermissionError` case
+explicitly and correctly) — the test's own `svc_dir` fixture directory
+just inherited whatever ambient group pytest happened to pick.
+
+**Fix:** in both tests, `os.chown(svc_dir, -1, os.getegid())` immediately
+after creating `svc_dir` — pins the test directory's group to one the
+test process is *always* a member of (its own effective gid), so the
+setgid bit sticks regardless of which ancestor group pytest's basetemp
+happens to land under that run. No production code changed.
+
+**Verification:** `pytest tests/hermes_cli/test_service_manager.py -q`
+66/66 passing; reproduced the original failure with `TMPDIR=/tmp uv run
+pytest ...` (forcing the wheel-owned ancestor) on the pre-fix test file,
+confirmed the fixed version passes under the same forced condition;
+`ruff check` clean.
+
+**Files:** `tests/hermes_cli/test_service_manager.py` (test fixture only —
+no production code changed).
+
+**Merge note:** test-only file, low conflict risk with upstream; this is a
+genuinely environment-dependent (basetemp ancestor group ownership) bug
+class, not fork-specific behavior.

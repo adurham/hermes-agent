@@ -608,11 +608,11 @@ class TestResolveXaiOAuthForAux:
 class TestAnthropicOAuthFlag:
     """Test that OAuth tokens get is_oauth=True in auxiliary Anthropic client."""
 
-    def test_oauth_token_sets_flag(self, monkeypatch):
+    def test_oauth_token_sets_flag(self, monkeypatch, spec_anthropic_client):
         """OAuth tokens (sk-ant-oat01-*) should create client with is_oauth=True."""
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-token")
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
-            mock_build.return_value = MagicMock()
+            mock_build.return_value = spec_anthropic_client
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, model = _try_anthropic()
             assert client is not None
@@ -621,12 +621,12 @@ class TestAnthropicOAuthFlag:
             adapter = client.chat.completions
             assert adapter._is_oauth is True
 
-    def test_api_key_no_oauth_flag(self, monkeypatch):
+    def test_api_key_no_oauth_flag(self, monkeypatch, spec_anthropic_client):
         """Regular API keys (sk-ant-api-*) should create client with is_oauth=False."""
-        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-testkey1234"), \
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant...1234"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
-            mock_build.return_value = MagicMock()
+            mock_build.return_value = spec_anthropic_client
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, model = _try_anthropic()
             assert client is not None
@@ -634,9 +634,9 @@ class TestAnthropicOAuthFlag:
             adapter = client.chat.completions
             assert adapter._is_oauth is False
 
-    def test_pool_entry_takes_priority_over_legacy_resolution(self):
+    def test_pool_entry_takes_priority_over_legacy_resolution(self, spec_anthropic_client):
         class _Entry:
-            access_token = "sk-ant-oat01-pooled"
+            access_token = "sk-ant...oled"
             base_url = "https://api.anthropic.com"
 
         class _Pool:
@@ -649,7 +649,7 @@ class TestAnthropicOAuthFlag:
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
             patch("agent.anthropic_adapter.resolve_anthropic_token", side_effect=AssertionError("legacy path should not run")),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build,
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=spec_anthropic_client) as mock_build,
         ):
             from agent.auxiliary_client import _try_anthropic
 
@@ -657,7 +657,7 @@ class TestAnthropicOAuthFlag:
 
         assert client is not None
         assert model == _ANTHROPIC_DEFAULT_AUX_MODEL
-        assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
+        assert mock_build.call_args.args[0] == "sk-ant...oled"
 
 
 class TestBuildCodexClient:

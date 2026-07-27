@@ -298,7 +298,15 @@ class TestRunBackgroundTask:
         # (default mode requires the file to exist as a regular file).
         import os as _os
         import tempfile as _tempfile
-        _tmpdir = _tempfile.mkdtemp(prefix="bg_media_")
+        # Resolve the tmpdir up front: validate_media_delivery_path()
+        # intentionally calls Path.resolve(strict=True) on every candidate
+        # before its containment/denylist checks (symlinks must be resolved
+        # before a security check, not after), so on macOS a path under
+        # /tmp or /var/folders (both symlinks into /private) comes back
+        # from _run_background_task already resolved. Comparing against the
+        # unresolved tempfile.mkdtemp() path is a test-only artifact of that
+        # symlink, not a bug in the resolution — so we resolve here too.
+        _tmpdir = _os.path.realpath(_tempfile.mkdtemp(prefix="bg_media_"))
         _ogg = _os.path.join(_tmpdir, "clip.ogg")
         _mp4 = _os.path.join(_tmpdir, "render.mp4")
         _png = _os.path.join(_tmpdir, "chart.png")

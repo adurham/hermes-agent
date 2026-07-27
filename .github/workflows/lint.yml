@@ -163,6 +163,42 @@ jobs:
       - name: Run footgun checker
         run: python scripts/check-windows-footguns.py --all
 
+  unspecced-sdk-mocks:
+    # Blocks NEW unspecced Mock()/MagicMock() SDK-client doubles (the exact
+    # mechanism behind at least 2 confirmed bugs where a test kept "passing"
+    # while silently testing nothing — see FORK.md's 2026-07-27
+    # test-suite-comprehensiveness entry). Diff-only, not --all: ~5,300
+    # unspecced mocks already exist in the suite (pre-dating this checker);
+    # retrofixing all of them was judged too large/risky for one pass. This
+    # job only stops the count from growing on new/changed test files.
+    # See scripts/check-unspecced-sdk-mocks.py for the full heuristic.
+    name: Unspecced SDK-client mocks (blocking, diff-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # need full history for merge-base
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Determine base ref
+        id: base
+        run: |
+          if [ "${{ inputs.event_name }}" = "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+          else
+            BASE_REF="HEAD~1"
+          fi
+          echo "ref=${BASE_REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Run unspecced-mock checker (diff vs base)
+        run: python scripts/check-unspecced-sdk-mocks.py --diff "${{ steps.base.outputs.ref }}"
+
   ci-review:
     # Require explicit maintainer review when CI-sensitive files change:
     # eslint config, workflow YAMLs, or composite actions. These files
