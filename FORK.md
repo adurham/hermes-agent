@@ -8101,3 +8101,71 @@ matches the identical fix pattern already documented in this file's
 **Merge note:** the file's own docstring says it's meant to stay
 untracked/uncommitted — flagging for the user rather than untracking it
 myself, since that's a workflow decision outside a lint-fix's scope.
+
+
+### Fork-only fix — 2026-07-27 (a 6th real intra-file test-order leak, plus a subtle monkeypatch.delenv footgun: it snapshots the CURRENT value, not the pre-test value)
+
+**Symptom:** the CI run for the previous "2 real intra-file leaks" push
+still failed 2 unrelated Python test slices, this time on
+`tests/gateway/test_matrix_message_length.py::TestMatrixMaxMessageLength::test_default_limit_is_16000`
+— `assert adapter.max_message_length == 16000` got `12000`. Passed cleanly
+in isolation; reproduced deterministically with `--randomly-seed=7`.
+
+**Root cause 1 (real leak):** `_apply_yaml_config()` in
+`plugins/platforms/matrix/adapter.py` sets `MATRIX_MAX_MESSAGE_LENGTH`
+directly via `os.environ[...] = ...` (by design — its docstring says
+"everything flows through env"), and `test_apply_yaml_config_sets_env`
+exercises exactly this real behavior with value `12000`. Left in place,
+that value is the third-priority fallback `_resolve_max_message_length()`
+reads (`extra` dict → env var → plugin registry), so any later test in
+the file that doesn't set its own explicit value inherits it —
+`test_default_limit_is_16000` calls `_make_adapter()` with no override at
+all, so it should always see the true default 16000.
+
+**Root cause 2 (why my FIRST fix attempt didn't work — a genuine
+monkeypatch semantics footgun worth remembering):** my initial fix added
+a second `monkeypatch.delenv("MATRIX_MAX_MESSAGE_LENGTH", raising=False)`
+at the end of the test, expecting it to clean up. It didn't —
+`monkeypatch.delenv`/`setenv` record an UNDO entry that restores whatever
+value was present *at the moment that specific call runs*, not "the
+value before this test started." Sequence: call 1 (test start) found the
+var absent → no undo entry pushed. `_apply_yaml_config()` then set it to
+`"12000"` via a RAW (untracked) assignment. Call 2 (my attempted cleanup)
+found `"12000"` present → snapshotted `"12000"` as the thing to restore,
+then deleted it. On test teardown, monkeypatch's undo stack faithfully
+restored... `"12000"` — the value my own "cleanup" call had just seen,
+not the original absent state. Confirmed by adding temporary debug
+tracing showing `os.getenv(...)` correctly returned `None` immediately
+after the second `delenv()` call inside the test, but the very next
+test's `_make_adapter()` call saw `"12000"` again once monkeypatch's
+fixture teardown ran.
+
+**Fix:** replaced the second `monkeypatch.delenv()` call with a raw,
+untracked `os.environ.pop("MATRIX_MAX_MESSAGE_LENGTH", None)`. This
+doesn't touch monkeypatch's undo stack at all, so teardown restores only
+the TRUE original state recorded by the first (pre-test) call.
+
+**Also checked (NOT touched — pre-existing, unrelated):** the same CI run
+additionally failed `test_windows_subprocess_no_window_flags.py`,
+`test_hindsight_provider.py` (3 tests), `test_docker_network_config.py`,
+`test_honcho_plugin/test_session.py` (2 tests), and the already-documented
+`test_dashboard_auth_gate.py`. Verified each in isolation:
+`test_windows_subprocess...`/`test_hindsight_provider.py` pass cleanly
+alone and pass when run together with the fixed matrix file (confirming
+they were incidental to running ~200 files in one un-isolated CI slice
+process, not caused by the matrix leak or anything else this session
+touched). `test_docker_network_config.py::test_reuse_keeps_airgapped_container_when_lockdown_requested`
+fails in TRUE isolation too — `/usr/bin/docker` doesn't exist on this
+machine — a pre-existing environment gap (same category as
+`test_dashboard_auth_gate.py`), not a test-order bug; left untouched, out
+of scope for this fix.
+
+**Verification:** `tests/gateway/test_matrix_message_length.py` — 9/9
+passing across 10 consecutive `-p randomly` reruns plus the exact
+originally-failing `--randomly-seed=7`. `tests/gateway/ -k matrix` (full
+sibling suite) still green. `ruff check .` and
+`check-windows-footguns.py --all` clean.
+
+**Files:** `tests/gateway/test_matrix_message_length.py`.
+
+**Merge note:** test-only file, low conflict risk with upstream.
