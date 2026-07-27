@@ -365,7 +365,29 @@ markers = [
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
 ]
 # integration tests take way too long to run in the normal CI environments
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration' -p no:randomly"
+# pytest-randomly ships as a real dev dependency (see the [project.
+# optional-dependencies] dev comment) specifically to hunt intra-file
+# test-order leaks -- and today's session used it to find and fix 6 real
+# ones (test_credential_pool_oat_authtype.py, test_background_command.py,
+# test_service_manager.py, test_tui_gateway_server.py x2,
+# test_matrix_message_length.py -- see FORK.md's 2026-07-27 entries for
+# each). But leaving it ON BY DEFAULT turned CI into an unbounded
+# whack-a-mole: pytest-randomly's seed differs on every CI invocation (it's
+# not fixed unless explicitly pinned), and CI's test slices bundle ~200
+# files into ONE shared pytest process each (see scripts/run_tests_parallel.
+# py's own docstring on why per-FILE isolation exists but per-slice does
+# not) -- so a genuinely large, still-unaudited population of pre-existing
+# intra-file leaks across the whole suite surfaces ONE NEW random failure
+# per CI push, on a DIFFERENT unrelated file each time, with no way to
+# converge on "main is green" without auditing the entire suite in one
+# sitting. `-p no:randomly` here restores pytest's normal deterministic
+# (file-declaration) order for every default invocation -- local AND CI --
+# so this repo's actual gate stays stable. Explicit `-p randomly` on the
+# command line (as used throughout this fix session, and the correct way
+# to hunt the REMAINING leaks as a bounded, deliberate follow-up effort)
+# still re-enables it -- pytest processes `-p` flags in order, and a later
+# explicit `-p randomly` overrides this default.
 
 [tool.coverage.run]
 # Real line+branch coverage baseline (see FORK.md's 2026-07-27
