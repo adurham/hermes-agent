@@ -7053,7 +7053,7 @@ _AUX_TASK_FIRST_KEYS = frozenset({
     "kanban_decomposer", "profile_describer", "curator", "monitor",
     "session_search", "memory_extraction", "delegation_router",
     "background_review", "consult", "goal_judge", "memory_query_rewrite",
-    "moa_aggregator", "moa_reference",
+    "moa_aggregator", "moa_reference", "pet_dialogue",
 })
 # Per-task setting keys that are provider-independent and belong in the shared
 # provider-first ``defaults`` block (NOT a model/routing field).

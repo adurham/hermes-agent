@@ -1,7 +1,10 @@
 """Tests for the CLI exit summary's resume hint, including profile-flag support."""
 
+import sys
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from cli import HermesCLI
 
@@ -25,6 +28,13 @@ class TestExitSummaryResumeHint:
     so a hint copied without `-p` from a non-default profile won't find
     the session.
     """
+
+    @pytest.fixture(autouse=True)
+    def _pin_argv(self, monkeypatch):
+        # Production uses os.path.basename(sys.argv[0]) for the resume-hint
+        # binary name. Under pytest that resolves to "pytest"; pin it to the
+        # real invocation name these tests assert on.
+        monkeypatch.setattr(sys, "argv", ["hermes"])
 
     def test_resume_hint_no_profile_flag_on_default(self, capsys):
         cli_obj = _make_cli()

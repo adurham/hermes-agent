@@ -105,9 +105,19 @@ class TestStreamStaleCircuitBreaker:
         unblock = threading.Event()
 
         def _blocking_gen():
+            # Yield one throwaway event first so `first_event_seen` flips
+            # True before the connection blocks. Without this the fork's
+            # cold-start grace period (agent/fork/stream_recovery.py::
+            # effective_stale_timeout) treats the whole block as "no event
+            # ever arrived yet" and inflates the 0.1s HERMES_STREAM_STALE_TIMEOUT
+            # set below to max(0.1*3, HERMES_STREAM_COLD_START_TIMEOUT=600s) —
+            # the watchdog would then never fire within this test's 5s budget.
+            # This test's docstring describes a mid-stream stall (a stream
+            # that opened and then wedged), not a cold-start stall, so
+            # simulating one real event first matches the scenario under test.
+            yield SimpleNamespace(type="ping")
             unblock.wait(timeout=5.0)
             raise httpx.ConnectError("connection dropped after close()")
-            yield  # make this a generator so next() triggers the wait
 
         def _stream_side_effect(*args, **kwargs):
             cm = MagicMock()
@@ -118,7 +128,7 @@ class TestStreamStaleCircuitBreaker:
             return cm
 
         # Every attempt blocks, trips the stale detector, and fails.
-        agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
+        agent._anthropic_client.beta.messages.stream.side_effect = _stream_side_effect
         # #67142: the stale detector now aborts the request-local client's
         # sockets from the poll thread (not close() on the shared client), so
         # unblock on the abort to simulate the socket shutdown waking the read.

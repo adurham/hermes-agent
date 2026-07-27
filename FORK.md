@@ -42,6 +42,109 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-26 (pre-existing test-suite failures: 6 real production bugs + ~50 stale-mock/assertion fixes)
+
+**Symptom:** ~54 pre-existing pytest failures across `tests/run_agent/`,
+`tests/cli/`, `tests/hermes_cli/`, `tests/tools/`, `tests/agent/`,
+`tests/acp/`, `tests/tui_gateway/` — unrelated to the same-day CI-lockfile
+fix above, these were failing on `main` before that fix even landed
+(uncovered once CI could run at all). Root causes fell into two buckets:
+genuine production bugs, and test doubles/assertions that had drifted out
+of sync with legitimate upstream/fork changes (new kwargs, renamed fields,
+new guard clauses, deliberately-changed defaults).
+
+**Real production bugs found and fixed (not test-only):**
+1. `agent/conversation_loop.py::run_conversation()` returned
+   `final_response: None` on the refusal/internal-error dict-return paths
+   instead of the actual message text.
+2. `cli.py::_persist_global_model_switch` wrote `""` instead of `None` for
+   a cleared base_url/api_mode, contradicting its own docstring and the
+   sibling branch's behavior. Same function's `/fast` handler always
+   persisted to config on every toggle; added a `--global`/`-g` flag so it's
+   session-scoped by default (matches the test's documented intent).
+3. `plugins/memory/holographic/retrieval.py::_sanitize_fts_query` only
+   split the query on whitespace, so a hyphenated token like `"PLAT-15800"`
+   collapsed into one glued token (`plat15800`) that could never match
+   FTS5's own `unicode61` tokenizer output for the same string (which
+   splits on `-` into `plat` + `15800`). Any hyphenated identifier in a
+   recall query silently returned zero results. Fixed by replacing `-`
+   with a space before the whitespace split.
+4. `tools/memory_tool.py` — the hot-tier `read` action reused
+   `_success_response()`, a helper whose docstring explicitly says it
+   withholds the entries list (deliberately, to stop the model from
+   re-issuing writes after every add/replace/remove). Reusing it for `read`
+   meant `/memory read` returned `entry_count` but never the actual
+   `entries` — defeating the action's entire purpose. Built a
+   read-specific response inline instead of reusing the write-shaped
+   helper.
+5. `agent/auxiliary_client.py::resolve_vision_provider_client`'s
+   memoization cache key was `(provider, model, base_url, api_key,
+   async_mode)` — it omitted `main_runtime` entirely. Two callers with
+   identical explicit args (the common case: most call sites pass all
+   default args and rely on ambient/context runtime) but different
+   `main_runtime` would silently share one cached `(provider, client,
+   model)` tuple, leaking one session's vision endpoint/model into an
+   unrelated session/thread. Caught via cross-test pollution
+   (`test_explicit_vision_runtime_wins_over_stale_ambient_runtime` failing
+   only when run after `test_concurrent_vision_probes_...`), but the same
+   collision is reachable in production. Fixed by folding the same
+   runtime-aware discriminator tuple `_client_cache_key` already uses for
+   this exact reason into the vision cache key too.
+6. `tools/lazy_deps.py` had `anthropic==0.87.0` pinned while
+   `pyproject.toml` had already moved to `0.100.0` — pins had drifted out
+   of sync (both versions are past the CVE-34450/34452 fix line, so this
+   was a consistency bug, not a security one).
+7. `hermes_cli/config.py::_AUX_TASK_FIRST_KEYS` was missing `pet_dialogue`,
+   causing that auxiliary task's config block to be misdetected as
+   "provider-first" and silently mis-saved. `hermes_cli/main.py`'s
+   `_BUILTIN_SUBCOMMANDS` was missing `submit`, causing it to be excluded
+   from top-level `--help` subcommand listings.
+
+**Stale test doubles/assertions fixed (production behavior was correct,
+tests hadn't caught up):** MagicMock auto-vivifying `.beta.messages.stream`
+as truthy and silently bypassing tests that only patched `.messages.stream`
+(the fork's OAuth beta-path preference introduced this); missing
+`sticky_active`/`model=`/`provider_override=` kwargs on fakes after real
+signatures grew; a retry-budget assertion (`< 3`) that predated a
+deliberate bump to `< 4`; a default-aux-model assertion
+(`claude-haiku-4-5-20251001`) that predated the deliberate upgrade to
+`claude-sonnet-5` for compression quality + 1M-context beta eligibility;
+this fork's MCP tool naming convention (`{server}_{tool}`, no `mcp__`
+prefix — see `tools/mcp_tool.py::is_mcp_tool_parallel_safe`) vs. a test
+still asserting the upstream `mcp__{server}__{tool}` shape; toolset
+composite drift (`consult`, a fork-only "second opinion" tool, missing
+from an expected-toolsets list); a background-review read-before-write
+guard added after its test was written.
+
+**Left unresolved (documented, not swept under the rug):**
+`tests/tools/test_mcp_circuit_breaker.py::test_half_open_dead_session_recovers_after_reconnect`
+and `test_half_open_probe_on_dead_session_requests_reconnect` — dead-session
+recovery moved from the old `_signal_reconnect`-based mechanism these tests
+exercise to a newer `_ensure_server_connected` lazy-spawn subsystem that
+does a real async config-backed connection attempt. The tests' stub setup
+(`_mcp_loop = None`, no real config entry, `_is_recycled_stdio=False`) is
+incompatible with the new dual-path branching in
+`tools/mcp_tool.py::_make_tool_handler` — patching just the config-presence
+check makes the test hang (real connect attempt against a nonexistent stub
+command) instead of pass. Needs either a graceful "reconnecting" error path
+added to `_ensure_server_connected` itself, or a test rewrite with a
+working fake transport — real follow-up work, not a mock patch.
+
+**Verification:** `scripts/run_tests.sh` (the CI-matching per-file-isolated
+runner) across all touched files: 34 files, 2063 tests passed, 0 failed, 8
+workers. `ruff check .` and `scripts/check-windows-footguns.py --all` both
+clean. Confirmed via `git stash` that 3 unrelated pre-existing failures in
+`test_file_tools.py` / `test_execution_flag_detection.py` /
+`test_web_tools_config.py` are environment-specific and fail identically
+without any of this session's changes — left untouched, out of scope.
+
+**Files touched (production):** `agent/auxiliary_client.py`,
+`agent/conversation_loop.py`, `cli.py`, `hermes_cli/config.py`,
+`hermes_cli/main.py`, `plugins/memory/holographic/retrieval.py`,
+`plugins/memory/holographic/store.py`, `tools/lazy_deps.py`,
+`tools/memory_tool.py`, `tools/memory_warm.py`. Plus ~25 test files with
+mock/assertion updates (see diff for the full list).
+
 ### Fork-only fix — 2026-07-26 (CI Lint + uv.lock/CI Tests permanently red — relative exclude-newer + missing encoding=)
 
 **Symptom:** GitHub Actions "CI" workflow failing on every push to `main` for

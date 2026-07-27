@@ -48,6 +48,13 @@ def _make_anthropic_agent(**kwargs):
     agent = AIAgent(**defaults)
     agent.api_mode = "anthropic_messages"
     agent._anthropic_client = MagicMock()
+    # Force the plain (non-beta) `.messages.stream` code path — a bare
+    # MagicMock() auto-vivifies `.beta.messages` as a truthy mock, so without
+    # this the production code (agent/chat_completion_helpers.py's
+    # `_call_anthropic`) silently prefers `.beta.messages.stream(...)` over
+    # the `.messages.stream` these tests configure below, and the mocked
+    # stream/side_effect is never actually exercised.
+    agent._anthropic_client.beta = None
     agent._anthropic_api_key = "test-anthropic-key"
     # #67142: anthropic streams now run on a request-local client; route it to
     # the test mock so .messages.stream is exercised and its cleanup observed.

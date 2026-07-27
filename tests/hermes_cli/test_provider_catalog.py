@@ -95,11 +95,14 @@ def test_api_key_providers_expose_a_credential_env_var():
     surface at least one env var to write the key into (otherwise the GUI can't
     configure it).
 
-    Exemptions: ``aws_sdk`` (bedrock — uses AWS_REGION/AWS_PROFILE) and the
-    ``custom`` bring-your-own-endpoint pseudo-provider, which is configured
-    inline via the local-endpoint flow rather than a fixed env var.
+    Exemptions: ``aws_sdk`` (bedrock — uses AWS_REGION/AWS_PROFILE), the
+    ``custom`` bring-your-own-endpoint pseudo-provider, and ``exo`` — all
+    three are configured inline via a local-endpoint flow (base_url set by
+    the user) rather than a fixed credential env var. ``exo``'s profile
+    declares ``env_vars=()`` explicitly: "No fixed API key — uses the
+    cluster's own auth" (plugins/model-providers/exo/__init__.py).
     """
-    exempt = {"custom"}
+    exempt = {"custom", "exo"}
     for d in provider_catalog():
         if d.auth_type == "api_key" and d.slug not in exempt:
             assert d.api_key_env_vars, f"{d.slug} is api_key but exposes no env var"

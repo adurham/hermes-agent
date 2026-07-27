@@ -3596,7 +3596,11 @@ def test_resolve_hermes_argv_module_actually_runs():
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
-    assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
+    # Brand-agnostic: forks rebrand the version banner's product name (see
+    # scripts/sync-fork-branding.py), so pin on the structural markers every
+    # variant prints rather than a literal "Hermes Agent" string.
+    assert "Install directory:" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
+    assert "Python:" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
 
 
 # ---------------------------------------------------------------------------

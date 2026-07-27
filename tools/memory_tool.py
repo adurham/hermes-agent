@@ -1452,7 +1452,26 @@ def memory_tool(
 
     elif action == "read":
         # New explicit hot-tier read action — returns the live entries.
-        result = store._success_response(target, "Hot tier entries returned.")
+        # _success_response() is deliberately write-shaped (see its
+        # docstring: entries are withheld after add/replace/remove to avoid
+        # inviting the model to re-issue redundant writes). A `read` action
+        # has no such write to guard against and its entire purpose is to
+        # surface the entries, so build the response directly instead of
+        # reusing that write-oriented helper (which silently dropped the
+        # content, leaving only entry_count -- issue found via
+        # tests/tools/test_memory_warm.py::TestBackwardCompat::test_hot_read_returns_state).
+        _entries = store._entries_for(target)
+        _current = store._char_count(target)
+        _limit = store._char_limit(target)
+        _pct = min(100, int((_current / _limit) * 100)) if _limit > 0 else 0
+        result = {
+            "success": True,
+            "target": target,
+            "entries": _entries,
+            "entry_count": len(_entries),
+            "usage": f"{_pct}% — {_current:,}/{_limit:,} chars",
+            "message": "Hot tier entries returned.",
+        }
 
     else:
         return tool_error(

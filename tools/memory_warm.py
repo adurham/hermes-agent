@@ -166,15 +166,13 @@ class WarmStore:
             return []
 
         top_k = max(1, min(int(top_k), 25))
-        # FTS5 has reserved syntax (AND/OR/NOT, parens, quotes). For a
-        # natural-language query the agent passes in, we want substring-
-        # ish matching, not boolean-search semantics. The simplest robust
-        # transform: wrap the whole query in double quotes to make it a
-        # phrase, but only if it doesn't already contain FTS5 syntax.
-        clean_query = self._sanitize_fts_query(query)
-
+        # NOTE: sanitization now happens inside ``search_facts`` itself
+        # (see plugins/memory/holographic/store.py), so we pass the raw
+        # query through here. Double-sanitizing would re-run the FTS5
+        # cleanup on an already-quoted expression and mangle it into a
+        # query that matches nothing.
         rows = self._inner.search_facts(
-            query=clean_query,
+            query=query,
             category=category,
             min_trust=min_trust,
             limit=top_k,

@@ -1173,6 +1173,14 @@ class TestBackgroundReviewExternalGuard:
 
         with self._patch_skills_dir(local), _two_roots(local, external), \
                 _background_review_context():
+            # The background-review read-before-write guard (separate from
+            # the external-dirs guard this test class targets) requires the
+            # target file to have been loaded via skill_view() in this
+            # review turn before a patch is allowed -- simulate that here,
+            # matching the pattern used by the other background-review
+            # tests above (see mark_background_review_skill_read usages).
+            from tools.skill_manager_tool import mark_background_review_skill_read
+            mark_background_review_skill_read(local_skill / "SKILL.md")
             result = _patch_skill("local-skill", "OLD_MARKER", "NEW_MARKER")
 
         assert result["success"] is True, result

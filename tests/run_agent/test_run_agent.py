@@ -7315,16 +7315,16 @@ class TestAnthropicCredentialRefresh:
 
         response = SimpleNamespace(content=[])
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.stream.side_effect = RuntimeError(
+        agent._anthropic_client.beta.messages.stream.side_effect = RuntimeError(
             "stream is not supported by this provider"
         )
-        agent._anthropic_client.messages.create.return_value = response
+        agent._anthropic_client.beta.messages.create.return_value = response
 
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
             result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
 
-        agent._anthropic_client.messages.stream.assert_called_once_with(model="claude-sonnet-4-20250514")
-        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.beta.messages.stream.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.beta.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
         assert result is response
 
     def test_anthropic_messages_create_honors_disable_streaming(self):
@@ -7345,13 +7345,13 @@ class TestAnthropicCredentialRefresh:
         response = SimpleNamespace(content=[])
         agent._disable_streaming = True
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create.return_value = response
+        agent._anthropic_client.beta.messages.create.return_value = response
 
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
             result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
 
-        agent._anthropic_client.messages.stream.assert_not_called()
-        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.beta.messages.stream.assert_not_called()
+        agent._anthropic_client.beta.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
         assert result is response
 
     def test_anthropic_messages_create_does_not_mask_bedrock_stream_validation_errors(self):
@@ -7371,7 +7371,7 @@ class TestAnthropicCredentialRefresh:
 
         exc = RuntimeError("ValidationException: InvokeModelWithResponseStream input malformed")
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.stream.side_effect = exc
+        agent._anthropic_client.beta.messages.stream.side_effect = exc
 
         with (
             patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False),
@@ -7379,7 +7379,7 @@ class TestAnthropicCredentialRefresh:
         ):
             agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
 
-        agent._anthropic_client.messages.create.assert_not_called()
+        agent._anthropic_client.beta.messages.create.assert_not_called()
 
     def test_anthropic_messages_create_falls_back_for_bedrock_stream_access_denied(self):
         with (
@@ -7398,15 +7398,15 @@ class TestAnthropicCredentialRefresh:
 
         response = SimpleNamespace(content=[])
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.stream.side_effect = RuntimeError(
+        agent._anthropic_client.beta.messages.stream.side_effect = RuntimeError(
             "User is not authorized to perform: bedrock:InvokeModelWithResponseStream"
         )
-        agent._anthropic_client.messages.create.return_value = response
+        agent._anthropic_client.beta.messages.create.return_value = response
 
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
             result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
 
-        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.beta.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
         assert result is response
 
 

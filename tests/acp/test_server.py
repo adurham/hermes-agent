@@ -1840,6 +1840,13 @@ class TestRegisterSessionMcpServers:
         state.agent.tools = []
         state.agent.valid_tool_names = set()
         state.agent._cached_system_prompt = "old prompt"
+        # Production reads this via getattr(..., False) to decide
+        # sticky_active for get_tool_definitions (see acp_adapter/server.py's
+        # _register_session_mcp_servers). state.agent is a MagicMock, so an
+        # unset attribute auto-vivifies as a truthy child mock rather than
+        # the intended False default -- pin it explicitly so the assertion
+        # below reflects the same call production actually makes.
+        state.agent._tool_search_ever_activated = False
         state.agent._memory_manager = SimpleNamespace(
             get_all_tool_schemas=lambda: [
                 {"name": "hindsight_recall", "description": "Recall", "parameters": {}}
@@ -1867,6 +1874,7 @@ class TestRegisterSessionMcpServers:
             enabled_toolsets=["hermes-acp", "mcp-srv"],
             disabled_toolsets=None,
             quiet_mode=True,
+            sticky_active=False,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
         assert state.agent.tools is fake_tools

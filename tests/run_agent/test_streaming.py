@@ -1195,6 +1195,13 @@ class TestAnthropicStreamCallbacks:
         mock_stream.get_final_message.return_value = final_message
 
         agent._anthropic_client = MagicMock()
+        # Force the plain (non-beta) `.messages.stream` code path — a bare
+        # MagicMock() auto-vivifies `.beta.messages` as a truthy mock, so
+        # without this the production code (agent/chat_completion_helpers.py's
+        # `_call_anthropic`) silently prefers `.beta.messages.stream(...)`
+        # over the `.messages.stream` this test configures, and the real
+        # Anthropic client under test never sees the events/streams below.
+        agent._anthropic_client.beta = None
         agent._anthropic_client.messages.stream.return_value = mock_stream
         # #67142: streaming now runs on a request-local anthropic client; route
         # it to the test mock so .messages.stream is exercised.
@@ -1250,6 +1257,7 @@ class TestAnthropicStreamCallbacks:
         good_stream.get_final_message.return_value = final_message
 
         agent._anthropic_client = MagicMock()
+        agent._anthropic_client.beta = None  # see comment on first occurrence above
         agent._anthropic_client.messages.stream.side_effect = [
             _BadStream(),
             good_stream,
@@ -1288,6 +1296,7 @@ class TestAnthropicStreamCallbacks:
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
 
         agent._anthropic_client = MagicMock()
+        agent._anthropic_client.beta = None  # see comment on first occurrence above
         agent._anthropic_client.messages.stream.side_effect = ValueError(
             "invalid local request shape"
         )
@@ -1331,6 +1340,7 @@ class TestAnthropicStreamCallbacks:
         empty_stream.get_final_message.return_value = empty_message
 
         agent._anthropic_client = MagicMock()
+        agent._anthropic_client.beta = None  # see comment on first occurrence above
         agent._anthropic_client.messages.stream.return_value = empty_stream
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
@@ -1376,6 +1386,7 @@ class TestAnthropicStreamCallbacks:
         empty_stream.get_final_message.side_effect = AssertionError()
 
         agent._anthropic_client = MagicMock()
+        agent._anthropic_client.beta = None  # see comment on first occurrence above
         agent._anthropic_client.messages.stream.return_value = empty_stream
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
