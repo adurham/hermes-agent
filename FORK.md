@@ -7603,3 +7603,52 @@ render loop), `apps/desktop/src/components/pet/use-pet-roam.ts`
 
 **Merge note:** fork-only files, no upstream equivalent — no conflict risk.
 
+### Fork-only fix — 2026-07-26 (regression from the same-day pet visibility-gate fix: sprite froze on one frame)
+
+**Symptom:** immediately after rebuilding with the visibility-gate fix
+above, the pet got stuck looping the same single animation frame instead of
+animating normally — reported right after the rebuild+relaunch.
+
+**Root cause:** the gate above paused the loop on `document.hidden ||
+!document.hasFocus()`, copied directly from `star-map.tsx`'s pattern. That's
+correct for star-map (a foreground interactive panel where "not focused"
+genuinely means covered/backgrounded), but wrong for `PetSprite`, which has
+two consumers with different windowing:
+
+1. The in-window floating mascot (`floating-pet.tsx`) — a background
+   companion meant to keep animating while glanced at, even when Hermes
+   isn't the OS-focused window. `document.hasFocus()` goes false the instant
+   any other app is clicked into, even though the pet is still fully visible
+   on screen — so the loop paused and stayed paused on whatever frame it
+   happened to be on for as long as focus stayed elsewhere.
+2. The popped-out overlay (`pet-overlay-app.tsx`) — its own `BrowserWindow`
+   created with `focusable: false` and shown via `showInactive()`
+   specifically so it never takes OS focus (see `spawnPetOverlayWindow` in
+   `electron/main.ts`). `document.hasFocus()` is *permanently* false in that
+   window by design, so its sprite render loop froze on frame 1 the instant
+   it mounted and never moved again.
+
+Both read as "stuck looping the same animation" — exactly the reported
+symptom.
+
+**Fix:** drop the `hasFocus()` half of the gate; pause purely on
+`document.hidden` (true Page Visibility — minimized, switched to another
+space, or occluded enough that Chromium flips it), which still eliminates
+the original battery drain (a genuinely backgrounded/occluded window) without
+punishing "visible but not OS-focused." Also removed the now-pointless
+`window.addEventListener('blur'/'focus', ...)` listeners from both files,
+since the gate no longer reacts to focus changes — only `visibilitychange`
+matters now. Added an explicit comment in both files explaining why the pet
+deliberately differs from star-map's stricter gate, so a future port of one
+pattern to the other doesn't reintroduce this.
+
+**Verification:** `tsc --noEmit` clean, `eslint` clean on both files, pet
+test suite 28/28, full desktop suite 256 files / 2227 tests passing (2
+pre-existing skips, unrelated).
+
+**Files:** `apps/desktop/src/components/pet/pet-sprite.tsx`,
+`apps/desktop/src/components/pet/use-pet-roam.ts` (both: gate narrowed to
+`document.hidden` only, blur/focus listeners removed).
+
+**Merge note:** fork-only files, no upstream equivalent — no conflict risk.
+
