@@ -37,6 +37,58 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_desktop_env(monkeypatch):
+    """Strip ambient ``HERMES_DESKTOP``/``HERMES_DESKTOP_TERMINAL`` for every test.
+
+    ``_resolve_session_platform()`` in tui_gateway/server.py branches on these
+    two env vars to distinguish the desktop app's chat panel ("desktop") from
+    a standalone/embedded TUI ("tui"). When the test *process itself* is
+    launched from inside the desktop app (or any dev shell that exports
+    ``HERMES_DESKTOP=1``), that ambient value leaks into every test in this
+    module that doesn't explicitly set its own platform expectation, flipping
+    the default from "tui" to "desktop" and failing assertions that have
+    nothing to do with desktop-specific behavior. Individual tests that need
+    to exercise the desktop branch still set these vars themselves via
+    ``monkeypatch``.
+    """
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_server_sessions(monkeypatch):
+    """Snapshot/restore ``server._sessions`` around every test in this module.
+
+    Many tests seed ``server._sessions[<id>]`` directly to exercise RPC
+    handlers and clean up with their own ``try/finally`` + ``.pop()``/
+    ``.clear()``, but a few historically didn't. A session id left behind by
+    an earlier test (e.g. "abx", "pdf1") then becomes the *first* entry
+    iterated/emitted by a later test that seeds its own differently-named
+    session, corrupting assertions that pattern-match on the expected
+    session id (e.g. ``emitted[0][0:2] == ("session.info", "sid")``). This is
+    a safety net on top of (not a replacement for) per-test cleanup: it
+    guarantees module-level test-order independence even if a future test
+    forgets to clean up after itself.
+
+    Uses ``monkeypatch.setattr`` (not a manual snapshot + raw ``.clear()``/
+    ``.update()`` in a bare ``try/finally``) so this rides the SAME
+    single-undo-stack teardown mechanism as any test that itself does
+    ``monkeypatch.setattr(server, "_sessions", <test double>)`` — e.g.
+    ``test_session_delete_fails_closed_when_active_snapshot_raises``, which
+    replaces ``_sessions`` with an object lacking `.clear()`. A bare
+    ``try/finally`` here raced that test's own monkeypatch teardown (pytest
+    tears fixtures down LIFO relative to *setup*, and there's no clean way
+    to force "run after a fixture I don't depend on" without going through
+    its own mechanism) — this fixture's teardown attempted `.clear()` on
+    the test's still-in-place fake object before monkeypatch had restored
+    the real dict, raising ``AttributeError``. Both patches now share one
+    undo stack and unwind correctly regardless of declaration order.
+    """
+    monkeypatch.setattr(server, "_sessions", dict(server._sessions))
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -9998,26 +10050,29 @@ def test_image_attach_bytes_writes_to_gateway_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._sessions["abx"] = _session()
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "image.attach_bytes",
-            "params": {
-                "session_id": "abx",
-                "content_base64": _PNG_1X1_B64,
-                "filename": "shot.png",
-            },
-        }
-    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "image.attach_bytes",
+                "params": {
+                    "session_id": "abx",
+                    "content_base64": _PNG_1X1_B64,
+                    "filename": "shot.png",
+                },
+            }
+        )
 
-    res = resp["result"]
-    assert res["attached"] is True
-    written = Path(res["path"])
-    assert written.is_file()
-    assert written.parent == tmp_path / "images"
-    assert written.read_bytes().startswith(b"\x89PNG")
-    assert len(server._sessions["abx"]["attached_images"]) == 1
-    assert res["bytes"] > 0
+        res = resp["result"]
+        assert res["attached"] is True
+        written = Path(res["path"])
+        assert written.is_file()
+        assert written.parent == tmp_path / "images"
+        assert written.read_bytes().startswith(b"\x89PNG")
+        assert len(server._sessions["abx"]["attached_images"]) == 1
+        assert res["bytes"] > 0
+    finally:
+        server._sessions.pop("abx", None)
 
 
 def test_image_attach_bytes_accepts_data_url_prefix(monkeypatch, tmp_path):

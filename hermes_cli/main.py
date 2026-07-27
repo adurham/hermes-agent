@@ -471,8 +471,71 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # The flag is stripped from sys.argv so argparse never sees it.
 # Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
+_HERMES_SCRIPT_NAMES = {"hermes", "hermes-agent", "hermes-acp"}
+
+
+def _looks_like_hermes_invocation(argv0: str) -> bool:
+    """True if ``argv0`` identifies a real Hermes CLI entry point.
+
+    Covers:
+      - console-script invocations ("hermes", "hermes-agent", "hermes-acp",
+        including Windows ".exe" wrappers)
+      - `python -m hermes_cli.main`, and direct `python .../hermes_cli/main.py`
+        execution -- CPython rewrites sys.argv[0] to the resolved module file
+        path in both cases (multiple real production paths use this exact
+        invocation style: hermes_cli/relaunch.py's own fallback,
+        gateway.py's --replace re-exec argv builder, a systemd ExecStart
+        example in the docs), so the parent-dir/file-name pair is a reliable
+        signal without depending on how deep the repo/venv path is.
+    """
+    if not argv0:
+        return False
+    name = os.path.basename(argv0)
+    stem = name[:-4] if name.lower().endswith(".exe") else name
+    if stem in _HERMES_SCRIPT_NAMES:
+        return True
+    parts = Path(argv0).parts
+    return len(parts) >= 2 and parts[-1] == "main.py" and parts[-2] == "hermes_cli"
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    # Runs at MODULE IMPORT TIME (called unconditionally below), scanning the
+    # real process's sys.argv -- but "this module got imported" and "the
+    # hermes CLI was invoked" are different events that happen to collide
+    # here. When something else's argv also uses `-p <word>` (pytest's own
+    # plugin-activation flag: `-p no:xdist`, `-p randomly`, etc.) and that
+    # process imports hermes_cli.main (as most test files in this repo do,
+    # at module scope, during collection), this function misreads the
+    # foreign `-p` as a Hermes profile selector. An existing regex guard
+    # below already special-cases `no:xdist`-shaped values (colon = clearly
+    # not a valid profile name) -- but a PLAIN-WORD pytest plugin name like
+    # `-p randomly` (pytest-randomly, added 2026-07-27) is shaped exactly
+    # like a real profile name and slips through, crashing with
+    # `sys.exit(1)` ("Profile 'randomly' does not exist") the instant any
+    # test file importing hermes_cli.main runs inside `pytest -p randomly`.
+    #
+    # Root-caused as a structural issue (module import triggering CLI-only
+    # bootstrap logic) worth a real entry-point-level fix eventually --
+    # splitting this pre-import bootstrap into its own thin module that only
+    # the `hermes` console_script entry point invokes, so `import
+    # hermes_cli.main` from test code never triggers it at all. That's a
+    # bigger refactor than belongs in this fix.
+    #
+    # Guard via sys.argv[0] IDENTITY, not an env-var proxy for "are we under
+    # pytest" -- an earlier attempt at `if os.environ.get("PYTEST_VERSION"):
+    # return` broke tests/hermes_cli/test_apply_profile_override.py, which
+    # calls this function DIRECTLY with a test-controlled
+    # `monkeypatch.setattr(sys, "argv", ["hermes", "-p", "elias", ...])` --
+    # that test legitimately wants the override logic to run even though
+    # PYTEST_VERSION is set. argv[0] identity (real console-script name, or
+    # the `-m hermes_cli.main` / direct-script-execution file-path shape
+    # CPython produces) correctly covers both real Hermes invocations AND
+    # this file's own test-constructed argv, while cleanly rejecting
+    # pytest's own process argv[0] (the pytest executable / __main__.py
+    # path), with no dependency on pytest internals at all.
+    if not _looks_like_hermes_invocation(sys.argv[0] if sys.argv else ""):
+        return
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
