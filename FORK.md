@@ -145,6 +145,49 @@ without any of this session's changes — left untouched, out of scope.
 `tools/memory_tool.py`, `tools/memory_warm.py`. Plus ~25 test files with
 mock/assertion updates (see diff for the full list).
 
+**Follow-up same-day (2026-07-27): 3 more failures surfaced by real CI**
+that hadn't reproduced in local runs (test-order and OS dependent):
+1. `tests/plugins/memory/test_holographic_retrieval.py` had a parametrized
+   case (`"context: length-probe"` → `{"context", "lengthprobe"}`) that
+   encoded the exact pre-fix buggy behavior of the `_sanitize_fts_query`
+   hyphen bug fixed above — CI runs this file in a slice/order where it
+   wasn't shadowed by a coincidentally-passing local run. Updated the
+   expectation to the correct `{"context", "length", "probe"}`.
+2. `tests/tools/test_web_providers_claude_code.py::test_check_web_api_key_true_when_claude_code_configured`
+   relied on ambient plugin-registration state (`agent.web_search_registry`
+   only knows about a provider once some earlier-run test/import has called
+   its `register(ctx)` hook) — passes when run after enough of the suite,
+   fails when CI's parallel slicing puts it first. Fixed by having the test
+   call `register_provider(ClaudeCodeWebProvider())` directly
+   (`register_provider()`'s own docstring says repeated registration is
+   explicitly safe — "makes hot-reload scenarios (tests, dev loops) behave
+   predictably").
+3. `tests/tools/test_mcp_circuit_breaker.py`'s two half-open-probe tests
+   (`test_half_open_probe_on_dead_session_requests_reconnect`,
+   `test_half_open_dead_session_recovers_after_reconnect`) — the real fix
+   this time, not deferred. Confirmed via a second-opinion review that the
+   two reconnect mechanisms (`_request_lazy_reconnect` for recycled stdio,
+   `_ensure_server_connected` lazy-spawn for everything else) are
+   legitimately different by design, not a product gap — the tests'
+   `_is_recycled_stdio=False` stub setup means they were always meant to
+   exercise the lazy-spawn path, they just predated that path's addition
+   and asserted the other branch's (`_reconnect_event`/"reconnect" wording)
+   contract instead. Rewrote both to mock `_connect_server` to fail fast
+   (`ConnectionRefusedError`) instead of hanging on a real spawn attempt,
+   and assert on `_ensure_server_connected`'s actual clean-failure contract
+   ("failed to connect" + breaker bump). Also manually audited
+   `_run_on_mcp_loop`'s timeout path (the thing that would matter if this
+   *were* a production gap) and confirmed it does real bounded polling with
+   `future.cancel()` on deadline — not a naive blocking wait — so no
+   follow-up production fix was needed there.
+
+Re-verified: `scripts/run_tests.sh` across all touched + previously-touched
+files: 272 files, 4750 tests passed, 0 failed. Confirmed via `git stash`
+that `test_web_tools_config.py`, `test_base_environment.py` also have
+pre-existing failures unrelated to any of this session's changes (fail
+identically without the diff) — left untouched, out of scope, same as the
+`test_file_tools.py` / `test_execution_flag_detection.py` findings above.
+
 ### Fork-only fix — 2026-07-26 (CI Lint + uv.lock/CI Tests permanently red — relative exclude-newer + missing encoding=)
 
 **Symptom:** GitHub Actions "CI" workflow failing on every push to `main` for

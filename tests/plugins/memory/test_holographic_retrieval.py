@@ -30,8 +30,14 @@ from plugins.memory.holographic.store import MemoryStore
         ("the and of", None),  # None = sentinel for fallback-to-raw
         # empty string → empty output
         ("", ""),
-        # FTS5 operator characters stripped
-        ("context: length-probe", {"context", "lengthprobe"}),
+        # FTS5 operator characters stripped. The hyphen in "length-probe"
+        # must become a token *separator*, not silently deleted: FTS5's own
+        # unicode61 tokenizer treats '-' as a word boundary, so a stored
+        # value like "length-probe" is indexed as two tokens ("length",
+        # "probe"). Gluing them into one token ("lengthprobe") here would
+        # produce a query that can never match the index (see
+        # plugins/memory/holographic/retrieval.py::_sanitize_fts_query).
+        ("context: length-probe", {"context", "length", "probe"}),
         # trailing punctuation stripped by tokenizer
         ("hello, world!", {"hello", "world"}),
     ],

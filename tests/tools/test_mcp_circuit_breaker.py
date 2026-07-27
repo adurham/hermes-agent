@@ -222,14 +222,20 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
 
 
 def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_path):
-    """A half-open probe against a server with no live session must request
-    a transport reconnect and return a clean error — NOT write into a dead
-    pipe or permanently re-arm the breaker.
+    """A half-open probe against a non-recycled-stdio server with no live
+    session must lazy-spawn via ``_ensure_server_connected`` and, when that
+    spawn fails, return a clean connect-failure error — NOT write into a
+    dead pipe or permanently re-arm the breaker.
 
-    This is the #16788 wedge: a dead stdio subprocess leaves ``session=None``
-    (the run loop parked after exhausting retries). The old handler bumped
-    the breaker every cooldown forever; the fix signals ``_reconnect_event``
-    so the parked task revives and rebuilds the transport.
+    This is the #16788 wedge for the *non-recycled* dead-session case.
+    Recycled stdio servers take the older ``_request_lazy_reconnect``
+    signal-and-wait path (covered by
+    ``test_half_open_dead_session_recovers_after_reconnect`` below and by
+    ``test_run_loop_parks_instead_of_exiting_then_revives``); this test's
+    stub explicitly forces ``_is_recycled_stdio() == False`` (see
+    ``_install_stub_server``), so it must exercise
+    ``_ensure_server_connected``'s lazy-spawn-and-fail-cleanly contract
+    instead of the reconnect-event signal.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -239,8 +245,24 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
     server = _install_stub_server(mcp_tool, "srv", None)
     # Simulate a dead/parked transport: no live session.
     server.session = None
-    # Drive _signal_reconnect down its direct .set() path (no live loop).
-    monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
+    # _ensure_server_connected needs a real running MCP loop to schedule its
+    # connect attempt on (unlike the recycled-stdio path, it doesn't have a
+    # fallback for _mcp_loop=None -- see tools/mcp_tool.py's
+    # `_run_on_mcp_loop`, which raises immediately when the loop isn't
+    # running rather than hanging).
+    mcp_tool._ensure_mcp_loop()
+    # The server must be present in the live MCP config for
+    # _ensure_server_connected to even attempt a spawn (added since this
+    # test was first written) -- the stub above only registers "srv" in the
+    # in-memory _servers registry, not in any real config.yaml.
+    monkeypatch.setattr(
+        mcp_tool, "_load_mcp_config", lambda: {"srv": {"enabled": True}}
+    )
+
+    async def _fail_connect(name, config):
+        raise ConnectionRefusedError("stub transport refused")
+
+    monkeypatch.setattr(mcp_tool, "_connect_server", _fail_connect)
 
     try:
         mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
@@ -260,9 +282,16 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
         result = handler({})
         parsed = json.loads(result)
 
-        # Clean "reconnecting" error, and a reconnect was actually signalled.
-        assert "reconnect" in parsed.get("error", "").lower(), parsed
-        server._reconnect_event.assert_called_once()
+        # Clean, bounded-time connect-failure error -- not a hang, not a
+        # write into a dead pipe. _ensure_server_connected's own failure
+        # path (see tools/mcp_tool.py) reports "failed to connect", not
+        # "reconnect" -- that wording belongs to the recycled-stdio
+        # _request_lazy_reconnect path, a different branch this stub
+        # deliberately doesn't take (_is_recycled_stdio=False).
+        assert "failed to connect" in parsed.get("error", "").lower(), parsed
+        # A failed lazy-spawn must bump the breaker so the next call
+        # short-circuits instead of re-attempting immediately.
+        assert mcp_tool._server_error_counts.get("srv", 0) > mcp_tool._CIRCUIT_BREAKER_THRESHOLD
     finally:
         _cleanup(mcp_tool, "srv")
 
@@ -271,6 +300,13 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
     """Once the transport comes back (session repopulated + breaker reset by
     the run loop), the next call must go straight through — proving the wedge
     is escapable, not just deferred.
+
+    Like the sibling test above, this exercises the non-recycled-stdio
+    ``_ensure_server_connected`` lazy-spawn path (the stub forces
+    ``_is_recycled_stdio() == False``): probe 1's spawn attempt fails
+    cleanly, then something external (the real run loop, in production)
+    repopulates ``server.session`` and resets the breaker, and probe 2 must
+    go straight through without attempting another spawn.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -288,8 +324,15 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
 
     server = _install_stub_server(mcp_tool, "srv", _call_tool_success)
     server.session = None  # transport down at first
-    monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
     mcp_tool._ensure_mcp_loop()
+    monkeypatch.setattr(
+        mcp_tool, "_load_mcp_config", lambda: {"srv": {"enabled": True}}
+    )
+
+    async def _fail_connect(name, config):
+        raise ConnectionRefusedError("stub transport refused")
+
+    monkeypatch.setattr(mcp_tool, "_connect_server", _fail_connect)
 
     try:
         mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
@@ -301,12 +344,12 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
 
         handler = _make_tool_handler("srv", "tool1", 10.0)
 
-        # Probe 1: transport down → reconnect requested, clean error.
+        # Probe 1: transport down, lazy-spawn attempted and fails cleanly.
         parsed = json.loads(handler({}))
-        assert "reconnect" in parsed.get("error", "").lower(), parsed
+        assert "failed to connect" in parsed.get("error", "").lower(), parsed
 
         # Simulate the run loop rebuilding the session + resetting the breaker
-        # (what _run_stdio does on successful re-init).
+        # (what a successful _run_stdio re-init does in production).
         live = MagicMock()
         live.call_tool = _call_tool_success
         server.session = live
@@ -315,7 +358,8 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
         # Advance past the re-armed cooldown so the next call is a fresh probe.
         fake_now[0] += cooldown + 1.0
 
-        # Next call goes straight through.
+        # Next call goes straight through — no lazy-spawn attempted since
+        # server.session is now populated.
         parsed = json.loads(handler({}))
         assert parsed.get("result") == "ok", parsed
     finally:
