@@ -647,7 +647,7 @@ registry.register(
     handler=_handle_yb_send_dm,
     check_fn=_check_yuanbao,
     is_async=True,
-    emoji="✉️",
+    emoji="✉",
 )
 
 

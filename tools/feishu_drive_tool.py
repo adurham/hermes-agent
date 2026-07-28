@@ -415,7 +415,7 @@ registry.register(
     requires_env=[],
     is_async=False,
     description="Reply to a document comment",
-    emoji="\u2709\ufe0f",
+    emoji="✉",
 )
 
 registry.register(
@@ -427,5 +427,5 @@ registry.register(
     requires_env=[],
     is_async=False,
     description="Add a whole-document comment",
-    emoji="\u2709\ufe0f",
+    emoji="✉",
 )
