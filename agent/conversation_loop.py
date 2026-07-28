@@ -2444,18 +2444,55 @@ def run_conversation(
                             )
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
+                            _is_partial_stream_stub = (
+                                getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
+                            )
+                            _dropped_tools = getattr(
+                                response, "_dropped_tool_names", None
+                            )
+                            # ── Empty-salvage stream failure: retry CLEANLY ──
+                            # When the stream died before ANY visible output
+                            # was salvaged (content empty, no tool calls, no
+                            # dropped-tool stub — e.g. a backend that clean-
+                            # fails a malformed tool call mid-stream after
+                            # only reasoning deltas), appending the EMPTY
+                            # assistant turn plus "continue exactly where you
+                            # left off / do not restart or repeat prior text"
+                            # is actively harmful: there is nothing to
+                            # continue FROM, and the instruction forbids
+                            # restarting. Observed live (2026-07-27, exo
+                            # DSv4-Flash on hard_eval coding tasks): the
+                            # model obediently "continues" from nothing —
+                            # emitting an empty <think> </think> turn — and
+                            # each retry adds another empty assistant turn to
+                            # history, teaching it that empty turns are
+                            # acceptable until every retry budget exhausts
+                            # and the turn ends empty_response_exhausted.
+                            # Retry the SAME request with NO history
+                            # mutation instead: sampling diversity gets a
+                            # fair re-roll, exactly like an HTTP-level retry.
+                            _salvaged_text = (
+                                getattr(assistant_message, "content", None) or ""
+                            ).strip()
+                            if (
+                                _is_partial_stream_stub
+                                and not _salvaged_text
+                                and not _dropped_tools
+                                and length_continue_retries < 4
+                            ):
+                                agent._vprint(
+                                    f"{agent.log_prefix}↻ Stream failed before "
+                                    f"any visible output — retrying cleanly "
+                                    f"({length_continue_retries}/4)..."
+                                )
+                                _retry.restart_with_length_continuation = True
+                                break
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                             messages.append(interim_msg)
                             if assistant_message.content:
                                 truncated_response_parts.append(assistant_message.content)
 
                             if length_continue_retries < 4:
-                                _is_partial_stream_stub = (
-                                    getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
-                                )
-                                _dropped_tools = getattr(
-                                    response, "_dropped_tool_names", None
-                                )
 
                                 if _is_partial_stream_stub and _dropped_tools:
                                     _tool_list = ", ".join(_dropped_tools[:3])

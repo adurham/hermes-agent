@@ -403,6 +403,112 @@ class TestConversationLoopPartialStreamContinuation:
         assert "forty-two" in result["final_response"]
 
 
+class TestEmptySalvagePartialStreamRetriesCleanly:
+    """A partial-stream stub with NOTHING salvaged (no content, no tool
+    calls, no dropped-tool names) must retry the SAME request with NO
+    history mutation — no empty interim assistant message, no 'continue
+    exactly where you left off' nudge.
+
+    Observed live (2026-07-27, exo DSv4-Flash on hard_eval coding tasks):
+    the backend clean-failed a malformed tool call mid-stream after only
+    reasoning deltas, so the stub carried empty content. The old path
+    appended an EMPTY assistant turn plus the network-error continuation
+    nudge ('Do not restart or repeat prior text') — the model obediently
+    'continued' from nothing, emitting empty <think> </think> turns until
+    every retry budget exhausted and the turn ended
+    empty_response_exhausted with no answer at all.
+    """
+
+    def test_empty_salvage_stub_retries_without_scaffolding(self, loop_agent):
+        from tests.run_agent.test_run_agent import _mock_response, _mock_assistant_msg
+
+        empty_stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=None),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        recovery = _mock_response(
+            content="The answer is forty-two.", finish_reason="stop",
+        )
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            empty_stub, recovery,
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("ask me something")
+
+        # Two API calls: the failed stub, then the clean retry.
+        assert loop_agent.client.chat.completions.create.call_count == 2
+
+        # The retry must be scaffolding-free: no continuation nudge, no
+        # empty interim assistant message in the resent conversation.
+        second_call_kwargs = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call_kwargs.kwargs.get("messages") or second_call_kwargs.args[0].get("messages")
+        joined_user = " ".join(
+            (m.get("content") or "") for m in msgs if m.get("role") == "user"
+        )
+        assert "network error mid-stream" not in joined_user, (
+            "Empty-salvage retry must NOT append the 'continue where you "
+            "left off' nudge — there is nothing to continue from."
+        )
+        assert not any(
+            m.get("role") == "assistant" and not (m.get("content") or "").strip()
+            and not m.get("tool_calls")
+            for m in msgs
+        ), (
+            "Empty-salvage retry must NOT append an empty interim assistant "
+            "message — it teaches the model that empty turns are acceptable."
+        )
+        assert "forty-two" in (result["final_response"] or "")
+
+    def test_nonempty_salvage_still_gets_continuation_nudge(self, loop_agent):
+        """Guard: a stub that DID salvage text keeps the old behavior —
+        interim message + network-error continuation nudge."""
+        from tests.run_agent.test_run_agent import _mock_response, _mock_assistant_msg
+
+        partial_stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content="The first half of "),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        continuation = _mock_response(
+            content="the answer is forty-two.", finish_reason="stop",
+        )
+        loop_agent.client.chat.completions.create.side_effect = [
+            partial_stub, continuation,
+        ]
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("ask me something")
+
+        second_call_kwargs = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call_kwargs.kwargs.get("messages") or second_call_kwargs.args[0].get("messages")
+        last_user = next(
+            (m for m in reversed(msgs) if m.get("role") == "user"), None,
+        )
+        assert last_user is not None
+        assert "network error mid-stream" in (last_user.get("content") or "")
+        assert "forty-two" in (result["final_response"] or "")
+
+
 class TestContentFilterStallActivatesFallback:
     """Regression for #32421: a provider output-layer content safety filter
     (e.g. MiniMax ``output new_sensitive (1027)``) terminates a streaming
