@@ -87,11 +87,15 @@ class _StubCLI:
 class TestMaybeStartGating(unittest.TestCase):
     """``maybe_start`` is the policy wall — exercise its decision tree."""
 
-    def test_single_child_returns_noop(self):
-        # n_children < 2 → no-op regardless of CLI.
-        parent = type("P", (), {"_cli_ref": _StubCLI()})()
+    def test_single_child_returns_real_board(self):
+        # 1+ children with a CLI host → real board (single-child delegations
+        # get the same in-place row treatment as batches — see maybe_start's
+        # docstring for why this changed from "single-child = no-op").
+        cli = _StubCLI()
+        parent = type("P", (), {"_cli_ref": cli})()
         b = SwarmBoard.maybe_start(parent_agent=parent, n_children=1)
-        assert isinstance(b, _NoopBoard)
+        assert isinstance(b, SwarmBoard)
+        assert b.is_active is True
 
     def test_zero_children_returns_noop(self):
         parent = type("P", (), {"_cli_ref": _StubCLI()})()
