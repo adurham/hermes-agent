@@ -18,6 +18,7 @@
 
 import { atom, computed } from 'nanostores'
 
+import { sessionRoute } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
@@ -583,6 +584,31 @@ export function focusOpenSession(storedSessionId: string): boolean {
   }
 
   return false
+}
+
+/** THE single entry point for "jump to this session" navigation. Every caller
+ *  that routes a user to a stored session (sidebar click, Ctrl+Tab switcher,
+ *  session-slot hotkeys, command palette, artifacts "open chat", notification
+ *  click, cron/command-center "go to session") must go through here instead of
+ *  calling `navigate(sessionRoute(id))` directly.
+ *
+ *  Why: the workspace pane renders whatever `$selectedStoredSessionId` points
+ *  at, independent of `$sessionTiles` — a bare `navigate(sessionRoute(id))`
+ *  loads the session into the workspace tab even while a tile for that SAME
+ *  session already sits in the tab strip, producing two tabs for one session.
+ *  `focusOpenSession` is the guard against that: it fronts the existing tab
+ *  (tile or main) and returns true when the session is already on screen, so
+ *  the fallback navigate below only fires for a session with no open tab. */
+export function goToSession(
+  navigate: (path: string, opts?: { replace?: boolean }) => void,
+  storedSessionId: string,
+  opts?: { replace?: boolean }
+): void {
+  if (focusOpenSession(storedSessionId)) {
+    return
+  }
+
+  navigate(sessionRoute(storedSessionId), opts)
 }
 
 // Closed-tab stack for ⌘⇧T reopen (in-memory) — keyed PER PROFILE like the

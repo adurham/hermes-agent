@@ -58,7 +58,7 @@ import {
   setCurrentProvider,
   setMessages
 } from '@/store/session'
-import { closeSessionTile, focusOpenSession, openSessionTile } from '@/store/session-states'
+import { closeSessionTile, focusOpenSession, goToSession, openSessionTile } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -1004,7 +1004,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
             onNavigateRoute={path => navigate(path)}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+            onOpenSession={sessionId => goToSession(navigate, sessionId)}
           />
         </Suspense>
       )}
@@ -1019,7 +1019,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         <Suspense fallback={null}>
           <CronView
             onClose={closeOverlayToPreviousRoute}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+            onOpenSession={sessionId => goToSession(navigate, sessionId)}
           />
         </Suspense>
       )}

@@ -57,6 +57,7 @@ import {
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
 import { requestStartWorkSession } from '@/store/projects'
+import { goToSession } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 import { applyBackendUpdate } from '@/store/updates'
 import { luminance } from '@/themes/color'
@@ -71,7 +72,6 @@ import {
   MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
-  sessionRoute,
   SETTINGS_ROUTE,
   SKILLS_ROUTE,
   STARMAP_ROUTE
@@ -351,6 +351,11 @@ export function CommandPalette() {
 
   const go = useCallback((path: string) => () => navigate(path), [navigate])
 
+  // Session-specific goto: routes through `goToSession` so a palette pick on a
+  // session that's already open (tile or main) fronts its tab instead of
+  // loading a second copy into the workspace — same guard as a sidebar click.
+  const goSession = useCallback((sessionId: string) => () => goToSession(navigate, sessionId), [navigate])
+
   // Step up one nested page (or back to the root list), clearing the filter so
   // the parent page doesn't reopen mid-search.
   const goBack = useCallback(() => {
@@ -607,7 +612,7 @@ export function CommandPalette() {
             id: `goto-${directId}`,
             keywords: ['session', 'id', 'go to', directId],
             label: `${t.commandCenter.goToSession} ${directId}`,
-            run: go(sessionRoute(directId))
+            run: goSession(directId)
           }
         ]
       })
@@ -693,7 +698,7 @@ export function CommandPalette() {
             ...(session.git_branch ? [session.git_branch] : [])
           ],
           label: session.title,
-          run: go(sessionRoute(session.id))
+          run: goSession(session.id)
         }))
       })
     }
@@ -748,6 +753,7 @@ export function CommandPalette() {
     availableThemes,
     configFieldLabel,
     go,
+    goSession,
     mcpServers,
     resolvedMode,
     search,

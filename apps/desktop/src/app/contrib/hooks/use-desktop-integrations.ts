@@ -4,12 +4,13 @@ import { closeActiveTab } from '@/app/chat/close-tab'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
 import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
+import { goToSession } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE } from '../../routes'
 
 interface DesktopIntegrationsParams {
   chatOpen: boolean
@@ -95,7 +96,7 @@ export function useDesktopIntegrations({
     const last = getRememberedSessionId()
 
     if (last) {
-      navigate(sessionRoute(last), { replace: true })
+      goToSession(navigate, last, { replace: true })
     }
   }, [locationPathname, navigate])
 
@@ -110,7 +111,7 @@ export function useDesktopIntegrations({
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current)))
+        goToSession(navigate, storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current))
       }
     })
 
