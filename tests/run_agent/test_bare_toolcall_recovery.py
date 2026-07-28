@@ -135,6 +135,27 @@ class TestStripOrphanToolCallTail:
             content = code + "\n</parameter>\n</invoke>\n" + closer + "\n"
             assert _strip_orphan_toolcall_tail(content) == code, closer
 
+    def test_strips_tail_followed_by_models_own_closing_fence(self):
+        """The residual leak variant caught live 2026-07-28 (hard_eval
+        code_segment_tree t2): the model slips into closers at the end of its
+        inline answer and THEN closes its code fence. The fence pushed
+        end-of-string past the old anchor so the tail dodged the strip; now
+        the tail is stripped and the captured fence re-appended so the code
+        block stays balanced."""
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        content = (
+            "```python\nclass SegTree:\n    def query(self):\n        return res\n"
+            "</parameter>\n</invoke>\n\n```\n"
+        )
+        stripped = _strip_orphan_toolcall_tail(content)
+        assert stripped is not None
+        assert "</invoke>" not in stripped
+        assert "</parameter>" not in stripped
+        assert stripped.count("```") == 2
+        assert stripped.rstrip().endswith("```")
+        assert "return res" in stripped
+
     def test_untouched_on_lone_wrapper_closer(self):
         """A bare ``</tool_calls>`` WITHOUT the preceding ``</parameter>``…
         ``</invoke>`` sequence is not the tail signature — that lone closer is
