@@ -28,7 +28,7 @@ import {
 import { requestNewWorktree } from '@/store/projects'
 import { toggleReview } from '@/store/review'
 import { setModelPickerOpen } from '@/store/session'
-import { reopenLastClosedTile } from '@/store/session-states'
+import { goToSession, reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
   closeSwitcher,
@@ -50,7 +50,6 @@ import {
   CRON_ROUTE,
   MESSAGING_ROUTE,
   PROFILES_ROUTE,
-  sessionRoute,
   SETTINGS_ROUTE,
   SKILLS_ROUTE
 } from '../routes'
@@ -91,9 +90,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
   }
 
-  const goToSession = (sessionId: null | string) => {
+  const gotoSlotSession = (sessionId: null | string) => {
     if (sessionId) {
-      navigate(sessionRoute(sessionId))
+      goToSession(navigate, sessionId)
     }
   }
 
@@ -103,15 +102,15 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   for (let slot = 1; slot <= SESSION_SLOT_COUNT; slot += 1) {
     sessionSlotHandlers[`session.slot.${slot}`] = () => {
       closeSwitcher()
-      goToSession(slotSessionId(slot))
+      gotoSlotSession(slotSessionId(slot))
     }
   }
 
-  commitSwitcherRef.current = () => goToSession(commitOnCtrlUp())
+  commitSwitcherRef.current = () => gotoSlotSession(commitOnCtrlUp())
 
   const stepSession = (direction: 1 | -1) => {
     onSwitcherTabDown()
-    goToSession(openOrAdvanceSwitcher(direction))
+    gotoSlotSession(openOrAdvanceSwitcher(direction))
   }
 
   const showFiles = () => {
