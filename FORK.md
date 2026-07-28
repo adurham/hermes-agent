@@ -8219,3 +8219,66 @@ remaining backlog, rather than reactive one-at-a-time CI-push chasing.
 **Merge note:** config-only change, no logic touched; trivial to
 re-apply or drop on next upstream merge depending on whether upstream
 also adopts pytest-randomly.
+
+### Fork-only fix — 2026-07-28 (desktop: duplicate session tabs from bypassed dedup guard)
+
+**Symptom:** the same session could show up as two tabs in one window's tab
+strip — a tile tab plus a separate workspace tab both bound to the identical
+stored session id.
+
+**Root cause:** `focusOpenSession()` (in `apps/desktop/src/store/session-states.ts`)
+is the guard that fronts an already-open tab instead of loading a duplicate,
+but it was only wired into the sidebar-row click handler
+(`onResumeSession` in `contrib/wiring.tsx`). Every OTHER way to jump to a
+session — the Ctrl+Tab session switcher, ^N session-slot hotkeys, the command
+palette (direct-id paste and the sessions list), artifacts' "open chat",
+native-notification click, cron/command-center "go to session", and the
+cold-start remembered-session restore — called `navigate(sessionRoute(id))`
+directly, skipping the guard entirely. The workspace pane
+(`ChatRoutesSurface`) renders whatever `$selectedStoredSessionId` points to
+independent of `$sessionTiles`, so navigating straight to a session id loaded
+it into the workspace tab even while a tile for that same session already sat
+in the tab strip.
+
+**Fix:** added `goToSession(navigate, storedSessionId, opts?)` in
+`store/session-states.ts` as the single canonical "jump to this session" entry
+point — it calls `focusOpenSession` first (fronts the existing tab, no-op)
+and only falls through to `navigate(sessionRoute(id), opts)` when the session
+has no open tab anywhere. Rewired every bypassing call site to go through it:
+- `app/session-switcher.tsx` (Ctrl+Tab pick)
+- `app/hooks/use-keybinds.ts` (^N slot hotkeys, renamed the local shadowing
+  helper to `gotoSlotSession` to avoid colliding with the imported name)
+- `app/command-palette/index.tsx` (direct session-id paste + sessions list;
+  added a `goSession` wrapper alongside the existing generic `go`)
+- `app/artifacts/index.tsx` (both "open chat" call sites)
+- `app/contrib/hooks/use-desktop-integrations.ts` (native-notification click +
+  cold-start remembered-session restore)
+- `app/contrib/wiring.tsx` (CommandCenterView + CronView "open session")
+
+Left untouched: the sidebar's own `onResumeSession` (already correctly
+guarded, with richer "open beside" tile semantics `goToSession` doesn't need
+to replicate) and the `navigate(sessionRoute(...))` calls inside
+`use-session-actions/index.ts` for session creation, branch creation, and
+compression-id rotation — those always target a brand-new id or the current
+selection, which by construction can never already have an open tile.
+
+**Verification:** added 4 regression tests to
+`store/session-states.test.ts` covering `goToSession` directly (fronts an
+open tile without navigating, fronts main without navigating, falls through
+to `navigate` for a session with no open tab, forwards `{replace: true}` on
+the fallback path). Full desktop suite: 256 test files / 2231 tests pass
+(was 2227 before the 4 new tests), `tsc --noEmit` clean, `eslint` clean on
+every touched file.
+
+**Files:** `apps/desktop/src/store/session-states.ts`,
+`apps/desktop/src/store/session-states.test.ts`,
+`apps/desktop/src/app/session-switcher.tsx`,
+`apps/desktop/src/app/hooks/use-keybinds.ts`,
+`apps/desktop/src/app/command-palette/index.tsx`,
+`apps/desktop/src/app/artifacts/index.tsx`,
+`apps/desktop/src/app/contrib/hooks/use-desktop-integrations.ts`,
+`apps/desktop/src/app/contrib/wiring.tsx`.
+
+**Merge note:** pure fork-local UI dedup fix, no upstream file identity
+concerns; trivial to re-apply on the next upstream merge if these files
+conflict.
