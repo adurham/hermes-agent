@@ -42,6 +42,88 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-28 (single-subagent status printed a new scrollback line every 30s instead of updating in place)
+
+**Symptom (reported live in the CLI, on the work MacBook):** a `delegate_task()`
+call with exactly ONE subagent showed a fresh scrollback line every ~30s for
+heartbeat / "still waiting on provider" ticks instead of a single row updating
+in place:
+
+```
+[subagent-0] Still waiting on provider — 30s elapsed ...
+[subagent-0] Still waiting on provider — 60s elapsed ...
+[subagent-0] Still waiting on provider — 90s elapsed ...
+```
+
+Looked exactly like a frozen/broken status line spamming duplicate text — it
+never disappeared or got replaced.
+
+**Root cause:** `SwarmBoard` (`tools/swarm_board.py`, fork-only, zero upstream
+merge surface — added 2026-05-04) is the live multi-row display that redraws
+one row per subagent in place every 250ms via a prompt_toolkit widget. Its
+`maybe_start()` gate only activated for `n_children >= 2` (batches). A
+single-child `delegate_task()` call always fell through to the `_NoopBoard`,
+so its heartbeat/wait-notice text went through `agent._emit_status()` ->
+`_vprint(force=True)` -> raw `print()` -> a brand-new scrollback line every
+tick, forever.
+
+**Fix (3 sites):**
+
+- `tools/swarm_board.py`: `SwarmBoard.maybe_start()` now activates for
+  `n_children >= 1` (was `>= 2`), still gated on a CLI host exposing the
+  required widget hooks (`_swarm_board_show`/`_swarm_board_hide`/
+  `_invalidate_app`) and the `HERMES_SWARM_BOARD=0` escape hatch.
+- `tools/delegate_tool.py`: the `n_tasks == 1` fast path now wraps
+  `_run_single_child` in the same `SwarmBoard.maybe_start()` context the
+  `n_tasks > 1` batch path already used — registers the one row, routes
+  child chatter into the row's note slot via `make_child_print_fn`, and
+  stashes/clears `parent_agent._swarm_board` around the call. Row completion
+  (`finish()` -> terminal status icon) was already correctly wired for
+  single-child via `_build_child_progress_callback`'s existing
+  `"subagent.complete"` handler (runs regardless of batch size) — no change
+  needed there.
+- `agent/chat_completion_helpers.py`: the ~30s heartbeat loop now checks
+  `agent._swarm_board` (set only when this agent IS a delegated child inside
+  an active board) and routes the "thinking +N chars" / "still waiting on
+  provider" text into `board.note(sid, text)` instead of `_emit_status()`, so
+  it updates the same row instead of printing a new line. `board.note()`
+  failures fall back to the original `_emit_status()` text (logged at debug)
+  rather than silently dropping the whole heartbeat tick.
+  `_emit_wait_notice()` (a different UI surface — the parent's own live
+  spinner text) is unconditional since it can't duplicate a board row.
+
+**Test fix:** `tests/tools/test_async_delegation.py::
+test_delegate_task_background_detaches_child_from_parent` patched
+`dt._run_single_child` inside a `patch.object(...)` block that exited
+(reverting the patch) before synchronizing with the background
+daemon-executor worker thread — a pre-existing race that was "lucky" before
+and became a consistent failure once SwarmBoard registration added latency
+to the worker's pre-call setup. Fixed with a `threading.Event` the mock sets
+on entry, asserted INSIDE the patch block. `tests/tools/test_swarm_board.py`:
+renamed/updated `test_single_child_returns_noop` ->
+`test_single_child_returns_real_board` to match the new gating.
+
+**Known limitation (documented inline, pre-existing, not introduced by this
+change):** `parent_agent._swarm_board` is a single-slot attribute (same
+pattern the `n_tasks > 1` path already used) — not safe against two
+concurrent `delegate_task()` calls on the same parent (e.g. overlapping
+background dispatches). Worst case is a missed/misdirected row update, not a
+crash; the CLI widget itself (`cli_ref._swarm_board`) is also single-slot so
+only one board renders at a time regardless.
+
+**Files touched:** `tools/swarm_board.py`, `tools/delegate_tool.py`,
+`agent/chat_completion_helpers.py`, `tests/tools/test_async_delegation.py`,
+`tests/tools/test_swarm_board.py`.
+
+**Verification:** `scripts/run_tests_parallel.py` across `tests/agent/` +
+`tests/tools/` filtered to delegation/swarm/async/heartbeat/stream_phase/ttfb
+— all pass (repeated 3x for the fixed race test, no flakes). Full
+`tests/agent/` + `tests/tools/` sweep shows the same 37 pre-existing failures
+(macOS tmp-path/AF_UNIX length, unrelated to this change) on this branch and
+on unmodified `main` — confirmed via a `git stash` control run.
+
+Commit `d4fd4bfb2`, pushed to `origin/main`.
+
 ### Fork-only fix — 2026-07-26 (pre-existing test-suite failures: 6 real production bugs + ~50 stale-mock/assertion fixes)
 
 **Symptom:** ~54 pre-existing pytest failures across `tests/run_agent/`,
