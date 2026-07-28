@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
 import { $layoutEditMode } from '../../edit-mode'
-import type { LayoutNode, SplitNode } from '../model'
+import type { GroupNode, LayoutNode, SplitNode } from '../model'
 import { allPaneIds } from '../model'
 import {
   $collapsedTreeSides,
@@ -27,9 +27,9 @@ import {
 } from '../store'
 
 import {
-  computedPx,
   cssMax,
-  edgeFixedZone,
+  edgeFixedZones,
+  edgeZonesClamp,
   fixedTrackSize,
   MIN_PANE_PX,
   paneChrome,
@@ -126,31 +126,68 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   // aggregates its panes' clamps (largest-tenant semantics, mirroring the
   // max() track basis) — the active tab's caps must never resize the zone.
   const sizingFor = (child: LayoutNode, track: string | null): PaneSizing | null => {
-    if (child.type !== 'group' || child.panes.length === 0) {
+    if (child.type === 'group') {
+      if (child.panes.length === 0) {
+        return null
+      }
+
+      const shownIds = shownPaneIds(child, trackCtx)
+
+      if (track === null && shownIds.length !== 1) {
+        return null
+      }
+
+      if (shownIds.length <= 1) {
+        return (paneFor(shownIds[0])?.data as PaneSizing | undefined) ?? null
+      }
+
+      // Fixed STACK: floors take the largest declared min; caps stay unbounded
+      // unless EVERY pane declares one (a single uncapped tenant uncaps the
+      // zone). Same largest-tenant basis as the track size — never per-tab.
+      const all = shownIds.map(id => (paneFor(id)?.data ?? {}) as PaneSizing)
+
+      const cap = (pick: (s: PaneSizing) => string | undefined) => (all.every(pick) ? cssMax(all.map(pick)) : undefined)
+
+      return {
+        minWidth: cssMax(all.map(s => s.minWidth)),
+        maxWidth: cap(s => s.maxWidth),
+        minHeight: cssMax(all.map(s => s.minHeight)),
+        maxHeight: cap(s => s.maxHeight)
+      }
+    }
+
+    // A nested SPLIT (always cross-orientation to `axis` — normalize()
+    // flattens same-orientation runs into this one) that resolves fixed
+    // along `axis` is still "a fixed track" from THIS split's point of view
+    // — e.g. a bottom band dropped into row([terminal+logs, pet-zone]) is
+    // still a fixed-height band along the outer column axis. Recurse into
+    // its own FIXED children only (a flex/main-bearing one just stretches,
+    // same semantics `fixedTrackSize`'s cross-axis branch already uses) and
+    // combine their clamps the same largest-floor/tightest-common-cap way a
+    // tab stack combines its panes'. Without this the band's wrapper carries
+    // no CSS floor at all once it stops being a bare group — the drag sash
+    // still clamps live (see edgeZonesClamp), but nothing stops the band
+    // from being squeezed under a zone's declared minimum by any OTHER path
+    // (window resize, sibling growth, etc).
+    if (track === null) {
       return null
     }
 
-    const shownIds = shownPaneIds(child, trackCtx)
+    const visible = child.children.filter(c => !subtreeGone(c, trackCtx))
+    const subs = visible
+      .map(c => sizingFor(c, fixedTrackSize(c, axis, trackCtx)))
+      .filter((s): s is PaneSizing => s !== null)
 
-    if (track === null && shownIds.length !== 1) {
+    if (subs.length === 0) {
       return null
     }
 
-    if (shownIds.length <= 1) {
-      return (paneFor(shownIds[0])?.data as PaneSizing | undefined) ?? null
-    }
-
-    // Fixed STACK: floors take the largest declared min; caps stay unbounded
-    // unless EVERY pane declares one (a single uncapped tenant uncaps the
-    // zone). Same largest-tenant basis as the track size — never per-tab.
-    const all = shownIds.map(id => (paneFor(id)?.data ?? {}) as PaneSizing)
-
-    const cap = (pick: (s: PaneSizing) => string | undefined) => (all.every(pick) ? cssMax(all.map(pick)) : undefined)
+    const cap = (pick: (s: PaneSizing) => string | undefined) => (subs.every(pick) ? cssMax(subs.map(pick)) : undefined)
 
     return {
-      minWidth: cssMax(all.map(s => s.minWidth)),
+      minWidth: cssMax(subs.map(s => s.minWidth)),
       maxWidth: cap(s => s.maxWidth),
-      minHeight: cssMax(all.map(s => s.minHeight)),
+      minHeight: cssMax(subs.map(s => s.minHeight)),
       maxHeight: cap(s => s.maxHeight)
     }
   }
@@ -191,22 +228,29 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       const sideFor = (child: LayoutNode, wrapper: HTMLElement, edge: 'start' | 'end') => {
         const fixed = fixedTrackSize(child, axis, trackCtx) !== null
-        const zone = fixed ? edgeFixedZone(child, edge, axis, trackCtx) : null
-        const zoneEl = zone ? container.querySelector<HTMLElement>(`[data-tree-group="${zone.id}"]`) : null
-        // Clamps live on the zone's split-child WRAPPER (where we render them).
-        const el = zoneEl?.parentElement ?? wrapper
-        const cs = window.getComputedStyle(el)
+        const zones = fixed ? edgeFixedZones(child, edge, axis, trackCtx) : []
+        const zoneEl = (zone: GroupNode) => container.querySelector<HTMLElement>(`[data-tree-group="${zone.id}"]`)
+        // Clamps live on each zone's split-child WRAPPER (where we render
+        // them); a cross-axis run can hand back several independently-fixed
+        // zones sharing this edge (e.g. terminal+logs next to a dropped
+        // pet-zone pane in the same bottom band) — every one of them must be
+        // measured, written, and clamped together or the ones left out keep
+        // a stale override and silently reclamp the whole band.
+        const wrapperOf = (zone: GroupNode) => zoneEl(zone)?.parentElement ?? wrapper
+        const firstEl = zones[0] ? (zoneEl(zones[0]) ?? wrapper) : wrapper
+        const clamp = edgeZonesClamp(zones, axis, trackCtx, zone => wrapperOf(zone))
 
         return {
-          // EVERY shown pane of the zone: the zone's track is the max() of its
-          // panes' sizes, so the sash writes the same px to all of them —
-          // writing only the active pane would leave the zone pinned at a
-          // larger sibling's width.
-          paneIds: zone ? shownPaneIds(zone, trackCtx) : [],
-          fixed: Boolean(zone),
-          size: sizeOf(zoneEl ?? wrapper),
-          min: Math.max(MIN_PANE_PX, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
-          max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY)
+          // EVERY shown pane of EVERY fixed zone on this edge: each zone's
+          // track is the max() of its own panes' sizes, so the sash writes
+          // the same px to all of them — writing only one zone (or only the
+          // active pane within one) would leave the others pinned at their
+          // old size, which is exactly the "can't resize the bar" bug.
+          paneIds: zones.flatMap(zone => shownPaneIds(zone, trackCtx)),
+          fixed: zones.length > 0,
+          size: sizeOf(firstEl),
+          min: Math.max(MIN_PANE_PX, clamp.min),
+          max: clamp.max
         }
       }
 
@@ -308,10 +352,12 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         [node.children[aIndex], 'end'],
         [node.children[bIndex], 'start']
       ] as const) {
-        const zone = edgeFixedZone(child, edge, axis, trackCtx)
+        const zones = edgeFixedZones(child, edge, axis, trackCtx)
 
-        for (const paneId of zone ? shownPaneIds(zone, trackCtx) : []) {
-          setOverride(paneId, undefined)
+        for (const zone of zones) {
+          for (const paneId of shownPaneIds(zone, trackCtx)) {
+            setOverride(paneId, undefined)
+          }
         }
       }
 
