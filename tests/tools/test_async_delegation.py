@@ -1133,8 +1133,10 @@ def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
     fake_child._subagent_id = "s1"
 
     gate = threading.Event()
+    entered = threading.Event()
 
     def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
+        entered.set()
         gate.wait(timeout=60)
         return {"task_index": 0, "status": "completed", "summary": "ok"}
 
@@ -1152,12 +1154,21 @@ def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
          patch.object(dt, "_run_single_child", side_effect=slow_child), \
          patch.object(dt, "_resolve_delegation_credentials", return_value=creds):
         out = dt.delegate_task(goal="bg task", background=True, parent_agent=parent)
+        # Wait for the detached worker thread to actually reach the patched
+        # _run_single_child WHILE the patches are still active. Without
+        # this, the `with patch.object(...)` block exits (reverting
+        # _run_single_child to the real function) before the daemon worker
+        # thread gets scheduled — a genuine race, not specific to any one
+        # code path, that widens whenever the worker's pre-call setup does
+        # more work (e.g. SwarmBoard registration).
+        assert entered.wait(timeout=10), "worker thread never reached _run_single_child"
 
     import json
     assert json.loads(out)["status"] == "dispatched"
     # Child detached immediately at dispatch, while it is still running.
     assert fake_child not in parent._active_children
     gate.set()
+
     assert _drain_one() is not None
 
 

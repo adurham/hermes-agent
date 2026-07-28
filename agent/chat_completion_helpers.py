@@ -4396,8 +4396,45 @@ def interruptible_streaming_api_call(
                     # genuine signal regardless of display mode.
                     _thinking_delta_chars = thinking_chars["n"] - _last_hb_thinking_chars
                     _last_hb_thinking_chars = thinking_chars["n"]
+                    # Swarm-board awareness: when this agent IS a delegated
+                    # child running inside an active SwarmBoard (single- or
+                    # multi-child batches — see tools/swarm_board.py), the
+                    # board already renders one row per subagent that's
+                    # redrawn in place every 250ms. Emitting this heartbeat
+                    # via _emit_status prints a NEW scrollback line every 30s
+                    # instead — for a long single-child delegation that looks
+                    # exactly like a frozen/broken status line spamming
+                    # duplicate text (it never disappears or gets replaced).
+                    # Route into the board row's note slot instead so the
+                    # SAME row updates in place; the row's own elapsed-time
+                    # column already covers what _emit_status's suffix said.
+                    _board = getattr(agent, "_swarm_board", None)
+                    _board_active = _board is not None and getattr(_board, "is_active", False) is True
+                    _board_sid = (
+                        getattr(agent, "_subagent_id", None) if _board_active else None
+                    )
                     if thinking_active["yes"] and _thinking_delta_chars > 0:
-                        if agent.reasoning_callback is None:
+                        _board_note_ok = False
+                        if _board_active and _board_sid:
+                            try:
+                                _board.note(
+                                    _board_sid,
+                                    f"🧠 thinking +{_thinking_delta_chars:,} chars",
+                                )
+                                _board_note_ok = True
+                            except Exception:
+                                # Board write failed (e.g. malformed board
+                                # object) — fall through to the normal
+                                # scrollback line below rather than silently
+                                # dropping the whole heartbeat tick, which
+                                # would look exactly like the frozen-status
+                                # bug this change fixes.
+                                logger.debug(
+                                    "swarm board note() failed on thinking "
+                                    "heartbeat; falling back to _emit_status",
+                                    exc_info=True,
+                                )
+                        if not _board_note_ok and agent.reasoning_callback is None:
                             agent._emit_status(
                                 f"🧠 Thinking — {thinking_chars['n']:,} chars "
                                 f"(+{_thinking_delta_chars:,} in last "
@@ -4409,16 +4446,34 @@ def interruptible_streaming_api_call(
                         # Desktop) via _emit_wait_notice, in addition to the
                         # scrollback line above, so users on drivers that only
                         # render the live spinner (not scrollback status) still
-                        # see the wait explained.
+                        # see the wait explained. Always fires regardless of
+                        # board state — it targets a different in-place
+                        # surface (the parent's own spinner text), not
+                        # scrollback, so it can't duplicate the board row.
                         agent._emit_wait_notice(
                             f"⏳ waiting on {_model_name} — {_user_elapsed}s "
                             f"with no output yet (provider may be slow or "
                             f"overloaded, or the model is thinking){_diag}"
                         )
-                        agent._emit_status(
-                            f"⏳ Still waiting on provider — {_user_elapsed}s elapsed "
-                            f"(model: {_model_name}{_model_label_extra}, {_phase}){_diag}"
-                        )
+                        _board_note_ok = False
+                        if _board_active and _board_sid:
+                            try:
+                                _board.note(
+                                    _board_sid,
+                                    f"⏳ waiting on provider — {_user_elapsed}s ({_phase})",
+                                )
+                                _board_note_ok = True
+                            except Exception:
+                                logger.debug(
+                                    "swarm board note() failed on wait "
+                                    "heartbeat; falling back to _emit_status",
+                                    exc_info=True,
+                                )
+                        if not _board_note_ok:
+                            agent._emit_status(
+                                f"⏳ Still waiting on provider — {_user_elapsed}s elapsed "
+                                f"(model: {_model_name}{_model_label_extra}, {_phase}){_diag}"
+                            )
                 except Exception:
                     pass
 

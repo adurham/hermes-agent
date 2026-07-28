@@ -244,7 +244,12 @@ class SwarmBoard:
         """Activate the board only when there's a CLI host to render it.
 
         Activates when:
-          * 2+ children (single-child runs render fine via existing chatter)
+          * 1+ children — single-child runs used to fall back to raw
+            scrollback chatter (each heartbeat/"still waiting on provider"
+            tick printed a brand-new line instead of updating in place,
+            making a long single delegation look like it was spamming or
+            frozen). A lone child now gets the same one-row-updated-in-place
+            treatment as a batch.
           * the parent agent carries a ``_cli_ref`` that exposes the
             ``_swarm_board_show`` / ``_swarm_board_hide`` /
             ``_invalidate_app`` hooks
@@ -254,7 +259,7 @@ class SwarmBoard:
         """
         if os.environ.get("HERMES_SWARM_BOARD", "").strip() == "0":
             return _NoopBoard()
-        if n_children < 2:
+        if n_children < 1:
             return _NoopBoard()
 
         cli_ref = getattr(parent_agent, "_cli_ref", None)

@@ -3201,9 +3201,44 @@ def delegate_task(
         waits on each other, and returns together.
         """
         if n_tasks == 1:
-            # Single task -- run directly (no thread pool overhead)
+            # Single task -- run directly (no thread pool overhead), but
+            # still wire it into a SwarmBoard so long single delegations
+            # get the same one-row-updated-in-place treatment as a batch
+            # instead of every 30s heartbeat/"still waiting on provider"
+            # tick printing a fresh scrollback line (looked like a frozen
+            # status line spamming duplicate text).
+            from tools.swarm_board import SwarmBoard, make_child_print_fn
+
             _i, _t, child = children[0]
-            result = _run_single_child(0, _t["goal"], child, parent_agent)
+            sid = getattr(child, "_subagent_id", None) or "subagent-0"
+            # NOTE: parent_agent._swarm_board is a single-slot attribute (the
+            # same pattern the n_tasks>1 branch below already uses) — it is
+            # NOT safe against two concurrent delegate_task() calls on the
+            # SAME parent_agent (e.g. two overlapping background/detached
+            # dispatches). A second call's board would overwrite this one's
+            # slot mid-flight, and the finally-clause reset below could clear
+            # a sibling call's still-active board. Worst case is a missed/
+            # misdirected row update (heartbeat falls back to _emit_status),
+            # not a crash — the CLI widget itself (cli_ref._swarm_board) is
+            # also single-slot, so only one board can render at a time
+            # regardless. Pre-existing limitation, not introduced here.
+            with SwarmBoard.maybe_start(parent_agent, n_tasks) as _swarm_board:
+                parent_print_fn = getattr(parent_agent, "_print_fn", None) or print
+                _swarm_board.register(
+                    sid,
+                    model=getattr(child, "model", "") or "",
+                    goal=(_t.get("goal") or "")[:60],
+                    status="running",
+                )
+                child._print_fn = make_child_print_fn(
+                    _swarm_board, sid, fallback=parent_print_fn
+                )
+                child._swarm_board = _swarm_board
+                parent_agent._swarm_board = _swarm_board
+                try:
+                    result = _run_single_child(0, _t["goal"], child, parent_agent)
+                finally:
+                    parent_agent._swarm_board = None
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines.
