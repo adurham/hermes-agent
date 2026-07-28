@@ -112,6 +112,38 @@ class TestStripOrphanToolCallTail:
         )
         assert _strip_orphan_toolcall_tail(content) == code
 
+    def test_strips_tail_with_trailing_tool_calls_wrapper_closer(self):
+        """The residual leak variant caught live 2026-07-27 (exo debug
+        capture, hard_eval code_dijkstra): a sentinel-less ``</tool_calls>``
+        WRAPPER closer trails the final ``</invoke>``. This net runs BEFORE
+        strip_think_blocks removes stray wrapper closers, so the regex must
+        match the PRE-strip string — the old ``</invoke>\\s*$`` anchor never
+        did, and the tail painted into the visible answer."""
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        code = "    return -1"
+        content = code + "\n</parameter>\n</invoke>\n</tool_calls>"
+        assert _strip_orphan_toolcall_tail(content) == code
+
+    def test_strips_tail_with_wrapper_closer_dialect_variants(self):
+        """Wrapper closers vary with the model's degenerate dialect just like
+        openers do: singular/``_called``/V3.2 ``function_calls`` forms."""
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        code = "x = 1"
+        for closer in ("</tool_call>", "</tool_called>", "</function_calls>"):
+            content = code + "\n</parameter>\n</invoke>\n" + closer + "\n"
+            assert _strip_orphan_toolcall_tail(content) == code, closer
+
+    def test_untouched_on_lone_wrapper_closer(self):
+        """A bare ``</tool_calls>`` WITHOUT the preceding ``</parameter>``…
+        ``</invoke>`` sequence is not the tail signature — that lone closer is
+        strip_think_blocks' job, not this net's."""
+        from agent.conversation_loop import _strip_orphan_toolcall_tail
+
+        content = "Here is the answer: 42.\n</tool_calls>"
+        assert _strip_orphan_toolcall_tail(content) == content
+
     def test_untouched_when_invoke_opener_present(self):
         """A full <invoke> block is the recovery function's job — never strip."""
         from agent.conversation_loop import _strip_orphan_toolcall_tail

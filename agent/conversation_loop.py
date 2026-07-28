@@ -236,7 +236,18 @@ def _recover_bare_tool_calls_from_content(content: Optional[str]) -> list[Any]:
 _ORPHAN_TOOLCALL_TAIL_RE = re.compile(
     r"\s*</parameter>\s*"
     r"(?:<parameter\s+name=\"[^\"]+\"[^>]*>.*?</parameter>\s*)*"
-    r"</invoke>\s*$",
+    r"</invoke>\s*"
+    # Optional trailing sentinel-less WRAPPER closer(s): the model closes the
+    # whole block with `</tool_calls>` (or a dialect variant) after the final
+    # `</invoke>`. Caught live 2026-07-27 (exo debug capture, hard_eval
+    # code_dijkstra): the leaked content ended
+    # `'</parameter>\n</invoke>\n</tool_calls>'` — this net runs BEFORE
+    # strip_think_blocks' stray-closer pass removes the `</tool_calls>`, so
+    # the `$` anchor sat past `</invoke>` and the tail was never stripped
+    # (the backend's twin detector missed for the same reason; fixed there
+    # in exo 6b80624a). The wrapper set mirrors the recovery regex's dialect
+    # variants.
+    r"(?:</(?:tool_calls?|tool_called|function_calls?)>\s*)*$",
     re.DOTALL,
 )
 
