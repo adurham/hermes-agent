@@ -42,6 +42,51 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-28 (desktop: Pet Zone dragged into the bottom dock made the whole bottom band unresizable)
+
+**Reported:** user enabled Pet Zone and dragged it into the bottom dock next
+to the Terminal/Logs tab group, landing side-by-side rather than stacked as
+a third tab. Once there, dragging the sash between the main workspace and
+the bottom band no longer resized it.
+
+**Root cause:** the pane-shell layout tree resizer treats a resize boundary
+as owned by "the FIXED zone(s) that touch that edge." Before this fix,
+`edgeFixedZone` (`track-model.ts`) walked a cross-axis run (zones laid out
+side-by-side, e.g. `row([terminal+logs, pet-zone])` sized along the
+`column` axis) and returned only the FIRST fixed zone it found, using a
+`for...return`. `tree-split.tsx`'s drag handler (`sideFor`) then wrote the
+live height override to only that one zone's panes on every pointermove.
+The sibling zone (whichever one wasn't first) kept its old, un-overridden
+height — and because `fixedTrackSize`'s cross-axis branch sizes the whole
+row to `cssMax()` of its children, that stale sibling silently reclamped
+the entire band back to its old size on every render, making the seam feel
+undraggable. The double-click "reset to default" handler had the identical
+single-zone bug. A second, quieter bug: `sizingFor` (which the ANCESTOR
+column split reads to apply a CSS `min-height`/`max-height` floor to the
+band) only recognized a direct `group` child — once the band became a
+`split` of two zones it stopped contributing any floor/ceiling to the
+ancestor at all, independent of the drag path.
+
+**Fix:** `apps/desktop/src/components/pane-shell/tree/renderer/track-model.ts`
+— replaced `edgeFixedZone` (single `GroupNode | null`) with
+`edgeFixedZones` (returns every fixed zone touching the edge across a
+cross-axis run, not just the first) and added `edgeZonesClamp` (combines
+several zones' declared min/max into one tightest-floor/tightest-ceiling
+drag clamp). `apps/desktop/src/components/pane-shell/tree/renderer/tree-split.tsx`
+— `sideFor` (live drag) and `resetBoundary` (double-click reset) both now
+write/clear overrides across every zone `edgeFixedZones` returns instead of
+assuming one; `sizingFor` now also recurses into a nested `split` child (not
+just a bare `group`), combining its fixed sub-zones' clamps the same way, so
+the ancestor split keeps enforcing a real CSS floor/ceiling on a band that
+became a two-zone row instead of a single group.
+
+**Verification:** `npx tsc -p apps/desktop/tsconfig.json --noEmit` clean
+(zero errors, whole desktop package). `npx vitest run
+src/components/pane-shell` — 5 files, 15 tests, all passing (no existing
+behavior regressed, including the single-fixed-zone/no-op case which is now
+just `edgeFixedZones` returning a 1-element array). Files touched:
+`track-model.ts`, `tree-split.tsx`. Commit `4b474017b`.
+
 ### Fork-only fix — 2026-07-28 (5th recurrence of the spinner-timer corruption: root cause was on the OTHER side of the pty — xterm.js's own Unicode-11 table disagrees with the 2026-07-24 fix)
 
 **Reported (again):** a live `process(action="wait", timeout=300)` spinner
