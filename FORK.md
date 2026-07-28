@@ -42,6 +42,42 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-28 (desktop: pet stationary jump pose looped in place after the first hop instead of bobbing)
+
+**Reported:** after the previous Pet Zone resize fix, user noticed the
+mascot in the zone "kinda just repeating the same jumping animation but
+not actually changing height" — the leg/jump sprite frames kept cycling
+but the pet stopped physically hopping after the first bob.
+
+**Root cause:** `PetSprite`'s stationary jump bob (`.pet-jump-bob` in
+styles.css — idle fidget / click-to-pet / turn-end celebrate; NOT the roam
+loop's real ledge-to-ledge hop, which is physically impossible while
+docked in Pet Zone mode since `snapshotContainerLedges()` always returns
+exactly one ledge, so `chooseMove()` in `roam-behavior.ts` can never
+select `'hop'` there) fired exactly ONE CSS animation per `jump`-state
+transition, capped at `jumpDurationMs()`'s 900ms ceiling. But a
+turn-completion celebrate (`flashPetActivity({ celebrate: true, ... },
+2200)` in `gateway-event.ts`) deliberately HOLDS the `jump` pose for
+2200ms — ~2x the sprite's own frame-loop `loopMs` so the leg animation
+gets to loop twice before settling, per that call site's own comment. The
+single bob landed and went flat for the remaining ~1.3s while the canvas
+kept cycling jump frames underneath it, which reads exactly as "stuck
+repeating the animation but not changing height."
+
+**Fix:** `apps/desktop/src/components/pet/pet-sprite.tsx` — the bob effect
+now re-triggers itself on an interval paced to `jumpDurationMs(loopMs)`
+for as long as `$petState` (via the same `isJumping()` check the old code
+used, still excluding the roam loop's own airborne case) stays `jump`,
+instead of firing once per transition. `$petJumpBeat` (the repeat-request
+nonce) now restarts the whole cadence from a fresh hop instead of just
+firing one bob, so a second celebrate mid-hold doesn't leave a stale
+interval ticking out of phase. Cleanup clears the interval alongside the
+existing state/beat unsubscribes.
+
+**Verification:** `npx tsc -p apps/desktop/tsconfig.json --noEmit` clean.
+`npx vitest run src/components/pet src/store/pet.test.ts` — 4 files, 41
+tests, all passing. File touched: `pet-sprite.tsx`. Commit `0b89c317e`.
+
 ### Fork-only fix — 2026-07-28 (desktop: Pet Zone dragged into the bottom dock made the whole bottom band unresizable)
 
 **Reported:** user enabled Pet Zone and dragged it into the bottom dock next
