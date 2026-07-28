@@ -107,3 +107,51 @@ class TestKawaiiSpinnerUsesSharedHelper:
 
         line = "  \u2699\ufe0f wait proc_abc123 280s (4m17s)"
         assert KawaiiSpinner._display_width(line) > get_cwidth(line)
+
+
+class TestNoRegisteredEmojiUsesVS16:
+    """Root-cause regression guard (2026-07-28): display_cwidth() correctly
+    widens VS-16 sequences to 2 cells to match prompt_toolkit-side terminals
+    (iTerm2, Kitty, Terminal.app, etc.) -- but Hermes Desktop's OWN embedded
+    terminal pane (apps/desktop/.../use-agent-terminal.ts) renders via
+    xterm.js + @xterm/addon-unicode11, whose shipped Unicode-11 width table
+    still reports these exact sequences ("\u2699\ufe0f" gear, "\u270d\ufe0f"
+    writing hand, "\u2709\ufe0f" envelope, "\u26a0\ufe0f" warning, etc.) as
+    width 1, not 2 (confirmed by extracting and running xterm.js's actual
+    shipped algorithm standalone). That leaves the two sides of the pty
+    disagreeing about cell width for the same bytes whenever a Hermes
+    session (cli.py, prompt_toolkit) runs inside Hermes Desktop's own
+    terminal tab -- Python reserves height assuming 2 cells, xterm.js only
+    advances the cursor 1 cell, and the wrapped continuation overlaps the
+    row below. This is the same failure mode as the original bug, just
+    with the mismatch moved to the other side of the boundary.
+
+    display_cwidth() can't fix this (it only affects the Python side), and
+    patching xterm.js's Unicode table only fixes Hermes's own embedded
+    terminal while leaving every other xterm.js-based terminal (VS Code's
+    integrated terminal, Hyper) still disagreeing, plus it would risk
+    affecting every OTHER program's output rendered in that same pane.
+    The durable fix is to never depend on VS-16 width agreement for
+    Hermes's own tool emoji in the first place: registered tool emoji use
+    bare base codepoints (no VS-16), which every measured width table
+    (get_cwidth, display_cwidth, and xterm.js's Unicode-11 table) agrees
+    on unambiguously. This test fails if a future change reintroduces a
+    VS-16 tool emoji into the registry.
+    """
+
+    def test_no_registered_tool_emoji_contains_variation_selector_16(self):
+        from tools.registry import registry
+
+        offenders = {
+            name: entry.emoji
+            for name, entry in registry._tools.items()
+            if getattr(entry, "emoji", None) and "\ufe0f" in entry.emoji
+        }
+        assert not offenders, (
+            f"Registered tool emoji must not contain VARIATION SELECTOR-16 "
+            f"(U+FE0F) -- xterm.js's own Unicode-11 width table disagrees "
+            f"with prompt_toolkit's on these sequences, causing spinner-line "
+            f"wrap/overlap corruption when Hermes runs inside its own "
+            f"embedded terminal pane. Use the bare base codepoint instead. "
+            f"Offenders: {offenders!r}"
+        )

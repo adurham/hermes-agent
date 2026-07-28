@@ -1979,5 +1979,5 @@ registry.register(
         name=args.get("name", ""), task_id=kw.get("task_id")
     ),
     check_fn=check_skills_requirements,
-    emoji="⚠️",
+    emoji="⚠",
 )

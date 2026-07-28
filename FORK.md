@@ -42,6 +42,100 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-28 (5th recurrence of the spinner-timer corruption: root cause was on the OTHER side of the pty — xterm.js's own Unicode-11 table disagrees with the 2026-07-24 fix)
+
+**Reported (again):** a live `process(action="wait", timeout=300)` spinner
+line inside Hermes Desktop's own embedded terminal tab (title "polaris")
+showed `wait proc_c043482f975c 300s (4m361s)` — a seconds remainder >= 60,
+mathematically impossible from `elapsed // 60` / `elapsed % 60` arithmetic
+(verified: current code can only ever produce `_s` in `[0, 59]`). Same bug
+class as the 2026-07-06, 2026-07-19, and 2026-07-24 entries below — this is
+the 4th documented occurrence, now root-caused for real.
+
+**Investigation:** confirmed the running deployment already has the
+2026-07-24 `display_cwidth()` fix (byte-identical file content; the
+apparent "missing commit" from a `git merge-base --is-ancestor` check was a
+false negative from `~/.hermes/hermes-agent`'s shallow clone, not a missing
+fix — the deployed file was inspected directly and matches). Confirmed the
+formatting arithmetic cannot overflow. That left one place left to check:
+whether the terminal actually *displaying* these bytes agrees with
+`display_cwidth()`'s glyph-width assumption.
+
+**Root cause, this time on the other side of the boundary:** Hermes
+Desktop's own embedded terminal pane (`apps/desktop/src/app/right-sidebar/
+terminal/use-agent-terminal.ts`) renders via `xterm.js` +
+`@xterm/addon-unicode11`, activated with `term.unicode.activeVersion =
+'11'`. Extracted xterm.js's actual shipped `UnicodeV11.wcwidth` /
+`getStringCellWidth` algorithm (verbatim from the npm package, not
+reimplemented) and ran it standalone in Node against Hermes's own
+registered tool emoji: xterm.js's Unicode-11 table reports width **1**
+(not 2) for `⚙️` (GEAR+VS-16, the `process` tool's emoji used in the
+screenshot's `wait proc_...` spinner line), and the same for `✍️`, `✉️`,
+`⚠️`, `⌨️`, `◀️`, `🖼️`, `👁️`, `🖥️`, `🗣️`, `❤️` — the exact glyph shape the
+2026-07-24 fix corrected Python's side to treat as 2 cells (matching
+iTerm2/Kitty/Terminal.app/Windows Terminal). So after that fix, Python
+*reserves* height assuming these sequences are 2 cells wide, but Hermes's
+own xterm.js terminal pane only *advances the cursor* 1 cell for the same
+bytes — landing the reserved wrap height exactly 1 row short and producing
+the same "wrapped continuation overlaps the row below" corruption as
+before, just with the mismatch moved to the other side of the pty. This
+also explains why the 2026-07-19 forensic logging and earlier reports
+never pinned it down cleanly: the corruption only manifests when a Hermes
+CLI/TUI session runs *inside Hermes Desktop's own terminal tab*, not in an
+external terminal emulator that (unlike xterm.js's Unicode-11 table) treats
+VS-16 sequences as 2 cells consistently with the Python side.
+
+**Why not patch xterm.js's Unicode table instead:** considered and
+rejected (confirmed via a second-opinion review before committing). Two
+reasons: (1) it would only fix Hermes's own embedded pane — cli.py also
+runs in tmux, VS Code's integrated terminal (also xterm.js!), Hyper,
+Windows Terminal, ssh sessions, etc., none of which this touches, so the
+next differently-consensus terminal would just be fix #6; (2) overriding
+`term.unicode.activeVersion`'s width table for the *whole pane* risks
+misrendering every other program's output rendered in that same terminal,
+not just Hermes's own spinner line — new mismatches, not fewer.
+
+**Fix:** stop depending on VS-16 width consensus for Hermes's own tool
+emoji at all — strip the trailing `\ufe0f` from every registered tool
+emoji that had one, keeping the bare base codepoint. Every measured width
+table (`get_cwidth`, `display_cwidth`, and xterm.js's own Unicode-11
+table) already agrees unambiguously on the *bare* codepoint's width, so
+there's no longer a boundary for the two sides of the pty to disagree
+across. Changed 16 registrations across 11 files:
+`tools/process_registry.py` (`process`), `tools/browser_tool.py`
+(`browser_type`/`browser_press`/`browser_back`/`browser_get_images`/
+`browser_vision`/`browser_console`, 6 entries), `tools/close_terminal_tool.py`
+(`close_terminal`), `tools/read_terminal_tool.py` (`read_terminal`),
+`tools/file_tools.py` (`write_file`), `tools/feishu_drive_tool.py` (2
+comment-reply entries), `tools/skills_tool.py` (skills warning),
+`tools/vision_tools.py` (`vision_analyze`), `tools/yuanbao_tools.py`
+(`yb_send_dm`), `plugins/spotify/__init__.py` (`spotify_library`, found via
+the new regression test below — missed by the initial `emoji=` grep since
+plugin tool registration uses a tuple, not a keyword arg), and
+`plugins/google_meet/__init__.py` (`meet_say`, same tuple-registration
+pattern). Left `gateway/run.py` and `gateway/platforms/base.py`'s
+`get_tool_emoji(..., default="⚙️")` call sites untouched — those are the
+messaging-platform (Discord/Slack/Telegram/etc.) tool-progress renderer,
+which has its own independent formatting path and isn't implicated in
+cli.py's prompt_toolkit wrap-height math.
+
+**Verification:** added
+`TestNoRegisteredEmojiUsesVS16.test_no_registered_tool_emoji_contains_variation_selector_16`
+to `tests/agent/test_display_cwidth_vs16.py` — scans the live tool
+registry (`tools.registry.registry._tools`) and fails if any future change
+reintroduces a VS-16 tool emoji (this test is what caught the
+`spotify_library` and `meet_say` misses on the first pass, since those
+live in plugin tuples rather than the `emoji=` keyword grep pattern used
+for the initial sweep). Full `tests/agent/test_display_cwidth_vs16.py` +
+`test_display_emoji.py` + `test_display.py` +
+`test_kawaii_spinner_display_width.py` + `tests/cli/test_cli_status_bar.py`
++ `tests/tools/test_spotify_client.py` + `tests/plugins/
+test_google_meet_plugin.py` + `tests/hermes_cli/test_spotify_auth.py`: 219
+passed, 0 failed. Also independently re-ran the extracted xterm.js
+Unicode-11 algorithm against every changed emoji post-fix and confirmed
+all now measure width=1 on both `display_cwidth()` and xterm.js's table —
+zero disagreement remains.
+
 ### Fork-only fix — 2026-07-28 (single-subagent status printed a new scrollback line every 30s instead of updating in place)
 
 **Symptom (reported live in the CLI, on the work MacBook):** a `delegate_task()`
