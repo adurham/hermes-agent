@@ -307,7 +307,14 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "the task, use them instead of telling the user what you would do.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "without acting are not acceptable.\n"
+    "Tool use supports your answer — it never replaces it. When the user asks for "
+    "code, a fix, or other content to be returned in your reply (e.g. 'return the "
+    "corrected class in a ```python``` block'), your final response must contain that "
+    "content inline, in exactly the requested format. Writing it to a file or "
+    "summarizing the changes you made does NOT fulfill such a request — and for a "
+    "small, self-contained answer the user asked to see, prefer answering inline "
+    "over creating files at all."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
