@@ -344,20 +344,24 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     }
   }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows])
 
-  // Stationary jump bob: play a CSS vertical hop whenever the pose enters
-  // `jump` for a reason OTHER than the roam loop's own ledge-to-ledge hop
-  // (idle fidget, click-to-pet, turn-end celebrate — see `.pet-jump-bob` in
-  // styles.css). The roam loop already moves the container's real top/left
-  // during an actual hop (`$petRoamAirborne`), so skip this there or the two
-  // vertical motions would fight each other.
+  // Stationary jump bob: play a CSS vertical hop for as long as the pose
+  // stays `jump` for a reason OTHER than the roam loop's own ledge-to-ledge
+  // hop (idle fidget, click-to-pet, turn-end celebrate — see `.pet-jump-bob`
+  // in styles.css). The roam loop already moves the container's real
+  // top/left during an actual hop (`$petRoamAirborne`), so skip this there
+  // or the two vertical motions would fight each other.
   //
-  // Two triggers, not one: `$petState` fires on the FIRST transition into
-  // `jump`, but nanostores' `computed.set()` only notifies on a VALUE change —
-  // a repeat celebrate (click the pet again, or two turns finishing close
-  // together) while still inside the previous beat's decay window resolves to
-  // the same `'jump'` string, so `$petState` silently no-ops and the bob would
-  // never replay. `$petJumpBeat` is a nonce bumped on every celebrate request
-  // (see `flashPetActivity`) specifically to catch that repeat case.
+  // The pose is held far longer than one hop: a turn-completion celebrate
+  // holds `jump` for 2200ms — deliberately ~2x the sprite's own `loopMs` so
+  // the frame animation gets to loop twice before settling (see the
+  // "runs ~2 loops, then settles" comment at the celebrate call site) — but
+  // a single bob capped at `jumpDurationMs()` (max 900ms) lands and goes flat
+  // for the remaining ~1.3s while the leg frames keep cycling in place. That
+  // reads exactly as "stuck repeating the same jump animation but not
+  // changing height." Fix: re-trigger the bob every `jumpDurationMs(loopMs)`
+  // for as long as the pose is actually held, so the physical hop always
+  // tracks how long the jump pose is shown — not a duration hardcoded to one
+  // cycle regardless of the caller's hold time.
   useEffect(() => {
     const wrap = wrapRef.current
 
@@ -369,34 +373,61 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       wrap.style.setProperty('--pet-jump-height', `${jumpBobHeightPx(drawH)}px`)
       wrap.style.setProperty('--pet-jump-ms', `${jumpDurationMs(loopMs)}ms`)
       // Force a reflow so re-triggering the same animation class (e.g. two
-      // quick jump beats) restarts it instead of no-oping.
+      // quick jump beats, or the next repeat in the cadence below) restarts
+      // it instead of no-oping.
       wrap.classList.remove('pet-jump-bob')
       void wrap.offsetWidth
       wrap.classList.add('pet-jump-bob')
     }
 
-    let prev = overrideRef.current ?? stateRef.current
+    let repeatTimer: ReturnType<typeof setInterval> | undefined
 
-    const unsubState = $petState.listen(next => {
-      if (next === 'jump' && prev !== 'jump' && !$petRoamAirborne.get()) {
-        playBob()
+    const startBobbing = () => {
+      playBob()
+      clearInterval(repeatTimer)
+      repeatTimer = setInterval(playBob, jumpDurationMs(loopMs))
+    }
+
+    const stopBobbing = () => {
+      clearInterval(repeatTimer)
+      repeatTimer = undefined
+    }
+
+    const isJumping = () => (overrideRef.current ?? stateRef.current) === 'jump' && !$petRoamAirborne.get()
+
+    let prevJumping = isJumping()
+
+    if (prevJumping) {
+      startBobbing()
+    }
+
+    const unsubState = $petState.listen(() => {
+      const jumping = isJumping()
+
+      if (jumping && !prevJumping) {
+        startBobbing()
+      } else if (!jumping && prevJumping) {
+        stopBobbing()
       }
 
-      prev = next
+      prevJumping = jumping
     })
 
     // A plain `atom.listen()` (unlike `.subscribe()`) never calls the new
     // listener synchronously with the current value — only future `.set()`
-    // calls — so every firing here is a real, new celebrate request.
+    // calls — so every firing here is a real, new celebrate request. Restart
+    // the cadence from a fresh hop rather than letting a stale interval's
+    // next tick land mid-way through the new request's hold window.
     const unsubBeat = $petJumpBeat.listen(() => {
-      if ((overrideRef.current ?? stateRef.current) === 'jump' && !$petRoamAirborne.get()) {
-        playBob()
+      if (isJumping()) {
+        startBobbing()
       }
     })
 
     return () => {
       unsubState()
       unsubBeat()
+      stopBobbing()
     }
   }, [drawH, loopMs])
 
