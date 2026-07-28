@@ -246,18 +246,28 @@ export function rootChildSide(
 }
 
 /**
- * The FIXED zone that owns `edge` of this subtree along `axis` — the zone a
- * sash on that boundary actually resizes (dragging the seam between main and
- * a nested right section resizes the section's edge sidebar, VS Code-style).
+ * The FIXED zone(s) that own `edge` of this subtree along `axis` — the
+ * zone(s) a sash on that boundary actually resizes (dragging the seam
+ * between main and a nested right section resizes the section's edge
+ * sidebar, VS Code-style). Along the axis there's exactly one owner (the
+ * first/last visible child); ACROSS the axis every visible child touches the
+ * edge, and when several are independently fixed (e.g. a bottom band split
+ * row-wise into a terminal stack next to a dropped pet-zone pane) they are
+ * cross-axis siblings stretched to a shared height by `fixedTrackSize`'s
+ * cross-axis `cssMax` — so a drag must write ALL of them or the ones left
+ * out keep their stale override and silently reclamp the whole band (the
+ * "can't resize the bar" bug: only the first-found zone ever got a live
+ * height, so the band could never shrink past whichever sibling was still
+ * pinned to its old size).
  */
-export function edgeFixedZone(
+export function edgeFixedZones(
   node: LayoutNode,
   edge: 'start' | 'end',
   axis: 'row' | 'column',
   ctx: TrackContext
-): GroupNode | null {
+): GroupNode[] {
   if (node.type === 'group') {
-    return fixedTrackSize(node, axis, ctx) !== null ? node : null
+    return fixedTrackSize(node, axis, ctx) !== null ? [node] : []
   }
 
   const visible = node.children.filter(child => !subtreeGone(child, ctx))
@@ -265,17 +275,37 @@ export function edgeFixedZone(
   if (node.orientation === axis) {
     const child = edge === 'start' ? visible[0] : visible[visible.length - 1]
 
-    return child ? edgeFixedZone(child, edge, axis, ctx) : null
+    return child ? edgeFixedZones(child, edge, axis, ctx) : []
   }
 
-  // Cross-axis: every child touches the edge — the first fixed one owns it.
-  for (const child of visible) {
-    const zone = edgeFixedZone(child, edge, axis, ctx)
+  // Cross-axis: every child touches the edge — every fixed one owns it.
+  return visible.flatMap(child => edgeFixedZones(child, edge, axis, ctx))
+}
 
-    if (zone) {
-      return zone
+/** Combined drag clamp for a set of fixed zones sharing an edge: the
+ *  tightest floor (max of their minima) and tightest ceiling (min of their
+ *  maxima, when every zone declares one) — never past ANY of them. */
+export function edgeZonesClamp(
+  zones: GroupNode[],
+  axis: 'row' | 'column',
+  ctx: TrackContext,
+  el: (zone: GroupNode) => HTMLElement | null
+): { min: number; max: number } {
+  let min = MIN_PANE_PX
+  let max = Number.POSITIVE_INFINITY
+
+  for (const zone of zones) {
+    const zoneEl = el(zone)
+
+    if (!zoneEl) {
+      continue
     }
+
+    const cs = window.getComputedStyle(zoneEl)
+
+    min = Math.max(min, computedPx(axis === 'row' ? cs.minWidth : cs.minHeight, 0))
+    max = Math.min(max, computedPx(axis === 'row' ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY))
   }
 
-  return null
+  return { min, max }
 }
