@@ -247,7 +247,17 @@ _ORPHAN_TOOLCALL_TAIL_RE = re.compile(
     # (the backend's twin detector missed for the same reason; fixed there
     # in exo 6b80624a). The wrapper set mirrors the recovery regex's dialect
     # variants.
-    r"(?:</(?:tool_calls?|tool_called|function_calls?)>\s*)*$",
+    r"(?:</(?:tool_calls?|tool_called|function_calls?)>\s*)*"
+    # Optional trailing markdown fence: after slipping into closers at the end
+    # of an INLINE answer, the model sometimes still closes its code fence
+    # AFTER them (caught live 2026-07-28, hard_eval code_segment_tree t2:
+    # content ended '…return res\n</parameter>\n</invoke>\n\n```\n') — which
+    # pushed end-of-string past the old anchor so the tail dodged the strip.
+    # The fence is captured so the strip can re-append it and keep the code
+    # block balanced (exo's backend twin re-balances via fence parity; this
+    # client net has no turn-level fence state, so re-appending the captured
+    # fence is the equivalent).
+    r"(?P<trailing_fence>```[ \t]*\n?)?\s*$",
     re.DOTALL,
 )
 
@@ -267,7 +277,13 @@ def _strip_orphan_toolcall_tail(content: Optional[str]) -> Optional[str]:
     match = _ORPHAN_TOOLCALL_TAIL_RE.search(content)
     if match is None:
         return content
-    return content[: match.start()].rstrip()
+    stripped = content[: match.start()].rstrip()
+    # If the tail swallowed the model's own closing fence (it closed the code
+    # block AFTER the closer slip), re-append it so the delivered answer's
+    # fence stays balanced.
+    if match.group("trailing_fence"):
+        stripped += "\n```"
+    return stripped
 
 
 def _strip_cache_control(payload: Any) -> None:
