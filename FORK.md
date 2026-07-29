@@ -42,6 +42,67 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-29 (desktop: pet roam loop never actually roams — dies after one animation frame)
+
+**Reported:** after the pane-resize and jump-bob fixes shipped, user
+reported the pet in Pet Zone "still not fixed" — no pacing, no falling,
+no running, sitting completely still except for the (now-correct) idle
+jump fidget. Confirmed via a live screenshot that Roam WAS enabled in
+Settings. Diagnostic: user watched the sprite's `style="left/top"` in
+DevTools for ~20s — it never moved on its own, "it only changes when
+something in the loop forces itself forward, like the standing by/user
+prompt breakout." That's the exact fingerprint of the bug below.
+
+**Root cause, two compounding bugs:**
+
+1. **The real one.** `usePetRoam`'s `schedule()` helper only calls
+   `requestAnimationFrame` when its closure-local `raf` id is falsy —
+   but nothing ever reset that id back to 0 after the browser "spent" it
+   (fired the callback). So the rAF loop scheduled exactly **one frame**
+   per effect mount, then went silently dead forever, regardless of how
+   long roam/canRoam stayed true. The physics state machine (phase, walk
+   target, dwell timer, fall/jump integrators) never got a second tick to
+   progress on.
+2. **The masking bug (this session's own earlier detour).** The effect's
+   `enabled` prop was `roamEnabled && active && !overlayActive &&
+   canRoam`, where `canRoam` flips false on every turn completion /
+   clarify / error / celebrate beat. Each flip tore the whole effect
+   down and remounted it (via the dependency array) — which
+   incidentally re-armed bug #1's dead `raf` and let exactly one more
+   frame slip through before dying again. That's why the pet only ever
+   nudged at the instant of an activity transition: every "movement" was
+   really just bug #1's one free frame per remount, triggered by bug #2's
+   constant teardown/rebuild churn. Fixing #2 alone (as this session
+   initially did, via a `canMove` ref-split — see below) would NOT have
+   fixed the actual symptom on its own, since #1 would just make the pet
+   freeze after its first frame in the fixed-and-no-longer-remounting
+   effect instead. Both had to be fixed together.
+
+**Fix:** `apps/desktop/src/components/pet/use-pet-roam.ts` — `raf = 0` is
+now the first thing `step()` does, before any early return or scheduling
+decision, so every code path's `schedule()` call actually queues the next
+frame. Separately, `enabled` was split into a structural `enabled`
+(roam opted in / pet loaded / not popped out — rare, still an effect
+dependency, still legitimately tears down + rebuilds on its own flips)
+and a new `canMove` (the old `canRoam` activity gate), read via a ref
+(`canMoveRef`) inside the step loop instead of the dependency array —
+toggling it now freezes physics in place and resumes the SAME state,
+never resets it. `apps/desktop/src/components/pet/floating-pet.tsx`
+updated to pass both props at the `usePetRoam` call site.
+
+**Verification:** `npx tsc -p apps/desktop/tsconfig.json --noEmit`
+clean. New test file
+`apps/desktop/src/components/pet/use-pet-roam.test.tsx` (harness
+component + fake-rAF driver, 3 tests): (1) proves the loop keeps
+scheduling a new frame every tick indefinitely — this test FAILS against
+the pre-fix code, confirmed by stashing the fix and re-running it; (2)
+proves a `canMove` flip freezes/resumes the same closure instead of
+resetting it; (3) proves an `enabled` flip still legitimately resets
+everything, so the fix didn't just stop resetting anything at all. Full
+`src/components/pet` + `src/store/pet.test.ts` suite: 5 files, 44 tests,
+all passing. Files: `use-pet-roam.ts`, `floating-pet.tsx`,
+`use-pet-roam.test.tsx` (new). Commit `e67330ecb`.
+
 ### Fork-only fix — 2026-07-28 (desktop: pet stationary jump pose looped in place after the first hop instead of bobbing)
 
 **Reported:** after the previous Pet Zone resize fix, user noticed the
