@@ -535,14 +535,17 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
 
   const isDragging = useCallback(() => dragRef.current !== null, [])
 
-  // Roam the in-window pet whenever roaming is opted in and the agent isn't in
-  // a state that wants a distinct stationary pose ($petCanRoam allows ordinary
-  // idle AND active work — see its doc comment — so the pet keeps pacing while
-  // the agent is thinking/running a tool, not just at true idle).
+  // Roam the in-window pet whenever roaming is opted in. `canMove` (not
+  // `enabled`) is what gates on the agent's live activity pose — folding it
+  // into `enabled` used to tear down and rebuild the whole physics state
+  // machine on every turn completion/clarify/error beat (`canRoam` flips
+  // constantly during a real chat session), so the pet never actually
+  // walked/fell/hopped on its own; see `usePetRoam`'s `canMove` doc comment.
   usePetRoam({
+    canMove: canRoam,
     commit: commitRoamPosition,
     containerRef,
-    enabled: roamEnabled && active && !overlayActive && canRoam,
+    enabled: roamEnabled && active && !overlayActive,
     isInteracting: isDragging,
     loopMs: info.loopMs ?? 1100,
     overlayOpen: routeOverlayOpen,
