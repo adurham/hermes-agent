@@ -1,4 +1,4 @@
-import { type RefObject, useEffect } from 'react'
+import { type RefObject, useEffect, useRef } from 'react'
 
 import { $petMotion, $petRoamAirborne, $petRoamDir, $petRoamPaused, type PetState } from '@/store/pet'
 
@@ -41,8 +41,32 @@ const easeOutCubic = (t: number): number => 1 - (1 - t) ** 3
 const signDir = (n: number): -1 | 0 | 1 => (n > 0 ? 1 : n < 0 ? -1 : 0)
 
 interface PetRoamOptions {
-  /** Run the wander loop (roam opt-in + pet active + in-window + agent at rest). */
+  /** Mount the wander machinery at all — roam opt-in, pet loaded, not popped
+   *  out. STRUCTURAL: expected to change rarely (a settings toggle, the pet
+   *  loading, popping out), so it's fine to fully tear down and rebuild the
+   *  loop when this flips. Do NOT fold activity-driven state into this —
+   *  see `canMove`. */
   enabled: boolean
+  /**
+   * Whether the loop is currently ALLOWED to progress physics right now —
+   * the agent is at rest or doing ordinary work, not showing a distinct
+   * attention pose (waiting/wave/jump/failed). Read every frame via a ref,
+   * NOT an effect dependency: toggling this must PAUSE the loop in place
+   * and RESUME it exactly where it left off, never reset it.
+   *
+   * This used to be folded into `enabled` (`roamEnabled && active &&
+   * !overlayActive && canRoam`), which put it in the effect's dependency
+   * array. During a real chat session `canRoam` flips false on every turn
+   * completion, clarify prompt, and error/celebrate beat — so the WHOLE
+   * physics state machine (phase, walk target, dwell timer, fall/jump
+   * integrators) was destroyed and rebuilt from a fresh pause on every one
+   * of those blips, before a single decision beat could ever complete. The
+   * pet only ever appeared to move at the exact instant one of those
+   * transitions forced a re-seed from the live DOM rect — it never
+   * actually walked, fell, or hopped on its own. See FORK.md, "pet never
+   * actually roams" entry.
+   */
+  canMove: boolean
   containerRef: RefObject<HTMLDivElement | null>
   /** True while the user is dragging — the loop yields so it never fights a drag. */
   isInteracting: () => boolean
@@ -81,6 +105,7 @@ interface PetRoamOptions {
  */
 export function usePetRoam({
   enabled,
+  canMove,
   containerRef,
   isInteracting,
   petW,
@@ -90,6 +115,14 @@ export function usePetRoam({
   commit,
   zoneContainer
 }: PetRoamOptions): void {
+  // Read every frame via a ref, not an effect dependency — see `canMove`'s
+  // doc comment. Updating a ref doesn't re-run the setup effect below.
+  const canMoveRef = useRef(canMove)
+
+  useEffect(() => {
+    canMoveRef.current = canMove
+  }, [canMove])
+
   useEffect(() => {
     if (!enabled) {
       $petMotion.set(null)
@@ -291,6 +324,21 @@ export function usePetRoam({
     }
 
     const step = (now: number) => {
+      // The browser has already "consumed" this frame's id — clear it BEFORE
+      // any scheduling decision below, or every `schedule()` call for the
+      // rest of this closure's life sees a stale non-zero `raf` and no-ops
+      // forever. This was the actual root cause of the pet never roaming on
+      // its own: `schedule()` only calls `requestAnimationFrame` when `raf`
+      // is falsy, but nothing used to clear it after the first frame fired —
+      // so the loop ran EXACTLY ONE frame per effect mount, then silently
+      // went dead. It only ever appeared to move again at the instant
+      // something tore down and remounted the whole effect (which used to
+      // happen on every activity blip before the `canMove` split above),
+      // because a fresh mount's `schedule()` call started from `raf === 0`
+      // and got exactly one more frame through before dying again. See
+      // FORK.md, "pet never actually roams" entry.
+      raf = 0
+
       const dt = Math.min(MAX_DT_S, (now - last) / 1000)
       last = now
 
@@ -308,6 +356,20 @@ export function usePetRoam({
         signal(null, 0)
         $petRoamAirborne.set(false)
         $petRoamPaused.set(true)
+        schedule()
+
+        return
+      }
+
+      // The agent wants a distinct attention pose right now (waiting/wave/
+      // jump/failed — see `canMove`'s doc comment) — freeze physics exactly
+      // where they are instead of progressing OR resetting. `$petState`'s
+      // own priority order already lets that pose win over the roam motion
+      // signal while this holds, so nothing else needs to change here; the
+      // walk/fall/jump/dwell state all resume untouched the instant
+      // `canMoveRef.current` flips back. `last` still advances so the dt
+      // clamp doesn't have to absorb the whole frozen span in one frame.
+      if (!canMoveRef.current) {
         schedule()
 
         return
