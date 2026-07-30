@@ -2203,6 +2203,12 @@ def _resolve_runtime_agent_kwargs() -> dict:
         resolve_runtime_provider, format_runtime_provider_error, _get_model_config)
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
+    # Capture primary provider/model from config before the try block so we
+    # can include it in the fallback notice if the primary fails (#74349).
+    _model_cfg = _get_model_config()
+    _primary_model = (_model_cfg.get("default") or "").strip()
+    _primary_provider = (_model_cfg.get("provider") or "").strip()
+
     try:
         runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
@@ -2215,6 +2221,17 @@ def _resolve_runtime_agent_kwargs() -> dict:
             logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
+            # Carry fallback notice metadata so the gateway can surface a
+            # user-visible provider switch (#74349).  The caller must pop
+            # ``_fallback_notice`` before forwarding kwargs to AIAgent.
+            fb_provider = fb_config.get("provider") or fb_config.get("requested_provider") or "unknown"
+            fb_model = fb_config.get("model") or "default"
+            primary_desc = "/".join(filter(None, [_primary_provider, _primary_model])) or "primary"
+            fallback_desc = "/".join(filter(None, [fb_provider, fb_model]))
+            fb_config["_fallback_notice"] = (
+                f"⚠️ Provider fallback: {primary_desc} unavailable; "
+                f"using {fallback_desc} for this response."
+            )
             return fb_config
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
     except Exception as exc:
