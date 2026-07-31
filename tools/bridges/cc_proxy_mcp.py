@@ -97,13 +97,55 @@ log = logging.getLogger("cc_proxy_mcp")
 
 # --- credential management --------------------------------------------------
 
-def _keychain_account() -> Optional[str]:
-    """Return the account associated with the Claude Code keychain entry, or None."""
+def _resolve_keychain_service() -> Optional[str]:
+    """Find the actual Keychain service name for Claude Code's credentials.
+
+    Claude Code >=2.1.114 on some macOS installs suffixes the service name
+    with an account/workspace-specific hash (observed:
+    "Claude Code-credentials-3775e6c9"), not the bare "Claude
+    Code-credentials" the constant assumes. An exact ``-s`` match against
+    the un-suffixed name silently finds nothing on those installs, which
+    this shim previously mis-handled as "no keychain entry -> fall back to
+    file", producing a stale-file-not-found or stale-token error instead of
+    ever reading the real (working) credential.
+
+    ``security dump-keychain`` (no ``-a``) lists entry metadata without
+    triggering a per-item unlock/access prompt, so this is cheap and silent.
+    """
     if platform.system() != "Darwin":
         return None
     try:
         result = subprocess.run(
-            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE],
+            ["security", "dump-keychain"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    candidates = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith('"svce"<blob>='):
+            value = line.split("=", 1)[1].strip().strip('"')
+            if value == KEYCHAIN_SERVICE or value.startswith(KEYCHAIN_SERVICE + "-"):
+                candidates.append(value)
+    if not candidates:
+        return None
+    # Prefer the exact legacy (un-suffixed) name if present; otherwise take
+    # the first suffixed match found.
+    if KEYCHAIN_SERVICE in candidates:
+        return KEYCHAIN_SERVICE
+    return candidates[0]
+
+
+def _keychain_account(service: str) -> Optional[str]:
+    """Return the account associated with a Claude Code keychain entry, or None."""
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service],
             capture_output=True, text=True, timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -147,10 +189,14 @@ class CredStore:
         # Keychain, which is fine since we're authoritative for our own
         # refreshes anyway.
         self._account = None
+        self._service = KEYCHAIN_SERVICE
         if path.exists():
             self._backend = "file"
         elif platform.system() == "Darwin":
-            self._account = _keychain_account()
+            resolved_service = _resolve_keychain_service()
+            if resolved_service:
+                self._service = resolved_service
+                self._account = _keychain_account(resolved_service)
             self._backend = "keychain" if self._account else "file"
         else:
             self._backend = "file"
@@ -165,22 +211,22 @@ class CredStore:
         try:
             result = subprocess.run(
                 ["security", "find-generic-password",
-                 "-s", KEYCHAIN_SERVICE, "-w"],
+                 "-s", self._service, "-w"],
                 capture_output=True, text=True, timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise FileNotFoundError(
-                f"Keychain read for '{KEYCHAIN_SERVICE}' failed: {e}"
+                f"Keychain read for '{self._service}' failed: {e}"
             )
         if result.returncode != 0:
             raise FileNotFoundError(
-                f"Keychain entry '{KEYCHAIN_SERVICE}' not found "
+                f"Keychain entry '{self._service}' not found "
                 f"(security exit {result.returncode}: {result.stderr.strip()})"
             )
         raw = result.stdout.strip()
         if not raw:
             raise FileNotFoundError(
-                f"Keychain entry '{KEYCHAIN_SERVICE}' is empty"
+                f"Keychain entry '{self._service}' is empty"
             )
         return json.loads(raw)
 
@@ -204,18 +250,18 @@ class CredStore:
             result = subprocess.run(
                 ["security", "add-generic-password",
                  "-U",
-                 "-s", KEYCHAIN_SERVICE,
+                 "-s", self._service,
                  "-a", account,
                  "-w", payload],
                 capture_output=True, text=True, timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise RuntimeError(
-                f"Keychain write for '{KEYCHAIN_SERVICE}' failed: {e}"
+                f"Keychain write for '{self._service}' failed: {e}"
             )
         if result.returncode != 0:
             raise RuntimeError(
-                f"Keychain write for '{KEYCHAIN_SERVICE}' failed "
+                f"Keychain write for '{self._service}' failed "
                 f"(security exit {result.returncode}: {result.stderr.strip()})"
             )
 
