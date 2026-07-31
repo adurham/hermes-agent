@@ -5336,6 +5336,66 @@ the real code** (not accepted at face value, not dismissed either):
   mechanism found anywhere in this hook or its callers to race against);
   noted but not acted on absent a concrete repro.
 
+### Real maintainer/community response (2026-07-27 through 2026-07-30)
+
+The 7 PRs got genuine external engagement, not just automated triage:
+
+- **#72054 (MCP orphan reap) — CLOSED as superseded, but the fix landed
+  anyway.** Contributor CrowLoki independently reconciled this PR with
+  #62026's broader ownership/revival mechanism on a review branch,
+  explicitly preserving this PR's `CancelledError` invariant and crediting
+  it in the reconciliation commit. Maintainer `kshitijk4poor` merged the
+  combined work as **#74139**, with this PR's `CancelledError` rule and
+  reap-failure logging carried over via `Co-authored-by`. Real lesson:
+  a narrowly-scoped, correctly-reasoned fix gets absorbed into the
+  broader effort it was originally scoped to complement, not wasted —
+  closing "superseded" with credit preserved is a good outcome, not a
+  rejection.
+- **#72087, #72151, #72152, #72153, #72155, #72164 — all reviewed by the
+  repo's automated hermes-sweeper (run by maintainer `teknium1`),
+  `keep_open, salvageability=high` on all 6.** Two carried concrete,
+  correct asks that got fixed as follow-up commits (not new PRs):
+  - **#72087:** sweeper + independent contributor `israellot` both
+    flagged that the tests only asserted an upper bound, so a future
+    "fix" that turns the estimator into a field allowlist (dropping
+    `anthropic_content_blocks`/Codex's `codex_reasoning_items`/
+    `codex_message_items` entirely) would still pass — trading a bounded
+    ~4-5x overcount for an ~1000x undercount (worse: compaction fires too
+    late, turn dies on a hard context error). `israellot` measured this
+    precisely (11K-char payload: 9026 → 9 tokens) on their own fork.
+    Fixed: added a payload-proportional lower-bound assertion
+    (`_assert_payload_proportional`) to every replay-channel test, plus
+    2 new tests for the Codex channels and a meta-test proving the
+    assertion has real teeth. Verified by simulating the exact allowlist
+    regression locally — 5/7 tests correctly failed, reproducing
+    `israellot`'s ~9-token measurement almost exactly.
+  - **#72152:** sweeper wanted a dedicated `ProfileRail` focus/
+    visibilitychange/unmount test (none existed). Extracted the listener
+    wiring into `use-profile-rail-refresh-on-active.ts`, matching this
+    exact directory's own established pattern (`use-profile-prewarm.ts`
+    — a small side-effect hook pulled out of `ProfileRail` specifically
+    for testability). 6 new tests; verified by simulating the exact
+    original bug (dropped cleanup) — 4/6 correctly failed, including a
+    "no accumulate listeners" test showing 7 calls instead of 1.
+  - **#72155:** sweeper flagged the branch was reported conflicting.
+    Rebased onto current `main` — the only real conflict was in the test
+    file, where an unrelated upstream test-pruning pass had removed 3
+    pre-existing tests my diff's context lines touched; resolved by not
+    resurrecting the pruned tests, just cleanly reinserting this PR's 2
+    new ones. `hermes_cli/inventory.py` itself auto-merged cleanly
+    against an intervening seam refactor. Force-pushed the rebase.
+  - **#72151, #72153, #72164:** sweeper confirmed all three mechanically
+    salvageable as-is with current `main` — no changes needed.
+
+**Environment note:** the `upstream` git remote's SSH URL
+(`git@github.com:NousResearch/hermes-agent.git`) intermittently fails to
+connect from this network (`ssh: connect to host github.com port 22:
+Operation timed out`) — a pre-existing config issue, not something to
+"fix" by changing the remote. Workaround used successfully:
+`git fetch https://github.com/NousResearch/hermes-agent.git main:refs/remotes/upstream-https/main`
+gets a current, real `main` ref via HTTPS without touching the
+configured `upstream` remote.
+
 ### Bucket B — needs de-forking first, or unverified/likely-contaminated (do NOT file as-is)
 
 Moved here from the original Bucket A after re-review: FORK.md's own
