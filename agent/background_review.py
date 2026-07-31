@@ -49,8 +49,30 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
     Default (auto / unset / same as parent): inherit the parent's live runtime
     (with codex_app_server -> codex_responses downgrade). ``routed`` is False —
     the fork uses the main model and the warm cache, exactly as before. When
-    ``auxiliary.background_review.{provider,model}`` names a concrete model
-    different from the parent's, resolve that runtime and set ``routed=True``.
+    ``auxiliary.background_review`` (task-first) or the active main provider's
+    ``auxiliary.<provider>.background_review`` block (provider-first) names a
+    concrete model different from the parent's, resolve that runtime and set
+    ``routed=True``.
+
+    FIXED 2026-07-31: previously read ``auxiliary.background_review`` directly
+    off the raw config dict, which only understands the legacy TASK-FIRST
+    schema (top-level keys are task names). A PROVIDER-FIRST config (top-level
+    keys are provider ids + ``defaults`` -- e.g. ``auxiliary.exo:``,
+    ``auxiliary.anthropic:``, the schema every other auxiliary task already
+    supports via ``_get_auxiliary_task_config``/``_resolve_task_provider_model``
+    in auxiliary_client.py) was silently ignored: the naive read always saw an
+    empty/absent ``background_review`` block and fell through to ``parent``,
+    so a user's per-provider background_review override (e.g. pinning it to a
+    faster/off-cluster model when main is exo) had NO EFFECT no matter how it
+    was configured -- "background_review" was in the recognized task-key set
+    (``_BUILTIN_AUX_TASK_KEYS``) the whole time but this call site never used
+    the resolver that actually understands that set. Root cause: this file
+    had its own hand-rolled resolver instead of calling the shared one every
+    other auxiliary task (curator, compression, vision, ...) already uses.
+    Fix: delegate to ``_resolve_task_provider_model("background_review")``,
+    which transparently handles both schemas (see its docstring) -- same
+    function every other task already relies on, so both schemas now work
+    identically for this task too.
     """
     parent_runtime = agent._current_main_runtime()
     parent_api_mode = parent_runtime.get("api_mode") or None
@@ -70,17 +92,15 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         "routed": False,
     }
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from agent.auxiliary_client import _resolve_task_provider_model
+        task_provider, task_model, task_base_url, task_api_key, _task_api_mode = (
+            _resolve_task_provider_model("background_review")
+        )
     except Exception:
         return parent
-    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-    task = aux.get("background_review", {}) if isinstance(aux.get("background_review"), dict) else {}
-    task_provider = (str(task.get("provider", "")).strip() or None)
-    task_model = (str(task.get("model", "")).strip() or None)
-    task_base_url = (str(task.get("base_url", "")).strip() or None)
-    task_api_key = (str(task.get("api_key", "")).strip() or None)
-    if not (task_provider and task_provider != "auto" and task_model):
+    task_provider = (task_provider or "").strip() or None
+    task_model = (task_model or "").strip() or None
+    if not (task_provider and task_provider not in ("auto", "") and task_model):
         return parent
     if task_provider == (agent.provider or "") and task_model == (agent.model or ""):
         return parent  # same model/provider as parent -> not routed
