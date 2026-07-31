@@ -5181,42 +5181,6 @@ def run_conversation(
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
             finish_reason = normalized.finish_reason
-
-            # Repetition guard for thinking-heavy local models (DSv4-Flash,
-            # Qwen3.5-MoE via exo): those model-card defaults run with every
-            # anti-repetition sampler guard off, and can degenerate into a
-            # semantic loop (same few reasoning sentences repeated turn after
-            # turn) for many minutes before the gateway_timeout backstop
-            # fires. RepetitionTuner scores reasoning_content repetition via
-            # n-gram overlap / lead-phrase density and proposes escalating
-            # frequency_penalty/presence_penalty for the NEXT request. Gated
-            # on the exo base_url (agent.provider is "custom" for exo, since
-            # it's configured under providers.exo / the custom-provider
-            # schema, not a registered provider name; match on exo's fixed
-            # API port 52415 rather than a specific node IP, since the
-            # cluster's controlling node can change) — targeted fix for a
-            # reproduced failure mode, not a general-purpose behavior change.
-            if ":52415" in (agent.base_url or ""):
-                try:
-                    if not hasattr(agent, "_repetition_tuner"):
-                        from agent.repetition_tuner import RepetitionTuner
-
-                        agent._repetition_tuner = RepetitionTuner()
-                    _reasoning_for_tuner = getattr(assistant_message, "reasoning_content", None) or getattr(
-                        assistant_message, "reasoning", None
-                    )
-                    agent._repetition_tuner.observe(_reasoning_for_tuner, turn_index=api_call_count)
-                    _tuner_suggestion = agent._repetition_tuner.suggest()
-                    if _tuner_suggestion:
-                        agent.request_overrides = dict(agent.request_overrides or {})
-                        agent.request_overrides.update(_tuner_suggestion)
-                    else:
-                        # Score dropped back down — don't leave a stale penalty
-                        # from an earlier turn permanently applied.
-                        for _k in ("frequency_penalty", "presence_penalty"):
-                            (agent.request_overrides or {}).pop(_k, None)
-                except Exception:
-                    logger.debug("[repetition_tuner] observe/suggest failed", exc_info=True)
             
             # Normalize content to string — some OpenAI-compatible servers
             # (llama-server, etc.) return content as a dict or list instead
