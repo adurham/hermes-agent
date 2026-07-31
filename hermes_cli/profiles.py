@@ -142,6 +142,34 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
         return False
 
 
+def _symlink_replacing_existing(source: Path, dest: Path) -> None:
+    """Point ``dest`` at ``source`` via a symlink, replacing whatever (if
+    anything) already occupies ``dest``.
+
+    Used by ``create_profile(..., link=True)`` to share skills/plugins/memory
+    between a profile and its clone source instead of copying them. ``dest``
+    is expected to not exist yet in the normal ``create_profile`` flow (the
+    profile directory was just created), but this is defensive against future
+    callers re-running link setup against an existing profile: a stale
+    symlink is removed and replaced; a real directory/file is removed via
+    ``shutil.rmtree``/``unlink`` first (whatever was there is being
+    deliberately superseded by the shared link, matching the semantics of
+    every other clone step in this function, which also overwrite/populate
+    a freshly-created empty subdir).
+
+    Uses an absolute, fully-resolved target so the resulting symlink keeps
+    working even if ``dest``'s profile directory is later moved/renamed —
+    only ``source`` itself moving would break it, same as any other symlink.
+    """
+    resolved_source = source.resolve()
+    if dest.is_symlink() or dest.exists():
+        if dest.is_dir() and not dest.is_symlink():
+            shutil.rmtree(dest)
+        else:
+            dest.unlink()
+    dest.symlink_to(resolved_source, target_is_directory=resolved_source.is_dir())
+
+
 def _clone_all_copytree_ignore(source_dir: Path):
     """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
@@ -992,6 +1020,7 @@ def create_profile(
     clone_from: Optional[str] = None,
     clone_all: bool = False,
     clone_config: bool = False,
+    link: bool = False,
     no_alias: bool = False,
     no_skills: bool = False,
     description: Optional[str] = None,
@@ -1003,31 +1032,51 @@ def create_profile(
     name:
         Profile identifier (lowercase, alphanumeric, hyphens, underscores).
     clone_from:
-        Source profile to clone from. If ``None`` and clone_config/clone_all
+        Source profile to clone from. If ``None`` and clone_config/clone_all/link
         is True, defaults to the currently active profile.
     clone_all:
         If True, do a full copytree of the source (all state).
     clone_config:
         If True, copy config files (config.yaml, .env, SOUL.md), installed
         skills, and selected profile identity files from the source profile.
+    link:
+        If True, share skills, plugins, and memory (both the hot-tier
+        MEMORY.md/USER.md files and the warm-tier memory_store.db) with the
+        source profile via symlinks instead of copying them — edits/learns
+        in either profile are immediately visible in both, forever, with no
+        re-sync step. Implies ``clone_config`` (config.yaml/.env/SOUL.md are
+        still independent *copies* so per-profile model/provider routing can
+        diverge — only the state that should be shared is linked). Intended
+        for "same brain, different model" profile pairs (e.g. quick-switching
+        between two providers) rather than fully isolated personas.
+        Mutually exclusive with ``clone_all`` (a full independent snapshot)
+        and ``no_skills``.
     no_alias:
         If True, skip wrapper script creation.
     no_skills:
         If True, create an empty profile with no bundled skills, and write
         a marker file so ``hermes update`` skips re-seeding this profile's
-        skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
-        explicitly copy skills from the source).
+        skills. Mutually exclusive with ``clone_config``/``clone_all``/``link``
+        (those explicitly copy or link skills from the source).
 
     Returns
     -------
     Path
         The newly created profile directory.
     """
-    if no_skills and (clone_from is not None or clone_config or clone_all):
+    if no_skills and (clone_from is not None or clone_config or clone_all or link):
         raise ValueError(
-            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
-            "(cloning explicitly copies skills from the source profile)."
+            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all / --link "
+            "(cloning/linking explicitly provides skills from the source profile)."
         )
+    if link and clone_all:
+        raise ValueError(
+            "--link is mutually exclusive with --clone-all "
+            "(--clone-all makes a fully independent snapshot; --link shares "
+            "live state with the source profile — pick one)."
+        )
+    if link:
+        clone_config = True
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
 
@@ -1090,13 +1139,30 @@ def create_profile(
                         except OSError:
                             pass
 
-            # Clone installed skills from the source profile. The dashboard's
-            # "clone from default" flow is expected to preserve both bundled
-            # and user-installed skills so the new profile immediately has the
-            # same agent capabilities as the source profile.
+            # Clone (or, with --link, symlink-share) installed skills from the
+            # source profile. The dashboard's "clone from default" flow is
+            # expected to preserve both bundled and user-installed skills so
+            # the new profile immediately has the same agent capabilities as
+            # the source profile. --link points profile_dir/skills AT the
+            # source's skills/ dir instead of copying it: both profiles read
+            # and write the exact same on-disk tree, so a skill created,
+            # edited, or curator-pruned from either profile is instantly
+            # visible in the other with no re-sync step ever needed.
             source_skills = source_dir / "skills"
-            if source_skills.is_dir():
+            if link:
+                if source_skills.is_dir() or source_skills.is_symlink():
+                    _symlink_replacing_existing(source_skills, profile_dir / "skills")
+            elif source_skills.is_dir():
                 shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+
+            # --link also shares the plugins/ directory the same way, when
+            # the source profile has one. Plugins are typically empty/absent
+            # (installed at the shared ~/.hermes level in most setups) but
+            # honor the same link semantics as skills for consistency.
+            if link:
+                source_plugins = source_dir / "plugins"
+                if source_plugins.is_dir() or source_plugins.is_symlink():
+                    _symlink_replacing_existing(source_plugins, profile_dir / "plugins")
 
             # Clone installed petdex mascots from the source profile. Without
             # this, config.yaml's display.pet.slug still points at a pet the
@@ -1108,13 +1174,31 @@ def create_profile(
             if source_pets.is_dir():
                 shutil.copytree(source_pets, profile_dir / "pets", symlinks=True, dirs_exist_ok=True)
 
-            # Clone memory and other subdirectory files
-            for relpath in _CLONE_SUBDIR_FILES:
-                src = source_dir / relpath
-                if src.exists():
-                    dst = profile_dir / relpath
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
+            if link:
+                # --link shares BOTH memory tiers with the source profile:
+                # the hot-tier memories/ directory (MEMORY.md, USER.md — the
+                # files _CLONE_SUBDIR_FILES would otherwise copy-once below)
+                # and the warm-tier memory_store.db (+ -wal/-shm siblings,
+                # which sqlite recreates next to whatever path it's opened
+                # through — no need to link those explicitly). This is for
+                # profile pairs that are the same "self" running under a
+                # different model/provider (fast local-switch setups), where
+                # facts learned under one provider should be visible under
+                # the other immediately, not copied-then-drifted.
+                source_memories = source_dir / "memories"
+                if source_memories.is_dir() or source_memories.is_symlink():
+                    _symlink_replacing_existing(source_memories, profile_dir / "memories")
+                source_memory_db = source_dir / "memory_store.db"
+                if source_memory_db.is_file() or source_memory_db.is_symlink():
+                    _symlink_replacing_existing(source_memory_db, profile_dir / "memory_store.db")
+            else:
+                # Clone memory and other subdirectory files
+                for relpath in _CLONE_SUBDIR_FILES:
+                    src = source_dir / relpath
+                    if src.exists():
+                        dst = profile_dir / relpath
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dst)
 
     # Seed an empty .env so the profile has its own credentials file from
     # day one. Without it, profile-scoped env writes (dashboard Channels /

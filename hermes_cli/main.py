@@ -11895,18 +11895,20 @@ def cmd_profile(args):
         name = args.profile_name
         clone = getattr(args, "clone", False)
         clone_all = getattr(args, "clone_all", False)
+        link = getattr(args, "link", False)
         no_alias = getattr(args, "no_alias", False)
         no_skills = getattr(args, "no_skills", False)
 
         try:
             clone_from = getattr(args, "clone_from", None)
-            clone_config = clone or clone_from is not None
+            clone_config = clone or clone_from is not None or link
 
             profile_dir = create_profile(
                 name=name,
                 clone_from=clone_from,
                 clone_all=clone_all,
                 clone_config=clone_config,
+                link=link,
                 no_alias=no_alias,
                 no_skills=no_skills,
                 description=getattr(args, "description", None),
@@ -11921,6 +11923,12 @@ def cmd_profile(args):
                     print(
                         f"Full copy from {source_label} "
                         "(excluding session history, backups, and snapshots)."
+                    )
+                elif link:
+                    print(
+                        f"Cloned config, .env, and SOUL.md from {source_label}. "
+                        f"Skills, plugins, and memory are LINKED (shared) with "
+                        f"{source_label} — changes to either show up in both."
                     )
                 else:
                     print(

@@ -48,6 +48,19 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="Source profile to clone from; implies --clone unless --clone-all is set",
     )
     profile_create.add_argument(
+        "--link",
+        action="store_true",
+        help=(
+            "Share skills, plugins, and memory (hot + warm tier) with the "
+            "source profile via symlinks instead of copying — edits/learns "
+            "in either profile show up in both immediately, with no re-sync "
+            "step, ever. config.yaml/.env/SOUL.md are still independent "
+            "copies. For 'same brain, different model' profile pairs (e.g. "
+            "quick-switching providers), not fully isolated personas. "
+            "Mutually exclusive with --clone-all and --no-skills."
+        ),
+    )
+    profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation"
     )
     profile_create.add_argument(

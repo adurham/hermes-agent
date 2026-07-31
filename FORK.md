@@ -42,6 +42,89 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only feature — 2026-07-31 (`hermes profile create --link`: share skills/plugins/memory between profiles via symlinks)
+
+**Motivation:** user maintains a `default` profile (Anthropic/Claude) and an
+`exo` profile (local DeepSeek-V4-Flash cluster) purely as a fast provider
+switch — same "self," different model backend, not separate personas. Skills
+and memory (warm-tier facts + hot-tier MEMORY.md/USER.md) had drifted between
+the two over weeks of use (default had 60 skill dirs with newer content, exo
+had 3 warm facts default lacked). Manually symlinked
+`~/.hermes/profiles/exo/{skills,plugins,memories,memory_store.db}` to their
+`~/.hermes/` counterparts to fix the immediate drift, but that's a raw
+filesystem hack: `hermes profile create --clone`'s existing clone path
+(`create_profile()` in `hermes_cli/profiles.py`) does `shutil.copytree(...,
+symlinks=True, dirs_exist_ok=True)` for skills — `symlinks=True` here means
+"preserve symlinks found *inside* the source tree," not "make the
+destination itself a symlink." A future `hermes profile create --clone` (or
+a profile repair/recreate flow) would silently deep-copy over the manual
+symlink and reintroduce drift with no warning.
+
+**Root cause (why this needed a real fix, not just a manual `ln -s`):**
+`create_profile()`'s clone_config branch copies skills/pets and copy2's
+memory files item-by-item with no concept of "share, don't copy" — there
+was no code path that could produce a linked profile pair, so any
+profile-management operation that re-runs cloning (recreate, a future
+"repair" command, etc.) would always regress to independent copies.
+
+**Fix:** added a `link: bool` parameter to `create_profile()`
+(`hermes_cli/profiles.py`) and a `--link` CLI flag
+(`hermes_cli/subcommands/profile.py`, wired through in
+`hermes_cli/main.py`'s `create` handler). When set:
+- Implies `clone_config` (config.yaml/.env/SOUL.md are still independent
+  *copies* — per-profile model/provider routing must be able to diverge).
+- `skills/`, `plugins/` (if present in source), `memories/` (hot tier), and
+  `memory_store.db` (warm tier) are symlinked to the source profile's copies
+  via a new `_symlink_replacing_existing()` helper, instead of copied.
+  sqlite's `-wal`/`-shm` siblings are NOT symlinked explicitly — sqlite
+  recreates them next to whatever path it opens, verified they still see
+  writes from either symlinked path correctly.
+- Mutually exclusive with `--clone-all` (full independent snapshot) and
+  `--no-skills` (would defeat the point of the flag).
+- `_symlink_replacing_existing()` is defensive/idempotent: replaces an
+  existing real dir (rmtree) or stale/broken symlink (unlink) before
+  linking, so a future repair script can safely re-run link setup against
+  an already-linked or partially-broken profile without erroring.
+
+**Verified:**
+- `shutil.rmtree(profile_dir)` (what `delete_profile()` does) on a linked
+  profile leaves the shared source completely intact — confirmed via a
+  standalone repro before writing the fix, and covered by
+  `test_link_survives_rmtree_of_linked_profile`.
+- End-to-end manual run (real venv, real `create_profile()`, temp
+  `HERMES_HOME`): skills/memories/memory_store.db all correctly symlinked,
+  config.yaml an independent copy, writes to skills via either the profile
+  or source path visible from both, rmtree of the profile survives.
+- `hermes profile create --help` shows the new `--link` flag with full CLI
+  help text.
+- Added `TestCreateProfileLink` (11 new tests) covering: skills/plugins/
+  memories/memory_store.db symlinking, plugins skip when source has none,
+  config independence, live bidirectional visibility, rmtree survival, the
+  two mutual-exclusion errors, `clone_config` implication, and
+  `_symlink_replacing_existing()` idempotency against existing/broken links.
+- Fixed a copy-paste accident during the initial patch that had split
+  `TestCreateProfile` (moved `test_clone_all_excludes_default_infrastructure`
+  and `test_clone_all_excludes_history_artifacts` into the wrong class) —
+  caught immediately by re-running the full file.
+- Full suite: `tests/hermes_cli/test_profiles.py` (169/169 passed),
+  `test_profile_distribution.py` + `test_profiles_s6_hooks.py` (79/79
+  passed), `test_web_server.py -k profiles_create` (5 passed, 4 skipped, no
+  regression in the existing `--clone-all` API test).
+
+**Files touched:** `hermes_cli/profiles.py` (new `link` param + logic +
+`_symlink_replacing_existing()` helper), `hermes_cli/subcommands/profile.py`
+(`--link` argparse flag), `hermes_cli/main.py` (`create` action wiring +
+success message), `tests/hermes_cli/test_profiles.py` (new
+`TestCreateProfileLink` class, 11 tests).
+
+**Not yet done:** the user's live `~/.hermes/profiles/exo/` is still linked
+via the manual `ln -s` from earlier this session, not via this new
+`--link` flag (that profile already exists; `--link` only applies at
+`create` time). If `exo` is ever deleted and recreated, use
+`hermes profile create exo --link --clone-from default` (or `--link` alone,
+which defaults the source to whatever profile is currently active) instead
+of manually symlinking again.
+
 ### Fork-only fix — 2026-07-29 (desktop: pet roam loop never actually roams — dies after one animation frame)
 
 **Reported:** after the pane-resize and jump-bob fixes shipped, user

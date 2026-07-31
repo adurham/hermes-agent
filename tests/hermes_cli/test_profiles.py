@@ -319,6 +319,7 @@ class TestCreateProfile:
         assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
         assert not (profile_dir / "profiles").exists()
 
+
     def test_clone_all_excludes_default_infrastructure(self, profile_env):
         """--clone-all from default profile excludes hermes-agent, .worktrees,
         bin, node_modules at root, plus __pycache__/*.pyc/*.pyo/*.sock/*.tmp
@@ -415,6 +416,169 @@ class TestCreateProfile:
         assert (profile_dir / ".env").exists()
         # SOUL.md is always seeded with the default even when clone source lacks it
         assert (profile_dir / "SOUL.md").exists()
+
+
+class TestCreateProfileLink:
+    """Tests for create_profile(..., link=True) — shared skills/plugins/memory."""
+
+    def test_link_symlinks_skills_to_source(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skill_dir = default_home / "skills" / "cat" / "myskill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: myskill\n---\n")
+
+        profile_dir = create_profile("exo", link=True, no_alias=True)
+
+        assert (profile_dir / "skills").is_symlink()
+        assert (profile_dir / "skills").resolve() == (default_home / "skills").resolve()
+        assert (
+            profile_dir / "skills" / "cat" / "myskill" / "SKILL.md"
+        ).read_text() == "---\nname: myskill\n---\n"
+
+    def test_link_symlinks_plugins_when_source_has_plugins(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "plugins").mkdir()
+        (default_home / "plugins" / "marker.txt").write_text("plugin data")
+
+        profile_dir = create_profile("exo", link=True, no_alias=True)
+
+        assert (profile_dir / "plugins").is_symlink()
+        assert (profile_dir / "plugins" / "marker.txt").read_text() == "plugin data"
+
+    def test_link_skips_plugins_when_source_has_none(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        assert not (default_home / "plugins").exists()
+
+        profile_dir = create_profile("exo", link=True, no_alias=True)
+
+        assert not (profile_dir / "plugins").exists()
+
+    def test_link_symlinks_memories_dir_and_db(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "memories").mkdir()
+        (default_home / "memories" / "MEMORY.md").write_text("shared fact\n")
+        (default_home / "memories" / "USER.md").write_text("user info\n")
+        (default_home / "memory_store.db").write_bytes(b"fake sqlite bytes")
+
+        profile_dir = create_profile("exo", link=True, no_alias=True)
+
+        assert (profile_dir / "memories").is_symlink()
+        assert (profile_dir / "memories" / "MEMORY.md").read_text() == "shared fact\n"
+        assert (profile_dir / "memory_store.db").is_symlink()
+        assert (profile_dir / "memory_store.db").read_bytes() == b"fake sqlite bytes"
+
+    def test_link_config_files_remain_independent_copies(self, profile_env):
+        """config.yaml/.env/SOUL.md are still real copies under --link — only
+        skills/plugins/memory are shared, so per-profile model routing can
+        still diverge."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text("model: default-model\n")
+
+        profile_dir = create_profile("exo", link=True, no_alias=True)
+
+        assert not (profile_dir / "config.yaml").is_symlink()
+        assert (profile_dir / "config.yaml").read_text().startswith("model: default-model")
+        # Mutating the clone's config must NOT affect the source.
+        (profile_dir / "config.yaml").write_text("model: exo-model\n")
+        assert (default_home / "config.yaml").read_text() == "model: default-model\n"
+
+    def test_link_writes_from_either_profile_are_visible_in_both(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "skills").mkdir()
+
+        profile_dir = create_profile("exo", link=True, no_alias=True)
+
+        new_skill = profile_dir / "skills" / "cat2" / "newskill"
+        new_skill.mkdir(parents=True)
+        (new_skill / "SKILL.md").write_text("new content")
+
+        assert (
+            default_home / "skills" / "cat2" / "newskill" / "SKILL.md"
+        ).read_text() == "new content"
+
+    def test_link_survives_rmtree_of_linked_profile(self, profile_env):
+        """delete_profile() (and any other code path) that rmtree's the
+        profile directory must NOT take the shared source down with it —
+        this is the property that makes --link safe against
+        create/delete/recreate cycles."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "skills").mkdir()
+        (default_home / "skills" / "marker.txt").write_text("keep me")
+        (default_home / "memories").mkdir()
+        (default_home / "memories" / "MEMORY.md").write_text("keep me too")
+        (default_home / "memory_store.db").write_bytes(b"keep me three")
+
+        profile_dir = create_profile("exo", link=True, no_alias=True)
+        shutil.rmtree(profile_dir)
+
+        assert not profile_dir.exists()
+        assert (default_home / "skills" / "marker.txt").read_text() == "keep me"
+        assert (default_home / "memories" / "MEMORY.md").read_text() == "keep me too"
+        assert (default_home / "memory_store.db").read_bytes() == b"keep me three"
+
+    def test_link_mutually_exclusive_with_clone_all(self, profile_env):
+        with pytest.raises(ValueError, match="--link is mutually exclusive with --clone-all"):
+            create_profile("exo", link=True, clone_all=True, no_alias=True)
+
+    def test_link_mutually_exclusive_with_no_skills(self, profile_env):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            create_profile("exo", link=True, no_skills=True, no_alias=True)
+
+    def test_link_implies_clone_config_even_when_not_explicitly_set(self, profile_env):
+        """link=True alone (no clone_config=True passed) must still copy
+        config.yaml/.env/SOUL.md — matching the CLI's clone_config = clone or
+        clone_from is not None or link derivation in main.py."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text("model: test\n")
+        (default_home / "SOUL.md").write_text("Be helpful.")
+
+        profile_dir = create_profile("exo", link=True, no_alias=True)
+
+        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cloned_config["model"] == "test"
+        assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_link_re_running_against_existing_stale_symlink_is_idempotent(self, profile_env):
+        """_symlink_replacing_existing must cleanly replace a stale/broken
+        symlink rather than erroring — covers a future repair/relink script
+        re-running create_profile's link step against an already-linked (or
+        partially-broken) profile."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "skills").mkdir()
+        (default_home / "skills" / "a.txt").write_text("a")
+
+        from hermes_cli.profiles import _symlink_replacing_existing
+
+        profile_dir = tmp_path / ".hermes" / "profiles" / "manual"
+        profile_dir.mkdir(parents=True)
+        dest = profile_dir / "skills"
+
+        # First link
+        _symlink_replacing_existing(default_home / "skills", dest)
+        assert dest.is_symlink()
+        assert (dest / "a.txt").read_text() == "a"
+
+        # Re-run against an already-linked dest — must not raise, must still
+        # resolve correctly afterward.
+        _symlink_replacing_existing(default_home / "skills", dest)
+        assert dest.is_symlink()
+        assert (dest / "a.txt").read_text() == "a"
+
+        # Re-run against a broken symlink (target deleted out from under it)
+        dest.unlink()
+        dest.symlink_to(tmp_path / "nonexistent-target")
+        _symlink_replacing_existing(default_home / "skills", dest)
+        assert dest.is_symlink()
+        assert (dest / "a.txt").read_text() == "a"
 
 
 # ===================================================================
