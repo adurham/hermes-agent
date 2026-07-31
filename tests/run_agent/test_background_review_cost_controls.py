@@ -112,6 +112,86 @@ def test_routing_resolution_failure_falls_back_to_parent():
 
 
 # ---------------------------------------------------------------------------
+# _resolve_review_runtime — PROVIDER-FIRST schema (2026-07-31 fix)
+#
+# Regression for a real bug: the pre-fix implementation read
+# ``auxiliary.background_review`` directly off the raw config dict, which
+# only understands the legacy TASK-FIRST schema. A PROVIDER-FIRST config
+# (top-level keys are provider ids + "defaults" -- e.g. auxiliary.exo:,
+# auxiliary.anthropic: -- the schema curator/compression/vision already
+# support via _resolve_task_provider_model) was silently ignored: the naive
+# read always saw an empty background_review block and fell through to
+# "parent", so a user's per-provider override had NO EFFECT no matter how
+# it was configured. Fixed by delegating to the same
+# _resolve_task_provider_model("background_review") every other auxiliary
+# task already uses.
+# ---------------------------------------------------------------------------
+
+def test_provider_first_schema_routes_when_main_provider_matches_block():
+    """auxiliary.exo.background_review (provider-first) must route the
+    review fork off-cluster when the active main provider is exo -- this
+    is the exact scenario that was previously silently ignored."""
+    agent = _FakeAgent(provider="exo", model="mlx-community/DeepSeek-V4-Flash")
+    cfg = {"auxiliary": {
+        "exo": {"provider": "ollama-cloud", "default": "gemma4:31b"},
+    }}
+    fake_rp = {
+        "provider": "ollama-cloud", "api_key": None,
+        "base_url": None, "api_mode": "chat_completions",
+        "credential_pool": None, "request_overrides": {},
+        "max_output_tokens": None,
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("agent.auxiliary_client._read_main_provider", return_value="exo"), \
+         patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_rp):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is True
+    assert rt["provider"] == "ollama-cloud"
+    assert rt["model"] == "gemma4:31b"
+
+
+def test_provider_first_schema_falls_through_to_parent_for_unmatched_provider():
+    """A provider-first config with an exo block, but main provider is
+    something else entirely (no matching block) -- must fall through to
+    parent (auto), not crash or misroute."""
+    agent = _FakeAgent(provider="anthropic", model="claude-sonnet-5")
+    cfg = {"auxiliary": {
+        "exo": {"provider": "ollama-cloud", "default": "gemma4:31b"},
+    }}
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is False
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-sonnet-5"
+
+
+def test_provider_first_schema_task_pin_overrides_provider_block():
+    """A top-level auxiliary.background_review pin (explicit routing) must
+    still win over provider-first flattening, per
+    _aux_flatten_provider_first's documented "task pin" precedence --
+    proves the fix didn't silently drop that override path."""
+    agent = _FakeAgent(provider="exo", model="mlx-community/DeepSeek-V4-Flash")
+    cfg = {"auxiliary": {
+        "exo": {"provider": "ollama-cloud", "default": "gemma4:31b"},
+        "background_review": {"provider": "anthropic", "model": "claude-haiku-4-5"},
+    }}
+    fake_rp = {
+        "provider": "anthropic", "api_key": None,
+        "base_url": None, "api_mode": "chat_completions",
+        "credential_pool": None, "request_overrides": {},
+        "max_output_tokens": None,
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("agent.auxiliary_client._read_main_provider", return_value="exo"), \
+         patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_rp):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is True
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4-5"
+
+
+# ---------------------------------------------------------------------------
 # _digest_history — routed-path compact replay
 # ---------------------------------------------------------------------------
 
