@@ -42,6 +42,81 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Fork-only fix — 2026-07-31 (exo/DSv4-Flash: RepetitionTuner wired into the conversation loop; wasn't called anywhere)
+
+**Reported:** user watched a live CLI session against the exo cluster
+(DSv4-Flash) sit in a semantic decode loop for 20+ minutes — the model's
+`reasoning_content` cycled the same ~4 sentences ("Wait — I just had a
+thought...", "OK, I'm going to try one more thing...") repeatedly with no
+detection or intervention until the 30-min `gateway_timeout` would
+eventually have killed the turn as a backstop.
+
+**Root cause, two compounding gaps:**
+
+1. **No sampler override sent to exo.** `providers.exo.extra_body` in
+   config.yaml only carried `use_prefix_cache`/`service_tier` — no
+   `temperature`/`top_p`/`top_k`/`repetition_penalty`. DSv4-Flash's own
+   model-card defaults (`temperature=1.0, top_p=0.95, top_k=None,
+   repetition_penalty=None`) leave every anti-repetition guard off. A
+   server-side fix (count-aware `repetition_penalty`, adurham/mlx-lm
+   `b6b7434`) was deployed 2026-07-01 but was inert the whole time because
+   nothing ever sent a non-null `repetition_penalty` value to invoke it —
+   checked every `config.yaml.bak*` back to May, the override was never
+   present. **Fixed by `hermes config set` (not a code change — see config
+   changes are user-config, not fork code):** added
+   `temperature: 0.6, top_p: 0.95, top_k: 40, repetition_penalty: 1.1`
+   under `providers.exo.extra_body`, plus a hard `max_tokens: 16384` cap
+   under `providers.exo.models."mlx-community/DeepSeek-V4-Flash"` to bound
+   worst-case single-turn generation time server-side (exo calls are
+   non-streaming from Hermes' side, so nothing client-side can abort an
+   in-flight generation once started — a token ceiling is the only lever
+   that bounds it).
+
+2. **`RepetitionTuner` (`agent/repetition_tuner.py`) existed fully
+   implemented — scores `reasoning_content` repetition per turn via 4-gram
+   overlap / lead-phrase density / intra-turn repetition / entity
+   restatement, EMA-smoothed, and proposes escalating
+   `frequency_penalty`/`presence_penalty` — but had ZERO call sites
+   anywhere in the codebase.** Grepped the whole tree; it was dead code,
+   built and never wired in. So there was no live mechanism watching for
+   exactly the failure mode it was purpose-built to detect.
+
+**Fix:** wired `RepetitionTuner` into `agent/conversation_loop.py`
+immediately after `assistant_message`/`finish_reason` are set from the
+normalized API response (the single call site — `assistant_message =
+normalized` — that runs for every non-Codex-app-server turn). Gated on
+`":52415" in agent.base_url` (exo's fixed API port; `agent.provider` is
+`"custom"` for exo since it's a `providers.<key>` custom-provider entry,
+not a registered provider name — matching on `agent.provider == "exo"`
+would silently no-op). Each turn: `observe()` the turn's
+`reasoning_content`/`reasoning`, then `suggest()` a
+`frequency_penalty`/`presence_penalty` pair and merge it into
+`agent.request_overrides` for the next request; when the score drops back
+down, the stale penalty keys are popped so they don't stick around
+forever from an earlier spike. Wrapped in try/except + `logger.debug` —
+never allowed to break the main loop on an unexpected `reasoning_content`
+shape.
+
+**Known limitation (by design, not a bug):** this prevents the NEXT turn
+from continuing the same loop once the pattern is detected — it cannot
+abort an ALREADY-IN-FLIGHT generation, because Hermes's exo calls are
+non-streaming (waits for the full HTTP response). The `max_tokens: 16384`
+cap in fix #1 is the mechanism that bounds a single stuck generation's
+wall-clock time; RepetitionTuner is the mechanism that stops the loop
+from being re-triggered turn after turn once caught.
+
+**Files touched:** `agent/conversation_loop.py` (+36 lines, one insertion
+point). `~/.hermes/config.yaml` (user config, not fork code — sampler
+overrides + max_tokens cap under `providers.exo`).
+
+**Verification:** `ast.parse()` syntax check + `python -c "import
+agent.conversation_loop"` both clean. Not yet verified against a live
+reproduced loop (would need another 20-min degenerate session to confirm
+end-to-end) — flag for a follow-up check next time a repetition episode
+occurs: `grep '\[repetition_tuner\]' ~/.hermes/logs/*.log` should show
+escalating scores/penalties before the loop would previously have
+continued unchecked.
+
 ### Fork-only fix — 2026-07-29 (desktop: pet roam loop never actually roams — dies after one animation frame)
 
 **Reported:** after the pane-resize and jump-bob fixes shipped, user
