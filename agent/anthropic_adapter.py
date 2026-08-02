@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import socket
 import stat
@@ -1298,12 +1299,75 @@ def build_anthropic_bedrock_client(region: str):
     )
 
 
+def _list_claude_code_keychain_service_candidates() -> list:
+    """Enumerate keychain generic-password service names that could hold a
+    Claude Code OAuth credential, newest-modified first.
+
+    Claude Code >=2.1.114 stores credentials in the macOS Keychain under the
+    service name "Claude Code-credentials". Some installs (observed on
+    2.1.220) instead write a per-install-suffixed service name such as
+    "Claude Code-credentials-3775e6c9", leaving the unsuffixed entry behind
+    as a stale, empty placeholder. A hardcoded exact-name lookup silently
+    finds that stale placeholder and never sees the real, live credential —
+    so we must enumerate by prefix and let the caller validate + pick the
+    freshest usable one instead of trusting an exact name match.
+
+    Uses ``security dump-keychain`` WITHOUT ``-d`` — that only lists item
+    attributes (service name, account, modified date), never secrets, so it
+    never triggers a Touch ID / keychain-unlock prompt. The actual secret is
+    fetched later, one item at a time, via ``find-generic-password -w`` only
+    for the specific candidate being tried.
+
+    Returns a list of service-name strings ordered newest-``mdat``-first.
+    """
+    try:
+        result = subprocess.run(
+            ["security", "dump-keychain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("Keychain: 'security dump-keychain' unavailable or timed out")
+        return []
+
+    if result.returncode != 0 or not result.stdout:
+        return []
+
+    candidates = []
+    # Each item begins with its own `keychain: "..."` line (no blank-line
+    # separator on all macOS versions — observed absent on 27.0/Tahoe+).
+    # Split on that marker and keep svce/mdat paired per-block so we never
+    # associate the wrong modified-date with the wrong service name.
+    for block in re.split(r'(?=^keychain: )', result.stdout, flags=re.MULTILINE):
+        if 'class: "genp"' not in block:
+            continue
+        svce_match = re.search(r'"svce"<blob>="([^"]*)"', block)
+        if not svce_match:
+            continue
+        svce = svce_match.group(1)
+        if not svce.startswith("Claude Code-credentials"):
+            continue
+        mdat_match = re.search(r'"mdat"<timedate>=0x[0-9A-Fa-f]+\s+"([^"]*)"', block)
+        mdat = mdat_match.group(1) if mdat_match else ""
+        candidates.append((mdat, svce))
+
+    # mdat is a zero-padded ISO-ish string (e.g. "20260802160634Z"), so plain
+    # lexical sort is chronological. Newest first.
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    return [svce for _, svce in candidates]
+
+
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from the macOS Keychain.
 
-    Claude Code >=2.1.114 stores credentials in the macOS Keychain under the
-    service name "Claude Code-credentials" rather than (or in addition to)
-    the JSON file at ~/.claude/.credentials.json.
+    Enumerates every keychain service name starting with
+    "Claude Code-credentials" (see ``_list_claude_code_keychain_service_candidates``),
+    newest-modified first, and returns the first one that actually contains a
+    non-empty, well-formed OAuth payload. This tolerates Claude Code versions
+    that suffix the service name per-install while a stale unsuffixed entry
+    (empty accessToken/refreshToken) lingers from an older version.
 
     The password field contains a JSON string with the same claudeAiOauth
     structure as the JSON file.
@@ -1313,45 +1377,57 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     if platform.system() != "Darwin":
         return None
 
-    try:
-        # Read the "Claude Code-credentials" generic password entry
-        result = subprocess.run(
-            ["security", "find-generic-password",
-             "-s", "Claude Code-credentials",
-             "-w"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        logger.debug("Keychain: security command not available or timed out")
-        return None
+    service_names = _list_claude_code_keychain_service_candidates()
+    # Always try the plain exact name too (in case dump-keychain enumeration
+    # fails for some reason, e.g. sandboxing) — de-duplicate, preserve order.
+    if "Claude Code-credentials" not in service_names:
+        service_names.append("Claude Code-credentials")
 
-    if result.returncode != 0:
-        logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
-        return None
+    for service_name in service_names:
+        try:
+            result = subprocess.run(
+                ["security", "find-generic-password",
+                 "-s", service_name,
+                 "-w"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            logger.debug("Keychain: security command not available or timed out")
+            continue
 
-    raw = result.stdout.strip()
-    if not raw:
-        return None
+        if result.returncode != 0:
+            continue
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.debug("Keychain: credentials payload is not valid JSON")
-        return None
+        raw = result.stdout.strip()
+        if not raw:
+            continue
 
-    oauth_data = data.get("claudeAiOauth")
-    if oauth_data and isinstance(oauth_data, dict):
-        access_token = oauth_data.get("accessToken", "")
-        if access_token:
-            return {
-                "accessToken": access_token,
-                "refreshToken": oauth_data.get("refreshToken", ""),
-                "expiresAt": oauth_data.get("expiresAt", 0),
-                "source": "macos_keychain",
-            }
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.debug("Keychain: credentials payload for '%s' is not valid JSON", service_name)
+            continue
+
+        oauth_data = data.get("claudeAiOauth")
+        if oauth_data and isinstance(oauth_data, dict):
+            access_token = oauth_data.get("accessToken", "")
+            if access_token:
+                if service_name != "Claude Code-credentials":
+                    logger.debug(
+                        "Keychain: using suffixed Claude Code credential entry '%s'",
+                        service_name,
+                    )
+                return {
+                    "accessToken": access_token,
+                    "refreshToken": oauth_data.get("refreshToken", ""),
+                    "expiresAt": oauth_data.get("expiresAt", 0),
+                    "source": "macos_keychain",
+                }
+        # Empty/malformed payload (e.g. a stale placeholder entry) — fall
+        # through and try the next candidate rather than giving up.
 
     return None
 

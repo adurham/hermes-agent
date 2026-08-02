@@ -90,6 +90,92 @@ class TestReadClaudeCodeCredentialsFromKeychain:
             assert creds["expiresAt"] == 9999999999999
             assert creds["source"] == "macos_keychain"
 
+    def test_suffixed_service_name_used_when_exact_name_is_stale(self):
+        """Regression test for the 2026-08-02 sync-drift bug: Claude Code
+        2.1.220 writes its keychain entry under a per-install-suffixed
+        service name (e.g. "Claude Code-credentials-3775e6c9") and leaves
+        the exact unsuffixed "Claude Code-credentials" entry behind as an
+        empty placeholder. The resolver must enumerate by prefix and use
+        the first candidate with an actual populated accessToken, not just
+        the exact name — otherwise a fresh, valid, self-refreshing OAuth
+        credential is invisible and callers fall back to a manually-copied
+        static token that has to be re-synced across every Hermes profile
+        by hand whenever it goes stale.
+        """
+        dump_keychain_output = (
+            'keychain: "/Users/x/Library/Keychains/login.keychain-db"\n'
+            'version: 512\n'
+            'class: "genp"\n'
+            'attributes:\n'
+            '    "svce"<blob>="Claude Code-credentials"\n'
+            '    "acct"<blob>="x"\n'
+            '    "mdat"<timedate>=0x00  "20260728195931Z\\000"\n'
+            'keychain: "/Users/x/Library/Keychains/login.keychain-db"\n'
+            'version: 512\n'
+            'class: "genp"\n'
+            'attributes:\n'
+            '    "svce"<blob>="Claude Code-credentials-3775e6c9"\n'
+            '    "acct"<blob>="x"\n'
+            '    "mdat"<timedate>=0x00  "20260802160634Z\\000"\n'
+        )
+        stale_payload = json.dumps({
+            "claudeAiOauth": {"accessToken": "", "refreshToken": "", "expiresAt": 0}
+        })
+        fresh_payload = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "fresh-suffixed-token",
+                "refreshToken": "fresh-suffixed-refresh",
+                "expiresAt": 9999999999999,
+            }
+        })
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["security", "dump-keychain"]:
+                return MagicMock(returncode=0, stdout=dump_keychain_output, stderr="")
+            if cmd[:2] == ["security", "find-generic-password"]:
+                service_name = cmd[cmd.index("-s") + 1]
+                if service_name == "Claude Code-credentials-3775e6c9":
+                    return MagicMock(returncode=0, stdout=fresh_payload, stderr="")
+                if service_name == "Claude Code-credentials":
+                    return MagicMock(returncode=0, stdout=stale_payload, stderr="")
+                return MagicMock(returncode=1, stdout="", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run", side_effect=fake_run):
+            creds = _read_claude_code_credentials_from_keychain()
+            assert creds is not None
+            assert creds["accessToken"] == "fresh-suffixed-token"
+            assert creds["refreshToken"] == "fresh-suffixed-refresh"
+            assert creds["source"] == "macos_keychain"
+
+    def test_falls_back_past_dump_keychain_failure_to_exact_name(self):
+        """If 'security dump-keychain' fails (e.g. unavailable), the resolver
+        must still try the plain exact service name rather than giving up."""
+        fresh_payload = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "exact-name-token",
+                "refreshToken": "exact-name-refresh",
+                "expiresAt": 9999999999999,
+            }
+        })
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["security", "dump-keychain"]:
+                return MagicMock(returncode=1, stdout="", stderr="boom")
+            if cmd[:2] == ["security", "find-generic-password"]:
+                service_name = cmd[cmd.index("-s") + 1]
+                if service_name == "Claude Code-credentials":
+                    return MagicMock(returncode=0, stdout=fresh_payload, stderr="")
+                return MagicMock(returncode=1, stdout="", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run", side_effect=fake_run):
+            creds = _read_claude_code_credentials_from_keychain()
+            assert creds is not None
+            assert creds["accessToken"] == "exact-name-token"
+
 
 class TestReadClaudeCodeCredentialsPriority:
     """Bug 4: Keychain must be checked before the JSON file."""
