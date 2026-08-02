@@ -5479,6 +5479,49 @@ Operation timed out`) — a pre-existing config issue, not something to
 gets a current, real `main` ref via HTTPS without touching the
 configured `upstream` remote.
 
+### Second rebase round (2026-08-02) — #72087 and #72153 both hit real upstream refactors
+
+`main` had moved substantially in the few days since the first fixes
+landed. Both PRs showed real (not stale) merge conflicts, and in both
+cases the conflict was because an unrelated upstream change had
+independently touched the exact code these PRs target:
+
+- **#72087:** upstream's own `#73298` refactor extracted
+  `_estimate_message_tokens_without_images()`'s dedup logic into a new
+  shared `_wire_message_shadow()` helper — and that refactor
+  **independently introduced the same underscore-mismatch bug** this PR
+  was written against: the helper excludes the legacy back-compat key
+  `_anthropic_content_blocks` (leading underscore) but the live wire
+  field is `anthropic_content_blocks` (no underscore), so the exclusion
+  silently never fires. Verified empirically on unpatched `main`: a
+  message with the duplicated thinking text is estimated at **4.04x**
+  the correct token count — a bigger blast radius than the original bug
+  report, since `_wire_message_shadow()` now feeds both the char-count
+  and token-estimate paths. Retargeted the fix directly into
+  `_wire_message_shadow()`; all prior payload-proportional test
+  hardening carried over unchanged and still passes (7/7), plus the full
+  `test_model_metadata.py` suite (66/66) and a wider regression sweep of
+  context-compression/turn-context suites (236/236) since the helper is
+  now shared infra.
+- **#72153:** upstream landed a full user-configurable terminal font
+  feature (`resolveTerminalFontFamily()` / `DEFAULT_TERMINAL_FONT_FAMILY`
+  in a new `terminal-font.ts`) that replaced the two hardcoded
+  `fontFamily` strings this PR originally patched. The underlying bug
+  (tofu boxes on the unconfigured default) was still real — confirmed
+  the new default constant still lacked the Nerd Font fallback — so the
+  fix collapsed from a 2-file patch to a single-constant change.
+  Existing tests reference the constant symbolically, not as a hardcoded
+  literal, so no test updates were needed; ran the full terminal
+  directory as a regression check (9 files, 61 tests, 0 failures).
+
+Lesson reinforced: when a PR sits open for several days against a
+fast-moving `main`, don't assume "conflicting" means stale or abandoned
+— re-verify the underlying bug is still real against current code before
+touching anything, since upstream may have independently reintroduced
+the exact same bug through unrelated refactor work (as happened with
+#72087). All 6 open PRs (#72087, #72151, #72152, #72153, #72155, #72164)
+confirmed mergeable as of 2026-08-02.
+
 ### Bucket B — needs de-forking first, or unverified/likely-contaminated (do NOT file as-is)
 
 Moved here from the original Bucket A after re-review: FORK.md's own
