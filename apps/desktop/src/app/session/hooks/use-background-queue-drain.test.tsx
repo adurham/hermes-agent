@@ -141,6 +141,7 @@ describe('useBackgroundQueueDrain', () => {
     const getRuntimeIdForStoredSession = vi.fn((storedSessionId: string) =>
       storedSessionId === 'stored-session-a' ? null : 'rt-session-b'
     )
+
     const submitText = vi.fn(async () => true)
 
     enqueueQueuedPrompt('stored-session-a', { text: 'must not land in session b', attachments: [] })

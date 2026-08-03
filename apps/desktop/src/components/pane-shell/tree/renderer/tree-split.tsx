@@ -174,6 +174,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
     }
 
     const visible = child.children.filter(c => !subtreeGone(c, trackCtx))
+
     const subs = visible
       .map(c => sizingFor(c, fixedTrackSize(c, axis, trackCtx)))
       .filter((s): s is PaneSizing => s !== null)

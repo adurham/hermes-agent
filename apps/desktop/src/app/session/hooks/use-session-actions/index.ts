@@ -698,7 +698,9 @@ export function useSessionActions({
                   // (set locally by message.start) when the backend doesn't send
                   // one, and clear it once the turn is no longer running.
                   turnStartedAt: running
-                    ? (activated.inflight?.started_at ? activated.inflight.started_at * 1000 : state.turnStartedAt)
+                    ? activated.inflight?.started_at
+                      ? activated.inflight.started_at * 1000
+                      : state.turnStartedAt
                     : null
                 }),
                 storedSessionId
@@ -901,7 +903,9 @@ export function useSessionActions({
             // real start time from the backend's inflight snapshot so the
             // "thinking" timer doesn't reset when resuming a running session.
             turnStartedAt: resumedRunning
-              ? (resumed.inflight?.started_at ? resumed.inflight.started_at * 1000 : state.turnStartedAt)
+              ? resumed.inflight?.started_at
+                ? resumed.inflight.started_at * 1000
+                : state.turnStartedAt
               : null
           }),
           storedSessionId

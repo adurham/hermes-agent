@@ -83,7 +83,8 @@ export function SidebarWorkspaceGroup({
   // (recency) order — same pattern as the flat Recents list, just scoped to
   // this one lane instead of the whole sidebar.
   const orderedSessions = useMemo(
-    () => (laneSessionOrder?.length ? orderByIds(group.sessions, session => session.id, laneSessionOrder) : group.sessions),
+    () =>
+      laneSessionOrder?.length ? orderByIds(group.sessions, session => session.id, laneSessionOrder) : group.sessions,
     [group.sessions, laneSessionOrder]
   )
 
@@ -169,7 +170,11 @@ export function SidebarWorkspaceGroup({
     )
 
   return (
-    <SidebarRowStack className={dragging ? 'relative z-10 bg-(--ui-sidebar-surface-background)' : undefined} ref={ref} style={style}>
+    <SidebarRowStack
+      className={dragging ? 'relative z-10 bg-(--ui-sidebar-surface-background)' : undefined}
+      ref={ref}
+      style={style}
+    >
       <WorkspaceHeader
         action={
           (onNewSession || isProfileGroup || onRemove) && (
