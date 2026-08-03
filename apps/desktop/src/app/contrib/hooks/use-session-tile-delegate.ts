@@ -6,6 +6,7 @@ import { publishSessionState, setSessionTileDelegate } from '@/store/session-sta
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
+import { resolveStoredSession, sessionShouldHaveTranscript } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
 
@@ -66,7 +67,8 @@ export function useSessionTileDelegate({
           return existing
         }
 
-        const [prefetch, resumed] = await Promise.all([
+        const [storedRow, prefetch, resumed] = await Promise.all([
+          resolveStoredSession(storedSessionId).catch(() => undefined),
           getSessionMessages(storedSessionId).catch(() => null),
           requestGateway<SessionResumeResponse>('session.resume', { session_id: storedSessionId, cols: 96 })
         ])
@@ -77,13 +79,33 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
+        const seededMessages = toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+
+        // A known-non-empty session (message_count > 0 on the stored row) that
+        // comes back with an empty transcript from BOTH the REST prefetch and
+        // the gateway resume is not a legitimately blank chat — it's a resume
+        // that silently failed to hydrate (a stale/cold gateway swap mid-
+        // request, a transient 404 the two `.catch`es above swallowed). The
+        // primary resume path (use-session-actions/index.ts) guards this exact
+        // case via sessionShouldHaveTranscript + drops the cache so a retry can
+        // rebind; a tile had no equivalent guard, so it cached the false-empty
+        // state as truth and rendered a permanently blank pane with no error
+        // and no way to recover short of closing and reopening the tab.
+        // Throwing here instead routes into the SAME "Couldn't open this
+        // session" + Retry card session-tile.tsx already shows for a failed
+        // resume, and — critically — does NOT cache the empty state, so Retry
+        // (or the next reconnect) gets a clean attempt instead of reusing this
+        // tainted runtime binding.
+        if (seededMessages.length === 0 && sessionShouldHaveTranscript(storedRow)) {
+          throw new Error('resume returned no messages for a non-empty session')
+        }
+
         updateSessionState(
           runtimeId,
           state => ({
             ...state,
             busy: Boolean(resumed?.info?.running),
-            messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+            messages: state.messages.length > 0 ? state.messages : seededMessages
           }),
           storedSessionId
         )
