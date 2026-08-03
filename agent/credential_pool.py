@@ -1641,6 +1641,26 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
+            # Dead env:-seeded reference row guard, run AFTER the file/auth-
+            # store sync and refresh steps above. Unlike claude_code/nous/
+            # codex/xai-oauth borrowed sources (which all have an explicit
+            # live-resync path above, or a refresh path via
+            # ``_entry_needs_refresh``/``_refresh_entry``), an ``env:*``
+            # entry (e.g. ANTHROPIC_TOKEN/CLAUDE_CODE_OAUTH_TOKEN) whose
+            # backing environment variable has since been unset has NO
+            # resync path at all — ``_seed_from_env`` only re-hydrates while
+            # the var is still set, and ``_prune_stale_seeded_entries``
+            # deliberately never deletes env: rows (see #9331). Such a row
+            # is permanently empty. The earlier ``AUTH_TYPE_API_KEY`` guard
+            # only catches this when auth_type is api_key; an oauth-typed
+            # env: stub (empty runtime_api_key) sailed through unfiltered
+            # and could sit at a higher priority than a real, valid,
+            # lower-priority credential — e.g. an empty env:ANTHROPIC_TOKEN
+            # row permanently shadowing a live claude_code token, making
+            # the pool report "no credentials found" forever even though a
+            # working credential existed further down the priority list.
+            if entry.source.startswith("env:") and not entry.runtime_api_key:
+                continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
