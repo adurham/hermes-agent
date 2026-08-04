@@ -42,6 +42,80 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### De-fork pass — 2026-08-04 (post-v2026.8.3 audit: retire divergences upstream superseded)
+
+Full audit of every FORK.md entry against upstream v2026.8.3, goal: reuse
+as much upstream as possible. Each divergence was checked two ways — does
+the tree still diff from the tag for it, and does upstream now provide the
+capability. Retired/migrated in this pass (details appended to each
+original entry):
+
+* **Prompt-cache sentinel split (2026-06-02 item 2)** → upstream's
+  `static_system_prefix` structured split; ~200 lines deleted across the
+  three hottest merge files; one back-compat sentinel strip survives for
+  sentinel-era stored sessions.
+* **Pet visibility IPC channel (2026-07-26 family)** → upstream's
+  `renderer-loop-pause` controller; the parallel
+  `hermes:window-visibility-changed` channel deleted end-to-end
+  (electron/main.ts push, preload bridge, `use-window-visibility.ts`,
+  typings); `pauseWhenUnfocused: false` preserves the fork's
+  keep-animating-while-unfocused design.
+* **Pane-shell close/front machinery (2026-07-22/23/24)** → upstream's
+  `paneClosers` registry + `closeWorkspaceTab` + boot-only-collapses
+  `bindToolPaneCollapse`; fork's `isPaneCloseable`/`front:` params/inline
+  workspace closer removed — `store.ts` and `fallback.tsx` now match
+  upstream byte-for-byte. Incidentally fixed a real race: the fork had TWO
+  live `registerPaneCloser('workspace', …)` effects and the winner depended
+  on render timing. Browser-tab sidebar clicks re-expressed as upstream's
+  `openSession(id, navigate, 'stack')` intent; the tile-fronting fix moved
+  into `open-session.ts` where upstream's own tab branch was internally
+  inconsistent.
+* **Approval-timeout wording (2026-07-06)** → upstream absorbed the
+  semantics ('timeout' outcome, "Silence is not consent"); fork wording
+  residue converged to upstream verbatim (tools/approval.py + cli.py + 16
+  locale files), which also restored `deny_reason` on the reachable return
+  path — the fork residual had stranded it in dead code. Kept: codex
+  app-server maps timeout→`cancel` (real denial-vs-unanswered semantic).
+* **Legacy aux `fallback_model` scalar / `fallback_models` map read paths
+  (2026-06-22/24)** deleted — the v31 provider-first migration converts
+  both shapes and the live config (v33) carries neither.
+* **npm security overrides (2026-07-25)** revalidated: react-router v8 +
+  brace-expansion converged upstream; `minimatch`/nested-`glob` overrides
+  proven STILL necessary (trial removal reintroduced vulnerable
+  brace-expansion under @electron/asar); bumped `brace-expansion` override
+  to 5.0.9 (new advisory GHSA-rgw5 flags ≤5.0.8, including upstream's own
+  pin) and fixed the pre-existing undici highs (ui-tui → 6.28.0; jsdom
+  scoped override → 7.29.0; node-gyp via top-level `^6.28.0`) — `npm
+  audit`: **0 vulnerabilities**.
+
+Checked and deliberately KEPT after deeper verification (audit claims
+corrected): `_cancel_lifecycle_wait_tasks` in tools/mcp_tool.py (upstream's
+inline form calls `cancel()` outside the try and can still raise 'Event
+loop is closed' at interpreter-shutdown GC — the Bucket A note calling it
+"a pure refactor" is wrong and corrected below); `cache_tools` threading
+(sole tools[] cache emitter for third-party anthropic-wire gateways); the
+lone-header force for main-placement panes (upstream still hides the only
+× on a lone workspace tab — the 2026-07-23 bug would return). The
+"corrected below" for Bucket A is a nuance, not a reversal — see the
+paragraph after next.
+
+Also converged/retired as already-absorbed upstream (annotations on the
+original entries): self-update codesign fixup body (upstream's
+`_desktop_macos_local_codesign` is strictly better), Bearer x-api-key leak
+guard (upstream implemented the identical fix independently), `/exit`
+"Event loop is closed" orphan-reap (fork's PR merged upstream as #74139).
+Nuance on `_cancel_lifecycle_wait_tasks`: Bucket A's "pure refactor"
+finding was right about fork history, but upstream's inline form guards
+`cancel()` differently (outside the try), so the helper is kept as a real
+protective divergence, not dedup.
+
+Still open upstream (converge when they land): PRs #72087 (estimator
+4x-count — upstream's refactor reintroduced the exact bug), #72151,
+#72152, #72153 (Nerd Font — locally re-applied as the one-constant form),
+#72155, #72164. New filing opportunity surfaced by the audit: upstream's
+`background_review.py` has the fork's 2026-07-22 doubled-tokens /
+Ctrl+C-lockup race (same subsystem, same session_id sharing, no guard).
+
 ### Upstream sync — 2026-08-04 (v2026.8.3 / v0.20.0 "Herald", 4,032 commits, ~200 conflict files)
 
 Merge-base was v2026.7.20; pulled 4,032 upstream commits on branch
@@ -904,6 +978,8 @@ failures on a clean `git stash` of this change.
 
 ### Fork-only fix — 2026-07-26 (self-update relaunch fixup stripped mac entitlements + hardened runtime)
 
+**CONVERGED 2026-08-04** — upstream's `_desktop_macos_local_codesign` (inside-out signing, entitlements, hardened runtime, identifier-based DR pinning) is strictly better and the fork now runs it byte-identical. The 2026-07-26 skip-branch call-site fix below remains fork-only.
+
 **Symptom:** a from-scratch local macOS build (`npm run dist:mac`/`pack`, or
 `CSC_IDENTITY_AUTO_DISCOVERY=false ... -c.mac.identity='-'`) is ad-hoc signed
 WITH entitlements (`electron/entitlements.mac.plist`: JIT, unsigned-executable-
@@ -1064,6 +1140,8 @@ unmodified `main` (confirmed via `git stash`) — not caused by this change.
 changes the second time (idempotency confirmed).
 
 ### Fork-only fix — 2026-07-25 (npm audit: 19 high-severity vulns → 0, react-router v7→v8 + minimatch/brace-expansion overrides)
+
+**Revalidated 2026-08-04** — react-router v8 + brace-expansion override converged upstream. `minimatch`/nested-`glob` overrides proven STILL necessary (trial removal reintroduced vulnerable brace-expansion under @electron/asar). Bumped `brace-expansion` to 5.0.9 (GHSA-rgw5 flags ≤5.0.8 including upstream's pin) and fixed the pre-existing undici highs (ui-tui direct dep → 6.28.0; scoped `jsdom→undici ^7.29.0`; top-level `undici ^6.28.0` for node-gyp; undici added to .npmrc min-release-age excludes). `npm audit`: 0 vulnerabilities.
 
 **Symptom:** `npm install` at repo root reported 19 high-severity
 vulnerabilities; `npm run pack` in `apps/desktop` (the packaged-build path)
@@ -2430,6 +2508,8 @@ Files: `agent/display.py` (+ new `tests/agent/test_display_cwidth_vs16.py`),
 
 ### Fork-only fix — 2026-07-23 (spurious "Event loop is closed" traceback on /exit)
 
+**Partially UPSTREAMED 2026-08-04** — the orphan-reap half merged upstream as #74139 (with fork credit) and the fork runs upstream's version. `_cancel_lifecycle_wait_tasks` re-verified and deliberately KEPT: Bucket A's "pure refactor" finding was correct about FORK history (the fork's pre-fix code already guarded `cancel()`), but UPSTREAM's inline finally-blocks call `cancel()` outside the try and can raise 'Event loop is closed' at interpreter-shutdown GC (#63412 scenario) — so the helper is now a real protective divergence vs upstream, not just dedup.
+
 **Symptom:** on `/exit`, after the "(cleaning up — press Ctrl+C to quit
 immediately)" message, the CLI process occasionally printed a Python
 "Exception ignored in: <coroutine object MCPServerTask.run at ...>" /
@@ -2492,6 +2572,8 @@ unmodified `main` when run in the same session, a pre-existing order-dependent
 flake unrelated to this change, confirmed via `git stash`).
 
 ### Fork-only feature — 2026-07-23 (desktop: sidebar click opens browser-like tabs instead of always replacing the middle pane)
+
+**Re-expressed 2026-08-04** as upstream machinery: the inline wiring handler replaced by `openSession(id, navigate, 'stack')` (upstream intent expresses the stack-beside-occupied-main design exactly); the tile-fronting fix moved into `open-session.ts`'s tab branch. The feature itself is unchanged.
 
 **Ask:** user wanted the middle chat pane's tab strip to behave like a
 browser — multiple sessions visible as tabs at once — instead of always
@@ -2615,6 +2697,8 @@ are unchanged. Worth a careful look on next upstream sync in case upstream
 also touches `pane-tab.tsx`.
 
 ### Fork-only feature — 2026-07-24 (desktop: workspace tab's × was missing and its "close" would have ripped the app's anchor pane out of the tree)
+
+**SUPERSEDED 2026-08-04** — migrated onto upstream's closer registry (`registerPaneCloser('workspace', closeWorkspaceTab)`); fork's `isPaneCloseable`, store-level `closeWorkspaceTab`, and hand-rolled closer removed (`store.ts` now matches upstream). Anchor guard verified upstream and pinned by the retained `workspace-closer.test.ts`. Promote semantics are now upstream's (next tab after workspace, wrapping; no-op close on a blank draft). KEPT: the lone-header force for main-placement panes — upstream still hides the only × on a lone workspace tab.
 
 **Follow-up to the two features above.** After adding the × close button,
 the user reported it showed on the 2nd (session-tile) tab but not the 1st —
@@ -2752,6 +2836,8 @@ Ran the bench myself on today's HEAD (`npm run perf -- cold-start --spawn --prod
 
 ### Fork-only fix — 2026-07-23 (desktop: running tool call buried mid-group, tool window too short)
 
+**OBSOLETE 2026-08-04** — upstream's ToolGroupSlot→ToolRun rework dropped the `.tool-group-scroll` window entirely; the orphaned CSS, `--tool-group-scroll-max-h`, and `data-tool-pending` attr were removed (dead code).
+
 **Symptom:** in the inline tool-call list under a chat reply, once a
 back-to-back run collapses into the bounded auto-scrolling window
 (`ToolGroupSlot` / `.tool-group-scroll`, triggered at
@@ -2828,6 +2914,8 @@ in `controller.tsx` that described the pane as "hidden until ⌘G".
 change).
 
 ### Fork-only fix — 2026-07-22 (desktop: Terminal-deck layout opened to the logs tab instead of terminal)
+
+**SUPERSEDED 2026-08-04** — upstream's `bindToolPaneCollapse` boot-only-collapses rule covers this scenario; fork's `front:` params removed (`revealTreePane`/`setPaneCollapsed` back to upstream signatures), pet-zone rebound through `bindToolPaneCollapse`, `bind-order-front.test.ts` deleted in favor of upstream's equivalent `tool-pane-toggle.test.ts` Terminal-deck case.
 
 **Symptom:** opening the desktop app while on the "Terminal deck" layout
 preset (or any layout where `terminal` and `logs` share one tabbed zone)
@@ -4072,6 +4160,36 @@ config issue. **Not sent upstream** (user decision — "not my problem").
    The `system_prompt.py` and `conversation_loop.py` edits are small; on
    conflict keep ours and re-verify the sentinel round-trips (strip == legacy
    flat join).
+   **RETIRED 2026-08-04 (sync/upstream-2026-08-04):** upstream's structured
+   split (`build_system_prompt_parts()` → `_cached_system_prompt_static` →
+   `static_system_prefix` through `build_prompt_cache_plan` /
+   `_apply_system_cache_markers`, merged via v2026.8.3) provides the same
+   stable|volatile cache boundary natively, and the fork had been running
+   both mechanisms stacked. Removed: the sentinel insertion in
+   `build_system_prompt`, `split_system_for_cache` /
+   `_apply_split_system_marker` / `_strip_system_sentinel` and the
+   sentinel-precedence branch in `apply_anthropic_cache_control`, the
+   send-site strip and the pre-`build_prompt_cache_plan` early decoration
+   block in `conversation_loop.py` (whose removal also fixed a latent
+   whitespace-instability hazard the plan-site comment documents), and
+   `tests/agent/test_system_prompt_cache_split.py` (static-prefix coverage
+   lives in `tests/agent/test_prompt_caching.py`). **Survivor:**
+   `strip_volatile_sentinel` + the sentinel constants stay in
+   `agent/prompt_caching.py` with exactly one call site — session-DB prompt
+   adoption in `_restore_or_build_system_prompt` — because prompts persisted
+   by sentinel-era sessions still contain the marker text; stripping there
+   restores the exact bytes those sessions sent, keeping their prefix cache
+   warm (regression test:
+   `test_system_prompt_restore.py::test_legacy_sentinel_prompt_is_stripped_on_restore`).
+   Semantic shift inherited from upstream: the sentinel split cached
+   stable+context as the head; `static_system_prefix` caches only the
+   stable tier (context rides with volatile). Once sentinel-era session DBs
+   age out, the survivor can be deleted too. Item 1's `cache_tools`
+   threading was re-verified 2026-08-04 and KEPT: it is the sole tools[]
+   breakpoint emitter for third-party native-layout anthropic-wire gateways
+   (MiniMax/Zhipu/LiteLLM-proxy class); upstream's plan-based
+   `direct_native_tool_cache` covers only api.anthropic.com, where the
+   double application is idempotent.
 
 3. **Config (not code) — `prompt_caching.cache_ttl: 1h → 5m`** on both boxes, to
    match Claude Code's default (CC defaults to 5m; the 1h tier costs 2x on write
@@ -4619,6 +4737,8 @@ anthropic_kwargs` guard on the temperature re-attach.
 
 ### Fork-only fix — 2026-06-22 (per-task `fallback_model` — cheap Haiku for trivial aux on Anthropic-main)
 
+**Read path RETIRED 2026-08-04** — the v31 provider-first migration converts the scalar shape and the live config carries it nowhere; the legacy read path in `_resolve_task_provider_model` was deleted. The migration itself still reads the legacy shape (correct).
+
 **Motivation:** Cost control. With aux tasks now resolving to `claude-sonnet-4-6`
 on Anthropic-main sessions (2026-06-21 change), every side task — including
 trivial ones like title generation and TTS-tag rewriting — burned Sonnet-tier
@@ -4678,6 +4798,8 @@ exo-scoped delegation guard. On conflict: keep the `cfg_fallback_model` read and
 
 
 ### Fork-only feature — 2026-06-24 (provider-scoped aux fallback: `fallback_models` map)
+
+**Read path RETIRED 2026-08-04** — same as the scalar: v31 converts the map shape; legacy read path deleted from `_resolve_task_provider_model`.
 
 **Motivation:** The 2026-06-22 `fallback_model` scalar fixed cost on
 Anthropic-main but is structurally under-designed: it is a single model string
@@ -6046,6 +6168,8 @@ Merge-base was v2026.6.19; pulled 1,760 upstream commits on branch
 
 ### Fork-only fixes — 2026-07-06 (status-bar timer + approval timeout semantics)
 
+**Timeout semantics SUPERSEDED 2026-08-04** — upstream absorbed the outcome model (distinct 'timeout' return, "Silence is not consent", elicitation cancel); the fork's wording residue in tools/approval.py, cli.py, and 16 locale files was converged to upstream verbatim, which also restored `deny_reason` on the reachable return path (the fork residual had stranded it in dead duplicate deny blocks). Surviving delta: codex app-server maps timeout→`cancel` vs upstream's `decline` (denial-vs-unanswered wire semantic, kept). The status-bar timer half of this entry is unaffected.
+
 1. **`0285cf60c` — status-bar timer no longer zero-pads minutes.**
    `cli.py` status-bar timer formatted `{_m:02d}m` so 2m19s rendered as
    `02m19s`. Changed to `{_m}m` (seconds keep `:02d` for width stability:
@@ -6579,6 +6703,8 @@ Keychain verified untouched after the run.
 
 
 ### Fork-only fix — 2026-07-14 (Bearer clients no longer leak env ANTHROPIC_API_KEY as x-api-key)
+
+**CONVERGED 2026-08-04** — upstream implemented the identical guard independently (`client.api_key = None`, same env-inference-trap comment); no fork delta remains.
 
 **`agent/anthropic_adapter.py` — `build_anthropic_client` + the Entra ID
 bearer-hook builder.**
@@ -8327,6 +8453,8 @@ signal across every phase transition).
 
 ### Fork-only fix — 2026-07-26 (pet: uncapped rAF loops kept running at full rate in the background, chewing battery)
 
+**Note 2026-08-04:** the gate now rides upstream's `renderer-loop-pause` controller instead of the fork IPC channel; the battery gate itself (pause-when-hidden, `last` reset, dt clamp) survives unchanged.
+
 **Symptom:** user reported Hermes Desktop draining battery noticeably.
 `powermetrics --samplers tasks` showed the renderer process pegged at
 37–53% of a core, sustained, with Safari frontmost and Hermes fully
@@ -8379,6 +8507,8 @@ render loop), `apps/desktop/src/components/pet/use-pet-roam.ts`
 
 ### Fork-only fix — 2026-07-26 (regression from the same-day pet visibility-gate fix: sprite froze on one frame)
 
+**SUPERSEDED 2026-08-04** — see the De-fork pass entry: the lesson survives as `pauseWhenUnfocused: false` on upstream's renderer-loop-pause controller.
+
 **Symptom:** immediately after rebuilding with the visibility-gate fix
 above, the pet got stuck looping the same single animation frame instead of
 animating normally — reported right after the rebuild+relaunch.
@@ -8427,6 +8557,8 @@ pre-existing skips, unrelated).
 **Merge note:** fork-only files, no upstream equivalent — no conflict risk.
 
 ### Fork-only fix — 2026-07-26 (second regression on the same day: document.hidden itself is unreliable in this app, not just hasFocus())
+
+**SUPERSEDED 2026-08-04** — upstream v2026.8.3 removed the two backgrounding switches that made Page Visibility unreliable, so this entry's premise is gone. The fork's `hermes:window-visibility-changed` channel, preload bridge, `use-window-visibility.ts`, and typings were deleted end-to-end; both pet loops now ride upstream's `renderer-loop-pause` controller (its `onWindowStateChanged` IPC keeps a main-process belt-and-braces). Note: upstream wires window-state pushes only for the primary window — if a secondary-window pause regression ever appears, add the four listeners to `wireCommonWindowHandlers`.
 
 **Symptom:** after rebuilding with the `document.hidden`-only gate above, the
 pet was still stuck on a single frame from the moment the app launched, and
