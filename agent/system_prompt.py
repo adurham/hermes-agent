@@ -566,40 +566,17 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     one cached block — Hermes never rebuilds or reinjects parts of it
     mid-session, which is the only way to keep upstream prompt caches
     warm across turns.
-
-    Cache split marker: when a volatile tier is present, a single
-    ``SYSTEM_VOLATILE_SENTINEL`` line is inserted between the stable+context
-    head and the volatile tail. The Anthropic cache layer
-    (``agent.prompt_caching``) uses it to place the system cache_control
-    breakpoint at the end of the stable head so a memory edit or date
-    rollover doesn't cold-rewrite the stable identity. The sentinel is
-    internal-only — it is always either consumed by the split or stripped
-    (restoring the plain ``\\n\\n`` separator) before the prompt is sent,
-    so the model never sees it, and the stored/displayed flat string stays
-    byte-reproducible. No sentinel is emitted when volatile is empty.
     """
-    _r = _ra()
-    from agent.prompt_caching import SYSTEM_VOLATILE_SENTINEL
-
     parts = build_system_prompt_parts(agent, system_message=system_message)
+    joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
     agent._cached_system_prompt_static = parts["stable"]
 
     # Surface context-file truncation warnings through the normal agent status
     # channel so gateway/CLI users see them in chat instead of only in logs.
-    # (Side effect only — independent of the cache-split return shape below.)
     for warning in drain_truncation_warnings():
         agent._emit_status(warning)
 
-    # FORK (prompt-cache stable|volatile split, FORK.md 2026-06-02): insert the
-    # SYSTEM_VOLATILE_SENTINEL between the stable+context head and the volatile
-    # tier so apply_anthropic_cache_control can split the system block and keep
-    # the byte-stable identity+tools head cached across memory/date changes.
-    head = "\n\n".join(p for p in (parts["stable"], parts["context"]) if p)
-    volatile = parts["volatile"]
-    if head and volatile:
-        return head + "\n\n" + SYSTEM_VOLATILE_SENTINEL + "\n\n" + volatile
-    # Only one side present — no boundary to mark; emit a plain join.
-    return "\n\n".join(p for p in (head, volatile) if p)
+    return joined
 
 
 def invalidate_system_prompt(agent: Any) -> None:
