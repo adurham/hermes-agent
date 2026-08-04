@@ -163,6 +163,49 @@ describe('usePetRoam canMove vs enabled', () => {
     expect(stillOnScreen).toBe(true)
   })
 
+  it('pauses while the document is hidden, resumes on visible, and ignores blur (pauseWhenUnfocused: false)', () => {
+    // The roam loop's visibility gate now comes from the shared
+    // renderer-loop-pause controller (the fork's parallel main-process
+    // visibility IPC was removed once upstream re-enabled occlusion
+    // tracking). Pausing must stop scheduling entirely — not just skip
+    // physics — and a blur alone must NOT pause: the pet is a background
+    // companion that keeps wandering while the window is visible but
+    // unfocused.
+    const setDocumentHidden = (hidden: boolean) => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: hidden ? 'hidden' : 'visible'
+      })
+    }
+
+    const onPos = vi.fn()
+
+    render(createElement(Harness, { canMove: true, enabled: true, onPos }))
+    expect(rafCallbacks.length).toBe(1)
+
+    try {
+      // Blur: still scheduling (visible-but-unfocused keeps wandering).
+      act(() => window.dispatchEvent(new Event('blur')))
+      advanceFrame(16)
+      expect(rafCallbacks.length).toBe(1)
+
+      // Truly hidden: the in-flight frame fires but must not queue another.
+      setDocumentHidden(true)
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      advanceFrame(16)
+      expect(rafCallbacks.length).toBe(0)
+
+      // Visible again: scheduling resumes.
+      setDocumentHidden(false)
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      expect(rafCallbacks.length).toBe(1)
+      advanceFrame(16)
+      expect(rafCallbacks.length).toBe(1)
+    } finally {
+      setDocumentHidden(false)
+    }
+  })
+
   it('an enabled flip DOES reset the loop (this is intentional — structural mount/unmount)', () => {
     const onPos = vi.fn()
 
