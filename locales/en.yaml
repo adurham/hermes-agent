@@ -21,7 +21,7 @@ approval:
   prompt_smart_deny: "      Choice [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Timeout - command not run (no response)"
+  timeout:         "      ⏱ Timeout - denying command"
   allowed_once:    "      ✓ Allowed once"
   allowed_session: "      ✓ Allowed for this session"
   allowed_always:  "      ✓ Added to permanent allowlist"

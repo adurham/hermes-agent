@@ -2559,7 +2559,7 @@ def save_permanent_allowlist(patterns: set):
 # =========================================================================
 
 def prompt_dangerous_approval(command: str, description: str,
-                              timeout_seconds: float | None = None,
+                              timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
                               approval_callback=None,
                               *, smart_denied: bool = False) -> str:
@@ -2578,7 +2578,7 @@ def prompt_dangerous_approval(command: str, description: str,
             supported when ``smart_denied`` is false.
 
     Returns: 'once', 'session', 'always', 'deny', or 'timeout'.
-    'timeout' means the prompt expired without a user response — the
+        'timeout' means the prompt expired without a user response — the
         action must still be blocked (fail-closed), but callers should
         report it as "no response" rather than an explicit user denial.
     """
@@ -3883,26 +3883,6 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                     "outcome": outcome,
                     "user_consent": False,
-                }
-            if choice == "deny":
-                # Explicit denial — a hard halt that names the agent's most
-                # common evasion paths (retry, rephrase, achieve the same
-                # outcome via a different command). See issue #24912.
-                return {
-                    "approved": False,
-                    "message": (
-                        "BLOCKED: Command denied by user. The user has NOT "
-                        "consented to this action. Do NOT retry this command, "
-                        "do NOT rephrase it, and do NOT attempt the same "
-                        "outcome via a different command. Stop the current "
-                        "workflow and wait for the user to respond before "
-                        "taking any further destructive or irreversible "
-                        "action."
-                    ),
-                    "pattern_key": primary_key,
-                    "description": combined_desc,
-                    "outcome": "denied",
-                    "user_consent": False,
                     "deny_reason": deny_reason,
                 }
 
@@ -4255,20 +4235,6 @@ def check_execute_code_guard(code: str, env_type: str,
             "description": description,
             "outcome": "timeout" if not resolved else "denied",
             "user_consent": False,
-        }
-    if choice == "deny":
-        return {
-            "approved": False,
-            "message": (
-                "BLOCKED: execute_code script denied by user. The user has NOT "
-                "consented to running this code. Do NOT retry, do NOT rephrase "
-                "the script, and do NOT attempt the same outcome via a "
-                "different tool."
-            ),
-            "pattern_key": pattern_key,
-            "description": description,
-            "outcome": "denied",
-            "user_consent": False,
             "deny_reason": deny_reason,
         }
 
@@ -4375,8 +4341,8 @@ def request_elicitation_consent(
     if choice in ("once", "session", "always"):
         return "accept"
     if choice == "timeout":
-        # No user response — per the MCP elicitation spec, "cancel" means the
-        # request went unanswered/dismissed, vs "decline" = explicit refusal.
+        # Prompt expired without a user response — mirror the gateway's
+        # unresolved outcome ("cancel") rather than an explicit decline.
         return "cancel"
     return "decline"
 

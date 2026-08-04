@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      選擇 [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ 逾時 — 指令未執行（無回應）"
+  timeout:         "      ⏱ 逾時 — 已拒絕指令"
   allowed_once:    "      ✓ 本次允許"
   allowed_session: "      ✓ 本次工作階段內允許"
   allowed_always:  "      ✓ 已加入永久允許清單"
