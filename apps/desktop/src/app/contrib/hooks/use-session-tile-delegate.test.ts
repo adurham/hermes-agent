@@ -62,20 +62,45 @@ describe('useSessionTileDelegate resumeTile', () => {
     setSessions([])
   })
 
-  it('resumes a cold tile and seeds its transcript from the resume payload', async () => {
-    setSessions([row({ id: 'stored-y' })])
+  it('carries the owning profile into a cold tile resume so it cannot fork profiles', async () => {
+    // A tile opens a session owned by another profile. Resuming without the
+    // profile lets the gateway fall back to the launch-profile DB and clone the
+    // conversation into the wrong profile (#67603). The owning profile must ride
+    // both the transcript prefetch and the resume RPC.
+    setSessions([row({ id: 'stored-x', profile: 'ai-engineer' })])
+
+    const requestGateway = vi.fn(async (method: string) =>
+      method === 'session.resume' ? ({ session_id: 'runtime-1' } as never) : ({} as never)
+    )
+
+    renderTile(requestGateway)
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-x')
+
+    expect(runtimeId).toBe('runtime-1')
+    expect(getSessionMessages).toHaveBeenCalledWith('stored-x', 'ai-engineer')
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
+      session_id: 'stored-x',
+      cols: 96,
+      profile: 'ai-engineer',
+      omit_messages: true
+    })
+  })
+
+  it('resolves and carries a default-profile session explicitly', async () => {
+    setSessions([row({ id: 'stored-y', profile: 'default' })])
 
     const requestGateway = vi.fn(async (method: string) =>
       method === 'session.resume' ? ({ session_id: 'runtime-2' } as never) : ({} as never)
     )
 
     renderTile(requestGateway)
-    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-y')
+    await sessionTileDelegate()!.resumeTile('stored-y')
 
-    expect(runtimeId).toBe('runtime-2')
     expect(requestGateway).toHaveBeenCalledWith('session.resume', {
       session_id: 'stored-y',
-      cols: 96
+      cols: 96,
+      profile: 'default',
+      omit_messages: true
     })
   })
 

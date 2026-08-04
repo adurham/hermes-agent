@@ -42,6 +42,233 @@ This sequence is not optional or "when convenient" — it is the definition of
 done for a fork change. Skipping step 2 or 3 is how a fix gets silently
 reverted and re-discovered as "still happening" days later.
 
+### Upstream sync — 2026-08-04 (v2026.8.3 / v0.20.0 "Herald", 4,032 commits, ~200 conflict files)
+
+Merge-base was v2026.7.20; pulled 4,032 upstream commits on branch
+`sync/upstream-2026-08-04` (tag `v2026.8.3`). Conflict resolution ran in a
+Hermes session (`20260803_233324_2d5c07`) that resolved and staged all ~200+
+conflicted files, then **killed itself during verification**: it ran
+`uv sync` against the very venv it was running from, the dependency swap
+yanked its interpreter's modules mid-request (`FileNotFoundError`,
+`max_retries_exhausted`), and the session died. Verification and post-merge
+fixes were completed in Claude Code. **Lesson: a Hermes session working on
+its own checkout must never `uv sync`/reinstall its own live venv — do
+dependency syncs from an outside tool or after handing off.** Second lesson,
+reconfirmed from the 2026-07-21 sync: the conflict-hunk resolutions
+themselves were mostly fine; nearly all real damage was *cross-file
+consistency* the resolver couldn't see (renames adopted on one side of a
+file boundary but not the other, upstream tests imported against fork
+implementations, dropped destructure/imports).
+
+**Environment prerequisites for verification (both bit this sync):**
+`uv sync --locked --extra all --extra dev --extra anthropic --extra mistral
+--extra fal --extra modal --extra daytona --extra hindsight --extra
+parallel-web` (CI's exact extras set — plain `uv sync` leaves pytest/aiohttp
+missing and 26 files fail collection), and **`npm ci` at the repo root after
+any lockfile-changing merge** — the stale node_modules held two React
+copies, which failed ~200 UI tests across 34 files with "Invalid hook call"
+before a single real regression was visible. Also: root `package.json`
+engines pins npm `<11.10.0 || >=11.17.0`; Homebrew node@26 bundles 11.12.1
+(blocked) — system node 22.23.1 + npm 10.9.8 satisfies it.
+
+**Notable resolutions (merge-damage fixes):**
+
+* `agent/prompt_caching.py` — upstream renamed `_build_cache_marker` →
+  `_build_marker`; the resolution kept the fork def name but upstream's call
+  site + test imports. Adopted upstream's name (bodies identical). Same
+  file, real production bug caught by upstream's new test: the resolution
+  combined upstream's shallow-copy optimization (`messages = list(...)`)
+  with the fork's marking loop, which mutated the caller's message dicts —
+  added the per-marked-message `copy.deepcopy` upstream's version carries.
+  Upstream's new `tests/agent/test_prompt_caching.py` pins the legacy
+  4-message-breakpoint layout; the fork reserves one breakpoint for
+  `tools[]` by default — adapted the 3 affected tests to pass
+  `reserve_tools_breakpoint=False` (the fork's legacy switch, which matches
+  upstream semantics exactly) rather than changing fork behavior.
+* `apps/desktop/.../use-session-actions.test.tsx` — resolution dropped a
+  closing `})` on the "(cold path)" session-timer test, truncating the file
+  (tsc stopped at the parse error, masking 13 more semantic errors until it
+  was fixed).
+* `apps/desktop/.../use-session-actions/index.ts` — cold-resume path lost
+  the fork's `turnStartedAt` restore from the backend's `inflight.started_at`
+  snapshot (the thinking-timer fix); the resolution kept only upstream's
+  journal-based recovery, which is gated on `inFlightRecovery.applied` and
+  returns nothing on a fresh renderer. Re-integrated: backend snapshot is
+  authoritative, journal recovery is the fallback, `null` when not running.
+* **Pet system — upstream evolved it in parallel; split decision per file.**
+  Upstream v2026.8.3 *removed* the `disable-background-timer-throttling` /
+  `disable-backgrounding-occluded-windows` switches (the root cause of the
+  fork's 2026-07-26 "Page Visibility unreliable" fixes) and built a new
+  `@/lib/renderer-loop-pause` controller + demand-driven sprite scheduler
+  for that corrected environment, with new test files.
+  - `use-pet-roam.ts`: **reverted to fork version.** The resolution had
+    inserted upstream's pause machinery as dead code — `pauseController`
+    never constructed, `handleVisibilityChange` never subscribed, duplicate
+    `schedule` definition. Fork's main-process-visibility gate stays; its
+    companion test file reverted to the fork version too (upstream's new
+    RAF-scheduling tests test upstream's implementation).
+  - `pet-sprite.tsx`: **kept upstream's integration** (fully wired +
+    covered by upstream's new `pet-sprite.test.tsx`; the ~5Hz wake-on-cell
+    scheduler is a genuine perf win over the fork's 60Hz rAF loop), but
+    added `pauseWhenUnfocused={false}` at the `floating-pet.tsx` call site —
+    upstream's default pauses the sprite whenever the window loses focus,
+    which contradicts the fork's "background companion keeps animating
+    while glanced at" design (the pop-out overlay already passes false).
+* `use-background-sync.ts` — upstream's per-profile previously-live-runtime
+  reaping **supersedes** the fork's `missingRuntimeSinceMs` consecutive-miss
+  grace (optimistic sends were never in the previously-live set, so the
+  flicker case the fork guarded is handled structurally). Fork's
+  `resetMissingRuntimeTrackingForTests` is gone; the test file's cleanup now
+  calls upstream's `resetLiveRuntimeTracking`.
+* `use-background-queue-drain.test.tsx` — three fork-added tests (lineage
+  root/tip busy-check, park honored) still used the fork's old
+  `runtimeMap` ref prop; converted to upstream's
+  `getRuntimeIdForStoredSession` harness API the rest of the file uses.
+* `tree-split.tsx` — fork's multi-zone `sideFor` (2026-07-28 bottom-dock
+  fix, `edgeFixedZones` plural) + upstream's new drag-to-collapse fields
+  (`collapseId`/`floor`/`COLLAPSED_ZONE_PX`): integrated — collapse fields
+  computed on top of the multi-zone clamp, `min` drops to the collapsed
+  floor only for tool zones.
+* Dropped destructure/imports (upstream additions the resolution half-kept):
+  `workspace-header.tsx` declared `count` in the props type but not the
+  destructuring; `use-desktop-integrations.ts` + `use-keybinds.ts` used
+  upstream's `sessionRoute(...)` without importing it.
+* `scripts/sync-fork-branding.py` run per the standard workflow (41 lines /
+  19 files re-pointed; 13 unresolvable docs links reviewed by hand — all
+  site-absolute `/docs/...` paths the script can't map to repo files,
+  unchanged from last sync).
+
+**Post-merge regression sweep (full suites, classified against a pre-merge
+`git worktree` baseline).** First full runs: desktop UI 207 failures / 34
+files; Python 261 failures / 76 files (26,465 passing). Baseline runs of the
+same files at pre-merge HEAD showed only 18 Python failures (7 files)
+pre-existing — everything else was merge damage. Root causes, grouped:
+
+* **`package-lock.json` was hand-mixed and caused ~200 of the 207 UI
+  failures on its own.** The resolution kept the fork's root `react@19.2.8`
+  while upstream pins every workspace to exactly `19.2.7` — npm installed a
+  second React under `apps/desktop/node_modules`, and every rendering test
+  died with "Invalid hook call." Fix: took upstream's lockfile
+  (`git checkout MERGE_HEAD -- package-lock.json`) and re-ran `npm install`
+  so the fork's manifest deltas re-resolve on top — the lockfile diff vs
+  upstream went from 12,032 hand-mixed lines to a 179-line fork delta.
+  **Never hand-merge package-lock.json: take upstream's side, then
+  `npm install`.**
+* **One dropped assignment caused ~80 Python failures.**
+  `agent/transports/chat_completions.py::build_kwargs` kept the fork's
+  `is_nous` branches but lost HEAD's `is_nous = params.get("is_nous",
+  False)` line — every legacy-path API call raised `NameError`, which the
+  loop reports as a non-retryable internal error (test_run_agent 45,
+  test_413_compression 18, and ~6 more files). Same class:
+  `agent/conversation_loop.py` lost the `apply_anthropic_cache_control`
+  import while keeping its call site.
+* **`tools/mcp_tool.py` had three real merge defects:** discovery ran twice
+  (mis-merged try/finally); the fork's default-on startup-cache /
+  `_ensure_server_connected` dead-session recovery path (FORK.md 2026-07-27)
+  was deleted as "dead code" — restored to coexist with upstream's opt-in
+  `lazy: true` path; `_make_tool_handler` lost its session-resolution
+  cascade — rebuilt as upstream's lazy-connect → fork's cache-shell/dead-
+  session spawn. `tools/delegate_tool.py` had an orphaned
+  `executor.submit(...)` before the executor existed (`UnboundLocalError`);
+  folded upstream's contextvars propagation into the fork's staggered
+  submit. `tools/skill_manager_tool.py` guard order made external skills
+  get the wrong refusal.
+* **Upstream's config split (`config.py` → `config_defaults.py` /
+  `config_migrations.py`) silently dropped fork content:** `skills.
+  lazy_listing` + `display.interrupt_key` defaults and the fork's v30→31
+  auxiliary provider-first migration — all restored. Upstream's new parity
+  test also exposed a real pre-existing fork bug (provider-first conversion
+  dropped a model pinned on `auto`) — fixed. Same class: upstream's
+  `hermes_state` schema split lost the fork's `api_calls` ON DELETE CASCADE
+  migration — reimplemented as a self-healing shape repair in
+  `_reconcile_columns` (PRAGMA probe + drop/recreate), which also repairs
+  DBs whose version already advanced.
+* **Fork converter vs upstream portal contract:** upstream's new Nous
+  Portal thinking-replay exception (`_is_nous_portal_endpoint` — portal
+  validates signed thinking; stripping 400s the first tool-loop turn) was
+  present in the merged `anthropic_adapter.py` but NOT applied in the
+  fork's active converter (`agent/fork/anthropic_messages.py`) — applied
+  the same portal exclusion there. Also added upstream's
+  `_ensure_leading_user_turn`, `_scrub_blank_text_blocks`, and ordered-
+  replay cache_control harvest to the fork converter. Fork's
+  `_build_tool_search_config()` call in `chat_completion_helpers.py` is now
+  getattr-guarded (upstream test doubles lack it).
+* **pet-sprite dual-scheduler composition hole (found by upstream's new
+  tests):** the fork's visibility handler cancelled only `raf`, never
+  upstream's new `wakeTimer`, so a pending sleep timer could resurrect the
+  sprite loop while main-process-hidden. Folded the fork's main-process
+  visibility signal into upstream's pause flow (`mainProcessVisible`
+  checked first in `rendererPaused()`); upstream's 4 scheduling tests pass
+  unmodified, fork requirements (main-process signal authoritative,
+  `pauseWhenUnfocused={false}` keeps animating) preserved.
+* **Glued/dropped code in `cli.py` / gateway / web_server:** fork's
+  sentence-boundary early flush was nested inside upstream's spinner block
+  with `wrap_w` undefined; upstream's `_clear_persisted_context_for_model_
+  switch` helper survived with both call sites dropped; upstream's #72041
+  profile-bound API-key auth was dropped in favor of fork principals logic
+  (both merged); `web_server.py`'s `_speak_scoped` was defined but dead.
+* **Stale-test adaptations (upstream contract changes, fork behavior
+  preserved where deliberate):** ~20 tests updated for upstream's
+  `omit_messages`/`queued` params, `load_config_readonly`, renamed tool
+  signatures, codesign flow, `mcp__server__tool` → fork `server_tool`
+  naming, upstream's superseded busy-runtime grace mechanism (fork's
+  `missingRuntimeSinceMs` test rewritten against upstream's previously-
+  live reaping), and platform-gating for 3 upstream-new suites that assumed
+  Linux CI. Upstream-new tests hitting deliberate fork features got the
+  fork behavior pinned instead (post-hook tool set, cold-start stale
+  timeout, thresholded ToolSearch auto mode, prompt-caching tools-
+  breakpoint reservation via `reserve_tools_breakpoint=False`).
+* Duplicated test definitions the merge introduced (5 in
+  test_async_delegation, 1 stale fork session-limit test) removed;
+  `uv.lock` huggingface-hub re-pinned to upstream's lazy-deps pin (1.24.0).
+* **`cli.py::_init_agent` (fork's deliberate override of upstream's
+  CLIAgentSetupMixin version) was left on stale upstream APIs.** The fork
+  re-overrides `_init_agent` in cli.py (commit a4c788a9a — adds
+  `interleaved_thinking`, the swarm-board `_cli_ref` back-reference);
+  upstream's since-base mixin changes never reached it. Ported them in:
+  `wait_for_mcp_discovery()` → `ensure_mcp_discovery_before_agent_build(
+  single_query=...)`, `requested_provider` threading (3 sites),
+  `partial_update_hint` on init failure, and wired the (already-defined,
+  never-called-from-this-path) `_restore_session_cwd`/`_restore_session_yolo`
+  on resume. **Future syncs: any upstream change to the mixin's
+  `_init_agent` must be manually mirrored into cli.py's override.** Also
+  converted the override's raw `yaml.safe_load(config.yaml)` delegation
+  read to `load_config_readonly()` (upstream's new config-read-guard
+  meta-test forbids raw reads).
+* **`acp_registry/` is fork-owned now** — upstream deleted its ACP registry
+  manifest entirely in v0.20.0; the resolution had half-followed (deleted
+  `icon.svg`, kept `agent.json` at 0.19.0). Restored `icon.svg`, bumped
+  `agent.json` to 0.20.0 (the fork's `test_registry_manifest.py` pins the
+  manifest to pyproject's version). `tests/acp/test_permissions.py` had a
+  glued test (fork's `test_denied_and_unknown_outcomes_deny` body fused
+  into the previous test with its `def` dropped) — restored.
+* Three upstream-new `test_voice_mode.py` tests assumed Linux CI: pinned
+  `platform.system() → "Linux"` for the WSL2 PowerShell-fallback pair and
+  forced the fork's macOS TCC gate (`_sounddevice_output_allowed`) open for
+  the sounddevice beep assertion.
+
+**Pre-existing failures (verified failing identically at pre-merge HEAD,
+NOT merge regressions, left for follow-up — several are host-dependent /
+flaky, so counts wobble between runs; 18 at the baseline run, 11 on the
+final run):** `tests/gateway/test_readiness.py` (1),
+`test_systemd_notify.py` (1–2), `test_api_server.py` (1,
+TestHealthDetailedEndpoint), `tests/tools/test_file_tools.py` (2–7),
+`test_voice_mode.py` (2–3, TestPulseSocketReachable — Linux PulseAudio
+socket semantics on a macOS host), `test_execution_flag_detection.py` (3),
+`test_web_providers.py` (1) — 7 files.
+
+**Verification (final):** ruff clean; desktop `tsc` (all three tsconfigs)
+clean; eslint 0 errors; full desktop UI vitest suite green — **391 files /
+3,424 tests, 0 failures**; full isolated-subprocess Python suite
+(`scripts/run_tests_parallel.py`, 2,676 files) — **26,734 passed, 11
+failed, all 11 in the documented pre-existing set above**; boot smoke test
+in an isolated `HERMES_HOME` (CLI `--version`/`--help`, `gateway --help`,
+`doctor`) passes on v0.20.0. Caveat observed repeatedly during
+verification: the desktop vitest suite produces spurious 5s/15s-timeout
+failures (empty-DOM waitFor deadlines) when run CONCURRENTLY with the
+8-worker Python suite — always judge desktop results from a run with the
+machine otherwise idle.
+
 ### Fork-only feature — 2026-07-31 (`hermes profile create --link`: share skills/plugins/memory between profiles via symlinks)
 
 **Motivation:** user maintains a `default` profile (Anthropic/Claude) and an

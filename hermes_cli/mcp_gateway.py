@@ -290,7 +290,10 @@ def list_recent_runs(limit: int = 20) -> Dict[str, Any]:
         f"tail -n {int(limit)} {DEFAULT_AUDIT_LOG_PATH}",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=15, text=True)
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=15, text=True,
+            encoding="utf-8", errors="replace",
+        )
     except (subprocess.TimeoutExpired, OSError) as e:
         return {"ok": False, "error": f"list_recent_runs: {type(e).__name__}: {e}"}
 

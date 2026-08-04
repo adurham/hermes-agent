@@ -51,34 +51,33 @@ describe('flattenSessionsWithBranches', () => {
     expect(flattenSessionsWithBranches([branch])).toEqual([{ session: branch }])
   })
 
-  it('re-sorts top-level sessions by group recency by default', () => {
-    const stale = session('stale', { last_active: 5 })
-    const fresh = session('fresh', { last_active: 50 })
+  it('re-sorts roots by group recency by default (pinned-style jumps without preserveOrder)', () => {
+    // Stale important chat first in the caller's array; a recently-active
+    // background task second. Default path must lift the fresher root — that
+    // is what was scrambling the Pinned section before preserveOrder.
+    const important = session('important', { last_active: 10 })
+    const background = session('background', { last_active: 99 })
 
-    // Input order is stale-first; default behavior re-sorts freshest-first.
-    expect(flattenSessionsWithBranches([stale, fresh])).toEqual([{ session: fresh }, { session: stale }])
-  })
-
-  it('keeps the given order when preserveOrder is set, ignoring recency', () => {
-    const stale = session('stale', { last_active: 5 })
-    const fresh = session('fresh', { last_active: 50 })
-
-    // A manual drag-order hands in stale-first deliberately; it must survive.
-    expect(flattenSessionsWithBranches([stale, fresh], { preserveOrder: true })).toEqual([
-      { session: stale },
-      { session: fresh }
+    expect(flattenSessionsWithBranches([important, background]).map(e => e.session.id)).toEqual([
+      'background',
+      'important'
     ])
   })
 
-  it('still nests branches under their parent when preserveOrder is set', () => {
-    const parent = session('parent', { last_active: 5 })
-    const branchA = session('branch-a', { last_active: 20, parent_session_id: 'parent' })
-    const branchB = session('branch-b', { last_active: 10, parent_session_id: 'parent' })
+  it("preserveOrder keeps the caller's root order even when activity is newer lower down", () => {
+    const important = session('important', { last_active: 10 })
+    const background = session('background', { last_active: 99 })
+    const branch = session('branch', { last_active: 50, parent_session_id: 'important' })
 
-    expect(flattenSessionsWithBranches([parent, branchA, branchB], { preserveOrder: true })).toEqual([
-      { session: parent },
-      { branchStem: '├─ ', session: branchA },
-      { branchStem: '└─ ', session: branchB }
+    expect(
+      flattenSessionsWithBranches([important, background, branch], { preserveOrder: true }).map(e => ({
+        id: e.session.id,
+        stem: e.branchStem
+      }))
+    ).toEqual([
+      { id: 'important', stem: undefined },
+      { id: 'branch', stem: '└─ ' },
+      { id: 'background', stem: undefined }
     ])
   })
 })

@@ -79,11 +79,12 @@ class TestConfigDefault(unittest.TestCase):
         from pathlib import Path
 
         cfg_src = (Path(__file__).resolve().parent.parent.parent
-                   / "hermes_cli" / "config.py").read_text()
+                   / "hermes_cli" / "config_defaults.py").read_text()
         # The default lives in a single dict literal; the inline comment
-        # documents the canonical value.
+        # documents the canonical value. (Upstream moved DEFAULT_CONFIG out of
+        # hermes_cli/config.py into hermes_cli/config_defaults.py, 2026-08.)
         self.assertIn('"interrupt_key": "ctrl-c"', cfg_src,
-                      "hermes_cli/config.py default for display.interrupt_key drifted")
+                      "hermes_cli/config_defaults.py default for display.interrupt_key drifted")
 
 
 class TestDispatchMatrix(unittest.TestCase):

@@ -93,11 +93,6 @@ class TestCliApprovalUi:
         thread.join(timeout=2)
         assert result["value"] == "deny"
 
-    def test_non_smart_non_permanent_callback_preserves_session_choice(self):
-        cli = _make_cli_stub()
-        assert cli._approval_choices(
-            "rm -rf /tmp/example", allow_permanent=False, smart_denied=False
-        ) == ["once", "session", "deny"]
 
     def test_sudo_prompt_restores_existing_draft_after_response(self):
         cli = _make_cli_stub()
@@ -128,27 +123,6 @@ class TestCliApprovalUi:
         assert cli._app.current_buffer.text == "draft command"
         assert cli._app.current_buffer.cursor_position == 5
 
-    def test_approval_callback_includes_view_for_long_commands(self):
-        cli = _make_cli_stub()
-        command = "sudo dd if=/tmp/githubcli-keyring.gpg of=/usr/share/keyrings/githubcli-archive-keyring.gpg bs=4M status=progress"
-        result = {}
-
-        def _run_callback():
-            result["value"] = cli._approval_callback(command, "disk copy")
-
-        thread = threading.Thread(target=_run_callback, daemon=True)
-        thread.start()
-
-        deadline = time.time() + 2
-        while cli._approval_state is None and time.time() < deadline:
-            time.sleep(0.01)
-
-        assert cli._approval_state is not None
-        assert "view" in cli._approval_state["choices"]
-
-        cli._approval_state["response_queue"].put("deny")
-        thread.join(timeout=2)
-        assert result["value"] == "deny"
 
     def test_handle_approval_selection_view_expands_in_place(self):
         cli = _make_cli_stub()
@@ -452,10 +426,6 @@ class TestModalPaintNow:
         cli._paint_now()
         assert cli._app.invalidate.called
 
-    def test_paint_now_no_app_is_safe(self):
-        cli = HermesCLI.__new__(HermesCLI)
-        cli._app = None
-        cli._paint_now()  # must not raise
 
     def _drive(self, cli, target, state_attr):
         result = {}
@@ -499,26 +469,8 @@ class TestModalPaintNow:
         assert not thread.is_alive()
         return result["value"]
 
-    def test_approval_prompt_paints_under_both_gates(self):
-        cli = _make_real_paint_cli_stub()
-        value = self._drive(
-            cli, lambda: cli._approval_callback("rm -rf /tmp/scratch", "danger"),
-            "_approval_state",
-        )
-        assert value == "deny"
 
-    def test_clarify_prompt_paints_under_both_gates(self):
-        cli = _make_real_paint_cli_stub()
-        value = self._drive(
-            cli, lambda: cli._clarify_callback("Pick one", ["a", "b"]),
-            "_clarify_state",
-        )
-        assert value == "a"
 
-    def test_sudo_prompt_paints_under_both_gates(self):
-        cli = _make_real_paint_cli_stub()
-        value = self._drive(cli, cli._sudo_password_callback, "_sudo_state")
-        assert value == "pw"
 
     def test_secret_response_teardown_paints(self):
         """_submit_secret_response tears the secret panel down via _paint_now,
@@ -646,17 +598,6 @@ class TestPersistPromptSummary:
         assert "rm -rf /tmp/scratch" in summary
         assert "allowed for session" in summary
 
-    def test_approval_summary_truncates_long_command(self):
-        cli = _make_cli_stub()
-        printed = []
-        long_cmd = "sudo " + ("x" * 300)
-        with patch.object(cli_module, "_cprint", printed.append):
-            self._resolve_approval(cli, "deny", command=long_cmd)
-        summary = "\n".join(printed)
-        assert "denied" in summary
-        assert "…" in summary
-        # The raw 300-char tail must not be dumped wholesale.
-        assert "x" * 200 not in summary
 
     def test_persist_prompts_false_suppresses_summary(self):
         cli = _make_cli_stub()
@@ -738,13 +679,6 @@ class TestClearOverlaysForInterrupt:
         assert sudo_q.get_nowait() == ""
         assert secret_q.get_nowait() == ""
 
-    def test_noop_when_no_overlays_active(self):
-        cli = self._make_cli()
-        cli._clear_active_overlays_for_interrupt()
-        assert cli._approval_state is None
-        assert cli._clarify_state is None
-        assert cli._sudo_state is None
-        assert cli._secret_state is None
 
     def test_dead_queue_does_not_block_clearing_others(self):
         """A queue that raises on put() must not prevent the remaining

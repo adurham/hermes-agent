@@ -332,6 +332,7 @@ export function PetBubble() {
   // (an approval/clarify/sudo prompt or plain end-of-turn idle blocking on
   // the user), never the continuous "working…"/"thinking…" bubble chatter,
   // which would be constant narration over anything long-running.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (prop-derived value, not an atom)
   useEffect(() => {
     const previous = prevSpecKeyRef.current
     prevSpecKeyRef.current = specKey
@@ -361,6 +362,7 @@ export function PetBubble() {
   // from a previous turn. `.context` (the assistant's final reply text)
   // feeds the optional LLM line so it can reference what actually happened.
   const mountedTurnSeqRef = useRef(turnCompletedBeat.seq)
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (prop-derived value, not an atom)
   useEffect(() => {
     if (!voiceEnabled || turnCompletedBeat.seq === mountedTurnSeqRef.current) {
       return

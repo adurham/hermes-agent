@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from 'react'
 
+import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 import { $petJumpBeat, $petRoamAirborne, $petState, type PetInfo, type PetState } from '@/store/pet'
 
 import { jumpBobHeightPx, jumpDurationMs } from './roam-behavior'
@@ -94,6 +95,8 @@ export function roamWalkRow(dir: -1 | 0 | 1, stateRows?: string[]): { row?: stri
 
 interface PetSpriteProps {
   info: PetInfo
+  /** Keep animating in a deliberately non-activating visible window, such as the pop-out pet overlay. */
+  pauseWhenUnfocused?: boolean
   /** On-screen scale multiplier applied on top of the pet's native scale. */
   zoom?: number
   /**
@@ -117,20 +120,25 @@ interface PetSpriteProps {
  * with `memo`, this component effectively never re-renders after mount until
  * the pet itself changes.
  */
-function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSpriteProps) {
+function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUnfocused = true }: PetSpriteProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const stateRef = useRef<PetState>($petState.get())
   const overrideRef = useRef<PetState | undefined>(stateOverride)
   const rowOverrideRef = useRef<string | undefined>(rowOverride)
+  const kickAnimationRef = useRef<() => void>(() => undefined)
 
   // Keep the override current without re-running the RAF setup effect.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     overrideRef.current = stateOverride
+    kickAnimationRef.current()
   }, [stateOverride])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     rowOverrideRef.current = rowOverride
+    kickAnimationRef.current()
   }, [rowOverride])
 
   const frameW = info.frameW ?? DEFAULT_FRAME_W
@@ -156,6 +164,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     return img
   }, [info.spritesheetBase64, info.mime])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const canvas = canvasRef.current
 
@@ -195,66 +204,87 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     // Track state via subscription, not a prop — no re-render on activity ticks.
     stateRef.current = $petState.get()
 
-    const unsubState = $petState.listen(next => {
-      stateRef.current = next
-    })
-
     let raf = 0
+    let wakeTimer = 0
+    let stopped = false
     let frame = 0
     let lastStep = performance.now()
     let drawnFrame = -1
     let drawnRow = -1
     let activeRow = -1
     let activeCount = -1
+    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
-    // Freeze the loop while the window is truly hidden (minimized, on another
-    // space, or occluded). electron/main.ts disables Chromium's normal
-    // renderer-backgrounding throttle app-wide so a streaming reply never
-    // stalls on refocus — but that also means an rAF loop with no gate of its
-    // own spins at 60Hz forever with nobody looking at it. This loop is purely
-    // cosmetic (idle sprite animation), so it can safely pause; resume + force
-    // a fresh frame the instant it's visible again.
-    //
-    // Deliberately NOT document.hidden/visibilitychange, and NOT
-    // document.hasFocus(): this app's occlusion-throttle switches make Page
-    // Visibility unreliable here — a window created with `show: false` can
-    // get stuck reporting `hidden` forever even once genuinely shown, because
-    // the show→visible transition stops propagating correctly to Blink when
-    // occlusion tracking is off (verified regression: froze the sprite on
-    // frame 1 from launch — see FORK.md 2026-07-26 entries). Use the real
-    // OS-level visibility pushed from the main process instead (see
-    // use-window-visibility.ts). Also not hasFocus(): the pet (both the
-    // in-window floating mascot and the popped-out overlay) is a background
-    // companion meant to keep animating while glanced at, not a foreground
-    // interactive surface, and the popped-out overlay window is
-    // `focusable: false` by design so hasFocus() is permanently false there.
-    let paused = false
+    // Real OS-level window visibility pushed from the main process (see
+    // use-window-visibility.ts and the subscription below). Deliberately part
+    // of the pause state alongside the controller: this app disables
+    // Chromium's occlusion/backgrounding machinery app-wide (electron/main.ts),
+    // which makes Page Visibility unreliable here — a window created with
+    // `show: false` can get stuck reporting `hidden` forever even once
+    // genuinely shown (verified regression: froze the sprite on frame 1 from
+    // launch — see FORK.md 2026-07-26 entries). The main-process signal is the
+    // source of truth for hide/minimize/restore; defaults to visible so a
+    // context without the bridge never starts paused.
+    let mainProcessVisible = true
 
-    const schedule = () => {
-      if (!paused && !raf) {
-        raf = requestAnimationFrame(render)
+    const rendererPaused = () =>
+      !mainProcessVisible || (pauseController?.isPaused() ?? document.visibilityState === 'hidden')
+
+    const cancelWakeTimer = () => {
+      if (wakeTimer !== 0) {
+        window.clearTimeout(wakeTimer)
+        wakeTimer = 0
       }
     }
 
-    const onVisibilityChange = (visible: boolean) => {
-      const next = !visible
+    const cancelRaf = () => {
+      if (raf !== 0) {
+        window.cancelAnimationFrame(raf)
+        raf = 0
+      }
+    }
 
-      if (next === paused) {
+    const clearScheduled = () => {
+      cancelWakeTimer()
+      cancelRaf()
+    }
+
+    const scheduleFrame = (delayMs = 0) => {
+      if (stopped || rendererPaused() || raf !== 0 || wakeTimer !== 0) {
         return
       }
 
-      paused = next
+      if (delayMs > 16) {
+        wakeTimer = window.setTimeout(() => {
+          wakeTimer = 0
+          scheduleFrame()
+        }, delayMs)
 
-      if (paused) {
-        if (raf) {
-          cancelAnimationFrame(raf)
-          raf = 0
-        }
-      } else {
-        lastStep = performance.now()
-        drawnFrame = -1
-        schedule()
+        return
       }
+
+      raf = window.requestAnimationFrame(render)
+    }
+
+    const kickAnimation = () => {
+      if (stopped || rendererPaused()) {
+        return
+      }
+
+      cancelWakeTimer()
+      scheduleFrame()
+    }
+
+    const handleVisibilityChange = () => {
+      clearScheduled()
+
+      if (rendererPaused()) {
+        return
+      }
+
+      lastStep = performance.now()
+      drawnFrame = -1
+      kickAnimation()
     }
 
     const rowIndexForState = (s: PetState): number => {
@@ -295,6 +325,12 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     }
 
     const render = (now: number) => {
+      raf = 0
+
+      if (stopped || rendererPaused()) {
+        return
+      }
+
       const forcedRow = rowOverrideRef.current
       const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? stateRef.current)
 
@@ -317,10 +353,13 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
 
       frame %= count
 
+      if (!image.complete || image.naturalWidth <= 0) {
+        return
+      }
+
       // Only touch the canvas when the visible cell actually changes. The RAF
-      // ticks at ~60Hz but the sprite only steps ~5Hz, so this skips ~90% of
-      // the clear+draw work and keeps the main thread free.
-      if ((frame !== drawnFrame || row !== drawnRow) && image.complete && image.naturalWidth > 0) {
+      // wakes when a sprite cell is due, so the idle path avoids a 60Hz loop.
+      if (frame !== drawnFrame || row !== drawnRow) {
         const sx = frame * frameW
         const sy = row * frameH
         ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -330,19 +369,42 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
         drawnRow = row
       }
 
-      raf = requestAnimationFrame(render)
+      scheduleFrame(Math.max(0, stepMs - (now - lastStep)))
     }
 
-    schedule()
+    kickAnimationRef.current = kickAnimation
 
-    const unsubVisibility = subscribeWindowVisibility(onVisibilityChange)
+    const unsubState = $petState.listen(next => {
+      stateRef.current = next
+      kickAnimation()
+    })
+
+    image.addEventListener('load', kickAnimation)
+    pauseController = createRendererLoopPauseController(handleVisibilityChange, { pauseWhenUnfocused })
+    scheduleFrame()
+
+    // Fold the fork's main-process visibility signal into the same
+    // pause/resume flow as the controller: flip the flag rendererPaused()
+    // reads, then clear + rekick exactly like any other visibility change.
+    const unsubVisibility = subscribeWindowVisibility(visible => {
+      if (visible === mainProcessVisible) {
+        return
+      }
+
+      mainProcessVisible = visible
+      handleVisibilityChange()
+    })
 
     return () => {
-      cancelAnimationFrame(raf)
+      stopped = true
+      kickAnimationRef.current = () => undefined
+      clearScheduled()
+      image.removeEventListener('load', kickAnimation)
+      pauseController?.dispose()
       unsubState()
       unsubVisibility()
     }
-  }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows])
+  }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows, pauseWhenUnfocused])
 
   // Stationary jump bob: play a CSS vertical hop for as long as the pose
   // stays `jump` for a reason OTHER than the roam loop's own ledge-to-ledge
