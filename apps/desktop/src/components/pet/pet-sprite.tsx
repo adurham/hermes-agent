@@ -4,7 +4,6 @@ import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 import { $petJumpBeat, $petRoamAirborne, $petState, type PetInfo, type PetState } from '@/store/pet'
 
 import { jumpBobHeightPx, jumpDurationMs } from './roam-behavior'
-import { subscribeWindowVisibility } from './use-window-visibility'
 
 const DEFAULT_FRAME_W = 192
 const DEFAULT_FRAME_H = 208
@@ -215,20 +214,17 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
     let activeCount = -1
     let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
-    // Real OS-level window visibility pushed from the main process (see
-    // use-window-visibility.ts and the subscription below). Deliberately part
-    // of the pause state alongside the controller: this app disables
-    // Chromium's occlusion/backgrounding machinery app-wide (electron/main.ts),
-    // which makes Page Visibility unreliable here — a window created with
-    // `show: false` can get stuck reporting `hidden` forever even once
-    // genuinely shown (verified regression: froze the sprite on frame 1 from
-    // launch — see FORK.md 2026-07-26 entries). The main-process signal is the
-    // source of truth for hide/minimize/restore; defaults to visible so a
-    // context without the bridge never starts paused.
-    let mainProcessVisible = true
-
-    const rendererPaused = () =>
-      !mainProcessVisible || (pauseController?.isPaused() ?? document.visibilityState === 'hidden')
+    // The pause controller alone decides visibility. A parallel fork-only
+    // main-process visibility IPC used to feed a second flag here because the
+    // app once disabled Chromium's occlusion tracking app-wide, which could
+    // pin a `show: false` window's visibilityState to `hidden` forever (froze
+    // the sprite on frame 1 from launch — see FORK.md 2026-07-26 entries).
+    // Upstream re-enabled occlusion tracking (only disable-renderer-
+    // backgrounding remains), so document.visibilityState works again — and
+    // the controller ALSO subscribes to the main process's
+    // `hermes:window-state-changed` push (onWindowStateChanged) as
+    // belt-and-braces for hide/minimize/restore.
+    const rendererPaused = () => pauseController?.isPaused() ?? document.visibilityState === 'hidden'
 
     const cancelWakeTimer = () => {
       if (wakeTimer !== 0) {
@@ -383,18 +379,6 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
     pauseController = createRendererLoopPauseController(handleVisibilityChange, { pauseWhenUnfocused })
     scheduleFrame()
 
-    // Fold the fork's main-process visibility signal into the same
-    // pause/resume flow as the controller: flip the flag rendererPaused()
-    // reads, then clear + rekick exactly like any other visibility change.
-    const unsubVisibility = subscribeWindowVisibility(visible => {
-      if (visible === mainProcessVisible) {
-        return
-      }
-
-      mainProcessVisible = visible
-      handleVisibilityChange()
-    })
-
     return () => {
       stopped = true
       kickAnimationRef.current = () => undefined
@@ -402,7 +386,6 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
       image.removeEventListener('load', kickAnimation)
       pauseController?.dispose()
       unsubState()
-      unsubVisibility()
     }
   }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows, pauseWhenUnfocused])
 

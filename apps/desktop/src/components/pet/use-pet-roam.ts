@@ -1,5 +1,6 @@
 import { type RefObject, useEffect, useRef } from 'react'
 
+import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 import { $petMotion, $petRoamAirborne, $petRoamDir, $petRoamPaused, type PetState } from '@/store/pet'
 
 import { chooseMove, dwellMs, jumpDurationMs, PAUSE_DWELL, pickStrollTarget } from './roam-behavior'
@@ -13,7 +14,6 @@ import {
   snapshotContainerLedges,
   snapshotLedges
 } from './roam-geometry'
-import { subscribeWindowVisibility } from './use-window-visibility'
 
 interface Point {
   x: number
@@ -169,25 +169,21 @@ export function usePetRoam({
     let raf = 0
 
     // Freeze the wander loop while the window is truly hidden (minimized, on
-    // another space, or occluded). electron/main.ts disables Chromium's
-    // normal renderer-backgrounding throttle app-wide so a streaming reply
-    // never stalls on refocus — but that also means an rAF loop with no gate
-    // of its own spins at 60Hz forever with nobody looking at it. This loop
-    // is purely cosmetic (idle wander), so pausing is safe; `last` is reset
-    // on resume so the dt clamp (MAX_DT_S) absorbs the gap instead of the pet
-    // teleporting.
+    // another space, or occluded): this loop is purely cosmetic (idle
+    // wander), so pausing is safe; `last` is reset on resume so the dt clamp
+    // (MAX_DT_S) absorbs the gap instead of the pet teleporting.
     //
-    // Deliberately NOT document.hidden/visibilitychange, and NOT
-    // document.hasFocus(): this app's occlusion-throttle switches make Page
-    // Visibility unreliable here — a window created with `show: false` can
-    // get stuck reporting `hidden` forever even once genuinely shown, because
-    // the show→visible transition stops propagating correctly to Blink when
-    // occlusion tracking is off (verified regression: the roam loop never
-    // ran at all from launch — pet never dropped to the floor — see FORK.md
-    // 2026-07-26 entries). Use the real OS-level visibility pushed from the
-    // main process instead (see use-window-visibility.ts). Also not
-    // hasFocus(): the pet is a background companion meant to keep wandering
-    // while glanced at, not a foreground interactive surface.
+    // Pause state comes from the shared renderer-loop-pause controller.
+    // Page Visibility is reliable again — upstream dropped the app-wide
+    // occlusion/backgrounding switches that used to pin a `show: false`
+    // window's visibilityState to `hidden` forever (the FORK.md 2026-07-26
+    // "roam loop never ran from launch" regression) — and the controller
+    // ALSO subscribes to the main process's `hermes:window-state-changed`
+    // push as belt-and-braces for hide/minimize/restore. `pauseWhenUnfocused:
+    // false` because the pet is a background companion meant to keep
+    // wandering while the window is visible but unfocused, not a foreground
+    // interactive surface.
+    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
     let hidden = false
 
     const schedule = () => {
@@ -196,8 +192,8 @@ export function usePetRoam({
       }
     }
 
-    const onVisibilityChange = (visible: boolean) => {
-      const next = !visible
+    const onPauseChange = () => {
+      const next = pauseController?.isPaused() ?? false
 
       if (next === hidden) {
         return
@@ -451,9 +447,11 @@ export function usePetRoam({
       schedule()
     }
 
+    pauseController = createRendererLoopPauseController(onPauseChange, { pauseWhenUnfocused: false })
+    // Don't burn frames if mounted while already hidden — the controller's
+    // next change event resumes the loop (onPauseChange resets `last`).
+    hidden = pauseController.isPaused()
     schedule()
-
-    const unsubVisibility = subscribeWindowVisibility(onVisibilityChange)
 
     // React immediately to a live pane resize — not just the re-measure baked
     // into each decision beat. Without this, a resize mid-pause (dwell up to
@@ -495,7 +493,7 @@ export function usePetRoam({
 
     return () => {
       cancelAnimationFrame(raf)
-      unsubVisibility()
+      pauseController?.dispose()
       resizeObserver?.disconnect()
       signal(null, 0)
       $petRoamAirborne.set(false)
