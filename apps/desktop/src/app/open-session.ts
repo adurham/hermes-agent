@@ -14,6 +14,7 @@
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import {
   focusedSessionNeedsRoute,
@@ -118,6 +119,13 @@ export function openSession(
     }
 
     openSessionTile(storedSessionId, 'center')
+    // A fresh tile ADOPTS silently (insertAtGroup's activate:false — a
+    // background pane must not steal an already-visible tab out from under a
+    // drag/plugin adoption), so front the tab this explicit open gesture just
+    // created — otherwise it lands behind the one already showing and the
+    // click looks like a no-op. Same compensation the drag flow and
+    // `reuseBlankDraftTile` above already make.
+    revealTreePane(`session-tile:${storedSessionId}`)
 
     return
   }

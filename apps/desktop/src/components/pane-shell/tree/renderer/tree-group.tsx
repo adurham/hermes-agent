@@ -41,7 +41,6 @@ import {
   closeTreeTabsToRight,
   collapseTreePane,
   isCollapsePane,
-  isPaneCloseable,
   isSessionStripPane,
   noteActiveTreeGroup,
   reloadTreePane,
@@ -289,13 +288,12 @@ export function TreeGroup({
   // when it OPENS, so they read the tree with `.get()` at that moment instead.
   const targetPane = () => menuPane ?? activeId
 
-  // Close targets the right-clicked chip (falling back to the active pane) —
-  // `isPaneCloseable` covers both the generic case (no `uncloseable` flag) and
-  // workspace once its promote-or-reset closer is registered (wiring.tsx).
+  // Close targets the right-clicked chip (falling back to the active pane);
+  // only panes that declare `uncloseable` (the main workspace) are exempt.
   const closable = () => {
     const paneId = targetPane()
 
-    return isPaneCloseable(paneId) ? paneId : undefined
+    return paneChrome(paneFor(paneId)).uncloseable ? undefined : paneId
   }
 
   // The zone hosting the uncloseable workspace never minimizes — collapsing
@@ -376,7 +374,7 @@ export function TreeGroup({
               role="tablist"
             >
               {shown.map(paneId => {
-                const closeable = isPaneCloseable(paneId)
+                const closeable = closeableTab(paneId)
                 const title = paneFor(paneId)?.title ?? paneId
 
                 return (
@@ -439,7 +437,7 @@ export function TreeGroup({
               {shown.map(paneId => {
                 const isActive = paneId === activeId && !node.minimized
                 const chrome = paneChrome(paneFor(paneId))
-                const closeable = isPaneCloseable(paneId)
+                const closeable = closeableTab(paneId)
                 const title = paneFor(paneId)?.title ?? paneId
 
                 const tab = (
