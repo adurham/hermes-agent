@@ -116,6 +116,33 @@ Still open upstream (converge when they land): PRs #72087 (estimator
 `background_review.py` has the fork's 2026-07-22 doubled-tokens /
 Ctrl+C-lockup race (same subsystem, same session_id sharing, no guard).
 
+Audit findings noted but NOT actioned in this pass (small, optional):
+* Spinner timer format — upstream now has its own fixed-width
+  `{_m:02d}m{_s:02d}s`; the fork's `{_m}m` variant is purely cosmetic and
+  could adopt upstream's to de-conflict the hunk.
+* The 2026-07-19 spinner-anomaly forensic latch
+  (`_spinner_elapsed_anomaly_logged` in cli.py) — plausibly explained by
+  the since-fixed VS-16/xterm root causes; droppable if it has never
+  fired since 2026-07-28.
+* pyproject `exclude-newer` absolute pin — uv now bakes the absolute
+  cutoff + `exclude-newer-span` into uv.lock itself; upstream's relative
+  form may be safe to adopt (trial: `uv lock --check` under multiple
+  TZs). Fork's lock cutoff (2026-07-19) is also older than the tag's
+  resolution point — bump on next `uv lock`.
+* Provider-first aux config blocks listing `session_search` carry a dead
+  entry (upstream removed that aux task in #27590).
+* `is_auto` aux main-model fallback layer — droppable if the owner adds
+  one `fallback_providers`/per-task `fallback_chain` config entry
+  (upstream's new layers cover everything except zero-config
+  single-provider setups).
+* Upstream-PR candidates surfaced: pets/ in profile clone (upstream now
+  has pets.py but clone still copies only skills), Retina canvas fix for
+  pet-sprite, the 2026-07-26 codesign skip-branch call-site fix, the FTS
+  hyphen-glue fix in holographic retrieval, `hasattr(os, "getuid")`
+  gateway guard, upstream lazy_deps anthropic pin drift (0.87.0).
+* The "Soft-fork edits" numbers table (~line 4100) is directionally
+  stale post-merge; refresh line counts on the next sync.
+
 ### Upstream sync — 2026-08-04 (v2026.8.3 / v0.20.0 "Herald", 4,032 commits, ~200 conflict files)
 
 Merge-base was v2026.7.20; pulled 4,032 upstream commits on branch
