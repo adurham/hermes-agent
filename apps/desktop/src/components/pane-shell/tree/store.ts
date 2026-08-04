@@ -356,35 +356,6 @@ const isUncloseablePane = (paneId: string): boolean =>
     (registry.getArea('panes').find(c => c.id === paneId)?.data as { uncloseable?: boolean } | undefined)?.uncloseable
   )
 
-/** Whether Close does something useful for this pane: either a registered
- *  closer exists (workspace's own promote-or-reset logic, sessions/files
- *  side-collapse, a session/route tile's removal, …) or the pane isn't
- *  flagged `uncloseable` at all (the generic dismiss-from-tree fallback in
- *  `closeTreePane`). Mirrors `closeTreePane`'s own resolution order so a
- *  tab's × / ⌘W / right-click Close are never a dead click — including the
- *  structurally-uncloseable `workspace` pane once a closer is registered for
- *  it. Deliberately NOT used by the zone-never-minimize guard or lone-header
- *  forcing below — those two stay keyed on the raw `uncloseable` flag. */
-export function isPaneCloseable(paneId: string): boolean {
-  return Boolean(paneClosers[paneId]) || !isUncloseablePane(paneId)
-}
-
-/** ⌘W "main tabs always": close the MAIN (workspace) zone's active tab.
- *  Returns false when there's nothing to close, so ⌘W stays a no-op — it
- *  never closes the window. */
-export function closeWorkspaceTab(): boolean {
-  const tree = $layoutTree.get()
-  const active = tree ? findGroupOfPane(tree, 'workspace')?.active : null
-
-  if (!active || !isPaneCloseable(active)) {
-    return false
-  }
-
-  closeTreePane(active)
-
-  return true
-}
-
 /** A pane that belongs to a CHAT tab strip — the workspace or a session tile. */
 export const isSessionStripPane = (paneId: string): boolean =>
   paneId === 'workspace' || paneId.startsWith('session-tile:')
@@ -420,7 +391,7 @@ export function focusedSessionTabAnchor(): null | string {
 export function closeFocusedSessionTab(): boolean {
   const active = focusedSessionGroup()?.active
 
-  if (!active || !isPaneCloseable(active)) {
+  if (!active || isUncloseablePane(active)) {
     return false
   }
 
@@ -467,8 +438,8 @@ function closeableTreeSiblings(paneId: string): { others: string[]; right: strin
   const idx = panes.indexOf(paneId)
 
   return {
-    others: panes.filter(id => id !== paneId && isPaneCloseable(id)),
-    right: panes.filter((id, i) => i > idx && isPaneCloseable(id))
+    others: panes.filter(id => id !== paneId && !isUncloseablePane(id)),
+    right: panes.filter((id, i) => i > idx && !isUncloseablePane(id))
   }
 }
 
@@ -476,7 +447,7 @@ function closeableTreeSiblings(paneId: string): { others: string[]; right: strin
 export function treeTabCloseTargets(paneId: string): { all: number; others: number; right: number } {
   const { others, right } = closeableTreeSiblings(paneId)
 
-  return { all: others.length + (isPaneCloseable(paneId) ? 1 : 0), others: others.length, right: right.length }
+  return { all: others.length + (isUncloseablePane(paneId) ? 0 : 1), others: others.length, right: right.length }
 }
 
 /**
@@ -513,9 +484,7 @@ export function closeTreeTabsToRight(paneId: string): void {
   closeableTreeSiblings(paneId).right.forEach(closeTabPane)
 }
 
-/** Close every closeable tab in `paneId`'s group — workspace included once a
- *  closer is registered for it (promote-or-reset), so "Close all" genuinely
- *  empties the strip instead of always leaving one tab stranded. */
+/** Close every closeable tab in `paneId`'s group (the uncloseable workspace stays). */
 export function closeAllTreeTabs(paneId: string): void {
   const tree = $layoutTree.get()
   const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
@@ -862,23 +831,8 @@ export function treeSideOfPane(paneId: string): TreeSide | null {
 /**
  * App intent "show pane X" (a preview target landed, ⌘G opened review, …):
  * open its side, unhide it, and bring it to the front of its group.
- *
- * `front` (default true) gates ONLY the "make this the active tab" step.
- * Un-dismiss / un-collapse-side / un-hide / un-minimize all still run
- * regardless — those are legitimate reconciliation even on a boot-time
- * sync. `front: false` is for exactly that boot-time sync: `bindPaneCollapse`
- * calls `setPaneCollapsed` once per pane to reconcile its persisted open/
- * closed store against the tree on mount, and multiple tool panes (terminal,
- * logs) can share ONE zone. Each pane's own store can independently be
- * persisted "open" from a past session — so on every boot, whichever pane's
- * bind runs LAST would win the shared zone's active tab, regardless of which
- * pane the user actually last looked at (or which preset placed it). Passing
- * `front: false` for that initial sync lets the persisted tree's own `active`
- * field keep deciding the front tab; only a genuine user gesture — the live
- * `$open.listen` toggle callback, a reveal from a preview/review target
- * landing, clicking the pane's tab, applying a preset — passes front: true.
  */
-export function revealTreePane(paneId: string, front: boolean = true) {
+export function revealTreePane(paneId: string) {
   // Reveal beats a Close: un-dismiss and let adoption put the pane back.
   if ($dismissedPanes.get().has(paneId)) {
     setDismissed(paneId, false)
@@ -920,7 +874,7 @@ export function revealTreePane(paneId: string, front: boolean = true) {
       next = setGroupMinimized(next, group.id, false)
     }
 
-    if (front && group.active !== paneId) {
+    if (group.active !== paneId) {
       next = setActivePaneOp(next, group.id, paneId)
     }
 
@@ -1346,15 +1300,8 @@ function paneGroup(paneId: string) {
 
 /** Collapse/restore a pane's ZONE to a minimized rail — its tab stays visible.
  *  Store-driven (one-way): a tool panel's $open store mirrors here via
- *  bindPaneCollapse, so a toggle collapses rather than hides.
- *
- *  `front` (default true) forwards to `revealTreePane`'s `front` — pass
- *  `false` for the initial mount-time sync so a shared zone (terminal +
- *  logs) doesn't have its active tab decided by bind ORDER (whichever
- *  pane's `bindPaneCollapse` call runs last on boot would otherwise always
- *  win the front tab, regardless of which pane the persisted tree — or the
- *  user — actually last had active). */
-export function setPaneCollapsed(paneId: string, collapsed: boolean, front: boolean = true) {
+ *  bindPaneCollapse, so a toggle collapses rather than hides. */
+export function setPaneCollapsed(paneId: string, collapsed: boolean) {
   const group = paneGroup(paneId)
 
   if (!group) {
@@ -1378,7 +1325,7 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean, front: bool
         setTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
       }
     } else if (!collapsed) {
-      revealTreePane(paneId, front)
+      revealTreePane(paneId)
     }
 
     return
@@ -1388,7 +1335,7 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean, front: bool
     setTreeGroupMinimized(group.id, collapsed)
 
     if (!collapsed) {
-      revealTreePane(paneId, front)
+      revealTreePane(paneId)
     }
   }
 }

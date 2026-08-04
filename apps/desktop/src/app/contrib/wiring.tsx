@@ -20,8 +20,7 @@ import { FindBar } from '@/components/find-bar'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
-import { findGroupOfPane } from '@/components/pane-shell/tree/model'
-import { $layoutTree, $newSessionTabAction, registerPaneCloser, revealTreePane } from '@/components/pane-shell/tree/store'
+import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -66,7 +65,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
-import { closeSessionTile, focusOpenSession, goToSession, openSessionTile } from '@/store/session-states'
+import { goToSession } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord } from '@/store/wake-word'
 import { isSecondaryWindow } from '@/store/windows'
@@ -89,7 +88,6 @@ import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
 import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
 import {
-  $workspaceIsPage,
   CRON_ROUTE,
   navigateToWorkspacePage,
   routeSessionId,
@@ -618,50 +616,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     updateSessionState
   })
 
-  // Workspace tab Close — browser-tab semantics for the one pane that can
-  // never structurally leave the tree (dock anchor, drag payload target,
-  // `findGroupOfPane(tree, 'workspace')` assumed live everywhere). Promote an
-  // adjacent tab into it when one exists (load that session into main, then
-  // drop the now-redundant tile — exactly what closing a browser tab does:
-  // the strip shrinks by one and focus lands on a neighbor); with no sibling
-  // tab left, there's nothing to promote, so it resets to a blank draft
-  // instead (same effect as ⌘N). Routed through `registerPaneCloser` so
-  // `closeTreePane('workspace')` — used by the tab's × / ⌘W / right-click
-  // Close / "Close all" — never falls through to the generic dismiss-from-
-  // tree path, which would rip the anchor pane out of the layout.
-  useEffect(() => {
-    registerPaneCloser('workspace', () => {
-      const tree = $layoutTree.get()
-      const group = tree ? findGroupOfPane(tree, 'workspace') : null
-      const siblings = group?.panes.filter(id => id !== 'workspace') ?? []
-
-      if (siblings.length === 0) {
-        startFreshSessionDraft()
-
-        return
-      }
-
-      // Same neighbor pick as a real tab close (removePane in model.ts):
-      // the previous tab, falling back to the next one when workspace was
-      // first — never a jump to the strip's start.
-      const at = group!.panes.indexOf('workspace')
-      const promote = group!.panes[at - 1] ?? siblings[0]
-
-      if (promote.startsWith('session-tile:')) {
-        const storedSessionId = promote.slice('session-tile:'.length)
-
-        // A rejected/thrown resumeSession (stale id, mid-swap gateway) must
-        // not silently eat the whole ⌘W / × press — log it so "nothing
-        // happened" is diagnosable, and drop the redundant tile regardless
-        // so the strip still shrinks by one even on a failed resume (matches
-        // what closing a session tile directly does on its own load errors).
-        resumeSession(storedSessionId)
-          .catch(err => console.error('[workspace tab close] resumeSession failed while promoting a tab', err))
-          .finally(() => closeSessionTile(storedSessionId))
-      }
-    })
-  }, [resumeSession, startFreshSessionDraft])
-
   // The popped-out pet overlay's bridge back into the app.
   usePetBridge({ requestGateway, resumeSession, submitText })
 
@@ -930,32 +884,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onReload: reloadFromMessage,
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
-    // Browser-tab semantics: already on screen (open tile, or the main
-    // session)? Jump to its tab. Otherwise, an EMPTY workspace (fresh draft,
-    // or a full-page route with no session showing) has no tab content worth
-    // preserving, so load straight into it — the first session opened never
-    // needs a tile. Once something is already showing, a further sidebar
-    // click opens the session as an ADDITIONAL tab beside it instead of
-    // replacing what's there, so multiple sessions stay visible at once.
-    onResumeSession: sessionId => {
-      if (focusOpenSession(sessionId)) {
-        return
-      }
-
-      const workspaceEmpty = !$selectedStoredSessionId.get() || $workspaceIsPage.get()
-
-      if (workspaceEmpty) {
-        navigate(sessionRoute(sessionId))
-      } else {
-        openSessionTile(sessionId, 'center')
-        // New tiles adopt SILENTLY (insertAtGroup's activate:false — a
-        // background pane must not steal an already-visible tab out from
-        // under a drag/plugin adoption). A sidebar click is an explicit
-        // gesture, so front it — otherwise the tab opens behind the one
-        // already showing and looks like nothing happened.
-        revealTreePane(`session-tile:${sessionId}`)
-      }
-    },
+    // Already on screen (open tile, or the main session)? Jump to its tab.
+    // Same door every other session link uses; `stack` keeps the browser-tab
+    // semantics for a plain sidebar click — an occupied main stays put and
+    // the session opens as an additional tab beside it, while an empty main
+    // (fresh draft, or a full-page route) is loaded directly.
+    onResumeSession: sessionId => openSession(sessionId, navigate, 'stack'),
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSubmit: submitText,

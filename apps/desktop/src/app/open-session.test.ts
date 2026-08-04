@@ -6,6 +6,11 @@ const reuseBlankDraftTile = vi.fn()
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
+const revealTreePane = vi.fn()
+
+vi.mock('@/components/pane-shell/tree/store', () => ({
+  revealTreePane: (...args: unknown[]) => revealTreePane(...args)
+}))
 
 vi.mock('@/store/session-states', () => ({
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
@@ -89,6 +94,7 @@ describe('openSession', () => {
     canOpenSessionWindow.mockReturnValue(true)
     workspaceIsPageGet.mockReturnValue(false)
     reuseBlankDraftTile.mockReset()
+    revealTreePane.mockReset()
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
   })
@@ -132,6 +138,9 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'tab')
     expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    // A fresh tile adopts silently, so an explicit open must front the tab it
+    // just created — otherwise the gesture looks like a no-op.
+    expect(revealTreePane).toHaveBeenCalledWith('session-tile:s1')
     expect(navigate).not.toHaveBeenCalled()
   })
 

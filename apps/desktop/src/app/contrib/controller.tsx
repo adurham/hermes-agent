@@ -29,7 +29,6 @@ import {
   removeTreePane,
   resetLayoutTree,
   revealTreePane,
-  setPaneCollapsed,
   togglePaneVisible,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
@@ -489,31 +488,9 @@ registerLayoutResetHandler(stackSessionTilesIntoMain)
 // store — bindPaneVisibility — alongside bindToolPaneCollapse, so both are
 // testable against the real function instead of a copy.
 
-// TOOL PANELS (terminal, logs): like bindPaneVisibility but the toggle COLLAPSES
-// the zone to a persistent rail (tab stays) instead of hiding it — the
-// IntelliJ/VS-Code tool-window model. Restore routes back through `open` (rail
-// click / chevron) so ⌃`/the button stay truthful; the tab's ✕ removes it.
-function bindPaneCollapse(
-  paneId: string,
-  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
-  close: () => void,
-  open: () => void
-) {
-  markCollapsePane(paneId)
-  // front: false — this is a MOUNT-TIME reconciliation, not a user gesture.
-  // terminal and logs can share one zone; each has its OWN independently
-  // persisted open/closed store, and both can be "open" from a past session.
-  // Fronting on this initial sync would make the LAST-BOUND pane always win
-  // the shared zone's active tab on every boot (bindPaneCollapse('logs', …)
-  // runs after 'terminal' below, so logs would always steal the front tab
-  // from a Terminal-deck-style layout even though the user never touched
-  // logs this session). The persisted tree's own `active` field already
-  // knows which tab was actually last shown — leave it alone here.
-  setPaneCollapsed(paneId, !$open.get(), false)
-  $open.listen(isOpen => setPaneCollapsed(paneId, !isOpen))
-  registerPaneCloser(paneId, close)
-  registerPaneOpener(paneId, open)
-}
+// TOOL PANELS (terminal, logs): the binding lives in the tree store —
+// bindToolPaneCollapse — so the boot rule it encodes is testable against the
+// real function instead of a copy. See its docblock for the semantics.
 
 // SIDES have one source of truth: the TREE. The legacy $panesFlipped flag is
 // DERIVED from where the sessions zone actually sits (TitlebarControls maps
@@ -613,7 +590,7 @@ registry.register(
 
 // Pet zone: shown/hidden by the pet zone toggle in settings. Collapses to a
 // rail when off so the zone stays mounted (pet keeps its position).
-bindPaneCollapse(
+bindToolPaneCollapse(
   'pet-zone',
   $petZoneEnabled,
   () => setPetZoneEnabled(false),
