@@ -72,7 +72,6 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import (
-    apply_anthropic_cache_control,
     build_prompt_cache_plan,
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
@@ -709,7 +708,19 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 elif raw_prompt == "":
                     stored_state = "empty"
                 else:
-                    stored_prompt = raw_prompt
+                    # FORK back-compat (the ONLY surviving sentinel strip):
+                    # sessions persisted by the retired in-band cache-split
+                    # mechanism (FORK.md 2026-06-02, removed 2026-08-04)
+                    # stored the internal SYSTEM_VOLATILE_SENTINEL inside the
+                    # system prompt. Strip it here — the single point where a
+                    # historical prompt enters ``_cached_system_prompt`` — so
+                    # the marker can never leak to the model. Stripping
+                    # restores the exact "\n\n" join those sessions actually
+                    # sent on the wire, so their prefix cache still matches.
+                    # No-op for prompts written after the removal.
+                    from agent.prompt_caching import strip_volatile_sentinel
+
+                    stored_prompt = strip_volatile_sentinel(raw_prompt)
                     stored_state = "present"
         except Exception as exc:
             logger.warning(
@@ -1927,18 +1938,6 @@ def run_conversation(
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
-        # The cached system prompt may carry the internal volatile-boundary
-        # sentinel (see agent.system_prompt.build_system_prompt). It is only
-        # consumed by the native Anthropic stable|volatile cache split below.
-        # On every other path (non-native transports, caching disabled) strip
-        # it here so the marker never reaches the model; stripping restores
-        # the exact "\n\n" separator, keeping sent bytes identical to before.
-        _will_split = bool(
-            agent._use_prompt_caching and agent._use_native_cache_layout
-        )
-        if effective_system and not _will_split:
-            from agent.prompt_caching import strip_volatile_sentinel
-            effective_system = strip_volatile_sentinel(effective_system)
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
@@ -2019,25 +2018,6 @@ def run_conversation(
             _sel_incoming,
             logger=request_logger,
         )
-
-        # Apply Anthropic prompt caching for Claude models on native
-        # Anthropic, OpenRouter, and third-party Anthropic-compatible
-        # gateways. Auto-detected: if ``_use_prompt_caching`` is set,
-        # inject cache_control breakpoints (system + last 3 messages)
-        # to reduce input token costs by ~75% on multi-turn
-        # conversations.
-        if agent._use_prompt_caching:
-            # Reserve one of the 4 breakpoints for ``tools[]`` ONLY when
-            # we're going to actually emit it (native Anthropic path —
-            # ``cache_tools=True`` in _build_api_kwargs). On third-party
-            # gateways that path is off, so use all 3 message breakpoints.
-            _reserve_tools_bp = bool(agent._use_native_cache_layout)
-            api_messages = apply_anthropic_cache_control(
-                api_messages,
-                cache_ttl=agent._cache_ttl,
-                native_anthropic=agent._use_native_cache_layout,
-                reserve_tools_breakpoint=_reserve_tools_bp,
-            )
 
         # Safety net: strip orphaned tool results / add stubs for missing
         # results before sending to the API.  Runs unconditionally — not

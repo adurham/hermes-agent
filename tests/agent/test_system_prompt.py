@@ -191,12 +191,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     ):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
-    # FORK: the raw prompt carries the internal stable|volatile cache-split
-    # sentinel (FORK.md 2026-06-02); it is always stripped/consumed before the
-    # prompt reaches the model, so compare against the model-visible form.
-    from agent.prompt_caching import strip_volatile_sentinel
-
-    assert strip_volatile_sentinel(prompt) == expected
+    assert prompt == expected
     assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
 
 

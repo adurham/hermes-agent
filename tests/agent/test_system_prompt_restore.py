@@ -72,6 +72,28 @@ class TestStoredPromptReuse:
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
         assert agent._cached_system_prompt == stored
 
+    def test_legacy_sentinel_prompt_is_stripped_on_restore(self):
+        """Back-compat: sessions persisted by the retired in-band cache-split
+        mechanism (FORK.md 2026-06-02) stored the internal volatile-boundary
+        sentinel inside the system prompt. The restore path is the single
+        surviving strip site — the adopted prompt must carry the plain
+        ``\\n\\n`` join those sessions actually sent to the model, and the
+        marker must never reach ``_cached_system_prompt``."""
+        from agent.prompt_caching import SYSTEM_VOLATILE_SENTINEL
+
+        stable = "STABLE: identity + tool guidance"
+        volatile = "VOLATILE: memory + Conversation started: Tuesday"
+        stored = stable + "\n\n" + SYSTEM_VOLATILE_SENTINEL + "\n\n" + volatile
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stable + "\n\n" + volatile
+        assert SYSTEM_VOLATILE_SENTINEL not in agent._cached_system_prompt
+        agent._build_system_prompt.assert_not_called()
+
     def test_present_row_with_stale_runtime_identity_rebuilds(self, caplog):
         """Stored prompts are cache gold unless their runtime identity is stale.
 
