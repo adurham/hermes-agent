@@ -1,6 +1,12 @@
 import { atom } from 'nanostores'
 
-export const DEFAULT_TERMINAL_FONT_FAMILY = "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace"
+// Nerd Font fallbacks after JetBrains Mono so PUA glyphs (powerline segments,
+// devicons in shell prompts) render instead of tofu boxes when the user's
+// prompt assumes a Nerd Font is installed (FORK.md 2026-07-22; upstream PR
+// #72153). Fonts that aren't installed are skipped by the browser, so the
+// fallbacks are free on machines without them.
+export const DEFAULT_TERMINAL_FONT_FAMILY =
+  "'JetBrains Mono', 'Hack Nerd Font Mono', 'FiraCode Nerd Font Mono', 'Symbols Nerd Font Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace"
 
 export const TERMINAL_FONT_SUGGESTIONS = [
   'MesloLGS NF',
