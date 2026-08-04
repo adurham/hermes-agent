@@ -991,72 +991,6 @@ class TestAnthropicAuxModel:
         finally:
             clear_runtime_main()
 
-    def test_exo_pinned_task_with_fallback_model_uses_haiku_on_anthropic_main(self):
-        """A task pinned to exo with fallback_model=haiku: exo-main keeps Qwen,
-        anthropic-main drops the exo pin and uses the fallback (Haiku), NOT the
-        global Sonnet default.
-
-        This is the cost-saving path — trivial aux tasks (title, mcp, etc.) run
-        free on the local exo cluster when main=exo, and on cheap Haiku (3x under
-        Sonnet) when an Anthropic session follows main.
-        """
-        from agent.auxiliary_client import (
-            set_runtime_main,
-            clear_runtime_main,
-            _resolve_task_provider_model,
-        )
-
-        EXO_URL = "http://192.168.86.201:52415/v1"
-        QWEN = "mlx-community/Qwen3.6-35B-A3B-8bit"
-        cheap_cfg = {
-            "provider": "exo",
-            "base_url": EXO_URL,
-            "api_key": "x",
-            "model": QWEN,
-            "fallback_model": "claude-haiku-4-5-20251001",
-        }
-
-        # main=exo → exo pin honored, Qwen unchanged.
-        try:
-            set_runtime_main("exo", QWEN, api_key="not-needed", base_url=EXO_URL)
-            with patch(
-                "agent.auxiliary_client._get_auxiliary_task_config",
-                return_value=dict(cheap_cfg),
-            ):
-                prov, model, base_url, _ak, _am = _resolve_task_provider_model(
-                    task="title_generation"
-                )
-            assert prov == "exo" or base_url == EXO_URL, (
-                f"exo-main must keep the exo pin, got provider={prov!r} base_url={base_url!r}"
-            )
-            assert model == QWEN, (
-                f"exo-main must keep the configured exo model, got {model!r}"
-            )
-        finally:
-            clear_runtime_main()
-
-        # main=anthropic → exo pin dropped, fallback_model (Haiku) selected.
-        try:
-            set_runtime_main("anthropic", "claude-opus-4-8", api_key="not-needed")
-            with patch(
-                "agent.auxiliary_client._get_auxiliary_task_config",
-                return_value=dict(cheap_cfg),
-            ):
-                prov, model, base_url, _ak, _am = _resolve_task_provider_model(
-                    task="title_generation"
-                )
-            assert prov == "auto", (
-                f"anthropic-main must drop the exo pin to auto, got {prov!r}"
-            )
-            assert base_url is None, (
-                f"anthropic-main must drop the exo base_url, got {base_url!r}"
-            )
-            assert model == "claude-haiku-4-5-20251001", (
-                f"anthropic-main must use fallback_model (Haiku), got {model!r}"
-            )
-        finally:
-            clear_runtime_main()
-
     def test_exo_pinned_task_without_fallback_model_uses_sonnet_on_anthropic_main(self):
         """A task pinned to exo with NO fallback_model: anthropic-main drops the
         exo pin and clears the model so the provider-default aux model (Sonnet)
@@ -1188,11 +1122,12 @@ class TestAnthropicAuxModel:
             clear_runtime_main()
 
 
-class TestProviderScopedFallbackModels:
-    """Provider-scoped ``auxiliary.<task>.fallback_models`` map (fork 2026-06-24).
-
-    The map keys a main-provider id to the aux model used when the exo pin is
-    dropped. Resolution on drop: scoped entry → legacy scalar → cleared.
+class TestExoPinDropClearsModel:
+    """When a non-exo main drops an exo task pin, the model clears to the
+    provider default. Per-main-provider aux models are expressed via the
+    provider-first ``auxiliary`` schema (block selection happens upstream in
+    ``_aux_flatten_provider_first``); the pre-v31 ``fallback_model`` /
+    ``fallback_models`` read paths were removed after the v31 migration.
     """
 
     EXO_URL = "http://192.168.86.201:52415/v1"
@@ -1227,74 +1162,22 @@ class TestProviderScopedFallbackModels:
         finally:
             clear_runtime_main()
 
-    def test_scoped_map_selects_per_main_provider(self):
-        """Same task, different main providers → different aux models."""
-        cfg = self._cfg(fallback_models={
-            "anthropic": "claude-sonnet-4-6",
-            "openrouter": "anthropic/claude-3.5-haiku",
-        })
-        _p, model, base_url, _ak, _am = self._resolve_with_main("anthropic", cfg)
-        assert base_url is None and model == "claude-sonnet-4-6", (
-            f"anthropic-main must use scoped anthropic model, got {model!r}"
-        )
-        _p, model, _bu, _ak, _am = self._resolve_with_main("openrouter", cfg)
-        assert model == "anthropic/claude-3.5-haiku", (
-            f"openrouter-main must use scoped openrouter model, got {model!r}"
-        )
-
-    def test_scoped_map_wins_over_legacy_scalar(self):
-        """When both present, the provider-scoped entry takes precedence."""
+    def test_legacy_fallback_keys_are_ignored_on_drop(self):
+        """Stale pre-v31 fallback keys no longer influence the drop path."""
         cfg = self._cfg(
             fallback_model="claude-haiku-4-5-20251001",
             fallback_models={"anthropic": "claude-sonnet-4-6"},
         )
-        _p, model, _bu, _ak, _am = self._resolve_with_main("anthropic", cfg)
-        assert model == "claude-sonnet-4-6", (
-            f"scoped entry must win over scalar, got {model!r}"
-        )
-
-    def test_falls_back_to_scalar_when_provider_not_in_map(self):
-        """Main provider absent from map → legacy scalar applies."""
-        cfg = self._cfg(
-            fallback_model="claude-haiku-4-5-20251001",
-            fallback_models={"openrouter": "anthropic/claude-3.5-haiku"},
-        )
-        _p, model, _bu, _ak, _am = self._resolve_with_main("anthropic", cfg)
-        assert model == "claude-haiku-4-5-20251001", (
-            f"missing scoped entry must fall back to scalar, got {model!r}"
-        )
-
-    def test_no_match_no_scalar_clears_to_provider_default(self):
-        """Neither scoped entry nor scalar → model cleared (provider default)."""
-        cfg = self._cfg(fallback_models={"openrouter": "x/y"})
         prov, model, base_url, _ak, _am = self._resolve_with_main("anthropic", cfg)
         assert prov == "auto" and base_url is None and model is None, (
-            f"no match + no scalar must clear model, got prov={prov!r} model={model!r}"
+            f"drop must clear model regardless of legacy keys, got "
+            f"prov={prov!r} model={model!r}"
         )
 
-    def test_exo_main_ignores_scoped_map_and_keeps_pin(self):
-        """exo-main keeps the exo pin regardless of fallback_models."""
-        cfg = self._cfg(fallback_models={"anthropic": "claude-sonnet-4-6"})
+    def test_exo_main_keeps_pin(self):
+        """exo-main keeps the exo pin (model and endpoint intact)."""
+        cfg = self._cfg()
         prov, model, base_url, _ak, _am = self._resolve_with_main("exo", cfg)
         assert (prov == "exo" or base_url == self.EXO_URL) and model == self.QWEN, (
             f"exo-main must keep the exo pin, got prov={prov!r} model={model!r}"
-        )
-
-    def test_scoped_key_match_is_case_insensitive(self):
-        """Map keys match the main provider id case-insensitively."""
-        cfg = self._cfg(fallback_models={"Anthropic": "claude-sonnet-4-6"})
-        _p, model, _bu, _ak, _am = self._resolve_with_main("anthropic", cfg)
-        assert model == "claude-sonnet-4-6", (
-            f"scoped key match must be case-insensitive, got {model!r}"
-        )
-
-    def test_malformed_map_falls_back_to_scalar(self):
-        """A non-dict fallback_models is ignored; scalar still applies."""
-        cfg = self._cfg(
-            fallback_model="claude-haiku-4-5-20251001",
-            fallback_models="not-a-dict",
-        )
-        _p, model, _bu, _ak, _am = self._resolve_with_main("anthropic", cfg)
-        assert model == "claude-haiku-4-5-20251001", (
-            f"malformed map must fall back to scalar, got {model!r}"
         )

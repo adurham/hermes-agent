@@ -15661,8 +15661,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._approval_state = None
             self._approval_deadline = 0
             self._paint_now()
-            _cprint(f"\n{_DIM}  ⏱ Timeout — command not run (no response){_RST}")
-            self._persist_prompt_summary("⚠", "Approval", command, "timed out (unanswered)")
+            _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
+            self._persist_prompt_summary(
+                "⚠", "Approval", command, "timed out (no response)",
+            )
             return "timeout"
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True,
