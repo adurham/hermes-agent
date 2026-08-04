@@ -11,7 +11,7 @@
     "tests-js"
   ],
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
+    "postinstall": "echo '\u2705 Browser tools ready. Run: python run_agent.py --help'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
@@ -60,8 +60,12 @@
     "rimraf": "file:local-packages/rimraf-shim",
     "boolean": "file:local-packages/boolean-shim",
     "minimatch": "^10.2.5",
-    "brace-expansion": "5.0.8",
-    "protobufjs": "^8.7.1"
+    "brace-expansion": "5.0.9",
+    "protobufjs": "^8.7.1",
+    "undici": "^6.28.0",
+    "jsdom": {
+      "undici": "^7.29.0"
+    }
   },
   "engines": {
     "node": ">=22.22.0",
