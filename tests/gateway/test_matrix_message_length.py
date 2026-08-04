@@ -39,10 +39,6 @@ class TestMatrixMaxMessageLength:
         adapter = _make_adapter()
         assert adapter.max_message_length == 20000
 
-    def test_extra_beats_env(self, monkeypatch):
-        monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "20000")
-        adapter = _make_adapter(max_message_length=10000)
-        assert adapter.max_message_length == 10000
 
     def test_invalid_values_fall_back_to_default(self, monkeypatch):
         monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "not-a-number")

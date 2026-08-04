@@ -24,7 +24,7 @@ class TestWebSearchRegistryFork:
         def fake_load_config():
             return {"web": {"search_backend": "brave-free"}}
 
-        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
 
         result = _read_web_config_key("search")
         assert result == "brave-free"
@@ -48,7 +48,7 @@ class TestWebSearchRegistryFork:
                 }
             }
 
-        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
 
         result = _read_web_config_key("search")
         assert result == "anthropic-native"
@@ -71,7 +71,7 @@ class TestWebSearchRegistryFork:
                 }
             }
 
-        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
 
         result = _read_web_config_key("search")
         assert result == "searxng"
@@ -95,7 +95,7 @@ class TestWebSearchRegistryFork:
                 }
             }
 
-        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
 
         result = _read_web_config_key("search")
         assert result == "anthropic-native"
@@ -119,7 +119,7 @@ class TestWebSearchRegistryFork:
                 }
             }
 
-        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
 
         result = _read_web_config_key("search")
         assert result == "tavily"
@@ -143,7 +143,7 @@ class TestWebSearchRegistryFork:
                 }
             }
 
-        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
 
         result = _read_web_config_key("extract")
         assert result == "jina"
@@ -167,7 +167,7 @@ class TestWebSearchRegistryFork:
                 }
             }
 
-        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
 
         result = _read_web_config_key("search")
         assert result == "ddgs"
@@ -184,7 +184,7 @@ class TestWebSearchRegistryFork:
         def broken_load():
             raise RuntimeError("config broken")
 
-        monkeypatch.setattr("hermes_cli.config.load_config", broken_load)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", broken_load)
 
         # Should not raise — the function catches exceptions internally
         result = _read_web_config_key("search")

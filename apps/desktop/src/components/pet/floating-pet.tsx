@@ -6,6 +6,7 @@ import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { burstVibeHearts, PetHeartField } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
+import { $changeEventsAvailable, $petChange } from '@/store/live-sync'
 import {
   $petAtRest,
   $petCanRoam,
@@ -14,7 +15,10 @@ import {
   $petRoam,
   $petRoamDir,
   clearPetUnread,
+  hasPetSpriteForMeta,
+  mergePetInfoMeta,
   type PetInfo,
+  type PetInfoMeta,
   petProfile,
   type PetState,
   setPetInfo
@@ -56,14 +60,6 @@ const BUBBLE_CLEARANCE_PX = 40
 interface Point {
   x: number
   y: number
-}
-
-interface PetInfoMeta {
-  enabled: boolean
-  slug?: string
-  displayName?: string
-  scale?: number
-  spritesheetRevision?: string
 }
 
 function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
@@ -168,6 +164,8 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   const { resolvedMode } = useTheme()
   const gatewayState = useStore($gatewayState)
   const info = useStore($petInfo)
+  const changeEventsAvailable = useStore($changeEventsAvailable)
+  const petChange = useStore($petChange)
   const overlayActive = useStore($petOverlayActive)
   const roamEnabled = useStore($petRoam)
   const canRoam = useStore($petCanRoam)
@@ -216,9 +214,11 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     [petW, petH, zoneContainer]
   )
 
-  // Fetch pet.info on connect. Poll quickly while inactive so an in-app
-  // `/pet <slug>` appears, then slowly while active so regenerated spritesheets
-  // and row-count metadata replace the cached base64 payload.
+  // Fetch pet.info on connect, then let pet.changed drive refreshes: the
+  // change watcher broadcasts when /pet (de)activates a pet or the hatch flow
+  // rewrites a sheet, so event-capable backends need no interval at all —
+  // users with no pet especially (this used to poll hardest for them). Older
+  // backends keep the legacy fast-while-inactive poll.
   const active = info.enabled && Boolean(info.spritesheetBase64)
   useEffect(() => {
     if (gatewayState !== 'open') {
@@ -226,6 +226,16 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     }
 
     let cancelled = false
+
+    // pet.changed already carries the meta payload — an enabled=false
+    // broadcast clears the mascot with zero round-trips, and an unchanged
+    // revision (scale-only move still changes the sig) short-circuits below
+    // via hasPetSpriteForMeta + mergePetInfoMeta.
+    if (changeEventsAvailable && petChange.tick > 0 && petChange.meta?.enabled === false) {
+      setPetInfo({ enabled: false })
+
+      return
+    }
 
     const pull = async () => {
       try {
@@ -243,7 +253,15 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
               return
             }
 
-            if (samePetRevision($petInfo.get(), meta)) {
+            const current = $petInfo.get()
+
+            if (hasPetSpriteForMeta(current, meta)) {
+              const merged = mergePetInfoMeta(current, meta)
+
+              if (merged !== current) {
+                setPetInfo(merged)
+              }
+
               return
             }
           } catch {
@@ -276,15 +294,27 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     }
 
     void pull()
-    const timer = window.setInterval(() => void pull(), active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS)
     window.addEventListener('focus', pull)
+
+    // Event-capable backend: pet.changed re-runs this effect (petChange dep),
+    // so no timer. Legacy backend: the historical poll.
+    const timer = changeEventsAvailable
+      ? null
+      : window.setInterval(() => {
+          if (document.visibilityState === 'visible') {
+            void pull()
+          }
+        }, active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS)
 
     return () => {
       cancelled = true
       window.removeEventListener('focus', pull)
-      window.clearInterval(timer)
+
+      if (timer !== null) {
+        window.clearInterval(timer)
+      }
     }
-  }, [gatewayState, active, requestGateway])
+  }, [gatewayState, active, changeEventsAvailable, petChange, requestGateway])
 
   // Pets are per-profile. When the active profile changes, drop the previous
   // profile's mascot + gallery cache so the poll above refetches the new
@@ -321,6 +351,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   // Restore a popped-out pet on boot, once the pet has loaded (so we never spawn
   // an empty overlay window). Primary window only; runs at most once.
   const restoredRef = useRef(false)
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (isSecondaryWindow() || restoredRef.current || !active) {
       return
@@ -682,7 +713,11 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
           zIndex: 1
         }}
       >
-        <PetSprite info={info} rowOverride={walk.row} />
+        {/* pauseWhenUnfocused=false: the floating pet is a background companion
+            meant to keep animating while the window is visible but unfocused —
+            pause only when truly off screen (hidden/minimized). Matches the
+            popped-out overlay and the roam loop's main-process visibility gate. */}
+        <PetSprite info={info} pauseWhenUnfocused={false} rowOverride={walk.row} />
       </div>
       {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
           burstVibeHearts's router. */}

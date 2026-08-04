@@ -143,6 +143,7 @@ def test_uses_current_context_not_cumulative_session_total():
     assert budget > dt._MIN_SUMMARY_CHARS
 
 
+
 def test_empty_results_is_noop():
     # No summaries → nothing to do, must not raise.
     dt._apply_summary_budget([], _FakeParent(131_000, 1_000, 8_000))

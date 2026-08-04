@@ -147,7 +147,7 @@ SIMPLE_REPLACEMENTS = [
      f"github.com/{FORK_OWNER}/{REPO_NAME}"),
     (re.compile(r"github\.com:NousResearch/hermes-agent", re.IGNORECASE),
      f"github.com:{FORK_OWNER}/{REPO_NAME}"),
-    (re.compile(r"github:NousResearch/hermes-agent", re.IGNORECASE),
+    (re.compile(r"github:adurham/hermes-agent", re.IGNORECASE),
      f"github:{FORK_OWNER}/{REPO_NAME}"),
     (re.compile(r"raw\.githubusercontent\.com/NousResearch/hermes-agent", re.IGNORECASE),
      f"raw.githubusercontent.com/{FORK_OWNER}/{REPO_NAME}"),

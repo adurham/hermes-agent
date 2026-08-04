@@ -32,7 +32,7 @@ from collections import defaultdict
 
 
 def run(args, *, check=True):
-    r = subprocess.run(args, capture_output=True, text=True)
+    r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if check and r.returncode != 0:
         print(f"ERROR running {' '.join(args)}: {r.stderr}", file=sys.stderr)
         sys.exit(2)
@@ -100,7 +100,7 @@ def main():
     r = subprocess.run(
         ["git", "merge-tree", "--write-tree", "--name-only", "--no-messages",
          args.ours, args.upstream],
-        capture_output=True, text=True
+        capture_output=True, text=True, encoding="utf-8", errors="replace"
     )
     # Output format: first line is the merged-tree SHA, subsequent lines are
     # conflicting paths (when --name-only is set and there are conflicts).

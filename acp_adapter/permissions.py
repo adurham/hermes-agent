@@ -160,9 +160,10 @@ def make_approval_callback(
             response = future.result(timeout=timeout)
         except FutureTimeout:
             future.cancel()
-            logger.warning("Permission request timed out with no response")
-            # Unanswered ≠ denied: report timeout so the model isn't told the
-            # user explicitly rejected something they never saw.
+            logger.warning("Permission request timed out after %ss", timeout)
+            # Distinct from an explicit deny: the client never answered.
+            # tools.approval callers report this as "timed out without user
+            # response" instead of a user denial.
             return "timeout"
         except Exception as exc:
             future.cancel()

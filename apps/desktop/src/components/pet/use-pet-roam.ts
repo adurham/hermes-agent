@@ -119,6 +119,7 @@ export function usePetRoam({
   // doc comment. Updating a ref doesn't re-run the setup effect below.
   const canMoveRef = useRef(canMove)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (prop, not an atom)
   useEffect(() => {
     canMoveRef.current = canMove
   }, [canMove])

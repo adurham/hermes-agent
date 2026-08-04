@@ -64,6 +64,11 @@ def convert_messages_to_anthropic(
     _relocate_orphaned_tool_search_results = _aa._relocate_orphaned_tool_search_results
     _sanitize_block_for_anthropic_input = _aa._sanitize_block_for_anthropic_input
     _sanitize_tool_id = _aa._sanitize_tool_id
+    _apply_assistant_cache_control_to_last_cacheable_block = (
+        _aa._apply_assistant_cache_control_to_last_cacheable_block
+    )
+    _ensure_leading_user_turn = _aa._ensure_leading_user_turn
+    _scrub_blank_text_blocks = _aa._scrub_blank_text_blocks
     system = None
     result = []
 
@@ -170,6 +175,29 @@ def convert_messages_to_anthropic(
                     _last = rebuilt[-1]
                     if isinstance(_last, dict) and "cache_control" not in _last:
                         _last["cache_control"] = dict(_msg_cc)
+                # apply_anthropic_cache_control marks an assistant turn with
+                # non-empty text by writing cache_control INTO ``content``
+                # (see _apply_cache_marker's string/list branches), not at
+                # the top level. This branch rebuilds the message from
+                # anthropic_content_blocks and never reads ``content``, so
+                # that marker would be dropped — and because
+                # _can_carry_marker already counted this message as a
+                # carrier, the breakpoint would be burned rather than
+                # relocated (upstream #56195 / non-empty-content variant).
+                # Harvest it onto the last cacheable replayed block.
+                _inline_cc = None
+                _msg_content = m.get("content")
+                if isinstance(_msg_content, list):
+                    for _blk in _msg_content:
+                        if isinstance(_blk, dict) and isinstance(
+                            _blk.get("cache_control"), dict
+                        ):
+                            _inline_cc = _blk["cache_control"]
+                            break
+                if _inline_cc is not None:
+                    _apply_assistant_cache_control_to_last_cacheable_block(
+                        rebuilt, _inline_cc
+                    )
                 result.append({"role": "assistant", "content": rebuilt})
                 continue
 
@@ -444,6 +472,11 @@ def convert_messages_to_anthropic(
             fixed.append(m)
     result = fixed
 
+    # Anthropic requires messages[0] to be role=user — after a second auto
+    # compaction the summary can land as a leading assistant turn (upstream
+    # #52160). Prepend a minimal non-blank user turn when needed.
+    _ensure_leading_user_turn(result)
+
     # ── Thinking block signature management ──────────────────────────
     # Anthropic signs thinking blocks against the full turn content.
     # Any upstream mutation (context compression, session truncation,
@@ -466,7 +499,15 @@ def convert_messages_to_anthropic(
     # 3. Strip cache_control from thinking/redacted_thinking blocks —
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
-    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+    # Portal speaks Anthropic's thinking contract end-to-end (proxies Claude to
+    # Anthropic/Vertex/Bedrock and validates the same signed thinking blocks;
+    # sticky session_id keeps signatures warm) — do not treat it as a
+    # signature-blind proxy even though the host is not anthropic.com.
+    # Stripping here would 400 the first tool-loop turn.
+    _is_third_party = (
+        _is_third_party_anthropic_endpoint(base_url)
+        and not _aa._is_nous_portal_endpoint(base_url)
+    )
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -720,5 +761,10 @@ def convert_messages_to_anthropic(
                     else {"type": "text", "text": "[screenshot removed to save context]"}
                     for b in inner
                 ]
+
+    # Final provider-boundary guard: drop blank/whitespace-only text blocks
+    # anywhere in the payload (Anthropic rejects them with HTTP 400
+    # "text content blocks must contain non-whitespace text", #69512).
+    _scrub_blank_text_blocks(result)
 
     return system, result
