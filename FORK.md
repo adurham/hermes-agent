@@ -112,9 +112,11 @@ protective divergence, not dedup.
 Still open upstream (converge when they land): PRs #72087 (estimator
 4x-count — upstream's refactor reintroduced the exact bug), #72151,
 #72152, #72153 (Nerd Font — locally re-applied as the one-constant form),
-#72155, #72164. New filing opportunity surfaced by the audit: upstream's
-`background_review.py` has the fork's 2026-07-22 doubled-tokens /
-Ctrl+C-lockup race (same subsystem, same session_id sharing, no guard).
+#72155, #72164, and #82070 (background-review turn-race, filed
+2026-08-08 — see the 2026-07-22 entry below for full detail). New filing
+opportunity surfaced by the audit: upstream's `background_review.py` has
+the fork's 2026-07-22 doubled-tokens / Ctrl+C-lockup race (same
+subsystem, same session_id sharing, no guard). **Filed as #82070.**
 
 Audit findings noted but NOT actioned in this pass (small, optional):
 * Spinner timer format — upstream now has its own fixed-width
@@ -3349,6 +3351,29 @@ Anthropic-SDK/mock drift in this sandbox), not caused by this change.
 
 Files: `agent/agent_init.py`, `agent/background_review.py`,
 `agent/conversation_loop.py`.
+
+**SUBMITTED 2026-08-08 as upstream PR #82070.** The de-fork audit
+(2026-08-04) flagged this as a new filing opportunity: upstream's own
+`agent/background_review.py` still shares the parent's `session_id`
+(`review_agent.session_id = agent.session_id`) with no `_active_children`
+registration and no cancel-on-new-turn logic anywhere in
+`conversation_loop.py`/`agent_init.py` — confirmed live against a fresh
+`upstream/main` worktree before filing, not assumed from this file's own
+description. Checked for duplicates first: #78258 (open) touches the same
+file but fixes a different bug (Kanban task-failure misattribution from an
+inherited `HERMES_KANBAN_TASK` env var on the review fork) — not a
+duplicate. Isolated the fix to the three files above, hand-applied against
+clean `upstream/main` (git worktree, not a rebase of the fork commit — the
+file has diverged too far for a clean `git apply`), added 3 new regression
+tests to `tests/run_agent/test_background_review.py` and confirmed each
+fails against the pre-fix code via `git stash`. Zero fork-only symbols in
+the isolated diff (grepped for FORK/miku/exo/anthropic_adapter.py/
+cc_alias). Verified: `ruff check` clean; 66/66 across
+`test_background_review*.py` + interrupt-propagation suites; 256/256
+across `test_turn_finalizer_*.py` + `test_run_agent.py` (collateral check
+on the two touched shared files). **Merge note:** this fork's own fix to
+these three files should converge to upstream's shape (once merged) on the
+next sync — same design, same file set, no fork-only dependency.
 
 ### Fork-only fix — 2026-07-22 (desktop: work profile deletion silently reverted after quitting and reopening the app)
 
