@@ -115,8 +115,10 @@ Still open upstream (converge when they land): PRs #72087 (estimator
 #72155, #72164, #82070 (background-review turn-race, filed 2026-08-08 —
 see the 2026-07-22 entry below for full detail), #82095
 (agent.pin_anthropic_token, filed 2026-08-08 — see the 2026-07-25 entry
-below), and #82103 (consult tool, de-forked and filed 2026-08-08 — see
-the 2026-07-07 entry below). New filing opportunity surfaced by the
+below), #82103 (consult tool, de-forked and filed 2026-08-08 — see
+the 2026-07-07 entry below), and #82245 (`hermes config unset` dropping
+comment blocks, filed 2026-08-08 — see the 2026-08-08 config-unset entry
+at the end of this file). New filing opportunity surfaced by the
 audit: upstream's `background_review.py` has the fork's 2026-07-22
 doubled-tokens / Ctrl+C-lockup race (same subsystem, same session_id
 sharing, no guard). **Filed as #82070.**
@@ -129,21 +131,40 @@ deferral via `tool_search` (2026-06-22 entry — issue #60181/#60184, open
 PRs #60182/#63844/#67457). Per user decision: never file a competing PR
 when one already exists for the same problem.
 
-Audit findings noted but NOT actioned in this pass (small, optional):
-* Spinner timer format — upstream now has its own fixed-width
-  `{_m:02d}m{_s:02d}s`; the fork's `{_m}m` variant is purely cosmetic and
-  could adopt upstream's to de-conflict the hunk.
-* The 2026-07-19 spinner-anomaly forensic latch
-  (`_spinner_elapsed_anomaly_logged` in cli.py) — plausibly explained by
-  the since-fixed VS-16/xterm root causes; droppable if it has never
-  fired since 2026-07-28.
-* pyproject `exclude-newer` absolute pin — uv now bakes the absolute
-  cutoff + `exclude-newer-span` into uv.lock itself; upstream's relative
-  form may be safe to adopt (trial: `uv lock --check` under multiple
-  TZs). Fork's lock cutoff (2026-07-19) is also older than the tag's
-  resolution point — bump on next `uv lock`.
-* Provider-first aux config blocks listing `session_search` carry a dead
-  entry (upstream removed that aux task in #27590).
+Audit findings noted 2026-08-04, actioned 2026-08-08 (see the dated
+entries below for full detail on each):
+* Spinner timer format — **CHECKED, kept as-is, note corrected.** The
+  fork's actual format is `f"{_m}m{_s:02d}s".rjust(6)`, NOT the bare
+  `{_m}m` this note originally described — already fixed-width, with a
+  code comment explicitly citing deliberate user feedback ("Minutes are
+  NOT zero-padded — '02m' looks wrong"). Adopting upstream's
+  `{_m:02d}m` would revert real user feedback for zero benefit. No
+  change made.
+* The 2026-07-19 spinner-anomaly forensic latch — **DROPPED.** Checked
+  every available log file (agent.log + 3 rotations, errors.log + 2
+  rotations, back to at least 2026-08-02) for "Spinner elapsed timer
+  implausible": zero occurrences anywhere, confirming the root cause
+  really was the since-fixed VS-16/xterm issue. Removed the warning
+  block, `_spinner_elapsed_anomaly_logged` state, and its 3 dedicated
+  tests.
+* pyproject `exclude-newer` absolute pin — **KEPT the absolute-UTC
+  mechanism, bumped the stale cutoff.** Re-verified the premise: this
+  uv version (0.11.14) has no `exclude-newer-span` option, and
+  upstream/main still carries the relative-duration form
+  (`exclude-newer = "14 days"`) that the fork's own 2026-07-26 entry
+  root-caused and fixed (relative durations drift forward on every `uv
+  lock`/`uv sync --locked` re-resolve, breaking CI reproducibly) — NOT
+  reverting to it. Bumped the stale 2026-07-19 cutoff to 2026-08-09 per
+  the entry's own instructions; `uv lock --check` re-verified under
+  TZ=UTC/CDT/Tokyo.
+* Provider-first aux config `session_search` dead entry — **REMOVED**
+  from the live `~/.hermes/config.yaml` via `hermes config unset
+  auxiliary.defaults.session_search`. Doing this exposed a real,
+  independent bug (see the 2026-08-08 config-unset entry below,
+  **filed upstream as PR #82245**): `unset_config_value()` was silently
+  dropping the trailing Security/Fallback Model comment blocks on every
+  unset call, unrelated to which key was unset. Fixed first, then the
+  cleanup was safe to redo.
 * `is_auto` aux main-model fallback layer — droppable if the owner adds
   one `fallback_providers`/per-task `fallback_chain` config entry
   (upstream's new layers cover everything except zero-config
@@ -9361,3 +9382,94 @@ tests (1 pre-existing unrelated failure, independently confirmed via
 **Merge note:** pure fork-local regression fix — the bug only exists
 because of the fork's own `_init_agent()` override, so this stays local
 and is not an upstream PR candidate.
+
+### Fork-only chore — 2026-08-08 (drop spent 2026-07-19 spinner-timer forensic latch)
+
+Checked every available log file (`agent.log` + 3 rotations, `errors.log`
++ 2 rotations, spanning back to at least 2026-08-02, well past the
+2026-07-28 VS-16/xterm root-cause fixes the original 2026-07-19 entry
+references) for the exact string "Spinner elapsed timer implausible" —
+zero occurrences anywhere. The instrumentation never fired since being
+added, confirming the root cause really was the since-fixed VS-16/xterm
+issue.
+
+Removed the forensic warning block from `_render_spinner_text()`,
+`_spinner_elapsed_anomaly_logged` state (declaration + re-arm site), and
+the 3 tests in `tests/cli/test_cli_status_bar.py` that existed solely to
+exercise that latch. The underlying spinner-timer fixed-width formatting
+logic (`elapsed_str` construction, `.rjust(6)`) is untouched — only the
+diagnostic instrumentation is gone.
+
+**Files:** `cli.py`, `tests/cli/test_cli_status_bar.py`.
+
+**Verification:** `ruff` clean; 37/37 in
+`tests/cli/test_cli_status_bar.py` + `tests/agent/test_turn_summary.py`
+(the other `_render_spinner_text` consumer).
+
+### Fork-only chore — 2026-08-08 (bump stale `exclude-newer` uv cutoff, re-verify the absolute-UTC mechanism is still correct)
+
+The pin was 3 weeks stale (2026-07-19). Re-verified the reasoning behind
+the 2026-07-26 fix before touching it (an earlier audit note speculated
+uv might now support a documented `exclude-newer-span` relative-safe
+mechanism, or that upstream's relative form might be safe to adopt):
+this uv version (0.11.14) has no `exclude-newer-span` option, and
+`upstream/main` still carries the relative-duration form (`exclude-newer
+= "14 days"`) that the fork's own 2026-07-26 entry root-caused and fixed
+(relative durations drift the resolved cutoff forward on every `uv
+lock`/`uv sync --locked` re-resolve, breaking CI reproducibly) — so
+reverting to it would reintroduce the exact bug. The absolute-UTC pin
+mechanism stays; only the timestamp moved, per the entry's own
+instructions ("bump this timestamp by hand + run uv lock").
+
+**Verification:** `uv lock` regenerated cleanly (254 packages, zero
+version changes — pure cutoff bump), `uv lock --check` agrees under
+`TZ=UTC`, `TZ=America/Chicago`, and `TZ=Asia/Tokyo` (matching the
+original 2026-07-26 entry's own verification method), `uv sync --locked`
+succeeds.
+
+**Files:** `pyproject.toml` (`exclude-newer = "2026-07-19T00:00:00Z"` →
+`"2026-08-09T00:00:00Z"`), `uv.lock` (regenerated).
+
+### Fork-only fix — 2026-08-08 (`hermes config unset` silently dropped the trailing Security/Fallback Model comment blocks)
+
+**SUBMITTED as upstream PR #82245** — genuine shared-code bug, not
+fork-only (identical code confirmed on `upstream/main`).
+
+**Discovered while:** cleaning up a documented dead
+`auxiliary.defaults.session_search` config leftover (PR #27590 removed
+that aux LLM call; the code comment at `hermes_cli/config_defaults.py`
+already explained the leftover was harmless). Running `hermes config
+unset auxiliary.defaults.session_search` also silently deleted the
+entire trailing "Fallback Model" documentation block from the live
+`~/.hermes/config.yaml` — an unrelated side effect that had nothing to
+do with the key being unset.
+
+**Root cause:** `unset_config_value()` called `atomic_yaml_write()`
+directly with no `extra_content`, unlike `save_config()` which builds a
+`parts` list of commented reference sections (`_SECURITY_COMMENT` when
+`security.redact_secrets` is unset, `_FALLBACK_COMMENT` when no valid
+`fallback_model` is configured) and passes it through `extra_content`.
+`unset_config_value()` never built or passed that content at all, so
+**any** `hermes config unset <key>` call — regardless of which key —
+unconditionally stripped both sections from the file if present.
+
+**Fix:** extracted `save_config()`'s block-building logic into a shared
+`_build_config_extra_content()` helper (so the two writers cannot drift
+out of sync with each other again) and wired `unset_config_value()`
+through it. No change to `save_config()`'s own behavior — same `parts`
+logic, same constants, just centralized.
+
+**Files:** `hermes_cli/config.py`, `tests/hermes_cli/test_config.py`.
+
+**Verification:** `ruff` clean; 4 new regression tests in
+`TestUnsetConfigValuePreservesExtraContent` (2 confirmed to fail against
+pre-fix code via `git stash`, 1 confirms the unset itself still works
+correctly, 1 confirms the Fallback Model comment correctly stays absent
+once a real `fallback_model` is configured — matching `save_config()`'s
+existing behavior); 78/78 in `tests/hermes_cli/test_config.py`; 127/127
+(+1 skipped) across the broader collateral sweep
+(`tests/docker/test_config_migration.py`, `tests/hermes_cli/test_doctor.py`).
+Applied to the live `~/.hermes/config.yaml` as well: the dead
+`auxiliary.defaults.session_search` block was then safely removed via
+`hermes config unset` (now fixed), confirmed only that key was removed
+and the Fallback Model block survived intact.
