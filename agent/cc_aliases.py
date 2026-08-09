@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 _CANONICAL_PATH = Path(__file__).parent / "cc_canonical" / "tools_eager.json"
 
 try:
-    _CC_TOOLS: List[Dict[str, Any]] = json.loads(_CANONICAL_PATH.read_text())
+    _CC_TOOLS: List[Dict[str, Any]] = json.loads(_CANONICAL_PATH.read_text(encoding="utf-8"))
 except Exception as e:
     logger.warning("cc_aliases: failed to load %s: %s — alias layer disabled",
                    _CANONICAL_PATH, e)

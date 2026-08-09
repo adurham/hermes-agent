@@ -987,12 +987,23 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         config.option.timeout_method = "thread"
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
+def _skip_requires_wal_tests(items):
     """Skip ``requires_wal`` tests when the linked SQLite can't use WAL.
 
     Cheaper and more honest than each test hand-rolling a version check: the
     reason string names the actual linked version so the skip is diagnosable
     rather than mysterious.
+
+    NOTE: this used to be its own ``pytest_collection_modifyitems`` hook, but
+    pytest hooks are discovered by function name via the plugin manager —
+    when a SECOND ``def pytest_collection_modifyitems`` was added later in
+    this same file (the known-failing-list skip below), Python's module
+    execution silently rebound the name so only the second definition ever
+    ran and this WAL skip logic was dead code. Collapsed into a plain helper
+    called from the single real hook further down so both skip lists apply.
+    See issue: WAL-vulnerable local runs (SQLite < 3.51.3 without backports)
+    stopped skipping ``requires_wal`` tests and started failing CI/local runs
+    on machines still linking an old SQLite (e.g. macOS system Python).
     """
     if _wal_is_usable():
         return
@@ -1424,12 +1435,23 @@ _KNOWN_FAILING: set[str] = _load_known_failing()
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip tests listed in ``tests/known_failing.txt``.
+    """Skip tests listed in ``tests/known_failing.txt``, plus ``requires_wal``
+    tests when the linked SQLite can't use WAL.
 
-    The list is a known-failing pin captured at a known-good point in
-    time. Tests still get collected (so the count is honest) but are
-    skipped instead of failing the run.
+    This is the ONLY ``pytest_collection_modifyitems`` definition in this
+    file — pytest discovers hooks by function name, so a second same-named
+    def anywhere later in module execution order silently shadows an
+    earlier one (that bit us once; see ``_skip_requires_wal_tests``'s
+    docstring). If you need another collection-modifying skip list, add a
+    helper and call it from here rather than defining a new
+    ``pytest_collection_modifyitems``.
+
+    The known-failing list is a known-failing pin captured at a known-good
+    point in time. Tests still get collected (so the count is honest) but
+    are skipped instead of failing the run.
     """
+    _skip_requires_wal_tests(items)
+
     if not _KNOWN_FAILING:
         return
     skip_marker = pytest.mark.skip(

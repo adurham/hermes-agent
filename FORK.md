@@ -3,6 +3,76 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-08-09 (four independent CI job failures on main)
+
+All CI (`CI` workflow) runs on `main` were failing. Four unrelated causes,
+found and fixed together:
+
+1. **JS & TS checks / List npm workspaces — EALLOWREMOTE.** npm 12 (npm's
+   new default security posture) blocks `npm ci` from fetching a registry
+   tarball whenever the package has a conflicting `overrides` entry the
+   committed `package-lock.json` didn't actually account for. The
+   `rimraf` override (`file:local-packages/rimraf-shim`, added 2026-07-22)
+   was correct in `package.json`, but `package-lock.json` had never been
+   regenerated against it — its `node_modules/rimraf` entry still pointed
+   at `https://registry.npmjs.org/rimraf/-/rimraf-2.6.3.tgz`. npm 12
+   treats that as an untrusted mismatch and refuses the fetch. Fix:
+   `rm -rf node_modules package-lock.json && npm install --ignore-scripts`
+   to regenerate the lockfile so `node_modules/rimraf` correctly resolves
+   through the local shim link. Verified: `npm ci --ignore-scripts` exits 0
+   from a clean `node_modules/`.
+
+2. **Python lints / Windows footguns — `agent/cc_aliases.py`.** Bare
+   `Path.read_text()` with no `encoding=` on `_CANONICAL_PATH` (loading
+   `cc_canonical/tools_eager.json`). Fixed: `encoding="utf-8"`.
+
+3. **Python tests / slice 2 — `tests/test_session_db_read_path_split.py`
+   (5 failures) + Python tests / slice 5 —
+   `tests/hermes_cli/test_web_server.py::test_get_sessions_poll_preserves_pending_wal`
+   (1 failure), all on developer machines / older CI runner images linking
+   a WAL-reset-vulnerable SQLite (< 3.51.3, no 3.50.7/3.44.6 backport).
+   Root cause: `tests/conftest.py` defined **two** functions both named
+   `pytest_collection_modifyitems` (the WAL-skip gate near line 990, the
+   known-failing-list skip near line 1426). pytest discovers hooks by
+   function name via its plugin manager; a second same-named `def` later
+   in the same module silently rebinds the name, so only the second
+   definition ever ran — the WAL skip logic was dead code and every
+   `@pytest.mark.requires_wal` test executed (and failed) unconditionally
+   on vulnerable SQLite instead of being skipped. Fix: renamed the first
+   into a plain helper `_skip_requires_wal_tests(items)` and call it from
+   the one real `pytest_collection_modifyitems` hook. Verified: on this
+   machine's SQLite 3.50.4 (vulnerable), all 6 affected tests now report
+   `SKIPPED` instead of `FAILED`; CI's Ubuntu runner links a WAL-fixed
+   SQLite so it will actually execute (not skip) these tests going forward
+   — this bug was silently *hiding* real WAL-read-path coverage on CI too,
+   not just failing locally.
+
+4. **Python tests / slice 2 — flaky
+   `tests/tools/test_zombie_process_cleanup.py::TestDelegationCleanup::test_timed_out_child_keeps_relay_session_until_its_turn_exits`**
+   (CI's own log flagged it FLAKY: failed attempt 1, passed on retry).
+   The test stubs `_get_child_timeout()` to 0.1s to force
+   `_run_single_child`'s timeout branch, then asserts
+   `child_started.is_set()` immediately after. Under CI's real 8-way
+   concurrent-subprocess test-file parallelism (`scripts/run_tests_parallel.py`,
+   deliberately not xdist — see its own docstring), thread-scheduling
+   latency under contention can exceed the 100ms window before the
+   worker thread even gets to `child_started.set()`, so the future
+   times out before the child measurably started. The sibling file
+   `tests/tools/test_delegate_subagent_timeout_diagnostic.py` hit the
+   identical pattern and already fixed it by widening the synthetic
+   timeout to 0.3s (`_invoke_with_short_timeout`'s own comment: "Force a
+   0.3s timeout so the test is fast"). Applied the same fix here. Could
+   not reproduce the failure locally even under 8-way artificial CPU load
+   (`/tmp/burn.py` × 8 cores, 100+ combined iterations) — consistent with
+   a low-probability race gated on real OS thread-scheduler jitter under
+   GitHub's shared runners, not raw CPU saturation alone.
+
+Files touched: `package-lock.json` (regenerated), `agent/cc_aliases.py`,
+`tests/conftest.py`, `tests/tools/test_zombie_process_cleanup.py`.
+Verification: `npm ci --ignore-scripts` (exit 0),
+`scripts/check-windows-footguns.py --all` (0 footguns, was 1),
+`pytest tests/test_session_db_read_path_split.py tests/hermes_cli/test_web_server.py tests/tools/test_zombie_process_cleanup.py -v` (all pass/skip as expected, 0 unexpected failures).
+
 ## Merging upstream
 
 1. `python scripts/fork-merge-plan.py --fetch` — predicts conflicts before you merge.
