@@ -137,6 +137,17 @@ class TestActiveTurnRedirect:
         assert agent._pending_redirect is None
 
     def test_hard_stop_wins_concurrent_redirect(self):
+        """Hard stop always wins control of the turn, but must not silently
+        destroy a redirect correction that raced in concurrently. Whether
+        "change course" made it into ``_pending_redirect`` before
+        ``interrupt()``'s lock acquisition is a genuine thread-scheduling
+        race and isn't asserted here — what's guaranteed is: the stop always
+        wins (``_interrupt_requested`` True, ``_pending_redirect`` cleared),
+        the original stop message is always present, and if the redirect DID
+        land first its text is folded in rather than dropped (regression:
+        see test_hard_stop_folds_in_already_accepted_redirect for the
+        deterministic, non-racy version of this scenario).
+        """
         agent = _bare_agent()
         agent._model_request_active.set()
         start = threading.Barrier(3)
@@ -161,8 +172,47 @@ class TestActiveTurnRedirect:
         assert redirect_thread.is_alive() is False
         assert stop_thread.is_alive() is False
         assert agent._interrupt_requested is True
-        assert agent._interrupt_message == "stop requested"
+        assert agent._interrupt_message is not None
+        assert agent._interrupt_message.startswith("stop requested")
         assert agent._pending_redirect is None
+
+    def test_hard_stop_folds_in_already_accepted_redirect(self):
+        """Regression: a redirect() accepted (and confirmed to the user,
+        e.g. the CLI's "Redirected current turn") but not yet drained by the
+        conversation loop must survive a subsequent hard stop instead of
+        vanishing. Previously interrupt() unconditionally did
+        ``self._pending_redirect = None``, silently discarding an already-
+        confirmed correction if the user stopped the agent in the window
+        before the loop's next ``_drain_pending_redirect()`` call.
+        """
+        agent = _bare_agent()
+        agent._model_request_active.set()
+
+        accepted = agent.redirect("change course")
+        assert accepted is True
+        assert agent._pending_redirect == "change course"
+
+        agent.interrupt("stop requested")
+
+        assert agent._interrupt_requested is True
+        assert agent._pending_redirect is None
+        assert agent._interrupt_message == "stop requested\n\nchange course"
+
+    def test_hard_stop_with_no_message_still_preserves_redirect(self):
+        """Escape / Ctrl+Q call interrupt() with no message at all — the
+        folded text must still surface as the sole interrupt_message rather
+        than being lost because ``message`` was None.
+        """
+        agent = _bare_agent()
+        agent._model_request_active.set()
+
+        assert agent.redirect("change course") is True
+
+        agent.interrupt()
+
+        assert agent._interrupt_requested is True
+        assert agent._pending_redirect is None
+        assert agent._interrupt_message == "change course"
 
     def test_codex_app_server_hard_stop_reaches_native_session(self):
         agent = _bare_agent()
