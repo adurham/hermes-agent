@@ -214,6 +214,22 @@ class TestTrustedProxyIdentity:
             "Bearer shared-tok", "::ffff:10.0.0.5", "5.5.5.5"
         ) == "ip:5.5.5.5"
 
+    def test_ipv4_mapped_config_entry_still_matches_plain_v4_peer(self, monkeypatch):
+        """The reverse of test_ipv4_mapped_ipv6_socket_peer_matches_v4_cidr:
+        an operator writes an IPv4-mapped IPv6 CIDR *in the allow-list itself*
+        (e.g. copy-pasted from a dual-stack listener's own address). Without
+        unwrapping the config entry the same way the socket peer is unwrapped,
+        this would silently never match a real (plain-IPv4) socket peer —
+        fails closed, but confusingly, since nothing in the config surfaces
+        the address-family mismatch."""
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "::ffff:10.0.0.0/120")
+        assert security._is_trusted_proxy("10.0.0.5") is True
+        assert security.authenticate(
+            "Bearer shared-tok", "10.0.0.5", "5.5.5.5"
+        ) == "ip:5.5.5.5"
+
     def test_ipv6_untrusted_peer_still_ignores_header(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
