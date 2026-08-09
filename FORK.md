@@ -22,6 +22,30 @@ found and fixed together:
    through the local shim link. Verified: `npm ci --ignore-scripts` exits 0
    from a clean `node_modules/`.
 
+   **Follow-up (same day):** the initial lockfile regen (`npm install`
+   with no other change) re-resolved every *unpinned* transitive semver
+   range against the live registry, including React's own transitive
+   consumers (`@nous-research/ui`, `radix-ui`, `lucide-react`, `motion`,
+   etc.) — those picked up a same-day `react@19.2.8` patch release while
+   every workspace's own `react`/`react-dom` `package.json` entries stayed
+   pinned at `19.2.7`. Root `node_modules/react-dom` still resolved to
+   19.2.7 (no matching 19.2.8-consuming path pulled it forward), so the
+   tree ended up with two different major-matching-but-unequal React
+   copies loaded simultaneously — Vitest's React adapter refuses to run
+   under that combination ("Incompatible React versions"), which is why
+   `apps/desktop / check:test:ui` (390 files), `web / check` (2 files),
+   and `ui-tui / check` all failed **only after** the EALLOWREMOTE fix let
+   `npm ci` get far enough to actually run them (they'd never reached this
+   far in a passing CI run before, since the workspace-discovery job that
+   gates the whole JS matrix was itself failing). Fix: added explicit
+   `"react": "19.2.7"` / `"react-dom": "19.2.7"` root-level `overrides` so
+   every transitive consumer is forced onto the same pin the workspaces
+   already declare directly, then regenerated the lockfile again. Verified:
+   `npm ls react react-dom` shows a single 19.2.7 everywhere; `npm run
+   --workspace web test` (22 files/156 tests), `npm run --workspace
+   apps/desktop test:ui` (390 files/3421 tests), and `npm run --workspace
+   ui-tui check` (138 files/1529 tests, lint 0 errors) all pass clean.
+
 2. **Python lints / Windows footguns — `agent/cc_aliases.py`.** Bare
    `Path.read_text()` with no `encoding=` on `_CANONICAL_PATH` (loading
    `cc_canonical/tools_eager.json`). Fixed: `encoding="utf-8"`.
