@@ -472,7 +472,14 @@ class TestDelegationCleanup:
         parent._active_children.append(child)
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
-        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.1)
+        # 0.3s (not 0.1s): under real CI parallelism (8 concurrent test-file
+        # subprocesses contending for CPU), a 100ms window is sometimes too
+        # short for the worker thread to even get scheduled before
+        # future.result(timeout=...) expires, so `child_started` isn't set
+        # yet and the very first assertion below flakes. Same fix already
+        # applied in test_delegate_subagent_timeout_diagnostic.py's
+        # `_invoke_with_short_timeout` for the identical race.
+        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.3)
 
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
