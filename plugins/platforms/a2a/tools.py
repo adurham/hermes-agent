@@ -50,10 +50,21 @@ def _load_config() -> dict:
         return {}
 
 
-def _resolve_peer(agent: str) -> Optional[dict]:
-    """Resolve a peer name to {url, auth, timeout, capabilities}, or treat ``agent`` as a URL."""
+def _resolve_peer(agent: str, timeout_override: Optional[int] = None) -> Optional[dict]:
+    """Resolve a peer name to {url, auth, timeout, capabilities}, or treat ``agent`` as a URL.
+
+    ``timeout_override`` — when provided (e.g. via the ``timeout`` arg to
+    ``a2a_call``) — takes precedence over both the hardcoded default AND any
+    per-peer config entry. This closes the #78007 gap where raw-URL calls
+    could not extend the client timeout to cover long-running peer tasks.
+    """
     if agent.startswith("http://") or agent.startswith("https://"):
-        return {"url": agent, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": []}
+        return {
+            "url": agent,
+            "auth": {},
+            "timeout": int(timeout_override) if timeout_override else _DEFAULT_TIMEOUT,
+            "capabilities": [],
+        }
     cfg = _load_config()
     peers = cfg.get("a2a_agents") or {}
     entry = peers.get(agent)
@@ -62,7 +73,7 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     return {
         "url": entry.get("url", ""),
         "auth": entry.get("auth", {}) or {},
-        "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)),
+        "timeout": int(timeout_override) if timeout_override else int(entry.get("timeout", _DEFAULT_TIMEOUT)),
         "capabilities": entry.get("capabilities", []) or [],
         "tenant": entry.get("tenant", ""),
     }
@@ -266,10 +277,20 @@ def a2a_call(args: dict, **_: Any) -> str:
     agent = str(args.get("agent") or args.get("agent_name") or args.get("name") or "").strip()
     message = str(args.get("message") or args.get("text") or args.get("task") or "").strip()
     context_id = str(args.get("context_id") or args.get("contextId") or "").strip()
+    # #78007: allow the caller to raise the client timeout for long-running
+    # peer tasks — previously only named a2a_agents config entries could set
+    # this, so raw-URL calls were stuck at _DEFAULT_TIMEOUT.
+    timeout_override: Optional[int] = None
+    raw_timeout = args.get("timeout")
+    if raw_timeout is not None:
+        try:
+            timeout_override = max(1, int(raw_timeout))
+        except (TypeError, ValueError):
+            timeout_override = None
     if not agent or not message:
         return "Error: both 'agent' and 'message' are required."
 
-    peer = _resolve_peer(agent)
+    peer = _resolve_peer(agent, timeout_override=timeout_override)
     if not peer or not peer.get("url"):
         return (
             f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in "
@@ -517,6 +538,7 @@ _SCHEMAS: dict[str, _ToolSchema] = {
                     "agent": {"type": "string", "description": "Configured peer name (from a2a_agents) or a full http(s):// URL."},
                     "message": {"type": "string", "description": "The task / message to send the peer, in natural language."},
                     "context_id": {"type": "string", "description": "Optional: context id from a prior reply, to continue the conversation."},
+                    "timeout": {"type": "integer", "description": "Optional: seconds to wait for the peer's reply (default 120). Raise for long-running peer tasks; the server's own reply window is 300s by default (A2A_REPLY_TIMEOUT)."},
                 },
                 "required": ["agent", "message"],
             },
