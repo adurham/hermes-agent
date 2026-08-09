@@ -906,10 +906,35 @@ def run_doctor(args):
         ("httpx", "HTTPX"),
     ]
     
+    # python-telegram-bot / discord.py are only relevant when their platform
+    # is actually configured for use (a bot token is set) or hasn't been
+    # explicitly turned off. Warning "not installed" for a platform the user
+    # never set up (e.g. a CLI-only / Polaris-branded install with
+    # `discord`/`messaging` in agent.disabled_toolsets and no bot tokens
+    # configured) is just noise — the package will never be imported at
+    # runtime in that configuration.
+    _disabled_for_optional = _disabled_toolset_names()
+
+    def _messaging_platform_relevant(*, disabled_keys: set) -> bool:
+        # Suppress the warning only when the user has explicitly disabled
+        # the platform/messaging toolset. Everything else (no token yet on
+        # a fresh install, token present, etc.) keeps the existing
+        # "hint to install" behavior — this fix targets the disabled-toolset
+        # false positive specifically, not general messaging-setup nudging.
+        return not (_disabled_for_optional & disabled_keys)
+
     optional_packages = [
-        ("croniter", "Croniter (cron expressions)"),
-        ("telegram", "python-telegram-bot"),
-        ("discord", "discord.py"),
+        ("croniter", "Croniter (cron expressions)", None),
+        (
+            "telegram",
+            "python-telegram-bot",
+            lambda: _messaging_platform_relevant(disabled_keys={"telegram", "messaging"}),
+        ),
+        (
+            "discord",
+            "discord.py",
+            lambda: _messaging_platform_relevant(disabled_keys={"discord", "discord_admin", "messaging"}),
+        ),
     ]
     
     for module, name in required_packages:
@@ -919,12 +944,13 @@ def run_doctor(args):
         except ImportError:
             _fail_and_issue(name, "(missing)", f"Install {name}: {_python_install_cmd()} {module}", issues)
     
-    for module, name in optional_packages:
+    for module, name, relevance_check in optional_packages:
         try:
             __import__(module)
             check_ok(name, "(optional)")
         except ImportError:
-            check_warn(name, "(optional, not installed)")
+            if relevance_check is None or relevance_check():
+                check_warn(name, "(optional, not installed)")
     
     _section("Configuration Files")
     # Managed scope (administrator-pinned config/env), when present.
@@ -2564,8 +2590,15 @@ def run_doctor(args):
         # never load into the live agent regardless of dependency/capability
         # status, so a raw availability warning for them is just noise —
         # filter them out of this section entirely rather than reporting a
-        # false "problem" for something intentionally disabled.
+        # false "problem" for something intentionally disabled. This must
+        # also filter ``available`` (not just ``unavailable``): a toolset
+        # can pass its dependency check (e.g. computer_use, tts, video) yet
+        # still be disabled via config, and check_tool_availability() has no
+        # notion of that config gate — it only reports raw
+        # dependency/capability status. Without this, doctor showed a ✓ for
+        # toolsets the user had explicitly disabled.
         disabled_names = _disabled_toolset_names()
+        available = [tid for tid in available if tid not in disabled_names]
         unavailable = [item for item in unavailable if item.get("name") not in disabled_names]
 
         for tid in available:
@@ -2612,10 +2645,23 @@ def run_doctor(args):
     from hermes_cli.config import get_env_value
 
     def _gh_authenticated() -> bool:
-        """Check if gh CLI is authenticated via token file or device flow."""
+        """Check if gh CLI is authenticated against github.com specifically.
+
+        Two bugs fixed here (#observed live 2026-08-09):
+        1. ``--json authenticated`` is not a valid field on gh 2.96.0+ (the
+           only field is ``hosts``) — the command errors immediately
+           regardless of actual login state, so this always returned False.
+        2. Even with a valid invocation, checking the auth-status exit code
+           across *all* configured hosts means an unrelated broken token
+           (e.g. an expired GHE/git.corp token) makes this report "not
+           authenticated" even though github.com — the only host that
+           matters for the api.github.com rate limit this check exists
+           for — is perfectly fine. Scope the check to ``--hostname
+           github.com`` so other hosts' auth state can't leak in.
+        """
         try:
             result = subprocess.run(
-                ["gh", "auth", "status", "--json", "authenticated"],
+                ["gh", "auth", "status", "--hostname", "github.com"],
                 capture_output=True, timeout=10,
             )
             return result.returncode == 0
