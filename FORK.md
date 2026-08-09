@@ -112,11 +112,21 @@ protective divergence, not dedup.
 Still open upstream (converge when they land): PRs #72087 (estimator
 4x-count — upstream's refactor reintroduced the exact bug), #72151,
 #72152, #72153 (Nerd Font — locally re-applied as the one-constant form),
-#72155, #72164, and #82070 (background-review turn-race, filed
-2026-08-08 — see the 2026-07-22 entry below for full detail). New filing
-opportunity surfaced by the audit: upstream's `background_review.py` has
-the fork's 2026-07-22 doubled-tokens / Ctrl+C-lockup race (same
-subsystem, same session_id sharing, no guard). **Filed as #82070.**
+#72155, #72164, #82070 (background-review turn-race, filed 2026-08-08 —
+see the 2026-07-22 entry below for full detail), and #82095
+(agent.pin_anthropic_token, filed 2026-08-08 — see the 2026-07-25 entry
+below). New filing opportunity surfaced by the audit: upstream's
+`background_review.py` has the fork's 2026-07-22 doubled-tokens /
+Ctrl+C-lockup race (same subsystem, same session_id sharing, no guard).
+**Filed as #82070.**
+
+Tier-1 upstream candidates checked 2026-08-08, both had real open
+competing PRs and were NOT filed (see their respective entries for full
+detail): the `trafilatura` free `web_extract` backend (2026-07-18 entry —
+3-way overlap with issue #78624 and open PR #50456) and opt-in toolset
+deferral via `tool_search` (2026-06-22 entry — issue #60181/#60184, open
+PRs #60182/#63844/#67457). Per user decision: never file a competing PR
+when one already exists for the same problem.
 
 Audit findings noted but NOT actioned in this pass (small, optional):
 * Spinner timer format — upstream now has its own fixed-width
@@ -1247,6 +1257,23 @@ touches routing imports in these files; resolve by keeping the
 migration once react-router-dom's compat shim ages out further).
 
 ### Fork-only feature — 2026-07-25 (agent.pin_anthropic_token: opt-in override to make a static Anthropic setup-token win over a refreshable Claude Code credential)
+
+**SUBMITTED 2026-08-08 as upstream PR #82095.** Verified upstream's
+`resolve_anthropic_token()`/`_prefer_refreshable_claude_code_token()`
+already exist in the same converged shape (this OAuth path absorbed
+upstream v2026.7.1 per the earlier note in this entry), so the mechanism
+this opt-in inverts is genuinely shared code, not fork-only
+infrastructure. Searched issues/PRs first — no existing report or
+competing PR for this specific gap. Ported the config key with generic
+framing (no fork-specific wording, matches the fork's own
+`config_defaults.py` comment verbatim) plus 4 new tests, hand-applied
+against a clean `upstream/main` worktree (upstream's `resolve_anthropic_token`
+has reordered its priority list — `ANTHROPIC_API_KEY` moved to position 3
+— since this fork's copy was written, so the patch was built against
+upstream's actual current structure, not a mechanical port of the fork's
+diff). 97/97 passed in `test_anthropic_adapter.py`, 93/93 across 6
+adjacent credential-resolution test files, `ruff` clean, the new pin=true
+test confirmed to fail against pre-fix code via `git stash`.
 
 **Motivation:** user wants Hermes pinned to a dedicated long-lived
 `claude setup-token` (valid ~1 year) on each machine, independent of the
@@ -5094,6 +5121,21 @@ for multi-provider auto users and same-model tasks is unchanged.
 
 ### Fork-only feature — 2026-06-22 (opt-in deferral of core toolsets via tool_search)
 
+**CHECKED 2026-08-08, DO NOT FILE — 3 open competing PRs already exist for
+this exact feature.** Found the matching issue (#60181, "Let built-in
+toolsets opt into tool-search deferral (defer_toolsets)") and its
+duplicate (#60184), plus three open PRs targeting the identical mechanism:
+**#60182** (`defer_toolsets` — opt built-in toolsets into deferral, still
+draft, most recently updated 2026-08-03 — 4 days before this check),
+**#63844** (defer verbose core schemas + hot-tools promotion + per-toolset
+deferral, broader scope), and **#67457** (minimal core-tool deferral +
+skills compact_categories v2.0, same author as #63844, narrower follow-up
+attempt). Per user decision (2026-08-08, same rule applied to the
+trafilatura entry above): when open PRs already solve the same problem, do
+not open a competing one — it adds maintainer reconciliation burden
+instead of reducing it. Revisit only if all three close unmerged with no
+successor.
+
 **Problem.** The progressive-disclosure tool-search system (`tools/tool_search.py`)
 only ever deferred MCP + non-core plugin tools: `is_deferrable_tool_name` hard-
 refused to defer anything listed in `toolsets._HERMES_CORE_TOOLS`. That core list
@@ -7470,6 +7512,24 @@ that only fail under full-suite ordering but pass 2/2 in isolation both
 before and after this change). Zero new failures.
 
 ### Fork-only feature — 2026-07-18 (`trafilatura`: free no-API-key `web_extract` backend)
+
+**CHECKED 2026-08-08, DO NOT FILE — real open competing PR already exists.**
+Found the exact matching upstream issue: **#78624** ("web.extract_backend
+has no keyless option — every extract-capable provider requires an API
+key"). But **PR #50456** (`plugins/web/native`, readability-lxml +
+html2text instead of trafilatura) is already open against that same gap,
+has a real review from maintainer `teknium1` (not just automated triage),
+and the author addressed the blocking feedback — notably an SSRF/redirect-
+following bug, fixed by manually re-validating each redirect hop before
+following it. This fork's trafilatura provider already had that exact
+protective pattern from the start (manual redirect walk +
+`is_safe_url()`/`check_website_access()` re-checked on every hop), so it
+likely never had the bug #50456's reviewer flagged — but that's not a
+reason to file a second, competing PR for the same issue. Per user
+decision (2026-08-08): when an open PR already solves the same problem,
+do not open a competing one — it's more maintainer burden, not less. If
+#50456 stalls or gets closed unmerged, revisit; until then this stays
+fork-only with no upstream filing.
 
 **Problem:** the user's exo/ollama-cloud provider blocks had
 `web.extract_backend: ddgs` configured, but `DDGSWebSearchProvider.
