@@ -240,15 +240,41 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return
         self._json(404, {"error": "not found"})
 
+    def _auth_reject(self, code: int, decision: str, req_id, err_code: int, err_msg: str,
+                     identity=None, token_fp: str = "", client_ip: str = ""):
+        """Emit an auth/authz rejection: write audit entry AND the HTTP error.
+
+        Funnels every pre-dispatch rejection path through one place so a
+        future rejection reason (e.g. anti-loop, new gate) gets audited by
+        construction rather than by remembering to add another log call.
+        """
+        security.audit_auth(
+            decision,
+            status=code,
+            source_ip=client_ip,
+            identity=identity,
+            token_fp=token_fp,
+            method="POST",
+            path=self.path,
+            detail=err_msg,
+        )
+        self._json(code, protocol.jsonrpc_error(req_id, err_code, err_msg))
+
     def do_POST(self):  # noqa: N802
         adapter = self.adapter
         client_ip = self.client_address[0] if self.client_address else ""
+        auth_header = self.headers.get("Authorization")
+        token_fp = security.token_fingerprint(auth_header)
 
         # Identity comes from the presented credential (or the socket in
         # localhost-only mode) — never from the request body.
-        identity = security.authenticate(self.headers.get("Authorization"), client_ip)
+        identity = security.authenticate(auth_header, client_ip)
         if identity is None:
-            self._json(401, protocol.jsonrpc_error(None, protocol.ERR_UNAUTHORIZED, "unauthorized"))
+            decision = (security.AUTH_REJECTED_BAD_TOKEN if token_fp
+                        else security.AUTH_REJECTED_MISSING_TOKEN)
+            self._auth_reject(401, decision, None, protocol.ERR_UNAUTHORIZED,
+                              "unauthorized", identity=None, token_fp=token_fp,
+                              client_ip=client_ip)
             return
 
         try:
@@ -289,13 +315,26 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 
         if not adapter._rate_limiter.allow(identity):
             protocol.metrics.rate_limit_triggers += 1
-            self._json(429, protocol.jsonrpc_error(req_id, protocol.ERR_RATE_LIMITED, "rate limit exceeded"))
+            self._auth_reject(429, security.AUTH_REJECTED_RATE_LIMIT, req_id,
+                              protocol.ERR_RATE_LIMITED, "rate limit exceeded",
+                              identity=identity, token_fp=token_fp,
+                              client_ip=client_ip)
             return
 
         if not security.is_trusted_peer(identity):
-            self._json(403, protocol.jsonrpc_error(
-                req_id, protocol.ERR_UNTRUSTED_PEER, f"peer '{identity}' not trusted"))
+            self._auth_reject(403, security.AUTH_REJECTED_UNTRUSTED_PEER, req_id,
+                              protocol.ERR_UNTRUSTED_PEER,
+                              f"peer '{identity}' not trusted",
+                              identity=identity, token_fp=token_fp,
+                              client_ip=client_ip)
             return
+
+        # Auth + authz + rate limit + trust all passed — audit the accept.
+        security.audit_auth(
+            security.AUTH_ACCEPTED, status=200, source_ip=client_ip,
+            identity=identity, token_fp=token_fp, method="POST",
+            path=self.path, detail=method,
+        )
 
         if not operation:
             self._json(200, protocol.jsonrpc_error(
