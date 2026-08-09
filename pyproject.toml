@@ -480,7 +480,7 @@ preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 # Bump this timestamp by hand + `uv lock` when you want a newer dependency
 # cooldown window. Always include the trailing "Z" — do NOT put a relative
 # string or a bare date back here.
-exclude-newer = "2026-07-19T00:00:00Z"
+exclude-newer = "2026-08-09T00:00:00Z"
 # Allow anthropic past the cutoff: 0.100.0 (2026-05-06) ships fields
 # we mirror to match Claude Code's wire format. Selective override only.
 # vercel/nemo-relay/huggingface_hub are permanently exempted (upstream
