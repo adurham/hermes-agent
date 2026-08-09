@@ -113,12 +113,13 @@ Still open upstream (converge when they land): PRs #72087 (estimator
 4x-count — upstream's refactor reintroduced the exact bug), #72151,
 #72152, #72153 (Nerd Font — locally re-applied as the one-constant form),
 #72155, #72164, #82070 (background-review turn-race, filed 2026-08-08 —
-see the 2026-07-22 entry below for full detail), and #82095
+see the 2026-07-22 entry below for full detail), #82095
 (agent.pin_anthropic_token, filed 2026-08-08 — see the 2026-07-25 entry
-below). New filing opportunity surfaced by the audit: upstream's
-`background_review.py` has the fork's 2026-07-22 doubled-tokens /
-Ctrl+C-lockup race (same subsystem, same session_id sharing, no guard).
-**Filed as #82070.**
+below), and #82103 (consult tool, de-forked and filed 2026-08-08 — see
+the 2026-07-07 entry below). New filing opportunity surfaced by the
+audit: upstream's `background_review.py` has the fork's 2026-07-22
+doubled-tokens / Ctrl+C-lockup race (same subsystem, same session_id
+sharing, no guard). **Filed as #82070.**
 
 Tier-1 upstream candidates checked 2026-08-08, both had real open
 competing PRs and were NOT filed (see their respective entries for full
@@ -6016,10 +6017,10 @@ quick rename, before it's upstream-shaped.
   technique independent of the Miku voice feature it was built for. Would
   need extraction into a generic helper before it's upstream-shaped.
 * **`consult` tool** (second-opinion from a reference model, 2026-07-07) —
-  general-purpose mechanism, but explicitly flagged by external review as
-  needing "light de-forking" — do not batch this with genuine bugfix PRs.
-  Extract fully (config keys, no exo-specific defaults) before filing as its
-  own PR.
+  **DE-FORKED AND SUBMITTED 2026-08-08 as upstream PR #82103.** See the
+  2026-07-07 entry above for the full extraction detail. The periodic-
+  nudge companion (`agent/fork/consult_nudge.py`) stays fork-only —
+  depends on `agent/fork/skill_recall.py` infrastructure.
 * **Opt-in toolset deferral via `tool_search`** (`defer_toolsets`/
   `defer_tools`/`keep_eager_tools`, 2026-06-22) — pure config, plausibly
   generalizable, but same rule: verify no exo-specific default sneaks through
@@ -6327,6 +6328,31 @@ Verification: 347 fork-specific tests pass (8 skipped — pre-existing macOS
 
 
 ### Fork-only feature — 2026-07-07 (consult tool + periodic nudge)
+
+**De-forked and SUBMITTED 2026-08-08 as upstream PR #82103** (the
+`tools/consult_tool.py` half only — see below for what stayed fork-only).
+Bucket B originally flagged this as needing "light de-forking" before
+filing; did the extraction: verified `agent.auxiliary_client.call_llm`
+exists upstream with an identical signature (this is genuinely shared
+infra, not fork-only), stripped all Fable-specific/DSML-specific wording
+to generic "reference model"/"template markup" language, and — the one
+real design change — registered `consult` as an **opt-in** toolset
+(matching how `vision`/`video` are opt-in) instead of the fork's
+always-on `_HERMES_CORE_TOOLS` placement, since upstream's narrow-waist
+core-tool philosophy (AGENTS.md) treats every core-tool addition as
+expensive. The periodic-nudge half (`agent/fork/consult_nudge.py`) was
+NOT ported — it depends on `agent/fork/skill_recall.py`'s
+`_RISKY_TOOL_NAMES`, itself fork-only infrastructure with no upstream
+equivalent, and nudging isn't essential to the tool's value; stays
+fork-only. Ported both test files
+(`tests/tools/test_consult_tool.py` — 19 tests, added 2 new toolset-
+resolution tests for the opt-in registration — and
+`tests/tools/test_consult_degenerate_guard.py` — 6 tests, DSML sentinel
+renamed to generic "template sentinel" wording). Verified live via a
+boot smoke test that the tool auto-registers via `tools/registry.py`'s
+existing module-scan with zero additional core wiring. `ruff` clean,
+86/86 across new tests + `test_toolsets.py` + `test_registry.py`.
+Searched issues/PRs first — no existing report or competing PR.
 
 **`c5bb78547` — `tools/consult_tool.py` + `agent/fork/consult_nudge.py`.**
 
