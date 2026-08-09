@@ -1,6 +1,9 @@
 # Cross-Session Messaging (fork-only)
 
-Status: design proposal (not yet implemented)
+Status: design proposal — **BLOCKED pending a spike** (see "Round 2 review"
+below). Do not start implementation off this doc alone; the idle-session
+delivery mechanism this whole feature depends on has not been proven to
+exist in the codebase.
 Scope: **fork-specific** (`adurham/hermes-agent`). Not proposed for upstream.
 Porting: Claude Code's cross-session messaging
 (https://code.claude.com/docs/en/cross-session-messaging) — `ListAgents` +
@@ -96,29 +99,30 @@ CREATE TABLE cross_session_inbox (
 CREATE INDEX idx_inbox_recipient ON cross_session_inbox(to_session_id, status);
 ```
 
-`cross_session_registry` rows are upserted on a heartbeat cadence (every
-turn boundary — the same point that already updates `sessions.updated_at`,
-no new polling loop needed) and reaped when `last_heartbeat` is older than a
-short TTL (e.g. 2x the heartbeat interval) — no pid-liveness syscalls, no
-atexit handler, no crash-safety burden.
+`cross_session_registry` rows are upserted at the existing turn-boundary
+heartbeat for **actively-turning sessions**, but see the Round-2 finding
+below: heartbeat-on-turn starves the idle sessions this feature most needs
+to reach, so this is flagged as unresolved, not settled. Reaped when
+`last_heartbeat` is older than a TTL (e.g. 2x heartbeat interval) — no
+pid-liveness syscalls, no atexit handler, no crash-safety burden. Cron
+sessions do not register at all (they always `refuse`, see Inbound policy —
+no reason to pay heartbeat cost for a session that can never receive).
 
 Delivery is polling, not push: a session drains
 `SELECT * FROM cross_session_inbox WHERE to_session_id = ? AND status = 'pending'`
-at the same safe-boundary checkpoints described below. This matches the
-codebase's existing grain (kanban polling, cron's file lock + tick) instead
-of introducing a new runtime primitive. If idle-session latency ever proves
-to matter in practice, a UDS wakeup can be layered on top later as a pure
-optimization — it should not be the v1 foundation.
+at the same safe-boundary checkpoints described below, claimed atomically
+(`UPDATE cross_session_inbox SET status='delivered', delivered_at=? WHERE id=? AND status='pending'`,
+checking rows-affected before treating the message as claimed — see the
+crash-semantics note in Round 2) to give at-least-once delivery without
+duplicate injection on a crash between read and mark-delivered. This
+matches the codebase's existing grain (kanban polling, cron's file lock +
+tick) instead of introducing a new runtime primitive. If idle-session
+latency ever proves to matter in practice, a UDS wakeup can be layered on
+top later as a pure optimization — it should not be the v1 foundation.
 
 ### Delivery mechanics (the part that must not break the invariants)
 
 Two distinct delivery paths, matching Claude Code's own split:
-
-**Idle session** (no in-flight turn): deliver as a new turn, framed exactly
-like cron's header/footer convention — a normal `user`-role message with a
-`[Message from session <name>]` header. This is safe by construction: it's
-a fresh turn boundary, same mechanism cron already uses to avoid corrupting
-alternation.
 
 **Mid-turn session**: this is genuinely new territory, not covered by any
 existing precedent in this codebase, and it has one sharp edge:
@@ -143,6 +147,44 @@ Do not attempt to interrupt an in-flight model generation to inject a
 message. That path doesn't exist anywhere in this codebase today and
 inventing it for this feature is out of scope.
 
+**Round 2 finding — this mid-turn mechanic's "same checkpoint already used
+for interrupt-checking" is asserted, not verified.** No one has located the
+actual line in `agent/conversation_loop.py` where that checkpoint lives, or
+confirmed it's structurally reusable for this purpose. That must be
+confirmed by reading the code before this section is treated as settled,
+not assumed by analogy.
+
+**Round 2 finding — provider wire-format assumption.** The tail-append fix
+above assumes Anthropic-style content blocks, where a tool result is one
+block among others in a single user message. If any provider path this
+codebase speaks represents tool results as separate OpenAI-style
+`role: "tool"` messages instead, "append a block to the same user message"
+does not map and needs a per-provider design, not a single mechanic. Check
+`agent/anthropic_adapter.py` / `agent/chat_completion_helpers.py` against
+every provider this feature must support before implementation.
+
+**Idle session** (no in-flight turn) — **BLOCKER, not settled.** The
+original text here read "deliver as a new turn, framed like cron's
+header/footer convention," but that presupposes the receiving process is
+running a loop that can act on a new turn arriving. An idle interactive CLI
+session is blocked on user input (readline / prompt), not spinning
+anything that can poll `state.db` or start a turn on its own. Cron's
+precedent doesn't apply here — cron *is* the loop, invoked on its own
+schedule; it was never injecting into something else's blocked-on-stdin
+process. Making an idle session receive a message requires one of:
+background thread, `select`/timeout-based input loop, or an OS-level
+wakeup (e.g. signal) around whatever currently blocks on stdin in `cli.py`
+— none of which exists today, and any of which touches the single most
+sensitive code path in the interactive CLI.
+
+**This is the actual hard problem the whole feature depends on, and it
+needs a throwaway spike — "can an idle interactive `cli.py` session wake
+up and inject a turn without corrupting the input loop" — before any other
+part of this design is treated as final.** If the spike fails or the
+answer is "not without a rewrite of the input loop," idle-session delivery
+either drops to v2, or the feature narrows to gateway/ACP sessions only
+(which already run event loops, not blocking `input()`) for v1.
+
 ### Tools
 
 New module `tools/cross_session_tool.py`. Not added to `_HERMES_CORE_TOOLS`;
@@ -155,7 +197,17 @@ already used for Home Assistant / kanban / computer-use toolsets in
   below), returns name, cwd, platform, staleness-filtered by heartbeat age.
 - `send_agent_message(target, body)` — resolves `target` by name (same
   same-name-different-cwd disambiguation Claude Code does: append a short
-  id when names collide), inserts a row into `cross_session_inbox`.
+  id when names collide), inserts a row into `cross_session_inbox`, and
+  returns the inbox row's terminal status to the caller once resolved
+  (delivered / denied / expired) rather than being fire-and-forget — see
+  Round 2 finding: an unacknowledged send just gets silently retried by
+  the model, defeating the rate cap.
+
+Names come from `/rename` (interactive sessions) or are derived from the
+session's cwd folder name at registration time, same convention Claude
+Code uses for its own agent naming — this needs to be nailed down against
+real session-lifecycle code before implementation, not re-derived from
+scratch.
 
 Named `send_agent_message`/`list_agents` rather than reusing
 `send_message`/`list_*` to avoid collision with the existing
@@ -183,8 +235,42 @@ in the CLI (unlike Claude Code's TUI approval dialog), so: a held message
 surfaces as a terminal notice at the next natural output point, and
 `hermes agents inbox [--approve ID | --deny ID]` lists/resolves held
 messages from any session sharing the profile's state.db. Expires per
-`expires_at` (default 5m, matching Claude Code's `dialogExpiry`) via the
-same lock/expiry pattern cron already uses.
+`expires_at` via the same lock/expiry pattern cron already uses.
+
+**Round 2 finding — the 5-minute default is not credible UX and the state
+machine is underspecified.** Copying Claude Code's `dialogExpiry` default
+assumes a synchronous approval dialog the human sees immediately; this
+design instead requires the human to notice a terminal notice on a session
+they may not be looking at, then separately run `hermes agents inbox
+--approve`. For an idle session that's realistically never within 5
+minutes — as designed, `hold` mode is functionally `refuse` with extra
+steps. Needs either a much longer default expiry for CLI (e.g. hours, or
+no expiry until the session's own idle-timeout), or a push notification
+path (desktop notification, terminal bell) at minimum. Flagging as an open
+question, not resolving here.
+
+The state machine is also incomplete: `pending|held|delivered|denied|expired`
+has no explicit transition for "approved, now waiting for the recipient to
+actually poll it" — does `--approve` flip `held` back to `pending`? Who
+decides `pending` vs `held` at insert time — the sender (requires reading
+the recipient's policy out of the registry at send time, which races
+against a policy change) or the recipient at poll time? This needs an
+explicit state-transition table before implementation, not assumed.
+
+**Round 2 finding — no threat model, and this is a real gap, not a
+nice-to-have.** The message is delivered framed as **user**-role content —
+user-level authority in the model's eyes. `cross_session_registry` stores
+`permission_mode`, meaning any session with the toolset enabled can
+enumerate other sessions' permission modes and target the most permissive
+one. A gateway session driven by an untrusted external user (Telegram/
+Discord) could be instructed to `send_agent_message` an instruction into a
+permissive CLI session — `refuse`-by-default on gateway *inbound* does
+nothing to stop a gateway session acting as *sender*. Before implementation:
+(1) injected content must be framed as untrusted third-party content, not
+bare user-role text — same category of care as tool output from the web;
+(2) consider gating `send_agent_message` itself (not just inbound) by the
+sending session's own permission mode; (3) this needs its own short
+threat-model section, not a bullet in an open-questions list.
 
 ### Throttling — non-optional for v1
 
@@ -195,19 +281,63 @@ human in the loop. Claude Code built rate-limiting for exactly this
 reason — it can't be dropped just because it didn't show up naturally
 while designing the happy path.)*
 
+**Round 2 correctness fix — the hop_count rule below was wrong in the
+prior draft and is corrected here.** The earlier phrasing ("increments
+when a send is triggered by a message that itself carried a nonzero
+hop_count") has a broken base case: an initial send has `hop_count = 0`
+(not nonzero), so a reply triggered by it would never increment either,
+and two `accept`-mode sessions can ping-pong forever at `hop_count = 0`,
+under the rate cap the whole time. Corrected rule:
+
+- Any `send_agent_message` call made **during a turn that itself delivered
+  one or more cross-session inbox messages** must set the new row's
+  `hop_count = max(hop_count of the messages delivered into this turn) + 1`,
+  unconditionally — including the very first reply (0 + 1 = 1, not 0).
+  A send made with no delivered messages in the current turn is a fresh
+  chain and stays `hop_count = 0`.
+- This requires tracking "which inbox rows (and their hop_counts) were
+  delivered into the current turn" as in-turn state — this is new state
+  that doesn't exist anywhere in the conversation loop today and needs an
+  explicit home (likely alongside wherever the turn's message list is
+  built). Not persisted across a session resume — acceptable for v1, but
+  say so rather than leave it implicit.
+
 Required before ship, not a follow-up:
 
-- `hop_count` column above: each outbound `send_agent_message` triggered
-  *by a message that itself carried a nonzero hop_count* increments it.
-  Reject/drop sends with `hop_count` over a small ceiling (e.g. 4).
+- `hop_count`: see the corrected rule above — max delivered hop + 1, not a
+  conditional-on-nonzero increment. Reject/drop sends with `hop_count` over
+  a small ceiling (e.g. 4).
 - Per-sender-pair rate cap: max N messages per sender->recipient pair per
   rolling window (e.g. 5/minute), enforced at insert time in
   `cross_session_inbox`.
 - Hard per-turn ceiling: a single turn may send at most 1
   `send_agent_message` call (mirrors Claude Code's framing of messaging as
-  a deliberate, occasional handoff, not a chat loop).
+  a deliberate, occasional handoff, not a chat loop). **Round 2 note:**
+  this is a real v1 tradeoff against a fan-out/coordinator use case (one
+  turn notifying several peer sessions at once) — stating it explicitly
+  rather than leaving it as an unexamined default; revisit if that use
+  case turns out to matter.
 - Identical-body repeat suppression within a short window (Claude Code
   does this too — cite as precedent).
+
+INDEX ON `(to_session_id, status)` — **Round 2 note:** this serves the
+delivery poll but not the per-sender-pair rate-cap check above, which
+filters by `(from_session_id, to_session_id, created_at)`. Add
+`CREATE INDEX idx_inbox_sender_pair ON cross_session_inbox(from_session_id, to_session_id, created_at)`
+or accept a scan on that check — decide before implementation, don't
+silently scan a table that's meant to stay small but has no guaranteed
+bound.
+
+**Round 2 finding — no lifecycle for `pending` messages targeting a
+session that dies.** Only `held` messages have an `expires_at`. A `pending`
+message addressed to a session that crashes, is killed, or is simply never
+started again sits in the table forever with no expiry and no cleanup.
+Needs its own TTL or a cleanup pass tied to the registry reap, not left
+implicit. Related unresolved race: `list_agents` returns a session, the
+user's next `send_agent_message` targets it, but the session was reaped
+from the registry in between — decide whether `send_agent_message` should
+re-validate liveness at send time (and what it reports back if not) rather
+than trusting a stale `list_agents` snapshot.
 
 ### Profile scoping
 
@@ -237,21 +367,73 @@ default.
    `hermes tools`, or fold into an existing catalog entry?
 2. Heartbeat interval and registry TTL — proposing "update at every turn
    boundary, reap after 2x the interactive idle-timeout" but this needs a
-   number tied to real session-lifecycle constants, not guessed.
+   number tied to real session-lifecycle constants, not guessed. Also now
+   entangled with the idle-wakeup blocker below — heartbeat-on-turn starves
+   exactly the idle sessions this feature needs to reach.
 3. Does `hermes agents inbox` want to be a new subcommand file under
    `hermes_cli/subcommands/`, or fits better bolted onto an existing one?
+4. **New, from Round 2:** what is the acceptable UX for `hold`-mode
+   approval given no synchronous dialog exists — long expiry, desktop/
+   terminal-bell notification, both?
+5. **New, from Round 2:** should `send_agent_message` itself be gated by
+   the *sending* session's permission mode, not just the recipient's
+   inbound policy, to close the gateway-as-sender privilege path?
 
-## Review note
+## Review history
 
-This design was reviewed against a second-opinion pass before being
-finalized. That pass caught three real defects in the original draft and
-they're folded into the sections above rather than left as a changelog:
-(1) the UDS+registry.json transport was replaced with the state.db
-approach once it became clear the held-message approval flow already
-required durable shared storage; (2) the mid-turn delivery mechanic
-originally described "inserting a message between tool calls," which is
-an API-contract violation (tool_result placement), not just a cache
-concern — replaced with tail-appending a content block onto the existing
-tool_result-bearing user message; (3) throttling/loop-guarding was present
-in the feature description but absent from the original design section —
-now a required v1 component, not a follow-up.
+**Round 1** (pre-finalization) caught three structural defects, all
+resolved and folded into the sections above: (1) UDS+registry.json
+transport replaced with state.db once it was clear the held-message
+approval flow already needed durable shared storage; (2) the mid-turn
+delivery mechanic originally described "inserting a message between tool
+calls," which is an API wire-contract violation (tool_result placement),
+not just a cache concern — replaced with tail-appending a content block
+onto the existing tool_result-bearing user message; (3) throttling was
+described in the background section but absent from the design — promoted
+to a required v1 component.
+
+**Round 2** (this pass) was run specifically to check whether Round 1's
+fixes actually held up, and found the v2 doc was **not implementation-ready
+despite reading as finished.** Findings, in order of severity:
+
+1. **Blocker.** The idle-session delivery path — arguably the single most
+   important recipient case — assumed a receiving loop that doesn't exist:
+   an idle interactive CLI session is blocked on stdin, not polling
+   anything. Cron's header/footer precedent doesn't transfer, because cron
+   *is* the loop rather than injecting into someone else's blocked
+   process. **A throwaway spike answering "can an idle `cli.py` session
+   wake up and inject a turn without corrupting the input loop" must run
+   before this design is treated as final** — if it fails, idle-session
+   delivery either drops to v2 or the feature narrows to gateway/ACP
+   sessions (which already run event loops) for v1.
+2. **Correctness bug.** The hop-count throttle as originally written never
+   fires on the most common ping-pong case (base case used "nonzero"
+   instead of "always increment on any delivered-message turn") — two
+   `accept`-mode sessions could loop forever under the rate cap. Fixed
+   above; the fix needs the same scrutiny once implemented, since it
+   introduces new in-turn state that has no home yet.
+3. **No threat model.** Delivering as bare user-role content, combined with
+   the registry exposing `permission_mode`, is a plausible privilege path
+   from a gateway session (driven by an untrusted external chat user) into
+   a more permissive CLI session. This needs its own short section before
+   implementation, not a footnote — added as an open question above rather
+   than resolved here, since the right mitigation depends on decisions the
+   user hasn't made yet (per-sender gating vs. content framing vs. both).
+4. Several completeness gaps also confirmed real rather than cosmetic:
+   sender gets no delivery feedback (defeats the rate cap — a model that
+   never learns a send failed just retries); the inbox state machine is
+   missing an explicit `held -> pending` transition and a policy for who
+   decides `pending` vs `held` at insert time; `pending` messages targeting
+   a dead session have no expiry; the 5-minute hold-expiry default is not
+   credible without a synchronous approval UI; the provider wire-format fix
+   assumes Anthropic-style content blocks and hasn't been checked against
+   every provider path this codebase supports; the interrupt-checking
+   checkpoint the mid-turn mechanic depends on has not actually been
+   located in `agent/conversation_loop.py`.
+
+None of this invalidates the overall shape (state.db over sockets, opt-in
+toolset, tail-append for mid-turn delivery, throttling as a hard
+requirement) — Round 2 explicitly reconfirmed those. What it invalidates is
+calling the doc implementation-ready. Status is set to blocked at the top
+of this file until the idle-wakeup spike runs and the open questions above
+get real answers.
