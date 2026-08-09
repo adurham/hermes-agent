@@ -589,6 +589,103 @@ skipped/2 deselected, 0 failed. `tests/tools/test_delegate*.py` +
 `tests/test_delegate_cascade_49148.py` (subagent-creation collateral),
 97/97 passed. All touched files ruff-clean.
 
+### Investigation note — 2026-08-09 (Ollama Cloud always reports 0 cache tokens: confirmed upstream reporting gap, NOT a Hermes bug, no code change)
+
+**Not a fix — this is a documented dead end, recorded so it isn't
+re-investigated from scratch or misdiagnosed as a Hermes wiring bug later.**
+Same session as the credential-rebuild / auxiliary-staleness / two-tier-TTL
+work above; user asked for a broader cost/caching sweep and this came up
+mid-sweep.
+
+**Symptom:** `~/.hermes/state.db` `api_calls` table shows
+`cache_read_tokens = cache_write_tokens = 0` on EVERY ollama-cloud row,
+all-time (measured: 4,230 calls, 943.6M input tokens, zero cache credit
+on any of them) — while every other provider on the same install
+(anthropic, exo, custom/local, google-gemini-cli) shows real cache
+activity. Traced one long session and found `input_tokens` growing
+monotonically call-to-call, which read at first glance like proof of full
+context reprocessing every turn (**this initial inference was WRONG and
+had to be retracted** — see below).
+
+**Root-cause chain, cheapest check first:**
+1. Live raw API call directly to `https://ollama.com/v1/chat/completions`
+   via the `openai` Python SDK, inspected the actual response object:
+   `usage.prompt_tokens_details` is literally `None` on the wire.
+   `agent/usage_pricing.py::normalize_usage()`'s three fallback shapes
+   (OpenAI nested `prompt_tokens_details.cached_tokens`, Anthropic-style
+   top-level `cache_read_input_tokens`, DeepSeek-style
+   `prompt_cache_hit_tokens`) all correctly find nothing populated — so
+   `cache_read_tokens=0` is the CORRECT extraction of an empty field.
+   **Confirmed not a Hermes bug at this layer.**
+2. GitHub API-verified (not search-hallucinated — fetched both issues
+   via `api.github.com/repos/.../issues/<n>` before citing):
+   `ollama/ollama#15758` ("Ollama's Cloud doesn't report number of cached
+   tokens", opened by drifkin — an Ollama team member — Apr 2026, still
+   open) states verbatim: *"Behind the scenes requests are sped up with
+   caches, but we currently always report 0 cached tokens."* Ollama's own
+   side acknowledging server-side caching happens but token-count
+   reporting is broken. Separately, `NousResearch/hermes-agent#55422`
+   independently reports the identical near-zero-cache-on-ollama-cloud
+   symptom on a different Hermes install (cache_read_tokens ≈0 vs
+   openai-codex 80%+ on the same box) — corroborates this isn't
+   local-environment-specific.
+3. **The `input_tokens` monotonic-growth observation proves NOTHING about
+   caching** — a Claude Fable consult review caught this reasoning error
+   before it shipped to the user. Token-count fields report the FULL
+   prompt size regardless of whether it was served from cache, on nearly
+   every provider (Anthropic does the same — `input_tokens` +
+   `cache_read_input_tokens` are separate fields, and the former doesn't
+   shrink just because the latter is nonzero). The only client-observable
+   caching signal is latency, specifically time-to-first-token (TTFT).
+4. **Live TTFT test (network/connection-noise-controlled), run against
+   this account's real ollama-cloud credentials:** sent the SAME ~15K-token
+   system-prompt prefix with a varying user-message suffix 5x in a row,
+   averaged TTFT = 0.751s. As a CONTROL, sent 5 calls with a DIFFERENT
+   ~15K-token prefix each time (ruling out plain network/connection
+   warmup as the explanation) — averaged TTFT = 1.241s. A real ~40%
+   reduction on the same-prefix runs, consistent with genuine server-side
+   prefix-cache reuse happening — just never reported back to the client.
+   A first attempt at this test with a 3K-token prefix and only 3 samples
+   was too noisy to read (non-monotonic, call 3 slower than call 1) —
+   needed a genuinely large prefix (≥10K tokens) and N≥5 samples with a
+   proper varied-prefix control to get a readable signal.
+
+**Known limit — do not over-generalize this finding:** a different Ollama
+Cloud paying subscriber (`ollama/ollama#16714`) benchmarked their own
+heavier sustained agentic-loop workload and found NO real speedup from
+caching. The TTFT test above was light (a short isolated test sequence,
+not sustained agentic load under concurrent traffic) — it demonstrates
+caching CAN and does happen, not that it reliably helps at scale or under
+load. Do not present the ~40% number as a guarantee for a real workload.
+
+**Why this isn't actionable / no fix exists:** no `keep_alive`-equivalent,
+no cache-control header, no documented request parameter exists for the
+Cloud (`/v1`) OpenAI-compatible endpoint. `keep_alive` is a NATIVE
+`/api/chat` concept (model-residency-in-VRAM on a single box) that doesn't
+map onto a multi-tenant hosted service the client doesn't control
+placement on. There is nothing for Hermes to wire up here — this is
+purely an upstream Ollama reporting gap, tracked at `ollama/ollama#15758`.
+Revisit if that issue closes (would mean Cloud finally reports real
+cache-token counts) or if a `keep_alive`-equivalent ships for `/v1`.
+
+**Cost framing corrected:** the original alarm ("943M tokens, 95.5%
+'redundant' reprocessing, burning weekly quota ~20x faster than
+necessary") was built on treating a 0-in-the-DB as proof of zero caching
+— wrong methodology, corrected by the TTFT test above. Ollama Cloud bills
+flat GPU-time-metered against a subscription cap (not per-token, tiers
+$0/$20/$100), so this was never a direct dollar-cost bug even taken at
+face value; the real underlying concern (weekly quota burn) is likely
+overstated once real-but-unreported caching is accounted for.
+
+**No files touched — investigation only, zero code change.** Recorded per
+"document important findings on disk" rather than only in warm memory
+(`memory` warm-tier fact_id 1302, same content, searchable via
+`memory(action='recall', query='ollama-cloud cache')`) and the
+`hermes-prompt-cost-diagnostics` skill (patched with the same
+methodology + a reusable TTFT-test procedure for next time this class of
+"provider X looks wasteful" question comes up for ANY provider, not just
+ollama-cloud).
+
 ### Fork-only fix — 2026-08-09 (active-turn redirect: a hard stop silently destroyed an already-accepted correction)
 
 **Motivation:** user reported the CLI's "Redirected current turn" confirmation
