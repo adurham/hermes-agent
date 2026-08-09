@@ -404,6 +404,90 @@ failures (empty-DOM waitFor deadlines) when run CONCURRENTLY with the
 8-worker Python suite — always judge desktop results from a run with the
 machine otherwise idle.
 
+### Fork-only fix — 2026-08-09 (a live "Initializing agent..." misdiagnosis led to root-causing OAuth-credential-churn forcing a full agent rebuild on every token refresh)
+
+**Motivation:** user reported "hey, I thought we fixed this initializing
+agent bug" mid-session, referencing the 2026-08-08 signature-tuple fix (see
+the entry two below). Live investigation in the actual running session (not
+a cold-start repro) found the Aug 8 fix genuinely still in place and
+correct — both signature-building sites still agree, verified by
+constructing the real `HermesCLI` object and calling the resolver twice with
+zero drift. This is a DIFFERENT bug hitting the same user-visible symptom.
+
+**Root cause:** the user runs 4+ concurrent `hermes` CLI processes at once
+(confirmed via `ps`, one per terminal tab), and all of them share the same
+Claude Code OAuth token file (`~/.claude/.credentials.json`). When one
+process refreshes the token, every OTHER process's next
+`_ensure_runtime_credentials()` call resolves a genuinely different
+`api_key` string — not because anything about routing/model changed, but
+because a sibling process invalidated the cached token care of that shared
+file. `agent.log` showed this credential churn cycling constantly across
+every open session all day (`Credential auth failure — refreshed pool entry
+54def7`, repeating every few minutes since before this session started).
+
+`HermesCLI._ensure_runtime_credentials()` in
+`hermes_cli/cli_agent_setup_mixin.py` treated ANY `api_key` diff —
+including this benign same-provider token rotation — as
+`credentials_changed = True`, and unconditionally executed
+`self.agent = None` whenever that (or routing, or model) changed. That
+discards the whole `AIAgent` object (losing in-memory turn state:
+checkpoints, cached tool schemas, credential-pool refresh counters) and
+prints the disruptive "Initializing agent..." on every single token
+refresh — completely independent of, and unrelated to, the Aug 8
+`_active_agent_route_signature` tuple-shape bug (`api_key` was never part
+of that signature tuple at all).
+
+The deeper insight: `AIAgent` already has proven, in-place credential-swap
+machinery for exactly this scenario — `_swap_credential()`, used by the
+mid-turn 401-recovery path in `agent/agent_runtime_helpers.py`. It rebuilds
+only the live provider client (Anthropic client or the shared OpenAI-SDK
+client + `_client_kwargs`) without touching anything else on the agent. The
+turn-start credential-resolution path just never used it.
+
+**Fix:** new `AIAgent.apply_runtime_credential_update()` in `run_agent.py` —
+the same in-place swap logic as `_swap_credential()`, generalized to take a
+raw `(api_key, base_url)` pair instead of a credential-pool `entry` object
+(this path fires before a turn even starts, so there's no failing pool
+entry to hand in yet). `_ensure_runtime_credentials()` now only forces a
+full agent rebuild when `routing_changed` or `model_changed` is true; a
+bare `credentials_changed` calls `apply_runtime_credential_update()` on the
+live agent instead, and only falls back to the full rebuild if that swap
+itself fails (never silently runs on stale auth).
+
+**Files touched:**
+- `run_agent.py` — new `AIAgent.apply_runtime_credential_update()` method.
+- `hermes_cli/cli_agent_setup_mixin.py` — `_ensure_runtime_credentials()`:
+  replaced the unconditional `credentials_changed or routing_changed or
+  model_changed` rebuild with a routing/model-only rebuild path plus an
+  in-place swap-with-fallback path for a bare credentials-only change.
+- `tests/cli/test_cli_provider_resolution.py` — 3 new tests: the swap
+  fires and the SAME agent object survives a same-provider token refresh;
+  a failed swap still falls back to a full rebuild; a genuine routing
+  change (provider switch) still forces the full rebuild (the fast path
+  must never fire there).
+- `tests/run_agent/test_apply_runtime_credential_update.py` (new file) — 5
+  unit tests on the method directly: chat_completions client-kwargs swap,
+  anthropic_messages client rebuild + OAuth-flag preservation, credential
+  pool object gets updated when supplied, invalid/missing base_url returns
+  False cleanly, and a client-rebuild exception inside the swap returns
+  False rather than raising (so the caller's fallback path is reachable,
+  never crashes the turn-start path).
+
+**Verification:** `tests/cli/test_cli_provider_resolution.py` 16/16 (13
+pre-existing + 3 new), `tests/run_agent/test_apply_runtime_credential_update.py`
+5/5 new, both stable across 3 repeat runs. Broader regression sweep across
+every credential-rotation/pool/agent-init test file touching this code path
+(16 files) — 124 passed, 1 pre-existing failure confirmed identical on
+unmodified `main` via `git stash` (unrelated: `recover_with_credential_pool`
+key-attribution logic, not this fix's code path). All touched files verified
+with `python -m py_compile`.
+
+Developed live against the actual running install (`~/.hermes/hermes-agent`,
+a separate checkout from this dev repo) to diagnose the real symptom from
+real logs, then ported identically into this dev repo (`~/repos/hermes-agent`)
+for testing since the runtime install's venv lacks pytest/dev deps — the
+final diff is byte-identical between both checkouts.
+
 ### Fork-only fix — 2026-08-09 (active-turn redirect: a hard stop silently destroyed an already-accepted correction)
 
 **Motivation:** user reported the CLI's "Redirected current turn" confirmation

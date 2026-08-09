@@ -176,11 +176,39 @@ class CLIAgentSetupMixin:
         # models when provider is openai-codex).  Fixes #651.
         model_changed = self._normalize_model_for_provider(resolved_provider)
 
-        # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
-        # routing, or the effective model changed.
-        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
-            self.agent = None
-            self._active_agent_route_signature = None
+        # AIAgent/OpenAI client holds auth at init time, so rebuild if
+        # routing or the effective model changed. A bare credentials-only
+        # change (routing/model unchanged) is the common case of an OAuth
+        # token refresh mid-session -- Claude Code's
+        # ~/.claude/.credentials.json is shared across every concurrent
+        # `hermes` process, so one process refreshing invalidates another's
+        # cached token and its next resolve sees a "changed" api_key purely
+        # from that churn, not a real provider switch. Update the live
+        # agent's auth in place instead of discarding it: cheaper, and
+        # avoids a disruptive "Initializing agent..." + loss of in-memory
+        # turn state (checkpoints, cached tool schemas) on every refresh.
+        if self.agent is not None:
+            if routing_changed or model_changed:
+                self.agent = None
+                self._active_agent_route_signature = None
+            elif credentials_changed:
+                _swap_ok = False
+                try:
+                    _swap_ok = bool(
+                        self.agent.apply_runtime_credential_update(
+                            api_key=api_key,
+                            base_url=base_url,
+                            credential_pool=resolved_credential_pool,
+                        )
+                    )
+                except Exception:
+                    _swap_ok = False
+                if not _swap_ok:
+                    # In-place swap failed (or the agent predates this
+                    # method) -- fall back to the safe, proven full rebuild
+                    # rather than risk running with stale auth.
+                    self.agent = None
+                    self._active_agent_route_signature = None
 
         return True
 
