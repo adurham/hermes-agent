@@ -188,6 +188,62 @@ def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     assert result["runtime"]["provider"] == "openrouter"
 
 
+def test_active_agent_route_signature_matches_resolved_turn_signature(monkeypatch):
+    """Regression: cli.py's own _init_agent() override built a 6-field
+    signature (missing requested_provider) while _resolve_turn_agent_config()
+    builds a 7-field signature. Because tuples of different lengths never
+    compare equal, every single turn's signature comparison mismatched
+    unconditionally, forcing self.agent = None and a full re-init before
+    every message -- even with zero actual model/provider/runtime change.
+    User-visible symptom: "Initializing agent..." + a brief context/tool
+    list reset on every follow-up turn in the same session.
+
+    This asserts the two signature-building code paths agree once the
+    agent is actually initialized, so a second turn with identical
+    provider/model config does NOT force a spurious re-init.
+    """
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "anthropic",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "test-key",
+            "source": "env/config",
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            self._cli_ref = None
+
+        def _ensure_db_session(self):
+            pass
+
+        _session_db_created = False
+
+    cli = _import_cli()
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(model="claude-sonnet-5", compact=True, max_turns=1)
+
+    assert shell._init_agent() is True
+    assert shell.agent is not None
+
+    # Second turn, no config change of any kind -- the exact scenario a
+    # normal follow-up message in the same session hits.
+    turn_route = shell._resolve_turn_agent_config("follow-up question")
+
+    assert turn_route["signature"] == shell._active_agent_route_signature, (
+        "turn signature and stored route signature diverged with no "
+        "config change -- this forces a spurious agent re-init on every "
+        "turn (regression: requested_provider dropped from the stored "
+        "signature tuple in cli.py's own _init_agent override)"
+    )
+
+
 
 
 

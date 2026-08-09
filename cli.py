@@ -8124,6 +8124,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
+                runtime.get("requested_provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
                 runtime.get("command"),
