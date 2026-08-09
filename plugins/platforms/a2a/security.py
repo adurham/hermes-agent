@@ -76,6 +76,13 @@ def get_trusted_proxies() -> list:
 
     A2A_TRUSTED_PROXIES is opt-in and MUST be an explicit allow-list. Trusting
     an arbitrary client-supplied header would be a spoofing vector.
+
+    IPv4-mapped IPv6 entries (``::ffff:10.0.0.0/120``) are unwrapped to plain
+    IPv4 networks here, mirroring the unwrapping ``_is_trusted_proxy`` already
+    does for the socket peer address. Without this, an operator who
+    configures an IPv4-mapped allow-list entry would silently never match —
+    fails closed (never a security hole), but confusingly, since the address
+    family mismatch isn't obvious from the config alone.
     """
     import ipaddress as _ip
     raw = os.getenv("A2A_TRUSTED_PROXIES", "").strip()
@@ -89,7 +96,13 @@ def get_trusted_proxies() -> list:
         try:
             if "/" not in item:
                 item = item + ("/128" if ":" in item else "/32")
-            nets.append(_ip.ip_network(item, strict=False))
+            net = _ip.ip_network(item, strict=False)
+            if net.version == 6:
+                mapped = getattr(net.network_address, "ipv4_mapped", None)
+                if mapped is not None:
+                    prefixlen = max(0, net.prefixlen - 96)
+                    net = _ip.ip_network(f"{mapped}/{prefixlen}", strict=False)
+            nets.append(net)
         except ValueError:
             logger.warning(
                 "A2A: ignoring invalid A2A_TRUSTED_PROXIES entry %r "
