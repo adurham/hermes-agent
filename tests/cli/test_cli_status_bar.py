@@ -249,7 +249,11 @@ class TestContextDeltaSegment:
         assert "context_delta" not in snapshot
         assert cli_obj._format_context_delta(snapshot) is None
 
-    def test_small_growth_omits_segment(self):
+    def test_small_growth_still_shows_segment(self):
+        # Any positive growth is shown now — parity with the always-on
+        # session token counters and spinner_token_flow's live ↓ Nk tok.
+        # Previously gated behind a 2K "meaningful growth" floor; user
+        # explicitly asked for the segment to always be present instead.
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=50_900,
@@ -261,9 +265,31 @@ class TestContextDeltaSegment:
             last_input_tokens=2,
             last_cache_read_tokens=50_898,
         )
-        cli_obj._turn_start_context_tokens = 50_000  # +900, under the 2K floor
+        cli_obj._turn_start_context_tokens = 50_000  # +900, previously under the 2K floor
         snapshot = cli_obj._get_status_bar_snapshot()
         assert snapshot["context_delta"] == 900
+        label = cli_obj._format_context_delta(snapshot)
+        assert label is not None and label.startswith("Δ+")
+
+    def test_zero_or_negative_delta_omits_segment(self):
+        # A flat or shrinking turn (e.g. right after compression, or a
+        # baseline capture quirk) has nothing to attribute a cause to —
+        # the segment is correctly omitted only for delta<=0, not for any
+        # positive growth however small.
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=50_000,
+            completion_tokens=300,
+            total_tokens=50_300,
+            api_calls=7,
+            context_tokens=50_000,
+            context_length=200_000,
+            last_input_tokens=2,
+            last_cache_read_tokens=49_998,
+        )
+        cli_obj._turn_start_context_tokens = 50_000  # flat, delta=0
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot.get("context_delta") == 0
         assert cli_obj._format_context_delta(snapshot) is None
 
     def test_new_content_jump_tagged_new(self):
