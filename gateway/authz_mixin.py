@@ -196,6 +196,7 @@ class GatewayAuthorizationMixin:
         platform: Optional[Platform],
         *,
         profile: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ) -> bool:
         """Whether the adapter for *platform* delegates authz to a trusted upstream.
 
@@ -207,9 +208,28 @@ class GatewayAuthorizationMixin:
         policy the gateway mirrors only when it's an allowlist), this is an
         UPSTREAM decision the gateway honors directly. Defaults to ``False`` when
         the adapter is unknown or doesn't expose the flag.
+
+        Under ``gateway.multiplex_profiles``, a single process-level adapter
+        (A2A's stdlib http.server, Relay's connector WS, etc.) may serve
+        inbound traffic that gets routed to a SECONDARY profile even though
+        the adapter itself is registered only in the primary profile's map.
+        A pure profile-keyed lookup keyed on ``source.profile`` therefore
+        misses and default-denies a legitimately upstream-authorized event
+        (issue #80884). ``authorization_is_upstream`` is an intrinsic
+        property of the transport adapter that actually received the
+        request, not a per-profile policy — so when a *source* is supplied,
+        consult its in-process transport adapter first and only fall back to
+        the profile-keyed lookup for restored/hand-built sources that have
+        no transport provenance.
         """
         if not platform:
             return False
+        if source is not None:
+            transport_adapter = self._registered_transport_adapter(source)
+            if transport_adapter is not None and bool(
+                getattr(transport_adapter, "authorization_is_upstream", False)
+            ):
+                return True
         adapter = self._authorization_adapter(platform, profile)
         if adapter is None:
             return False
@@ -435,6 +455,7 @@ class GatewayAuthorizationMixin:
         if source.delivered_via_upstream_relay is True or self._adapter_authorization_is_upstream(
             source.platform,
             profile=adapter_profile,
+            source=source,
         ):
             return True
 
