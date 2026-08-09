@@ -2674,10 +2674,15 @@ def _toolset_has_keys(
             force_fresh=force_fresh,
             features=features,
         ):
-            env_vars = provider.get("env_vars", [])
-            if not env_vars:
-                return True  # No-key provider (e.g. Local Browser, Edge TTS)
-            if all(get_env_value(e["key"]) for e in env_vars):
+            # A bare `env_vars: []` row (e.g. Local Browser, Edge TTS) is
+            # only actually usable when it doesn't ALSO gate on Nous auth,
+            # xAI OAuth, or an unfinished post_setup wizard (Nous
+            # Subscription rows, xAI Grok OAuth, Spotify Web API). Those
+            # keyless-but-gated rows must not count as "configured" — use
+            # the same honest readiness check the GUI's "Ready" pill uses,
+            # rather than treating "no declared env vars" as sufficient.
+            status = provider_readiness_status(provider, config, features=features)
+            if status == "ready":
                 return True
         return False
 
@@ -2829,6 +2834,43 @@ def _configure_toolset(
         _configure_simple_requirements(ts_key)
 
 
+def _plugin_provider_row(provider, schema: dict) -> dict:
+    """Build the common picker-row fields shared by every plugin builder.
+
+    Pulls in ``requires_nous_auth`` / ``managed_nous_feature`` from the
+    schema when the plugin declares them (e.g. the OpenRouter "Nous
+    Portal (image)" row), and stamps an ``_is_available`` marker from the
+    provider's own ``is_available()`` when it exposes one (e.g. "OpenAI
+    (Codex auth)" gating on a stored Codex OAuth token).
+
+    Without this, ``provider_readiness_status()`` has no way to see
+    either signal on a plugin-injected row — a keyless row with no
+    declared auth gate falls straight through to "ready" even when the
+    user has never signed in, which is exactly the false-positive that
+    made Image Generation appear "configured" while logged out of both
+    Nous Portal and Codex.
+    """
+    row: dict = {
+        "name": schema.get("name", provider.display_name),
+        "badge": schema.get("badge", ""),
+        "tag": schema.get("tag", ""),
+        "env_vars": schema.get("env_vars", []),
+    }
+    if schema.get("post_setup"):
+        row["post_setup"] = schema["post_setup"]
+    if schema.get("requires_nous_auth"):
+        row["requires_nous_auth"] = True
+    if schema.get("managed_nous_feature"):
+        row["managed_nous_feature"] = schema["managed_nous_feature"]
+    is_available = getattr(provider, "is_available", None)
+    if callable(is_available):
+        try:
+            row["_is_available"] = bool(is_available())
+        except Exception:
+            row["_is_available"] = False
+    return row
+
+
 def _plugin_image_gen_providers() -> list[dict]:
     """Build picker-row dicts from plugin-registered image gen providers.
 
@@ -2856,15 +2898,8 @@ def _plugin_image_gen_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        row = {
-            "name": schema.get("name", provider.display_name),
-            "badge": schema.get("badge", ""),
-            "tag": schema.get("tag", ""),
-            "env_vars": schema.get("env_vars", []),
-            "image_gen_plugin_name": provider.name,
-        }
-        if schema.get("post_setup"):
-            row["post_setup"] = schema["post_setup"]
+        row = _plugin_provider_row(provider, schema)
+        row["image_gen_plugin_name"] = provider.name
         rows.append(row)
     return rows
 
@@ -2894,15 +2929,8 @@ def _plugin_video_gen_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        row = {
-            "name": schema.get("name", provider.display_name),
-            "badge": schema.get("badge", ""),
-            "tag": schema.get("tag", ""),
-            "env_vars": schema.get("env_vars", []),
-            "video_gen_plugin_name": provider.name,
-        }
-        if schema.get("post_setup"):
-            row["post_setup"] = schema["post_setup"]
+        row = _plugin_provider_row(provider, schema)
+        row["video_gen_plugin_name"] = provider.name
         rows.append(row)
     return rows
 
@@ -2950,17 +2978,9 @@ def _plugin_web_search_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        row = {
-            "name": schema.get("name", provider.display_name),
-            "badge": schema.get("badge", ""),
-            "tag": schema.get("tag", ""),
-            "env_vars": schema.get("env_vars", []),
-            "web_backend": name,
-            "web_search_plugin_name": name,
-        }
-        # Optional pass-through fields the schema can opt into.
-        if schema.get("post_setup"):
-            row["post_setup"] = schema["post_setup"]
+        row = _plugin_provider_row(provider, schema)
+        row["web_backend"] = name
+        row["web_search_plugin_name"] = name
         rows.append(row)
     return rows
 
@@ -3032,17 +3052,9 @@ def _plugin_browser_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        row = {
-            "name": schema.get("name", provider.display_name),
-            "badge": schema.get("badge", ""),
-            "tag": schema.get("tag", ""),
-            "env_vars": schema.get("env_vars", []),
-            "browser_provider": name,
-            "browser_plugin_name": name,
-        }
-        # Pass-through optional fields the schema can opt into.
-        if schema.get("post_setup"):
-            row["post_setup"] = schema["post_setup"]
+        row = _plugin_provider_row(provider, schema)
+        row["browser_provider"] = name
+        row["browser_plugin_name"] = name
         rows.append(row)
     return rows
 
@@ -3086,19 +3098,12 @@ def _plugin_tts_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        row = {
-            "name": schema.get("name", provider.display_name),
-            "badge": schema.get("badge", ""),
-            "tag": schema.get("tag", ""),
-            "env_vars": schema.get("env_vars", []),
-            # Selecting this row writes ``tts.provider: <name>`` — the
-            # same write-path used by hardcoded rows. The plugin
-            # dispatcher picks it up automatically from there.
-            "tts_provider": name,
-            "tts_plugin_name": name,
-        }
-        if schema.get("post_setup"):
-            row["post_setup"] = schema["post_setup"]
+        row = _plugin_provider_row(provider, schema)
+        # Selecting this row writes ``tts.provider: <name>`` — the
+        # same write-path used by hardcoded rows. The plugin
+        # dispatcher picks it up automatically from there.
+        row["tts_provider"] = name
+        row["tts_plugin_name"] = name
         rows.append(row)
     return rows
 
@@ -3382,6 +3387,18 @@ def provider_readiness_status(
         if is_active is None:
             is_active = _is_provider_active(provider, config)
         return "ready" if is_active else "needs_setup"
+
+    # Plugin-injected rows with NO declared env_vars, NO requires_nous_auth,
+    # and NO post_setup hook (e.g. "OpenAI (Codex auth)", which gates purely
+    # on a stored Codex OAuth token) can still stamp an ``_is_available``
+    # marker from the provider's own ``is_available()`` — see
+    # ``_plugin_provider_row``. Checked last, after post_setup, because rows
+    # like ddgs/trafilatura also implement ``is_available()`` (package
+    # install state) but rely on their post_setup predicate above to report
+    # "needs_setup" correctly; this is purely a fallback for rows with no
+    # other gating signal at all.
+    if provider.get("_is_available") is False:
+        return "needs_auth"
 
     return "ready"
 
