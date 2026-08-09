@@ -3095,6 +3095,19 @@ class AIAgent(ForkForwardersMixin):
             # When new message arrives for active session:
             if session_has_running_agent:
                 running_agent.interrupt(new_message.text)
+
+        Note on ``_pending_redirect``: a prior ``redirect()`` call may have
+        already been accepted (the surface confirmed it, e.g. the CLI's
+        "Redirected current turn") but not yet drained by the conversation
+        loop -- the loop only consumes ``_pending_redirect`` once per
+        iteration, at the top of the tool-calling while-loop. If a stop
+        lands in that window it must not silently destroy that accepted,
+        undelivered correction. Instead it is folded into ``message`` below
+        so it rides out on the normal ``_interrupt_message`` ->
+        ``result["interrupt_message"]`` -> next-turn requeue path (the same
+        path that already recovers a plain interrupt() message dropped by a
+        race against turn completion). The user's correction survives as the
+        next thing sent instead of vanishing.
         """
         # A hard stop and redirect share one lock so /stop cannot race with an
         # accepted correction and accidentally turn itself into a retry.
@@ -3120,17 +3133,28 @@ class AIAgent(ForkForwardersMixin):
                     )
             event.set()
 
+        def _fold_dropped_redirect(_dropped):
+            # Preserve an accepted-but-undelivered redirect correction by
+            # merging it into the interrupt message instead of discarding it.
+            if not _dropped:
+                return message
+            return f"{message}\n\n{_dropped}" if message else _dropped
+
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is not None:
             with _redirect_lock:
+                _folded_message = _fold_dropped_redirect(self._pending_redirect)
                 self._interrupt_requested = True
-                self._interrupt_message = message
+                self._interrupt_message = _folded_message
                 if hard_cancel:
                     _admit_hard_cancel()
                 self._pending_redirect = None
         else:
+            _folded_message = _fold_dropped_redirect(
+                getattr(self, "_pending_redirect", None)
+            )
             self._interrupt_requested = True
-            self._interrupt_message = message
+            self._interrupt_message = _folded_message
             if hard_cancel:
                 _admit_hard_cancel()
             self._pending_redirect = None
