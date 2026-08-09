@@ -311,6 +311,48 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_a2a_direct_channel_target_bypasses_misleading_home_channel_error(self):
+        """#78396: 'a2a:<context_id>' has no channel-directory entry (A2A never
+        populates one) and no ``_parse_target_ref`` rule (its ids are opaque
+        A2A context ids, not a parseable format). Before the fix, this fell
+        through to the "No home channel set for a2a" error even though the
+        user supplied a direct channel exactly as the error text recommends.
+        The fix passes the raw ref through as chat_id for platforms with no
+        parser rule and no directory match, instead of erroring."""
+        a2a_platform = Platform("a2a")
+        a2a_cfg = SimpleNamespace(enabled=True, token=None, extra={})
+        config = SimpleNamespace(
+            platforms={a2a_platform: a2a_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", return_value=None), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "a2a:some-context-id-1234",
+                        "message": "hello peer",
+                    }
+                )
+            )
+
+        assert result["success"] is True, result
+        send_mock.assert_awaited_once_with(
+            a2a_platform,
+            a2a_cfg,
+            "some-context-id-1234",
+            "hello peer",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
 
     def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):
         # This test exercises the strict-allowlist path; force strict mode on
