@@ -4,6 +4,60 @@ Consolidates the entire A2A (Agent-to-Agent) feature cluster (#514 and friends)
 into one **plugin** with **zero core edits**, built on capabilities the current
 codebase already exposes. Implements **A2A Protocol v1.0** (JSON-RPC binding).
 
+## Status: implemented, merged upstream, has known open bugs
+
+This is not a proposal — it shipped. `837003b1e` (closes #514) through
+`81c7e5de4` are on `NousResearch/hermes-agent` main. `tests/plugins/
+test_a2a_plugin.py` + `test_a2a_phase23.py` (2,300+ lines, 168 tests) pass
+against current main. The plugin directory (`adapter.py`, `protocol.py`,
+`security.py`, `tools.py`) is real, working code, not a sketch.
+
+It is not bug-free. Open issues on the upstream tracker as of 2026-08-09,
+roughly in priority order:
+
+| Issue | Problem |
+|---|---|
+| #78050 (dup: #81163) | Outbound client tools never register in CLI/TUI sessions — the plugin is a *deferred* platform plugin, so `register()` only fires in gateway/web-server processes that call `platform_registry.plugin_entries()` at startup. CLI/TUI never does, so the toolset is invisible where most interactive users would reach for it. |
+| #78007 | Client default timeout (120s) is shorter than the server's own reply window (`A2A_REPLY_TIMEOUT`, default 300s) — long tasks always die client-side first, and the error surfaces as a raw socket timeout, not a task state. Raw-URL peer calls also can't override the hardcoded 120s at all. Additionally, the server finalizes a task as failed at its own deadline even if the agent's future later resolves successfully — the real result is discarded. |
+| #78396 | `hermes send --to a2a:...` fails with a misleading "no home channel" error even against a resolvable channel. |
+| #80884 | Under `gateway.multiplex_profiles: true`, inbound A2A requests routed to a secondary profile are rejected by gateway authz — `authorization_is_upstream` isn't honored outside the primary profile. |
+| #80534 | Behind a reverse proxy, a shared `A2A_BEARER_TOKEN` collapses every remote peer to the same `ip:<proxy address>` identity (the proxy's socket address), silently degrading per-peer rate limiting, trust gating, and audit attribution — the documented mitigation is per-peer tokens, but nothing warns operators who reach for the shared-token path behind a proxy. |
+| #81003 | Rejected requests (401/403) never reach `a2a_audit.jsonl` — only accepted requests are logged, so credential-stuffing/token-probing against the inbound port is invisible to the audit trail that's supposed to be the intrusion-detection signal. |
+
+### External review (2026-08-09)
+
+Two of the six are architectural, not local patches:
+
+- **#78050** — the plugin conflates lightweight client tools (needed in
+  every process) with a heavy gateway-only platform adapter inside one
+  deferred-load plugin, and `resolve_toolset` silently returns `[]` when a
+  deferred plugin hasn't resolved instead of forcing resolution or erroring.
+  Fix the loading boundary (split tool registration from platform
+  adapter registration, or make toolset resolution force-resolve deferred
+  platform plugins), not just this one plugin's symptom.
+- **#78007** — do not fix this by raising `_DEFAULT_TIMEOUT`. The design
+  bug is (a) synchronous blocking `message/send` racing three independent
+  clocks (client timeout / `A2A_REPLY_TIMEOUT` / 5-min watchdog — the
+  watchdog and reply timeout are dangerously close in value already), and
+  (b) `_finalize_task` marking a task terminally FAILED at the server
+  deadline even though the agent's Future can still resolve successfully
+  afterward, discarding real completed work. The task store already
+  exists for polling (`tasks/get`); the fix is to lean on it — return a
+  `working` task promptly and let the late Future finalize normally —
+  not to move the deadline.
+
+#80534 (proxy identity collapse) and #80884 (multiplexer authz) need an
+actual design decision (trusted-proxy header support, or refuse
+shared-token mode off-localhost; audit which profile-override paths are
+honored under multiplexing generally) — not a one-line guard. #78396 and
+#81003 are genuinely local, though #81003's fix belongs at the HTTP-entry
+layer (log before/regardless of auth outcome), not inside the
+already-authenticated adapter path, or the next rejection path will be
+missed the same way.
+
+Treat this doc as the as-built reference; fixes land as targeted patches
+referencing the issue numbers above, not a redesign.
+
 ## Why a plugin, not a core feature
 
 Earlier A2A attempts (#4135, #4948, #4952, #11025) added a standalone server
