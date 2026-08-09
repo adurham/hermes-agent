@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -157,6 +158,47 @@ def _short_state(state: str) -> str:
     return state.replace("TASK_STATE_", "").replace("_", "-").lower() if state else ""
 
 
+def _poll_task_until_terminal(
+    base_url: str, headers: dict, card: Optional[dict],
+    task_id: str, budget_seconds: float,
+) -> Optional[dict]:
+    """Poll ``tasks/get`` until the task reaches a terminal state or the
+    caller's remaining timeout budget runs out. Returns the final Task
+    result dict, or None if the budget expired while still non-terminal.
+
+    #78007: the server now replies to ``message/send`` with a non-terminal
+    WORKING task instead of blocking (and instead of discarding a real
+    result that lands after its own reply window). Without this poll, the
+    caller would just get back "(no text reply) [... working]" and the real
+    completion — captured server-side via tasks/get — would be invisible to
+    whoever called ``a2a_call``. This closes that gap on the client side.
+    """
+    deadline = time.time() + max(0.0, budget_seconds)
+    interval = 1.0
+    rpc_url = _rpc_url(base_url, card)
+    while time.time() < deadline:
+        req_body = {
+            "jsonrpc": "2.0", "id": protocol.new_task_id(),
+            "method": "tasks/get", "params": {"id": task_id},
+        }
+        try:
+            resp = _http_post_json(rpc_url, req_body, headers, min(10, max(1, int(deadline - time.time()))))
+        except Exception:
+            # Transient poll failure — keep trying within budget rather than
+            # surfacing a spurious error for what may just be a slow peer.
+            time.sleep(min(interval, max(0.0, deadline - time.time())))
+            continue
+        if "error" in resp:
+            return None
+        result = resp.get("result", {}) or {}
+        state = (result.get("status") or {}).get("state", "")
+        if state in protocol.TERMINAL_STATES or state == protocol.STATE_INPUT_REQUIRED:
+            return result
+        time.sleep(min(interval, max(0.0, deadline - time.time())))
+        interval = min(interval * 1.5, 5.0)
+    return None
+
+
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """Send one message/send to a peer. Returns (reply_text, context_id, state).
 
@@ -203,9 +245,28 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     payload = protocol.unwrap_send_message_response(result)
     reply = _reply_text_from_result(payload)
     reply_ctx, state = ctx, ""
+    task_id = ""
     if isinstance(payload, dict):
         reply_ctx = payload.get("contextId", ctx)
         state = (payload.get("status") or {}).get("state", "")
+        task_id = str(payload.get("id") or "")
+
+    # #78007: the server replies to message/send with a non-terminal WORKING
+    # task when its own reply window closes before the agent finishes,
+    # rather than blocking indefinitely or discarding a late-arriving real
+    # result. Poll tasks/get for the actual outcome instead of returning
+    # "(no text reply) [... working]" to the caller — the whole point of the
+    # server-side fix is that the real result is still there to be fetched.
+    if state and state not in protocol.TERMINAL_STATES and state != protocol.STATE_INPUT_REQUIRED and task_id:
+        remaining = max(0.0, timeout - 2.0)  # leave margin below the caller's own timeout
+        if remaining > 0:
+            polled = _poll_task_until_terminal(base_url, headers, card, task_id, remaining)
+            if polled is not None:
+                payload = polled
+                reply = _reply_text_from_result(polled)
+                reply_ctx = polled.get("contextId", reply_ctx)
+                state = (polled.get("status") or {}).get("state", state)
+
     protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
     protocol.metrics.inbound_total += 1
     return reply, reply_ctx, state
