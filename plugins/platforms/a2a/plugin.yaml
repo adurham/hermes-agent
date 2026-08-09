@@ -54,6 +54,10 @@ optional_env:
     description: "Allow any authenticated A2A peer to reach the agent (dev only)."
     prompt: "Allow all A2A peers? (true/false)"
     password: false
+  - name: A2A_TRUSTED_PROXIES
+    description: "Comma-separated IPs/CIDRs of reverse proxies whose X-Forwarded-For header is trusted for identity resolution. Default empty (header ignored). Required when using shared A2A_BEARER_TOKEN behind a proxy so per-peer rate limits / trust gate / audit attribution work (#80534)."
+    prompt: "A2A trusted proxy IPs/CIDRs (comma-separated, or empty)"
+    password: false
   - name: A2A_HOME_CHANNEL
     description: "Task/context id used as the cron / notification delivery target for deliver=a2a."
     prompt: "A2A home channel (or empty)"

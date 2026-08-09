@@ -230,6 +230,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             if security.localhost_only() or security.authenticate(
                 self.headers.get("Authorization"),
                 self.client_address[0] if self.client_address else "",
+                self._forwarded_for(),
             ) is not None:
                 payload["served_agents"] = self.adapter._served_agent_summary(
                     public_url=self._request_public_url() or None)
@@ -240,13 +241,33 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return
         self._json(404, {"error": "not found"})
 
+    def _forwarded_for(self) -> Optional[str]:
+        """All ``X-Forwarded-For`` header values, comma-joined (RFC 7230 §3.2.2).
+
+        A client may send the header multiple times; a well-behaved proxy
+        *appends its own line* rather than editing the client's. Using
+        ``headers.get()`` would return only the FIRST (attacker-controlled)
+        line and silently drop the proxy-appended true client IP, letting a
+        client behind a trusted proxy forge any identity it likes. Joining all
+        instances preserves the real left-to-right chain so the right-to-left
+        walk in :func:`security.resolve_client_ip` sees the proxy-appended
+        hops. See #80534.
+        """
+        values = self.headers.get_all("X-Forwarded-For") or []
+        joined = ", ".join(v.strip() for v in values if v and v.strip())
+        return joined or None
+
     def do_POST(self):  # noqa: N802
         adapter = self.adapter
         client_ip = self.client_address[0] if self.client_address else ""
 
         # Identity comes from the presented credential (or the socket in
         # localhost-only mode) — never from the request body.
-        identity = security.authenticate(self.headers.get("Authorization"), client_ip)
+        identity = security.authenticate(
+            self.headers.get("Authorization"),
+            client_ip,
+            self._forwarded_for(),
+        )
         if identity is None:
             self._json(401, protocol.jsonrpc_error(None, protocol.ERR_UNAUTHORIZED, "unauthorized"))
             return
