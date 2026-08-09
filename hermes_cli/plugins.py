@@ -306,6 +306,24 @@ class PluginManifest:
     #              in ~/.hermes/plugins/ still gated by ``plugins.enabled``
     #              (untrusted code).
     kind: str = "standalone"
+    # For ``kind: platform`` bundled plugins that are deferred at discovery
+    # time, this optional field names a submodule (e.g. ``"tools"``) inside
+    # the plugin package that exposes a ``register_tools(ctx)`` entry point
+    # for lightweight *client* tools which should be available in every
+    # process type (including plain CLI/TUI ``hermes chat`` sessions), NOT
+    # only in gateway/web-server processes where the platform adapter is
+    # eventually resolved. See ``#78050``.
+    #
+    # CONTRACT (enforced by review, not by code — there is no way to police
+    # a module's transitive imports without importing it): the named
+    # submodule and everything it imports at module scope MUST be
+    # lightweight — stdlib and intra-plugin helpers only, no per-platform
+    # SDKs, no network/DB clients, no adapter import. Violating this
+    # reintroduces exactly the startup-cost blow-up the deferred-platform
+    # mechanism exists to prevent, on EVERY ``hermes chat`` launch.
+    # ``tests/plugins/test_a2a_cli_tui_toolset.py`` asserts that a2a is
+    # currently the only opt-in, so a new opt-in fails CI and gets reviewed.
+    client_tools_module: str = ""
     # Registry key — path-derived, used by ``plugins.enabled``/``disabled``
     # lookups and by ``hermes plugins list``. For a flat plugin at
     # ``plugins/disk-cleanup/`` the key is ``disk-cleanup``; for a nested
@@ -1663,6 +1681,7 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                client_tools_module=str(data.get("client_tools_module", "") or ""),
             )
         except Exception as exc:
             logger.warning(
@@ -1754,6 +1773,18 @@ class PluginManager:
                 platform_name,
                 lookup_key,
             )
+            # #78050: platform plugins may ship lightweight *client* tools
+            # (talk-to-a-peer, not run-a-server) that need to be available in
+            # every process type, not only after the gateway/web-server resolves
+            # the platform_registry. When ``plugin.yaml`` declares
+            # ``client_tools_module``, eagerly import ONLY that submodule and
+            # call its ``register_tools(ctx)`` here. The heavy adapter module
+            # stays deferred. The declared submodule MUST be lightweight (no
+            # SDK imports at module level) — the whole point of this hook is
+            # to sidestep the ~20-platform import blow-up the deferred
+            # mechanism exists to prevent.
+            if manifest.client_tools_module:
+                self._register_deferred_platform_client_tools(manifest, loaded)
         except Exception:
             # If the registry import fails for any reason, fall back to eager
             # loading so the platform is never silently lost.
@@ -1763,6 +1794,115 @@ class PluginManager:
                 exc_info=True,
             )
             self._load_plugin(manifest)
+
+    def _register_deferred_platform_client_tools(
+        self, manifest: "PluginManifest", loaded: "LoadedPlugin"
+    ) -> None:
+        """Eagerly register a deferred platform plugin's *client* tools.
+
+        Imports ``<plugin_pkg>.<manifest.client_tools_module>`` and invokes its
+        ``register_tools(ctx)`` entry point, so the plugin's outbound / client
+        tools are visible in every process type (including plain ``hermes chat``
+        CLI/TUI sessions), NOT only after gateway/web-server startup forces
+        the platform_registry to resolve its deferred loaders. The heavy
+        adapter module remains deferred.
+
+        We mark the imported client-tools submodule with a
+        ``__hermes_client_tools_registered__`` attribute so the plugin's own
+        ``register()`` — which will run later if the deferred adapter loader
+        eventually fires — can skip re-registering the same tools and avoid
+        cross-toolset shadow warnings. See ``#78050``.
+        """
+        submodule_name = manifest.client_tools_module.strip()
+        if not submodule_name:
+            return
+        plugin_dir = Path(manifest.path) if manifest.path else None
+        if plugin_dir is None or not plugin_dir.is_dir():
+            return
+
+        submodule_file = plugin_dir / f"{submodule_name}.py"
+        if not submodule_file.exists():
+            logger.warning(
+                "Plugin '%s' declares client_tools_module=%r but %s does not exist",
+                manifest.key or manifest.name,
+                submodule_name,
+                submodule_file,
+            )
+            return
+
+        key = manifest.key or manifest.name
+        slug = key.replace("/", "__").replace("-", "_")
+        pkg_module_name = f"{_NS_PARENT}.{slug}"
+        full_module_name = f"{pkg_module_name}.{submodule_name}"
+
+        # Ensure the namespace parent package + plugin package shell exist so
+        # relative imports inside the submodule ("from . import protocol")
+        # can resolve without dragging in the plugin's ``__init__.py`` (which
+        # is what we're trying to keep deferred). This mirrors the setup in
+        # ``_load_directory_module`` but only creates a package shell — no
+        # ``__init__.py`` execution.
+        if _NS_PARENT not in sys.modules:
+            ns_pkg = types.ModuleType(_NS_PARENT)
+            ns_pkg.__path__ = []  # type: ignore[attr-defined]
+            ns_pkg.__package__ = _NS_PARENT
+            sys.modules[_NS_PARENT] = ns_pkg
+
+        if pkg_module_name not in sys.modules:
+            pkg_shell = types.ModuleType(pkg_module_name)
+            pkg_shell.__path__ = [str(plugin_dir)]  # type: ignore[attr-defined]
+            pkg_shell.__package__ = pkg_module_name
+            sys.modules[pkg_module_name] = pkg_shell
+
+        try:
+            from tools.registry import registry as _registry
+            _registry.register_plugin_override_policy(
+                pkg_module_name,
+                PluginContext(manifest, self)._tool_override_allowed(""),
+            )
+
+            spec = importlib.util.spec_from_file_location(
+                full_module_name, submodule_file
+            )
+            if spec is None or spec.loader is None:
+                raise ImportError(
+                    f"Cannot create module spec for {submodule_file}"
+                )
+            module = importlib.util.module_from_spec(spec)
+            module.__package__ = pkg_module_name
+            sys.modules[full_module_name] = module
+            spec.loader.exec_module(module)
+
+            register_tools = getattr(module, "register_tools", None)
+            if register_tools is None:
+                logger.warning(
+                    "Plugin '%s' client_tools_module=%r has no register_tools()",
+                    key, submodule_name,
+                )
+                return
+
+            ctx = PluginContext(manifest, self)
+            _tools_before = set(self._plugin_tool_names)
+            register_tools(ctx)
+
+            # Sentinel so the deferred full-load path (which will re-run the
+            # plugin's ``__init__.py`` -> ``register()`` and typically calls
+            # ``register_tools`` again) can no-op the second call.
+            setattr(module, "__hermes_client_tools_registered__", True)
+
+            new_tools = [
+                t for t in self._plugin_tool_names if t not in _tools_before
+            ]
+            loaded.tools_registered.extend(new_tools)
+            logger.debug(
+                "Eagerly registered %d client tool(s) from deferred platform "
+                "plugin '%s' via %s",
+                len(new_tools), key, submodule_name,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to eagerly register client tools for platform plugin '%s'",
+                key, exc_info=True,
+            )
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
