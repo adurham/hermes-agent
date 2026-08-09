@@ -404,6 +404,82 @@ failures (empty-DOM waitFor deadlines) when run CONCURRENTLY with the
 8-worker Python suite — always judge desktop results from a run with the
 machine otherwise idle.
 
+### Fork-only fix — 2026-08-09 (active-turn redirect: a hard stop silently destroyed an already-accepted correction)
+
+**Motivation:** user reported the CLI's "Redirected current turn" confirmation
+felt untrustworthy — sometimes a correction typed mid-turn genuinely redirected,
+sometimes Enter just hard-interrupted the whole turn instead, and separately, a
+correction that HAD been accepted as a redirect could vanish entirely if the
+user then stopped the agent (Escape, Ctrl+Q, `/stop`'s underlying `interrupt()`)
+before the conversation loop got around to draining it.
+
+**Root cause:** `redirect()` (upstream primitive, `_supports_active_turn_redirect`)
+only fires in a narrow window — the model has to be actively mid-stream (not
+running a tool, no images attached) for the CLI to take the redirect path at
+all; most of the time Enter falls back to the older hard-interrupt +
+next-turn-requeue path, which explains why "Redirected current turn" felt
+rare. That narrowness is correct-as-designed upstream behavior, not a bug —
+noted here for context, not fixed. Separately, and more seriously:
+`AIAgent.interrupt()` unconditionally executed `self._pending_redirect =
+None`. `_pending_redirect` is only consumed once per iteration by
+`_drain_pending_redirect()` at the top of the tool-calling while-loop in
+`agent/conversation_loop.py`. If a user's correction landed via `redirect()`
+(accepted, CLI already printed the "Redirected current turn" confirmation)
+but the user then hit Escape/Ctrl+Q/`/stop` before that loop iteration ran,
+`interrupt()`'s unconditional wipe silently discarded the already-confirmed
+correction — the confirmation message had lied to the user about the outcome
+in that race window.
+
+**Fix:** `AIAgent.interrupt()` in `run_agent.py` now folds any dropped
+`_pending_redirect` text into `_interrupt_message` instead of discarding it
+(`_fold_dropped_redirect()` helper, applied under the same
+`_pending_redirect_lock` that already serializes `interrupt()` vs `redirect()`
+races, and coexisting with the existing `hard_cancel`/`_admit_hard_cancel()`
+compression-fence admission path). The folded correction then rides the
+existing recovery path unmodified: `turn_finalizer.py` already surfaces
+`agent._interrupt_message` as `result["interrupt_message"]`, and `cli.py`'s
+post-turn handling already re-queues that as the next turn (the pre-existing
+`#interrupt-vacuumed-into-void` handling, originally written for a different
+race — a plain `interrupt()` message dropped by a race against normal turn
+completion). Handles both `interrupt(message)` and bare `interrupt()`
+(Escape/Ctrl+Q have no message of their own — the folded redirect text becomes
+the sole `_interrupt_message` rather than being lost because `message` was
+`None`).
+
+**Files touched:**
+- `run_agent.py` — `AIAgent.interrupt()`: added `_fold_dropped_redirect()` and
+  routed both lock/no-lock branches through it before clearing
+  `_pending_redirect`; kept alongside the existing `hard_cancel` path.
+- `tests/run_agent/test_steer.py` — `test_hard_stop_wins_concurrent_redirect`
+  had been asserting the bug (that a concurrently-landed redirect's text was
+  silently dropped); loosened to assert the guaranteed outcome of a genuine
+  race (stop always wins, message present, starts with the stop text) rather
+  than the exact string. Added
+  `test_hard_stop_folds_in_already_accepted_redirect` (deterministic sequential
+  case — the actual regression) and
+  `test_hard_stop_with_no_message_still_preserves_redirect` (Escape/Ctrl+Q,
+  `message=None`).
+
+**Verification:** `pytest tests/run_agent/test_steer.py` — 29/29 pass (27
+pre-existing + 2 new), 5 consecutive runs with no flakiness. Full
+`tests/run_agent/` sweep: 1451 passed, 14 skipped, 0 failures.
+`tests/agent/test_interrupt_compat.py` — 6/6 pass. All touched files verified
+with `python -m py_compile` and `ast.parse`.
+
+Developed in an isolated `git worktree` off a stale local `main`
+(`a124d56f4`, 4054 commits behind `origin/main`) while investigating —
+`redirect()` didn't exist there yet, so it was cherry-picked in first
+(upstream v2026.8.3, `cbf5b05c70` + `34d0de80e6`) before the actual fix was
+written. Once `origin/main` was checked directly and found to already have
+`redirect()` (and the same unfixed bug), the fix commit was re-applied as a
+standalone cherry-pick onto the real `origin/main` tip instead — this is the
+version that lands. The stale-local-main cherry-pick chain was not pushed.
+
+Applied in an isolated `git worktree`, not the working tree with a
+long-uncommitted upstream sync in progress on `sync/v2026.8.3` — that branch
+was abandoned per explicit user direction (`git merge --abort` +
+`git reset --hard HEAD`) rather than touched by this fix.
+
 ### Fork-only feature — 2026-07-31 (`hermes profile create --link`: share skills/plugins/memory between profiles via symlinks)
 
 **Motivation:** user maintains a `default` profile (Anthropic/Claude) and an
