@@ -488,6 +488,107 @@ real logs, then ported identically into this dev repo (`~/repos/hermes-agent`)
 for testing since the runtime install's venv lacks pytest/dev deps — the
 final diff is byte-identical between both checkouts.
 
+### Fork-only fix + feature — 2026-08-09 (auxiliary-client stale-token cache misses; two-tier prompt-cache TTL)
+
+**Motivation:** direct follow-up to the credential-rebuild fix above (same
+concurrent-`hermes`-processes-share-one-OAuth-file root condition). After
+confirming that fix with the user, they asked for a broader scrub of
+`agent.log`/config for other cost leaks. Two more were found and fixed in
+this same pass.
+
+**Bug 1 — auxiliary client served guaranteed-401 requests on a stale cached
+token.** `agent/auxiliary_client.py::_get_cached_client()` caches an
+`AnthropicAuxiliaryClient` (used by background compression, approval
+checks, memory extraction, title generation — everything that isn't the
+main conversation turn) keyed by `_client_cache_key()`, which does hash an
+`api_key` component into the key. But the common auxiliary-Anthropic path
+(`_try_anthropic()`) always calls with `explicit_api_key=None` — the token
+is only resolved fresh, from `resolve_anthropic_token()` reading
+`~/.claude/.credentials.json`/Keychain, *inside* `_try_anthropic()` on a
+cache MISS. So in practice that key component is a constant `""` and never
+varies when a sibling process refreshes the shared credential file — the
+staleness is invisible to the cache key. The cached client then kept using
+its stale baked-in token until a live 401 from Anthropic, at which point
+the existing reactive recovery path (`_refresh_provider_credentials()` +
+retry, logged as `"Auxiliary %s: refreshed %s credentials after auth
+error, retrying"`) force-refreshed and retried. Measured: 203 occurrences
+of that exact log line for `provider=anthropic` over ~9 hours across 5
+concurrent `hermes` sessions in the same `agent.log` sweep that caught the
+credential-rebuild bug. Unlike that bug, a 401 is rejected before any
+tokens are billed (confirmed: no `usage` block on an auth-rejected
+request, no prompt-cache interaction, no context re-send) — this cost
+latency/reliability/log-noise, not tokens/dollars.
+
+**Fix 1:** `_anthropic_cached_client_is_stale(cache_key, cached_client)` —
+a fast, network-free pre-flight check (JSON file read / macOS Keychain
+`security` CLI call, not an HTTP request) run in `_get_cached_client()`'s
+cache-hit branch, gated to `provider == "anthropic"`. Compares the cached
+client's baked-in `api_key` against the currently-resolvable token
+(`resolve_anthropic_token()`); on a mismatch, evicts+closes the stale entry
+so the caller falls through to rebuild BEFORE issuing the request, not
+after eating the 401. Throttled per cache key
+(`_ANTHROPIC_FRESHNESS_CHECK_INTERVAL_SECONDS = 10.0`,
+`_anthropic_freshness_checked_at` dict, capped at 256 entries) so hot
+auxiliary paths (compression runs every few seconds in a busy session)
+don't pay a Keychain-subprocess/file-stat cost on every single call.
+Pool-backed credentials (`_select_pool_entry("anthropic")` returns an
+entry) are explicitly skipped — they already rotate through
+`mark_exhausted_and_rotate`, and this check must defer to it rather than
+second-guess it. Any resolution failure inside the check returns
+not-stale (never blocks a legitimate cache hit) — the reactive 401 path
+remains the correctness backstop for the TOCTOU window between this check
+and the actual request.
+
+**Files touched (Bug 1):**
+- `agent/auxiliary_client.py` — new `_anthropic_cached_client_is_stale()`
+  + `_ANTHROPIC_FRESHNESS_CHECK_INTERVAL_SECONDS` /
+  `_anthropic_freshness_checked_at`; call site added in
+  `_get_cached_client()`'s cache-hit branch.
+- `tests/agent/test_auxiliary_anthropic_client_freshness.py` (new file) —
+  6 tests: stale token detected+evicted, matching token not flagged,
+  throttle prevents re-resolution within the window, pool-backed
+  credentials never flagged, resolution failure never blocks a cache hit,
+  end-to-end `_get_cached_client()` rebuild-on-stale.
+
+**Bug/feature 2 — user requested a two-tier `cache_ttl`:** subagents and
+all auxiliary tasks should stay on the cheap 5m write tier (short-lived,
+one-shot calls — 5m almost always wins there), but the main interactive
+session should be able to use the 1h tier (amortizes its 2x write cost
+across idle gaps in the 5–60 min range, which a long-lived chat session
+actually has). Previously `prompt_caching.cache_ttl` was a single global
+value applied identically to the main session AND every subagent
+(`agent/agent_init.py`'s `init_agent()` derives `agent._cache_ttl` from
+config with no `platform` awareness). Auxiliary calls
+(`agent/auxiliary_client.py`) were already isolated — they hardcode
+`cache_ttl="5m"` as a `build_anthropic_kwargs()` default and never read
+config — so only the subagent path needed gating.
+
+**Fix 2:** new optional `prompt_caching.main_session_cache_ttl` config key
+(default `null` = unset). In `agent_init.py`, when `platform != "subagent"`
+(the top-level interactive session — `AIAgent(platform="subagent")` is how
+`tools/delegate_tool.py` tags every delegated child), a set
+`main_session_cache_ttl` of `"5m"`/`"1h"` overrides the `cache_ttl` value
+used for `agent._cache_ttl`; subagents always use `cache_ttl` regardless.
+Leaving `main_session_cache_ttl` unset reproduces the historical
+single-tier behavior exactly (falls through to `cache_ttl` for everyone).
+
+**Files touched (Bug/feature 2):**
+- `hermes_cli/config_defaults.py` — `prompt_caching.main_session_cache_ttl`
+  default `None`, documented inline.
+- `agent/agent_init.py` — `init_agent()`'s cache_ttl derivation block reads
+  `main_session_cache_ttl` and applies it only when `platform != "subagent"`.
+- `tests/run_agent/test_run_agent.py` — 3 new tests: override applies to
+  main session, override ignored for `platform="subagent"`, unset override
+  falls back to `cache_ttl` (byte-identical to pre-change behavior).
+
+**Verification:** new freshness-check tests 6/6;
+`tests/agent/test_auxiliary_client.py` + 18 other auxiliary-client test
+files, 320 passed/5 skipped, 0 failed (collateral sweep). New cache_ttl
+tests 3/3; full `tests/run_agent/` suite (1459 tests) passed/14
+skipped/2 deselected, 0 failed. `tests/tools/test_delegate*.py` +
+`tests/test_delegate_cascade_49148.py` (subagent-creation collateral),
+97/97 passed. All touched files ruff-clean.
+
 ### Fork-only fix — 2026-08-09 (active-turn redirect: a hard stop silently destroyed an already-accepted correction)
 
 **Motivation:** user reported the CLI's "Redirected current turn" confirmation

@@ -7390,6 +7390,61 @@ def _compat_model(client: Any, model: Optional[str], cached_default: Optional[st
     return model or cached_default
 
 
+_ANTHROPIC_FRESHNESS_CHECK_INTERVAL_SECONDS = 10.0
+_anthropic_freshness_checked_at: Dict[tuple, float] = {}
+
+
+def _anthropic_cached_client_is_stale(cache_key: tuple, cached_client: Any) -> bool:
+    """Detect a cached Anthropic auxiliary client whose baked-in token has
+    been superseded by a fresher one on disk/Keychain.
+
+    _client_cache_key() hashes ``api_key`` into the cache key, but auxiliary
+    Anthropic calls almost always pass ``explicit_api_key=None`` (the common
+    OAuth-via-Claude-Code path — see ``_try_anthropic``), so that component
+    is a constant ``""`` and never changes when ``~/.claude/.credentials.json``
+    is refreshed by a *different* concurrent hermes process sharing the same
+    file. The cached client then keeps using its stale baked-in token until
+    it gets a live 401 (see the reactive "refreshed anthropic credentials
+    after auth error, retrying" recovery path further down this module) —
+    wasting a guaranteed-fail round-trip on every call after every refresh
+    (observed ~200+ times/day across a handful of concurrent sessions).
+
+    This is a fast, network-free pre-flight check (a JSON file read / macOS
+    Keychain ``security`` CLI call — not an HTTP request) so the stale
+    client is caught and evicted before the wasted round-trip, not after.
+    Throttled per cache key so hot auxiliary-call paths (compression,
+    approval checks, memory extraction) don't pay a Keychain-subprocess or
+    file-stat cost on every single call.
+    """
+    now = time.monotonic()
+    last_checked = _anthropic_freshness_checked_at.get(cache_key)
+    if last_checked is not None and (now - last_checked) < _ANTHROPIC_FRESHNESS_CHECK_INTERVAL_SECONDS:
+        return False
+    _anthropic_freshness_checked_at[cache_key] = now
+    if len(_anthropic_freshness_checked_at) > 256:
+        _anthropic_freshness_checked_at.pop(next(iter(_anthropic_freshness_checked_at)))
+
+    cached_token = getattr(cached_client, "api_key", None)
+    if not cached_token:
+        return False
+
+    try:
+        pool_present, entry = _select_pool_entry("anthropic")
+        if pool_present and entry is not None:
+            # Pool-backed credentials rotate through their own recovery
+            # path (mark_exhausted_and_rotate) — trust it, don't
+            # second-guess it here.
+            return False
+        from agent.anthropic_adapter import resolve_anthropic_token
+        current_token = resolve_anthropic_token()
+    except Exception:
+        # Any resolution failure here must never block a cache hit — the
+        # reactive 401 path remains the correctness backstop.
+        return False
+
+    return bool(current_token) and current_token != cached_token
+
+
 def _get_cached_client(
     provider: str,
     model: str = None,
@@ -7443,7 +7498,16 @@ def _get_cached_client(
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
-            if async_mode:
+            # Anthropic OAuth-via-Claude-Code auxiliary clients bake a token
+            # into the client at build time, but the cache key doesn't vary
+            # with that token on the common (explicit_api_key=None) path —
+            # see _anthropic_cached_client_is_stale's docstring. Catch a
+            # token rotated by a sibling process BEFORE issuing a
+            # guaranteed-401 request on it, not after.
+            if provider == "anthropic" and _anthropic_cached_client_is_stale(cache_key, cached_client):
+                _close_cached_client(cached_client)
+                del _client_cache[cache_key]
+            elif async_mode:
                 # Validate: the cached client must be bound to the CURRENT,
                 # OPEN loop.  If the loop changed or was closed, the httpx
                 # transport inside is dead — force-close and replace.

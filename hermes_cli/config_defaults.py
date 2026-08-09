@@ -770,8 +770,18 @@ DEFAULT_CONFIG = {
     # cache_ttl: "5m" or "1h" (Anthropic-supported tiers). Other non-falsy
     # values are silently ignored. Falsy values (false, null, "off",
     # "disabled", "no", "none") disable prompt caching entirely.
+    # main_session_cache_ttl: optional override applied ONLY to the top-level
+    #   interactive session (agent.platform != "subagent" — i.e. not a
+    #   delegated child, not a background compression/approval/vision
+    #   auxiliary call). Leave null/empty to use cache_ttl everywhere
+    #   (the historical single-tier behavior). Subagents and all auxiliary
+    #   tasks always use cache_ttl regardless of this setting — their calls
+    #   are short-lived and one-shot, so the cheaper 5m write tier almost
+    #   always wins there. A long-lived interactive chat with idle gaps in
+    #   the 5-60 minute range amortizes the 1h tier's 2x write cost instead.
     "prompt_caching": {
         "cache_ttl": "5m",
+        "main_session_cache_ttl": None,
     },
 
     # OpenRouter-specific settings.
