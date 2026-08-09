@@ -254,6 +254,170 @@ def test_active_agent_route_signature_matches_resolved_turn_signature(monkeypatc
 
 
 
+def test_credential_only_refresh_updates_agent_in_place_without_reinit(monkeypatch):
+    """Regression: a bare OAuth token refresh (api_key changes, routing and
+    model unchanged) previously forced self.agent = None unconditionally in
+    _ensure_runtime_credentials, discarding the whole AIAgent and printing
+    "Initializing agent..." even though nothing about routing/model actually
+    changed. This is the common case with Claude Code's shared
+    ~/.claude/.credentials.json: one concurrent `hermes` process refreshing
+    the token invalidates every other open session's cached copy, so their
+    next _ensure_runtime_credentials() call sees a "changed" api_key purely
+    from that churn.
+
+    Asserts the fix: a credentials-only change calls the live agent's
+    apply_runtime_credential_update() instead of discarding it, and the SAME
+    agent object survives the refresh.
+    """
+    api_key_holder = {"value": "token-v1"}
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "anthropic",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.anthropic.com",
+            "api_key": api_key_holder["value"],
+            "source": "env/config",
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            self._cli_ref = None
+            self.swap_calls = []
+
+        def _ensure_db_session(self):
+            pass
+
+        _session_db_created = False
+
+        def apply_runtime_credential_update(self, *, api_key, base_url, credential_pool=None):
+            self.swap_calls.append((api_key, base_url))
+            self.api_key = api_key
+            self.base_url = base_url
+            return True
+
+    cli = _import_cli()
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(model="claude-sonnet-5", compact=True, max_turns=1)
+    assert shell._init_agent() is True
+    original_agent = shell.agent
+    assert original_agent is not None
+
+    # Simulate a same-provider OAuth token refresh (routing/model unchanged,
+    # only the resolved api_key rotated) landing before the next turn.
+    api_key_holder["value"] = "token-v2-refreshed"
+    assert shell._ensure_runtime_credentials() is True
+
+    assert shell.agent is original_agent, (
+        "a bare credential refresh discarded and rebuilt the whole agent "
+        "instead of updating auth in place -- this is the "
+        "\"Initializing agent...\" on every token refresh regression"
+    )
+    assert original_agent.swap_calls == [("token-v2-refreshed", "https://api.anthropic.com")]
+    assert shell.api_key == "token-v2-refreshed"
+
+
+def test_credential_refresh_falls_back_to_full_rebuild_when_swap_fails(monkeypatch):
+    """If apply_runtime_credential_update() fails (or the agent predates the
+    method, e.g. a stub in an older test/plugin), the caller must fall back
+    to the safe, proven full rebuild rather than silently running with stale
+    auth on the old client.
+    """
+    api_key_holder = {"value": "token-v1"}
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "anthropic",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.anthropic.com",
+            "api_key": api_key_holder["value"],
+            "source": "env/config",
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            self._cli_ref = None
+
+        def _ensure_db_session(self):
+            pass
+
+        _session_db_created = False
+
+        def apply_runtime_credential_update(self, *, api_key, base_url, credential_pool=None):
+            return False  # simulate an in-place swap failure
+
+    cli = _import_cli()
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(model="claude-sonnet-5", compact=True, max_turns=1)
+    assert shell._init_agent() is True
+    original_agent = shell.agent
+
+    api_key_holder["value"] = "token-v2-refreshed"
+    assert shell._ensure_runtime_credentials() is True
+
+    assert shell.agent is None, (
+        "a failed in-place credential swap must fall back to a full "
+        "rebuild (self.agent = None), not silently keep running on stale auth"
+    )
+    assert shell.agent is not original_agent
+
+
+def test_routing_change_still_forces_full_rebuild(monkeypatch):
+    """A genuine routing change (provider switch) must still force a full
+    agent rebuild -- the in-place credential-swap fast path is scoped ONLY
+    to a bare credentials-only refresh, not a real provider/model switch.
+    """
+    provider_holder = {"value": "anthropic"}
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": provider_holder["value"],
+            "api_mode": "chat_completions",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "same-key",
+            "source": "env/config",
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            self._cli_ref = None
+
+        def _ensure_db_session(self):
+            pass
+
+        _session_db_created = False
+
+        def apply_runtime_credential_update(self, *, api_key, base_url, credential_pool=None):
+            raise AssertionError(
+                "apply_runtime_credential_update must not be called for a "
+                "real routing change -- only for a bare credentials-only refresh"
+            )
+
+    cli = _import_cli()
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(model="claude-sonnet-5", compact=True, max_turns=1)
+    assert shell._init_agent() is True
+    original_agent = shell.agent
+
+    provider_holder["value"] = "openrouter"
+    assert shell._ensure_runtime_credentials() is True
+
+    assert shell.agent is None, "a real provider switch must force a full rebuild"
+    assert shell.agent is not original_agent
+
+
 def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeypatch):
     import yaml
 

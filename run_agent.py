@@ -5890,6 +5890,101 @@ class AIAgent(ForkForwardersMixin):
         )
         self._replace_primary_openai_client(reason="credential_rotation")
 
+    def apply_runtime_credential_update(
+        self, *, api_key: Any, base_url: str, credential_pool: Any = None
+    ) -> bool:
+        """Update auth on the live agent in place, without a full rebuild.
+
+        For same-provider/same-routing/same-model turns where only the
+        resolved ``api_key``/``base_url`` changed (the common case: an OAuth
+        token refresh mid-session — Claude Code's ``~/.claude/.credentials.json``
+        is shared across every concurrent ``hermes`` process, so one process
+        refreshing invalidates another's cached token and its next call gets a
+        real 401), the caller previously discarded the whole ``AIAgent`` and
+        rebuilt from scratch (see ``HermesCLI._ensure_runtime_credentials``).
+        That loses in-memory turn state (checkpoints, cached tool schemas,
+        credential-pool refresh counters) and prints a disruptive
+        "Initializing agent..." on every refresh for no reason — routing and
+        model are unchanged, only the token rotated.
+
+        Reuses the same in-place client-rebuild machinery ``_swap_credential``
+        already uses for a pool-driven mid-turn 401 recovery, just entered
+        from a raw ``(api_key, base_url)`` pair instead of a pool ``entry``
+        object (this path fires before a turn even starts, so there is no
+        failing pool entry to hand in). Returns True on success; the caller
+        should fall back to a full rebuild (``self.agent = None``) if this
+        returns False, since an in-place client swap can fail for a reason a
+        fresh client wouldn't (a bad TLS override, an SDK edge case).
+        """
+        if not isinstance(api_key, str) and not (callable(api_key) and not isinstance(api_key, str)):
+            return False
+        if not isinstance(base_url, str) or not base_url:
+            return False
+        if credential_pool is not None:
+            self._credential_pool = credential_pool
+        try:
+            from hermes_cli.route_identity import normalize_route_base_url
+
+            route_changed = normalize_route_base_url(
+                self.base_url
+            ) != normalize_route_base_url(base_url)
+
+            if self.api_mode == "anthropic_messages":
+                from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+
+                try:
+                    self._anthropic_client.close()
+                except Exception:
+                    pass
+
+                self._anthropic_api_key = api_key
+                self._anthropic_base_url = base_url.rstrip("/") if isinstance(base_url, str) else base_url
+                self._anthropic_client = build_anthropic_client(
+                    api_key, self._anthropic_base_url,
+                    timeout=get_provider_request_timeout(self.provider, self.model),
+                    drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+                )
+                self._is_anthropic_oauth = _is_oauth_token(api_key) if self.provider == "anthropic" else False
+                self.api_key = api_key
+                self.base_url = self._anthropic_base_url
+                return True
+
+            self.api_key = api_key
+            self.base_url = base_url.rstrip("/") if isinstance(base_url, str) else base_url
+            self._client_kwargs["api_key"] = self.api_key
+            self._client_kwargs["base_url"] = self.base_url
+            self._client_kwargs.pop("ssl_verify", None)
+            self._client_kwargs.pop("ssl_ca_cert", None)
+            try:
+                from hermes_cli.config import (
+                    apply_custom_provider_tls_to_client_kwargs,
+                    get_compatible_custom_providers,
+                    load_config_readonly,
+                )
+
+                apply_custom_provider_tls_to_client_kwargs(
+                    self._client_kwargs,
+                    str(self.base_url or ""),
+                    get_compatible_custom_providers(load_config_readonly()),
+                )
+            except Exception:
+                logger.debug(
+                    "custom-provider TLS resolution skipped on runtime credential update",
+                    exc_info=True,
+                )
+            self._apply_client_headers_for_base_url(
+                self.base_url,
+                apply_user_headers=not route_changed,
+            )
+            return self._replace_primary_openai_client(reason="runtime_credential_update")
+        except Exception:
+            logger.debug(
+                "In-place runtime credential update failed; caller should fall back "
+                "to a full agent rebuild",
+                exc_info=True,
+            )
+            return False
+
     def _recover_with_credential_pool(
         self,
         *,
