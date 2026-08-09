@@ -6029,13 +6029,37 @@ quick rename, before it's upstream-shaped.
   gap for users without a paid extract-capable provider key. Standalone
   candidate once verified it doesn't import/depend on fork-only routing.
 * **Hot-tier memory audit** (stale-path detection + optional LLM
-  classification, 2026-07-14, three entries) — generalizable in principle,
-  but this is the same memory subsystem the background-review race item
-  above may depend on; verify upstream's memory architecture is similar
-  enough for this to be a portable feature, not a fork-only rewrite.
-* **Delegate auto-route to model tier + persona** (2026-07-07) — useful
-  default-routing behavior, but verify it doesn't hardcode or default toward
-  the fork's exo/Anthropic two-provider routing preference before filing.
+  classification, 2026-07-14, three entries) — **CHECKED 2026-08-08, NOT
+  FILED — real design mismatch, not just verification.** Confirmed the
+  underlying infra (`agent.curator._resolve_review_runtime`,
+  `maybe_run_curator`, aux-model binding) IS genuinely shared upstream,
+  unchanged. But open upstream issue #78307 ("Add lifecycle management
+  and maintenance UX for built-in memory", active discussion as recently
+  as 2026-08-06) asks for a much broader surface than this fork's 727-line
+  implementation provides: a user-invoked `hermes memory audit`/
+  `consolidate` CLI command with staged reviewable batches and protected
+  entry classes, vs. the fork's version which runs silently inside the
+  existing background curator pass with no protected-entry exemption. A
+  second-opinion consult flagged the real risk: filing as-is could get
+  vetoed on architecture alone (CLI-first vs. background-pass placement is
+  the core design question #78307 is asking maintainers to resolve) and
+  waste a large review cycle. Recommended path: comment on #78307 first
+  describing what exists and asking about placement/restructuring, before
+  filing any PR — not yet done, needs the user's go-ahead since it's a
+  public comment under their identity.
+* **Delegate auto-route to model tier + persona** (2026-07-07) —
+  **CHECKED 2026-08-08, DO NOT FILE — deeper than a config-default check,
+  genuinely fork-only infrastructure.** Verified `tools/delegation_router.py`
+  depends on two things with zero upstream equivalent: (1)
+  `delegation.model_by_role` (upstream's `tools/delegate_tool.py` has no
+  such config key or role→model mapping at all — grepped clean), and (2)
+  `hermes_cli/personas.py`'s `discover_personas()` for the persona-
+  classification half — already on this file's own hard-fork table with
+  no upstream equivalent. Porting either the tier-only half (needs
+  `model_by_role` invented upstream first) or the persona half (needs the
+  whole persona subsystem ported) is real de-forking work, not the "check
+  no exo-specific default sneaks through" originally scoped here. Revisit
+  only if upstream ever ships an equivalent role→model routing config.
 
 ### Bucket C — personal/fork-only, do not upstream
 
