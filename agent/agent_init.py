@@ -892,6 +892,16 @@ def init_agent(
     # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
     # sessions with >5-minute pauses between turns (#14971).
     #
+    # prompt_caching.main_session_cache_ttl (optional) overrides cache_ttl
+    # for the top-level interactive session ONLY — subagents
+    # (platform == "subagent") and every auxiliary/side-task call
+    # (agent/auxiliary_client.py, which hardcodes "5m" independently of this
+    # config and never reads it) always stay on cache_ttl. Those calls are
+    # short-lived, one-shot utility completions (compression summaries,
+    # title gen, delegated subagent turns) where the cheaper 5m write tier
+    # almost always wins; only a long-lived interactive chat with idle gaps
+    # in the 5-60 minute range amortizes the 1h tier's higher write cost.
+    #
     # Setting cache_ttl to a falsy value (false / null / "off" / "disabled" /
     # "no" / "none") disables prompt caching entirely. This is useful for
     # OAuth subscription users where cache writes bill against "extra usage"
@@ -907,6 +917,14 @@ def init_agent(
 
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
+        # Main-session-only override: only consulted for the top-level
+        # session, never for delegated subagents or auxiliary calls (see
+        # comment above). Falls back to cache_ttl when unset/empty, which
+        # reproduces the historical single-tier behavior exactly.
+        if platform != "subagent":
+            _main_ttl = _pc_cfg.get("main_session_cache_ttl")
+            if _main_ttl in {"5m", "1h"}:
+                _ttl = _main_ttl
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
         elif cache_ttl_means_disabled(_ttl):
