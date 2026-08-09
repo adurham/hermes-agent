@@ -6030,8 +6030,8 @@ quick rename, before it's upstream-shaped.
   candidate once verified it doesn't import/depend on fork-only routing.
 * **Hot-tier memory audit** (stale-path detection + optional LLM
   classification, 2026-07-14, three entries) — **CHECKED 2026-08-08, NOT
-  FILED — real design mismatch, not just verification.** Confirmed the
-  underlying infra (`agent.curator._resolve_review_runtime`,
+  YET FILED — commented on #78307 first, per second-opinion advice.**
+  Confirmed the underlying infra (`agent.curator._resolve_review_runtime`,
   `maybe_run_curator`, aux-model binding) IS genuinely shared upstream,
   unchanged. But open upstream issue #78307 ("Add lifecycle management
   and maintenance UX for built-in memory", active discussion as recently
@@ -6043,10 +6043,12 @@ quick rename, before it's upstream-shaped.
   second-opinion consult flagged the real risk: filing as-is could get
   vetoed on architecture alone (CLI-first vs. background-pass placement is
   the core design question #78307 is asking maintainers to resolve) and
-  waste a large review cycle. Recommended path: comment on #78307 first
-  describing what exists and asking about placement/restructuring, before
-  filing any PR — not yet done, needs the user's go-ahead since it's a
-  public comment under their identity.
+  waste a large review cycle. **Posted a comment on #78307 2026-08-08**
+  (https://github.com/NousResearch/hermes-agent/issues/78307#issuecomment-5228941765)
+  describing what exists, explicitly framing it as a strict subset, and
+  asking whether maintainers want it as-is (background-pass placement) or
+  restructured as a standalone CLI command — the classification core ports
+  over either way. Waiting on a maintainer steer before writing any PR.
 * **Delegate auto-route to model tier + persona** (2026-07-07) —
   **CHECKED 2026-08-08, DO NOT FILE — deeper than a config-default check,
   genuinely fork-only infrastructure.** Verified `tools/delegation_router.py`
