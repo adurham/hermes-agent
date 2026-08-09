@@ -1324,6 +1324,12 @@ DEFAULT_CONFIG = {
             # scale); set a positive int only to pin the half-block/kitty width
             # independently of scale.
             "unicode_cols": 0,
+            # Desktop-only pet voice (opt-in, like voice.auto_tts): speaks the
+            # pet's status-bubble line via the existing TTS pipeline once per
+            # mood transition. voice_provider selects a tts.providers.<name>
+            # entry (e.g. "miku"); empty string falls back to tts.provider.
+            "voice_enabled": False,
+            "voice_provider": "",
         },
     },
 
