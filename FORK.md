@@ -9309,3 +9309,55 @@ every touched file.
 **Merge note:** pure fork-local UI dedup fix, no upstream file identity
 concerns; trivial to re-apply on the next upstream merge if these files
 conflict.
+
+### Fork-only fix — 2026-08-08 (CLI: agent force-reinitialized on every turn, not just on real config changes)
+
+**Symptom:** user-reported — every follow-up message in the same CLI
+session showed `Initializing agent...` plus a fresh `preparing
+mcp__tool_call…` sequence before settling back into the conversation, a
+few seconds of visible "context loss" on every single turn even with zero
+`/model`/`/reasoning`/provider change. Confirmed via 3 screenshots: 79.8K
+context on the first turn's response, `Initializing agent...` shown on the
+very next follow-up, tool-prep churn, then the response resumes normally.
+
+**Root cause:** `cli.py` carries its own deliberate override of
+`_init_agent()` (added locally for `interleaved_thinking` support and the
+swarm-board `_cli_ref` back-reference — this override's existence is a
+known, accepted divergence from the shared mixin). Its
+`self._active_agent_route_signature` assignment built a **6-field**
+tuple — missing `requested_provider` — while the shared, unmodified
+`_resolve_turn_agent_config()` (in `hermes_cli/cli_agent_setup_mixin.py`,
+called on every turn to decide whether a re-init is needed) builds a
+**7-field** tuple including `requested_provider`. Tuples of different
+length never compare equal in Python, so
+`turn_route["signature"] != self._active_agent_route_signature` was True
+on literally every turn regardless of actual config state, forcing
+`self.agent = None` and a full re-init before every message. Confirmed
+by diffing against `upstream/main`: the mixin's own `_init_agent()` (the
+version cli.py's override shadows) has the correct 7-field signature,
+identical to `_resolve_turn_agent_config()` — this was a fork-only
+regression from the override drifting out of sync when
+`requested_provider` was added to the shared signature-building logic
+elsewhere, not an upstream bug.
+
+**Fix:** one-line addition of `runtime.get("requested_provider")` to
+cli.py's `_active_agent_route_signature` tuple, matching the mixin and
+`_resolve_turn_agent_config()` exactly.
+
+**Verification:** added
+`test_active_agent_route_signature_matches_resolved_turn_signature` to
+`tests/cli/test_cli_provider_resolution.py` — builds a `HermesCLI`,
+initializes the agent, then asserts a second turn's resolved signature
+equals the stored route signature with zero config change. Confirmed via
+`git stash` that the test fails against pre-fix code (7-field vs 6-field
+tuple mismatch shown in the assertion diff) and passes with the fix.
+`ruff` clean; 13/13 in the touched test file; 48/49 in a broader
+collateral sweep across CLI provider-resolution and credential-pool
+tests (1 pre-existing unrelated failure, independently confirmed via
+`git stash` on cli.py alone to fail identically before this change).
+
+**Files:** `cli.py`, `tests/cli/test_cli_provider_resolution.py`.
+
+**Merge note:** pure fork-local regression fix — the bug only exists
+because of the fork's own `_init_agent()` override, so this stays local
+and is not an upstream PR candidate.
