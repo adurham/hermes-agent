@@ -515,39 +515,6 @@ TOOL_CATEGORIES = {
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
             },
-            {
-                "name": "SearXNG",
-                "badge": "free · self-hosted · search only",
-                "tag": "Privacy-respecting metasearch engine — search only (pair with any extract provider)",
-                "web_backend": "searxng",
-                "env_vars": [
-                    {"key": "SEARXNG_URL", "prompt": "Your SearXNG instance URL (e.g., http://localhost:8080)", "url": "https://searxng.github.io/searxng/"},
-                ],
-            },
-            {
-                "name": "Brave Search (Free Tier)",
-                "badge": "free tier · search only",
-                "tag": "2,000 queries/mo free — search only (pair with any extract provider)",
-                "web_backend": "brave-free",
-                "env_vars": [
-                    {"key": "BRAVE_SEARCH_API_KEY", "prompt": "Brave Search subscription token", "url": "https://brave.com/search/api/"},
-                ],
-            },
-            {
-                "name": "DuckDuckGo (ddgs)",
-                "badge": "free · no key · search only",
-                "tag": "Search via the ddgs Python package — no API key (pair with any extract provider)",
-                "web_backend": "ddgs",
-                "env_vars": [],
-                "post_setup": "ddgs",
-            },
-            {
-                "name": "Claude Code",
-                "badge": "free · uses Anthropic subscription",
-                "tag": "Delegates to the Claude Code CLI's built-in WebSearch/WebFetch — no extra API keys",
-                "web_backend": "claude-code",
-                "env_vars": [],
-            },
         ],
     },
     "image_gen": {
