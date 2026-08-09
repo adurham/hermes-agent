@@ -686,6 +686,53 @@ methodology + a reusable TTFT-test procedure for next time this class of
 "provider X looks wasteful" question comes up for ANY provider, not just
 ollama-cloud).
 
+### Fork-only fix — 2026-08-09 (status bar Δ+ context-growth segment gated behind an arbitrary 2K floor, hid on most turns)
+
+**Motivation:** user compared two side-by-side CLI screenshots and asked why
+one session's status bar showed the `Δ+77.1K new` per-turn context-growth
+segment while another, otherwise-identical session didn't show it at all.
+Traced the mechanism: `_get_status_bar_snapshot()` only populated
+`context_delta_cause` (and therefore `_format_context_delta()` only ever
+rendered a label) when that turn's growth was `>= 2000` tokens — anything
+below that threshold computed `context_delta` internally but the formatter
+silently dropped it, so most ordinary turns never showed the segment at all.
+User's ask: it should behave like the other always-on status bar pieces
+(session token counters, `spinner_token_flow`'s live `↓ Nk tok` counter,
+which came from upstream) — always present, not gated behind an arbitrary
+"meaningful growth" floor.
+
+**Fix:** dropped the `delta >= 2000` gate in both the cause-classification
+block (`_get_status_bar_snapshot()`) and the render gate
+(`_format_context_delta()`). The only remaining gate is `delta <= 0`, since
+a flat or shrinking turn (e.g. right after a context compression) has no
+"new content vs cache refresh" cause to attribute — that's a correctness
+gate, not a clutter-avoidance one, and stays. Any positive per-turn growth,
+however small, now gets classified (`new` vs `cache`) and rendered
+(`Δ+900 new`, `Δ+3 cache`, etc.) exactly the same way a 77K jump would be.
+
+**Files touched:**
+- `cli.py` — `_get_status_bar_snapshot()`: `if delta >= 2000:` → `if delta > 0:`.
+  `_format_context_delta()`: `if delta is None or delta < 2000:` →
+  `if delta is None or delta <= 0:`. Both docstrings updated to describe the
+  new always-on behavior instead of the old floor.
+- `tests/cli/test_cli_status_bar.py` — replaced
+  `test_small_growth_omits_segment` (asserted the old floor behavior, would
+  now fail) with `test_small_growth_still_shows_segment` (asserts a 900-token
+  growth now DOES render a label) and a new
+  `test_zero_or_negative_delta_omits_segment` (asserts the segment is still
+  correctly omitted for a flat/zero-delta turn, confirming the remaining
+  gate is delta<=0 only, not a disguised floor).
+
+**Verification:** `TestContextDeltaSegment` 7/7 passed (was 6, +1 net new
+test after replacing one). `tests/cli/test_cli_status_bar.py` +
+`tests/gateway/test_slack.py` (collateral — slack adapter references the
+same snapshot keys), 185/185 passed. Full `tests/cli/` suite: 988
+passed/32 skipped, same 2 pre-existing failures confirmed present
+identically on unmodified `main` via `git stash` (test-order-pollution
+issues in `test_cli_approval_ui.py` / `test_resume_quiet_stderr.py`,
+unrelated to this change — both pass individually and in isolation).
+ruff-clean.
+
 ### Fork-only fix — 2026-08-09 (active-turn redirect: a hard stop silently destroyed an already-accepted correction)
 
 **Motivation:** user reported the CLI's "Redirected current turn" confirmation

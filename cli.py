@@ -5802,7 +5802,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if base is not None and base > 0 and context_tokens:
                 delta = context_tokens - base
                 snapshot["context_delta"] = delta
-                if delta >= 2000:
+                # Classify cause for any positive growth, however small — the
+                # segment is always shown alongside the other always-on status
+                # bar pieces (session tokens, spinner_token_flow's live
+                # ``↓ Nk tok`` counter), not gated behind an arbitrary
+                # "meaningful" floor. Was previously gated to delta>=2000 to
+                # avoid clutter on small turns; user explicitly asked for
+                # parity with the always-visible token counters instead.
+                if delta > 0:
                     cw = snapshot.get("context_cache_write_tokens", 0) or 0
                     inp = snapshot.get("context_input_tokens", 0) or 0
                     # Cause = the dominant contributor to the *current* prompt:
@@ -5826,14 +5833,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _format_context_delta(snapshot: dict) -> Optional[str]:
         """Format the per-turn context delta segment, or None to omit it.
 
-        Only shown for meaningful growth (>=2K), so a steady stream of small
-        turns doesn't clutter the bar. The cause tag tells the two mechanisms
-        apart at a glance:
+        Shown for ANY positive per-turn growth — parity with the other
+        always-on status bar pieces (session token counters,
+        spinner_token_flow's live ``↓ Nk tok``), not gated behind an
+        arbitrary "meaningful" floor. A shrink or flat turn (delta<=0, e.g.
+        right after compression) omits the segment since there's nothing to
+        attribute a cause to. The cause tag tells the two mechanisms apart
+        at a glance:
           ``Δ+23K new``   — fat tool result / genuinely new content this turn
           ``Δ+89K cache`` — prompt cache expired during idle; prefix re-charged
         """
         delta = snapshot.get("context_delta")
-        if delta is None or delta < 2000:
+        if delta is None or delta <= 0:
             return None
         cause = snapshot.get("context_delta_cause")
         amount = format_token_count_compact(delta)
