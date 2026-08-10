@@ -124,7 +124,7 @@ LOAD_TOOLS_SCHEMA: Dict[str, Any] = {
     "description": (
         "Load full schemas for one or more MCP tools that are currently shown "
         "as name-only stubs. This is Hermes' client-side lazy-loading mechanism: "
-        "MCP-prefixed tools (slack_*, salesforce_*, tanium_gateway_*, notion_*, etc.) "
+        "MCP-prefixed tools (slack_*, salesforce_*, jira_*, notion_*, etc.) "
         "default to stub schemas to keep the prompt small. Before calling such a "
         "tool, call this with the names you need — the full schemas become "
         "available on your next turn.\n\n"

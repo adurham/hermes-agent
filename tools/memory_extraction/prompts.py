@@ -4,8 +4,8 @@ Prompt design philosophy:
   - Output is STRICT JSON. Parse failures are non-fatal — we drop the
     proposal silently rather than confusing the user.
   - Each prompt has a tight system message that primes the model on
-    what counts as "memorable" for THIS user (Tanium support engineer,
-    project context, single-user setup).
+    what counts as "memorable" for THIS user (a support/technical
+    engineer, project context, single-user setup).
   - Few-shot examples are minimal — Sonnet/Haiku follow JSON schema
     instructions reliably without heavy priming.
   - Categories are free-form but suggested values are listed to keep
@@ -17,6 +17,14 @@ Prompt design philosophy:
 Inspired by mem0's prompt structure (system role + JSON output schema
 + minimal examples) but rewritten for our single-user / support-domain
 context — we own this code.
+
+The domain primer below is intentionally employer-agnostic (fork ships
+generically; see AGENTS.md's vendor-identifying-strings policy) — it
+describes the SHAPE of the user's work (support-case tooling, this
+agent's own fork, internal scripts/MCPs) without naming a specific
+company. If you want prompts tuned to your actual employer's product
+names/module names, override ``auxiliary.memory_extraction.*`` in
+config.yaml or fork this module locally.
 """
 
 from __future__ import annotations
@@ -27,14 +35,14 @@ from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
-# Domain hints — tuned for Adam (TSE/PrEE) but generic enough for any user
+# Domain hints — generic support/technical-engineer framing, tunable per user
 # ---------------------------------------------------------------------------
 
 DOMAIN_PRIMER = """\
 You are extracting durable memory entries for an AI assistant that helps a
-support engineer at a tech company. The user is working on:
+support/technical engineer at a tech company. The user is working on:
 
-- Tanium support cases (Salesforce, modules like TDS / Reporting / Connect / Comply)
+- Customer support cases (a case-tracking system, product-specific modules)
 - Hermes Agent — a long-running CLI / chat agent (their personal fork)
 - Various MCPs, scripts, internal tooling
 
@@ -44,7 +52,8 @@ What COUNTS as memorable:
 - Project conventions ("for X, route through Y; never via Z")
 - User preferences and corrections — STRONG signal: anything the user said
   to fix the assistant's behavior is HIGH priority
-- Architecture facts about Tanium internals, Hermes internals, etc.
+- Architecture facts about the employer's internal systems, Hermes
+  internals, etc.
 - "Solved problem" patterns the user might hit again
 
 What DOES NOT count:
@@ -62,10 +71,10 @@ answer.
 
 # Suggested category values. Free-form is allowed but consistency helps recall.
 SUGGESTED_CATEGORIES = [
-    "tanium",       # TDS, Reporting, Connect, Comply, etc.
+    "support",      # customer support case workflow, product modules
     "hermes",       # Hermes Agent internals, fork drift, plugins
     "mcp",          # MCP servers, debugging, auth
-    "salesforce",   # SF case workflow, time logging, Jira refs
+    "salesforce",   # SF case workflow, time logging, ticket refs
     "preferences",  # user preferences / corrections
     "tooling",      # CLI tools, scripts, shell quirks
     "review",       # PR review patterns, git workflows
@@ -84,7 +93,7 @@ Output ONLY a JSON object with this exact shape:
   "entries": [
     {
       "content": "<the fact, stated declaratively, as a self-contained sentence>",
-      "category": "<one of: tanium, hermes, mcp, salesforce, preferences, tooling, review, general>",
+      "category": "<one of: support, hermes, mcp, salesforce, preferences, tooling, review, general>",
       "tags": "<comma-separated keywords, can be empty>",
       "rationale": "<1-line explanation of why this is memorable>"
     }
@@ -227,7 +236,7 @@ Definitions:
   paths, version info, edge cases). Provide ``merged_content`` that
   preserves all detail from both.
 - CONTRADICTION: the new entry directly conflicts with an existing one
-  (e.g. "TDS uses Badger" vs "TDS uses cdsdb column files"). The user
+  (e.g. "the API uses OAuth2" vs "the API uses API keys"). The user
   needs to resolve.
 - NEW: the new entry is genuinely new — no existing entry overlaps.
 

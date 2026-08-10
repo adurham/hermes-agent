@@ -76,7 +76,7 @@ class TestParseExtractionResponse:
     def test_code_fence_passes(self):
         text = (
             "```json\n"
-            '{"entries": [{"content": "fact in fences", "category": "tanium"}]}\n'
+            '{"entries": [{"content": "fact in fences", "category": "support"}]}\n'
             "```"
         )
         result = mex_prompts.parse_extraction_response(text)
@@ -191,17 +191,17 @@ class TestConflictClassify:
         assert verdict.verdict == "NEW"
 
     def test_with_match_calls_llm(self, warm, monkeypatch):
-        warm.add("Tanium TDS uses cdsdb column files for sensor data")
+        warm.add("The internal API uses column-file storage for sensor data")
         # Mock the LLM to return REFINEMENT
         def fake_llm(*, system, user, max_tokens):
             return json.dumps({
                 "verdict": "REFINEMENT",
                 "matched_id": 1,
                 "rationale": "adds detail",
-                "merged_content": "Tanium TDS uses cdsdb column files (directio) for sensor data",
+                "merged_content": "The internal API uses column-file storage (directio) for sensor data",
             })
         verdict = mex_conflict.classify(
-            "TDS sensor data persists in cdsdb files",
+            "Sensor data persists in column-file storage",
             llm_caller=fake_llm,
         )
         assert verdict.verdict == "REFINEMENT"
@@ -209,11 +209,11 @@ class TestConflictClassify:
         assert "directio" in verdict.merged_content
 
     def test_llm_failure_falls_back_to_new(self, warm, monkeypatch):
-        warm.add("Tanium TDS uses cdsdb")
+        warm.add("The internal API uses column-file storage")
         def fake_llm(**_):
             raise RuntimeError("LLM exploded")
         verdict = mex_conflict.classify(
-            "Tanium TDS uses cdsdb files",
+            "The internal API uses column-file storage",
             llm_caller=fake_llm,
         )
         assert verdict.verdict == "NEW"
@@ -261,12 +261,12 @@ class TestApplyVerdict:
 
     def test_contradiction_pending_when_not_auto(self, warm):
         from tools.memory_extraction.conflict import ConflictVerdict
-        existing = warm.add("Badger is the storage")
+        existing = warm.add("an in-memory KV store is the storage")
         fid = existing["fact_id"]
         verdict = ConflictVerdict(
             verdict="CONTRADICTION",
             matched_id=fid,
-            matched_content="Badger is the storage",
+            matched_content="an in-memory KV store is the storage",
         )
         outcome = mex_conflict.apply_verdict(
             verdict, {"content": "cdsdb is the storage"},
@@ -274,16 +274,16 @@ class TestApplyVerdict:
         )
         assert outcome["action"] == "contradiction_pending"
         # Existing fact must NOT have been modified
-        assert warm.get(fid)["content"] == "Badger is the storage"
+        assert warm.get(fid)["content"] == "an in-memory KV store is the storage"
 
     def test_contradiction_supersedes_when_auto(self, warm):
         from tools.memory_extraction.conflict import ConflictVerdict
-        existing = warm.add("Badger is the storage")
+        existing = warm.add("an in-memory KV store is the storage")
         fid = existing["fact_id"]
         verdict = ConflictVerdict(
             verdict="CONTRADICTION",
             matched_id=fid,
-            matched_content="Badger is the storage",
+            matched_content="an in-memory KV store is the storage",
         )
         outcome = mex_conflict.apply_verdict(
             verdict, {"content": "cdsdb is the storage"},
@@ -352,14 +352,14 @@ class TestOnPreCompress:
     def test_writes_to_buffer(self, warm, auto_extract_on, monkeypatch):
         def fake_llm(*, system, user, max_tokens, timeout=None):
             return json.dumps({"entries": [
-                {"content": "fact extracted from compression slice", "category": "tanium"}
+                {"content": "fact extracted from compression slice", "category": "support"}
             ]})
         monkeypatch.setattr(mex_extractor, "_call_extraction_llm", fake_llm)
         mex_extractor.on_pre_compress(
             "sid-pre",
             [
-                {"role": "user", "content": "long message about TDS"},
-                {"role": "assistant", "content": "reply about TDS internals"},
+                {"role": "user", "content": "long message about the internal API"},
+                {"role": "assistant", "content": "reply about internal API details"},
             ],
         )
         entries = mex_buffer.get_session_entries("sid-pre")
@@ -481,7 +481,7 @@ class TestOnSessionEnd:
 
         # Pre-populate warm with an existing fact we'll claim is the dup target
         existing = warm.add(
-            content="The tanium developer MCP runs at developer.tanium.com",
+            content="The internal developer MCP runs at developer.example.com",
             category="mcp",
         )
         existing_id = existing["fact_id"]
@@ -489,7 +489,7 @@ class TestOnSessionEnd:
         # LLM returns a final-pass entry that overlaps the existing one
         def fake_llm(*, system, user, max_tokens, timeout=None):
             return json.dumps({"entries": [
-                {"content": "tanium developer MCP at developer.tanium.com endpoint",
+                {"content": "internal developer MCP at developer.example.com endpoint",
                  "category": "mcp"}
             ]})
         monkeypatch.setattr(mex_extractor, "_call_extraction_llm", fake_llm)
@@ -527,7 +527,7 @@ class TestOnSessionEnd:
         # candidate-detection path? — no, our spy only sees calls to the
         # public classify API). Either way the recorded contents must
         # not include the approved proposal's text.
-        approved_text = "tanium developer MCP at developer.tanium.com endpoint"
+        approved_text = "internal developer MCP at developer.example.com endpoint"
         assert approved_text not in classify_calls, (
             f"classify() was called on the approved proposal at commit time, "
             f"throwing away the UI verdict. calls={classify_calls!r}"
