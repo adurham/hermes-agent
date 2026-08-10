@@ -96,12 +96,56 @@ class _ThreadRoutingStream:
             return False
 
     def fileno(self):  # type: ignore[no-untyped-def]
-        return self._target().fileno()
+        # Same resilience contract as write()/flush(): a silenced thread's
+        # target is our shared devnull sink, which lives for the process
+        # lifetime (see module docstring + _SHARED_SINKS) and should never
+        # be closed out from under us. But defense-in-depth matters here —
+        # any stale/closed target (e.g. a passthrough stream torn down by
+        # unrelated cleanup) must not raise an uncaught ValueError/OSError
+        # into a caller (prompt_toolkit's renderer, in the CLI, probes
+        # .fileno() on sys.stdout on effectively every redraw). Fall back to
+        # the real stdio fd rather than propagating.
+        try:
+            return self._target().fileno()
+        except (ValueError, OSError):
+            return sys.__stdout__.fileno() if sys.__stdout__ else 1
 
     def __getattr__(self, name):  # type: ignore[no-untyped-def]
         # Delegate everything we don't override (encoding, buffer, mode, ...)
-        # to the calling thread's current target.
-        return getattr(self._target(), name)
+        # to the calling thread's current target. Mirror _SafeWriter's
+        # guarantee (agent/process_bootstrap.py) that a closed/broken
+        # underlying stream can never crash the caller — this proxy sits in
+        # front of sys.stdout/sys.stderr for EVERY thread in the process, not
+        # just the silenced ones, so an uncaught exception here is a global
+        # freeze risk (e.g. process_loop's daemon thread; #14726-adjacent).
+        try:
+            return getattr(self._target(), name)
+        except (ValueError, OSError):
+            return getattr(self._passthrough, name)
+
+
+# One devnull sink per attr ("stdout"/"stderr"), opened once and held open
+# for the life of the process — never closed. This mirrors the proxy's own
+# "installed once, idempotently, never uninstalled" contract (see module
+# docstring). Earlier code opened a fresh sink per thread_scoped_silence()
+# call and closed it on that call's exit; when two windows overlapped,
+# _ensure_installed's "already installed" fast path made the SECOND caller
+# silently reuse the FIRST caller's sink object, so the first caller's exit
+# closed a sink the second caller was still writing through. Any write
+# after that raised ValueError("I/O operation on closed file") — uncaught,
+# because it happened on a totally unrelated thread (e.g. the CLI's
+# process_loop) whose sys.stdout is this same shared proxy. A single
+# perpetually-open sink removes the race entirely: nothing ever closes it.
+_SHARED_SINKS: dict[str, TextIO] = {}
+
+
+def _get_shared_sink() -> TextIO:
+    with _install_lock:
+        sink = _SHARED_SINKS.get("devnull")
+        if sink is None or sink.closed:
+            sink = open(os.devnull, "w", encoding="utf-8")
+            _SHARED_SINKS["devnull"] = sink
+        return sink
 
 
 def _ensure_installed(attr: str, sink: TextIO) -> "_ThreadRoutingStream":
@@ -130,7 +174,7 @@ def thread_scoped_silence() -> Iterator[None]:
     thread's body instead of ``contextlib.redirect_stdout(devnull)`` when the
     process is multi-threaded and another thread must keep its console output.
     """
-    sink = open(os.devnull, "w", encoding="utf-8")
+    sink = _get_shared_sink()
     ident = threading.get_ident()
     out_proxy = _ensure_installed("stdout", sink)
     err_proxy = _ensure_installed("stderr", sink)
@@ -141,7 +185,5 @@ def thread_scoped_silence() -> Iterator[None]:
     finally:
         out_proxy.unsilence(ident)
         err_proxy.unsilence(ident)
-        try:
-            sink.close()
-        except Exception:
-            pass
+        # The sink is shared and process-lifetime — never close it here.
+        # See _SHARED_SINKS for why closing per-call was the original bug.

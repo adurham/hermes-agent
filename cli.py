@@ -20442,7 +20442,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             pass  # Non-fatal — don't break the main loop
 
                 except Exception as e:
-                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
+                    # exc_info=True (was bare %s) — this is the CLI's main
+                    # daemon-thread loop, so any exception here can silently
+                    # drop a user turn or a background-delegation completion
+                    # with no way to know WHERE it came from. A prior "I/O
+                    # operation on closed file" incident traced to a sink
+                    # race in agent/thread_scoped_output.py (fixed) was only
+                    # diagnosable via static code reading because this log
+                    # line carried no traceback — the next unrelated bug in
+                    # this loop shouldn't be that hard to find again.
+                    logger.warning(
+                        "process_loop unhandled error (msg may be lost): %s", e,
+                        exc_info=True,
+                    )
         
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
