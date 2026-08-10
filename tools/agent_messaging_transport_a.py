@@ -85,16 +85,41 @@ def register_session_participant(
     ``_agent_running`` flag and ``_pending_input`` queue (the CLI session).
     Either may be None in tests or headless hosts — delivery degrades to
     whichever branch is actually available.
+
+    Registration is ADDITIVE and idempotent. ``cli.py`` reassigns
+    ``self.session_id`` in several places (resume, rename-triggered
+    compression-tip switch, ...), and a background subagent spawned before
+    such a switch still carries the OLD id in its ``owner_session_id``. So a
+    session registers under every id it has ever held and old aliases are
+    never removed during the process lifetime — unregistering one mid-flight
+    would break exactly the ``send_to_parent`` path this registry exists to
+    serve.
+
+    Re-registering an existing id refreshes the stored ``agent``/``cli``
+    references (they are rebuilt on e.g. credential-churn agent reinit) while
+    PRESERVING ``pending_bytes``. Resetting that counter would silently defeat
+    the coalesced-cap accounting in ``_append_idle_atomically``. A None
+    ``agent``/``cli`` never clobbers an already-known reference, so a caller
+    that only has one of the two (the delegate spawn path) can register
+    safely.
     """
     if participant.kind is not ParticipantKind.SESSION:
         raise ValueError("register_session_participant expects a SESSION participant")
     with _session_lock:
-        _session_participants[participant.participant_id] = {
-            "participant": participant,
-            "agent": agent,
-            "cli": cli,
-            "pending_bytes": 0,
-        }
+        existing = _session_participants.get(participant.participant_id)
+        if existing is None:
+            _session_participants[participant.participant_id] = {
+                "participant": participant,
+                "agent": agent,
+                "cli": cli,
+                "pending_bytes": 0,
+            }
+            return
+        existing["participant"] = participant
+        if agent is not None:
+            existing["agent"] = agent
+        if cli is not None:
+            existing["cli"] = cli
 
 
 def unregister_session_participant(participant_id: str) -> None:

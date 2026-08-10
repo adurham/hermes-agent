@@ -11897,6 +11897,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             drain_to_idle_injection,
             install_transport,
             maintenance_tick,
+            register_session_participant_for,
         )
 
         session_key = getattr(self, "session_id", "") or ""
@@ -11906,6 +11907,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # resolve_transport()'s fan-out without a separate startup call site
         # that a non-CLI entrypoint could forget.
         install_transport()
+        # Same reasoning for Transport A: make this session addressable
+        # in-process so a background subagent's send_to_parent resolves
+        # directly instead of falling through to Transport B's approval gate.
+        # Additive and idempotent, so re-running it here also picks up any
+        # session_id reassignment (resume, rename) and refreshes the stored
+        # agent reference after an agent reinit, without ever dropping an
+        # older id an in-flight subagent is still keyed to.
+        register_session_participant_for(getattr(self, "agent", None), self)
         maintenance_tick()
         drain_to_idle_injection(
             session_id=session_key,
