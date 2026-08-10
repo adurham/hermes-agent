@@ -1618,3 +1618,139 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+
+# --------------------------------------------------------------------------
+# Audit log for rejected inbound requests (#81003)
+# --------------------------------------------------------------------------
+
+class TestAuditRejectedRequests:
+    """The audit log must record 401/403 rejections, not only accepted requests.
+
+    Rejected-call telemetry is the primary intrusion-detection signal for a
+    multi-agent fleet — credential-stuffing / token-probing must be visible.
+    """
+
+    def _read_audit(self, tmp_path):
+        p = tmp_path / "a2a_audit.jsonl"
+        if not p.exists():
+            return []
+        return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+
+    def test_missing_token_logged_with_401(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+            def _post_unauth():
+                try:
+                    _post_json(base + "/", _send_body("x"))
+                    raise AssertionError("expected 401")
+                except urllib.error.HTTPError as e:
+                    assert e.code == 401
+            await asyncio.to_thread(_post_unauth)
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+        recs = self._read_audit(tmp_path)
+        rejects = [r for r in recs if r.get("direction") == "inbound_auth"
+                   and r.get("status") == 401]
+        assert rejects, f"expected a 401 audit entry, got: {recs}"
+        r = rejects[-1]
+        assert r["decision"] == security.AUTH_REJECTED_MISSING_TOKEN
+        assert r["identity"] is None
+        assert r["token_fp"] == ""  # no token presented
+        assert r.get("source_ip")  # something recorded
+
+    def test_bad_token_logged_and_fingerprint_no_plaintext(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+            def _post_bad():
+                try:
+                    _post_json(base + "/", _send_body("x"),
+                               {"Authorization": "Bearer WRONG-TOKEN-abc123"})
+                    raise AssertionError("expected 401")
+                except urllib.error.HTTPError as e:
+                    assert e.code == 401
+            await asyncio.to_thread(_post_bad)
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+        recs = self._read_audit(tmp_path)
+        raw = (tmp_path / "a2a_audit.jsonl").read_text()
+        assert "WRONG-TOKEN-abc123" not in raw, "raw bad token leaked into audit log"
+        rejects = [r for r in recs if r.get("direction") == "inbound_auth"
+                   and r.get("status") == 401]
+        assert rejects
+        r = rejects[-1]
+        assert r["decision"] == security.AUTH_REJECTED_BAD_TOKEN
+        assert r["token_fp"].startswith("sha256:")
+
+    def test_untrusted_peer_logged_with_403(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("A2A_PEER_TOKENS", "mallory:tok-mal,alice:tok-alice")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+        monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice")
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+            def _post_untrusted():
+                try:
+                    _post_json(base + "/", _send_body("x"),
+                               {"Authorization": "Bearer tok-mal"})
+                    raise AssertionError("expected 403")
+                except urllib.error.HTTPError as e:
+                    assert e.code == 403
+            await asyncio.to_thread(_post_untrusted)
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+        recs = self._read_audit(tmp_path)
+        raw = (tmp_path / "a2a_audit.jsonl").read_text()
+        assert "tok-mal" not in raw, "raw peer token leaked into audit log"
+        rejects = [r for r in recs if r.get("direction") == "inbound_auth"
+                   and r.get("status") == 403]
+        assert rejects
+        r = rejects[-1]
+        assert r["decision"] == security.AUTH_REJECTED_UNTRUSTED_PEER
+        assert r["identity"] == "mallory"
+        assert r["token_fp"].startswith("sha256:")
+
+    def test_accepted_request_still_audited(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+            resp = await asyncio.to_thread(
+                _post_json, base + "/", _send_body("hello"),
+                {"Authorization": "Bearer topsecret"})
+            assert resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+        recs = self._read_audit(tmp_path)
+        # Both the pre-dispatch auth accept AND the existing inbound task entry.
+        accepts = [r for r in recs if r.get("direction") == "inbound_auth"
+                   and r.get("decision") == security.AUTH_ACCEPTED]
+        inbound_tasks = [r for r in recs if r.get("direction") == "inbound"]
+        assert accepts, f"expected accepted audit entry, got: {recs}"
+        assert inbound_tasks, "existing inbound task audit entry must still be written"
+        assert accepts[-1]["status"] == 200
+        assert accepts[-1]["identity"]
