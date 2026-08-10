@@ -183,7 +183,7 @@ class TestTodoChecklistBody:
         assert "✅ Fix TB link" in lines[1]
         assert "✅ Clear stall dumps" in lines[2]
         assert "🔄 Reboot both Studios" in lines[3]
-        assert "⬜ Verify link back up" in lines[4]
+        assert "[ ] Verify link back up" in lines[4]
         assert "❌ Relaunch cluster" in lines[5]
 
     def test_checklist_renders_on_create(self):

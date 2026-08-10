@@ -1561,13 +1561,20 @@ def _get_cute_tool_message(
         def _checklist_lines(items: list) -> list:
             """Render each todo item as an indented status line.
 
-            Markers match the post-compression injection format in
-            TodoStore.format_for_injection so the same list looks
-            consistent whether it's re-injected into context or printed
-            to the terminal.
+            completed/in_progress/cancelled markers match the
+            post-compression injection format in
+            TodoStore.format_for_injection. "pending" intentionally
+            diverges: format_for_injection's target is the model's
+            context (glyph choice doesn't matter there), while this
+            renders to the user's terminal, where WHITE LARGE SQUARE
+            (⬜) is Emoji_Presentation=Yes and gets drawn as a solid
+            white block by color-emoji fonts regardless of the active
+            theme — unreadable on a dark terminal. Plain ASCII "[ ]"
+            can never be emoji-rendered and matches the universal
+            Markdown checklist convention, so it's used here instead.
             """
             markers = {"completed": "✅", "in_progress": "🔄",
-                       "pending": "⬜", "cancelled": "❌"}
+                       "pending": "[ ]", "cancelled": "❌"}
             max_shown = 30
             lines = []
             for item in items[:max_shown]:
