@@ -19974,28 +19974,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # already redraws on every tool-call event during an active turn,
         # and the todo tool call itself is one such event.
         #
-        # Status markers use emoji rather than bracketed letters ([x]/[>])
-        # — those two in particular read as ambiguous at a glance (is ">"
-        # a cursor? a quote?), whereas checkmark/spinner/box/cross glyphs
-        # are unambiguous even at a skim.
+        # Status markers use emoji for completed/in_progress/cancelled —
+        # checkmark/spinner/cross glyphs are unambiguous even at a skim.
         #
-        # "pending" uses BALLOT BOX (U+2610) rather than WHITE LARGE SQUARE
-        # (U+2B1C, the previous glyph). U+2B1C has Emoji_Presentation=Yes,
-        # so color-emoji fonts render it as a stark solid white block
-        # regardless of the surrounding ANSI foreground color — it doesn't
-        # take a tint the way ✅/🔄/❌ (already colored green/blue/red) do.
-        # U+2610 has no emoji presentation, so it renders as a thin
-        # monochrome outline glyph that inherits the terminal's foreground
-        # color instead of standing out as a glaring white square on dark
-        # themes. It's also 1 terminal cell wide vs the emoji markers'
-        # 2 cells — see the padding in _todo_board_rows() below that keeps
-        # columns aligned despite the width difference.
+        # "pending" is a plain ASCII "[ ]" rather than any Unicode square
+        # glyph. Every candidate square tried (⬜ WHITE LARGE SQUARE, ☐
+        # BALLOT BOX, ◽ WHITE MEDIUM SMALL SQUARE, ⬚ DOTTED SQUARE, ...)
+        # is either classified Emoji_Presentation=Yes — meaning color-emoji
+        # fonts render it as a solid filled block regardless of the
+        # surrounding ANSI theme, exactly the "hard to see" complaint that
+        # started this — or renders too small/thin to read as a checkbox
+        # at a glance. Plain ASCII brackets can never be emoji-rendered
+        # (they're not in any emoji font's substitution table) and match
+        # the universal Markdown checklist convention ("- [ ] task"), so
+        # they're the only option guaranteed hollow/theme-colored on every
+        # terminal. It's naturally 3 terminal cells wide vs the emoji
+        # markers' 2 — _todo_board_rows() below pads every OTHER marker
+        # up to that width so columns still line up.
         _TODO_BOARD_MARKERS = {
             "completed": "✅",
             "in_progress": "🔄",
-            "pending": "☐",
+            "pending": "[ ]",
             "cancelled": "❌",
         }
+        _TODO_BOARD_MARKER_WIDTH = max(
+            HermesCLI._panel_cwidth(m) for m in _TODO_BOARD_MARKERS.values()
+        )
         _TODO_BOARD_MIN_ROWS = 8   # floor so a small terminal still shows something useful
         _TODO_BOARD_MAX_ROWS = 30  # ceiling so a huge plan can't eat the whole screen
 
@@ -20093,10 +20097,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             )
             for item in shown_items:
                 marker = _TODO_BOARD_MARKERS.get(item.get("status"), "❔")
-                # Ballot-box "pending" is 1 terminal cell wide vs the emoji
-                # markers' 2 cells — pad so every row's content starts in
-                # the same column regardless of which marker it got.
-                marker_pad = " " * max(0, 2 - HermesCLI._panel_cwidth(marker))
+                # Markers vary in terminal-cell width ("[ ]" is 3 cells,
+                # the emoji markers are 2) — pad every marker up to the
+                # widest one so all rows' content starts in the same
+                # column regardless of which marker it got.
+                marker_pad = " " * max(0, _TODO_BOARD_MARKER_WIDTH - HermesCLI._panel_cwidth(marker))
                 content = _flatten_to_oneline(str(item.get("content", "")), 70)
                 rows.append(f"{marker}{marker_pad} {content}")
             overflow_bits = []
