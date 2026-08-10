@@ -159,6 +159,62 @@ test asserts WAL unconditionally. Unrelated to this change.
 New tests were confirmed to genuinely catch the bug: neutering the helper to
 a no-op (simulating pre-fix state) fails 4 of them; restoring passes all 19.
 
+### Fork-only fix — 2026-08-10 (Gateway sessions never registered as Transport A participants either — the gateway half of the same registration gap, companion to `9f6a4da9` and the ACP fix)
+
+**Symptom:** a gateway-origin (Telegram/Discord/Slack/etc.) session's
+`background=true` subagent calling `send_to_parent` failed outright —
+"does not accept incoming agent messages (inbound policy: refuse). Do not
+retry." Unlike CLI/ACP (held for approval), gateway's Transport B inbound
+default is `refuse`, so this was a hard 100%-of-the-time functional break,
+not approval friction: no gateway path let a background subagent ever reach
+its parent.
+
+**Root cause:** same underlying bug as `9f6a4da9` — `register_session_participant()`
+was never called for gateway sessions either, so `in_process_lookup()` could
+never resolve the parent and every send fell through to Transport B's
+gateway-refuse policy.
+
+**Why gateway needed its own design, not a direct reuse of the CLI/ACP shim:**
+gateway has no single long-lived per-session object shaped like `cli.py`'s
+`self`/`_pending_input`. Sessions live in `GatewayRunner._sessions[session_key]`,
+and idle-recipient delivery is queue-based poll+push into a platform adapter
+(`_async_delegation_watcher` → `_deliver_completion_notification` →
+`_inject_watch_notification` → `adapter.handle_message()`), not a
+`queue.Queue.put()`.
+
+**Fix:** new `gateway/agent_messaging_bridge.py` — a thin adapter satisfying
+Transport A's duck-typed `cli=` contract (`_agent_running`, `_pending_input.put()`)
+by delegating to gateway's own real mechanism instead of inventing new
+machinery:
+- `_agent_running` ⇒ `session_key in self._running_agents`.
+- `_pending_input.put(marked_text)` ⇒ schedules
+  `GatewayRunner._deliver_completion_notification()` on the gateway's event
+  loop via `asyncio.run_coroutine_threadsafe` — the same injection path
+  already used for background-process/async-delegation completions, fed a
+  Transport A payload (event type `agent_message_transport_a`, deliberately
+  distinct from `async_delegation`'s claim/ack-tracked completion events,
+  since Transport A messages are ephemeral with no durable producer row).
+
+Registration call site: where a gateway session's `AIAgent` first becomes
+live (`self._running_agents[session_key] = agent`). Unlike the CLI fix
+(deliberately never unregisters — short-lived processes), gateway sessions
+are long-running, so this fix **does** unregister on session eviction/expiry
+to avoid leaking stale registry entries over a gateway process's life.
+
+**Files touched:** `gateway/agent_messaging_bridge.py` (new), `gateway/run.py`
+(registration + unregistration call sites), `tests/gateway/test_transport_a_gateway_registration.py`
+(new, 11 tests).
+
+**Verification:** new tests 11/11 passed; full required suite (agent-messaging
++ cross-session + gateway) passed except the same pre-existing/environmental
+WAL-mode failure noted in `9f6a4da9` (unrelated, confirmed present on clean
+`HEAD`). Live smoke test confirmed the full path: registration → `resolve_transport`
+→ `IN_PROCESS` → `send_in_process` → marker-wrapped delivery injected via the
+real gateway completion-notification path → unregister removes it cleanly.
+
+Closes the gateway half of the registration gap found 2026-08-10 (companion
+to `9f6a4da9` and the ACP fix).
+
 ### Fork-only fix — 2026-08-10 (TUI todo/task board: no border, ambiguous `[x]`/`[>]` markers, naive truncation buried active work)
 
 **Symptom:** the live in-TUI todo/task board (rendered by the

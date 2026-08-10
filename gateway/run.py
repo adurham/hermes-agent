@@ -22719,6 +22719,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         state = self._peek_session_state(session_key)
         if state is not None:
             state.conversation.clear()
+        # Drop this session's Transport A (in-process agent-messaging)
+        # registration. Unlike the CLI's deliberately-permanent registration
+        # (short-lived process), a gateway process is long-running and
+        # serves many sessions over its lifetime — leaving stale entries in
+        # tools.agent_messaging_transport_a's registry (plus the AIAgent
+        # references they hold) would leak unboundedly. This funnel is the
+        # single place every true conversation boundary already routes
+        # through, so it fires at exactly session expiry/reset/resume and
+        # nowhere else (idle agent-cache eviction alone is NOT a boundary
+        # and must not unregister — see gateway/agent_messaging_bridge.py).
+        try:
+            from gateway.agent_messaging_bridge import (
+                unregister_gateway_session_participant,
+            )
+
+            _boundary_agent = (
+                self._agent_cache.get(session_key)
+                if hasattr(self, "_agent_cache")
+                else None
+            )
+            _boundary_agent = (
+                _boundary_agent[0]
+                if isinstance(_boundary_agent, tuple)
+                else _boundary_agent
+            )
+            if _boundary_agent is None and state is not None:
+                _boundary_agent = state.turn.agent
+            unregister_gateway_session_participant(_boundary_agent)
+        except Exception:
+            logger.debug(
+                "Transport A gateway unregistration failed for %s",
+                session_key, exc_info=True,
+            )
         # Legacy plain-dict stores still registered in
         # _CONVERSATION_SCOPED_STATE (not yet folded into SessionState),
         # e.g. _pending_model_notes.  SessionState-backed names resolve to
@@ -24649,6 +24682,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return
             self._session_state(session_key).turn.agent = agent_holder[0]
+            # Make this session addressable in-process (Transport A) so a
+            # background=true subagent's send_to_parent resolves directly
+            # instead of falling through to Transport B's approval gate
+            # (which outright refuses gateway-origin inbound messages).
+            # Additive/idempotent — safe on every turn. See
+            # gateway/agent_messaging_bridge.py.
+            try:
+                from gateway.agent_messaging_bridge import (
+                    register_gateway_session_participant,
+                )
+
+                register_gateway_session_participant(
+                    self, session_key, agent_holder[0]
+                )
+            except Exception:
+                logger.debug(
+                    "Transport A gateway registration failed for %s",
+                    session_key, exc_info=True,
+                )
             if self._draining:
                 self._update_runtime_status("draining")
         
