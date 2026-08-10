@@ -2,10 +2,20 @@
 
 The July 2026 TTFT force-flush hard-wrapped long partial lines at
 terminal width, baking real '\\n's into every long paragraph — exactly
-what polluted highlight-copy/paste. Now paragraphs stay one logical
-line (the terminal soft-wraps them and rejoins on copy, matching the
-TUI's selection copy), and TTFT perception is served by mirroring the
-partial line's tail into the spinner status text instead.
+what polluted highlight-copy/paste. This module still covers that:
+a paragraph still accumulating in the buffer (no newline seen yet)
+must NOT be wrapped/printed early — TTFT perception is served by
+mirroring the partial line's tail into the spinner status text
+instead, same as before.
+
+2026-08-10: once a logical line DOES complete (real newline, or the
+sentence-boundary early flush), _emit_one() now hard-wraps it to the
+box's text width before printing, so the response box gets a
+symmetric right margin matching _STREAM_PAD's left indent (explicit
+user preference, trading back some of July 2026's copy/paste
+smoothness for a framed look). See test_stream_symmetric_wrap.py for
+that behavior; this file is scoped to the pre-completion buffering
+contract only.
 """
 import os
 import re
