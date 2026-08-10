@@ -76,11 +76,7 @@ export const PetZoneSurface = memo(function PetZoneSurface() {
   const zoneEnabled = useStore($petZoneEnabled)
 
   return (
-    <div
-      className="relative h-full min-h-0 overflow-hidden bg-(--ui-bg-chrome)"
-      data-slot="pet-zone"
-      ref={zoneRef}
-    >
+    <div className="relative h-full min-h-0 overflow-hidden bg-(--ui-bg-chrome)" data-slot="pet-zone" ref={zoneRef}>
       {zoneEnabled && <FloatingPet zoneContainer={zoneRef} />}
     </div>
   )

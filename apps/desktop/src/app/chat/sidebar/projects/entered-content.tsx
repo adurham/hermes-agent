@@ -187,20 +187,14 @@ function RepoFlatSection({
       group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
   )
 
-
   // Apply THIS repo's manual lane drag-order over the default (recency) order.
   // orderByIds no-ops when the repo has no saved order, or when the persisted
   // ids don't intersect this repo's lanes (another repo's saved order).
   const laneIdSet = useMemo(() => new Set(defaultOrdered.map(group => group.id)), [defaultOrdered])
 
-  const repoLaneOrder = useMemo(
-    () => workspaceOrderIds.filter(id => laneIdSet.has(id)),
-    [workspaceOrderIds, laneIdSet]
-  )
+  const repoLaneOrder = useMemo(() => workspaceOrderIds.filter(id => laneIdSet.has(id)), [workspaceOrderIds, laneIdSet])
 
-  const ordered = repoLaneOrder.length
-    ? orderByIds(defaultOrdered, group => group.id, repoLaneOrder)
-    : defaultOrdered
+  const ordered = repoLaneOrder.length ? orderByIds(defaultOrdered, group => group.id, repoLaneOrder) : defaultOrdered
 
   // Drop stale per-lane session orders once the live lane set is known —
   // repo deletion / worktree removal / branch rename shouldn't leave orphaned
@@ -210,7 +204,6 @@ function RepoFlatSection({
   }, [laneIdSet])
 
   const repoCount = ordered.reduce((sum, group) => sum + group.sessions.length, 0)
-
 
   // Removal asks how: actually `git worktree remove` it, or just hide the lane
   // and leave the worktree on disk. A dirty worktree escalates to a force prompt

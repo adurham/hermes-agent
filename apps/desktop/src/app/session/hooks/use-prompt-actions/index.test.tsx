@@ -2957,7 +2957,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // Must resume the BACKGROUND stored session by id, never send straight to
     // the foreground's active runtime (RUNTIME_SESSION_ID).
     expect(calls.map(c => c.method)).toEqual(['session.resume', 'prompt.submit'])
-    expect(calls[0]?.params).toEqual({ omit_messages: true, session_id: BACKGROUND_STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[0]?.params).toEqual({
+      omit_messages: true,
+      session_id: BACKGROUND_STORED_SESSION_ID,
+      source: 'desktop'
+    })
     expect(calls[1]?.params).toEqual({
       queued: true,
       session_id: RECOVERED_BACKGROUND_SESSION_ID,

@@ -43,7 +43,6 @@ const LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS = 30_000
 // scheduled, so the burst's last write always lands.
 const SESSIONS_LIST_TICK_GAP_MS = 10_000
 
-
 interface LiveSessionStatusItem {
   id?: string
   last_active?: number

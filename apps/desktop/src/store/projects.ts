@@ -1,6 +1,10 @@
 import { atom } from 'nanostores'
 
-import { liveSessionProjectId, NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import {
+  liveSessionProjectId,
+  NO_PROJECT_ID,
+  type SidebarProjectTree
+} from '@/app/chat/sidebar/projects/workspace-groups'
 import { $terminalTakeover } from '@/app/right-sidebar/store'
 import { ensureProjectTerminal } from '@/app/right-sidebar/terminal/terminals'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'

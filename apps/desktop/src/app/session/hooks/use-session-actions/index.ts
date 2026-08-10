@@ -784,7 +784,9 @@ export function useSessionActions({
                   // (set locally by message.start) when the backend doesn't send
                   // one, and clear it once the turn is no longer running.
                   turnStartedAt: running
-                    ? (activated.inflight?.started_at ? activated.inflight.started_at * 1000 : state.turnStartedAt)
+                    ? activated.inflight?.started_at
+                      ? activated.inflight.started_at * 1000
+                      : state.turnStartedAt
                     : null
                 }),
                 storedSessionId

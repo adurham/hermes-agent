@@ -6,7 +6,11 @@ import { publishSessionState, setSessionTileDelegate } from '@/store/session-sta
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
-import { resolveSessionProfile, resolveStoredSession, sessionShouldHaveTranscript } from '../../session/hooks/use-session-actions/utils'
+import {
+  resolveSessionProfile,
+  resolveStoredSession,
+  sessionShouldHaveTranscript
+} from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
 

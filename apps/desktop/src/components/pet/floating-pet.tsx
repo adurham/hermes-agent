@@ -172,9 +172,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   const roamDir = useStore($petRoamDir)
   const routeOverlayOpen = useRouteOverlayActive()
 
-  const [position, setPosition] = useState<Point>(() =>
-    zoneContainer ? { x: 0, y: 0 } : loadPosition()
-  )
+  const [position, setPosition] = useState<Point>(() => (zoneContainer ? { x: 0, y: 0 } : loadPosition()))
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   // The facing mirror lives on the sprite wrapper, not the container, so the
@@ -300,11 +298,14 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     // so no timer. Legacy backend: the historical poll.
     const timer = changeEventsAvailable
       ? null
-      : window.setInterval(() => {
-          if (document.visibilityState === 'visible') {
-            void pull()
-          }
-        }, active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS)
+      : window.setInterval(
+          () => {
+            if (document.visibilityState === 'visible') {
+              void pull()
+            }
+          },
+          active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS
+        )
 
     return () => {
       cancelled = true
@@ -455,10 +456,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         return
       }
 
-      if (
-        !drag.moved &&
-        Math.hypot(e.clientX - drag.startClientX, e.clientY - drag.startClientY) > CLICK_SLOP_PX
-      ) {
+      if (!drag.moved && Math.hypot(e.clientX - drag.startClientX, e.clientY - drag.startClientY) > CLICK_SLOP_PX) {
         drag.moved = true
       }
 
@@ -709,7 +707,12 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         style={{
           lineHeight: 0,
           position: 'relative',
-          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW, zoneContainer?.current?.getBoundingClientRect()),
+          transform:
+            roamDir !== 0
+              ? walk.mirror
+                ? 'scaleX(-1)'
+                : 'none'
+              : facing(position.x, petW, zoneContainer?.current?.getBoundingClientRect()),
           zIndex: 1
         }}
       >

@@ -231,7 +231,6 @@ export function WorkspaceHeader({
     <SidebarRowLead>{icon}</SidebarRowLead>
   )
 
-
   return (
     <div
       className={cn(
