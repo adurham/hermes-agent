@@ -11340,7 +11340,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "snapshot":
             self._handle_snapshot_command(cmd_original)
         elif canonical == "stop":
-            self._handle_stop_command()
+            self._handle_stop_command(cmd_original)
         elif canonical == "agents":
             self._handle_agents_command()
         elif canonical == "journey":
@@ -14527,8 +14527,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if isinstance(parsed, dict) and parsed.get("status") == "dispatched" and parsed.get("mode") == "background":
                 n = parsed.get("count") or 1
                 noun, tail = ("task", "it finishes") if n == 1 else (f"{n} tasks", "they finish")
+                did = parsed.get("delegation_id") or ""
+                did_suffix = f" [{did}]" if did else ""
                 try:
-                    _cprint(f"\033[2m\u21a9 Background {noun} running — I'll resume when {tail}. Keep chatting.\033[0m")
+                    _cprint(
+                        f"\033[2m\u21a9 Background {noun} running{did_suffix} — I'll resume when {tail}. "
+                        f"Keep chatting. (/stop {did} to cancel)\033[0m"
+                        if did else
+                        f"\033[2m\u21a9 Background {noun} running — I'll resume when {tail}. Keep chatting.\033[0m"
+                    )
                 except Exception:
                     pass
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)

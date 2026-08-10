@@ -1512,6 +1512,55 @@ def interrupt_for_session(
     return count
 
 
+def interrupt_by_id(delegation_id: str, reason: str = "cancelled") -> Dict[str, Any]:
+    """Cancel ONE specific in-flight async delegation by its ``delegation_id``.
+
+    This is the id ``delegate_task``'s dispatch response and the ``⛓`` badge's
+    ``/agents`` listing both surface — the id the user/model actually has in
+    hand, as opposed to ``interrupt_subagent()`` (TUI-only, keyed by the
+    per-child ``subagent_id`` which is a level lower: a batch has N subagent
+    ids under one delegation_id). A single-task dispatch and a fan-out batch
+    are both cancellable this way; a batch cancel signals ALL of its children
+    via the batch's ``interrupt_fn`` (mirrors ``_batch_interrupt`` in
+    ``delegate_tool.py``, which fans out to every child agent).
+
+    The child(ren) still emit their normal completion event
+    (status='interrupted') via the regular finalize path — this requests a
+    graceful stop at the next iteration boundary, it does not hard-kill the
+    worker thread (Python threads can't be force-killed).
+
+    Returns ``{"found": bool, "already_done": bool, "interrupted": bool}``:
+    - ``found=False``: no delegation with this id exists (never dispatched,
+      already pruned after completion, or a typo).
+    - ``found=True, already_done=True``: it existed but already finished
+      (completed/failed/interrupted) before this call landed — nothing to do.
+    - ``found=True, interrupted=True``: the interrupt signal was sent.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None:
+            return {"found": False, "already_done": False, "interrupted": False}
+        status = record.get("status")
+        if status not in ("running", "stalling", "finalizing"):
+            return {"found": True, "already_done": True, "interrupted": False}
+        fn = record.get("interrupt_fn")
+
+    if not callable(fn):
+        # No interrupt_fn was wired at dispatch time (shouldn't happen for
+        # the live delegate_task path, but degrade honestly rather than
+        # claiming success).
+        return {"found": True, "already_done": False, "interrupted": False}
+
+    try:
+        fn()
+    except Exception as exc:
+        logger.debug("interrupt_by_id(%s) failed: %s", delegation_id, exc)
+        return {"found": True, "already_done": False, "interrupted": False}
+
+    logger.info("Interrupted async delegation %s (%s)", delegation_id, reason)
+    return {"found": True, "already_done": False, "interrupted": True}
+
+
 def _reset_for_tests() -> None:
     """Test-only: clear all state and tear down the executor + monitor."""
     global _executor, _executor_max_workers, _monitor_thread

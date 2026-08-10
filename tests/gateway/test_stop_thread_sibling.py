@@ -137,3 +137,97 @@ async def test_stop_no_active_agent_survives_status_clear_failure():
     result = await runner._handle_stop_command(event)
 
     assert "no active" in str(getattr(result, "text", result)).lower()
+
+
+# ---------------------------------------------------------------------------
+# /stop <delegation_id> — targeted single-delegation cancel
+# ---------------------------------------------------------------------------
+# Mirrors the CLI's targeted /stop <id>: cancels ONE in-flight delegate_task
+# dispatch without touching the foreground agent or any other running
+# background delegation. Routes through tools.async_delegation.interrupt_by_id
+# — see tests/tools/test_async_delegation.py::TestInterruptById for the
+# underlying registry behavior; these tests cover the gateway reply text.
+
+
+@pytest.mark.asyncio
+async def test_stop_with_id_does_not_touch_running_agent(monkeypatch):
+    """The targeted form must return before reaching any of the
+    whole-session interrupt machinery — no _interrupt_and_clear_session call."""
+    import tools.async_delegation as ad_mod
+
+    ad_mod._reset_for_tests()
+    try:
+        runner = object.__new__(GatewayRunner)
+        interrupted = []
+        runner._interrupt_and_clear_session = (
+            lambda *a, **kw: interrupted.append(a)
+        )
+
+        event = MessageEvent(
+            text="/stop deleg_missing",
+            message_type=MessageType.TEXT,
+            source=_thread_source("userA"),
+        )
+        result = await runner._handle_stop_command(event)
+
+        assert interrupted == []
+        assert "no running delegation" in str(getattr(result, "text", result)).lower()
+    finally:
+        ad_mod._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_stop_with_id_cancels_matching_delegation():
+    import tools.async_delegation as ad_mod
+
+    ad_mod._reset_for_tests()
+    try:
+        calls = []
+        with ad_mod._records_lock:
+            ad_mod._records["deleg_target"] = {
+                "delegation_id": "deleg_target",
+                "status": "running",
+                "interrupt_fn": lambda: calls.append(1),
+            }
+
+        runner = object.__new__(GatewayRunner)
+        event = MessageEvent(
+            text="/stop deleg_target",
+            message_type=MessageType.TEXT,
+            source=_thread_source("userA"),
+        )
+        result = await runner._handle_stop_command(event)
+
+        assert calls == [1]
+        text = str(getattr(result, "text", result)).lower()
+        assert "cancelled" in text
+        assert "deleg_target" in text
+    finally:
+        ad_mod._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_stop_with_id_already_done_reports_cleanly():
+    import tools.async_delegation as ad_mod
+
+    ad_mod._reset_for_tests()
+    try:
+        with ad_mod._records_lock:
+            ad_mod._records["deleg_finished"] = {
+                "delegation_id": "deleg_finished",
+                "status": "completed",
+            }
+
+        runner = object.__new__(GatewayRunner)
+        event = MessageEvent(
+            text="/stop deleg_finished",
+            message_type=MessageType.TEXT,
+            source=_thread_source("userA"),
+        )
+        result = await runner._handle_stop_command(event)
+
+        text = str(getattr(result, "text", result)).lower()
+        assert "already finished" in text
+    finally:
+        ad_mod._reset_for_tests()
+

@@ -363,14 +363,40 @@ class CLICommandsMixin:
             print(f"  Unknown subcommand: {subcmd}")
             print("  Usage: /snapshot [list|create [label]|restore <id>|prune [N]]")
 
-    def _handle_stop_command(self):
+    def _handle_stop_command(self, cmd: str = "/stop"):
         """Handle /stop — kill all running background processes and
-        background (async) delegations.
+        background (async) delegations, or a single one when given an id.
 
         Inspired by OpenAI Codex's separation of interrupt (stop current turn)
         from /stop (clean up background processes). See openai/codex#14602.
+
+        ``/stop <delegation_id>`` targets exactly ONE in-flight delegate_task
+        dispatch (the id printed in the dispatch confirmation and in
+        ``/agents``) without touching any other running background work —
+        the bare ``/stop`` still nukes everything, matching prior behavior.
         """
         from tools.process_registry import process_registry
+
+        parts = cmd.strip().split(maxsplit=1)
+        target_id = parts[1].strip() if len(parts) > 1 else ""
+
+        if target_id:
+            try:
+                from tools.async_delegation import interrupt_by_id
+                result = interrupt_by_id(target_id, reason="/stop <id>")
+            except Exception as exc:
+                print(f"  ❌ Could not cancel {target_id}: {exc}")
+                return
+            if not result.get("found"):
+                print(f"  No running delegation found with id: {target_id}")
+                print("  (Check /agents for currently active delegation_ids.)")
+            elif result.get("already_done"):
+                print(f"  ✅ {target_id} already finished — nothing to cancel.")
+            elif result.get("interrupted"):
+                print(f"  ✅ Cancelled {target_id}.")
+            else:
+                print(f"  ❌ Found {target_id} but could not signal it to stop.")
+            return
 
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]

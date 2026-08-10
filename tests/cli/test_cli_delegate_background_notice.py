@@ -67,3 +67,35 @@ def test_non_delegate_tool_prints_no_notice(monkeypatch):
     cli_obj._on_tool_complete("tc4", "read_file", {"path": "a"}, '{"ok": true}')
 
     assert not any("resume" in p.lower() for p in printed)
+
+
+def test_background_dispatch_with_id_surfaces_stop_hint(monkeypatch):
+    """When the dispatch payload carries a delegation_id, the notice must
+    surface it plus a copy-pasteable /stop <id> cancel hint — otherwise the
+    id only ever appeared once, in a line that scrolls out of view."""
+    cli_obj = _make_cli()
+    printed = _capture(monkeypatch)
+
+    result = json.dumps({
+        "status": "dispatched", "mode": "background", "count": 1,
+        "delegation_id": "deleg_abc123",
+    })
+    cli_obj._on_tool_complete("tc5", "delegate_task", {"goal": "x"}, result)
+
+    joined = "\n".join(printed)
+    assert "deleg_abc123" in joined
+    assert "/stop deleg_abc123" in joined
+
+
+def test_background_dispatch_without_id_omits_stop_hint(monkeypatch):
+    """Older/malformed payloads without a delegation_id must not print a
+    broken '/stop ' hint with a dangling empty id."""
+    cli_obj = _make_cli()
+    printed = _capture(monkeypatch)
+
+    result = json.dumps({"status": "dispatched", "mode": "background", "count": 1})
+    cli_obj._on_tool_complete("tc6", "delegate_task", {"goal": "x"}, result)
+
+    joined = "\n".join(printed)
+    assert "/stop" not in joined
+

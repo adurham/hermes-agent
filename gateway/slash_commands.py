@@ -1355,7 +1355,31 @@ class GatewaySlashCommandsMixin:
         fallback.  Force-clean the session lock in all cases for safety.
 
         The session is preserved so the user can continue the conversation.
+
+        ``/stop <delegation_id>`` targets exactly ONE in-flight delegate_task
+        dispatch (the id surfaced in the dispatch confirmation and in
+        ``/agents``) without interrupting the foreground agent or any other
+        background delegation — mirrors the CLI's targeted variant. A bare
+        ``/stop`` keeps its existing whole-session-interrupt behavior below.
         """
+        target_id = event.get_command_args().strip()
+        if target_id:
+            try:
+                from tools.async_delegation import interrupt_by_id
+                result = interrupt_by_id(target_id, reason="/stop <id>")
+            except Exception as exc:
+                return EphemeralReply(f"❌ Could not cancel `{target_id}`: {exc}")
+            if not result.get("found"):
+                return EphemeralReply(
+                    f"No running delegation found with id: `{target_id}`\n"
+                    f"(Check /agents for currently active delegation_ids.)"
+                )
+            if result.get("already_done"):
+                return EphemeralReply(f"✅ `{target_id}` already finished — nothing to cancel.")
+            if result.get("interrupted"):
+                return EphemeralReply(f"✅ Cancelled `{target_id}`.")
+            return EphemeralReply(f"❌ Found `{target_id}` but could not signal it to stop.")
+
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)

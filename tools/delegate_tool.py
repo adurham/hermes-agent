@@ -3349,6 +3349,7 @@ def delegate_task(
     model: Optional[str] = None,
     agent_type: Optional[str] = None,
     background: Optional[bool] = None,
+    cancel: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3363,10 +3364,51 @@ def delegate_task(
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
 
+    Third mode — cancel: pass 'cancel=<delegation_id>' (the id from a prior
+    dispatch's response / '⛓' badge / /agents listing) to signal that ONE
+    in-flight background delegation to stop, instead of spawning anything.
+    Mutually exclusive with goal/tasks; when 'cancel' is set, everything
+    else is ignored.
+
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+
+    if cancel:
+        try:
+            from tools.async_delegation import interrupt_by_id
+            result = interrupt_by_id(str(cancel).strip(), reason="model_cancel")
+        except Exception as exc:
+            return tool_error(f"Cancel failed: {exc}")
+        if not result.get("found"):
+            return json.dumps({
+                "status": "not_found",
+                "delegation_id": cancel,
+                "message": (
+                    f"No running delegation with id '{cancel}'. It may have "
+                    f"already completed (its result already re-entered the "
+                    f"conversation), never existed, or the id is a typo."
+                ),
+            })
+        if result.get("already_done"):
+            return json.dumps({
+                "status": "already_done",
+                "delegation_id": cancel,
+                "message": f"'{cancel}' already finished before the cancel landed.",
+            })
+        if result.get("interrupted"):
+            return json.dumps({
+                "status": "cancelled",
+                "delegation_id": cancel,
+                "message": (
+                    f"Cancel signal sent to '{cancel}'. It will stop at its "
+                    f"next iteration boundary and still emit a completion "
+                    f"event (status='interrupted') — expect that message to "
+                    f"still arrive, just without a completed result."
+                ),
+            })
+        return tool_error(f"Found '{cancel}' but could not signal it to stop.")
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
@@ -4118,17 +4160,23 @@ def delegate_task(
 
         if dispatch.get("status") == "dispatched":
             n = len(_goals)
+            _did = dispatch["delegation_id"]
             note = (
-                "Subagent is running in the background. You and the user can "
-                "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
+                f"Subagent is running in the background as '{_did}'. You and "
+                f"the user can keep working; its full result re-enters the "
+                f"conversation as a new message when it finishes. Do not wait "
+                f"or poll — just continue. If this was dispatched by mistake "
+                f"(wrong model, stale instructions, duplicate work), cancel it "
+                f"with delegate_task(cancel='{_did}')."
                 if n == 1 else
-                f"{n} subagents are running in parallel in the background. You "
-                f"and the user can keep working; they wait on each other and "
-                f"their consolidated results re-enter the conversation as a "
-                f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
+                f"{n} subagents are running in parallel in the background as "
+                f"'{_did}'. You and the user can keep working; they wait on "
+                f"each other and their consolidated results re-enter the "
+                f"conversation as a single message once ALL of them finish. "
+                f"Do not wait or poll — just continue. If this batch was "
+                f"dispatched by mistake, cancel the WHOLE batch (all "
+                f"{n} tasks) with delegate_task(cancel='{_did}') — there is "
+                f"no per-task cancel within a batch."
             )
             payload = {
                 "status": "dispatched",
@@ -4707,6 +4755,22 @@ DELEGATE_TASK_SCHEMA = {
                     "backward compatibility."
                 ),
             },
+            "cancel": {
+                "type": "string",
+                "description": (
+                    "Cancel ONE in-flight background delegation by its "
+                    "delegation_id (the id returned in a prior dispatch's "
+                    "response, e.g. 'deleg_abc123'). Use this to correct a "
+                    "mistaken dispatch (wrong model, stale instructions, "
+                    "duplicate work) without waiting for it to finish. When "
+                    "set, every other parameter is ignored -- this call does "
+                    "nothing but request the cancel. The target still emits "
+                    "its normal completion event (status='interrupted') once "
+                    "it actually stops, since Python cannot force-kill a "
+                    "worker thread mid-instruction -- it stops at its next "
+                    "safe boundary, not instantly."
+                ),
+            },
         },
         "required": [],
     },
@@ -4769,6 +4833,7 @@ registry.register(
         model=args.get("model"),
         agent_type=args.get("agent_type"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        cancel=args.get("cancel"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

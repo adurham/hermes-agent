@@ -256,6 +256,76 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("parent agent", result["error"])
 
+    def test_cancel_not_found(self):
+        """cancel= for an unknown/never-dispatched delegation_id reports not_found."""
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(cancel="deleg_does_not_exist", parent_agent=parent))
+        self.assertEqual(result["status"], "not_found")
+        self.assertEqual(result["delegation_id"], "deleg_does_not_exist")
+
+    def test_cancel_interrupts_running_delegation(self):
+        """cancel= for a live delegation_id signals its interrupt_fn and
+        reports cancelled — the model-facing mirror of the CLI's /stop <id>."""
+        import tools.async_delegation as ad_mod
+        ad_mod._reset_for_tests()
+        interrupted = []
+        try:
+            with ad_mod._records_lock:
+                ad_mod._records["deleg_live1"] = {
+                    "delegation_id": "deleg_live1",
+                    "status": "running",
+                    "is_batch": False,
+                    "interrupt_fn": lambda: interrupted.append(True),
+                }
+            parent = _make_mock_parent()
+            result = json.loads(delegate_task(cancel="deleg_live1", parent_agent=parent))
+            self.assertEqual(result["status"], "cancelled")
+            self.assertEqual(result["delegation_id"], "deleg_live1")
+            self.assertTrue(interrupted)
+        finally:
+            ad_mod._reset_for_tests()
+
+    def test_cancel_already_done_delegation(self):
+        """cancel= for a completed delegation_id reports already_done, not an error."""
+        import tools.async_delegation as ad_mod
+        ad_mod._reset_for_tests()
+        try:
+            with ad_mod._records_lock:
+                ad_mod._records["deleg_done1"] = {
+                    "delegation_id": "deleg_done1",
+                    "status": "completed",
+                    "is_batch": False,
+                }
+            parent = _make_mock_parent()
+            result = json.loads(delegate_task(cancel="deleg_done1", parent_agent=parent))
+            self.assertEqual(result["status"], "already_done")
+        finally:
+            ad_mod._reset_for_tests()
+
+    def test_cancel_bypasses_spawn_pause(self):
+        """A cancel must go through even while new spawning is paused —
+        pause blocks NEW work, not stopping existing work."""
+        from tools.delegate_tool import set_spawn_paused
+        import tools.async_delegation as ad_mod
+        ad_mod._reset_for_tests()
+        interrupted = []
+        try:
+            with ad_mod._records_lock:
+                ad_mod._records["deleg_paused1"] = {
+                    "delegation_id": "deleg_paused1",
+                    "status": "running",
+                    "is_batch": False,
+                    "interrupt_fn": lambda: interrupted.append(True),
+                }
+            set_spawn_paused(True)
+            parent = _make_mock_parent()
+            result = json.loads(delegate_task(cancel="deleg_paused1", parent_agent=parent))
+            self.assertEqual(result["status"], "cancelled")
+            self.assertTrue(interrupted)
+        finally:
+            set_spawn_paused(False)
+            ad_mod._reset_for_tests()
+
     def test_depth_limit(self):
         parent = _make_mock_parent(depth=2)
         result = json.loads(delegate_task(goal="test", parent_agent=parent))
