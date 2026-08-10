@@ -197,6 +197,18 @@ def send_agent_message(
     recipient: str = "", body: str = "", *, agent: Any = None, **_kw
 ) -> str:
     """Parent/session-side send. Requires an explicit recipient."""
+    if agent is None:
+        # Fail closed: caller identity is unknown, so we cannot safely
+        # classify sender as SESSION vs SUBAGENT (a plumbing regression
+        # here must never silently default to the more-privileged SESSION
+        # classification — see the incident this guard was added for,
+        # 2026-08-10: the generic dispatch path once failed to forward
+        # `agent`, and every subagent call was misclassified as SESSION).
+        return tool_error(
+            "send_agent_message: caller identity unavailable — refusing "
+            "rather than guessing. This indicates a dispatch bug, not a "
+            "usage error."
+        )
     sender = _caller_participant(agent)
     if sender.kind is ParticipantKind.SUBAGENT:
         # Defense in depth — the toolset gate should already prevent this.
@@ -209,6 +221,13 @@ def send_agent_message(
 
 def send_to_parent(body: str = "", *, agent: Any = None, **_kw) -> str:
     """Subagent-side send. Target is implicitly the parent — no recipient."""
+    if agent is None:
+        # Fail closed — see matching comment in send_agent_message above.
+        return tool_error(
+            "send_to_parent: caller identity unavailable — refusing rather "
+            "than guessing. This indicates a dispatch bug, not a usage "
+            "error."
+        )
     sender = _caller_participant(agent)
     if sender.kind is not ParticipantKind.SUBAGENT:
         return tool_error(
