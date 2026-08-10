@@ -1220,3 +1220,97 @@ def test_gateway_cli_origin_event_left_unrouted():
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
 
+
+# ── active_task_count() — expands batches to real child-task count ────────
+# Distinct from active_count() (units/slots: a batch is 1 regardless of its
+# child count). This is the source of truth for the CLI/TUI ⛓ status-bar
+# badge, which is supposed to show how many subagents are actually working
+# right now, not how many async-pool slots are occupied.
+
+
+class TestActiveTaskCount:
+    @pytest.fixture(autouse=True)
+    def _clean_records(self):
+        ad._reset_for_tests()
+        yield
+        ad._reset_for_tests()
+
+    def test_zero_when_no_records(self):
+        assert ad.active_task_count() == 0
+
+    def test_single_non_batch_delegation_counts_as_one(self):
+        with ad._records_lock:
+            ad._records["single-1"] = {
+                "delegation_id": "single-1",
+                "status": "running",
+                "is_batch": False,
+            }
+        assert ad.active_task_count() == 1
+
+    def test_batch_expands_to_child_goal_count(self):
+        with ad._records_lock:
+            ad._records["batch-1"] = {
+                "delegation_id": "batch-1",
+                "status": "running",
+                "is_batch": True,
+                "goals": ["a", "b", "c"],
+            }
+        # active_count() (units/slots) would report 1 here — the whole point
+        # of active_task_count() is to report the real child count instead.
+        assert ad.active_count() == 1
+        assert ad.active_task_count() == 3
+
+    def test_batch_missing_goals_falls_back_to_one(self):
+        with ad._records_lock:
+            ad._records["batch-1"] = {
+                "delegation_id": "batch-1",
+                "status": "running",
+                "is_batch": True,
+                "goals": None,
+            }
+        assert ad.active_task_count() == 1
+
+    def test_mixed_batch_and_single_records_sum_correctly(self):
+        with ad._records_lock:
+            ad._records["batch-1"] = {
+                "delegation_id": "batch-1",
+                "status": "running",
+                "is_batch": True,
+                "goals": ["a", "b"],
+            }
+            ad._records["single-1"] = {
+                "delegation_id": "single-1",
+                "status": "finalizing",
+                "is_batch": False,
+            }
+        assert ad.active_task_count() == 3
+
+    def test_stalling_batch_still_counted(self):
+        """A stalling record (child gone quiet, in grace period before
+        force-finalize) is still alive and must not disappear from the
+        badge count."""
+        with ad._records_lock:
+            ad._records["batch-1"] = {
+                "delegation_id": "batch-1",
+                "status": "stalling",
+                "is_batch": True,
+                "goals": ["a", "b", "c", "d"],
+            }
+        assert ad.active_task_count() == 4
+
+    def test_completed_and_failed_records_excluded(self):
+        with ad._records_lock:
+            ad._records["done-1"] = {
+                "delegation_id": "done-1",
+                "status": "completed",
+                "is_batch": True,
+                "goals": ["a", "b", "c"],
+            }
+            ad._records["failed-1"] = {
+                "delegation_id": "failed-1",
+                "status": "failed",
+                "is_batch": False,
+            }
+        assert ad.active_task_count() == 0
+
+

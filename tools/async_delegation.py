@@ -571,11 +571,17 @@ def active_task_count() -> int:
     working right now" figure for observability, where a 3-task batch shown as
     "1" undercounts real concurrent work. Falls back to counting a batch as 1
     if its goal list is missing.
+
+    Includes "stalling" records (a child has gone quiet and is in its grace
+    period before force-finalization) alongside "running"/"finalizing" — a
+    stalling subagent is still alive and occupying a slot, just not making
+    visible progress, so dropping it here would make the badge flicker to a
+    lower count right before the child either recovers or is force-finalized.
     """
     with _records_lock:
         total = 0
         for r in _records.values():
-            if r.get("status") not in {"running", "finalizing"}:
+            if r.get("status") not in {"running", "stalling", "finalizing"}:
                 continue
             if r.get("is_batch"):
                 goals = r.get("goals")
