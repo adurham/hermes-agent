@@ -1314,3 +1314,145 @@ class TestActiveTaskCount:
         assert ad.active_task_count() == 0
 
 
+# ── interrupt_by_id() — cancel ONE in-flight delegation by its public id ──
+# Powers the CLI's targeted `/stop <delegation_id>`, the gateway's mirrored
+# `/stop <delegation_id>`, and the model-facing `delegate_task(cancel=...)`
+# self-correction path.
+
+
+class TestInterruptById:
+    @pytest.fixture(autouse=True)
+    def _clean_records(self):
+        ad._reset_for_tests()
+        yield
+        ad._reset_for_tests()
+
+    def test_unknown_id_reports_not_found(self):
+        result = ad.interrupt_by_id("deleg_never_existed")
+        assert result == {"found": False, "already_done": False, "interrupted": False}
+
+    def test_running_delegation_gets_interrupted(self):
+        calls = []
+        with ad._records_lock:
+            ad._records["deleg_x"] = {
+                "delegation_id": "deleg_x",
+                "status": "running",
+                "interrupt_fn": lambda: calls.append(1),
+            }
+        result = ad.interrupt_by_id("deleg_x")
+        assert result == {"found": True, "already_done": False, "interrupted": True}
+        assert calls == [1]
+
+    def test_stalling_delegation_gets_interrupted(self):
+        """A stalling record is still live (in its grace period) — must be
+        cancellable, not treated as already finished."""
+        calls = []
+        with ad._records_lock:
+            ad._records["deleg_y"] = {
+                "delegation_id": "deleg_y",
+                "status": "stalling",
+                "interrupt_fn": lambda: calls.append(1),
+            }
+        result = ad.interrupt_by_id("deleg_y")
+        assert result["interrupted"] is True
+        assert calls == [1]
+
+    def test_finalizing_delegation_gets_interrupted(self):
+        calls = []
+        with ad._records_lock:
+            ad._records["deleg_z"] = {
+                "delegation_id": "deleg_z",
+                "status": "finalizing",
+                "interrupt_fn": lambda: calls.append(1),
+            }
+        result = ad.interrupt_by_id("deleg_z")
+        assert result["interrupted"] is True
+
+    def test_completed_delegation_reports_already_done(self):
+        with ad._records_lock:
+            ad._records["deleg_done"] = {
+                "delegation_id": "deleg_done",
+                "status": "completed",
+            }
+        result = ad.interrupt_by_id("deleg_done")
+        assert result == {"found": True, "already_done": True, "interrupted": False}
+
+    def test_failed_delegation_reports_already_done(self):
+        with ad._records_lock:
+            ad._records["deleg_failed"] = {
+                "delegation_id": "deleg_failed",
+                "status": "failed",
+            }
+        result = ad.interrupt_by_id("deleg_failed")
+        assert result["already_done"] is True
+
+    def test_missing_interrupt_fn_degrades_honestly(self):
+        """A record with no interrupt_fn wired must not falsely report success."""
+        with ad._records_lock:
+            ad._records["deleg_no_fn"] = {
+                "delegation_id": "deleg_no_fn",
+                "status": "running",
+                "interrupt_fn": None,
+            }
+        result = ad.interrupt_by_id("deleg_no_fn")
+        assert result["found"] is True
+        assert result["interrupted"] is False
+
+    def test_raising_interrupt_fn_does_not_propagate(self):
+        def _boom():
+            raise RuntimeError("child unreachable")
+
+        with ad._records_lock:
+            ad._records["deleg_boom"] = {
+                "delegation_id": "deleg_boom",
+                "status": "running",
+                "interrupt_fn": _boom,
+            }
+        result = ad.interrupt_by_id("deleg_boom")
+        assert result["found"] is True
+        assert result["interrupted"] is False
+
+    def test_batch_interrupt_fn_signals_all_children(self):
+        """A batch's interrupt_fn (fans out to every child agent, mirroring
+        delegate_tool.py's _batch_interrupt) is called exactly once — the
+        fan-out itself is the batch's own responsibility, not this
+        function's; interrupt_by_id only needs to trigger it."""
+        signalled_children = []
+
+        def _batch_interrupt():
+            signalled_children.extend(["child-1", "child-2", "child-3"])
+
+        with ad._records_lock:
+            ad._records["deleg_batch"] = {
+                "delegation_id": "deleg_batch",
+                "status": "running",
+                "is_batch": True,
+                "goals": ["a", "b", "c"],
+                "interrupt_fn": _batch_interrupt,
+            }
+        result = ad.interrupt_by_id("deleg_batch")
+        assert result["interrupted"] is True
+        assert signalled_children == ["child-1", "child-2", "child-3"]
+
+    def test_only_targets_matching_id_leaves_others_untouched(self):
+        """Cancelling one delegation must not touch a sibling's interrupt_fn —
+        the whole point of targeted cancel vs interrupt_all()."""
+        calls_a, calls_b = [], []
+        with ad._records_lock:
+            ad._records["deleg_a"] = {
+                "delegation_id": "deleg_a",
+                "status": "running",
+                "interrupt_fn": lambda: calls_a.append(1),
+            }
+            ad._records["deleg_b"] = {
+                "delegation_id": "deleg_b",
+                "status": "running",
+                "interrupt_fn": lambda: calls_b.append(1),
+            }
+        result = ad.interrupt_by_id("deleg_a")
+        assert result["interrupted"] is True
+        assert calls_a == [1]
+        assert calls_b == []
+
+
+
