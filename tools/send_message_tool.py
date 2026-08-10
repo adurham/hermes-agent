@@ -41,6 +41,16 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # resolve a raw phone number. Keeping the '+' preserves the E.164 form that
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
+
+# Platforms whose target refs have a bespoke ``_parse_target_ref`` rule. For
+# anything OUTSIDE this set (i.e. plugin platforms whose channel ids are
+# opaque — A2A context ids, plugin-native GUIDs) the send handler passes the
+# raw ref through as the chat_id when the channel directory has no matching
+# entry, instead of failing with a misleading "No home channel set" (#78396).
+_KNOWN_PARSER_PLATFORMS = frozenset({
+    "telegram", "feishu", "discord", "slack", "matrix", "weixin", "yuanbao",
+    "ntfy", "email", "whatsapp", "signal", "photon", "xmpp",
+}) | _PHONE_PLATFORMS
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 # Photon DM chat GUID (mirrors _DM_CHAT_GUID_RE in the photon adapter).
 _PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")
@@ -378,17 +388,33 @@ def _handle_send(args):
         try:
             from gateway.channel_directory import resolve_channel_name
             resolved = resolve_channel_name(platform_name, target_ref)
-            if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
-            else:
-                return tool_error(
-                    f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
-                )
         except Exception:
+            resolved = None
+        if resolved:
+            # Round-trip the resolved id through _parse_target_ref to pick up
+            # thread suffixes / normalized forms. If the parser has no rule
+            # for this platform (e.g. A2A context ids, opaque plugin-native
+            # channel ids — issue #78396), it returns (None, None, False);
+            # fall back to the resolved id verbatim so the direct-channel
+            # path advertised by ``send_message(action='list')`` actually
+            # delivers instead of falling through to the misleading
+            # "No home channel set" branch below.
+            parsed_chat_id, parsed_thread_id, _ = _parse_target_ref(platform_name, resolved)
+            chat_id = parsed_chat_id or resolved
+            thread_id = parsed_thread_id or thread_id
+        elif platform_name not in _KNOWN_PARSER_PLATFORMS:
+            # Nothing in the channel directory matched, AND the platform has
+            # no ``_parse_target_ref`` rule of its own (plugin platforms like
+            # A2A whose channel ids are opaque context ids from
+            # ~/.hermes/a2a_conversations/, or plugin-native channel GUIDs).
+            # Pass the raw ref through as the chat_id so the direct
+            # 'platform:CHANNEL_ID' form the error text recommends actually
+            # works. This mirrors _handle_react's fallback (issue #78396).
+            chat_id = target_ref
+        else:
             return tool_error(
                 f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
+                f"Use send_message(action='list') to see available targets."
             )
 
     from tools.interrupt import is_interrupted
