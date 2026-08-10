@@ -103,15 +103,16 @@ def _patch_process_registry(monkeypatch, count: int) -> None:
 
 
 # ── Background/async subagent indicator (⛓ N) ─────────────────────────────
-# Source of truth is tools.async_delegation.active_count() — the count of
-# delegate_task delegations (batch + background single) still in the
-# "running" state. Distinct from ▶ (/background agent threads) and ⚙ (shell
-# processes); all three can be active at once.
+# Source of truth is tools.async_delegation.active_task_count() — the count
+# of actual child subagent TASKS currently running (a batch expands to its
+# child count, e.g. a 3-task fan-out contributes 3, not 1 pool slot).
+# Distinct from ▶ (/background agent threads) and ⚙ (shell processes); all
+# three can be active at once.
 
 
 def _patch_async_active(monkeypatch, count: int) -> None:
     import tools.async_delegation as ad_mod
-    monkeypatch.setattr(ad_mod, "active_count", lambda: count)
+    monkeypatch.setattr(ad_mod, "active_task_count", lambda: count)
 
 
 def test_snapshot_reports_zero_when_no_background_subagents(monkeypatch):
@@ -124,14 +125,14 @@ def test_snapshot_reports_zero_when_no_background_subagents(monkeypatch):
 
 
 def test_snapshot_safe_when_async_active_count_raises(monkeypatch):
-    """If active_count() raises the snapshot stays at 0; no propagate."""
+    """If active_task_count() raises the snapshot stays at 0; no propagate."""
     cli_obj = _make_cli()
     import tools.async_delegation as ad_mod
 
     def _boom():
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(ad_mod, "active_count", _boom)
+    monkeypatch.setattr(ad_mod, "active_task_count", _boom)
     snap = cli_obj._get_status_bar_snapshot()
     assert snap["active_background_subagents"] == 0
 
@@ -173,4 +174,34 @@ def test_all_three_background_indicators_independent(monkeypatch):
     assert "▶ 1" in rendered
     assert "⚙ 2" in rendered
     assert "⛓ 5" in rendered
+
+
+def test_snapshot_expands_batch_to_child_task_count():
+    """A running 3-task delegate_task batch must show ⛓ 3, not ⛓ 1 —
+    active_task_count() (not the coarser active_count() unit/slot counter)
+    is the badge's source of truth so the number reflects real concurrent
+    subagent work, not how many async-pool slots are occupied."""
+    import tools.async_delegation as ad_mod
+
+    cli_obj = _make_cli()
+    ad_mod._reset_for_tests()
+    with ad_mod._records_lock:
+        ad_mod._records["batch-1"] = {
+            "delegation_id": "batch-1",
+            "status": "running",
+            "is_batch": True,
+            "goals": ["a", "b", "c"],
+        }
+        ad_mod._records["single-1"] = {
+            "delegation_id": "single-1",
+            "status": "stalling",
+            "is_batch": False,
+        }
+    try:
+        snap = cli_obj._get_status_bar_snapshot()
+        assert snap["active_background_subagents"] == 4
+        text = cli_obj._build_status_bar_text(width=80)
+        assert "⛓ 4" in text
+    finally:
+        ad_mod._reset_for_tests()
 

@@ -5768,10 +5768,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Count live background/async subagents (delegate_task batches and
         # background single delegations tracked by tools.async_delegation).
-        # active_count() iterates an in-memory records dict under a lock —
-        # cheap and only counts records still in the "running" state.
+        # active_task_count() expands a batch to its actual child count (a
+        # 3-task fan-out batch contributes 3, not 1) so the ⛓ badge reflects
+        # how many subagents are truly working right now, not how many pool
+        # slots are occupied. Iterates an in-memory records dict under a
+        # lock — cheap and only counts records still running/finalizing.
         try:
-            from tools.async_delegation import active_count as _async_active_count
+            from tools.async_delegation import active_task_count as _async_active_count
             snapshot["active_background_subagents"] = _async_active_count()
         except Exception:
             pass
