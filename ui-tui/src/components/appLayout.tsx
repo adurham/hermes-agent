@@ -154,21 +154,6 @@ const TranscriptPane = memo(function TranscriptPane({
   const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
-  // LiveTodoPanel rides as a child of the latest user-message row so it
-  // visually belongs to the prompt and follows it during scroll. -1 when
-  // empty → row.index === -1 is always false → no render.
-  const lastUserIdx = useMemo(() => {
-    const items = transcript.historyItems
-
-    for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i].role === 'user') {
-        return i
-      }
-    }
-
-    return -1
-  }, [transcript.historyItems])
-
   // Index of the first user-role message; every later user message gets a
   // small dash above it so multi-turn transcripts visually segment by
   // turn. -1 when no user message has been sent yet → no separator ever
@@ -234,8 +219,6 @@ const TranscriptPane = memo(function TranscriptPane({
                   t={ui.theme}
                 />
               )}
-
-              {row.index === lastUserIdx && <LiveTodoPanel />}
             </Box>
           ))}
 
@@ -363,6 +346,7 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
+      {ui.statusBar !== 'bottom' && <LiveTodoPanel />}
       <AmbientDock placement="dock-top" />
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
@@ -446,6 +430,7 @@ const ComposerPane = memo(function ComposerPane({
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
 
       <AmbientDock placement="dock-bottom" />
+      {ui.statusBar === 'bottom' && <LiveTodoPanel />}
       <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
   )
