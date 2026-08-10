@@ -236,6 +236,18 @@ def main(argv: list[str] | None = None) -> None:
     _setup_logging()
     _load_env()
 
+    # Classify every session this process creates as ACP-origin
+    # (tools/agent_messaging_tools.py's session_origin() / cross_session_
+    # integration's session_origin() both check this exact env var, the same
+    # mechanism HERMES_GATEWAY_SESSION/HERMES_CRON_SESSION use for their
+    # hosts). Without this, ACP sessions silently default to
+    # SessionOrigin.CLI, which is wrong for Transport B's inbound policy
+    # defaults (also "hold" for CLI, so today this was latent — but ACP-
+    # specific policy or auditing that keys off SessionOrigin.ACP would
+    # silently misclassify every ACP session). Set once, process-wide, before
+    # any AIAgent is constructed by SessionManager.
+    os.environ.setdefault("HERMES_ACP_SESSION", "1")
+
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")
 

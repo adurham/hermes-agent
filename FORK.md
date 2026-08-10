@@ -3,6 +3,90 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-08-10 (ACP sessions never registered as Transport A participants either — the ACP half of the same registration gap, companion to `9f6a4da9`)
+
+**Symptom:** identical to the CLI bug below, but for ACP: a `background=true`
+`delegate_task` subagent spawned from an ACP session (Zed, or any ACP
+client) calling `send_to_parent` never reached its parent directly. The
+message was written to `state.db`'s `cross_session_inbox` and **held for
+human approval** (ACP's inbound default), even though sender and recipient
+were the same Python process.
+
+**Root cause:** commit `9f6a4da9` wired `register_session_participant_for()`
+into `cli.py`'s idle tick and `delegate_tool.py`'s spawn path — but ACP
+(`acp_adapter/session.py`'s `SessionManager`/`SessionState`) is a **fully
+separate session host** from `cli.py`. It has its own `AIAgent` construction
+(`SessionManager._make_agent()`), its own `session_id` lifecycle
+(`create_session`, `fork_session`, `_restore`), and never calls into
+`cli.py` at all. None of the CLI fix's call sites ever ran for an ACP
+session, so `_session_participants` stayed empty for every ACP session and
+the exact same bug reproduced independently.
+
+**Fix:**
+1. New `_register_transport_a_participant(state)` helper in
+   `acp_adapter/session.py`, called at the end of `create_session()`,
+   `fork_session()`, and `_restore()` — every site that binds a fresh
+   `session_id` to a fresh `AIAgent`. Uses the same
+   `register_session_participant_for()` helper the CLI fix introduced, so
+   registration is additive/idempotent for ACP too.
+2. **Design decision — the `cli=` shim:** `register_session_participant_for()`'s
+   `cli=` argument is consumed by `tools/agent_messaging_transport_a.py`'s
+   delivery code via literal `getattr(cli, "_agent_running", ...)` /
+   `getattr(cli, "_pending_input", ...)` reads — attribute-name-strict, not
+   duck-typed to any particular shape beyond those two names. ACP's
+   `SessionState` has no such attributes; its equivalents are
+   `state.is_running` (bool) and `state.queued_prompts` (a plain list,
+   drained FIFO by `acp_adapter/server.py`). Rather than bolting CLI-shaped
+   attribute names onto `SessionState` itself — which would leak Transport
+   A's contract into the ACP session model — a new `_CliShim` class in
+   `acp_adapter/session.py` proxies `_agent_running` to `state.is_running`
+   and exposes a `_pending_input`-shaped object (`_PendingInputQueueShim`)
+   whose `.put()` appends to `state.queued_prompts`. `_register_transport_a_participant`
+   passes `_CliShim(state)` as `cli=` instead of `state` directly.
+3. `acp_adapter/entry.py`'s `main()` now sets `HERMES_ACP_SESSION=1`
+   (`os.environ.setdefault`) right after `_load_env()`, before any
+   `AIAgent` is constructed. `tools/agent_messaging_tools.py`'s and
+   `tools/cross_session_integration.py`'s `session_origin()` classifiers
+   both already checked this exact env var — the same mechanism
+   `HERMES_GATEWAY_SESSION`/`HERMES_CRON_SESSION` use for their hosts — but
+   nothing in the ACP process tree ever set it, so every ACP session
+   silently reported `SessionOrigin.CLI`. Verified this was still true on
+   current `main` before patching (Transport B's inbound policy defaults are
+   `hold` for both CLI and ACP, so the misclassification was latent — no
+   currently-observable behavioral difference — but ACP-specific policy or
+   auditing keyed off `SessionOrigin.ACP` would have silently misfired).
+
+**Not touched (deliberate):** `delegate_tool.py`'s spawn-site registration
+call (from the CLI fix) is untouched and already covers ACP-owned
+subagents — it registers `parent_agent`, whichever host spawned it. Transport
+B's inbound policy defaults remain unchanged, same reviewed boundary as the
+CLI fix.
+
+**Files touched:** `acp_adapter/session.py` (`_CliShim`,
+`_PendingInputQueueShim`, `_register_transport_a_participant()`, three call
+sites), `acp_adapter/entry.py` (`HERMES_ACP_SESSION` env var),
+`tests/acp/test_transport_a_registration.py` (7 new tests).
+
+**Verification:** `.venv/bin/python -m pytest tests/tools/test_agent_messaging_contract.py
+tests/tools/test_agent_messaging_send_dispatch.py tests/test_cross_session_transport.py
+tests/test_cross_session_integration.py tests/acp/ tests/acp_adapter/ -q` →
+**288 passed, 1 failed** (the 1 failure is the same pre-existing/environmental
+`TestSchema::test_wal_and_busy_timeout_on_this_modules_connections` noted in
+the companion CLI fix below — unrelated to this change, reproduces on a clean
+worktree). `tests/tools/test_delegate.py tests/tools/test_async_delegation.py
+tests/tools/test_delegate_toolset_scope.py
+tests/tools/test_restored_delegation_ownership.py` → **125 passed**.
+Live smoke test: constructed a real `SessionManager`/`SessionState` against
+an isolated `HERMES_HOME`, confirmed `session_origin() == SessionOrigin.ACP`
+with the env var set, spawned a background subagent record, called
+`resolve_transport()` → `TransportKind.IN_PROCESS`, delivered a message via
+`send_in_process()`, confirmed it landed in `state.queued_prompts` (not
+`cross_session_inbox`) and the DB's `cross_session_inbox` table had **0**
+rows afterward.
+
+Closes the ACP half of the registration gap found 2026-08-10 (companion to
+`9f6a4da9`).
+
 ### Fork-only fix — 2026-08-10 (Transport A never registered the top-level session, so every subagent `send_to_parent` fell through to Transport B's approval gate)
 
 **Symptom:** a `background=true` `delegate_task` subagent calling

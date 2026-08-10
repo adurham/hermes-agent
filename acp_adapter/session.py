@@ -155,6 +155,46 @@ def _clear_task_cwd(task_id: str) -> None:
         logger.debug("Failed to clear ACP task cwd override", exc_info=True)
 
 
+def _register_transport_a_participant(state: "SessionState") -> None:
+    """Make an ACP session addressable as a Transport A in-process recipient.
+
+    Companion to the CLI-side fix (commit 9f6a4da9): ACP is a fully separate
+    session host from ``cli.py`` — its own ``SessionManager``/``SessionState``,
+    its own ``AIAgent`` construction, its own session_id lifecycle — so the
+    CLI fix's call sites (``cli.py``'s idle tick, ``delegate_tool``'s spawn
+    path) never register an ACP session. Without this, a background
+    subagent's ``send_to_parent`` for an ACP session falls through to
+    Transport B's approval-gated path even though sender and recipient are
+    the same process — exactly the bug the CLI fix closed for ``cli.py``.
+
+    Called at the end of ``create_session()``, ``fork_session()``, and
+    ``_restore()`` — every site that binds a fresh ``session_id`` to a fresh
+    ``AIAgent``. ``register_session_participant_for()`` is additive and
+    idempotent (see ``tools/agent_messaging_transport_a.py``), so calling it
+    at all three sites, plus again whenever a subagent spawns
+    (``delegate_tool.py``'s existing call site also covers ACP-owned
+    subagents), is safe and never removes an older id an in-flight subagent
+    may still be keyed to.
+
+    The ``cli=`` argument expects an object exposing ``_agent_running``
+    (bool) and ``_pending_input`` (``.put()``-able) — literal attribute names
+    from ``cli.py``'s ``HermesCLI``. ACP's ``SessionState`` has no such
+    attributes (its own idle sink is ``queued_prompts``, drained FIFO by
+    ``acp_adapter/server.py``), so a ``_CliShim`` proxy translates rather
+    than bolting CLI-shaped attribute names onto ``SessionState`` itself.
+    """
+    try:
+        from tools.cross_session_integration import register_session_participant_for
+
+        register_session_participant_for(state.agent, cli=_CliShim(state))
+    except Exception:  # never break session creation/restore over messaging
+        logger.debug(
+            "Transport A participant registration failed for ACP session %s",
+            getattr(state, "session_id", "?"),
+            exc_info=True,
+        )
+
+
 @dataclass
 class SessionState:
     """Tracks per-session state for an ACP-managed Hermes agent."""
@@ -170,6 +210,64 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+
+
+class _PendingInputQueueShim:
+    """Adapter exposing a ``.put()`` queue-like interface over ``SessionState.queued_prompts``.
+
+    ``tools/agent_messaging_transport_a.py``'s idle-recipient delivery branch
+    (``_append_idle_atomically``) is attribute-name-strict: it does
+    ``getattr(cli, "_pending_input", None)`` and then calls ``.put()`` on
+    whatever it finds — mirroring ``cli.py``'s real ``queue.Queue``-backed
+    ``_pending_input``. ACP's idle-recipient sink is a plain
+    ``SessionState.queued_prompts`` list drained FIFO by
+    ``acp_adapter/server.py`` (``state.queued_prompts.pop(0)``), so ``.put()``
+    here appends to keep that same FIFO order rather than reimplementing a
+    real queue.
+    """
+
+    __slots__ = ("_state",)
+
+    def __init__(self, state: "SessionState") -> None:
+        self._state = state
+
+    def put(self, item: str) -> None:
+        self._state.queued_prompts.append(item)
+
+
+class _CliShim:
+    """Adapter presenting an ACP ``SessionState`` as Transport A's ``cli=`` target.
+
+    Transport A's delivery code (``tools/agent_messaging_transport_a.py``)
+    reads two literal attribute names off whatever object was registered as
+    ``cli``: ``_agent_running`` (bool — is the recipient's turn live right
+    now?) and ``_pending_input`` (an object with ``.put()`` — where to stash
+    a message for the recipient's next turn when it's idle). Those names come
+    from ``cli.py``'s ``HermesCLI`` class, which is a completely different
+    session host from ACP's ``SessionManager``/``SessionState``. Rather than
+    bolting CLI-shaped attribute names onto ``SessionState`` itself (which
+    would leak Transport A's contract into the ACP session model), this thin
+    read-only proxy translates on demand:
+
+    - ``_agent_running`` proxies ``state.is_running``.
+    - ``_pending_input`` proxies a ``_PendingInputQueueShim`` wrapping
+      ``state.queued_prompts`` (see that class for why ``.put()`` == append).
+
+    No other attribute is exposed or forwarded — Transport A's delivery code
+    only ever reads these two, and keeping the shim's surface to exactly what
+    is consumed makes it obvious if a future Transport A change needs a third
+    proxied attribute here.
+    """
+
+    __slots__ = ("_state", "_pending_input")
+
+    def __init__(self, state: "SessionState") -> None:
+        self._state = state
+        self._pending_input = _PendingInputQueueShim(state)
+
+    @property
+    def _agent_running(self) -> bool:
+        return bool(self._state.is_running)
 
 
 class SessionManager:
@@ -214,6 +312,7 @@ class SessionManager:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
         self._persist(state)
+        _register_transport_a_participant(state)
         logger.info("Created ACP session %s (cwd=%s)", session_id, cwd)
         return state
 
@@ -266,6 +365,7 @@ class SessionManager:
             self._sessions[new_id] = state
         _register_task_cwd(new_id, cwd)
         self._persist(state)
+        _register_transport_a_participant(state)
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -571,6 +671,7 @@ class SessionManager:
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
+        _register_transport_a_participant(state)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
