@@ -1,19 +1,18 @@
 # Local Agent Messaging (fork-only)
 
-Status: design draft, superseding `cross-session-messaging.md`'s scope.
-Two Fable review rounds plus three read-only codebase verification passes
-complete. Every Round 1 finding (8) and original open question (5) has a
-recorded decision; Round 2 caught two real gaps in those decisions
-(background-path wiring for the end-of-turn race fix, and an unspecified
-idle/active branch for parent-directed delivery), both now confirmed via
-direct code read and resolved with concrete, codebase-anchored fixes.
-Remaining before implementation: several lower-severity items (cap-locking,
-tool-schema bifurcation, parent-side toolset gating) plus everything still
-open in the predecessor doc (Transport B's heartbeat/TTL numbers, `hermes
-agents inbox` subcommand home, hold-mode UX, sender-permission threat
-model) — see "Status" sections throughout for the current itemized list.
-No code has been written. Needs a final user sign-off on the full
-accumulated decision set before implementation starts.
+Status: **design complete, pending user sign-off. No code written.**
+Supersedes `cross-session-messaging.md`'s scope. Two Fable review rounds
+plus four read-only codebase verification passes are complete. Every
+Round 1 finding (8), every original open question (5), both Round 2
+gaps, and every remaining lower-severity item (cap-locking, tool-schema
+naming, sender-permission gating) plus every item inherited from the
+predecessor doc (heartbeat/TTL, toolset name, `hermes agents inbox` home,
+hold-mode UX) now has a recorded, codebase-anchored decision — most
+verified via direct code read, the genuine judgment calls via Fable
+consult. See the final "Closing out the remaining lower-severity items"
+and "Final status" sections near the end of this doc for the complete
+decision list. Next step is user sign-off on the full decision set, not
+further design work.
 
 Scope: **fork-specific** (`adurham/hermes-agent`). Not proposed for upstream
 in this local-only form (see "Relationship to A2A" below for the part that
@@ -1020,3 +1019,187 @@ is a final user sign-off on the accumulated decision set (all of Round 1's
 gap-closure), followed by resolving the predecessor doc's remaining
 Transport B items and the schema/naming/toolset-gate items above, before
 any code is written.
+
+## Closing out the remaining lower-severity items (final pass, all resolved)
+
+### Cap-locking (decision 3's 4KB/16KB caps)
+
+**Decision:** the size-check and the append must happen atomically under
+`agent._pending_steer_lock` — not as two separate lock acquisitions
+(check size, release, re-acquire to append), which is the exact
+check-then-act race the earlier pass correctly flagged. Concretely: the
+messaging-tool layer's send path acquires `_pending_steer_lock` once,
+reads the current `_pending_steer` length, decides accept/reject against
+the 16KB coalesced cap, and — only on accept — appends and releases, all
+inside one critical section. This mirrors the pattern `steer()` itself
+already uses for its own read-modify-write
+(`self._pending_steer = self._pending_steer + "\n" + cleaned`, under
+`_pending_steer_lock`) — the fix is doing the cap check inside that same
+critical section rather than layering a second, separately-locked check on
+top of it.
+
+### Tool schema bifurcation: two distinctly-named tools, not one role-conditional schema
+
+**Decision (Fable consult): `send_agent_message(recipient, body)` for
+parent/session callers, `send_to_parent(body)` for subagent callers** — no
+recipient parameter on the subagent-side tool at all (it has exactly one
+valid target, per Finding 7). Rationale:
+
+- Same-tool-name-different-schema is a hygiene trap independent of this
+  feature: tool name → schema stops being a stable mapping, which breaks
+  anything that caches or replays tool definitions (transcript replay,
+  prompt caching, docs), and a subagent that has seen parent-side
+  transcripts elsewhere in its context could hallucinate a `recipient`
+  param onto the recipient-less variant it was actually given.
+- **This is the better choice for the "Relationship to A2A" compatibility
+  promise, not a worse one.** The A2A spec constrains the message
+  envelope/transport, not model-facing tool names — there's no A2A
+  argument for sharing a name. Both tools compile internally to the same
+  message envelope with an explicitly resolved recipient, so the router
+  has exactly one code path regardless of which tool name the model used.
+- **Cleaner forward-compat if Finding 7's sibling-messaging punt is ever
+  revisited:** a v2 that opens sibling messaging can give subagents the
+  *same* `send_agent_message` schema additively, and `send_to_parent`
+  survives unambiguously as sugar for the common case. The shared-name
+  approach would instead force a schema migration on a tool name already
+  in use — the exact instability distinct names avoid.
+
+### Sender-permission-mode threat model: gate at tool registration by session origin type, not a fictional "permission_mode" field
+
+The predecessor doc's Round 2 finding (a gateway session driven by an
+untrusted external chat user could act as *sender*, injecting an
+instruction into a more-permissive CLI session — recipient-side inbound
+policy does nothing to stop this) is real, but **there is no
+`permission_mode` field anywhere in this codebase to gate on** (verified —
+grepped for it directly; the concept the predecessor doc referenced does
+not exist as a real settings field on sessions today). The two closest
+real analogs, checked and explicitly rejected as the wrong lever:
+
+- `busy_input_mode` (`interrupt`/`queue`/`steer`) — a per-session UX
+  preference for how the CLI handles new input while busy, not a security
+  posture.
+- `delegation.subagent_auto_approve` — governs whether a *subagent's own*
+  dangerous-command approvals auto-approve, i.e. "what may this
+  participant do unsupervised." **Explicitly do not overload this for
+  sender-trust gating** — it answers a different question (what a
+  subagent may do to its own environment) from "how trusted is this
+  participant's inbound content to someone else," and conflating them
+  would bite the first time someone wants an auto-approving subagent
+  running inside an untrusted gateway session — two orthogonal settings
+  collapsed into one would then fight each other.
+
+**Decision (Fable consult): gate at tool registration by session origin
+type — gateway-origin sessions do not get the cross-session
+`send_agent_message` tool registered at all in v1.** They retain
+`send_to_parent`/in-process child messaging within their own session tree,
+but cannot reach another top-level session via Transport B. This is a
+one-line conditional at tool-registration time keyed on session origin
+(gateway vs. CLI vs. ACP), which is already a real, existing distinction
+in this codebase (how a session was created) — not a new concept invented
+for this feature. It kills the Telegram-driven-injection path outright at
+the source, rather than trying to mediate it after the fact with a policy
+field that doesn't exist.
+
+**Defense in depth, and the hook for future refinement:** the message
+router (not the sender) should stamp every envelope with the sending
+session's origin type and ID, regardless of the registration gate above.
+This is forgery-proof (the sender never self-reports its own origin) and
+gives a future, real per-session policy field something to key on without
+a schema change, if this coarse gate (which blocks a gateway session from
+messaging *any* other session, not just more-privileged ones) ever needs
+refining.
+
+**Explicitly documented as a residual risk, not solved by this gate:** the
+real remaining exposure isn't which sessions can send — it's that *any*
+inbound cross-session message is untrusted content from the recipient's
+point of view. The predecessor doc's Round 2 finding that delivered content
+must be framed as untrusted third-party data (not bare user-role
+authority) is the actual mitigation for that; this gate narrows *who* can
+attempt the attack, it does not make delivered content trustworthy by
+construction. Both are needed; neither substitutes for the other.
+
+### Predecessor doc's remaining Transport B items — concrete answers found via code precedent
+
+- **Heartbeat interval / registry TTL numbers:** this codebase already has
+  exactly this cadence question solved twice, with numbers to borrow
+  rather than invent. `agent/session_activity.py`'s
+  `SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0` is the existing
+  durable-heartbeat floor for session activity writes generally (explicitly
+  documented as a hard floor: "MUST stay >= 30s" against write contention).
+  `hermes_cli/kanban_db.py`'s `_STALE_HEARTBEAT_GAP_SECONDS = 3600` is the
+  existing "how long without a heartbeat before we call something dead"
+  reap threshold for kanban workers, a directly analogous liveness problem.
+  **Decision: reuse both numbers rather than inventing new ones** —
+  `cross_session_registry` heartbeats at the same 60s cadence
+  `session_activity.py` already uses for session activity generally, and
+  reaps at the same 3600s (1 hour) gap `kanban_db.py` already uses for
+  worker liveness. This is a smaller ask than the predecessor doc's vague
+  "2x the interactive idle-timeout" (which was never tied to a real
+  constant) and reuses cadences this codebase has already tuned for
+  write-contention and staleness detection.
+- **Toolset opt-in surface name:** name it `cross_session` per the
+  predecessor doc's own original proposal — no existing catalog entry fits
+  better, and the name should now cover both `send_agent_message`
+  (parent/session-side, Transport A+B) and `send_to_parent` (subagent-side,
+  Transport A only, mode-gated per the earlier decision) under one
+  opt-in toolset, consistent with the origin-type registration gate
+  decided above (a gateway session's toolset check gains the origin-type
+  condition on top of the existing opt-in check).
+- **`hermes agents inbox` subcommand home:** `hermes_cli/subcommands/approvals.py`
+  is a direct structural precedent — same shape of problem (list pending
+  items needing a human decision, resolve them via CLI flags), same
+  "parser here, handler injected by `main.py`" convention already
+  documented in that file's own module docstring. **Decision: give this
+  its own file, `hermes_cli/subcommands/agents.py`**, rather than bolting
+  onto `approvals.py` — the domain (cross-session messages) is distinct
+  from that file's actual domain (dangerous-command approval mining), and
+  a shared file would conflate two unrelated inbox concepts under one
+  misleading name. Follow `approvals.py`'s exact pattern: `build_agents_parser(subparsers, *, cmd_agents)`,
+  an `inbox` sub-subcommand with `--approve ID`/`--deny ID` flags mirroring
+  `approvals.py`'s `--apply`/`--json` shape.
+- **Hold-mode UX (long expiry vs. notification):** this codebase already
+  has a shipped, config-gated attention mechanism built for exactly this
+  problem — `cli.py`'s `_fire_attention_signals()`, built for approval/
+  clarify prompts that were getting silently missed across multiple
+  windows/SSH sessions. It fires a terminal bell (`\a`, propagates through
+  SSH/tmux/most terminal emulators) and, on macOS, a native `osascript`
+  notification banner with sound — both independently gated on
+  `approvals.bell_on_prompt`/`approvals.notify_on_prompt` in `config.yaml`,
+  fail-soft (never blocks the prompt if notification delivery itself
+  fails). **Decision: reuse `_fire_attention_signals()` directly for a
+  `held` cross-session message** rather than inventing a parallel
+  notification path or resolving the predecessor doc's "long expiry"
+  option — a `held` message firing the same bell+banner used for
+  approval/clarify prompts is more likely to actually be seen than a
+  longer timeout window, and it costs zero new code (one more call site,
+  reusing existing config gates rather than adding new ones). Combine with
+  a longer default `expires_at` anyway (borrowing the 3600s/1-hour reap
+  threshold decided above for consistency, rather than the predecessor
+  doc's original 5-minute default, which was explicitly flagged as not
+  credible without a synchronous dialog) — belt-and-suspenders, not
+  either/or.
+
+## Final status: all identified items resolved. Ready for user sign-off.
+
+Every item flagged across both Fable review rounds, both verification
+passes, and the predecessor doc's inherited open list now has a concrete,
+codebase-anchored decision:
+
+- Architecture (2 transports, participant model, `resolve_transport` seam)
+  — Round 1 confirmed sound, unchanged since.
+- All 8 Round 1 findings — resolved.
+- All 5 original open questions — resolved.
+- Both Round 2 gaps (background-path wiring, idle/active delivery branch)
+  — confirmed via direct code read and fixed.
+- Cap-locking, tool-schema naming, sender-permission gating — resolved
+  this pass, each via a concrete existing-code precedent or a direct
+  Fable consult, not invention.
+- Predecessor doc's remaining Transport B items (heartbeat/TTL, toolset
+  name, `hermes agents inbox` home, hold-mode UX) — resolved this pass, all
+  four via direct reuse of an already-shipped codebase mechanism
+  (`session_activity.py`'s heartbeat floor, `kanban_db.py`'s stale-gap
+  threshold, `approvals.py`'s subcommand pattern, `cli.py`'s
+  `_fire_attention_signals()`) rather than new design.
+
+No code has been written. Next step is user sign-off on the complete
+decision set, not further design work.
