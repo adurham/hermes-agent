@@ -10160,3 +10160,77 @@ clean; `npm --prefix ui-tui run typecheck` — clean, zero errors;
 src/__tests__/appChromeStatusRule.test.tsx src/__tests__/turnStore.test.ts`
 — 56/56 passing (no test referenced the removed `lastUserIdx` positioning,
 confirming no regression in covered behavior).
+
+### Fork-only feature — 2026-08-10 (CLI: border the live subagent/swarm tracking board; fix a narrow-terminal overflow bug in both boards)
+
+**Context:** user's live `~/.hermes/config.yaml` has `display.interface:
+cli`, so the actually-running frontend is the classic prompt_toolkit CLI
+(`cli.py`), not the Ink TUI touched by the two entries above. A
+concurrent session landed `91e3a62b9e` (bordered the todo board, emoji
+status markers, active-item-priority truncation) while this session was
+mid-investigation; fetched and fast-forward merged that commit before
+continuing, then implemented the matching border for the swarm/subagent
+board this turn's ask was actually about, reusing the exact box-drawing
+pattern `91e3a62b9e` established for the todo board.
+
+**Symptom (subagent board):** the live subagent/swarm tracking board —
+the `[a-xxxxxxxx] · model · status · N tools · ...` rows shown above the
+status line during `delegate_task` batches — rendered as bare
+`class:hint`-styled lines with no box-drawing chrome, same as the todo
+board did before `91e3a62b9e`.
+
+**Fix (subagent board):** added `_swarm_board_rows()` /
+`_swarm_board_box_width()` and rewrote `get_swarm_board_text()` /
+`get_swarm_board_height()` to wrap rows in a bronze `╭─...─╮`/`╰─...─╯`
+frame, mirroring `_todo_board_rows()` / `_todo_board_box_width()` /
+`get_todo_board_text()` from the just-merged commit line-for-line in
+structure. New `swarm-border` style key (`#CD7F32`, same bronze as
+`todo-border`/`clarify-border`/`sudo-border`/`approval-border`) added to
+`self._tui_style_base`. Height now accounts for the top+bottom border
+rows (`len(rows) + 2`).
+
+**Bug found and fixed (both boards):** `get_todo_board_text()` in
+`91e3a62b9e` (and my initial swarm board port of the same pattern) called
+`HermesCLI._panel_ljust(row, inner_width)` directly on each row without
+first trimming it to `inner_width`. `_panel_ljust` only *pads* short text
+to fill the width — it does nothing to text that's already longer than
+`inner_width`. Since `_todo_board_box_width()`/`_swarm_board_box_width()`
+cap the box at the terminal's available columns (not just the longest
+row), a long todo/subagent line on a narrow terminal renders past
+`inner_width`, and the box's right border (`│`) lands wherever that
+row's raw length happens to end — misaligned relative to every other
+row's border, breaking the panel's right edge. Fixed by trimming each
+row through the existing `HermesCLI._trim_status_bar_text(row,
+inner_width)` (adds a `...` ellipsis, same helper the status bar already
+uses for exactly this kind of width-budget trim) before the
+`_panel_ljust` pad call, in both `get_todo_board_text()` and
+`get_swarm_board_text()`.
+
+**Files:** `cli.py`.
+
+**Verification:** `python3 -c "import ast; ast.parse(open('cli.py').read())"`
+— clean. Standalone harness (built against the live
+`agent.display.display_cwidth`/`tools.swarm_board.format_row` so it
+exercises the real wide-glyph-width and row-formatting logic, not a
+mock) rendered both boards at terminal widths 100/60/40 with realistic
+multi-row fixtures (including the long "Deploy to both studios..." todo
+line and the "[a-0-9a36e9b0] · claude-opus-5 · summarizing · 26 tools
+..." subagent line from this session's own transcript) — confirmed every
+line of every rendered box (border rows + content rows) comes out to an
+IDENTICAL terminal-cell width at each terminal size, both before writing
+the trim fix (caught the bug: content rows measured wider than border
+rows at 60/40 cols) and after (all-equal at every width tested).
+`.venv/bin/python3 -m pytest tests/cli/test_cli_extension_hooks.py
+tests/cli/test_prompt_stash_cli.py tests/tools/test_swarm_board.py
+tests/agent/test_display_todo_progress.py tests/tools/test_todo_tool.py`
+— 101/101 passing (covers `_build_tui_layout_children`'s widget
+ordering — unchanged by this fix — plus `SwarmBoard`'s state container
+and the todo-progress/todo-tool paths the concurrent commit touched;
+confirms no regression from either commit).
+
+**Merge note:** the concurrent-session race on this exact feature
+(discovered via `git push` rejection → `git fetch` → inspect
+`origin/main..HEAD` before merging) is why this entry documents the
+merge alongside the fix — a future reader diffing FORK.md against `git
+log` should be able to tell which piece came from which session without
+re-deriving it from the SHAs.

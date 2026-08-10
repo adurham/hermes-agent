@@ -19897,9 +19897,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # tools/swarm_board.py::SwarmBoard's class docstring for why: each
         # concurrent delegate_task() batch gets its own board instance, and
         # this widget concatenates rows from every board currently active).
-        # Renders one line per active subagent across all active boards.
-        # Visibility is gated by the ConditionalContainer filter so the
-        # widget collapses to zero height when no swarm is running.
+        # Renders one line per active subagent across all active boards,
+        # wrapped in the same bronze bordered panel used by the todo board
+        # below and the clarify/approval/sudo widgets, so it reads as a
+        # distinct, self-contained widget rather than blending into
+        # scrollback. Visibility is gated by the ConditionalContainer
+        # filter so the widget collapses to zero height when no swarm is
+        # running.
 
         def _all_swarm_rows():
             # Snapshot the board list itself before iterating — show/hide
@@ -19914,18 +19918,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     continue
             return rows
 
-        def get_swarm_board_text():
+        def _swarm_board_rows() -> list:
+            """Raw (unpadded) text rows: one per active subagent."""
             rows = _all_swarm_rows()
             if not rows:
                 return []
             from tools.swarm_board import format_row as _format_swarm_row
-            fragments = []
+            return [_format_swarm_row(row) for row in rows]
+
+        def _swarm_board_box_width(rows: list) -> int:
+            term_cols = HermesCLI._get_tui_terminal_width()
+            longest = max([HermesCLI._panel_cwidth(r) for r in rows] + [20])
+            inner = min(longest + 4, max(24, term_cols - 6))
+            return inner + 2
+
+        def get_swarm_board_text():
+            rows = _swarm_board_rows()
+            if not rows:
+                return []
+            box_width = _swarm_board_box_width(rows)
+            inner_width = max(0, box_width - 2)
+            fragments = [('class:swarm-border', '╭' + ('─' * box_width) + '╮\n')]
             for row in rows:
-                fragments.append(('class:hint', _format_swarm_row(row) + '\n'))
+                # Trim BEFORE padding — see the todo board's identical fix
+                # for why an untrimmed row can overflow the box on a
+                # narrow terminal.
+                text = HermesCLI._trim_status_bar_text(row, inner_width)
+                fragments.append(('class:swarm-border', '│ '))
+                fragments.append(('class:hint', HermesCLI._panel_ljust(text, inner_width)))
+                fragments.append(('class:swarm-border', ' │\n'))
+            fragments.append(('class:swarm-border', '╰' + ('─' * box_width) + '╯\n'))
             return fragments
 
         def get_swarm_board_height():
-            return len(_all_swarm_rows())
+            rows = _swarm_board_rows()
+            if not rows:
+                return 0
+            return len(rows) + 2  # +2 for the top/bottom border lines
 
         swarm_board_widget = ConditionalContainer(
             Window(
@@ -20031,8 +20060,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             inner_width = max(0, box_width - 2)
             fragments = [('class:todo-border', '╭' + ('─' * box_width) + '╮\n')]
             for row in rows:
+                # Trim BEFORE padding — on a narrow terminal `inner_width`
+                # can end up smaller than a row's natural width (box_width
+                # is capped to the terminal, not just the longest row), and
+                # `_panel_ljust` only pads short rows, never shrinks long
+                # ones. An untrimmed long row pushes the right border off
+                # past the box edge, breaking alignment for every row below
+                # it. See swarm board's identical fix for the same class
+                # of bug.
+                text = HermesCLI._trim_status_bar_text(row, inner_width)
                 fragments.append(('class:todo-border', '│ '))
-                fragments.append(('class:hint', HermesCLI._panel_ljust(row, inner_width)))
+                fragments.append(('class:hint', HermesCLI._panel_ljust(text, inner_width)))
                 fragments.append(('class:todo-border', ' │\n'))
             fragments.append(('class:todo-border', '╰' + ('─' * box_width) + '╯\n'))
             return fragments
@@ -20173,6 +20211,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'sudo-text': '#FFF8DC',
             # Live todo/task board panel
             'todo-border': '#CD7F32',
+            # Live subagent/swarm tracking board panel
+            'swarm-border': '#CD7F32',
             # Dangerous command approval panel
             'approval-border': '#CD7F32',
             'approval-title': '#FF8C00 bold',
