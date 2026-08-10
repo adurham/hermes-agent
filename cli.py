@@ -3255,18 +3255,53 @@ def _terminal_width_for_streaming() -> int:
 
     The streaming path prefixes every line with ``_STREAM_PAD`` (a
     configurable left-margin indent — see ``display.response_indent_width``,
-    default 4 spaces) inside an open response panel.  The realigner uses
-    this number as its budget when deciding whether to keep a horizontal
-    table or fall back to vertical key-value rendering.  We subtract a
-    small safety margin so terminal-resize races don't push a borderline
-    table into mid-cell soft-wrap.
+    default 4 spaces) and, since 2026-08-10, hard-wraps at this same
+    budget so the box shows a matching blank margin on the RIGHT too
+    (symmetric framing, requested by the user after the box looked
+    lopsided with only a left indent). We subtract ``_STREAM_PAD`` on
+    both sides plus a small safety margin so terminal-resize races
+    don't push a borderline line/table into mid-cell soft-wrap.
+
+    This is also the realigner's budget when deciding whether to keep
+    a horizontal table or fall back to vertical key-value rendering.
     """
 
     try:
         cols = shutil.get_terminal_size((80, 24)).columns
     except Exception:
         cols = 80
-    return max(20, cols - len(_STREAM_PAD) - 2)
+    return max(20, cols - (2 * len(_STREAM_PAD)) - 2)
+
+
+def _wrap_stream_line(line: str) -> list[str]:
+    """Hard-wrap one logical line of streamed prose to the box's width.
+
+    2026-08-10: restores pre-July-2026 hard-wrapping (real newlines
+    inserted at the box's text width) so the streaming response box
+    gets a symmetric right margin matching ``_STREAM_PAD``'s left
+    indent, instead of relying on the terminal's own soft-wrap (which
+    only padded the left side, leaving the right edge flush against
+    the terminal wall). This knowingly reintroduces the rough edge the
+    July-2026 change removed: mouse-selecting a hard-wrapped paragraph
+    pastes as several short lines instead of one line the terminal can
+    rejoin on copy. Accepted explicitly by the user — ``/copy`` still
+    writes the original, unwrapped message text via the native
+    clipboard regardless of on-screen wrapping.
+
+    Only call this on prose lines. Table rows must NOT be wrapped here
+    — they're column-aligned separately by ``realign_markdown_tables``
+    and word-wrapping would destroy that alignment.
+    """
+    if not line:
+        return [""]
+    wrapped = textwrap.wrap(
+        line,
+        width=max(8, _terminal_width_for_streaming()),
+        replace_whitespace=False,
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+    return wrapped or [""]
 
 
 def _render_final_assistant_content(text: str, mode: str = "render"):
@@ -7228,12 +7263,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # reasoning is visible in real-time even without newlines.
         # Indent by _STREAM_PAD so reasoning text sits inside the box frame,
         # matching the response box (which pads content the same way) instead
-        # of rendering flush against the left border.
+        # of rendering flush against the left border. Also hard-wrap to the
+        # same box width for a symmetric right margin (2026-08-10).
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_STREAM_PAD}{_DIM}{line}{_RST}")
+            for sub_line in _wrap_stream_line(line):
+                _cprint(f"{_STREAM_PAD}{_DIM}{sub_line}{_RST}")
         if len(self._reasoning_buf) > 80:
-            _cprint(f"{_STREAM_PAD}{_DIM}{self._reasoning_buf}{_RST}")
+            for sub_line in _wrap_stream_line(self._reasoning_buf):
+                _cprint(f"{_STREAM_PAD}{_DIM}{sub_line}{_RST}")
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
@@ -7242,7 +7280,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
-                _cprint(f"{_STREAM_PAD}{_DIM}{buf}{_RST}")
+                for sub_line in _wrap_stream_line(buf):
+                    _cprint(f"{_STREAM_PAD}{_DIM}{sub_line}{_RST}")
                 self._reasoning_buf = ""
             w = self._scrollback_box_width()
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
@@ -7463,12 +7502,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
 
-        def _emit_one(printed_line: str) -> None:
+        def _emit_one(printed_line: str, wrap: bool = True) -> None:
             # Safety net: strip any leaked model control-token markup (e.g.
             # DeepSeek ``<｜DSML｜…>``) so a backend tool-call-parser leak never
             # paints raw special tokens into the response box.
             printed_line = _strip_special_token_markup(printed_line)
-            _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+            # Hard-wrap prose to the box width so the right edge gets a
+            # blank margin matching _STREAM_PAD's left indent (2026-08-10).
+            # Table rows come in pre-aligned by realign_markdown_tables and
+            # must print with wrap=False — word-wrapping would break their
+            # column padding.
+            for sub_line in (_wrap_stream_line(printed_line) if wrap else [printed_line]):
+                _cprint(f"{_STREAM_PAD}{_tc}{sub_line}{_RST}" if _tc else f"{_STREAM_PAD}{sub_line}")
 
         def _flush_table_buf() -> None:
             buf = self._stream_table_buf
@@ -7486,7 +7531,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 joined = _strip_markdown_syntax(joined)
             block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
-                _emit_one(ln)
+                _emit_one(ln, wrap=False)
 
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
@@ -7512,15 +7557,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 line = _strip_markdown_syntax(line)
             _emit_one(line)
 
-        # Long partial lines are emitted ONLY at real newlines — we no
-        # longer hard-wrap paragraphs at terminal width ourselves.  Each
-        # logical line lands in scrollback as one line; the TERMINAL
-        # soft-wraps it visually, and emulators (iTerm2/kitty/VTE/
-        # xterm.js/Windows Terminal) rejoin soft-wrapped rows on copy,
-        # so highlight-copy yields the original unwrapped text — same
-        # outcome as the TUI's selection copy.  (The pre-July-2026 chunk
-        # emitter baked real '\n's into every long paragraph, which is
-        # exactly what polluted copy/paste.)
+        # Long partial lines are emitted ONLY at real newlines — we don't
+        # hard-wrap an in-flight, still-growing paragraph ourselves (that
+        # would force a re-wrap of already-printed lines every time a new
+        # word arrives). Each logical line still lands in scrollback as one
+        # PRINTED line via _emit_one() above, which now hard-wraps it to
+        # the box's text width for a symmetric right margin (2026-08-10) —
+        # so wrapping does happen, just only once the line is complete
+        # (at a real '\n', or via the sentence-boundary early-flush below).
         #
         # TTFT perception: while a long opening paragraph accumulates
         # without a newline, mirror its tail into the status-bar spinner
@@ -7618,12 +7662,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
                 ln = _strip_special_token_markup(ln)
+                # Table rows are pre-aligned by the realigner above — do
+                # NOT word-wrap them, it would break column padding.
                 _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
 
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             line = _strip_special_token_markup(line)
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+            for sub_line in _wrap_stream_line(line):
+                _cprint(f"{_STREAM_PAD}{_tc}{sub_line}{_RST}" if _tc else f"{_STREAM_PAD}{sub_line}")
             self._stream_buf = ""
 
         # Close the response box.  Note: _stream_box_opened stays True
@@ -16357,7 +16404,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 label = f"{label}{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))} "
                             fill = w - 2 - HermesCLI._status_bar_display_width(label)
                             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
-                        _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
+                        for sub_line in _wrap_stream_line(sentence.rstrip()):
+                            _cprint(f"{_STREAM_PAD}{sub_line}")
                     _tts_display_cb = display_callback
 
                 tts_thread = threading.Thread(
