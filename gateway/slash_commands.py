@@ -1364,9 +1364,27 @@ class GatewaySlashCommandsMixin:
         """
         target_id = event.get_command_args().strip()
         if target_id:
+            # Scope the cancel to THIS session's own delegations.
+            # tools.async_delegation._records is one process-global dict
+            # shared by every session the gateway serves; without a session
+            # selector, any user who obtains a delegation_id (they're
+            # printed in plaintext in status lines / dispatch confirmations
+            # / /agents output, so leakage across a shared channel or a
+            # copy-paste is realistic) could cancel a DIFFERENT session's
+            # background work. Fetch the same session_key the plain-/stop
+            # path below already resolves, before branching on target_id,
+            # and pass it through so interrupt_by_id's ownership check
+            # (mirrors interrupt_for_session's selector matching) applies.
+            _stop_id_source = event.source
+            _stop_id_session_entry = await self.async_session_store.get_or_create_session(
+                _stop_id_source
+            )
+            _stop_id_session_key = _stop_id_session_entry.session_key
             try:
                 from tools.async_delegation import interrupt_by_id
-                result = interrupt_by_id(target_id, reason="/stop <id>")
+                result = interrupt_by_id(
+                    target_id, reason="/stop <id>", session_key=_stop_id_session_key
+                )
             except Exception as exc:
                 return EphemeralReply(f"❌ Could not cancel `{target_id}`: {exc}")
             if not result.get("found"):

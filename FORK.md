@@ -3,6 +3,104 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-08-10 (two review-flagged gaps in today's delegation/Transport A work: no session-ownership check on `/stop <id>`; gateway unregister could silently no-op or unregister the wrong id)
+
+**Context:** requested a second-opinion review (via `mcp__consult`, the
+configured reference model) of today's five delegation/agent-messaging
+commits (`9f6a4da927`, `388aa20150`, `36bd139d83`, `2487044e90`,
+`85f18c79c3`) before calling the session done. The review surfaced two
+real, verified-against-the-actual-code issues; both are fixed here.
+
+**Issue 1 — `interrupt_by_id` had no session-ownership check.**
+`tools.async_delegation._records` is one process-global dict shared by
+every session a gateway process serves. The new `interrupt_by_id()` (from
+`85f18c79c3`) did a bare `_records.get(delegation_id)` lookup with no
+selector — unlike the pre-existing `interrupt_for_session()`, which
+correctly scopes to the caller via `_matches_session_selectors()`.
+`delegation_id` (`deleg_<8 hex>`) isn't practically guessable, but it's
+printed in plaintext everywhere (status lines, dispatch confirmations,
+`/agents` output), so cross-session leakage via a shared channel or
+copy-paste was a real, not hypothetical, path to one gateway user
+cancelling another session's background work.
+
+**Fix:** `interrupt_by_id()` gained three optional keyword selectors
+(`session_key`, `origin_ui_session_id`, `parent_session_id`) reusing the
+existing `_matches_session_selectors()` matcher. When any are passed, a
+non-matching record reports `found=False` — identical to a genuinely
+nonexistent id, so the check can't be used to probe for other sessions'
+ids. Left unscoped (all three empty), behavior is unchanged — the CLI's
+default, since a CLI process is single-session and has nothing to scope
+against. Wired the scoping into both call sites that cross a session
+boundary:
+- `gateway/slash_commands.py`'s `/stop <id>` now resolves the caller's own
+  `session_key` (the same lookup the bare-`/stop` path below it already
+  does) and passes it through.
+- `tools/delegate_tool.py`'s `delegate_task(cancel=...)` now passes
+  `parent_session_id=parent_agent.session_id`.
+
+New tests: `TestInterruptByIdSessionScoping` (5 cases) in
+`tests/tools/test_async_delegation.py`; `test_cancel_ignores_other_sessions_delegation`
+in `tests/tools/test_delegate.py`; `test_stop_with_id_ignores_other_sessions_delegation`
+plus session_key threading through the existing `/stop <id>` gateway tests
+in `tests/gateway/test_stop_thread_sibling.py`.
+
+**Issue 2 — gateway's Transport A unregister could silently no-op, or unregister
+the wrong id.** `_clear_conversation_scope`'s teardown tried to re-derive
+the agent to unregister at boundary time via a three-step fallback
+(`_agent_cache.get()` → unwrap tuple → `state.turn.agent`). Two real
+failure modes, not edge cases:
+1. `state.turn.agent` is nulled by `TurnState.clear()` at the end of
+   *every* turn — well before most conversation boundaries fire — so the
+   fallback found nothing far more often than intended.
+2. A session split (in-place compaction changes `agent.session_id`
+   without rotating the gateway's `session_key` — see the
+   `agent_session_id != ctx.session_id` branch in `_finish_agent_run`)
+   could leave a *reachable* agent's `session_id` different from the id
+   that was actually registered, so even a successful lookup could
+   unregister the wrong participant.
+Both silently defeated the whole point of `36bd139d83`'s gateway-specific
+unregister (unbounded `_session_participants` leak, since gateway
+processes are long-running and serve many sessions).
+
+**Fix:** stopped re-deriving the registered id at teardown time entirely.
+Added `SessionState.conversation.transport_a_participant_id: str = ""` —
+populated with the exact id `register_gateway_session_participant()`
+returns at registration time (now `str`, not `bool`), read back (not
+re-derived) by `_clear_conversation_scope` before `state.conversation.clear()`
+wipes it, and passed directly to `unregister_gateway_session_participant()`
+(now takes a `participant_id: str`, not an `agent` object). Both bridge
+functions' docstrings in `gateway/agent_messaging_bridge.py` updated to
+explain why re-deriving at teardown is unsound.
+
+New test: `test_unregister_uses_registration_time_id_not_current_agent_session_id`
+in `tests/gateway/test_transport_a_gateway_registration.py`, simulating a
+session split and confirming unregistration still finds the originally
+registered id. Existing `register_gateway_session_participant`/
+`unregister_gateway_session_participant` tests updated for the new
+str-returning / str-accepting signatures.
+
+**Files:** `gateway/agent_messaging_bridge.py`, `gateway/run.py`,
+`gateway/session_state.py`, `gateway/slash_commands.py`,
+`tools/async_delegation.py`, `tools/delegate_tool.py`, plus the four
+touched test files above.
+
+**Verification:** `python3 -c "import ast; ..."` on all six touched
+source files — clean. Full targeted suite (`tests/gateway/
+test_transport_a_gateway_registration.py`, `tests/tools/
+test_async_delegation.py`, `tests/tools/test_delegate.py`, `tests/cli/
+test_stop_targeted_delegation.py`, `tests/gateway/
+test_stop_thread_sibling.py`) — 162/162 passing. Broader collateral sweep
+(`tests/gateway/`, `tests/tools/test_agent_messaging_send_dispatch.py`,
+`tests/tools/test_agent_messaging_contract.py`, `tests/acp/
+test_transport_a_registration.py`, `tests/test_cross_session_integration.py`,
+`tests/test_cross_session_transport.py`) — 4987 passed, 7 failed; all 7
+confirmed pre-existing test-order/isolation pollution unrelated to any
+touched file (Discord video/attachment sends, redirect-header handling,
+session-store DB path, systemd socket, WAL/busy-timeout schema test) —
+each passes individually both with and without this change applied,
+confirming the failures are ordering artifacts of the full-suite run, not
+regressions.
+
 ### Fork-only fix — 2026-08-10 (ACP sessions never registered as Transport A participants either — the ACP half of the same registration gap, companion to `9f6a4da9`)
 
 **Symptom:** identical to the CLI bug below, but for ACP: a `background=true`

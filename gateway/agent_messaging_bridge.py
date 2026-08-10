@@ -149,7 +149,7 @@ class GatewaySessionAgentSink:
             return False
 
 
-def register_gateway_session_participant(runner: Any, session_key: str, agent: Any) -> bool:
+def register_gateway_session_participant(runner: Any, session_key: str, agent: Any) -> str:
     """Register ``agent``'s owning gateway session as a Transport A participant.
 
     Call this whenever a gateway session's ``AIAgent`` becomes the live
@@ -159,27 +159,41 @@ def register_gateway_session_participant(runner: Any, session_key: str, agent: A
     call on every turn, which also keeps the stored ``agent`` reference
     fresh across gateway's per-turn ``AIAgent`` reconstruction.
 
-    Returns True when a registration was attempted. Never raises — a
-    messaging-registration failure must never block a gateway turn.
+    Returns the ``participant_id`` (== ``agent.session_id`` at the moment of
+    registration) when a registration was attempted, or ``""`` on failure.
+    Callers MUST persist this return value (``SessionState.conversation.
+    transport_a_participant_id`` — see that field's docstring) and pass it
+    back to ``unregister_gateway_session_participant`` at the matching
+    conversation boundary, rather than trying to re-derive it later from
+    whatever agent object happens to still be reachable at that point: a
+    session split (in-place compaction changes ``agent.session_id`` without
+    rotating the gateway's ``session_key``) can leave the live agent's
+    ``session_id`` different from the id actually registered here, and
+    ``TurnState.clear()`` already nulls ``state.turn.agent`` at the end of
+    every turn — well before most conversation boundaries fire. Never
+    raises — a messaging-registration failure must never block a gateway
+    turn.
     """
     if not session_key or agent is None:
-        return False
+        return ""
     try:
         from tools.cross_session_integration import register_session_participant_for
 
-        return register_session_participant_for(
+        if not register_session_participant_for(
             agent, cli=GatewaySessionAgentSink(runner, session_key)
-        )
+        ):
+            return ""
+        return getattr(agent, "session_id", "") or ""
     except Exception:
         logger.debug(
             "gateway Transport A participant registration failed for %s",
             session_key,
             exc_info=True,
         )
-        return False
+        return ""
 
 
-def unregister_gateway_session_participant(agent: Optional[Any]) -> None:
+def unregister_gateway_session_participant(participant_id: Optional[str]) -> None:
     """Drop a gateway session's Transport A registration at a conversation boundary.
 
     UNLIKE the CLI fix (which deliberately never unregisters, because CLI
@@ -199,24 +213,22 @@ def unregister_gateway_session_participant(agent: Optional[Any]) -> None:
     boundary — the session can resume and its subagents (if genuinely
     in-flight, mid-turn) still need to reach it.
 
-    ``agent`` is the session's stored ``AIAgent`` at the boundary (may be
-    None if the session never ran a turn); ``register_session_participant_for``
-    keys registration off ``agent.session_id``, so unregistration needs the
-    same id, not the gateway routing key.
+    ``participant_id`` is the exact id ``register_gateway_session_participant``
+    returned at registration time (persisted in ``SessionState.conversation.
+    transport_a_participant_id``) — NOT re-derived from a live ``AIAgent``
+    object here. See that field's docstring in ``gateway/session_state.py``
+    for why re-deriving it at teardown time is unsound.
     """
-    if agent is None:
-        return
-    session_id = getattr(agent, "session_id", "") or ""
-    if not session_id:
+    if not participant_id:
         return
     try:
         from tools.agent_messaging_transport_a import unregister_session_participant
 
-        unregister_session_participant(session_id)
+        unregister_session_participant(participant_id)
     except Exception:
         logger.debug(
             "gateway Transport A participant unregistration failed for %s",
-            session_id,
+            participant_id,
             exc_info=True,
         )
 

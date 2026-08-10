@@ -3378,7 +3378,17 @@ def delegate_task(
     if cancel:
         try:
             from tools.async_delegation import interrupt_by_id
-            result = interrupt_by_id(str(cancel).strip(), reason="model_cancel")
+            # Scope to the calling agent's own session -- delegate_task's
+            # cancel path must only be able to pull back a delegation this
+            # session actually dispatched, matching the ownership check
+            # added to the gateway's /stop <id> for the same reason
+            # (_records is process-global; a gateway process runs many
+            # sessions concurrently).
+            result = interrupt_by_id(
+                str(cancel).strip(),
+                reason="model_cancel",
+                parent_session_id=getattr(parent_agent, "session_id", "") or "",
+            )
         except Exception as exc:
             return tool_error(f"Cancel failed: {exc}")
         if not result.get("found"):

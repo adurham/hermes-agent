@@ -22715,8 +22715,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session_key:
             return
         # Structural clear: every conversation-scoped field resets in one
-        # call — no per-attribute pop-list to drift.
+        # call — no per-attribute pop-list to drift. Capture the Transport A
+        # participant_id BEFORE clearing — state.conversation.clear() zeroes
+        # transport_a_participant_id along with everything else, so it must
+        # be read first or the unregister block below always sees "".
         state = self._peek_session_state(session_key)
+        _t_a_pid = state.conversation.transport_a_participant_id if state is not None else ""
         if state is not None:
             state.conversation.clear()
         # Drop this session's Transport A (in-process agent-messaging)
@@ -22729,24 +22733,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # through, so it fires at exactly session expiry/reset/resume and
         # nowhere else (idle agent-cache eviction alone is NOT a boundary
         # and must not unregister — see gateway/agent_messaging_bridge.py).
+        #
+        # Unregister by the id CAPTURED AT REGISTRATION TIME
+        # (transport_a_participant_id), not re-derived from whatever agent
+        # object happens to still be reachable here. The prior approach
+        # (check _agent_cache, unwrap a tuple, fall back to state.turn.agent)
+        # silently no-op'd far more often than intended: TurnState.clear()
+        # already nulls turn.agent at the end of every turn — well before
+        # most conversation boundaries fire — and a session split (in-place
+        # compaction changes agent.session_id without rotating session_key)
+        # can leave a reachable agent's session_id different from the id
+        # that was actually registered. See transport_a_participant_id's
+        # docstring in gateway/session_state.py for the full reasoning.
         try:
             from gateway.agent_messaging_bridge import (
                 unregister_gateway_session_participant,
             )
 
-            _boundary_agent = (
-                self._agent_cache.get(session_key)
-                if hasattr(self, "_agent_cache")
-                else None
-            )
-            _boundary_agent = (
-                _boundary_agent[0]
-                if isinstance(_boundary_agent, tuple)
-                else _boundary_agent
-            )
-            if _boundary_agent is None and state is not None:
-                _boundary_agent = state.turn.agent
-            unregister_gateway_session_participant(_boundary_agent)
+            unregister_gateway_session_participant(_t_a_pid)
         except Exception:
             logger.debug(
                 "Transport A gateway unregistration failed for %s",
@@ -24693,9 +24697,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     register_gateway_session_participant,
                 )
 
-                register_gateway_session_participant(
+                _t_a_pid = register_gateway_session_participant(
                     self, session_key, agent_holder[0]
                 )
+                if _t_a_pid:
+                    # Persist the EXACT id we registered under so the
+                    # matching _clear_conversation_scope teardown
+                    # unregisters this id specifically, rather than trying
+                    # to re-derive it later from whatever agent object is
+                    # still reachable (unsound after a session split, or
+                    # once TurnState.clear() has already nulled turn.agent
+                    # — see transport_a_participant_id's docstring in
+                    # gateway/session_state.py).
+                    self._session_state(session_key).conversation.transport_a_participant_id = _t_a_pid
             except Exception:
                 logger.debug(
                     "Transport A gateway registration failed for %s",

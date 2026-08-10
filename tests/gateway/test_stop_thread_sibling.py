@@ -158,6 +158,7 @@ async def test_stop_with_id_does_not_touch_running_agent(monkeypatch):
     ad_mod._reset_for_tests()
     try:
         runner = object.__new__(GatewayRunner)
+        runner.session_store = _FakeStore(_per_user_key("userA"))
         interrupted = []
         runner._interrupt_and_clear_session = (
             lambda *a, **kw: interrupted.append(a)
@@ -178,19 +179,26 @@ async def test_stop_with_id_does_not_touch_running_agent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stop_with_id_cancels_matching_delegation():
+    """The gateway's targeted /stop <id> scopes to the CALLER's own
+    session_key -- pass the same key _FakeStore.get_or_create_session
+    resolves for this event's source so the ownership check in
+    interrupt_by_id matches."""
     import tools.async_delegation as ad_mod
 
     ad_mod._reset_for_tests()
     try:
+        session_key = _per_user_key("userA")
         calls = []
         with ad_mod._records_lock:
             ad_mod._records["deleg_target"] = {
                 "delegation_id": "deleg_target",
                 "status": "running",
+                "session_key": session_key,
                 "interrupt_fn": lambda: calls.append(1),
             }
 
         runner = object.__new__(GatewayRunner)
+        runner.session_store = _FakeStore(session_key)
         event = MessageEvent(
             text="/stop deleg_target",
             message_type=MessageType.TEXT,
@@ -207,18 +215,55 @@ async def test_stop_with_id_cancels_matching_delegation():
 
 
 @pytest.mark.asyncio
+async def test_stop_with_id_ignores_other_sessions_delegation():
+    """A delegation dispatched by a DIFFERENT session_key must not be
+    cancellable via this caller's /stop <id> -- reports not-found,
+    identical to a genuinely nonexistent id."""
+    import tools.async_delegation as ad_mod
+
+    ad_mod._reset_for_tests()
+    try:
+        calls = []
+        with ad_mod._records_lock:
+            ad_mod._records["deleg_not_mine"] = {
+                "delegation_id": "deleg_not_mine",
+                "status": "running",
+                "session_key": _per_user_key("userB"),
+                "interrupt_fn": lambda: calls.append(1),
+            }
+
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = _FakeStore(_per_user_key("userA"))
+        event = MessageEvent(
+            text="/stop deleg_not_mine",
+            message_type=MessageType.TEXT,
+            source=_thread_source("userA"),
+        )
+        result = await runner._handle_stop_command(event)
+
+        assert calls == []
+        text = str(getattr(result, "text", result)).lower()
+        assert "no running delegation" in text
+    finally:
+        ad_mod._reset_for_tests()
+
+
+@pytest.mark.asyncio
 async def test_stop_with_id_already_done_reports_cleanly():
     import tools.async_delegation as ad_mod
 
     ad_mod._reset_for_tests()
     try:
+        session_key = _per_user_key("userA")
         with ad_mod._records_lock:
             ad_mod._records["deleg_finished"] = {
                 "delegation_id": "deleg_finished",
                 "status": "completed",
+                "session_key": session_key,
             }
 
         runner = object.__new__(GatewayRunner)
+        runner.session_store = _FakeStore(session_key)
         event = MessageEvent(
             text="/stop deleg_finished",
             message_type=MessageType.TEXT,

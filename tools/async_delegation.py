@@ -1512,7 +1512,14 @@ def interrupt_for_session(
     return count
 
 
-def interrupt_by_id(delegation_id: str, reason: str = "cancelled") -> Dict[str, Any]:
+def interrupt_by_id(
+    delegation_id: str,
+    reason: str = "cancelled",
+    *,
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+    parent_session_id: str = "",
+) -> Dict[str, Any]:
     """Cancel ONE specific in-flight async delegation by its ``delegation_id``.
 
     This is the id ``delegate_task``'s dispatch response and the ``⛓`` badge's
@@ -1529,16 +1536,38 @@ def interrupt_by_id(delegation_id: str, reason: str = "cancelled") -> Dict[str, 
     graceful stop at the next iteration boundary, it does not hard-kill the
     worker thread (Python threads can't be force-killed).
 
+    Ownership scoping (session_key / origin_ui_session_id / parent_session_id):
+    ``_records`` is a single process-global dict, and a gateway process
+    serves many independent sessions/users concurrently out of the same
+    dict. If ANY of the three selectors is non-empty, the record must match
+    via ``_matches_session_selectors`` (same matcher ``interrupt_for_session``
+    uses) or this call reports the id as not found -- identical to a
+    genuinely nonexistent id, deliberately not distinguished, so a caller
+    can't use this to probe whether some other session's delegation_id
+    exists. Leave all three empty (the CLI's default) to skip the check
+    entirely -- a CLI process is single-session, so there is nothing to
+    scope against; every id already in _records was dispatched by the one
+    session that process is running.
+
     Returns ``{"found": bool, "already_done": bool, "interrupted": bool}``:
     - ``found=False``: no delegation with this id exists (never dispatched,
-      already pruned after completion, or a typo).
+      already pruned after completion, a typo, or -- when scoped -- it
+      belongs to a different session).
     - ``found=True, already_done=True``: it existed but already finished
       (completed/failed/interrupted) before this call landed — nothing to do.
     - ``found=True, interrupted=True``: the interrupt signal was sent.
     """
+    scoped = bool(session_key or origin_ui_session_id or parent_session_id)
     with _records_lock:
         record = _records.get(delegation_id)
         if record is None:
+            return {"found": False, "already_done": False, "interrupted": False}
+        if scoped and not _matches_session_selectors(
+            record,
+            session_key=session_key,
+            origin_ui_session_id=origin_ui_session_id,
+            parent_session_id=parent_session_id,
+        ):
             return {"found": False, "already_done": False, "interrupted": False}
         status = record.get("status")
         if status not in ("running", "stalling", "finalizing"):

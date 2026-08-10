@@ -109,6 +109,21 @@ class ConversationState:
     ephemeral_pin: Optional[Tuple[Any, ...]] = None
     # Last voice-channel context delivered (None = never delivered).
     vc_last: Optional[str] = None
+    # The exact Transport A (in-process agent-messaging) participant_id
+    # this session registered under — i.e. the agent.session_id value
+    # captured at the moment gateway/agent_messaging_bridge.py's
+    # register_gateway_session_participant() succeeded. Read (not
+    # re-derived) by _clear_conversation_scope to unregister the SAME id
+    # that was registered. Re-deriving it at teardown time from whatever
+    # agent object happens to still be reachable is unsound: a session
+    # split (in-place compaction changes agent.session_id without
+    # rotating session_key — see the agent_session_id != ctx.session_id
+    # branch in _finish_agent_run) means the live agent's session_id can
+    # differ from the id that was actually registered, and turn.agent is
+    # already cleared to None by TurnState.clear() at the end of every
+    # turn — well before most conversation boundaries fire — so falling
+    # back to it finds nothing far more often than "rare edge case".
+    transport_a_participant_id: str = ""
 
     def clear(self) -> None:
         """Reset every conversation-scoped field to its default.
@@ -126,6 +141,7 @@ class ConversationState:
         self.sidecar_notes = []
         self.ephemeral_pin = None
         self.vc_last = None
+        self.transport_a_participant_id = ""
 
 
 @dataclass
