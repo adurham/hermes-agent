@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,10 +51,21 @@ def _load_config() -> dict:
         return {}
 
 
-def _resolve_peer(agent: str) -> Optional[dict]:
-    """Resolve a peer name to {url, auth, timeout, capabilities}, or treat ``agent`` as a URL."""
+def _resolve_peer(agent: str, timeout_override: Optional[int] = None) -> Optional[dict]:
+    """Resolve a peer name to {url, auth, timeout, capabilities}, or treat ``agent`` as a URL.
+
+    ``timeout_override`` — when provided (e.g. via the ``timeout`` arg to
+    ``a2a_call``) — takes precedence over both the hardcoded default AND any
+    per-peer config entry. This closes the #78007 gap where raw-URL calls
+    could not extend the client timeout to cover long-running peer tasks.
+    """
     if agent.startswith("http://") or agent.startswith("https://"):
-        return {"url": agent, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": []}
+        return {
+            "url": agent,
+            "auth": {},
+            "timeout": int(timeout_override) if timeout_override else _DEFAULT_TIMEOUT,
+            "capabilities": [],
+        }
     cfg = _load_config()
     peers = cfg.get("a2a_agents") or {}
     entry = peers.get(agent)
@@ -62,7 +74,7 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     return {
         "url": entry.get("url", ""),
         "auth": entry.get("auth", {}) or {},
-        "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)),
+        "timeout": int(timeout_override) if timeout_override else int(entry.get("timeout", _DEFAULT_TIMEOUT)),
         "capabilities": entry.get("capabilities", []) or [],
         "tenant": entry.get("tenant", ""),
     }
@@ -146,6 +158,47 @@ def _short_state(state: str) -> str:
     return state.replace("TASK_STATE_", "").replace("_", "-").lower() if state else ""
 
 
+def _poll_task_until_terminal(
+    base_url: str, headers: dict, card: Optional[dict],
+    task_id: str, budget_seconds: float,
+) -> Optional[dict]:
+    """Poll ``tasks/get`` until the task reaches a terminal state or the
+    caller's remaining timeout budget runs out. Returns the final Task
+    result dict, or None if the budget expired while still non-terminal.
+
+    #78007: the server now replies to ``message/send`` with a non-terminal
+    WORKING task instead of blocking (and instead of discarding a real
+    result that lands after its own reply window). Without this poll, the
+    caller would just get back "(no text reply) [... working]" and the real
+    completion — captured server-side via tasks/get — would be invisible to
+    whoever called ``a2a_call``. This closes that gap on the client side.
+    """
+    deadline = time.time() + max(0.0, budget_seconds)
+    interval = 1.0
+    rpc_url = _rpc_url(base_url, card)
+    while time.time() < deadline:
+        req_body = {
+            "jsonrpc": "2.0", "id": protocol.new_task_id(),
+            "method": "tasks/get", "params": {"id": task_id},
+        }
+        try:
+            resp = _http_post_json(rpc_url, req_body, headers, min(10, max(1, int(deadline - time.time()))))
+        except Exception:
+            # Transient poll failure — keep trying within budget rather than
+            # surfacing a spurious error for what may just be a slow peer.
+            time.sleep(min(interval, max(0.0, deadline - time.time())))
+            continue
+        if "error" in resp:
+            return None
+        result = resp.get("result", {}) or {}
+        state = (result.get("status") or {}).get("state", "")
+        if state in protocol.TERMINAL_STATES or state == protocol.STATE_INPUT_REQUIRED:
+            return result
+        time.sleep(min(interval, max(0.0, deadline - time.time())))
+        interval = min(interval * 1.5, 5.0)
+    return None
+
+
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """Send one message/send to a peer. Returns (reply_text, context_id, state).
 
@@ -192,9 +245,28 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     payload = protocol.unwrap_send_message_response(result)
     reply = _reply_text_from_result(payload)
     reply_ctx, state = ctx, ""
+    task_id = ""
     if isinstance(payload, dict):
         reply_ctx = payload.get("contextId", ctx)
         state = (payload.get("status") or {}).get("state", "")
+        task_id = str(payload.get("id") or "")
+
+    # #78007: the server replies to message/send with a non-terminal WORKING
+    # task when its own reply window closes before the agent finishes,
+    # rather than blocking indefinitely or discarding a late-arriving real
+    # result. Poll tasks/get for the actual outcome instead of returning
+    # "(no text reply) [... working]" to the caller — the whole point of the
+    # server-side fix is that the real result is still there to be fetched.
+    if state and state not in protocol.TERMINAL_STATES and state != protocol.STATE_INPUT_REQUIRED and task_id:
+        remaining = max(0.0, timeout - 2.0)  # leave margin below the caller's own timeout
+        if remaining > 0:
+            polled = _poll_task_until_terminal(base_url, headers, card, task_id, remaining)
+            if polled is not None:
+                payload = polled
+                reply = _reply_text_from_result(polled)
+                reply_ctx = polled.get("contextId", reply_ctx)
+                state = (polled.get("status") or {}).get("state", state)
+
     protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
     protocol.metrics.inbound_total += 1
     return reply, reply_ctx, state
@@ -266,10 +338,20 @@ def a2a_call(args: dict, **_: Any) -> str:
     agent = str(args.get("agent") or args.get("agent_name") or args.get("name") or "").strip()
     message = str(args.get("message") or args.get("text") or args.get("task") or "").strip()
     context_id = str(args.get("context_id") or args.get("contextId") or "").strip()
+    # #78007: allow the caller to raise the client timeout for long-running
+    # peer tasks — previously only named a2a_agents config entries could set
+    # this, so raw-URL calls were stuck at _DEFAULT_TIMEOUT.
+    timeout_override: Optional[int] = None
+    raw_timeout = args.get("timeout")
+    if raw_timeout is not None:
+        try:
+            timeout_override = max(1, int(raw_timeout))
+        except (TypeError, ValueError):
+            timeout_override = None
     if not agent or not message:
         return "Error: both 'agent' and 'message' are required."
 
-    peer = _resolve_peer(agent)
+    peer = _resolve_peer(agent, timeout_override=timeout_override)
     if not peer or not peer.get("url"):
         return (
             f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in "
@@ -517,6 +599,7 @@ _SCHEMAS: dict[str, _ToolSchema] = {
                     "agent": {"type": "string", "description": "Configured peer name (from a2a_agents) or a full http(s):// URL."},
                     "message": {"type": "string", "description": "The task / message to send the peer, in natural language."},
                     "context_id": {"type": "string", "description": "Optional: context id from a prior reply, to continue the conversation."},
+                    "timeout": {"type": "integer", "description": "Optional: seconds to wait for the peer's reply (default 120). Raise for long-running peer tasks; the server's own reply window is 300s by default (A2A_REPLY_TIMEOUT)."},
                 },
                 "required": ["agent", "message"],
             },

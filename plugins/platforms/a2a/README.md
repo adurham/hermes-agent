@@ -84,6 +84,7 @@ via `tasks/get`.
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
 | `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply. |
+| `A2A_QUICK_ACK_TIMEOUT` | `15` | Seconds `message/send` blocks before returning an early non-terminal ack if the agent hasn't replied yet (clamped to `A2A_REPLY_TIMEOUT`). Fast tasks still return synchronously; poll `tasks/get` for slow ones. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 

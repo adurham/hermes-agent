@@ -724,6 +724,45 @@ class TestClientTools:
         # Outbound redaction applied before sending.
         assert "sk-abcdefghij" not in part["text"]
 
+    def test_raw_url_call_honors_caller_timeout(self, monkeypatch):
+        """#78007: a2a_call with a plain http(s):// URL must honor a caller-
+        supplied ``timeout`` argument (previously hardcoded at 120s)."""
+        # No a2a_agents config — force the raw-URL path.
+        monkeypatch.setattr(tools, "_load_config", lambda: {})
+        monkeypatch.setattr(tools, "_fetch_card", lambda *a, **k: None)
+
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured["timeout"] = timeout
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", "c", protocol.STATE_COMPLETED, "ok"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+
+        # Default: hardcoded 120.
+        tools.a2a_call({"agent": "http://peer.example:9999", "message": "hi"})
+        assert captured["timeout"] == tools._DEFAULT_TIMEOUT
+
+        # Override: caller-supplied timeout wins.
+        tools.a2a_call({"agent": "http://peer.example:9999", "message": "hi", "timeout": 600})
+        assert captured["timeout"] == 600
+
+        # Also works via _resolve_peer directly.
+        peer = tools._resolve_peer("http://peer.example:9999", timeout_override=450)
+        assert peer["timeout"] == 450
+
+    def test_named_peer_timeout_override_takes_precedence(self, monkeypatch):
+        """Caller ``timeout`` also overrides a per-peer config entry."""
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"r": {"url": "http://x", "timeout": 60}}})
+        peer = tools._resolve_peer("r")
+        assert peer["timeout"] == 60
+        peer = tools._resolve_peer("r", timeout_override=900)
+        assert peer["timeout"] == 900
+
     def test_call_reports_input_required(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config",
                             lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
@@ -1335,29 +1374,169 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
-    def test_timeout_returns_failed_not_completed(self, monkeypatch):
-        """When the agent never replies, the task must FAIL (and count as a
-        failure), not report success."""
+    def test_timeout_leaves_task_non_terminal_for_late_completion(self, monkeypatch):
+        """When the sync-RPC window closes before the agent replies, the task
+        must stay in a non-terminal state (WORKING) — NOT be finalized as
+        FAILED — so that a real completion arriving later is still captured
+        via tasks/get. See upstream issue #78007.
+        """
+        import time
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1")
-        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+
+        reply_gate = threading.Event()
+        reply_holder = {"text": "the real answer"}
+
+        # Custom adapter so we can drive the reply asynchronously *after*
+        # the sync-RPC window has closed.
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        port = _free_port()
+        monkeypatch.setenv("A2A_PORT", str(port))
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        base = f"http://127.0.0.1:{port}"
+
+        async def fake_handle_message(event):
+            # Wait until the test releases us — well after A2A_REPLY_TIMEOUT.
+            await asyncio.get_event_loop().run_in_executor(
+                None, reply_gate.wait, 10.0)
+            await adapter.send(event.source.chat_id, reply_holder["text"],
+                               metadata={"notify": True})
+
+        adapter.handle_message = fake_handle_message  # type: ignore
+        adapter._message_handler = object()
 
         async def run():
             assert await adapter.connect() is True
             failed_before = protocol.metrics.tasks_failed
             completed_before = protocol.metrics.tasks_completed
-            resp = await asyncio.to_thread(_post_json, base + "/", _send_body("are you there"))
+
+            resp = await asyncio.to_thread(_post_json, base + "/", _send_body("do something slow"))
             task = resp["result"]
-            assert task["status"]["state"] == "TASK_STATE_FAILED"
-            assert protocol.metrics.tasks_failed == failed_before + 1
+            task_id = task["id"]
+            # (a) sync-RPC returned NON-terminal; agent still working.
+            assert task["status"]["state"] in (
+                "TASK_STATE_WORKING", "TASK_STATE_SUBMITTED",
+            ), f"expected non-terminal, got {task['status']['state']}"
+            assert protocol.metrics.tasks_failed == failed_before  # not counted as failure
             assert protocol.metrics.tasks_completed == completed_before
-            # The task store agrees.
-            rec = adapter.tasks.get(task["id"])
-            assert rec["state"] == "TASK_STATE_FAILED"
+
+            # (b) Task store agrees it's still working (not terminally failed).
+            rec = adapter.tasks.get(task_id)
+            assert rec["state"] not in ("TASK_STATE_FAILED", "TASK_STATE_COMPLETED")
+
+            # (c) Now release the agent — its Future resolves; the late
+            # done-callback finalizes the task as COMPLETED.
+            reply_gate.set()
+            # Poll tasks/get until the task reaches COMPLETED.
+            deadline = time.time() + 5.0
+            final_state = ""
+            final_reply = ""
+            while time.time() < deadline:
+                get_resp = await asyncio.to_thread(_post_json, base + "/", {
+                    "jsonrpc": "2.0", "id": "g",
+                    "method": "tasks/get", "params": {"id": task_id},
+                })
+                final_state = get_resp["result"]["status"]["state"]
+                if final_state in ("TASK_STATE_COMPLETED", "TASK_STATE_FAILED"):
+                    arts = get_resp["result"].get("artifacts") or []
+                    if arts:
+                        final_reply = arts[0]["parts"][0].get("text", "")
+                    break
+                await asyncio.sleep(0.05)
+            assert final_state == "TASK_STATE_COMPLETED", (
+                f"late completion was NOT recorded (state={final_state}); "
+                "issue #78007 regression."
+            )
+            assert reply_holder["text"] in final_reply
+            assert protocol.metrics.tasks_completed == completed_before + 1
+            assert protocol.metrics.tasks_failed == failed_before
+
             await adapter.disconnect()
 
         asyncio.run(run())
+
+    def test_client_tool_polls_quick_ack_to_real_result_with_default_timeouts(self, monkeypatch):
+        """End-to-end regression for the #78007 default-mismatch gap: with the
+        client tool's DEFAULT timeout (120s, unmodified) against the
+        server's DEFAULT reply window (300s, unmodified) a caller previously
+        always saw a raw socket timeout, because the server blocked the full
+        300s before ever sending back a response to poll on.
+
+        The server now quick-acks with a non-terminal WORKING task well
+        inside typical client timeouts (see _quick_ack_timeout, default 15s
+        clamped by A2A_REPLY_TIMEOUT). a2a_call's client-side polling then
+        picks up the REAL result via tasks/get once the agent finishes,
+        instead of returning "(no text reply) [... working]" to the caller.
+
+        We can't wait out real 15s/300s defaults in a unit test, so both
+        sides are scaled down proportionally (quick-ack ~0.3s, reply window
+        ~2s) while keeping the same *shape*: quick-ack << client timeout <<
+        reply window, and the agent's real reply lands after quick-ack but
+        before the client's own timeout — exactly the region that was
+        previously unreachable.
+        """
+        import time
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "2")
+        monkeypatch.setenv("A2A_QUICK_ACK_TIMEOUT", "0.3")
+
+        reply_gate = threading.Event()
+        reply_holder = {"text": "the real slow answer"}
+
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        port = _free_port()
+        monkeypatch.setenv("A2A_PORT", str(port))
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        base = f"http://127.0.0.1:{port}"
+
+        async def fake_handle_message(event):
+            # Resolve AFTER the quick-ack window closes but well before the
+            # reply timeout / orphan watchdog would give up — the exact
+            # window the quick-ack fix exists to make reachable.
+            await asyncio.get_event_loop().run_in_executor(
+                None, reply_gate.wait, 5.0)
+            await adapter.send(event.source.chat_id, reply_holder["text"],
+                               metadata={"notify": True})
+
+        adapter.handle_message = fake_handle_message  # type: ignore
+        adapter._message_handler = object()
+
+        async def run():
+            assert await adapter.connect() is True
+
+            def _release_after_delay():
+                time.sleep(0.6)  # after quick-ack (0.3s), before reply_timeout (2s)
+                reply_gate.set()
+
+            releaser = threading.Thread(target=_release_after_delay, daemon=True)
+            releaser.start()
+
+            from plugins.platforms.a2a import tools as a2a_tools
+            monkeypatch.setattr(
+                a2a_tools, "_load_config",
+                lambda: {"a2a_agents": {"peer": {"url": base}}},
+            )
+            # Client tool timeout budget large enough to cover the poll —
+            # this models a caller that (per the #78007 fix) can now raise
+            # its own timeout via the `timeout` arg, but the key regression
+            # being tested is that the FIRST response is a quick, pollable
+            # ack rather than a dead socket.
+            result = await asyncio.to_thread(
+                a2a_tools.a2a_call, {"agent": "peer", "message": "do something slowish", "timeout": 10},
+            )
+            await adapter.disconnect()
+            releaser.join(timeout=2)
+            return result
+
+        result = asyncio.run(run())
+        assert reply_holder["text"] in result, (
+            f"client tool did not surface the late real result via polling; got: {result!r}"
+        )
+        assert "no text reply" not in result
 
     def test_connect_accepts_gateway_reconnect_kwarg(self, monkeypatch):
         """Gateway reconnection passes is_reconnect=... to every adapter connect()."""

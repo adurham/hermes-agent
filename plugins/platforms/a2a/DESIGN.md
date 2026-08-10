@@ -111,8 +111,27 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
 - **Task store:** every task (including terminal ones, bounded to the last
   500) stays queryable via `tasks/get` / `tasks/list`, and `tasks/subscribe`
   reattaches to a running task's stream via store watchers. A watchdog fails
-  orphaned tasks after 5 minutes (idempotent transitions — no double
-  counting in metrics).
+  orphaned tasks after `_orphan_timeout()` (kept strictly greater than
+  `A2A_REPLY_TIMEOUT` — see below), with idempotent transitions (no double
+  counting in metrics, no double persist/audit/push).
+- **Quick-ack + polling (#78007):** synchronous `message/send` no longer
+  blocks for the full `A2A_REPLY_TIMEOUT` window (default 300s). It blocks
+  only for `A2A_QUICK_ACK_TIMEOUT` (default 15s, clamped to never exceed
+  `A2A_REPLY_TIMEOUT`) before returning an early non-terminal `WORKING` task
+  if the agent hasn't replied yet — a fast task still returns its real
+  result synchronously the moment it resolves. Without this, a caller whose
+  own HTTP timeout is shorter than the reply window (the common case: the
+  `a2a_call` client tool defaults to 120s against a 300s server window)
+  always hit a raw socket timeout and never received a response object to
+  poll from at all. The client tool now polls `tasks/get` against its own
+  timeout budget when it gets back a non-terminal ack, so the real result —
+  captured whenever the agent's Future eventually resolves, via a
+  `add_done_callback` that finalizes through the normal `_finalize_task`
+  path — is surfaced to the caller instead of silently discarded. Task
+  finalization is race-safe: `TaskStore.complete()` (not a separate
+  pre-check) is the atomic hand-off, so a late finalize and the orphan
+  watchdog racing for the same task can never both run persist/audit/push
+  side effects.
 - **input-required:** the platform hint tells the agent to start a reply with
   `[INPUT_REQUIRED]` when it needs clarification; the adapter maps that to
   `TASK_STATE_INPUT_REQUIRED` with the question in `status.message`.
