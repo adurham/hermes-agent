@@ -10081,3 +10081,32 @@ component change covers both call sites automatically.
 
 **Verification:** `npm --prefix ui-tui run build` — clean build, no type
 errors.
+
+### Fork-only feature — 2026-08-10 (TUI: persistent to-do list moved out of transcript, anchored to status line)
+
+**Symptom:** user-reported follow-up to the border fix above — the live
+`TodoPanel` rendered as a child of the latest user-message row inside the
+scrolling transcript (`row.index === lastUserIdx`), so it got interwoven
+between transcript messages as the turn progressed rather than sitting in
+a fixed, predictable spot. User wanted it anchored directly above or below
+the status rule instead.
+
+**Fix:** removed the row-anchored render (and the `lastUserIdx`
+last-user-message lookup that positioned it) from `TranscriptPane` in
+`appLayout.tsx`, and instead render `<LiveTodoPanel />` once in
+`ComposerPane`, immediately adjacent to whichever `StatusRulePane` is
+active: directly below the top status rule when `ui.statusBar !== 'bottom'`
+(covers `'top'`, the default, and any non-bottom placement), or directly
+above the bottom status rule when `ui.statusBar === 'bottom'`. `TodoPanel`
+lives on the global `$turnState` nanostore atom (not React context), so
+moving its consumer from `TranscriptPane` to `ComposerPane` required no
+prop threading.
+
+**Files:** `ui-tui/src/components/appLayout.tsx`.
+
+**Verification:** `npm --prefix ui-tui run build:ink && npm run build` —
+clean; `npm --prefix ui-tui run typecheck` — clean, zero errors;
+`npx vitest run src/__tests__/appChromeBlockedTimers.test.tsx
+src/__tests__/appChromeStatusRule.test.tsx src/__tests__/turnStore.test.ts`
+— 56/56 passing (no test referenced the removed `lastUserIdx` positioning,
+confirming no regression in covered behavior).
