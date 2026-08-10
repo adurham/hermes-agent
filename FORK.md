@@ -10059,3 +10059,25 @@ Applied to the live `~/.hermes/config.yaml` as well: the dead
 `auxiliary.defaults.session_search` block was then safely removed via
 `hermes config unset` (now fixed), confirmed only that key was removed
 and the Fallback Model block survived intact.
+
+### Fork-only feature — 2026-08-10 (TUI: persistent to-do list panel had no visible border)
+
+**Symptom:** user-reported — the persistent/live to-do list rendered by
+`TodoPanel` (the `tasks N/M` block shown above the input prompt while an
+agent turn is running) had no border, making it visually blend into the
+surrounding transcript compared to other boxed elements (tool-result
+previews, `Hermes` overlay/prompt boxes, branding boxes) which all use a
+rounded `borderStyle` for visual separation.
+
+**Fix:** added `borderColor={t.color.muted}` + `borderStyle="round"` +
+`paddingX={1}` to the outer `Box` in `TodoPanel`, matching the existing
+convention used by the tool-result box in `messageLine.tsx`
+(`borderColor={t.color.muted} borderStyle="round"`). `TodoPanel` is shared
+between the live turn panel (`LiveTodoPanel` in `streamingAssistant.tsx`)
+and the archived-transcript row (`messageLine.tsx`), so the single
+component change covers both call sites automatically.
+
+**Files:** `ui-tui/src/components/todoPanel.tsx`.
+
+**Verification:** `npm --prefix ui-tui run build` — clean build, no type
+errors.
