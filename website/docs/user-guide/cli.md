@@ -74,7 +74,9 @@ A persistent status bar sits above the input area, updating in real time:
 | Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
 | 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
 | ▶ N | **Active background tasks** — how many `/background` prompts are still running in the current session. Appears whenever at least one task is in flight. |
+| ⛓ N | **Active background subagents** — real child-task count across all in-flight `delegate_task` dispatches, batch-expanded (a 3-task parallel batch shows `⛓ 3`, not `⛓ 1`). Includes children the stall monitor has flagged `stalling` (still occupying a slot during their grace window before force-finalize), so the count doesn't flicker low right before recovery. Appears whenever at least one subagent is running. |
 | Duration | Elapsed session time |
+| ⏩ steer | Shown while a queued `/steer` note is waiting to land on the next tool result — persists in the bar until the note is delivered, instead of only flashing once in a confirmation line that can scroll out of view. |
 | ⚠ YOLO | **YOLO mode warning** — shown whenever `HERMES_YOLO_MODE` is on (either `hermes --yolo` at launch or `/yolo` toggled mid-session). Mirrors the banner-line warning so you can't forget you're in auto-approve mode. |
 
 The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration, plus the YOLO badge when active) below 52.
@@ -95,6 +97,15 @@ On the `openai-codex` provider, `/usage` also shows any banked usage-limit reset
 ### Session Resume Display
 
 When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Previous Conversation" panel appears between the banner and the input prompt, showing a compact recap of the conversation history. See [Sessions — Conversation Recap on Resume](sessions.md#conversation-recap-on-resume) for details and configuration.
+
+### Live Task Boards
+
+Two bordered panels can appear above the status line while work is in flight, matching the framing already used for clarify/approval/sudo prompts:
+
+- **Todo board** — live while the `todo` tool has an active list. Uses unambiguous markers (`✅` done, spinner for in-progress, plain `[ ]` for pending — chosen over Unicode squares/ballot boxes because color-emoji fonts render those as solid blocks regardless of terminal theme, and `[ ]` can never be substituted by an emoji glyph) and a `❌` marker for cancelled items. In-progress items are never hidden; only pending items are trimmed from the tail once the row budget (sized from terminal height, floor 8 / ceiling 30 rows) fills up, with the footer reporting exactly what's hidden (`N pending` and/or `N completed`).
+- **Swarm/subagent board** — live during `delegate_task` batches, showing one row per child (`[a-xxxxxxxx] · model · status · N tools · ...`).
+
+Both boards trim long rows to the box's inner width before padding (so a long line on a narrow terminal ellipsis-truncates instead of overflowing past the right border) and are hidden entirely when there's nothing to show.
 
 ## Keybindings
 

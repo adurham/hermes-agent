@@ -242,6 +242,17 @@ worker thread — the layer where the wedge lived. The stall monitor remains
 as the safety net for anything else.
 
 
+## Cancelling One In-Flight Delegation
+
+Any single dispatch — a lone background task or a whole parallel batch — can be pulled back by its `delegation_id` without touching anything else running:
+
+- **CLI / Gateway:** `/stop <delegation_id>` cancels exactly that dispatch. Bare `/stop` still kills everything (whole-session interrupt), unchanged.
+- **Model-facing:** `delegate_task(cancel="deleg_xyz")` lets the agent self-correct a mistaken dispatch (wrong model, stale instructions, duplicate work) mid-turn instead of waiting on you.
+
+The `delegation_id` is surfaced everywhere you'd need it — the dispatch confirmation note, the CLI's background-dispatch status line (`[deleg_id] ... (/stop <id> to cancel)`), and the JSON tool result — so it's never buried where only a log-diver could find it.
+
+Targeting distinguishes three outcomes rather than a blind "ok": the delegation is actively running/stalling and gets interrupted, it already finished (`already_done`), or the id doesn't match anything (`not_found`). A batch cancel interrupts every task in that batch; sibling delegations dispatched separately are untouched.
+
 ## Monitoring Running Subagents (`/agents`)
 
 The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegate_task` fan-out into a first-class audit surface:
