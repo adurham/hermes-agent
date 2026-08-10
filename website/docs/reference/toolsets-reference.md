@@ -57,6 +57,7 @@ Or in-session:
 | `code_execution` | `execute_code` | Run Python scripts that call Hermes tools programmatically. |
 | `coding` | composite (`file` + `terminal` + `search` + `web` + `skills` + `browser` + `todo` + `memory` + `session_search` + `clarify` + `code_execution` + `delegation` + `vision`) | Coding-focused bundle for software work: file editing, terminal, search, web docs, skills, browser, delegate, and code execution. |
 | `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
+| `cross_session` | `send_agent_message`, `send_to_parent`, `list_agents` | [Local agent messaging](../user-guide/features/agent-messaging.md) — fork-only, opt-in. Message another live top-level session or your own subagents (`send_agent_message`), or your parent if you're a `background=true` subagent (`send_to_parent`); `list_agents` discovers reachable sessions. `send_agent_message`/`list_agents` are parent/session-only and are never granted to a subagent in any mode; `send_agent_message` is additionally withheld from gateway-origin sessions. `send_to_parent` is granted to a delegated child only under `background=true`. |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
 | `discord` | `discord` | Core Discord text/embed/DM actions (gateway-only). Active on the `hermes-discord` toolset. |

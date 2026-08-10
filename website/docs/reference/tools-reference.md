@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~81 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 6 terminal tools (`terminal`, `process`, plus desktop-GUI-gated `read_terminal`, `close_terminal`, `open_preview`, `focus_pane`), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~84 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 6 terminal tools (`terminal`, `process`, plus desktop-GUI-gated `read_terminal`, `close_terminal`, `open_preview`, `focus_pane`), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), 3 opt-in `cross_session` tools (`send_agent_message`, `send_to_parent`, `list_agents`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
@@ -55,6 +55,16 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `cronjob` | Unified scheduled-task manager. Use `action="create"`, `"list"`, `"update"`, `"pause"`, `"resume"`, `"run"`, or `"remove"` to manage jobs. Supports skill-backed jobs with one or more attached skills, and `skills=[]` on update clears attached skills. Cron runs happen in fresh sessions with no current-chat context. | — |
+
+## `cross_session` toolset
+
+Opt-in toolset (not loaded in the default `hermes-cli` set) — see [Local Agent Messaging](/user-guide/features/agent-messaging) for the full behavior, delivery guarantees, and inbound-policy config. Add via `--toolsets cross_session` or include `cross_session` in your `toolsets:` config.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `send_agent_message` | Send a short coordination message to another live top-level Hermes session or one of your own running subagents. Success means QUEUED, not delivered or read. Never registered for gateway-origin sessions (Telegram, Discord, etc.) or for any subagent. | — |
+| `send_to_parent` | Send a short progress or coordination message to the parent that delegated this task to you. No recipient parameter — your parent is the only valid target. Only registered for a `background=true` subagent; a synchronous child never gets this tool. | — |
+| `list_agents` | List other live top-level Hermes sessions reachable via `send_agent_message`. Subagents are never listed — message the session that owns them instead. Never registered for a subagent in any mode. | — |
 
 ## `delegation` toolset
 

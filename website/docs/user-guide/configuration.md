@@ -745,6 +745,17 @@ the `hermes tools` UI.
 
 Leaving the list empty, or omitting the key, is a no-op.
 
+## Local Agent Messaging
+
+Controls the inbound policy for [cross-process local agent messaging](/user-guide/features/agent-messaging) — what this session does with a message another local Hermes session sends it, once you've enabled the opt-in `cross_session` toolset.
+
+```yaml
+cross_session:
+  inbound: ""   # "" (default: per-origin defaults below), "accept", "hold", or "refuse"
+```
+
+Leaving it empty (the default) keeps conservative per-session-origin defaults: `hold` for CLI and ACP sessions, `refuse` for gateway and cron sessions. Setting this key to `accept`, `hold`, or `refuse` overrides that default for every origin this session might have. Evaluated fresh by the recipient every time it drains a message — never trusted from the sender, and a policy change takes effect immediately even for messages already queued.
+
 ## Git Worktree Isolation
 
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:

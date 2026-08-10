@@ -63,6 +63,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
 | `hermes approvals` | Approval-prompt tools — mine approval history into allowlist proposals. |
+| `hermes agents` | Local agent messaging — list and resolve held cross-session messages. See [Local Agent Messaging](../user-guide/features/agent-messaging.md). |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
 | `hermes prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
 | `hermes debug` | Debug tools — upload logs and system info for support. |
