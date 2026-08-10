@@ -65,6 +65,46 @@ def _print_unmanaged_summary() -> None:
     )
 
 
+def _print_blocked_writes_summary(state: dict) -> None:
+    """Report skill_manage writes the most recent LLM review pass tried and
+    got refused by its own write guard (unmanaged/pinned/external/bundled/
+    hub-installed skills — see ``_background_review_write_guard`` in
+    ``tools/skill_manager_tool.py``).
+
+    Previously the ONLY place this surfaced was a per-tool-call scrollback
+    line in a live CLI session at the moment the refusal happened (``⚡
+    skill_man <name>  Refusing background curator patch for skill '...'``)
+    — indistinguishable at a glance from any other failed tool call, and
+    gone the moment that session's terminal scrolled past it or the process
+    exited. ``agent.curator._run_llm_review`` now persists the full refusal
+    list into ``.curator_state.json`` on every LLM pass, so `hermes curator
+    status` can show it durably regardless of whether anyone was watching
+    a live terminal when the refusal actually happened.
+
+    Sourced from state (this run's snapshot), not a live re-scan — the
+    refusal only happens WHEN the curator actually tries a write, so there
+    is no way to compute this outside of an actual review pass.
+    """
+    blocked = state.get("blocked_writes") or []
+    if not blocked:
+        return
+    by_skill: dict = {}
+    for entry in blocked:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("skill", "?")
+        by_skill.setdefault(name, entry)
+    print(f"\nblocked writes (needs manual action): {len(by_skill)}")
+    for name, entry in list(by_skill.items())[:10]:
+        hint = entry.get("hint", "")
+        if hint:
+            print(f"  {name:<40s} `{hint}`")
+        else:
+            print(f"  {name}")
+    if len(by_skill) > 10:
+        print(f"  … and {len(by_skill) - 10} more — see last report")
+
+
 def _cmd_status(args) -> int:
     from agent import curator
     from tools import skill_usage
@@ -110,6 +150,7 @@ def _cmd_status(args) -> int:
         f"  consolidate:    {'on' if curator.get_consolidate() else 'off'}"
         f"{'' if curator.get_consolidate() else ' (prune-only; LLM merge pass opt-in)'}"
     )
+    _print_blocked_writes_summary(state)
 
     rows = skill_usage.curated_report()
     if not rows:

@@ -149,6 +149,14 @@ def _default_state() -> Dict[str, Any]:
         "last_report_path": None,
         "paused": False,
         "run_count": 0,
+        # skill_manage writes the most recent LLM review pass tried and got
+        # refused by its own write guard (unmanaged/pinned/external/bundled/
+        # hub-installed skills) — see _extract_blocked_writes /
+        # _background_review_write_guard. Replaced wholesale on every LLM
+        # pass, not accumulated. load_state()'s key filter below silently
+        # drops any persisted key absent from this dict, so it MUST be
+        # listed here to round-trip across a save_state()/load_state() pair.
+        "blocked_writes": [],
     }
 
 
@@ -1329,6 +1337,7 @@ def _write_run_report(
         "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"),
         "tool_calls": llm_meta.get("tool_calls", []),
+        "blocked_writes": llm_meta.get("blocked_writes", []),
     }
 
     # run.json — machine-readable, full fidelity
@@ -1533,6 +1542,38 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             lines.append("## LLM summary\n")
             lines.append(llm_sum)
             lines.append("")
+
+    # Blocked writes — skill_manage calls the review fork's own write guard
+    # refused (unmanaged/pinned/external/bundled/hub-installed skills). This
+    # is deliberately its own section, not buried in tool-call counts: each
+    # entry needs a manual command to actually take effect, and the whole
+    # point of this section is that a human read it and act on it, not just
+    # note that "some tool calls happened."
+    blocked = p.get("blocked_writes") or []
+    if blocked:
+        lines.append(f"## Blocked writes — needs manual action ({len(blocked)})\n")
+        lines.append(
+            "_The review fork tried to patch these skills but its own "
+            "safety guard refused — these are skills the curator is NOT "
+            "currently allowed to touch autonomously. Nothing is broken; "
+            "each just needs one manual command to opt in (or is "
+            "intentionally left alone)._\n"
+        )
+        SHOW = 25
+        for entry in blocked[:SHOW]:
+            skill = entry.get("skill", "?")
+            action = entry.get("action", "?")
+            hint = entry.get("hint", "")
+            reason = entry.get("reason", "")
+            line = f"- `{skill}` ({action})"
+            if hint:
+                line += f" — `{hint}`"
+            lines.append(line)
+            if reason and not hint:
+                lines.append(f"    - {reason}")
+        if len(blocked) > SHOW:
+            lines.append(f"- … and {len(blocked) - SHOW} more (see `run.json`)")
+        lines.append("")
 
     # Recovery footer
     lines.append("## Recovery\n")
@@ -1786,10 +1827,35 @@ def run_curator_review(
         except Exception as e:
             logger.debug("Curator rename summary build failed: %s", e, exc_info=True)
 
+        # Surface skill_manage writes the review fork's own guard refused
+        # (unmanaged/pinned/external/bundled/hub-installed skills — see
+        # ``_background_review_write_guard``). These used to be visible
+        # ONLY as a per-tool-call line in a live CLI's scrollback
+        # (``⚡ skill_man <name>  Refusing background curator ...``) or by
+        # grepping agent.log — nothing rolled them up anywhere a user would
+        # actually look after the fact. Append a short, actionable summary
+        # line and persist the full list to state so `hermes curator
+        # status` can show it on every subsequent invocation, not just the
+        # one where it happened to scroll past in a terminal.
+        blocked_writes = (llm_meta.get("blocked_writes") or []) if isinstance(llm_meta, dict) else []
+        if blocked_writes:
+            _names = sorted({b.get("skill", "?") for b in blocked_writes if isinstance(b, dict)})
+            final_summary = (
+                f"{final_summary}\n"
+                f"blocked (needs manual action): {', '.join(_names)} "
+                f"— see `hermes curator status`"
+            )
+
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         state2 = load_state()
         state2["last_run_duration_seconds"] = elapsed
         state2["last_run_summary"] = final_summary
+        # Persisted across runs until superseded: this run's set of writes
+        # the curator wanted to make but couldn't without a manual
+        # `hermes curator adopt`/`unpin`. Replaced wholesale each LLM pass
+        # (not accumulated) — an empty list here means the most recent pass
+        # hit no refusals, which is itself useful signal for status to show.
+        state2["blocked_writes"] = blocked_writes
 
         # Write the per-run report. Runs in a best-effort try so a
         # reporting bug never breaks the curator itself. Report path is
@@ -1907,6 +1973,73 @@ def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
     return b.provider, b.model
 
 
+def _extract_blocked_writes(
+    session_messages: List[Dict[str, Any]],
+    call_by_id: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, str]]:
+    """Pull every "Refusing background curator ..." tool refusal out of a
+    completed review fork's session messages.
+
+    The write guards in ``tools/skill_manager_tool.py``
+    (``_background_review_write_guard`` and friends) fire silently from the
+    curator's point of view: the fork just gets a normal ``{"success":
+    False, "error": "..."}`` tool result and moves on to the next candidate.
+    Nothing upstream of this function previously distinguished "the skill
+    doesn't need a manual `hermes curator adopt`" from "genuinely nothing
+    happened" — a refusal was indistinguishable from a no-op unless someone
+    went looking at ``agent.log`` or a live CLI's per-tool-call scrollback
+    line. This makes the refusal a first-class, aggregated part of the run
+    report instead of a fact that only a live terminal happened to witness.
+
+    Returns a list of ``{skill, action, reason, hint}`` dicts, one per
+    refused ``skill_manage`` call, in the order they occurred. ``hint`` is
+    the exact remediation command the guard's own error text already names
+    (``hermes curator adopt <name>`` / ``hermes curator unpin <name>``) so a
+    human reading the report can copy-paste it directly.
+    """
+    if not call_by_id:
+        return []
+    blocked: List[Dict[str, str]] = []
+    for msg in session_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        tc_id = msg.get("tool_call_id")
+        call = call_by_id.get(tc_id) if tc_id else None
+        if not call or call.get("name") != "skill_manage":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or "Refusing background curator" not in content:
+            continue
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, dict) or data.get("success") is not False:
+            continue
+        error = str(data.get("error") or "")
+        if "Refusing background curator" not in error:
+            continue
+        try:
+            call_args = json.loads(call.get("arguments") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            call_args = {}
+        skill_name = (
+            call_args.get("name") if isinstance(call_args, dict) else None
+        ) or "?"
+        action = (
+            call_args.get("action") if isinstance(call_args, dict) else None
+        ) or "?"
+        hint_match = re.search(r"`(hermes curator [^`]+)`", error)
+        hint = hint_match.group(1) if hint_match else ""
+        blocked.append({
+            "skill": skill_name,
+            "action": action,
+            "reason": error,
+            "hint": hint,
+        })
+    return blocked
+
+
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
     """Spawn an AIAgent fork to run the curator review prompt.
 
@@ -1916,6 +2049,11 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
       - model, provider: what the fork actually ran on
       - tool_calls: list of {name, arguments} for every tool call made during
         the pass (arguments may be truncated for readability)
+      - blocked_writes: list of {skill, action, reason, hint} for every
+        skill_manage call the review fork's own write guard refused (see
+        ``_background_review_write_guard`` in skill_manager_tool.py) —
+        surfaces skills that need a manual `hermes curator adopt`/`unpin`
+        instead of silently vanishing into a per-tool-call log line
       - error: set if the pass failed mid-run; final/summary may still be empty
 
     Never raises; callers get a structured failure instead.
@@ -1927,6 +2065,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         "model": "",
         "provider": "",
         "tool_calls": [],
+        "blocked_writes": [],
         "error": None,
     }
     try:
@@ -2050,8 +2189,13 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # session messages and extract every tool_call made during the
         # pass. Truncate argument payloads so a giant skill_manage create
         # doesn't blow up the report.
+        _session_msgs = getattr(review_agent, "_session_messages", []) or []
         _calls: List[Dict[str, Any]] = []
-        for msg in getattr(review_agent, "_session_messages", []) or []:
+        # tool_call_id -> {name, args} for the skill_manage() blocked-write
+        # scan below, which needs to pair an assistant tool_call with its
+        # tool-role result to know WHICH skill/action a refusal was about.
+        _call_by_id: Dict[str, Dict[str, Any]] = {}
+        for msg in _session_msgs:
             if not isinstance(msg, dict):
                 continue
             tcs = msg.get("tool_calls") or []
@@ -2061,10 +2205,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
                 fn = tc.get("function") or {}
                 name = fn.get("name") or ""
                 args_raw = fn.get("arguments") or ""
+                tc_id = tc.get("id") or ""
+                if tc_id:
+                    _call_by_id[tc_id] = {"name": name, "arguments": args_raw}
                 if isinstance(args_raw, str) and len(args_raw) > 400:
                     args_raw = args_raw[:400] + "…"
                 _calls.append({"name": name, "arguments": args_raw})
         result_meta["tool_calls"] = _calls
+        result_meta["blocked_writes"] = _extract_blocked_writes(
+            _session_msgs, _call_by_id
+        )
     except Exception as e:
         result_meta["error"] = f"error: {e}"
         result_meta["summary"] = result_meta["error"]

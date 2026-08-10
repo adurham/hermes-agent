@@ -3,6 +3,93 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only feature — 2026-08-10 (background curator's skill_manage write refusals were invisible outside a live scrollback line)
+
+**Symptom:** the background skill curator (`agent/curator.py`'s LLM
+consolidation pass, forked with `_memory_write_origin = "background_review"`)
+periodically tries to patch/edit/delete a skill the user's foreground
+sessions have been actively improving all week, and the write silently gets
+refused by `tools/skill_manager_tool.py`'s `_background_review_write_guard`
+(unmanaged/pinned/external/bundled/hub-installed skills are off-limits to
+autonomous curation by design — see issue #25839). The refusal is 100%
+correct behavior, but it was reported ONLY as a per-tool-call scrollback
+line in whichever live CLI happened to be open at that moment (`⚡
+skill_man <name>  Refusing background curator patch for skill '...'`) —
+visually indistinguishable from any other failed tool call, gone the
+instant that terminal scrolled past it, and completely absent from
+`hermes curator status`, `REPORT.md`, and `run.json`. A user who saw the
+line out of context had no way to tell "this needs a manual `hermes
+curator adopt <name>`" from "something is broken," and a user who missed
+the live line (the common case — this is a background daemon-thread pass)
+had no way to ever discover the refusal happened at all.
+
+**Root cause:** `agent.curator._run_llm_review` already collects every
+tool call the review fork makes (for the report's tool-call-count
+histogram) but never inspected the paired tool-result messages for the
+specific `"Refusing background curator ..."` sentinel the write guards
+emit — so a refusal was recorded with exactly the same shape as any other
+tool call, no different from a routine `skill_view` read. Nothing rolled
+refusals up into a durable, human-facing surface.
+
+**Fix:**
+- `agent/curator.py`: new `_extract_blocked_writes(session_messages,
+  call_by_id)` walks a completed review fork's session messages, matches
+  each `skill_manage` tool result against the guard's own sentinel string
+  (`"Refusing background curator"`), and extracts `{skill, action, reason,
+  hint}` per refusal — `hint` is the exact `hermes curator adopt <name>` /
+  `unpin <name>` command parsed straight out of the guard's own error text
+  via regex, so it's always in sync with the guard's actual wording.
+  `_run_llm_review` now populates `result_meta["blocked_writes"]` from
+  this. `_default_state()` gained a `"blocked_writes": []` key —
+  `load_state()` filters any loaded key not present in the default dict,
+  so omitting it there would have silently dropped the persisted list on
+  every reload (caught by the new state round-trip test, see below).
+- The `_llm_pass()` orchestrator appends a one-line `"blocked (needs
+  manual action): <names> — see \`hermes curator status\`"` suffix to the
+  run's `last_run_summary` when any writes were blocked, and persists the
+  full list to `state["blocked_writes"]` (replaced wholesale each LLM
+  pass, not accumulated — an empty list is itself meaningful: the most
+  recent pass hit no refusals).
+- `_write_run_report`/`_render_report_markdown`: `blocked_writes` flows
+  into `run.json` verbatim and gets its own `## Blocked writes — needs
+  manual action (N)` section in `REPORT.md`, between the LLM final summary
+  and the Recovery footer — one bullet per skill with the exact
+  remediation command inline.
+- `hermes_cli/curator.py`: new `_print_blocked_writes_summary(state)`,
+  called from `_cmd_status` right after the interval/consolidate lines.
+  Prints nothing when the list is empty (no phantom section on a clean
+  run); otherwise a `blocked writes (needs manual action): N` header plus
+  up to 10 `<skill>  \`<command>\`` rows.
+
+**Files touched:** `agent/curator.py` (`_extract_blocked_writes`,
+`_default_state`, `_run_llm_review`, `_llm_pass`, `_write_run_report`,
+`_render_report_markdown`), `hermes_cli/curator.py`
+(`_print_blocked_writes_summary`, `_cmd_status`).
+
+**Tests:** `tests/agent/test_curator.py` — 4 new tests:
+`_run_llm_review` correctly extracts a blocked write from a realistic
+assistant-tool_call/tool-refusal message pair (asserts the exact `{skill,
+action, reason, hint}` shape including the regex-parsed hint command); a
+clean pass reports `blocked_writes == []` (not `None`/missing key,
+callers branch on it); `_extract_blocked_writes` does NOT misclassify an
+unrelated `skill_manage` failure (e.g. "skill not found") as a blocked
+write — only the exact guard sentinel qualifies;
+`_write_run_report`/`_render_report_markdown` render the new section into
+both `run.json` and `REPORT.md`. `tests/hermes_cli/test_curator_status.py`
+— 2 new tests: a `blocked_writes` entry seeded into `.curator_state` via
+`save_state`/`load_state` (exercising the real round-trip, which is what
+caught the `_default_state()` key-filter gap above) surfaces in `hermes
+curator status` output with the skill name and remediation command; a
+clean state (no blocked writes) prints no "blocked writes" section at
+all. Full suite: `tests/agent/test_curator.py`,
+`test_curator_reports.py`, `test_curator_classification.py`,
+`tests/hermes_cli/test_curator_status.py`, `test_curator_run.py`,
+`test_curator_archive_prune.py`, `test_curator_usage.py` — 58 passed, 1
+pre-existing skip. Broader sweep `tests/ -k "curator"` (85 passed, 3
+skipped) and `tests/ -k "skill_manager or background_review"` (95 passed,
+2 skipped) — zero regressions. `ruff check` clean;
+`scripts/check-windows-footguns.py --all` clean (968 files scanned).
+
 ### Fork-only fix — 2026-08-09 (four independent CI job failures on main)
 
 All CI (`CI` workflow) runs on `main` were failing. Four unrelated causes,
