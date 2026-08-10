@@ -702,6 +702,193 @@ def test_run_llm_review_missing_cost_attribute_is_swallowed(curator_env, monkeyp
     assert curator.get_and_reset_curator_cost_usd() == 0.0
 
 
+class _StubAgentWithBlockedWrite:
+    """Simulates a review fork whose skill_manage(patch) call was refused by
+    ``_background_review_write_guard`` (unmanaged skill, no `created_by:
+    agent` marker) — the exact shape that produces the "Refusing background
+    curator patch ..." line the user sees in scrollback.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self._memory_write_origin = "assistant_tool"
+        self._memory_nudge_interval = 10
+        self._skill_nudge_interval = 10
+        self.platform = kwargs.get("platform")
+        self.session_estimated_cost_usd = 0.0
+        import json as _json
+        self._session_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "skill_manage",
+                            "arguments": _json.dumps(
+                                {"action": "patch", "name": "quicken-interaction"}
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": _json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            "Refusing background curator patch for skill "
+                            "'quicken-interaction': the skill is not "
+                            "curator-managed (created_by=None). User-owned "
+                            "skills are off-limits to autonomous curation. "
+                            "Run `hermes curator adopt quicken-interaction` "
+                            "to opt it in."
+                        ),
+                    }
+                ),
+            },
+        ]
+
+    def run_conversation(self, user_message=None, **kwargs):
+        return {"final_response": "no change"}
+
+    def close(self):
+        pass
+
+
+def test_run_llm_review_extracts_blocked_write(curator_env, monkeypatch):
+    """A refused skill_manage write must surface in llm_meta['blocked_writes']
+    with the skill name, action, and the exact remediation command parsed out
+    of the guard's own error text -- not just vanish into tool_calls."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    monkeypatch.setattr(curator, "_load_config", lambda: {})
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgentWithBlockedWrite)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    blocked = meta.get("blocked_writes")
+    assert blocked == [
+        {
+            "skill": "quicken-interaction",
+            "action": "patch",
+            "reason": (
+                "Refusing background curator patch for skill "
+                "'quicken-interaction': the skill is not "
+                "curator-managed (created_by=None). User-owned "
+                "skills are off-limits to autonomous curation. "
+                "Run `hermes curator adopt quicken-interaction` "
+                "to opt it in."
+            ),
+            "hint": "hermes curator adopt quicken-interaction",
+        }
+    ]
+
+
+def test_run_llm_review_no_blocked_writes_when_all_succeed(curator_env, monkeypatch):
+    """A clean pass (no refused writes) reports an empty list, not None or
+    a missing key -- callers downstream (report writer, status command)
+    branch on truthiness."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    monkeypatch.setattr(curator, "_load_config", lambda: {})
+
+    monkeypatch.setattr(
+        "run_agent.AIAgent",
+        lambda *a, **kw: _StubAgentWithCost(*a, cost=0.0, **kw),
+    )
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert meta.get("blocked_writes") == []
+
+
+def test_extract_blocked_writes_ignores_non_refusal_failures(curator_env):
+    """A skill_manage failure that ISN'T a background-review-guard refusal
+    (e.g. a plain 'skill not found') must not be misclassified as a
+    blocked write -- only the specific guard sentinel string qualifies."""
+    curator = curator_env["curator"]
+    import json as _json
+
+    session_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "skill_manage",
+                        "arguments": _json.dumps({"action": "patch", "name": "nope"}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": _json.dumps({"success": False, "error": "skill 'nope' not found"}),
+        },
+    ]
+    call_by_id = {
+        "call_1": {
+            "name": "skill_manage",
+            "arguments": _json.dumps({"action": "patch", "name": "nope"}),
+        }
+    }
+    result = curator._extract_blocked_writes(session_messages, call_by_id)
+    assert result == []
+
+
+def test_write_run_report_renders_blocked_writes_section(curator_env):
+    """REPORT.md must include a dedicated, actionable section when a run
+    had blocked writes -- not silently drop them from the human-readable
+    report even though run.json carries the field."""
+    curator = curator_env["curator"]
+    from datetime import datetime, timezone
+
+    llm_meta = {
+        "final": "no change",
+        "summary": "no change",
+        "model": "test-model",
+        "provider": "test-provider",
+        "tool_calls": [],
+        "blocked_writes": [
+            {
+                "skill": "quicken-interaction",
+                "action": "patch",
+                "reason": "Refusing background curator patch for skill 'quicken-interaction': ...",
+                "hint": "hermes curator adopt quicken-interaction",
+            }
+        ],
+        "error": None,
+    }
+    run_dir = curator._write_run_report(
+        started_at=datetime.now(timezone.utc),
+        elapsed_seconds=1.0,
+        auto_counts={"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        auto_summary="no changes",
+        before_report=[],
+        before_names=set(),
+        after_report=[],
+        llm_meta=llm_meta,
+    )
+    assert run_dir is not None
+    report_md = (run_dir / "REPORT.md").read_text(encoding="utf-8")
+    assert "Blocked writes" in report_md
+    assert "quicken-interaction" in report_md
+    assert "hermes curator adopt quicken-interaction" in report_md
+
+    import json as _json
+    run_json = _json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_json["blocked_writes"] == llm_meta["blocked_writes"]
+
+
 def test_is_curator_running_false_when_no_thread():
     from agent import curator as curator_mod
     curator_mod._active_curator_thread = None

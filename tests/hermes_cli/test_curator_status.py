@@ -124,3 +124,45 @@ def test_list_unmanaged_itemizes_and_explains(curator_status_env):
     assert "curator adopt" in out
 
 
+def test_status_surfaces_blocked_writes_from_last_run(curator_status_env):
+    """A skill_manage refusal recorded by the last LLM review pass (see
+    agent.curator._extract_blocked_writes) must show up in `hermes curator
+    status` durably -- not just as a scrollback line the user had to be
+    watching live to see. Regression coverage for the gap where a
+    'Refusing background curator patch ...' refusal was indistinguishable
+    from a generic failed tool call and left no record anywhere `status`
+    (or any other post-hoc surface) would show."""
+    env = curator_status_env
+    curator = __import__("agent.curator", fromlist=["curator"])
+    state = curator.load_state()
+    state["blocked_writes"] = [
+        {
+            "skill": "quicken-interaction",
+            "action": "patch",
+            "reason": (
+                "Refusing background curator patch for skill "
+                "'quicken-interaction': the skill is not curator-managed "
+                "(created_by=None). Run `hermes curator adopt "
+                "quicken-interaction` to opt it in."
+            ),
+            "hint": "hermes curator adopt quicken-interaction",
+        }
+    ]
+    curator.save_state(state)
+
+    out = _capture_status(env["curator_cli"])
+
+    assert "blocked writes" in out.lower()
+    assert "quicken-interaction" in out
+    assert "hermes curator adopt quicken-interaction" in out
+
+
+def test_status_omits_blocked_writes_section_when_empty(curator_status_env):
+    """A clean run (no refusals) must not print a phantom 'blocked writes'
+    section -- the section should only appear when there's something
+    actionable to show."""
+    env = curator_status_env
+    out = _capture_status(env["curator_cli"])
+    assert "blocked writes" not in out.lower()
+
+
