@@ -64,20 +64,30 @@ class TestNoopBoard(unittest.TestCase):
 class _StubCLI:
     """Minimal stand-in for ``HermesCLI`` exposing only the swarm-board
     hooks ``maybe_start`` looks for.  Used to test the activation gate
-    without instantiating the real CLI."""
+    without instantiating the real CLI.
+
+    Mirrors the real CLI's list-based tracking (``_swarm_boards``) so tests
+    exercise the same "multiple concurrent boards" contract that
+    ``cli.py`` implements — a single delegate_task() batch's board must not
+    stomp on another concurrently-active batch's board.
+    """
 
     def __init__(self):
-        self._swarm_board = None
+        self._swarm_boards = []
         self.show_calls = []
         self.hide_calls = 0
         self.invalidate_calls = 0
 
     def _swarm_board_show(self, board):
-        self._swarm_board = board
+        if board not in self._swarm_boards:
+            self._swarm_boards.append(board)
         self.show_calls.append(board)
 
-    def _swarm_board_hide(self):
-        self._swarm_board = None
+    def _swarm_board_hide(self, board):
+        try:
+            self._swarm_boards.remove(board)
+        except ValueError:
+            pass
         self.hide_calls += 1
 
     def _invalidate_app(self):
@@ -148,9 +158,28 @@ class TestContextManagerWiresShowHide(unittest.TestCase):
         with SwarmBoard.maybe_start(parent, n_children=2) as board:
             assert isinstance(board, SwarmBoard)
             assert cli.show_calls == [board]
-            assert cli._swarm_board is board
+            assert cli._swarm_boards == [board]
         assert cli.hide_calls == 1
-        assert cli._swarm_board is None
+        assert cli._swarm_boards == []
+
+    def test_two_concurrent_boards_both_stay_visible(self):
+        # Regression test: a second delegate_task() batch starting while
+        # the first is still running used to overwrite the CLI's
+        # single-slot `_swarm_board` attribute, silently dropping the
+        # first batch's rows from the widget. Both boards must coexist in
+        # the active list until each is individually torn down.
+        cli = _StubCLI()
+        parent = type("P", (), {"_cli_ref": cli})()
+        board1 = SwarmBoard.maybe_start(parent, n_children=2)
+        board1.__enter__()
+        board2 = SwarmBoard.maybe_start(parent, n_children=3)
+        board2.__enter__()
+        assert cli._swarm_boards == [board1, board2]
+        # Finishing the SECOND batch first must not blank the first one out.
+        board2.__exit__(None, None, None)
+        assert cli._swarm_boards == [board1]
+        board1.__exit__(None, None, None)
+        assert cli._swarm_boards == []
 
 
 class TestPrintFnRouting(unittest.TestCase):

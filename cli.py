@@ -5044,11 +5044,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._pending_agent_seed = None
         self._secret_state = None
         self._secret_deadline = 0
-        # Active swarm board (delegate_task multi-agent display).  When set,
-        # the swarm_board_widget is visible and reads rows via its
-        # ``get_rows_snapshot()``.  Mutated only by ``_swarm_board_show`` /
-        # ``_swarm_board_hide``; readable from prompt_toolkit's render loop.
-        self._swarm_board = None
+        # Active swarm boards (delegate_task multi-agent display). A list,
+        # not a single slot: concurrent delegate_task() batches (e.g. a
+        # background batch still running when another one starts) each get
+        # their own SwarmBoard instance, and the widget renders rows from
+        # every board currently in this list concatenated together. Mutated
+        # only by ``_swarm_board_show`` / ``_swarm_board_hide``; readable
+        # from prompt_toolkit's render loop.
+        self._swarm_boards: list = []
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
@@ -6005,13 +6008,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     # ``Application.invalidate`` documents that).
 
     def _swarm_board_show(self, board) -> None:
-        """Make ``board`` the active swarm board so its rows render above the spinner."""
-        self._swarm_board = board
+        """Add ``board`` to the active list so its rows render above the spinner.
+
+        A list, not a single slot: multiple ``delegate_task()`` batches can
+        be running concurrently (e.g. a background batch still in flight
+        when a second one starts) and each gets its own board.  Without
+        this, the second batch's ``_swarm_board_show`` used to overwrite the
+        single ``self._swarm_board`` slot, silently dropping the first
+        batch's rows from the widget for as long as both were active.
+        """
+        if board not in self._swarm_boards:
+            self._swarm_boards.append(board)
         self._invalidate_app()
 
-    def _swarm_board_hide(self) -> None:
-        """Tear down the active swarm board.  The widget hides on the next frame."""
-        self._swarm_board = None
+    def _swarm_board_hide(self, board) -> None:
+        """Remove ``board`` from the active list.  The widget hides on the next frame.
+
+        Only removes the SPECIFIC board being torn down — a batch finishing
+        while a sibling batch is still running must not blank the display
+        out from under the still-active one.
+        """
+        try:
+            self._swarm_boards.remove(board)
+        except ValueError:
+            pass  # already removed / hide fired twice — not fatal
         self._invalidate_app()
 
     def _invalidate_app(self) -> None:
@@ -17405,6 +17425,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         reasoning_picker_widget=None,
         spinner_widget=None,
         swarm_board_widget=None,
+        todo_board_widget=None,
         spacer,
         status_bar,
         input_rule_top,
@@ -17431,6 +17452,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 model_picker_widget,
                 reasoning_picker_widget,
                 swarm_board_widget,
+                todo_board_widget,
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
@@ -19279,46 +19301,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             wrap_lines=True,
         )
 
-        # --- Swarm board: live multi-row display for delegate_task batches ---
-        # Reads rows from cli_ref._swarm_board (set by SwarmBoard.maybe_start).
-        # Renders one line per active subagent.  Visibility is gated by the
-        # ConditionalContainer filter so the widget collapses to zero height
-        # when no swarm is running.
-
-        def get_swarm_board_text():
-            board = cli_ref._swarm_board
-            if board is None:
-                return []
-            try:
-                rows = board.get_rows_snapshot()
-            except Exception:
-                return []
-            if not rows:
-                return []
-            from tools.swarm_board import format_row as _format_swarm_row
-            fragments = []
-            for row in rows:
-                fragments.append(('class:hint', _format_swarm_row(row) + '\n'))
-            return fragments
-
-        def get_swarm_board_height():
-            board = cli_ref._swarm_board
-            if board is None:
-                return 0
-            try:
-                return len(board.get_rows_snapshot())
-            except Exception:
-                return 0
-
-        swarm_board_widget = ConditionalContainer(
-            Window(
-                content=FormattedTextControl(get_swarm_board_text),
-                height=get_swarm_board_height,
-                wrap_lines=False,
-            ),
-            filter=Condition(lambda: cli_ref._swarm_board is not None),
-        )
-
         # Petdex mascot — right-aligned half-block sprite above the prompt,
         # mirroring the TUI's PetPane. Collapses to height 0 when no pet is
         # enabled, so it's a no-op for everyone else. The _pet_anim_loop thread
@@ -19856,6 +19838,119 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             filter=Condition(lambda: cli_ref._voice_mode),
         )
 
+        # ── Status area: live delegate_task / todo summaries + status bar ──
+        # Grouped together (rather than scattered across the layout builder)
+        # because they're all "what's the agent doing right now" summaries
+        # that render immediately above the input, in this same visual
+        # region. Ordering in the HSplit (see _build_tui_layout_children)
+        # is: swarm board -> todo board -> status bar, so the most volatile
+        # live state (per-subagent rows) sits closest to the spinner and the
+        # steadier state (task list, then the persistent status line) sits
+        # closest to the input.
+
+        # --- Swarm board: live multi-row display for delegate_task batches ---
+        # Reads rows from cli_ref._swarm_boards (a list — see
+        # tools/swarm_board.py::SwarmBoard's class docstring for why: each
+        # concurrent delegate_task() batch gets its own board instance, and
+        # this widget concatenates rows from every board currently active).
+        # Renders one line per active subagent across all active boards.
+        # Visibility is gated by the ConditionalContainer filter so the
+        # widget collapses to zero height when no swarm is running.
+
+        def _all_swarm_rows():
+            # Snapshot the board list itself before iterating — show/hide
+            # run on subagent worker threads and can mutate the list
+            # concurrently with this render-thread read.
+            boards = list(cli_ref._swarm_boards)
+            rows = []
+            for board in boards:
+                try:
+                    rows.extend(board.get_rows_snapshot())
+                except Exception:
+                    continue
+            return rows
+
+        def get_swarm_board_text():
+            rows = _all_swarm_rows()
+            if not rows:
+                return []
+            from tools.swarm_board import format_row as _format_swarm_row
+            fragments = []
+            for row in rows:
+                fragments.append(('class:hint', _format_swarm_row(row) + '\n'))
+            return fragments
+
+        def get_swarm_board_height():
+            return len(_all_swarm_rows())
+
+        swarm_board_widget = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(get_swarm_board_text),
+                height=get_swarm_board_height,
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: len(cli_ref._swarm_boards) > 0),
+        )
+
+        # --- Todo board: live task-list display, same treatment as the
+        # swarm board above (one line per item, collapses to zero height
+        # when there's nothing to show). Reads straight from the agent's
+        # TodoStore (tools/todo_tool.py) at render time — no separate
+        # invalidate wiring needed since the TUI already redraws on every
+        # tool-call event during an active turn, and the todo tool call
+        # itself is one such event.
+        _TODO_BOARD_MARKERS = {
+            "completed": "[x]",
+            "in_progress": "[>]",
+            "pending": "[ ]",
+            "cancelled": "[~]",
+        }
+        _TODO_BOARD_MAX_ROWS = 12  # cap so a huge plan can't eat the screen
+
+        def _todo_board_items():
+            store = getattr(cli_ref.agent, "_todo_store", None) if getattr(cli_ref, "agent", None) else None
+            if store is None:
+                return []
+            try:
+                return store.read()
+            except Exception:
+                return []
+
+        def get_todo_board_text():
+            items = _todo_board_items()
+            if not items:
+                return []
+            from tools.swarm_board import _flatten_to_oneline
+            done = sum(1 for i in items if i.get("status") in ("completed", "cancelled"))
+            fragments = [
+                ('class:hint', f"📋 tasks {done}/{len(items)}\n"),
+            ]
+            for item in items[:_TODO_BOARD_MAX_ROWS]:
+                marker = _TODO_BOARD_MARKERS.get(item.get("status"), "[?]")
+                content = _flatten_to_oneline(str(item.get("content", "")), 70)
+                fragments.append(('class:hint', f"  {marker} {content}\n"))
+            remaining = len(items) - _TODO_BOARD_MAX_ROWS
+            if remaining > 0:
+                fragments.append(('class:hint', f"  … +{remaining} more\n"))
+            return fragments
+
+        def get_todo_board_height():
+            items = _todo_board_items()
+            if not items:
+                return 0
+            shown = min(len(items), _TODO_BOARD_MAX_ROWS)
+            overflow_line = 1 if len(items) > _TODO_BOARD_MAX_ROWS else 0
+            return 1 + shown + overflow_line  # +1 for the "tasks N/M" header
+
+        todo_board_widget = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(get_todo_board_text),
+                height=get_todo_board_height,
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: len(_todo_board_items()) > 0),
+        )
+
         status_bar = ConditionalContainer(
             Window(
                 content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
@@ -19920,6 +20015,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     reasoning_picker_widget=reasoning_picker_widget,
                     spinner_widget=spinner_widget,
                     swarm_board_widget=swarm_board_widget,
+                    todo_board_widget=todo_board_widget,
                     spacer=spacer,
                     status_bar=status_bar,
                     input_rule_top=input_rule_top,

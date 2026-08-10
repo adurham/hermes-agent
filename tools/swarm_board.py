@@ -213,6 +213,18 @@ class SwarmBoard:
         with SwarmBoard.maybe_start(parent_agent, n) as board:
             board.register(sid, ...)
             board.update(sid, last_tool="...")
+
+    Each ``delegate_task()`` call gets its OWN ``SwarmBoard`` instance with
+    its own rows and its own lock — this class never has cross-call state to
+    worry about.  Concurrent batches (e.g. a second nested/background
+    ``delegate_task()`` dispatched while the first is still running) are
+    reconciled on the CLI side: ``cli_ref`` tracks a LIST of currently-shown
+    boards (``_swarm_board_show``/``_swarm_board_hide`` append/remove), and
+    the widget concatenates rows from every active board at render time.
+    That keeps ownership simple — one board per call, cleaned up on that
+    call's own ``__exit__`` — while still surfacing every concurrently
+    running batch in one summary area instead of the most recent batch
+    silently overwriting the display slot the previous one was using.
     """
 
     is_active = True
@@ -271,12 +283,20 @@ class SwarmBoard:
             if not callable(getattr(cli_ref, attr, None)):
                 return _NoopBoard()
 
-        return cls(
+        board = cls(
             on_change=cli_ref._invalidate_app,
             on_show=cli_ref._swarm_board_show,
-            on_hide=cli_ref._swarm_board_hide,
             title=title,
         )
+        # Bind on_hide to THIS board instance via closure rather than
+        # widening SwarmBoard's on_hide contract to take an argument.
+        # ``_swarm_board_hide`` on the CLI side takes the board being torn
+        # down (it needs to know WHICH board to drop from its active list —
+        # see the class docstring's "concurrent batches" note) but
+        # SwarmBoard.__exit__ still calls a plain zero-arg ``self._on_hide()``,
+        # unaware that a specific board identity is threaded through.
+        board._on_hide = lambda: cli_ref._swarm_board_hide(board)
+        return board
 
     def __enter__(self) -> "SwarmBoard":
         if self._on_show is not None:

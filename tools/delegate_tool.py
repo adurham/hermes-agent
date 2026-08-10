@@ -3534,17 +3534,22 @@ def delegate_task(
 
             _i, _t, child = children[0]
             sid = getattr(child, "_subagent_id", None) or "subagent-0"
-            # NOTE: parent_agent._swarm_board is a single-slot attribute (the
-            # same pattern the n_tasks>1 branch below already uses) — it is
-            # NOT safe against two concurrent delegate_task() calls on the
-            # SAME parent_agent (e.g. two overlapping background/detached
-            # dispatches). A second call's board would overwrite this one's
-            # slot mid-flight, and the finally-clause reset below could clear
-            # a sibling call's still-active board. Worst case is a missed/
-            # misdirected row update (heartbeat falls back to _emit_status),
-            # not a crash — the CLI widget itself (cli_ref._swarm_board) is
-            # also single-slot, so only one board can render at a time
-            # regardless. Pre-existing limitation, not introduced here.
+            # NOTE: parent_agent._swarm_board is a single-slot attribute used
+            # to route THIS agent's own progress-callback lookups (see
+            # _current_board() and chat_completion_helpers.py's heartbeat) to
+            # its board — it is NOT the same thing as cli_ref._swarm_boards,
+            # the CLI-side list the widget renders from (fixed to support
+            # multiple concurrently-visible boards; see swarm_board.py).
+            # This attribute is still single-slot and is NOT safe against two
+            # concurrent delegate_task() calls on the SAME parent_agent (e.g.
+            # two overlapping background/detached dispatches sharing one
+            # agent object) — a second call's board would overwrite this
+            # one's slot mid-flight, and the finally-clause reset below could
+            # clear a sibling call's still-active board. Worst case is a
+            # missed/misdirected heartbeat note (falls back to _emit_status),
+            # not a crash, and the CLI widget itself now renders both boards
+            # correctly regardless of this attribute's state. Narrower
+            # pre-existing limitation, not introduced here.
             with SwarmBoard.maybe_start(parent_agent, n_tasks) as _swarm_board:
                 parent_print_fn = getattr(parent_agent, "_print_fn", None) or print
                 _swarm_board.register(
