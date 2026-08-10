@@ -50,6 +50,59 @@ def test_stderr_is_also_routed_per_thread():
 
 
 
+def test_overlapping_silence_windows_do_not_close_shared_sink():
+    """Regression: two overlapping thread_scoped_silence() windows must not
+    let the first window's exit close a sink the second window still uses.
+
+    Real incident: a delegate_task background batch ran two subagent worker
+    threads under overlapping thread_scoped_silence() windows (via
+    background_review-style teardown). When the first subagent's window
+    exited before the second's, the old implementation (fresh devnull sink
+    per call, closed on exit) closed a sink object shared by BOTH windows
+    (_ensure_installed's "already installed" fast path reuses the existing
+    proxy — and therefore its existing sink — for any caller after the
+    first). The second thread's next write then raised
+    ValueError("I/O operation on closed file"), uncaught, on whatever thread
+    happened to own sys.stdout at that point (the CLI's process_loop daemon
+    thread in the field report) — freezing the interactive session.
+    """
+    from agent.thread_scoped_output import thread_scoped_silence
+
+    entered_second = threading.Event()
+    exit_first = threading.Event()
+    second_write_ok: dict = {"value": None, "exc": None}
+
+    def first():
+        with thread_scoped_silence():
+            entered_second.wait(timeout=2.0)
+            # First window exits (and, pre-fix, closed the shared sink)
+            # while the second window below is still silenced.
+
+    def second():
+        with thread_scoped_silence():
+            entered_second.set()
+            exit_first.wait(timeout=2.0)
+            try:
+                print("still writing after first window closed")
+                second_write_ok["value"] = True
+            except Exception as e:  # pragma: no cover - the bug this pins
+                second_write_ok["exc"] = e
+
+    t1 = threading.Thread(target=first)
+    t2 = threading.Thread(target=second)
+    t1.start()
+    t2.start()
+    t1.join(timeout=5.0)
+    exit_first.set()
+    t2.join(timeout=5.0)
+
+    assert not t1.is_alive() and not t2.is_alive()
+    assert second_write_ok["exc"] is None, (
+        f"write from overlapping silence window raised: {second_write_ok['exc']!r}"
+    )
+    assert second_write_ok["value"] is True
+
+
 def test_many_concurrent_silenced_and_loud_threads():
     """Stress: interleaved silenced/loud threads keep their respective fates."""
     start = threading.Event()

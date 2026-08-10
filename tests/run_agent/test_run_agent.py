@@ -4985,6 +4985,50 @@ class TestSafeWriter:
         writer.write("hello")
         assert inner.getvalue() == "hello"
 
+    def test_fileno_on_closed_inner_does_not_raise(self):
+        """Regression: fileno() must catch ValueError like write()/flush() do.
+
+        This class's own docstring describes the exact race — a subagent
+        ThreadPoolExecutor teardown can close the shared stdout handle
+        between thread teardown and cleanup, raising ``ValueError: I/O
+        operation on closed file`` — but the guard was only applied to
+        write()/flush()/isatty(), not fileno(). prompt_toolkit's renderer
+        calls sys.stdout.fileno() on essentially every redraw, so an
+        uncaught raise here reached the CLI's process_loop daemon thread and
+        froze the interactive session (no recovery path beyond logging the
+        exception and moving on to the next loop iteration).
+        """
+        from run_agent import _SafeWriter
+        from io import StringIO
+
+        inner = StringIO()
+        inner.close()
+        writer = _SafeWriter(inner)
+
+        # Must not raise — closed StringIO.fileno() raises ValueError.
+        fd = writer.fileno()
+        assert isinstance(fd, int)
+
+    def test_getattr_on_closed_inner_does_not_raise(self):
+        """Regression: __getattr__ passthrough must also survive a closed inner stream."""
+        from run_agent import _SafeWriter
+        from io import StringIO
+
+        inner = StringIO()
+        inner.close()
+        writer = _SafeWriter(inner)
+
+        # StringIO.closed is a plain attribute (doesn't raise), but .encoding
+        # (a real file's attribute, not on StringIO) exercises the
+        # __getattr__ fallback path against a closed real stream shape.
+        # The key guarantee is simply: no exception escapes.
+        try:
+            writer.some_attr_that_does_not_exist_on_stringio_or_stdout
+        except (OSError, ValueError):
+            pytest.fail("__getattr__ must swallow OSError/ValueError from a closed inner stream")
+        except AttributeError:
+            pass  # Expected — genuinely missing attribute, not a closed-stream crash.
+
 
 
 

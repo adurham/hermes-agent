@@ -97,7 +97,23 @@ class _SafeWriter:
             pass
 
     def fileno(self):
-        return self._inner.fileno()
+        # This is the gap that let the exact race described in this class's
+        # docstring (subagent ThreadPoolExecutor teardown closing the shared
+        # stdout handle) escape as an uncaught ``ValueError: I/O operation on
+        # closed file`` — write()/flush()/isatty() all guard OSError/ValueError
+        # but fileno() didn't, and prompt_toolkit's renderer calls
+        # sys.stdout.fileno() on essentially every redraw/terminal-control
+        # operation. An uncaught raise here reached the CLI's process_loop
+        # daemon thread, which has no recovery path other than logging and
+        # moving on — so the exception silently ate whatever synthetic
+        # message (e.g. a background subagent-batch completion) was in
+        # flight for that loop iteration, and the interactive prompt stopped
+        # accepting input once the render pipeline sharing this fd wedged.
+        # Fall back to the real stdio fd rather than propagating.
+        try:
+            return self._inner.fileno()
+        except (OSError, ValueError):
+            return sys.__stdout__.fileno() if sys.__stdout__ else 1
 
     def isatty(self):
         try:
@@ -106,7 +122,14 @@ class _SafeWriter:
             return False
 
     def __getattr__(self, name):
-        return getattr(self._inner, name)
+        # Same guard as write()/flush() — any other attribute/method proxied
+        # to a closed inner stream (e.g. .buffer, .encoding accessed through
+        # a property that touches the underlying fd) must not raise past
+        # this wrapper for the same reason fileno() must not.
+        try:
+            return getattr(self._inner, name)
+        except (OSError, ValueError):
+            return getattr(sys.__stdout__, name, None)
 
 
 def _get_proxy_from_env() -> Optional[str]:
