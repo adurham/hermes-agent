@@ -2432,6 +2432,21 @@ def _run_single_child(
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
         _parent_sid = getattr(child, "_parent_subagent_id", None)
+        # Guarantee the owner session is addressable in-process BEFORE the
+        # child can run and call send_to_parent. The CLI's idle tick also
+        # registers, but it only fires between turns: a subagent spawned in
+        # the same turn as a session_id reassignment would otherwise capture
+        # an owner_session_id nobody has registered yet, and its
+        # send_to_parent would fall through to Transport B's approval gate.
+        # Registration is additive/idempotent, so doing it here too is free.
+        try:
+            from tools.cross_session_integration import (
+                register_session_participant_for,
+            )
+
+            register_session_participant_for(parent_agent)
+        except Exception as _exc:  # never block a spawn over messaging
+            logger.debug("owner session participant registration failed: %s", _exc)
         _register_subagent(
             {
                 "subagent_id": _subagent_id,

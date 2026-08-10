@@ -111,6 +111,50 @@ def is_subagent(agent: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def register_session_participant_for(agent: Any, cli: Any = None) -> bool:
+    """Make ``agent``'s session addressable as a Transport A recipient.
+
+    Why this lives here rather than at the ``cli.py`` call site: building the
+    ``Participant`` requires the contract types and the origin classifier,
+    and ``cli.py`` is a god-file we keep free of that knowledge. Call sites
+    stay one-liners (module docstring's stated reason for existing).
+
+    Without this, ``in_process_lookup`` can never find a top-level session,
+    so EVERY ``send_to_parent`` from a background subagent falls through to
+    Transport B — held for human approval, or refused outright on a
+    gateway/cron origin — even when sender and recipient are the same
+    process. Registration is additive and idempotent, so calling it on every
+    idle tick and at every subagent spawn is safe and covers ``session_id``
+    reassignment without ever removing an alias an in-flight subagent may
+    still be keyed to.
+
+    Returns True when a registration was attempted.
+    """
+    if is_subagent(agent):
+        return False
+    session_id = getattr(agent, "session_id", "") or ""
+    if not session_id:
+        return False
+    try:
+        from tools.agent_messaging_contract import Participant, ParticipantKind
+        from tools.agent_messaging_transport_a import register_session_participant
+
+        register_session_participant(
+            Participant(
+                participant_id=session_id,
+                kind=ParticipantKind.SESSION,
+                owner_session_id=session_id,
+                session_origin=session_origin(),
+            ),
+            agent=agent,
+            cli=cli,
+        )
+        return True
+    except Exception as exc:  # never break startup/spawn over messaging
+        logger.debug("in-process participant registration failed: %s", exc)
+        return False
+
+
 def install_transport() -> None:
     """Plug Transport B into ``resolve_transport``'s fan-out. Idempotent.
 
@@ -316,6 +360,7 @@ __all__ = [
     "install_transport",
     "is_subagent",
     "maintenance_tick",
+    "register_session_participant_for",
     "session_display_name",
     "session_origin",
 ]

@@ -3,6 +3,78 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-08-10 (Transport A never registered the top-level session, so every subagent `send_to_parent` fell through to Transport B's approval gate)
+
+**Symptom:** a `background=true` `delegate_task` subagent calling
+`send_to_parent` never reached its parent directly. Instead the message was
+written to `state.db`'s `cross_session_inbox` and **held for human approval**
+(CLI/ACP inbound default) or **silently refused** (gateway/cron default) —
+even though sender and recipient were literally the same Python process, the
+exact case Transport A exists to serve with zero-gate direct delivery.
+
+**Root cause:** `tools/agent_messaging_transport_a.py` defines
+`register_session_participant()` — meant to make the top-level session an
+addressable in-process recipient in the module-level `_session_participants`
+dict — but **nothing in production ever called it**. The only caller in the
+entire tree was a single test. With that dict permanently empty,
+`in_process_lookup()` could never resolve a SESSION recipient, so
+`resolve_transport()`'s fan-out always fell through to Transport B. The
+opposite direction (session → its own subagent) was unaffected: it reads
+`delegate_tool`'s `_active_subagents` records, which *are* populated.
+
+**Fix:**
+1. New `register_session_participant_for(agent, cli=None)` helper in
+   `tools/cross_session_integration.py` — builds the `Participant` and stamps
+   the origin so the god-file call sites stay one-liners (the module's stated
+   reason for existing). Refuses to register a subagent as a session.
+2. `register_session_participant()` is now **additive and idempotent**.
+   Re-registering an existing id refreshes the stored `agent`/`cli` refs
+   (rebuilt on credential-churn agent reinit) but **preserves
+   `pending_bytes`** — resetting it would silently defeat the coalesced-cap
+   accounting in `_append_idle_atomically`. A `None` agent/cli never clobbers
+   a known ref. Old ids are never removed during process lifetime.
+3. Two call sites, deliberately not the seven `self.session_id = `
+   assignment sites:
+   - `cli.py`'s `_drain_cross_session_inbox()` (the existing idle tick that
+     already makes the idempotent `install_transport()` call) — covers every
+     `session_id` reassignment additively and refreshes the agent ref.
+   - `tools/delegate_tool.py`'s `_run_single_child()` spawn path, right
+     before `_register_subagent()` — the idle tick only fires *between*
+     turns, so a subagent spawned in the same turn as a `session_id`
+     reassignment would otherwise capture an `owner_session_id` nobody had
+     registered yet and race straight back into this bug. Registering where
+     `owner_session_id` is captured makes the invariant deterministic.
+
+**Why additive, not unregister-then-reregister:** an in-flight background
+subagent stores the `owner_session_id` captured at spawn time. Removing that
+id on rename/resume would break its `send_to_parent` — reintroducing this
+exact bug — and opens a window where sends misroute to Transport B silently.
+
+**Not touched (deliberate):** Transport B's inbound policy defaults
+(`hold` for CLI/ACP, `refuse` for gateway/cron) remain unchanged — that is a
+reviewed security boundary for genuinely cross-process senders.
+
+**Files touched:** `tools/agent_messaging_transport_a.py` (idempotent
+additive registration), `tools/cross_session_integration.py` (new helper +
+`__all__`), `cli.py` (idle-tick call site), `tools/delegate_tool.py` (spawn
+call site), `tests/tools/test_agent_messaging_send_dispatch.py` (7 new tests).
+
+**Verification:** `.venv/bin/python -m pytest
+tests/tools/test_agent_messaging_contract.py
+tests/tools/test_agent_messaging_send_dispatch.py
+tests/test_cross_session_transport.py tests/test_cross_session_integration.py
+tests/tools/test_delegate.py tests/tools/test_async_delegation.py
+tests/tools/test_delegate_toolset_scope.py
+tests/tools/test_restored_delegation_ownership.py -q` → **252 passed, 1
+failed**; the single failure
+(`TestSchema::test_wal_and_busy_timeout_on_this_modules_connections`) is
+**pre-existing and environmental** — confirmed identical on a clean `HEAD`
+worktree. The linked SQLite 3.50.4 has the WAL-reset corruption bug, so
+`hermes_state` intentionally falls back to `journal_mode=DELETE` while the
+test asserts WAL unconditionally. Unrelated to this change.
+New tests were confirmed to genuinely catch the bug: neutering the helper to
+a no-op (simulating pre-fix state) fails 4 of them; restoring passes all 19.
+
 ### Fork-only fix — 2026-08-10 (TUI todo/task board: no border, ambiguous `[x]`/`[>]` markers, naive truncation buried active work)
 
 **Symptom:** the live in-TUI todo/task board (rendered by the

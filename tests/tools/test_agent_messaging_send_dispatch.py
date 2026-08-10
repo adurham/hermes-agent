@@ -390,3 +390,243 @@ def test_format_result_not_found_is_an_error():
 
     assert "gone" in out
     assert "Note:" not in out
+
+
+# ---------------------------------------------------------------------------
+# Transport A registration gap (found 2026-08-10)
+# ---------------------------------------------------------------------------
+# register_session_participant() existed but was never called by production
+# code, so in_process_lookup() could never find a top-level session and EVERY
+# subagent send_to_parent fell through to Transport B's approval gate even
+# when sender and recipient were the same process. These tests pin the two
+# production call sites (cli.py's idle tick, delegate_tool's spawn path) via
+# the shared helper they both use.
+
+
+class _FakeSubagent:
+    """Stand-in for a background delegate_task child."""
+
+    def __init__(self, subagent_id: str, owner_session_id: str) -> None:
+        self._subagent_id = subagent_id
+        self._delegate_owner_session_id = owner_session_id
+        self._parent_subagent_id = None
+
+
+def _register_in_process_transport():
+    """Re-arm Transport A after the autouse fixture cleared the registry."""
+    import tools.agent_messaging_transport_a as ta
+    from tools.agent_messaging_contract import register_transport
+
+    register_transport(
+        TransportKind.IN_PROCESS, ta.in_process_lookup, ta._in_process_send
+    )
+    return ta
+
+
+def _spawn_subagent_record(subagent_id, owner_session_id, agent):
+    import tools.delegate_tool as dt
+
+    dt._register_subagent(
+        {
+            "subagent_id": subagent_id,
+            "parent_id": None,
+            "owner_session_id": owner_session_id,
+            "agent": agent,
+            "goal": "test",
+            "status": "running",
+        }
+    )
+
+
+def _inbox_rows(cst):
+    with cst._connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM cross_session_inbox").fetchone()[0]
+
+
+@pytest.fixture()
+def _clean_subagents():
+    import tools.delegate_tool as dt
+
+    with dt._active_subagents_lock:
+        dt._active_subagents.clear()
+    yield
+    with dt._active_subagents_lock:
+        dt._active_subagents.clear()
+
+
+def test_send_to_parent_resolves_in_process_after_registration(
+    cst, _clean_subagents, monkeypatch
+):
+    """The core gap: a registered session is reachable in-process.
+
+    Asserts the transport kind AND that nothing was written to
+    cross_session_inbox — a resolution that silently degraded to Transport B
+    would still "succeed" from the tool's point of view.
+    """
+    import tools.cross_session_integration as csi
+
+    ta = _register_in_process_transport()
+    ta._reset_for_tests()
+    cst.register_lookup()
+    _register_session(cst, "sess-A", "sess-A")
+
+    parent = _FakeAgent("sess-A")
+    assert csi.register_session_participant_for(parent, cli=None) is True
+    _spawn_subagent_record("sub-1", "sess-A", object())
+
+    sender = Participant(
+        participant_id="sub-1",
+        kind=ParticipantKind.SUBAGENT,
+        owner_session_id="sess-A",
+    )
+    resolution = resolve_transport(sender, "sess-A")
+
+    assert resolution.kind is TransportKind.IN_PROCESS
+    assert _inbox_rows(cst) == 0
+
+    ta._reset_for_tests()
+
+
+def test_session_id_reassignment_keeps_old_alias_resolvable(
+    cst, _clean_subagents, monkeypatch
+):
+    """Registration is additive: an in-flight subagent keyed to the OLD id
+    still resolves in-process after the session is renamed/resumed.
+
+    A naive unregister-old/register-new would reintroduce the original bug
+    for any subagent spawned before the reassignment.
+    """
+    import tools.cross_session_integration as csi
+
+    ta = _register_in_process_transport()
+    ta._reset_for_tests()
+    cst.register_lookup()
+
+    agent = _FakeAgent("sess-A")
+    csi.register_session_participant_for(agent, cli=None)
+    _spawn_subagent_record("sub-1", "sess-A", object())
+
+    # Session id is reassigned mid-flight (resume / compression-tip switch).
+    agent.session_id = "sess-B"
+    csi.register_session_participant_for(agent, cli=None)
+
+    sender = Participant(
+        participant_id="sub-1",
+        kind=ParticipantKind.SUBAGENT,
+        owner_session_id="sess-A",
+    )
+    assert resolve_transport(sender, "sess-A").kind is TransportKind.IN_PROCESS
+
+    # ...and the new id is reachable too.
+    new_sender = Participant(
+        participant_id="sub-2",
+        kind=ParticipantKind.SUBAGENT,
+        owner_session_id="sess-B",
+    )
+    assert resolve_transport(new_sender, "sess-B").kind is TransportKind.IN_PROCESS
+    assert _inbox_rows(cst) == 0
+
+    ta._reset_for_tests()
+
+
+def test_double_registration_is_idempotent_and_preserves_pending_bytes():
+    """Re-registering must not duplicate state or reset the coalesced-cap
+    accounting — the idle tick calls this every 0.1s.
+    """
+    import tools.agent_messaging_transport_a as ta
+    import tools.cross_session_integration as csi
+
+    ta._reset_for_tests()
+    agent = _FakeAgent("sess-A")
+
+    csi.register_session_participant_for(agent, cli=None)
+    with ta._session_lock:
+        ta._session_participants["sess-A"]["pending_bytes"] = 4096
+
+    for _ in range(5):
+        csi.register_session_participant_for(agent, cli=None)
+
+    with ta._session_lock:
+        assert len(ta._session_participants) == 1
+        assert ta._session_participants["sess-A"]["pending_bytes"] == 4096
+
+    ta._reset_for_tests()
+
+
+def test_registration_refreshes_agent_ref_without_clobbering_on_none():
+    """An agent reinit (credential churn) must refresh the stored ref, but a
+    caller that has no cli handle must not wipe an existing one.
+    """
+    import tools.agent_messaging_transport_a as ta
+    import tools.cross_session_integration as csi
+
+    ta._reset_for_tests()
+    agent_v1 = _FakeAgent("sess-A")
+    sentinel_cli = object()
+    csi.register_session_participant_for(agent_v1, cli=sentinel_cli)
+
+    agent_v2 = _FakeAgent("sess-A")
+    # delegate_tool's spawn site registers with no cli handle.
+    csi.register_session_participant_for(agent_v2, cli=None)
+
+    with ta._session_lock:
+        entry = ta._session_participants["sess-A"]
+        assert entry["agent"] is agent_v2
+        assert entry["cli"] is sentinel_cli
+
+    ta._reset_for_tests()
+
+
+def test_unregistered_recipient_still_falls_through_to_transport_b(cst, monkeypatch):
+    """A genuinely cross-process recipient must NOT be captured by Transport A."""
+    ta = _register_in_process_transport()
+    ta._reset_for_tests()
+    cst.register_lookup()
+    _register_session(cst, "sess-other", "sess-other")
+
+    sender = Participant(
+        participant_id="sess-A",
+        kind=ParticipantKind.SESSION,
+        owner_session_id="sess-A",
+        session_origin=SessionOrigin.CLI,
+    )
+    resolution = resolve_transport(sender, "sess-other")
+
+    assert resolution.kind is TransportKind.CROSS_PROCESS_DB
+
+    ta._reset_for_tests()
+
+
+def test_never_registered_recipient_resolves_to_nothing_without_raising(cst):
+    """Dead/unknown recipient -> clean miss, never an exception."""
+    ta = _register_in_process_transport()
+    ta._reset_for_tests()
+    cst.register_lookup()
+
+    sender = Participant(
+        participant_id="sess-A",
+        kind=ParticipantKind.SESSION,
+        owner_session_id="sess-A",
+        session_origin=SessionOrigin.CLI,
+    )
+    resolution = resolve_transport(sender, "sess-ghost")
+
+    assert resolution.kind is TransportKind.NOT_FOUND
+
+    ta._reset_for_tests()
+
+
+def test_subagent_is_never_registered_as_a_session_participant():
+    """Transport A's session registry is sessions-only; a child must not
+    register its own id as a session (that would make it addressable as a
+    top-level session and confuse ownership scoping).
+    """
+    import tools.agent_messaging_transport_a as ta
+    import tools.cross_session_integration as csi
+
+    ta._reset_for_tests()
+    child = _FakeSubagent("sub-1", "sess-A")
+
+    assert csi.register_session_participant_for(child, cli=None) is False
+    with ta._session_lock:
+        assert ta._session_participants == {}
