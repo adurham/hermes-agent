@@ -60,7 +60,12 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
-_ORPHAN_TIMEOUT = 300  # seconds before a pending task is considered orphaned
+# Orphan timeout is the *hard ceiling* — a task that has never resolved is
+# considered dead. It must be strictly greater than the per-RPC reply window
+# (A2A_REPLY_TIMEOUT); otherwise long-running tasks that legitimately outlive
+# the sync-RPC window get killed by the watchdog before they finish. See
+# _orphan_timeout() below for the actual value used at runtime.
+_ORPHAN_TIMEOUT_FLOOR = 600  # seconds — absolute minimum ceiling
 _WATCHDOG_INTERVAL = 60  # seconds between orphaned task watchdog runs
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
@@ -72,6 +77,51 @@ def _reply_timeout() -> float:
         return max(1.0, float(os.getenv("A2A_REPLY_TIMEOUT", "300")))
     except (ValueError, TypeError):
         return 300.0
+
+
+_QUICK_ACK_DEFAULT = 15  # seconds — see _quick_ack_timeout()
+
+
+def _quick_ack_timeout() -> float:
+    """How long the synchronous ``message/send`` RPC blocks before returning
+    an early non-terminal WORKING task, instead of blocking near the full
+    ``_reply_timeout()`` window.
+
+    #78007: the client's own default timeout (``_DEFAULT_TIMEOUT = 120`` in
+    tools.py) is well under the server's default 300s reply window, so with
+    default settings on both sides a caller's HTTP request always died with
+    a raw socket timeout LONG before the server ever got a chance to send
+    back a pollable WORKING task — the late-completion machinery (task
+    store, done-callback finalize, tasks/get) existed but was unreachable in
+    the common case. Acking quickly, well inside typical client timeouts,
+    means every caller gets back an actual HTTP response object it can act
+    on (poll tasks/get, as the a2a_call client tool now does) instead of a
+    dead socket. Fast tasks are unaffected — if the agent replies before
+    this window elapses, the RPC still returns the real result synchronously
+    (see _rpc_message_send / _await_reply); this only shortens how long a
+    SLOW task keeps the connection open before handing back a WORKING ack.
+
+    Configurable via ``A2A_QUICK_ACK_TIMEOUT``. Clamped to never exceed
+    ``_reply_timeout()`` — an operator who configures a reply timeout
+    shorter than the quick-ack default gets the old exact-blocking behavior
+    for that (already short) window, not a longer effective wait.
+    """
+    try:
+        configured = float(os.getenv("A2A_QUICK_ACK_TIMEOUT", str(_QUICK_ACK_DEFAULT)))
+    except (ValueError, TypeError):
+        configured = float(_QUICK_ACK_DEFAULT)
+    return max(1.0, min(configured, _reply_timeout()))
+
+
+def _orphan_timeout() -> int:
+    """Hard ceiling for a task that never resolves.
+
+    Kept strictly greater than the per-RPC reply window so that a long-running
+    task which correctly outlived one sync-RPC window (see _rpc_message_send,
+    which now returns a non-terminal Task in that case instead of failing)
+    isn't spuriously killed by the watchdog while the agent is still working.
+    """
+    return max(_ORPHAN_TIMEOUT_FLOOR, int(_reply_timeout() * 2))
 
 
 def _default_agent_name() -> str:
@@ -531,8 +581,13 @@ class A2AAdapter(BasePlatformAdapter):
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
-                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
+                orphan_to = _orphan_timeout()
+                for tid in self.tasks.fail_orphans(orphan_to):
+                    # Drop the pending Future too: with #78007 the RPC path no
+                    # longer pops it when the sync window closes, so the
+                    # watchdog is the only thing left to reclaim it.
+                    self._pop_pending(tid)
+                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, orphan_to)
                     protocol.metrics.tasks_failed += 1
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)
@@ -723,20 +778,62 @@ class A2AAdapter(BasePlatformAdapter):
                         self._pending_order.pop(entry[0], None)
 
     def _resolve_task(self, task_id: str, state: str, text: str) -> bool:
+        # #78007: Future.set_result() synchronously runs every registered
+        # done-callback on THIS thread — including _finalize_from_future,
+        # which calls _pop_pending() -> re-acquires self._pending_lock. Since
+        # this lock is a plain (non-reentrant) Lock, calling set_result()
+        # while still holding it would self-deadlock. So we must release the
+        # lock before calling set_result() — but a done()-check-then-release
+        # pattern reopens a DIFFERENT race: two concurrent resolvers (e.g.
+        # send() and on_processing_complete() racing for the same task_id)
+        # could both observe not-done under the lock and both call
+        # set_result() outside it, and the second raises InvalidStateError
+        # uncaught. Fix: POP the pending entry from the dict under the lock,
+        # so at most one caller can ever obtain the Future reference — pop is
+        # the atomic hand-off, not the done() check. Whoever pops it owns
+        # resolving it exclusively; a second caller for the same task_id
+        # sees no entry and returns False.
+        fut: Optional[Future] = None
         with self._pending_lock:
-            entry = self._pending.get(task_id)
-            if entry and not entry[1].done():
-                entry[1].set_result((state, text))
-                return True
+            entry = self._pending.pop(task_id, None)
+            if entry:
+                order = self._pending_order.get(entry[0])
+                if order:
+                    try:
+                        order.remove(task_id)
+                    except ValueError:
+                        pass
+                    if not order:
+                        self._pending_order.pop(entry[0], None)
+                if not entry[1].done():
+                    fut = entry[1]
+        if fut is not None:
+            fut.set_result((state, text))
+            return True
         return False
 
     def _resolve_oldest_for_context(self, context_id: str, state: str, text: str) -> bool:
+        # See _resolve_task: pop (not peek) the entry under the lock so at
+        # most one concurrent caller can ever win the race to resolve it.
+        fut: Optional[Future] = None
         with self._pending_lock:
-            for task_id in self._pending_order.get(context_id, ()):
-                entry = self._pending.get(task_id)
-                if entry and not entry[1].done():
-                    entry[1].set_result((state, text))
-                    return True
+            order = self._pending_order.get(context_id)
+            if order:
+                for task_id in list(order):
+                    entry = self._pending.get(task_id)
+                    if entry and not entry[1].done():
+                        self._pending.pop(task_id, None)
+                        try:
+                            order.remove(task_id)
+                        except ValueError:
+                            pass
+                        if not order:
+                            self._pending_order.pop(context_id, None)
+                        fut = entry[1]
+                        break
+        if fut is not None:
+            fut.set_result((state, text))
+            return True
         return False
 
     def _scope_for_agent(self, agent: Optional[dict]) -> tuple[str, str]:
@@ -955,7 +1052,29 @@ class A2AAdapter(BasePlatformAdapter):
 
     def _finalize_task(self, pending: dict, state: str, reply: str) -> tuple[str, str]:
         """Record the outcome of a dispatched task. Returns (state, reply) after
-        redaction and input-required detection."""
+        redaction and input-required detection.
+
+        Idempotent and safe to call from a thread other than the one that
+        handled the request (#78007 late Future done-callbacks run on the
+        agent's event-loop executor). If the task already reached a terminal
+        state — e.g. the orphan watchdog failed it before the agent finally
+        replied — we do NOT re-persist, re-audit, re-push, or double-count
+        metrics; we return the already-recorded outcome instead.
+
+        The atomic hand-off is ``self.tasks.complete()`` itself (it holds the
+        store's lock across the read-check-write and returns None if the task
+        was already terminal) — NOT a separate pre-check. An earlier version
+        of this method pre-checked ``tasks.get()`` for a terminal state, then
+        ran persist/audit/metrics/push, and only THEN called
+        ``tasks.complete()``. That left a real window: if the orphan watchdog
+        raced in and completed the task between the pre-check and the
+        eventual ``complete()`` call, this method would already have run all
+        the side effects a second time before its own ``complete()`` call
+        (correctly) no-opped. Calling ``complete()`` FIRST and gating every
+        side effect on whether *this* call won the transition closes that
+        window — only one caller for a given task_id can ever see a non-None
+        result from ``complete()``.
+        """
         task_id = pending["task_id"]
         context_id = pending["context_id"]
         peer = pending["peer"]
@@ -971,6 +1090,19 @@ class A2AAdapter(BasePlatformAdapter):
                 state = protocol.STATE_INPUT_REQUIRED
                 reply = stripped[len(protocol.INPUT_REQUIRED_MARKER):].strip()
 
+        won = self.tasks.complete(task_id, state, reply)
+        if won is None:
+            # Someone else (the orphan watchdog, or a concurrent finalize for
+            # the same task_id) already completed this task first. Return the
+            # already-recorded outcome; do NOT re-persist, re-audit, re-count
+            # metrics, or re-push — those already happened on the winning call.
+            existing = self.tasks.get(task_id)
+            if existing:
+                logger.debug("A2A: task %s already terminal (%s); ignoring late finalize",
+                             task_id, existing["state"])
+                return existing["state"], existing.get("reply", "")
+            return state, reply
+
         protocol.persist_message(context_id, "agent", reply, task_id)
         security.audit("outbound", peer, task_id, reply)
 
@@ -981,39 +1113,100 @@ class A2AAdapter(BasePlatformAdapter):
         else:
             protocol.metrics.tasks_failed += 1
 
-        self.tasks.complete(task_id, state, reply)
         self._send_push_notification(task_id, context_id, reply, state)
         return state, reply
 
-    def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
-        """Block until the task's future resolves (or times out).
+
+    def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str, bool]:
+        """Block until the task's future resolves, or the quick-ack window
+        elapses, whichever comes first.
 
         ``keepalive`` is an optional zero-arg callable invoked every
         _SSE_KEEPALIVE seconds while waiting (used by the SSE paths); if it
         raises, the client is gone and we stop waiting.
+
+        Returns ``(state, text, resolved)``. When ``resolved`` is False the
+        agent's Future is still pending — the caller MUST NOT finalize the
+        task; it should return a non-terminal Task (WORKING) and leave the
+        pending Future in place so the eventual result can still be captured
+        via tasks/get. This is the fix for issue #78007 (server discarding
+        real successes that finish after A2A_REPLY_TIMEOUT).
+
+        The wait deadline here is ``_quick_ack_timeout()`` (default 15s,
+        clamped to never exceed ``_reply_timeout()``), NOT the full
+        ``_reply_timeout()`` window. A fast-completing task still returns its
+        real result synchronously the moment the Future resolves — this only
+        bounds how long a SLOW task holds the connection open before handing
+        back an early WORKING ack the caller can poll on. Without this, a
+        caller whose own HTTP timeout is shorter than _reply_timeout() (the
+        common case: the client tool defaults to 120s against a 300s server
+        window) would always see a raw socket timeout and never receive a
+        response to poll from in the first place.
         """
         fut: Future = pending["future"]
-        deadline = pending["started"] + _reply_timeout()
+        deadline = pending["started"] + _quick_ack_timeout()
         while True:
             try:
-                return fut.result(timeout=_SSE_KEEPALIVE if keepalive else max(0.0, deadline - time.time()))
+                state, text = fut.result(timeout=_SSE_KEEPALIVE if keepalive else max(0.0, deadline - time.time()))
+                return state, text, True
             except FuturesTimeout:
                 if time.time() >= deadline:
-                    return (protocol.STATE_FAILED, "[agent did not reply in time]")
+                    # Deadline hit but the Future has NOT resolved. Return
+                    # unresolved so the caller keeps the task in a
+                    # non-terminal state. The watchdog (bounded by
+                    # _orphan_timeout()) remains the hard ceiling.
+                    if not fut.done():
+                        return (protocol.STATE_WORKING, "", False)
+                    # Race: it resolved between the timeout and here.
+                    try:
+                        state, text = fut.result(timeout=0)
+                        return state, text, True
+                    except Exception:
+                        return (protocol.STATE_FAILED, "[agent did not reply in time]", True)
                 if keepalive:
                     try:
                         keepalive()
                     except Exception:
-                        return (protocol.STATE_FAILED, "[client disconnected]")
+                        return (protocol.STATE_FAILED, "[client disconnected]", True)
             except Exception:
-                return (protocol.STATE_FAILED, "[agent did not reply in time]")
+                return (protocol.STATE_FAILED, "[agent did not reply in time]", True)
+
+    def _finalize_from_future(self, pending: dict, fut: "Future") -> None:
+        """Future done-callback used when the sync-RPC window closed before
+        the agent resolved. When the Future later fires, record the real
+        outcome via the normal finalize path so tasks/get returns it.
+        """
+        try:
+            state, reply = fut.result()
+        except Exception:
+            state, reply = (protocol.STATE_FAILED, "[agent processing failed]")
+        try:
+            self._finalize_task(pending, state, reply)
+        except Exception:
+            logger.debug("A2A: late finalize failed", exc_info=True)
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         terminal, pending = self._prepare_task(params, peer, agent=agent)
         if terminal is not None:
             result = protocol.send_message_response(terminal) if v1_response else terminal
             return protocol.jsonrpc_result(req_id, result)
-        state, reply = self._await_reply(pending)
+        state, reply, resolved = self._await_reply(pending)
+        if not resolved:
+            # #78007: sync-RPC window closed but the agent's Future is still
+            # pending. Do NOT finalize the task as FAILED — leave it WORKING
+            # so a real completion arriving later is captured (via a done-
+            # callback that feeds _finalize_task) and remains retrievable
+            # through tasks/get. Only the watchdog can now terminate it.
+            pending["future"].add_done_callback(
+                lambda f, p=pending: self._finalize_from_future(p, f)
+            )
+            task = protocol.build_task(
+                pending["task_id"], pending["context_id"],
+                protocol.STATE_WORKING, "",
+                created_at=pending["created_iso"],
+            )
+            result = protocol.send_message_response(task) if v1_response else task
+            return protocol.jsonrpc_result(req_id, result)
         state, reply = self._finalize_task(pending, state, reply)
         task = protocol.build_task(
             pending["task_id"], pending["context_id"], state, reply,
@@ -1079,8 +1272,22 @@ class A2AAdapter(BasePlatformAdapter):
             self._sse_write(handler, protocol.sse_data(
                 protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
 
-            state, reply = self._await_reply(
+            state, reply, resolved = self._await_reply(
                 pending, keepalive=lambda: self._sse_write(handler, ": keepalive\n\n"))
+            if not resolved:
+                # See _rpc_message_send: keep the task in a non-terminal state
+                # and let a late Future resolution finalize it. For the SSE
+                # client we still have to close the stream; emit a WORKING
+                # status update (no done frame → this is unusual but valid;
+                # clients should reconnect via tasks/subscribe or poll
+                # tasks/get by task id).
+                pending["future"].add_done_callback(
+                    lambda f, p=pending: self._finalize_from_future(p, f)
+                )
+                self._sse_write(handler, protocol.sse_data(
+                    protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
+                self._sse_write(handler, protocol.sse_done())
+                return
             state, reply = self._finalize_task(pending, state, reply)
             self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
