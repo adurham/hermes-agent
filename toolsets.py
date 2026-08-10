@@ -215,6 +215,22 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
+
+    # Local agent messaging (docs/design/local-agent-messaging.md). Opt-in.
+    # send_agent_message is parent/session-only and is additionally withheld
+    # from gateway-origin sessions via its check_fn; send_to_parent is granted
+    # to a delegated child only under background=true. list_agents is a
+    # session-only discovery tool and is never granted to a subagent.
+    "cross_session": {
+        "description": (
+            "Message other local Hermes participants: other live sessions or "
+            "your own running subagents (send_agent_message), or the parent "
+            "that delegated to you (send_to_parent); list_agents discovers "
+            "reachable sessions"
+        ),
+        "tools": ["send_agent_message", "send_to_parent", "list_agents"],
+        "includes": []
+    },
     
 
     "file": {

@@ -1724,6 +1724,20 @@ def run_conversation(
         # iteration, no tools yet), the steer stays pending for the next
         # tool batch — injecting into a user message would break role
         # alternation, and there's no tool output to piggyback on.
+        #
+        # Cross-session agent messages (Transport B), mid-turn path: feed
+        # _pending_steer immediately before the drain below, so an inbound
+        # cross-session message reaches an ACTIVE session at this same
+        # checkpoint instead of waiting for the turn to end. The tail-append
+        # onto the last tool-role message is the existing steer machinery's
+        # job — this only supplies already-framed text.
+        try:
+            from tools.cross_session_integration import drain_into_pending_steer
+
+            drain_into_pending_steer(agent)
+        except Exception:
+            pass
+
         _pre_api_steer = agent._drain_pending_steer()
         if _pre_api_steer:
             _injected = False

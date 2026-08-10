@@ -918,6 +918,15 @@ def _push_completion_event(
     ):
         if _k in result:
             evt[_k] = result[_k]
+    # Messages that reached a background child too late for it to act on
+    # (docs/design/local-agent-messaging.md, Finding 8 + Verification pass 2).
+    # Same additive pattern as the stall allowlist above: without this, the
+    # _finalize_child_results fix would never reach a background=true child's
+    # actual completion-delivery path, which is the only path where the
+    # end-of-turn race can fire at all.
+    for _k in ("unprocessed_messages",):
+        if _k in result:
+            evt[_k] = result[_k]
     _persist_completion(evt, result)
     try:
         process_registry.completion_queue.put(evt)

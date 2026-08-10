@@ -455,6 +455,7 @@ from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.security import build_security_parser
+from hermes_cli.subcommands.agents import build_agents_parser
 from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
 from hermes_cli.subcommands.debug import build_debug_parser
@@ -4980,6 +4981,16 @@ def cmd_security(args):
         sys.exit(int(code or 0))
     print(f"unknown security subcommand: {sub}", file=sys.stderr)
     sys.exit(2)
+
+
+def cmd_agents(args):
+    """Dispatch `hermes agents <subcmd>`."""
+    from hermes_cli.agents_inbox import agents_command
+
+    status = agents_command(args)
+    if status:
+        sys.exit(status)
+    return status
 
 
 def cmd_approvals(args):
@@ -10773,7 +10784,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "agents", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
@@ -11804,6 +11815,11 @@ def main():
     # approvals command  (parser built in hermes_cli/subcommands/approvals.py)
     # =========================================================================
     build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
+
+    # =========================================================================
+    # agents command  (parser built in hermes_cli/subcommands/agents.py)
+    # =========================================================================
+    build_agents_parser(subparsers, cmd_agents=cmd_agents)
 
     # =========================================================================
     # dump command  (parser built in hermes_cli/subcommands/dump.py)
