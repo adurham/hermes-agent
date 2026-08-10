@@ -69,7 +69,7 @@ _HERMES_CORE_TOOLS = [
     # Second opinion from a configurable reference model (fork feature)
     "consult",
     # Code execution + delegation
-    "execute_code", "delegate_task", "swarm_run",
+    "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -284,12 +284,6 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
-        "includes": ["swarm"]
-    },
-
-    "swarm": {
-        "description": "Native multi-agent swarm orchestration (fork feature)",
-        "tools": ["swarm_run"],
         "includes": []
     },
 
@@ -435,7 +429,7 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
             "session_search",
-            "execute_code", "delegate_task", "swarm_run",
+            "execute_code", "delegate_task",
         ],
         "includes": []
     },
@@ -467,7 +461,7 @@ TOOLSETS = {
             # Session history search
             "session_search",
             # Code execution + delegation
-            "execute_code", "delegate_task", "swarm_run",
+            "execute_code", "delegate_task",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

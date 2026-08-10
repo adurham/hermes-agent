@@ -2278,10 +2278,9 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("clarify", {"question": "Continue?"}),
         ("read_terminal", {}),
         ("delegate_task", {"goal": "Check the child path"}),
-        # Fork-only inline dispatch branches (see AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
+        # Fork-only inline dispatch branch (see AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
         # fork note in agent/agent_runtime_helpers.py).
         ("hermes_load_tools", {"names": ["web_search"]}),
-        ("swarm_run", {"agents": []}),
     )
 
     @pytest.mark.parametrize(("tool_name", "tool_args"), _CASES)
@@ -2322,10 +2321,6 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr(
             "tools.hermes_load_tools.load_tools",
-            lambda **kwargs: '{"ok":true}',
-        )
-        monkeypatch.setattr(
-            "tools.swarm_tool.swarm_run",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)

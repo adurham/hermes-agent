@@ -98,14 +98,14 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    # Fork note: hermes_load_tools + swarm_run are fork-only inline dispatch
-    # branches in tool_executor.execute_tool_calls_sequential (client-side lazy
-    # tool loading + multi-agent swarm). They go through the same
-    # _run_agent_tool_execution_middleware path, so the executor fires their
-    # post_tool_call hook — they must be listed here or it double-fires.
-    # read_terminal is upstream's; keep it alongside the two fork-only names.
+    # Fork note: hermes_load_tools is a fork-only inline dispatch branch in
+    # tool_executor.execute_tool_calls_sequential (client-side lazy tool
+    # loading). It goes through the same
+    # _run_agent_tool_execution_middleware path, so the executor fires its
+    # post_tool_call hook — it must be listed here or it double-fires.
+    # read_terminal is upstream's; keep it alongside the fork-only name.
     {"todo", "session_search", "memory", "clarify", "read_terminal",
-     "delegate_task", "hermes_load_tools", "swarm_run"}
+     "delegate_task", "hermes_load_tools"}
 )
 
 
@@ -3025,20 +3025,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
-    elif function_name == "swarm_run":
-        def _execute(next_args: dict) -> Any:
-            from tools.swarm_tool import swarm_run as _swarm_run
-            return _finish_agent_tool(
-                _swarm_run(
-                    agents=next_args.get("agents"),
-                    topology=next_args.get("topology"),
-                    title=next_args.get("title"),
-                    shared_context=next_args.get("shared_context"),
-                    swarm_id=next_args.get("swarm_id"),
-                    parent_agent=agent,
-                ),
-                next_args,
-            )
     else:
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(

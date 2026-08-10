@@ -2346,7 +2346,7 @@ def _strip_unknown_tool_blocks(
     This is easy to hit in practice:
 
       * MCP server reconnect storms — when ``mcp__salesforce__*`` /
-        ``hermes_swarm_*`` / ``StackOverflowTeams_*`` tools were used
+        ``mcp__jira__*`` / ``StackOverflowTeams_*`` tools were used
         last turn but the MCP server fails to reconnect this turn,
         their schemas are absent from the tool list while the prior
         ``tool_use`` blocks remain in the conversation transcript.

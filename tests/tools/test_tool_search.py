@@ -73,11 +73,11 @@ class TestConfigParsing:
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw({
             "defer_toolsets": ["browser", "homeassistant"],
-            "defer_tools": ["swarm_run"],
+            "defer_tools": ["cronjob"],
             "keep_eager_tools": ["delegate_task"],
         })
         assert cfg.defer_toolsets == frozenset({"browser", "homeassistant"})
-        assert cfg.defer_tools == frozenset({"swarm_run"})
+        assert cfg.defer_tools == frozenset({"cronjob"})
         assert cfg.keep_eager_tools == frozenset({"delegate_task"})
 
     def test_defer_lists_parsed_from_comma_string(self):
@@ -190,23 +190,23 @@ class TestForkDeferToolsets:
 
     def test_defer_tools_defers_single_core_tool(self, monkeypatch):
         from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
-        self._patch_registry(monkeypatch, {"swarm_run": "delegation"})
-        cfg = ToolSearchConfig.from_raw({"defer_tools": ["swarm_run"]})
-        assert is_deferrable_tool_name("swarm_run", cfg) is True
+        self._patch_registry(monkeypatch, {"fake_tool": "delegation"})
+        cfg = ToolSearchConfig.from_raw({"defer_tools": ["fake_tool"]})
+        assert is_deferrable_tool_name("fake_tool", cfg) is True
 
     def test_keep_eager_overrides_defer_toolsets(self, monkeypatch):
         """keep_eager_tools wins: defer the toolset but keep one sibling eager."""
         from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
         self._patch_registry(monkeypatch, {
             "delegate_task": "delegation",
-            "swarm_run": "delegation",
+            "fake_tool": "delegation",
         })
         cfg = ToolSearchConfig.from_raw({
             "defer_toolsets": ["delegation"],
             "keep_eager_tools": ["delegate_task"],
         })
         assert is_deferrable_tool_name("delegate_task", cfg) is False
-        assert is_deferrable_tool_name("swarm_run", cfg) is True
+        assert is_deferrable_tool_name("fake_tool", cfg) is True
 
     def test_keep_eager_overrides_defer_tools(self, monkeypatch):
         """keep_eager_tools beats defer_tools for the same name (eager wins)."""

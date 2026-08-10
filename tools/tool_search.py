@@ -93,12 +93,12 @@ class ToolSearchConfig:
     #                     are listed in toolsets._HERMES_CORE_TOOLS.
     #   defer_tools     — individual tool names to force-defer, for granular
     #                     control when a toolset mixes keep-eager and
-    #                     defer tools (e.g. defer "swarm_run" but not the
-    #                     rest of the "delegation" toolset).
+    #                     defer tools (e.g. defer one tool but not the
+    #                     rest of its toolset).
     #   keep_eager_tools— individual tool names that must NEVER defer, even
     #                     when their toolset is in defer_toolsets. Wins over
     #                     everything (e.g. keep "delegate_task" eager while
-    #                     deferring its "delegation" sibling "swarm_run").
+    #                     deferring a toolset sibling).
     defer_toolsets: frozenset = field(default_factory=frozenset)
     defer_tools: frozenset = field(default_factory=frozenset)
     keep_eager_tools: frozenset = field(default_factory=frozenset)
@@ -251,7 +251,7 @@ def is_deferrable_tool_name(name: str, config: Optional["ToolSearchConfig"] = No
       1. Bridge tools never defer.
       2. ``keep_eager_tools`` — name listed here never defers, full stop.
          Lets you keep one tool eager while deferring its toolset siblings
-         (e.g. keep ``delegate_task`` while deferring ``swarm_run``).
+         (e.g. keep ``delegate_task`` while deferring another toolset tool).
       3. ``defer_tools`` — name listed here always defers, even if core.
       4. ``defer_toolsets`` — tool whose registry toolset is listed here
          always defers, even if core (e.g. defer the whole ``browser``

@@ -1690,33 +1690,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
                     agent._vprint(f"  {cute_msg}")
-        elif function_name == "swarm_run":
-            from tools.swarm_tool import swarm_run as _swarm_run
-            agents_arg = function_args.get("agents") or []
-            spinner_label = f"🐝 swarm of {len(agents_arg)}"
-            spinner = None
-            if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
-                face = random.choice(KawaiiSpinner.get_waiting_faces())
-                spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=agent._print_fn)
-                spinner.start()
-            _swarm_result = None
-            try:
-                function_result = _swarm_run(
-                    agents=function_args.get("agents"),
-                    topology=function_args.get("topology"),
-                    title=function_args.get("title"),
-                    shared_context=function_args.get("shared_context"),
-                    swarm_id=function_args.get("swarm_id"),
-                    parent_agent=agent,
-                )
-                _swarm_result = function_result
-            finally:
-                tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl('swarm_run', function_args, tool_duration, result=_swarm_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
         elif agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
             # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
             spinner = None
