@@ -19978,13 +19978,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # — those two in particular read as ambiguous at a glance (is ">"
         # a cursor? a quote?), whereas checkmark/spinner/box/cross glyphs
         # are unambiguous even at a skim.
+        #
+        # "pending" uses BALLOT BOX (U+2610) rather than WHITE LARGE SQUARE
+        # (U+2B1C, the previous glyph). U+2B1C has Emoji_Presentation=Yes,
+        # so color-emoji fonts render it as a stark solid white block
+        # regardless of the surrounding ANSI foreground color — it doesn't
+        # take a tint the way ✅/🔄/❌ (already colored green/blue/red) do.
+        # U+2610 has no emoji presentation, so it renders as a thin
+        # monochrome outline glyph that inherits the terminal's foreground
+        # color instead of standing out as a glaring white square on dark
+        # themes. It's also 1 terminal cell wide vs the emoji markers'
+        # 2 cells — see the padding in _todo_board_rows() below that keeps
+        # columns aligned despite the width difference.
         _TODO_BOARD_MARKERS = {
             "completed": "✅",
             "in_progress": "🔄",
-            "pending": "⬜",
+            "pending": "☐",
             "cancelled": "❌",
         }
-        _TODO_BOARD_MAX_ROWS = 12  # cap so a huge plan can't eat the screen
+        _TODO_BOARD_MIN_ROWS = 8   # floor so a small terminal still shows something useful
+        _TODO_BOARD_MAX_ROWS = 30  # ceiling so a huge plan can't eat the whole screen
 
         def _todo_board_items():
             store = getattr(cli_ref.agent, "_todo_store", None) if getattr(cli_ref, "agent", None) else None
@@ -19995,39 +20008,77 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 return []
 
+        def _todo_board_max_rows() -> int:
+            """Size the board's row budget from terminal height.
+
+            Fixed at 12 previously, which silently hid active (pending/
+            in_progress) items on a brand-new list with >12 tasks and no
+            completed items to drop instead — see _select_todo_display_items.
+            Scaling with the terminal keeps the board usable on both a tall
+            window (show more) and a short one (still respect the floor)
+            without ever needing to hide work that hasn't been done yet
+            purely because of a hardcoded cap.
+            """
+            try:
+                term_rows = shutil.get_terminal_size((100, 24)).lines
+            except Exception:
+                term_rows = 24
+            # Reserve roughly half the terminal for the transcript/prompt;
+            # clamp to [_TODO_BOARD_MIN_ROWS, _TODO_BOARD_MAX_ROWS].
+            return max(_TODO_BOARD_MIN_ROWS, min(_TODO_BOARD_MAX_ROWS, term_rows // 2))
+
         def _select_todo_display_items(items: list, max_rows: int):
             """Pick which items to show when the list won't fit.
 
-            Rather than a naive head-truncation (which can bury active
-            work under a wall of already-finished items), completed/
-            cancelled items are dropped first — the header's "done/total"
-            count already preserves that progress information — so the
-            visible rows are weighted toward what's still pending or in
-            progress. Original list order (priority order) is preserved
-            among whatever's kept. Returns (shown_items, hidden_count).
+            Priority order when rows are scarce:
+              1. in_progress — always shown, never hidden (it's the one
+                 thing actively happening right now).
+              2. pending — shown next; only trimmed from the tail
+                 (priority order preserved) if in_progress alone already
+                 fills the budget.
+              3. completed/cancelled — dropped first. The header's
+                 "done/total" count already preserves that progress
+                 information, so these are the safest rows to hide.
+
+            Returns (shown_items, hidden_done_count, hidden_active_count)
+            so the footer can report accurately what was actually hidden
+            instead of unconditionally blaming "completed" — a brand-new
+            all-pending list that overflows the cap has zero completed
+            items, so the old unconditional "(completed hidden)" label
+            was simply false in that case.
             """
             if len(items) <= max_rows:
-                return items, 0
-            active_count = sum(1 for i in items if i.get("status") in ("pending", "in_progress"))
-            done_budget = max(0, max_rows - active_count)
-            shown = []
-            active_shown = 0
-            done_shown = 0
-            hidden = 0
-            for item in items:
-                if item.get("status") in ("pending", "in_progress"):
-                    if active_shown < max_rows:
-                        shown.append(item)
-                        active_shown += 1
-                    else:
-                        hidden += 1
-                else:
-                    if done_shown < done_budget:
-                        shown.append(item)
-                        done_shown += 1
-                    else:
-                        hidden += 1
-            return shown, hidden
+                return items, 0, 0
+
+            in_progress = [i for i in items if i.get("status") == "in_progress"]
+            pending = [i for i in items if i.get("status") == "pending"]
+            done = [i for i in items if i.get("status") in ("completed", "cancelled")]
+
+            budget = max_rows - len(in_progress)
+
+            if budget > 0:
+                shown_pending = pending[:budget]
+                hidden_active = len(pending) - len(shown_pending)
+                budget -= len(shown_pending)
+            else:
+                # in_progress alone overflows the cap (rare — a dozen+
+                # concurrent in-progress items). Let it render past the
+                # nominal cap rather than hiding active work; nothing left
+                # for pending or done.
+                shown_pending = []
+                hidden_active = len(pending)
+                budget = 0
+
+            if budget > 0:
+                shown_done = done[:budget]
+                hidden_done = len(done) - len(shown_done)
+            else:
+                shown_done = []
+                hidden_done = len(done)
+
+            kept_ids = {id(i) for i in in_progress + shown_pending + shown_done}
+            shown = [i for i in items if id(i) in kept_ids]
+            return shown, hidden_done, hidden_active
 
         def _todo_board_rows():
             """Raw (unpadded) text rows: header line + one per item + optional overflow."""
@@ -20037,13 +20088,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from tools.swarm_board import _flatten_to_oneline
             done = sum(1 for i in items if i.get("status") in ("completed", "cancelled"))
             rows = [f"📋 tasks {done}/{len(items)}"]
-            shown_items, hidden = _select_todo_display_items(items, _TODO_BOARD_MAX_ROWS)
+            shown_items, hidden_done, hidden_active = _select_todo_display_items(
+                items, _todo_board_max_rows()
+            )
             for item in shown_items:
                 marker = _TODO_BOARD_MARKERS.get(item.get("status"), "❔")
+                # Ballot-box "pending" is 1 terminal cell wide vs the emoji
+                # markers' 2 cells — pad so every row's content starts in
+                # the same column regardless of which marker it got.
+                marker_pad = " " * max(0, 2 - HermesCLI._panel_cwidth(marker))
                 content = _flatten_to_oneline(str(item.get("content", "")), 70)
-                rows.append(f"{marker} {content}")
-            if hidden > 0:
-                rows.append(f"… +{hidden} more (completed hidden)")
+                rows.append(f"{marker}{marker_pad} {content}")
+            overflow_bits = []
+            if hidden_active > 0:
+                overflow_bits.append(f"{hidden_active} pending")
+            if hidden_done > 0:
+                overflow_bits.append(f"{hidden_done} completed")
+            if overflow_bits:
+                rows.append(f"… +{' / '.join(overflow_bits)} hidden")
             return rows
 
         def _todo_board_box_width(rows: list) -> int:
