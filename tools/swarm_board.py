@@ -363,12 +363,29 @@ class SwarmBoard:
                 # "summarizing" — the model has stopped calling tools and
                 # is just streaming its final answer text, so the displayed
                 # time should reflect the work duration, not the streaming
-                # latency.  Only the FIRST transition into summarizing wins
-                # (a later TASK_TOOL_STARTED could flip back to running and
-                # then back to summarizing again; we don't reset the freeze
-                # in that case — the original work end is still meaningful).
-                if status == "summarizing" and row.work_ended_at is None:
-                    row.work_ended_at = time.time()
+                # latency.
+                #
+                # The freeze must be provisional, not permanent: the
+                # "summarizing" transition can come from a HEURISTIC text
+                # match (TASK_THINKING's _looks_like_summary_phase — e.g. the
+                # child's reasoning starts a line with "## Summary" as an
+                # intermediate planning artifact, not the real final answer).
+                # A false positive here used to freeze the clock forever —
+                # tool_count kept climbing as the child did real work, but
+                # elapsed() stayed pinned at the false-positive timestamp
+                # (reported live: rows stuck at "4s" while clearly still
+                # iterating).  Every real tool call reports status="running"
+                # via TASK_TOOL_STARTED, which is an unambiguous "the child is
+                # actively working" signal, so treat it as the unfreeze
+                # trigger.  Terminal statuses never flow through this method
+                # (they go through finish(), a separate code path that sets
+                # ended_at directly) so they can't accidentally clear the
+                # freeze here.
+                if status == "summarizing":
+                    if row.work_ended_at is None:
+                        row.work_ended_at = time.time()
+                elif status == "running":
+                    row.work_ended_at = None
                 row.status = status
             if tool_count is not None:
                 row.tool_count = tool_count
