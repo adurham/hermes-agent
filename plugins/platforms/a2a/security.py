@@ -370,3 +370,71 @@ def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         logger.debug("A2A: audit write failed", exc_info=True)
+
+
+def token_fingerprint(auth_header: Optional[str]) -> str:
+    """Return a short SHA-256 fingerprint of the presented bearer token.
+
+    Used by the audit log so rejected-request records can correlate repeated
+    probes of the same bad credential WITHOUT ever writing the raw token
+    value to disk. Empty string when no bearer token was presented.
+    """
+    presented = _parse_bearer(auth_header)
+    if not presented:
+        return ""
+    return "sha256:" + hashlib.sha256(presented.encode("utf-8")).hexdigest()[:16]
+
+
+# Known decision codes for audit_auth. Kept as constants so tests and
+# downstream tripwire tooling can pattern-match without magic strings.
+AUTH_ACCEPTED = "accepted"
+AUTH_REJECTED_MISSING_TOKEN = "rejected_missing_token"
+AUTH_REJECTED_BAD_TOKEN = "rejected_bad_token"
+AUTH_REJECTED_UNTRUSTED_PEER = "rejected_untrusted_peer"
+AUTH_REJECTED_RATE_LIMIT = "rejected_rate_limit"
+
+
+def audit_auth(
+    decision: str,
+    *,
+    status: int,
+    source_ip: str = "",
+    identity: Optional[str] = None,
+    token_fp: str = "",
+    method: str = "",
+    path: str = "",
+    detail: str = "",
+) -> None:
+    """Append an entry-layer auth/authorization outcome to the audit log.
+
+    Called from the HTTP request handler for EVERY inbound request that
+    reaches the auth/authz gate — success and every rejection path. This
+    is the primary intrusion-detection signal for a multi-agent fleet:
+    credential stuffing, token probing, or lateral-movement attempts show
+    up here even when the request never dispatched a task.
+
+    Never writes the raw presented token — only a short SHA-256 fingerprint
+    via ``token_fingerprint()`` so repeated probes with the same bad
+    credential correlate without exposing the value.
+
+    Best-effort — never raises into the caller.
+    """
+    try:
+        rec = {
+            "ts": time.time(),
+            "direction": "inbound_auth",
+            "decision": decision,
+            "status": int(status),
+            "source_ip": source_ip or "",
+            "identity": identity,
+            "token_fp": token_fp or "",
+            "method": method or "",
+            "path": path or "",
+            "detail": (detail or "")[:200],
+        }
+        p = _audit_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.debug("A2A: audit_auth write failed", exc_info=True)

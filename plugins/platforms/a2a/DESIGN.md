@@ -168,7 +168,12 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
 - **Anti-loop:** per-context turn cap (`A2A_MAX_PINGPONG_TURNS`, default 5,
   hard max 20) rejects (v1.0 `TASK_STATE_REJECTED`) runaway agent↔agent
   ping-pong; `tasks/cancel` resets the counter for the task's context.
-- **Audit log:** append-only `~/.hermes/a2a_audit.jsonl` for every exchange.
+- **Audit log:** append-only `~/.hermes/a2a_audit.jsonl` for every exchange
+  AND every inbound auth/authorization outcome (accepted + all rejection
+  paths: missing token, bad token, untrusted peer, rate-limited). Rejected
+  entries include source IP, decision code, HTTP status, and a short
+  SHA-256 fingerprint of any presented token — never the raw token — so
+  credential-stuffing / token-probing is visible for fleet monitoring.
 
 ## State placement
 Task store, turn tracker, and rate limiter are **adapter-instance** objects
