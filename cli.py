@@ -19937,17 +19937,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         )
 
         # --- Todo board: live task-list display, same treatment as the
-        # swarm board above (one line per item, collapses to zero height
-        # when there's nothing to show). Reads straight from the agent's
-        # TodoStore (tools/todo_tool.py) at render time — no separate
-        # invalidate wiring needed since the TUI already redraws on every
-        # tool-call event during an active turn, and the todo tool call
-        # itself is one such event.
+        # swarm board above but wrapped in a bordered panel (matching the
+        # clarify/approval/sudo panel look) so it reads as a distinct,
+        # self-contained widget rather than blending into scrollback.
+        # Reads straight from the agent's TodoStore (tools/todo_tool.py) at
+        # render time — no separate invalidate wiring needed since the TUI
+        # already redraws on every tool-call event during an active turn,
+        # and the todo tool call itself is one such event.
+        #
+        # Status markers use emoji rather than bracketed letters ([x]/[>])
+        # — those two in particular read as ambiguous at a glance (is ">"
+        # a cursor? a quote?), whereas checkmark/spinner/box/cross glyphs
+        # are unambiguous even at a skim.
         _TODO_BOARD_MARKERS = {
-            "completed": "[x]",
-            "in_progress": "[>]",
-            "pending": "[ ]",
-            "cancelled": "[~]",
+            "completed": "✅",
+            "in_progress": "🔄",
+            "pending": "⬜",
+            "cancelled": "❌",
         }
         _TODO_BOARD_MAX_ROWS = 12  # cap so a huge plan can't eat the screen
 
@@ -19960,31 +19966,82 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 return []
 
-        def get_todo_board_text():
+        def _select_todo_display_items(items: list, max_rows: int):
+            """Pick which items to show when the list won't fit.
+
+            Rather than a naive head-truncation (which can bury active
+            work under a wall of already-finished items), completed/
+            cancelled items are dropped first — the header's "done/total"
+            count already preserves that progress information — so the
+            visible rows are weighted toward what's still pending or in
+            progress. Original list order (priority order) is preserved
+            among whatever's kept. Returns (shown_items, hidden_count).
+            """
+            if len(items) <= max_rows:
+                return items, 0
+            active_count = sum(1 for i in items if i.get("status") in ("pending", "in_progress"))
+            done_budget = max(0, max_rows - active_count)
+            shown = []
+            active_shown = 0
+            done_shown = 0
+            hidden = 0
+            for item in items:
+                if item.get("status") in ("pending", "in_progress"):
+                    if active_shown < max_rows:
+                        shown.append(item)
+                        active_shown += 1
+                    else:
+                        hidden += 1
+                else:
+                    if done_shown < done_budget:
+                        shown.append(item)
+                        done_shown += 1
+                    else:
+                        hidden += 1
+            return shown, hidden
+
+        def _todo_board_rows():
+            """Raw (unpadded) text rows: header line + one per item + optional overflow."""
             items = _todo_board_items()
             if not items:
                 return []
             from tools.swarm_board import _flatten_to_oneline
             done = sum(1 for i in items if i.get("status") in ("completed", "cancelled"))
-            fragments = [
-                ('class:hint', f"📋 tasks {done}/{len(items)}\n"),
-            ]
-            for item in items[:_TODO_BOARD_MAX_ROWS]:
-                marker = _TODO_BOARD_MARKERS.get(item.get("status"), "[?]")
+            rows = [f"📋 tasks {done}/{len(items)}"]
+            shown_items, hidden = _select_todo_display_items(items, _TODO_BOARD_MAX_ROWS)
+            for item in shown_items:
+                marker = _TODO_BOARD_MARKERS.get(item.get("status"), "❔")
                 content = _flatten_to_oneline(str(item.get("content", "")), 70)
-                fragments.append(('class:hint', f"  {marker} {content}\n"))
-            remaining = len(items) - _TODO_BOARD_MAX_ROWS
-            if remaining > 0:
-                fragments.append(('class:hint', f"  … +{remaining} more\n"))
+                rows.append(f"{marker} {content}")
+            if hidden > 0:
+                rows.append(f"… +{hidden} more (completed hidden)")
+            return rows
+
+        def _todo_board_box_width(rows: list) -> int:
+            term_cols = HermesCLI._get_tui_terminal_width()
+            longest = max([HermesCLI._panel_cwidth(r) for r in rows] + [20])
+            inner = min(longest + 4, max(24, term_cols - 6))
+            return inner + 2
+
+        def get_todo_board_text():
+            rows = _todo_board_rows()
+            if not rows:
+                return []
+            box_width = _todo_board_box_width(rows)
+            inner_width = max(0, box_width - 2)
+            fragments = [('class:todo-border', '╭' + ('─' * box_width) + '╮\n')]
+            for row in rows:
+                fragments.append(('class:todo-border', '│ '))
+                fragments.append(('class:hint', HermesCLI._panel_ljust(row, inner_width)))
+                fragments.append(('class:todo-border', ' │\n'))
+            fragments.append(('class:todo-border', '╰' + ('─' * box_width) + '╯\n'))
             return fragments
 
         def get_todo_board_height():
-            items = _todo_board_items()
-            if not items:
+            rows = _todo_board_rows()
+            if not rows:
                 return 0
-            shown = min(len(items), _TODO_BOARD_MAX_ROWS)
-            overflow_line = 1 if len(items) > _TODO_BOARD_MAX_ROWS else 0
-            return 1 + shown + overflow_line  # +1 for the "tasks N/M" header
+            return len(rows) + 2  # +2 for the top/bottom border lines
 
         todo_board_widget = ConditionalContainer(
             Window(
@@ -20114,6 +20171,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'sudo-border': '#CD7F32',
             'sudo-title': '#FF6B6B bold',
             'sudo-text': '#FFF8DC',
+            # Live todo/task board panel
+            'todo-border': '#CD7F32',
             # Dangerous command approval panel
             'approval-border': '#CD7F32',
             'approval-title': '#FF8C00 bold',

@@ -125,10 +125,10 @@ class TodoStore:
 
         # Status markers for compact display
         markers = {
-            "completed": "[x]",
-            "in_progress": "[>]",
-            "pending": "[ ]",
-            "cancelled": "[~]",
+            "completed": "✅",
+            "in_progress": "🔄",
+            "pending": "⬜",
+            "cancelled": "❌",
         }
 
         # Only inject pending/in_progress items — completed/cancelled ones
@@ -142,7 +142,7 @@ class TodoStore:
 
         lines = [TODO_INJECTION_HEADER]
         for item in active_items:
-            marker = markers.get(item["status"], "[?]")
+            marker = markers.get(item["status"], "❔")
             lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")
 
         return "\n".join(lines)

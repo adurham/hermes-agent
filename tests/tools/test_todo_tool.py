@@ -56,11 +56,11 @@ class TestFormatForInjection:
         ])
         text = store.format_for_injection()
         # Completed items are filtered out of injection
-        assert "[x]" not in text
+        assert "✅" not in text
         assert "Do thing" not in text
         # Active items are included
-        assert "[ ]" in text
-        assert "[>]" in text
+        assert "⬜" in text
+        assert "🔄" in text
         assert "Next" in text
         assert "Working" in text
         assert "context compression" in text.lower()

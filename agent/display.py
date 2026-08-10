@@ -1566,14 +1566,14 @@ def _get_cute_tool_message(
             consistent whether it's re-injected into context or printed
             to the terminal.
             """
-            markers = {"completed": "[x]", "in_progress": "[>]",
-                       "pending": "[ ]", "cancelled": "[~]"}
+            markers = {"completed": "✅", "in_progress": "🔄",
+                       "pending": "⬜", "cancelled": "❌"}
             max_shown = 30
             lines = []
             for item in items[:max_shown]:
                 if not isinstance(item, dict):
                     continue
-                marker = markers.get(str(item.get("status") or ""), "[?]")
+                marker = markers.get(str(item.get("status") or ""), "❔")
                 content = _trunc(item.get("content", ""), 70)
                 lines.append(f"      {marker} {content}")
             remaining = len(items) - max_shown
