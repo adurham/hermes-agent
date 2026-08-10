@@ -5718,6 +5718,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Focus view badge (/focus). Persistent indicator so the reduced
             # output mode is never invisible. Display-only.
             "focus_label": "",
+            # Queued /steer note pending delivery on the next tool result.
+            "steer_pending": False,
         }
 
         try:
@@ -5794,6 +5796,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         if not agent:
             return snapshot
+
+        # Queued /steer note — a note injected mid-turn that will land on the
+        # next tool result. This can otherwise get lost scrolling past in the
+        # confirmation line printed at queue-time, so surface it persistently
+        # in the bar (mirrors the YOLO badge convention) until it's drained.
+        try:
+            _steer_lock = getattr(agent, "_pending_steer_lock", None)
+            if _steer_lock is not None:
+                with _steer_lock:
+                    snapshot["steer_pending"] = bool(getattr(agent, "_pending_steer", None))
+            else:
+                snapshot["steer_pending"] = bool(getattr(agent, "_pending_steer", None))
+        except Exception:
+            pass
 
         snapshot["session_input_tokens"] = getattr(agent, "session_input_tokens", 0) or 0
         snapshot["session_output_tokens"] = getattr(agent, "session_output_tokens", 0) or 0
@@ -6544,6 +6560,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             focus_label = snapshot.get("focus_label") or ""
 
             yolo_active = self._is_session_yolo_active()
+            steer_pending = bool(snapshot.get("steer_pending"))
             goal_segment = self._status_bar_goal_segment(snapshot)
             if width < 52:
                 text = f"{battery_prefix}{_glyph} {snapshot['model_short']} · {duration_label}"
@@ -6551,6 +6568,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     text += f" · {goal_segment}"
                 if focus_label:
                     text += f" · {focus_label}"
+                if steer_pending:
+                    text += " · ⏩ steer"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
@@ -6575,6 +6594,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 parts.append(duration_label)
                 if focus_label:
                     parts.append(focus_label)
+                if steer_pending:
+                    parts.append("⏩ steer")
                 if yolo_active:
                     parts.append("⚠ YOLO")
                 return self._trim_status_bar_text(" · ".join(parts), width)
@@ -6615,6 +6636,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 parts.append(idle_since)
             if focus_label:
                 parts.append(focus_label)
+            if steer_pending:
+                parts.append("⏩ steer")
             if yolo_active:
                 parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
@@ -6640,6 +6663,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
+            steer_pending = bool(snapshot.get("steer_pending"))
             goal_segment = self._status_bar_goal_segment(snapshot)
             battery_label = snapshot.get("battery_label") or ""
             battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))
@@ -6659,6 +6683,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if focus_label:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-strong", focus_label))
+                if steer_pending:
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append(("class:status-bar-steer", "⏩ steer"))
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -6706,6 +6733,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if focus_label:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", focus_label))
+                    if steer_pending:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-steer", "⏩ steer"))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -6778,6 +6808,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if focus_label:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", focus_label))
+                    if steer_pending:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-steer", "⏩ steer"))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -20319,6 +20352,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
             'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
+            'status-bar-steer': 'bg:#1a1a2e #00BFFF bold',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges
