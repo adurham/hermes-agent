@@ -1221,7 +1221,7 @@ class TestBuildAnthropicKwargs:
             # Single-underscore MCP-server names must be promoted to ``mcp__``
             # (the gap the bare->mcp__ constant swap left open).
             {"type": "function", "function": {"name": "slack_slack_search_public", "description": "x"}},
-            {"type": "function", "function": {"name": "hermes_swarm_swarm_update_agent", "description": "x"}},
+            {"type": "function", "function": {"name": "jira_jira_search_issues", "description": "x"}},
         ]
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-6",
@@ -1234,7 +1234,7 @@ class TestBuildAnthropicKwargs:
         names = [t["name"] for t in kwargs["tools"]]
         # Bare names land on the double-underscore form.
         assert "mcp__slack_slack_search_public" in names, names
-        assert "mcp__hermes_swarm_swarm_update_agent" in names, names
+        assert "mcp__jira_jira_search_issues" in names, names
         # The core invariant: NOTHING single-underscore reaches the wire, and
         # no name is double-prefixed (``mcp__mcp__``).
         for n in names:
@@ -1648,9 +1648,10 @@ class TestBuildAnthropicKwargs:
     # not found in available tools`` when the message history contains a
     # ``tool_use`` whose name isn't in the current ``tools`` array.
     # Triggering scenarios in the wild (errors.log 2026-05-07/08):
-    #   * MCP server reconnect failures — ``hermes_swarm_get_prompt``,
-    #     ``salesforce_get_prompt``, ``StackOverflowTeams_create_QA``,
-    #     ``tanium_developer_get_endpoint_info``
+    #   * MCP server reconnect failures — e.g. a custom MCP server's
+    #     ``*_get_prompt``, ``salesforce_get_prompt``,
+    #     ``StackOverflowTeams_create_QA``, or similar tools disappearing
+    #     from the tool list when their server fails to reconnect
     #   * Toolset switches mid-session — ``clarify`` dropped after
     #     ``/toolsets remove`` while tool_use blocks linger in history.
     # build_anthropic_kwargs now scrubs these via

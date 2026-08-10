@@ -48,7 +48,6 @@ from utils import base_url_hostname, is_truthy_value
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
         "delegate_task",  # no recursive delegation
-        "swarm_run",  # no recursive delegation (same rationale as delegate_task)
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
@@ -3501,30 +3500,6 @@ def delegate_task(
                 "reason": _route.get("reason"),
                 "agent_type": _route.get("agent_type"),
             }
-        # If swarm_tool seeded swarm coordinates onto the task, patch the
-        # child's hermes-agent session_id onto the swarm.agents row so
-        # stats queries can join onto per-session token usage. Best-
-        # effort — a missing swarm package or DB error must not block
-        # delegation.
-        _swarm_id = (t.get("swarm_id") or "").strip() or None
-        _swarm_agent_id = (t.get("swarm_agent_id") or "").strip() or None
-        _child_session_id = getattr(child, "session_id", None) or None
-        if _swarm_id and _swarm_agent_id and _child_session_id:
-            try:
-                from swarm import lifecycle as _swarm_lc  # type: ignore
-
-                _swarm_lc.update_agent(
-                    _swarm_id,
-                    _swarm_agent_id,
-                    session_id=_child_session_id,
-                )
-            except Exception:
-                logger.debug(
-                    "swarm.update_agent(session_id) failed for %s/%s",
-                    _swarm_id,
-                    _swarm_agent_id,
-                    exc_info=True,
-                )
         # Tee the child's progress events into its live transcript log.
         # wrap_progress_callback preserves the inner callback contract
         # (including the _flush attribute) and never lets writer failures

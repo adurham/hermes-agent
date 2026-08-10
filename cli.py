@@ -12566,7 +12566,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         (5, "5   — moderate fan-out"),
         (8, "8   — aggressive (watch your token spend)"),
         (12, "12  — heavy (cost scales linearly)"),
-        (20, "20  — schema ceiling for swarm_run agents per swarm"),
+        (20, "20  — schema ceiling for delegate_task batch size"),
     )
 
     _DELEGATION_DEPTH_CHOICES: tuple[tuple[int, str], ...] = (
@@ -12600,7 +12600,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         cur = self._read_delegation_int("max_concurrent_children", 3)
         _cprint(
             f"  {_ACCENT}delegation.max_concurrent_children = {cur}{_RST}  "
-            f"{_DIM}(parallel children per delegate_task batch / swarm_run){_RST}"
+            f"{_DIM}(parallel children per delegate_task batch){_RST}"
         )
         _cprint(
             f"  {_DIM}Change with: /delegation parallel <N> "
@@ -12644,7 +12644,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         default_idx = next((i for i, n in enumerate(actions) if n == cur), 0)
         try:
             picked = curses_radiolist(
-                title="Pick max parallel children for delegate_task / swarm_run",
+                title="Pick max parallel children for delegate_task",
                 items=items,
                 selected=default_idx,
                 cancel_returns=-1,

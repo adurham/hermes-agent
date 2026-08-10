@@ -1,7 +1,10 @@
 """Persona discovery + per-role model config (hermes-runtime side).
 
-The canonical implementation lives in :mod:`swarm.persona_library` (shipped
-in the hermes-swarm package).  This module is a thin wrapper that:
+The canonical implementation lives in :mod:`hermes_cli.persona_library`
+(ported from the standalone hermes-swarm package on 2026-08-09 when that
+package's actual multi-agent coordination code was retired as unused —
+persona discovery and the curated model table were the only pieces
+hermes-agent depended on). This module is a thin wrapper that:
 
   * Re-exports the library's persona discovery + curated-policy surface
     (:class:`Persona`, :func:`discover_personas`, :data:`SUGGESTED_ROLE_MODELS`,
@@ -9,17 +12,10 @@ in the hermes-swarm package).  This module is a thin wrapper that:
     churn for ``tools/delegate_tool.py``, ``cli.py``, slash commands, etc.
   * Adds the hermes-runtime config bits — reading/writing
     ``delegation.model_by_role`` in ``~/.hermes/config.yaml`` and the
-    one-shot :func:`sync_from_ruflo` bootstrap.  These belong here because
+    one-shot :func:`sync_from_ruflo` bootstrap. These belong here because
     they're tied to hermes-agent's config plumbing, not to the library.
 
-When hermes-swarm isn't installed (it's an optional dependency), the
-fallbacks below kick in: persona discovery still works (it's pure
-filesystem), but :data:`SUGGESTED_ROLE_MODELS` is empty so
-:func:`apply_suggested_defaults` becomes a no-op.  Install hermes-swarm to
-get the curated table.
-
-Public surface (callers shouldn't need to know whether the library is
-available — same names either way):
+Public surface:
 
   * :class:`Persona` (alias :class:`RufloAgent` for back-compat) — discovered
     persona record.
@@ -39,156 +35,20 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
-
-# ---------------------------------------------------------------------------
-# Library import + fallback
-# ---------------------------------------------------------------------------
-#
-# We prefer ``swarm.persona_library`` (canonical).  If the hermes-swarm
-# package isn't installed, fall back to a minimal local implementation so
-# hermes-agent still runs; the curated SUGGESTED_ROLE_MODELS table is just
-# empty in that mode (apply_suggested_defaults becomes a no-op).
-
-try:
-    from swarm import persona_library as _plib
-    _HAVE_LIBRARY = True
-except ImportError:
-    _plib = None  # type: ignore[assignment]
-    _HAVE_LIBRARY = False
-
-
-if _HAVE_LIBRARY:
-    # Re-export the library's surface verbatim so callers see the same
-    # types / functions either way.
-    Persona = _plib.Persona
-    DEFAULT_PERSONAS_PATH = _plib.DEFAULT_PERSONAS_PATH
-    SUGGESTED_ROLE_MODELS = _plib.SUGGESTED_ROLE_MODELS
-    _strip_frontmatter = _plib._strip_frontmatter
-    _parse_frontmatter = _plib._parse_frontmatter
-    discover_personas = _plib.discover_personas
-    group_by_category = _plib.group_by_category
-    _lookup_persona_lib = _plib.lookup_persona
-    _get_personas_path_lib = _plib.get_personas_path
-else:
-    # ── Minimal local fallback ────────────────────────────────────────────
-    from dataclasses import dataclass
-
-    DEFAULT_PERSONAS_PATH = "~/.hermes/personas"
-    SUGGESTED_ROLE_MODELS: dict[str, str] = {}  # empty without the library
-
-    def _strip_frontmatter(text: str) -> str:
-        if not text.startswith("---"):
-            return text
-        rest = text[3:]
-        closer = rest.find("\n---")
-        if closer < 0:
-            return text
-        return rest[closer + 4:].lstrip("\n")
-
-    def _parse_frontmatter(text: str) -> dict[str, str]:
-        if not text.startswith("---"):
-            return {}
-        rest = text[3:]
-        closer = rest.find("\n---")
-        if closer < 0:
-            return {}
-        block = rest[:closer].strip()
-        out: dict[str, str] = {}
-        current_key: Optional[str] = None
-        for raw_line in block.splitlines():
-            line = raw_line.rstrip()
-            if not line:
-                continue
-            if not raw_line.startswith((" ", "\t")) and ":" in line:
-                key, _, value = line.partition(":")
-                key = key.strip().lower()
-                value = value.strip()
-                if (value.startswith('"') and value.endswith('"')) or (
-                    value.startswith("'") and value.endswith("'")
-                ):
-                    value = value[1:-1]
-                out[key] = value
-                current_key = key
-            elif current_key and raw_line.startswith((" ", "\t")):
-                extra = raw_line.strip()
-                if extra:
-                    out[current_key] = (out.get(current_key, "") + " " + extra).strip()
-        return out
-
-    @dataclass(frozen=True)
-    class Persona:  # type: ignore[no-redef]
-        name: str
-        description: str
-        category: str
-        path: str
-
-        def load_prompt(self) -> str:
-            try:
-                text = Path(self.path).read_text(encoding="utf-8", errors="replace")
-            except (OSError, UnicodeDecodeError):
-                return ""
-            return _strip_frontmatter(text)
-
-    _NON_AGENT_BASENAMES_FALLBACK = frozenset({"MIGRATION_SUMMARY", "README", "INDEX"})
-
-    def _get_personas_path_lib(config_path: Optional[str] = None) -> Path:
-        if config_path:
-            return Path(os.path.expanduser(config_path)).resolve()
-        env = os.environ.get("HERMES_PERSONAS_PATH")
-        if env:
-            return Path(os.path.expanduser(env)).resolve()
-        return Path(os.path.expanduser(DEFAULT_PERSONAS_PATH)).resolve()
-
-    def discover_personas(personas_path: Optional[Path] = None) -> list[Persona]:
-        base = personas_path or _get_personas_path_lib()
-        if not base.is_dir():
-            return []
-        seen: dict[str, Persona] = {}
-        for md in base.rglob("*.md"):
-            if not md.is_file():
-                continue
-            name = md.stem
-            if name in _NON_AGENT_BASENAMES_FALLBACK:
-                continue
-            try:
-                rel = md.relative_to(base)
-            except ValueError:
-                continue
-            category = rel.parts[0] if len(rel.parts) > 1 else "general"
-            if name in seen:
-                continue
-            try:
-                with md.open("r", encoding="utf-8", errors="replace") as f:
-                    head = f.read(2048)
-            except OSError:
-                continue
-            meta = _parse_frontmatter(head)
-            seen[name] = Persona(
-                name=name,
-                description=meta.get("description", ""),
-                category=category,
-                path=str(md),
-            )
-        return sorted(seen.values(), key=lambda a: (a.category, a.name))
-
-    def group_by_category(personas: Iterable[Persona]) -> dict[str, list[Persona]]:
-        out: dict[str, list[Persona]] = {}
-        for p in personas:
-            out.setdefault(p.category, []).append(p)
-        return out
-
-    def _lookup_persona_lib(
-        name: str, personas_path: Optional[Path] = None
-    ) -> Optional[Persona]:
-        if not name:
-            return None
-        needle = name.strip()
-        for p in discover_personas(personas_path):
-            if p.name == needle:
-                return p
-        return None
+from hermes_cli.persona_library import (
+    DEFAULT_PERSONAS_PATH,
+    Persona,
+    SUGGESTED_ROLE_MODELS,
+    discover_personas,
+    group_by_category,
+)
+from hermes_cli.persona_library import lookup_persona as _lookup_persona_lib
+from hermes_cli.persona_library import get_personas_path as _get_personas_path_lib
+# Re-exported for legacy callers (ruflo_agents.py shim, older tests) that
+# imported the frontmatter helpers directly off this module.
+from hermes_cli.persona_library import _parse_frontmatter, _strip_frontmatter
 
 
 # Back-compat alias — older code (tools/delegate_tool.py before the rename,
@@ -401,8 +261,6 @@ def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
     Returns:
         ``(applied, skipped)`` — counts of roles updated and roles whose
         existing assignment was kept (or that weren't in the suggested map).
-
-    No-op when hermes-swarm isn't installed (the curated table is empty).
     """
     current = get_role_model_map()
     merged = dict(current)
