@@ -1428,6 +1428,11 @@ def _build_child_agent(
     # When set, ruflo's discovered .md prompt is prepended to the child's
     # system prompt and a per-role model override is consulted.
     agent_type: Optional[str] = None,
+    # True when this child is part of a background=true delegation. Gates
+    # the cross_session toolset: only a background child's parent keeps its
+    # own conversation loop running and can actually react to a message
+    # (docs/design/local-agent-messaging.md, Question 4 resolution).
+    background: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1521,6 +1526,25 @@ def _build_child_agent(
             inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"]
         )
     )
+
+    # Cross-agent messaging (docs/design/local-agent-messaging.md): a child
+    # gets send_to_parent ONLY under background=true. A synchronous child's
+    # parent is blocked inside the batch polling loop and cannot act on
+    # anything it sends, so shipping the schema would be pure token cost.
+    # send_agent_message (the recipient-taking tool) is never granted to a
+    # subagent in any mode; it stays parent/session-only.
+    from tools.agent_messaging_contract import TOOLSET_NAME as _MSG_TOOLSET
+
+    if background:
+        if _MSG_TOOLSET not in child_toolsets:
+            child_toolsets.append(_MSG_TOOLSET)
+        child_disabled_toolsets = [
+            name for name in child_disabled_toolsets if name != _MSG_TOOLSET
+        ]
+    else:
+        child_toolsets = [t for t in child_toolsets if t != _MSG_TOOLSET]
+        if _MSG_TOOLSET not in child_disabled_toolsets:
+            child_disabled_toolsets.append(_MSG_TOOLSET)
 
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because
@@ -1788,6 +1812,14 @@ def _build_child_agent(
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
+    # Which top-level session's process tree this child lives in. Transport A
+    # scopes in-process delivery to a shared owner_session_id, so a child needs
+    # to know its own owner to address its parent
+    # (docs/design/local-agent-messaging.md).
+    _owner_sid = getattr(parent_agent, "_delegate_owner_session_id", None)
+    if not isinstance(_owner_sid, str) or not _owner_sid:
+        _owner_sid = getattr(parent_agent, "session_id", None)
+    child._delegate_owner_session_id = _owner_sid if isinstance(_owner_sid, str) else ""
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Stable sidebar marker: delegate subagent sessions must stay out of
@@ -2404,6 +2436,15 @@ def _run_single_child(
             {
                 "subagent_id": _subagent_id,
                 "parent_id": _parent_sid if isinstance(_parent_sid, str) else None,
+                # Which top-level session's process tree this child belongs to.
+                # Transport A's in-process lookup uses this to refuse delivery
+                # across session boundaries even though _active_subagents is
+                # process-global (docs/design/local-agent-messaging.md).
+                "owner_session_id": (
+                    getattr(parent_agent, "session_id", None)
+                    if isinstance(getattr(parent_agent, "session_id", None), str)
+                    else None
+                ),
                 "depth": _tui_depth,
                 "goal": goal,
                 "model": (
@@ -2587,6 +2628,10 @@ def _run_single_child(
 
             return {
                 "task_index": task_index,
+                # Surfaced so the parent can address this child with
+                # send_agent_message without a list_active_subagents round
+                # trip (docs/design/local-agent-messaging.md, Question 2).
+                "subagent_id": _subagent_id,
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
                 "error": _err,
@@ -2692,6 +2737,7 @@ def _run_single_child(
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
+            "subagent_id": _subagent_id,
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
@@ -2707,6 +2753,18 @@ def _run_single_child(
                 ),
             },
             "tool_trace": tool_trace,
+            # Finding 8: a message that landed after this child's last tool
+            # batch but before its final text response has nothing left to
+            # attach to, so turn_finalizer parks it on result["pending_steer"].
+            # The child lifecycle never read that field, silently dropping the
+            # message. Carry it up so _finalize_child_results can surface it to
+            # the parent as unprocessed_messages instead
+            # (docs/design/local-agent-messaging.md, Finding 8).
+            "pending_steer": (
+                _ps
+                if isinstance((_ps := result.get("pending_steer")), str) and _ps.strip()
+                else None
+            ),
             # Auto-route decision (tier/role/model/reason/agent_type) when the
             # router picked this child's model — surfaced in the result so a
             # routing choice is always visible and auditable, never silent.
@@ -2942,6 +3000,7 @@ def _run_single_child(
                 logger.debug("Progress callback failure relay failed: %s", e)
         return {
             "task_index": task_index,
+            "subagent_id": _subagent_id,
             "status": "error",
             "summary": None,
             "error": str(exc),
@@ -3057,6 +3116,37 @@ def _parent_finalization_lock(parent_agent) -> threading.RLock:
     return lock
 
 
+def _surface_unprocessed_messages(results: List[Dict[str, Any]]) -> None:
+    """Promote a child's dropped end-of-turn message into the parent's result.
+
+    Finding 8 (docs/design/local-agent-messaging.md): a message delivered
+    after a child's last tool batch but before its final text response has
+    nothing left to append to, so ``agent/turn_finalizer.py`` parks it on
+    ``result["pending_steer"]``. ``cli.py`` already redelivers that for a
+    top-level session; the delegate child lifecycle never read it, so the
+    message was silently dropped.
+
+    We surface it — structured ``unprocessed_messages`` plus a one-line note
+    in the summary the parent actually reads — rather than reawakening the
+    child for another turn, which the design explicitly rejected for its
+    recursion cost.
+    """
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        leftover = entry.pop("pending_steer", None)
+        if not isinstance(leftover, str) or not leftover.strip():
+            continue
+        entry["unprocessed_messages"] = [leftover.strip()]
+        note = (
+            "[unprocessed message] This subagent received a message after its "
+            "final tool batch and never got a chance to act on it: "
+            f"{leftover.strip()}"
+        )
+        existing = entry.get("summary")
+        entry["summary"] = f"{existing}\n\n{note}" if existing else note
+
+
 def _finalize_child_results(
     results: List[Dict[str, Any]],
     task_list: List[Dict[str, Any]],
@@ -3065,6 +3155,7 @@ def _finalize_child_results(
 ) -> None:
     """Apply host-owned summary, memory, hook, and cost contracts once."""
     with _parent_finalization_lock(parent_agent):
+        _surface_unprocessed_messages(results)
         _apply_summary_budget(results, parent_agent)
         child_by_index = {index: child for index, _task, child in children}
 
@@ -3488,6 +3579,7 @@ def delegate_task(
             override_acp_args=creds.get("args"),
             role=effective_role,
             agent_type=task_agent_type,
+            background=background,
         )
         # Stash the auto-route decision (if any) so _run_single_child can
         # surface it in the result metadata — makes silent misrouting

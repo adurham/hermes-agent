@@ -3785,6 +3785,39 @@ class AIAgent(ForkForwardersMixin):
         if force_persist:
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()
+        try:
+            self._heartbeat_cross_session_registry()
+        except AttributeError:
+            # Some callers exercise _touch_activity on a minimal duck-typed
+            # stand-in (e.g. a SimpleNamespace binding only the methods a
+            # given test needs) rather than a real AIAgent instance, which
+            # won't have this method at all. The method's own body is
+            # already fail-open for everything it does once entered; this
+            # guards the one failure mode that happens before entry.
+            pass
+
+    def _heartbeat_cross_session_registry(self) -> None:
+        """Keep this session addressable by other local Hermes sessions.
+
+        Piggybacks on the existing turn-boundary activity hook rather than
+        adding a second heartbeat writer or a background thread — the registry
+        row and the session-activity row are refreshed by the same event, so
+        they can never drift apart. Rate-limiting lives in
+        ``cross_session_integration.heartbeat_if_due`` (60s window).
+
+        Fail-open in the strongest sense: messaging must never raise into the
+        agent loop, and Transport B may not even be installed.
+        """
+        try:
+            from tools.cross_session_integration import (
+                heartbeat_if_due,
+                install_transport,
+            )
+
+            install_transport()
+            heartbeat_if_due(self)
+        except Exception:
+            pass
 
     def _persist_session_activity_if_due(self) -> None:
         """Best-effort durable activity heartbeat for SessionDB consumers.

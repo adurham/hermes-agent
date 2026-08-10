@@ -11772,6 +11772,50 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)
 
+    def _drain_cross_session_inbox(self) -> None:
+        """Deliver cross-session agent messages addressed to this CLI session.
+
+        Transport B's idle-recipient path (docs/design/cross-session-messaging.md,
+        "Delivery mechanics"). Runs on the same idle tick as
+        ``_drain_process_notifications`` and reuses the same proven
+        claim-then-inject shape: the transport claims each row atomically
+        before returning it, and this method pushes it onto ``_pending_input``
+        — the sink that starts a fresh turn on the next 0.1s tick.
+
+        What is injected is ``DrainedMessage.framed_body``, which the
+        transport already wrapped with ``build_agent_message_marker()``. The
+        raw body is not reachable from here at all. Injecting an unwrapped
+        body would be indistinguishable from operator-authored input and
+        would defeat the untrusted-content framing this feature depends on.
+
+        Held messages fire ``_fire_attention_signals`` — the same config-gated
+        terminal bell + macOS notification used for approval/clarify prompts —
+        rather than a parallel notification path.
+
+        Housekeeping (reaping dead registry rows, expiring stale holds) is
+        throttled inside ``maintenance_tick``; this call site fires at 10Hz
+        and must not run two DB writes per tick.
+        """
+        from tools.cross_session_integration import (
+            drain_to_idle_injection,
+            install_transport,
+            maintenance_tick,
+        )
+
+        session_key = getattr(self, "session_id", "") or ""
+        if not session_key:
+            return
+        # Idempotent; guarantees this process participates in
+        # resolve_transport()'s fan-out without a separate startup call site
+        # that a non-CLI entrypoint could forget.
+        install_transport()
+        maintenance_tick()
+        drain_to_idle_injection(
+            session_id=session_key,
+            inject=self._pending_input.put,
+            on_held=self._fire_attention_signals,
+        )
+
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
 
@@ -20242,6 +20286,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             # and watch pattern matches) while agent is idle.
                             try:
                                 self._drain_process_notifications("cli-idle")
+                            except Exception:
+                                pass
+                            # Cross-session agent messages (Transport B).
+                            # Same claim-then-inject shape as the background
+                            # process completions above, and the same sink
+                            # (_pending_input), so an injected message starts
+                            # a fresh turn on the next tick exactly like a
+                            # typed prompt would.
+                            try:
+                                self._drain_cross_session_inbox()
                             except Exception:
                                 pass
                         continue

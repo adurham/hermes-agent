@@ -338,6 +338,56 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+-- Cross-session (Transport B) agent messaging: durable registry + inbox.
+-- Design: docs/design/cross-session-messaging.md ("Storage: state.db") and
+-- docs/design/local-agent-messaging.md ("Transport B").
+--
+-- SESSION-ONLY BY CONSTRUCTION. delegate_task subagents never get a row in
+-- either table: they live seconds, and a heartbeat/reap cost for such an
+-- entity is disproportionate (both design docs state this repeatedly). A
+-- subagent participates cross-process only by proxy through its owning
+-- top-level session, whose own in-process logic (Transport A) decides
+-- whether to relay. Do not add a subagent-facing path here.
+--
+-- NOTE on the absent ``permission_mode`` column: the predecessor doc's
+-- schema listed one, but the newer doc's "Sender-permission-mode threat
+-- model" section verified that no such settings field exists on sessions in
+-- this codebase. ``session_origin`` (cli|gateway|acp|cron) replaces it —
+-- that IS a real, existing distinction, and it is what both the inbound
+-- policy default and the sender-registration gate actually key on.
+CREATE TABLE IF NOT EXISTS cross_session_registry (
+    session_id      TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    cwd             TEXT,
+    platform        TEXT,
+    profile         TEXT NOT NULL,
+    session_origin  TEXT,
+    pid             INTEGER,
+    last_heartbeat  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cross_session_inbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_session_id TEXT NOT NULL,
+    from_name       TEXT NOT NULL,
+    to_session_id   TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    hop_count       INTEGER NOT NULL DEFAULT 0,
+    created_at      REAL NOT NULL,
+    delivered_at    REAL,
+    expires_at      REAL
+);
+
+-- Serves the delivery poll (drain claims by recipient + status).
+CREATE INDEX IF NOT EXISTS idx_inbox_recipient
+    ON cross_session_inbox(to_session_id, status);
+-- Round-2 flagged this one as missing: the per-sender-pair rate cap filters
+-- on (from_session_id, to_session_id, created_at) and would otherwise scan a
+-- table with no guaranteed size bound.
+CREATE INDEX IF NOT EXISTS idx_inbox_sender_pair
+    ON cross_session_inbox(from_session_id, to_session_id, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);

@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -65,16 +65,45 @@ class TransportKind(str, Enum):
     NOT_FOUND = "not_found"         # Finding 6: explicit typed result, never None/exception
 
 
+# A transport's recipient lookup: (sender, recipient_string) -> Participant | None.
+# Must return None — never raise — for anything it does not own, so the
+# fan-out in resolve_transport() keeps working.
+TransportLookupFn = Callable[[Participant, str], Optional["Participant"]]
+
+# A transport's send path: (sender, already-resolved recipient, body) -> SendResult.
+#
+# CONTRACT, and the reason this alias exists rather than each transport being
+# imported directly by the tool layer: an implementation may raise ONLY
+# ``MessageTooLargeError`` or ``RecipientQueueFullError``. Any transport-
+# internal exception (sqlite3.Error, a network timeout, anything else) must be
+# translated inside that transport's own adapter — either into one of those
+# two, or into a ``SendResult`` with ``RECIPIENT_NOT_FOUND``. A transport-
+# specific exception type must never leak across this seam, because the tool
+# layer catches exactly those two and cannot know what any given transport
+# might throw.
+TransportSendFn = Callable[["Participant", "Participant", str], "SendResult"]
+
+
 @dataclass(frozen=True)
 class TransportResolution:
     """Result of resolving a recipient string to a transport.
 
     ``NOT_FOUND`` covers BOTH "never existed" and "existed, now gone" —
     per Finding 3/6, the caller does not need (and is not told) which.
+
+    ``send`` is the resolved transport's own send callable, attached here so
+    the tool layer dispatches through the seam instead of branching on
+    ``kind`` with a hardcoded per-transport import. The design doc is
+    explicit about this ("define a small transport-selection interface ...
+    rather than hardcoding 'if same process, do X, else do Y' inline in the
+    tool implementation"). It is Optional only to defend against a transport
+    that registered a lookup but no send; the tool layer falls back to a
+    generic error rather than crashing in that case.
     """
 
     kind: TransportKind
     participant: Optional[Participant] = None
+    send: Optional["TransportSendFn"] = None
 
 
 def resolve_transport(sender: Participant, recipient_id: str) -> TransportResolution:
@@ -90,22 +119,30 @@ def resolve_transport(sender: Participant, recipient_id: str) -> TransportResolu
        durable store) -> CROSS_PROCESS_DB.
     3. Else -> NOT_FOUND (never raises).
 
-    Transport A and Transport B each register a lookup callable via
-    ``register_transport_lookup`` at import time; this function fans out to
-    both without either transport needing to know the other exists.
+    Transport A and Transport B each register a lookup callable (and its
+    matching send callable) via ``register_transport`` at import time; this
+    function fans out to both without either transport needing to know the
+    other exists. The resolved transport's send callable is attached to the
+    returned ``TransportResolution`` so the caller dispatches through the
+    seam rather than re-branching on ``kind``.
     """
     for kind, lookup in _TRANSPORT_LOOKUPS:
         participant = lookup(sender, recipient_id)
         if participant is not None:
-            return TransportResolution(kind=kind, participant=participant)
+            return TransportResolution(
+                kind=kind,
+                participant=participant,
+                send=_TRANSPORT_SENDS.get(kind),
+            )
     return TransportResolution(kind=TransportKind.NOT_FOUND, participant=None)
 
 
-_TRANSPORT_LOOKUPS: list[tuple[TransportKind, "TransportLookupFn"]] = []
-
-from typing import Callable
-
-TransportLookupFn = Callable[[Participant, str], Optional[Participant]]
+# Lookups stay an ordered list: registration order IS the classification
+# order (in-process is checked before cross-process, per Finding 6). Sends
+# are keyed by kind because they are only ever fetched for an
+# already-resolved transport, never iterated.
+_TRANSPORT_LOOKUPS: list[tuple[TransportKind, TransportLookupFn]] = []
+_TRANSPORT_SENDS: dict[TransportKind, TransportSendFn] = {}
 
 
 def register_transport_lookup(kind: TransportKind, lookup: TransportLookupFn) -> None:
@@ -113,13 +150,44 @@ def register_transport_lookup(kind: TransportKind, lookup: TransportLookupFn) ->
     ``resolve_transport``. Order of registration matters: Transport A
     (in-process) should register before Transport B, since Finding 6's
     classification rule checks in-process first.
+
+    Prefer ``register_transport()``, which registers the lookup and its
+    matching send together — a transport that registers only a lookup
+    resolves but cannot be sent to.
     """
     _TRANSPORT_LOOKUPS.append((kind, lookup))
 
 
+def register_transport_send(kind: TransportKind, send: TransportSendFn) -> None:
+    """Register the send callable for ``kind``. See ``TransportSendFn`` for
+    the exception contract an implementation must honor.
+    """
+    _TRANSPORT_SENDS[kind] = send
+
+
+def register_transport(
+    kind: TransportKind, lookup: TransportLookupFn, send: TransportSendFn
+) -> None:
+    """Register both halves of a transport at once — the intended entry point.
+
+    Keeping these paired at one call site is what prevents the failure this
+    seam was built to avoid: a transport that is discoverable via
+    ``resolve_transport`` but has no reachable send path, so every message
+    addressed to it dead-ends in the tool layer.
+    """
+    register_transport_lookup(kind, lookup)
+    register_transport_send(kind, send)
+
+
+def get_transport_send(kind: TransportKind) -> Optional[TransportSendFn]:
+    """The send callable registered for ``kind``, if any."""
+    return _TRANSPORT_SENDS.get(kind)
+
+
 def _reset_transport_lookups_for_tests() -> None:
-    """Test-only: clear registered lookups between test modules."""
+    """Test-only: clear registered lookups and sends between test modules."""
     _TRANSPORT_LOOKUPS.clear()
+    _TRANSPORT_SENDS.clear()
 
 
 # ---------------------------------------------------------------------------

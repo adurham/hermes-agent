@@ -2288,6 +2288,25 @@ DEFAULT_CONFIG = {
         "session_db_timeout_seconds": 10,
     },
 
+    # Local agent messaging, cross-process half (Transport B).
+    # docs/design/cross-session-messaging.md, "Inbound policy —
+    # cross_session.inbound".
+    #
+    # inbound — what this session does with a message another local Hermes
+    # session sends it. Enforced at DRAIN time by the recipient against its
+    # OWN current value, never trusted from the sender:
+    #   accept — deliver at the next drain checkpoint, marker-wrapped as
+    #            untrusted cross-agent content.
+    #   hold   — queue for human approval; `hermes agents inbox` approves or
+    #            denies, and an unresolved hold expires after an hour.
+    #   refuse — never deliver.
+    # Empty (the default) keeps the per-origin defaults, which are
+    # deliberately conservative: hold for CLI and ACP sessions, refuse for
+    # gateway and cron. Setting this key overrides that for every origin.
+    "cross_session": {
+        "inbound": "",
+    },
+
     # Kanban multi-agent coordination — controls the dispatcher loop that
     # spawns workers for ready tasks. The dispatcher ticks every N seconds
     # (default 60), reclaims stale claims, promotes dependency-satisfied
