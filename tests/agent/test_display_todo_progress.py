@@ -180,11 +180,11 @@ class TestTodoChecklistBody:
         assert lines[0].startswith("┊ 📋 plan")
         assert "2/5 task(s)" in lines[0]
         assert len(lines) == 6  # header + 5 items
-        assert "[x] Fix TB link" in lines[1]
-        assert "[x] Clear stall dumps" in lines[2]
-        assert "[>] Reboot both Studios" in lines[3]
-        assert "[ ] Verify link back up" in lines[4]
-        assert "[~] Relaunch cluster" in lines[5]
+        assert "✅ Fix TB link" in lines[1]
+        assert "✅ Clear stall dumps" in lines[2]
+        assert "🔄 Reboot both Studios" in lines[3]
+        assert "⬜ Verify link back up" in lines[4]
+        assert "❌ Relaunch cluster" in lines[5]
 
     def test_checklist_renders_on_create(self):
         items = self._items()
@@ -192,7 +192,7 @@ class TestTodoChecklistBody:
                                     result=_todo_result_with_items(items))
         lines = msg.splitlines()
         assert len(lines) == 6
-        assert "[x] Fix TB link" in lines[1]
+        assert "✅ Fix TB link" in lines[1]
 
     def test_checklist_renders_on_merge_update(self):
         items = self._items()

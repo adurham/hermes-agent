@@ -3,6 +3,56 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-08-10 (TUI todo/task board: no border, ambiguous `[x]`/`[>]` markers, naive truncation buried active work)
+
+**Symptom:** the live in-TUI todo/task board (rendered by the
+`todo_board_widget` in `cli.py`'s `_build_tui_layout_children`, populated
+from `TodoStore`) printed as bare unbordered lines that blended into
+scrollback, used bracket-letter status markers (`[x]` completed, `[>]`
+in-progress, `[ ]` pending, `[~]` cancelled) that read as ambiguous at a
+glance, and — when the list exceeded the 12-row cap — truncated by simple
+list-order head-slicing, so a long plan with many already-completed early
+items could hide the still-active later items behind a bare "… +N more"
+line instead of showing what's actually in flight.
+
+**Fix:**
+1. `todo_board_widget`'s `get_todo_board_text()`/`get_todo_board_height()`
+   (`cli.py`) now render inside a `╭─…─╮`/`╰─…─╯` box matching the existing
+   clarify/approval/sudo panel treatment, using a new `todo-border` style
+   entry (`#CD7F32`, the same bronze as the other panels) added to
+   `_tui_style_base`. Box width uses the existing `_panel_cwidth`/
+   `_panel_ljust` cell-width-aware helpers so wide glyphs (the new emoji
+   markers) don't misalign the right border.
+2. Status markers switched from `[x]`/`[>]`/`[ ]`/`[~]`/`[?]` to
+   `✅`/`🔄`/`⬜`/`❌`/`❔` in all three places a todo item's status marker is
+   rendered to a human: the live TUI board (`cli.py`), the scrollback tool-call
+   checklist preview (`agent/display.py`'s `get_cute_tool_message` todo
+   branch), and the post-compression context re-injection format
+   (`tools/todo_tool.py`'s `TodoStore.format_for_injection`) so the injected-
+   into-context representation and the terminal-rendered representation stay
+   visually consistent, per that function's own docstring intent.
+3. When the todo list exceeds `_TODO_BOARD_MAX_ROWS` (12), a new
+   `_select_todo_display_items()` helper in `cli.py` now prioritizes showing
+   every pending/in-progress item first and only fills remaining row budget
+   with completed/cancelled items (oldest-first, matching list order) —
+   previously a plain `items[:12]` slice could show 12 stale completed items
+   from the head of a 20-item list and hide all 8 still-active ones behind
+   "… +8 more". The header's `done/total` count already communicates overall
+   progress, so hiding completed items first loses no information the board
+   wasn't already showing at a glance. Overflow line now reads "… +N more
+   (completed hidden)" to make the hide-not-truncate behavior explicit.
+
+**Files touched:** `cli.py` (todo board widget + `todo-border` style entry),
+`agent/display.py` (`_checklist_lines` markers), `tools/todo_tool.py`
+(`format_for_injection` markers), `tests/agent/test_display_todo_progress.py`
+and `tests/tools/test_todo_tool.py` (updated marker assertions).
+
+**Verification:** `.venv/bin/python -m pytest tests/agent/test_display_todo_progress.py
+tests/tools/test_todo_tool.py -q` → 35 passed. `cli.py` parses (`ast.parse`)
+and imports cleanly under the repo venv. Manually traced
+`_select_todo_display_items` against a 14-item list (10 completed + 4
+pending, cap 12) → all 4 pending kept, 8/10 completed shown, 2 hidden.
+
 ### Fork-only feature — 2026-08-10 (background curator's skill_manage write refusals were invisible outside a live scrollback line)
 
 **Symptom:** the background skill curator (`agent/curator.py`'s LLM
