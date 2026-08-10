@@ -1159,6 +1159,16 @@ DEFAULT_CONFIG = {
         "timestamps": False,      # Show timestamp on user and assistant labels
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw
+        # Left-margin indent (in spaces) applied to streamed response and
+        # reasoning box text, and to the final-response Rich Panel's
+        # horizontal padding. Upstream default was 4 spaces; changed to 0
+        # (flush-left) in July 2026 specifically so mouse-selected/copied
+        # lines wouldn't carry leading whitespace. Restored to 4 as the
+        # fork default per user preference (2026-08-10) — /copy remains
+        # the clean-copy path regardless of this setting, since it writes
+        # the original message text via the native clipboard rather than
+        # scraping the rendered on-screen box. Set to 0 to go flush-left.
+        "response_indent_width": 4,
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator
         # behaves badly with replayed scrollback.
