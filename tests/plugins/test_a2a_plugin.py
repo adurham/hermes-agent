@@ -109,6 +109,218 @@ class TestPeerIdentity:
         assert security.authenticate("Bearer shared-tok", "1.1.1.1") == "ip:1.1.1.1"
 
 
+class TestTrustedProxyIdentity:
+    """A2A_TRUSTED_PROXIES gates X-Forwarded-For — never trusted by default (#80534)."""
+
+    def test_xff_ignored_when_no_trusted_proxies_configured(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.delenv("A2A_TRUSTED_PROXIES", raising=False)
+        # Socket peer is 10.0.0.1 (a "proxy"); client claims to be 5.5.5.5 via XFF.
+        # No allow-list => header ignored; identity is the socket peer.
+        ident = security.authenticate("Bearer shared-tok", "10.0.0.1", "5.5.5.5")
+        assert ident == "ip:10.0.0.1"
+
+    def test_xff_ignored_when_socket_peer_not_trusted(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
+        # Direct attacker at 99.99.99.99 sends a spoofed XFF. Must be ignored.
+        ident = security.authenticate("Bearer shared-tok", "99.99.99.99", "5.5.5.5")
+        assert ident == "ip:99.99.99.99"
+
+    def test_xff_honored_when_socket_peer_trusted(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
+        ident = security.authenticate("Bearer shared-tok", "10.0.0.1", "5.5.5.5")
+        assert ident == "ip:5.5.5.5"
+
+    def test_xff_cidr_match(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.0/24")
+        ident = security.authenticate("Bearer shared-tok", "10.0.0.42", "5.5.5.5")
+        assert ident == "ip:5.5.5.5"
+
+    def test_xff_chain_walks_past_trusted_hops(self, monkeypatch):
+        # client, edge-proxy, internal-proxy — walking from the right, we skip
+        # trusted hops until we find the real client.
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1,10.0.0.2")
+        ident = security.authenticate(
+            "Bearer shared-tok", "10.0.0.1", "5.5.5.5, 10.0.0.2"
+        )
+        assert ident == "ip:5.5.5.5"
+
+    def test_xff_malformed_entry_fails_closed(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
+        # Rightmost hop is garbage => the chain is untrustworthy. We must NOT
+        # skip it and fall through to the attacker-controlled 5.5.5.5.
+        ident = security.authenticate(
+            "Bearer shared-tok", "10.0.0.1", "5.5.5.5, not-an-ip"
+        )
+        assert ident == "ip:10.0.0.1"
+
+    def test_xff_no_valid_hops_falls_back_to_socket(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
+        ident = security.authenticate(
+            "Bearer shared-tok", "10.0.0.1", "garbage, more-garbage"
+        )
+        assert ident == "ip:10.0.0.1"
+
+    def test_peer_token_identity_unaffected_by_xff(self, monkeypatch):
+        # Per-peer tokens derive identity from the token match, NOT the IP —
+        # trusted-proxy plumbing must not change that.
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-a")
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
+        assert security.authenticate("Bearer tok-a", "10.0.0.1", "5.5.5.5") == "alice"
+
+    def test_invalid_cidr_entries_ignored(self, monkeypatch):
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "not-an-ip, 10.0.0.1")
+        nets = security.get_trusted_proxies()
+        # One valid entry survives.
+        assert len(nets) == 1
+
+    def test_attacker_prepended_fake_trusted_hops_ignored(self, monkeypatch):
+        """Classic XFF spoof: client pre-populates the header with fake trusted IPs.
+
+        The attacker originates the request so it controls everything to the
+        LEFT of what the proxy appends. It stuffs fake 'trusted proxy' IPs in,
+        hoping the walk skips past them to a forged client IP. The right-to-left
+        walk must stop at the proxy-appended real hop first.
+        """
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1,10.0.0.2")
+        # Attacker (really 66.66.66.66) sent: "1.2.3.4, 10.0.0.2"
+        # Trusted proxy 10.0.0.1 appended the true peer address.
+        forged = "1.2.3.4, 10.0.0.2, 66.66.66.66"
+        assert security.authenticate(
+            "Bearer shared-tok", "10.0.0.1", forged
+        ) == "ip:66.66.66.66"
+
+    def test_ipv4_mapped_ipv6_socket_peer_matches_v4_cidr(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.0/24")
+        assert security._is_trusted_proxy("::ffff:10.0.0.5") is True
+        assert security.authenticate(
+            "Bearer shared-tok", "::ffff:10.0.0.5", "5.5.5.5"
+        ) == "ip:5.5.5.5"
+
+    def test_ipv4_mapped_config_entry_still_matches_plain_v4_peer(self, monkeypatch):
+        """The reverse of test_ipv4_mapped_ipv6_socket_peer_matches_v4_cidr:
+        an operator writes an IPv4-mapped IPv6 CIDR *in the allow-list itself*
+        (e.g. copy-pasted from a dual-stack listener's own address). Without
+        unwrapping the config entry the same way the socket peer is unwrapped,
+        this would silently never match a real (plain-IPv4) socket peer —
+        fails closed, but confusingly, since nothing in the config surfaces
+        the address-family mismatch."""
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "::ffff:10.0.0.0/120")
+        assert security._is_trusted_proxy("10.0.0.5") is True
+        assert security.authenticate(
+            "Bearer shared-tok", "10.0.0.5", "5.5.5.5"
+        ) == "ip:5.5.5.5"
+
+    def test_ipv6_untrusted_peer_still_ignores_header(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.0/24")
+        assert security.authenticate(
+            "Bearer shared-tok", "2001:db8::99", "5.5.5.5"
+        ) == "ip:2001:db8::99"
+
+
+class TestForwardedForHeaderExtraction:
+    """Duplicate X-Forwarded-For headers must be joined, not truncated (#80534)."""
+
+    @staticmethod
+    def _handler_with_headers(raw_headers: bytes):
+        """Build a bare A2ARequestHandler with parsed headers, no socket."""
+        import io
+        from http.client import parse_headers
+        from plugins.platforms.a2a import adapter as a2a_adapter
+
+        handler = a2a_adapter.A2ARequestHandler.__new__(
+            a2a_adapter.A2ARequestHandler
+        )
+        handler.headers = parse_headers(io.BufferedReader(io.BytesIO(raw_headers)))
+        return handler
+
+    def test_duplicate_xff_headers_are_joined(self):
+        h = self._handler_with_headers(
+            b"X-Forwarded-For: 1.2.3.4\r\n"
+            b"X-Forwarded-For: 66.66.66.66\r\n\r\n"
+        )
+        assert h._forwarded_for() == "1.2.3.4, 66.66.66.66"
+
+    def test_missing_xff_returns_none(self):
+        h = self._handler_with_headers(b"Host: x\r\n\r\n")
+        assert h._forwarded_for() is None
+
+    def test_split_header_spoof_is_defeated(self, monkeypatch):
+        """End-to-end: attacker splits the header to hide behind a forged IP.
+
+        With ``headers.get()`` only the attacker's first line survived and the
+        proxy-appended true IP was dropped entirely — a full identity forge.
+        """
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
+        h = self._handler_with_headers(
+            b"X-Forwarded-For: 5.5.5.5\r\n"           # attacker-supplied
+            b"X-Forwarded-For: 66.66.66.66\r\n\r\n"   # proxy-appended truth
+        )
+        assert security.authenticate(
+            "Bearer shared-tok", "10.0.0.1", h._forwarded_for()
+        ) == "ip:66.66.66.66"
+
+
+class TestSharedTokenProxyWarning:
+    """resolve_bind_host warns loudly on the shared-token-behind-proxy footgun (#80534)."""
+
+    def test_warns_shared_token_non_loopback_no_proxy_config(self, monkeypatch, caplog):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.delenv("A2A_TRUSTED_PROXIES", raising=False)
+        monkeypatch.setenv("A2A_HOST", "0.0.0.0")
+        with caplog.at_level("WARNING", logger="plugins.platforms.a2a.security"):
+            security.resolve_bind_host()
+        assert any("#80534" in rec.message for rec in caplog.records)
+        assert any("A2A_PEER_TOKENS" in rec.message for rec in caplog.records)
+
+    def test_no_warn_with_peer_tokens(self, monkeypatch, caplog):
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-a")
+        monkeypatch.setenv("A2A_HOST", "0.0.0.0")
+        with caplog.at_level("WARNING", logger="plugins.platforms.a2a.security"):
+            security.resolve_bind_host()
+        assert not any("#80534" in rec.message for rec in caplog.records)
+
+    def test_no_warn_with_trusted_proxies(self, monkeypatch, caplog):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
+        monkeypatch.setenv("A2A_HOST", "0.0.0.0")
+        with caplog.at_level("WARNING", logger="plugins.platforms.a2a.security"):
+            security.resolve_bind_host()
+        assert not any("#80534" in rec.message for rec in caplog.records)
+
+    def test_no_warn_loopback(self, monkeypatch, caplog):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+        with caplog.at_level("WARNING", logger="plugins.platforms.a2a.security"):
+            security.resolve_bind_host()
+        assert not any("#80534" in rec.message for rec in caplog.records)
+
+
 class TestTrustedPeers:
     def test_localhost_trusts_all(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)

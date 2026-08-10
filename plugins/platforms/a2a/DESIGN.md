@@ -155,6 +155,20 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   for rate limiting, the trust gate, message framing, and audit. A shared
   `A2A_BEARER_TOKEN` authenticates as `ip:<addr>`. Nothing in the request
   body can assert identity. Comparisons are constant-time.
+- **Reverse-proxy identity (opt-in):** `A2A_TRUSTED_PROXIES=<ip-or-cidr,...>`
+  is an **explicit allow-list** of proxy socket addresses. Only when the
+  immediate socket peer is on that list is `X-Forwarded-For` consulted (the
+  rightmost non-proxy hop wins) to reconstruct the real client IP for
+  identity purposes. Empty (the default) means the header is ignored
+  entirely — a client cannot spoof identity by sending it. All instances of
+  the header are comma-joined (RFC 7230 §3.2.2) so a client cannot hide the
+  proxy-appended hop by splitting the header across lines, and a malformed
+  hop fails closed to the socket peer. Without this,
+  shared-token deployments behind a proxy collapse every peer to a single
+  `ip:<proxy>` identity, silently degrading per-peer rate limiting, the
+  trust gate, and audit attribution (#80534). Startup logs a loud warning
+  when the shared-token-behind-proxy shape is detected without either
+  `A2A_PEER_TOKENS` (the preferred fix) or `A2A_TRUSTED_PROXIES`.
 - **Trust gate:** `A2A_TRUSTED_PEERS` (or config `a2a.trusted_peers`)
   optionally restricts which authenticated identities may run tasks.
 - **Injection filters:** ALL inbound text (including `/`-prefixed — remote
