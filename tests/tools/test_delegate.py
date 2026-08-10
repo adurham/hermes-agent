@@ -270,14 +270,16 @@ class TestDelegateTask(unittest.TestCase):
         ad_mod._reset_for_tests()
         interrupted = []
         try:
+            parent = _make_mock_parent()
+            parent.session_id = "sess-cancel-test"
             with ad_mod._records_lock:
                 ad_mod._records["deleg_live1"] = {
                     "delegation_id": "deleg_live1",
                     "status": "running",
                     "is_batch": False,
+                    "parent_session_id": parent.session_id,
                     "interrupt_fn": lambda: interrupted.append(True),
                 }
-            parent = _make_mock_parent()
             result = json.loads(delegate_task(cancel="deleg_live1", parent_agent=parent))
             self.assertEqual(result["status"], "cancelled")
             self.assertEqual(result["delegation_id"], "deleg_live1")
@@ -290,13 +292,15 @@ class TestDelegateTask(unittest.TestCase):
         import tools.async_delegation as ad_mod
         ad_mod._reset_for_tests()
         try:
+            parent = _make_mock_parent()
+            parent.session_id = "sess-cancel-test"
             with ad_mod._records_lock:
                 ad_mod._records["deleg_done1"] = {
                     "delegation_id": "deleg_done1",
                     "status": "completed",
                     "is_batch": False,
+                    "parent_session_id": parent.session_id,
                 }
-            parent = _make_mock_parent()
             result = json.loads(delegate_task(cancel="deleg_done1", parent_agent=parent))
             self.assertEqual(result["status"], "already_done")
         finally:
@@ -310,21 +314,49 @@ class TestDelegateTask(unittest.TestCase):
         ad_mod._reset_for_tests()
         interrupted = []
         try:
+            parent = _make_mock_parent()
+            parent.session_id = "sess-cancel-test"
             with ad_mod._records_lock:
                 ad_mod._records["deleg_paused1"] = {
                     "delegation_id": "deleg_paused1",
                     "status": "running",
                     "is_batch": False,
+                    "parent_session_id": parent.session_id,
                     "interrupt_fn": lambda: interrupted.append(True),
                 }
             set_spawn_paused(True)
-            parent = _make_mock_parent()
             result = json.loads(delegate_task(cancel="deleg_paused1", parent_agent=parent))
             self.assertEqual(result["status"], "cancelled")
             self.assertTrue(interrupted)
         finally:
             set_spawn_paused(False)
             ad_mod._reset_for_tests()
+
+    def test_cancel_ignores_other_sessions_delegation(self):
+        """cancel= must not be able to pull back a delegation dispatched by
+        a DIFFERENT session -- the model-facing mirror of the gateway's
+        /stop <id> ownership check. Reports not_found, identical to a
+        genuinely nonexistent id."""
+        import tools.async_delegation as ad_mod
+        ad_mod._reset_for_tests()
+        interrupted = []
+        try:
+            parent = _make_mock_parent()
+            parent.session_id = "sess-attacker"
+            with ad_mod._records_lock:
+                ad_mod._records["deleg_not_mine"] = {
+                    "delegation_id": "deleg_not_mine",
+                    "status": "running",
+                    "is_batch": False,
+                    "parent_session_id": "sess-victim",
+                    "interrupt_fn": lambda: interrupted.append(True),
+                }
+            result = json.loads(delegate_task(cancel="deleg_not_mine", parent_agent=parent))
+            self.assertEqual(result["status"], "not_found")
+            self.assertFalse(interrupted)
+        finally:
+            ad_mod._reset_for_tests()
+
 
     def test_depth_limit(self):
         parent = _make_mock_parent(depth=2)

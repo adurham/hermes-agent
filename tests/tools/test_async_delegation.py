@@ -1455,4 +1455,105 @@ class TestInterruptById:
         assert calls_b == []
 
 
+# ── interrupt_by_id() session-ownership scoping ──────────────────────────
+# _records is one process-global dict shared by every session a gateway
+# process serves. Without a selector, any caller who obtains a
+# delegation_id (printed in plaintext in status lines / dispatch
+# confirmations / /agents output) could cancel a DIFFERENT session's
+# background work. When any of session_key/origin_ui_session_id/
+# parent_session_id is passed, the record must match via the same
+# _matches_session_selectors() interrupt_for_session() already uses, or
+# the call reports not-found -- identical to a genuinely nonexistent id,
+# so this can't be used to probe whether another session's id exists.
+
+
+class TestInterruptByIdSessionScoping:
+    @pytest.fixture(autouse=True)
+    def _clean_records(self):
+        ad._reset_for_tests()
+        yield
+        ad._reset_for_tests()
+
+    def test_matching_session_key_is_interrupted(self):
+        calls = []
+        with ad._records_lock:
+            ad._records["deleg_owned"] = {
+                "delegation_id": "deleg_owned",
+                "status": "running",
+                "session_key": "gw:owner-session",
+                "interrupt_fn": lambda: calls.append(1),
+            }
+        result = ad.interrupt_by_id(
+            "deleg_owned", session_key="gw:owner-session"
+        )
+        assert result == {"found": True, "already_done": False, "interrupted": True}
+        assert calls == [1]
+
+    def test_mismatched_session_key_reports_not_found(self):
+        """A different session's delegation must be reported identically to
+        a nonexistent id -- not distinguished as 'found but not yours',
+        which would let a caller probe for other sessions' ids."""
+        calls = []
+        with ad._records_lock:
+            ad._records["deleg_other"] = {
+                "delegation_id": "deleg_other",
+                "status": "running",
+                "session_key": "gw:someone-elses-session",
+                "interrupt_fn": lambda: calls.append(1),
+            }
+        result = ad.interrupt_by_id(
+            "deleg_other", session_key="gw:attacker-session"
+        )
+        assert result == {"found": False, "already_done": False, "interrupted": False}
+        assert calls == []
+
+    def test_matching_parent_session_id_is_interrupted(self):
+        """delegate_task(cancel=...) scopes by parent_session_id."""
+        calls = []
+        with ad._records_lock:
+            ad._records["deleg_parent"] = {
+                "delegation_id": "deleg_parent",
+                "status": "running",
+                "parent_session_id": "sess-abc123",
+                "interrupt_fn": lambda: calls.append(1),
+            }
+        result = ad.interrupt_by_id(
+            "deleg_parent", parent_session_id="sess-abc123"
+        )
+        assert result["interrupted"] is True
+        assert calls == [1]
+
+    def test_mismatched_parent_session_id_reports_not_found(self):
+        calls = []
+        with ad._records_lock:
+            ad._records["deleg_parent2"] = {
+                "delegation_id": "deleg_parent2",
+                "status": "running",
+                "parent_session_id": "sess-abc123",
+                "interrupt_fn": lambda: calls.append(1),
+            }
+        result = ad.interrupt_by_id(
+            "deleg_parent2", parent_session_id="sess-xyz999"
+        )
+        assert result["found"] is False
+        assert calls == []
+
+    def test_unscoped_call_ignores_ownership_matches_any_session(self):
+        """The CLI's default (no selectors passed) preserves the pre-fix
+        behavior -- a single-session process has nothing to scope against,
+        since every id in _records was dispatched by the one session that
+        process is running."""
+        calls = []
+        with ad._records_lock:
+            ad._records["deleg_cli"] = {
+                "delegation_id": "deleg_cli",
+                "status": "running",
+                "session_key": "some-key-the-caller-never-passes",
+                "interrupt_fn": lambda: calls.append(1),
+            }
+        result = ad.interrupt_by_id("deleg_cli")
+        assert result["interrupted"] is True
+        assert calls == [1]
+
+
 

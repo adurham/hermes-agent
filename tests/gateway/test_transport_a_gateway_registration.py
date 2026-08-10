@@ -111,7 +111,8 @@ def test_registered_gateway_session_resolves_in_process():
     session_id = "agent:main:telegram:dm:12345"
     agent = _fake_agent(session_id)
 
-    assert register_gateway_session_participant(runner, session_id, agent) is True
+    result = register_gateway_session_participant(runner, session_id, agent)
+    assert result == session_id
 
     sender = _sender_participant(session_id)
     resolution = resolve_transport(sender, session_id)
@@ -176,20 +177,53 @@ def test_unregister_drops_session_from_registry():
     runner = _FakeRunner()
     session_id = "agent:main:telegram:dm:555"
     agent = _fake_agent(session_id)
-    register_gateway_session_participant(runner, session_id, agent)
+    participant_id = register_gateway_session_participant(runner, session_id, agent)
+    assert participant_id == session_id
 
     sender = _sender_participant(session_id)
     assert transport_a.in_process_lookup(sender, session_id) is not None
 
-    unregister_gateway_session_participant(agent)
+    unregister_gateway_session_participant(participant_id)
 
     assert transport_a.in_process_lookup(sender, session_id) is None
 
 
-def test_unregister_is_noop_for_none_agent():
-    # Must never raise when called with no agent (e.g. a session that never
-    # ran a turn before hitting a conversation boundary).
+def test_unregister_is_noop_for_empty_participant_id():
+    # Must never raise when called with no id (e.g. a session that never
+    # ran a turn before hitting a conversation boundary, so
+    # transport_a_participant_id was never populated).
     unregister_gateway_session_participant(None)
+    unregister_gateway_session_participant("")
+
+
+def test_unregister_uses_registration_time_id_not_current_agent_session_id():
+    """Regression for the 2026-08-10 fragile-lookup bug: unregistration must
+    use the id CAPTURED AT REGISTRATION TIME, not whatever a live agent's
+    ``session_id`` happens to be at teardown. A session split (in-place
+    compaction changes ``agent.session_id`` without rotating the gateway's
+    routing key) used to leave the old lookup chain unregistering the WRONG
+    id (or finding nothing at all, since ``TurnState.clear()`` nulls
+    ``turn.agent`` before most boundaries fire) -- see
+    ``transport_a_participant_id``'s docstring in gateway/session_state.py.
+    """
+    runner = _FakeRunner()
+    original_session_id = "agent:main:telegram:dm:split-before"
+    agent = _fake_agent(original_session_id)
+    participant_id = register_gateway_session_participant(runner, original_session_id, agent)
+    assert participant_id == original_session_id
+
+    # Simulate a session split: the SAME agent object's session_id changes
+    # (compression in-place compaction) without re-registering.
+    agent.session_id = "agent:main:telegram:dm:split-after"
+
+    sender = _sender_participant(original_session_id)
+    assert transport_a.in_process_lookup(sender, original_session_id) is not None
+
+    # Unregistering by the CAPTURED id (what _clear_conversation_scope now
+    # does) correctly drops the original registration even though the live
+    # agent object's session_id has since diverged.
+    unregister_gateway_session_participant(participant_id)
+    assert transport_a.in_process_lookup(sender, original_session_id) is None
 
 
 # ---------------------------------------------------------------------------
@@ -202,8 +236,8 @@ def test_registration_is_idempotent():
     session_id = "agent:main:telegram:dm:777"
     agent = _fake_agent(session_id)
 
-    assert register_gateway_session_participant(runner, session_id, agent) is True
-    assert register_gateway_session_participant(runner, session_id, agent) is True
+    assert register_gateway_session_participant(runner, session_id, agent) == session_id
+    assert register_gateway_session_participant(runner, session_id, agent) == session_id
 
     with transport_a._session_lock:
         assert len(transport_a._session_participants) == 1
@@ -213,7 +247,7 @@ def test_registration_refuses_subagents():
     runner = _FakeRunner()
     session_id = "sub-agent-id"
     agent = _fake_agent(session_id, is_subagent=True)
-    assert register_gateway_session_participant(runner, session_id, agent) is False
+    assert register_gateway_session_participant(runner, session_id, agent) == ""
 
 
 # ---------------------------------------------------------------------------
