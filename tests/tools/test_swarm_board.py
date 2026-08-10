@@ -218,6 +218,59 @@ class TestRegisterAndUpdate(unittest.TestCase):
         assert row.ended_at is not None
         assert "all good" in row.last_note
 
+    def test_summarizing_freezes_elapsed_clock(self):
+        # Entering "summarizing" freezes work_ended_at so the displayed
+        # elapsed time reflects work duration, not final-answer streaming
+        # latency.
+        b = SwarmBoard()
+        b.register("a1")
+        b.update("a1", status="summarizing")
+        row = b._rows["a1"]
+        assert row.work_ended_at is not None
+        frozen = row.work_ended_at
+        time.sleep(0.05)
+        # elapsed() must not advance while frozen.
+        assert row.elapsed() == max(0.0, frozen - row.started_at)
+
+    def test_running_after_false_positive_summarizing_unfreezes_clock(self):
+        # Regression test: a heuristic false-positive "summarizing" flip
+        # (e.g. TASK_THINKING's _looks_like_summary_phase matching an
+        # intermediate "## Summary" planning artifact, not the real final
+        # answer) used to freeze work_ended_at PERMANENTLY — the row's
+        # elapsed clock stayed pinned at that timestamp forever even
+        # though the child kept calling real tools afterward (tool_count
+        # climbing while the displayed time stayed stuck, e.g. at "4s").
+        # A real tool call (TASK_TOOL_STARTED -> status="running") is an
+        # unambiguous "the child is actively working" signal and must
+        # clear the freeze so elapsed() resumes tracking wall-clock time.
+        b = SwarmBoard()
+        b.register("a1")
+        b.update("a1", status="summarizing")
+        row = b._rows["a1"]
+        assert row.work_ended_at is not None
+        b.update("a1", status="running", tool_count=1, last_tool="Read")
+        assert row.work_ended_at is None
+        time.sleep(0.05)
+        # Clock is unfrozen: elapsed grows again with real wall-clock time.
+        assert row.elapsed() > 0.0
+
+    def test_terminal_status_after_summarizing_keeps_freeze(self):
+        # finish() is the terminal path and sets ended_at directly; it does
+        # not go through update()'s status handling, so a legitimate
+        # "summarizing" freeze survives through to the completed row and
+        # elapsed() still reports the frozen work duration, not work +
+        # answer-streaming time.
+        b = SwarmBoard()
+        b.register("a1")
+        b.update("a1", status="summarizing")
+        row = b._rows["a1"]
+        frozen = row.work_ended_at
+        assert frozen is not None
+        time.sleep(0.05)
+        b.finish("a1", status="completed")
+        assert row.work_ended_at == frozen
+        assert row.elapsed() == max(0.0, frozen - row.started_at)
+
 
 class TestSnapshotAndOnChange(unittest.TestCase):
     """Two contracts the prompt_toolkit widget relies on:
