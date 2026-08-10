@@ -1,18 +1,28 @@
 # Local Agent Messaging (fork-only)
 
-Status: **design complete, pending user sign-off. No code written.**
-Supersedes `cross-session-messaging.md`'s scope. Two Fable review rounds
-plus four read-only codebase verification passes are complete. Every
-Round 1 finding (8), every original open question (5), both Round 2
-gaps, and every remaining lower-severity item (cap-locking, tool-schema
-naming, sender-permission gating) plus every item inherited from the
-predecessor doc (heartbeat/TTL, toolset name, `hermes agents inbox` home,
-hold-mode UX) now has a recorded, codebase-anchored decision — most
-verified via direct code read, the genuine judgment calls via Fable
-consult. See the final "Closing out the remaining lower-severity items"
-and "Final status" sections near the end of this doc for the complete
-decision list. Next step is user sign-off on the full decision set, not
-further design work.
+Status: **APPROVED. Ready for implementation.**
+Supersedes `cross-session-messaging.md`'s scope. Two Fable review rounds,
+a final Fable sign-off pass, and four read-only codebase verification
+passes are complete. Every Round 1 finding (8), every original open
+question (5), both Round 2 gaps, every lower-severity item (cap-locking,
+tool-schema naming, sender-permission gating), and every item inherited
+from the predecessor doc (heartbeat/TTL, toolset name, `hermes agents
+inbox` home, hold-mode UX) has a recorded, codebase-anchored decision.
+**The final sign-off pass caught and fixed two real remaining issues
+before approval:** (1) a wording contradiction between two decisions
+about which tool (`send_agent_message` vs. `send_to_parent`) a
+`background=true` subagent actually receives — fixed by clarifying
+`send_to_parent` is the only subagent-facing tool, in any mode; (2) a
+genuine threat-model gap — the idle-parent delivery branch, as originally
+specified, would have delivered inbound messages as bare next-turn text
+indistinguishable from operator input, undoing the predecessor doc's own
+untrusted-content framing requirement — fixed by requiring both the
+active (`steer()`) and idle (`_pending_input`) delivery branches to use
+the same marked/framed envelope, stated as a mandatory implementation
+requirement, not deferred. See "Closing out the remaining lower-severity
+items," "Item 2" (idle/active branch), and "Final status" sections near
+the end of this doc for the complete decision list. No code has been
+written; implementation may now begin.
 
 Scope: **fork-specific** (`adurham/hermes-agent`). Not proposed for upstream
 in this local-only form (see "Relationship to A2A" below for the part that
@@ -729,20 +739,30 @@ namespace to prevent it.
 
 **Decision (Fable consult):**
 
-- **`send_agent_message` is included in a subagent's toolset only when the
-  delegation is `background=true`.** Per the already-resolved Finding
-  7/5 constraint, a synchronous batch's parent is blocked and cannot react
-  to anything a subagent sends until the whole batch returns — shipping
-  this tool's schema to every sync-mode subagent (multiplied per-worker in
-  a batch, e.g. 3× for the file-refactor-workers example) is pure token
-  cost with no live consumer, exactly the case `AGENTS.md`'s "bar for a new
-  core tool is high" principle exists to prevent. Anything a sync subagent
-  would want to say by the end of a batch is already covered by its normal
-  return value.
+- **`send_to_parent` (the subagent-side messaging tool — see the "Tool
+  schema bifurcation" decision later in this doc, which supersedes any
+  earlier reference to a subagent getting `send_agent_message` directly)
+  is included in a subagent's toolset only when the delegation is
+  `background=true`.** Per the already-resolved Finding 7/5 constraint, a
+  synchronous batch's parent is blocked and cannot react to anything a
+  subagent sends until the whole batch returns — shipping this tool's
+  schema to every sync-mode subagent (multiplied per-worker in a batch,
+  e.g. 3× for the file-refactor-workers example) is pure token cost with no
+  live consumer, exactly the case `AGENTS.md`'s "bar for a new core tool is
+  high" principle exists to prevent. Anything a sync subagent would want to
+  say by the end of a batch is already covered by its normal return value.
+  **`send_agent_message` (the parent/session-side tool, with a `recipient`
+  parameter) is never given to a subagent, in any mode** — only
+  `send_to_parent` is subagent-facing, and only under `background=true`.
+  This is stated explicitly here to close a wording ambiguity a final
+  review pass caught: an earlier draft of this decision named
+  `send_agent_message` generically before the two-distinct-tools decision
+  existed; the tool a `background=true` subagent actually receives is
+  `send_to_parent`, never the recipient-taking `send_agent_message`.
 - **No subagent gets `list_agents` at all, in any mode.** Under the
   Finding 7 decision, a subagent has exactly one valid recipient — its own
   parent — so a discovery tool whose answer is always the same single value
-  is dead schema weight. `send_agent_message`, when called from a subagent,
+  is dead schema weight. `send_to_parent`, when called from a subagent,
   implicitly targets the parent; there is no recipient parameter for a
   subagent to fill in, and no reason to expose a tool whose only possible
   discovery result never varies.
@@ -983,6 +1003,43 @@ the **active-parent** half of item 2 (routing to `steer()` when the parent
 is mid-turn), since today's async-delegation completion delivery only
 handles the idle case.
 
+**Blocker caught by the final sign-off review, fixed here, not deferred:**
+the two branches above have divergent untrusted-content framing today, and
+faithfully reusing both mechanisms *as they currently exist* would silently
+undo the predecessor doc's own threat-model requirement. The **active**
+branch (`steer()`) already wraps its payload in an explicit out-of-band
+marker (`STEER_MARKER_OPEN`/`CLOSE`, per Finding 1's verification) — the
+model is told plainly that this content arrived out-of-band, not from its
+operator. The **idle** branch (`_pending_input.put(...)`) is, as currently
+used by `_drain_process_notifications` for e.g. background-terminal-process
+completions, a **bare next-turn message** with no such marker — the exact
+same channel ordinary human-typed input flows through. If Transport A's
+idle-delivery path reused that mechanism literally as-is, a cross-session
+or cross-participant message would land in the recipient's next turn
+indistinguishable from an instruction typed by its own operator — precisely
+the privilege-escalation path the predecessor doc's Round 2 threat-model
+finding (delivered content must be framed as untrusted third-party data,
+not bare user-role authority) exists to prevent, and precisely the kind of
+model-mediated-relay case Finding 5/Decision 4 above already flags as a
+place where inbound content might be one hop removed from an untrusted
+gateway sender.
+
+**Fix (mandatory, not optional, for both delivery branches):** every
+message delivered by Transport A — whether via the active-parent `steer()`
+branch or the idle-parent `_pending_input` branch — must be wrapped in the
+same marker/envelope convention already used for `steer()`, stamped with
+the sending participant's identity and origin type (session vs. subagent;
+if a session, its origin — CLI/gateway/ACP, per the sender-permission-mode
+decision elsewhere in this doc). The idle branch must **never** emit the
+raw message body as bare text into `_pending_input` — it must construct the
+same marked/framed form the active branch already produces via
+`format_steer_marker()`-equivalent wrapping before injecting. This is a
+small, concrete addition (reuse the existing marker-formatting function
+for both branches, do not let the idle branch bypass it) — but it is a
+correctness requirement for the whole feature's threat model, not a
+nice-to-have, and it must be implemented from the first version of Transport
+A's parent-delivery path, not added later.
+
 ### Updated status — ready for implementation, one design item left to write (not verify)
 
 Both critical-path items from the previous review pass are now resolved:
@@ -993,7 +1050,11 @@ Both critical-path items from the previous review pass are now resolved:
    shipped instances of the same pattern in this codebase, and recognized
    as collapsing into item 1's fix for the idle half; only the active-parent
    half (routing to `steer()` mid-turn) is genuinely new code, not a
-   verification gap.
+   verification gap. **A final sign-off pass caught and fixed one more real
+   gap here:** both the active and idle branches must use the same marked/
+   framed envelope, not just the active branch — see the "Blocker caught by
+   the final sign-off review" note above. This is now a stated implementation
+   requirement, not left implicit.
 
 **Remaining before code is written**, all lower-severity and resolvable
 during implementation rather than blocking its start:
