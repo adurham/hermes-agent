@@ -1,9 +1,9 @@
 # Cross-Session Messaging (fork-only)
 
-Status: design proposal — **BLOCKED pending a spike** (see "Round 2 review"
-below). Do not start implementation off this doc alone; the idle-session
-delivery mechanism this whole feature depends on has not been proven to
-exist in the codebase.
+Status: design proposal — unblocked (see "Round 3 review" below; the
+idle-session delivery mechanism the doc previously called an unproven
+blocker requiring a spike already exists in the codebase and is
+production-proven for an adjacent use case).
 Scope: **fork-specific** (`adurham/hermes-agent`). Not proposed for upstream.
 Porting: Claude Code's cross-session messaging
 (https://code.claude.com/docs/en/cross-session-messaging) — `ListAgents` +
@@ -163,27 +163,44 @@ does not map and needs a per-provider design, not a single mechanic. Check
 `agent/anthropic_adapter.py` / `agent/chat_completion_helpers.py` against
 every provider this feature must support before implementation.
 
-**Idle session** (no in-flight turn) — **BLOCKER, not settled.** The
+**Idle session** (no in-flight turn) — **RESOLVED, not a blocker.** The
 original text here read "deliver as a new turn, framed like cron's
-header/footer convention," but that presupposes the receiving process is
-running a loop that can act on a new turn arriving. An idle interactive CLI
-session is blocked on user input (readline / prompt), not spinning
-anything that can poll `state.db` or start a turn on its own. Cron's
-precedent doesn't apply here — cron *is* the loop, invoked on its own
-schedule; it was never injecting into something else's blocked-on-stdin
-process. Making an idle session receive a message requires one of:
-background thread, `select`/timeout-based input loop, or an OS-level
-wakeup (e.g. signal) around whatever currently blocks on stdin in `cli.py`
-— none of which exists today, and any of which touches the single most
-sensitive code path in the interactive CLI.
+header/footer convention," and Round 2 rejected that framing on the theory
+that an idle interactive CLI session is blocked on user input (readline /
+prompt), not spinning anything that can poll `state.db` or start a turn on
+its own — no such loop, Round 2 claimed, exists today.
 
-**This is the actual hard problem the whole feature depends on, and it
-needs a throwaway spike — "can an idle interactive `cli.py` session wake
-up and inject a turn without corrupting the input loop" — before any other
-part of this design is treated as final.** If the spike fails or the
-answer is "not without a rewrite of the input loop," idle-session delivery
-either drops to v2, or the feature narrows to gateway/ACP sessions only
-(which already run event loops, not blocking `input()`) for v1.
+**Round 3 finding: that premise is false.** `cli.py`'s interactive CLI is
+built on `prompt_toolkit`, which is asyncio-based, not a raw blocking
+`input()`/readline call. The CLI already runs a background `process_loop`
+thread (started alongside the prompt_toolkit `Application`) that polls
+`self._pending_input` on a 0.1s timeout in a `while not self._should_exit`
+loop — running continuously regardless of whether the agent is mid-turn or
+the prompt is sitting idle. On a `queue.Empty` timeout while idle, it
+already calls `self._drain_process_notifications("cli-idle")` — the exact
+same shape of hook this feature needs, and one that is **already shipped
+and production-tested** for an adjacent use case: background terminal
+processes (`terminal(background=true)`) notifying a visible, possibly-idle
+CLI session of completion via `process_registry.drain_notifications()` →
+claim → `self._pending_input.put(synthetic_message)`. That `put()` is
+picked up by `process_loop` on its very next 0.1s tick and, if idle, starts
+a fresh turn exactly like a normal typed prompt would.
+
+Cross-session delivery for the idle case is therefore: add a
+`cross_session_inbox` drain call alongside the existing
+`_drain_process_notifications("cli-idle")` call site, using the same
+claim-then-inject pattern already proven there. **No spike required, no
+signal handling, no touching prompt_toolkit's input path at all** — the
+loop that "doesn't exist" in the Round 2 framing already exists, is already
+polling on a tight interval, and already has a hook for exactly this kind
+of asynchronous injected notification.
+
+This also resolves the mid-turn case's uncertainty about *which* checkpoint
+to use for the idle path specifically — the mid-turn tail-append mechanic
+(still needing the Round 2 verification against `agent/conversation_loop.py`
+and provider wire formats, see below) and the idle drain are two genuinely
+different code paths, not one mechanism serving both, and both now have a
+concrete, already-shipped point of attachment.
 
 ### Tools
 
@@ -195,13 +212,30 @@ already used for Home Assistant / kanban / computer-use toolsets in
 
 - `list_agents()` — queries `cross_session_registry` (profile-scoped, see
   below), returns name, cwd, platform, staleness-filtered by heartbeat age.
-- `send_agent_message(target, body)` — resolves `target` by name (same
-  same-name-different-cwd disambiguation Claude Code does: append a short
-  id when names collide), inserts a row into `cross_session_inbox`, and
-  returns the inbox row's terminal status to the caller once resolved
-  (delivered / denied / expired) rather than being fire-and-forget — see
-  Round 2 finding: an unacknowledged send just gets silently retried by
-  the model, defeating the rate cap.
+- `send_agent_message(target, body)` — resolves `target` by name (see
+  Round 3 finding below on why "resolve by name" is itself underspecified;
+  Claude Code's disambiguation-by-appending-an-id is cited here but not
+  yet mapped onto a concrete uniqueness rule for this registry), inserts a
+  row into `cross_session_inbox`.
+
+  **Round 3 correction — Round 2's fix here contradicts the polling
+  architecture and must be reverted.** Round 2 proposed returning the
+  inbox row's *terminal* status (delivered/denied/expired) to the caller
+  synchronously, reasoning that a purely fire-and-forget send gives the
+  model no feedback and defeats the rate cap. But delivery only happens
+  when the *recipient* polls and claims the row — which could be seconds,
+  minutes, or (idle/held-awaiting-a-human) never. Returning "delivered"
+  synchronously is therefore impossible without either (a) blocking the
+  sender's own turn for an unbounded window waiting on someone else's poll
+  cycle, or (b) returning a non-terminal status like `pending`/`held` —
+  which is exactly the fire-and-forget outcome Round 2 was trying to
+  eliminate. `send_agent_message` should return the **insert-time**
+  outcome only: `queued` (accepted, will be delivered per the recipient's
+  policy), `held` (queued but the recipient's policy requires human
+  approval), `denied` (blocked at insert time — rate cap, hop ceiling,
+  recipient unknown/stale), never a promise of eventual delivery. This
+  still gives the model real feedback (a `denied` result should stop it
+  from silently retrying) without violating the delivery model.
 
 Names come from `/rename` (interactive sessions) or are derived from the
 session's cwd folder name at registration time, same convention Claude
@@ -437,3 +471,122 @@ requirement) — Round 2 explicitly reconfirmed those. What it invalidates is
 calling the doc implementation-ready. Status is set to blocked at the top
 of this file until the idle-wakeup spike runs and the open questions above
 get real answers.
+
+**Round 3** (this pass, run by an independent reviewer specifically
+skeptical of Rounds 1–2's own process, not just their current open items)
+found that the two prior rounds anchored on a flawed framing of the idle
+problem and, in one case, introduced a bug while "fixing" a bug. Findings:
+
+1. **The idle-wakeup blocker is dissolved, not just narrowed.** See the
+   Idle session section above — `cli.py` already runs a continuously
+   polling background thread (`process_loop`, 0.1s tick on
+   `self._pending_input`) with a proven, shipped precedent for exactly
+   this kind of asynchronous cross-process notification
+   (`_drain_process_notifications`, feeding background-terminal-process
+   completions into a possibly-idle CLI session via the same
+   `_pending_input.put()` call this feature needs). Both prior rounds
+   accepted the premise that no such loop exists; it does. The "narrow to
+   gateway/ACP sessions only" fallback in Round 2's write-up is now moot —
+   and was a bad fallback on its own terms regardless: it would have kept
+   gateway sessions (which the design's own inbound-policy table treats as
+   the untrusted-sender risk) in scope while cutting CLI sessions (the
+   flagship Claude Code parity use case), inverting the feature's own
+   trust model.
+2. **Round 2's delivery-feedback fix silently broke the delivery model.**
+   Returning a synchronous *terminal* status (delivered/denied/expired)
+   from `send_agent_message` is incompatible with delivery being
+   recipient-driven polling — see the correction inline in the Tools
+   section above. This is direct evidence of anchoring: a local patch was
+   applied to fix "no feedback" without re-checking it against the
+   architecture the same round had just reconfirmed as sound.
+3. **Delivery-guarantee mislabel.** The claim-then-inject sequence
+   (`UPDATE ... SET status='delivered' WHERE id=? AND status='pending'`,
+   then inject) is **at-most-once**, not "at-least-once, no duplicate
+   injection" as currently written — a crash between the UPDATE committing
+   and the injection actually happening silently drops the message, full
+   stop. At-most-once is probably an acceptable v1 choice (an occasional
+   dropped cross-session note is low-stakes), but it must be stated as a
+   deliberate choice, not mislabeled as a stronger guarantee it doesn't
+   provide. True at-least-once would need an intermediate `claimed`/unacked
+   state and a re-delivery timeout, which is more machinery than this
+   feature needs for v1.
+4. **Name resolution is unspecified and has real races.** `name` has no
+   uniqueness constraint in the schema. `send_agent_message(target)`
+   resolving "by name" is ambiguous when two live sessions share a name; a
+   `/rename` racing a concurrent send is unhandled; `from_name` is
+   denormalized into the inbox row and thus stale/spoofable relative to
+   the sender's current registry name. Needs an explicit rule (e.g.
+   resolve against the *current* registry at send time, fail closed with a
+   clear error on ambiguity rather than guessing which of two same-named
+   sessions was meant) before implementation, not left as "same
+   disambiguation Claude Code does" without translating that into this
+   schema's actual columns and race conditions.
+5. **Inbound policy enforcement point is undefined, and it matters for
+   both correctness and the threat model.** If `accept`/`hold`/`refuse` is
+   evaluated at *send* time (implied by the existing "recipient's policy
+   read at send time races against a policy change" note), then the
+   policy, the per-pair rate cap, and the hop ceiling are all bypassable by
+   anything with direct `state.db` write access — same trust boundary as
+   everything else here (see point 7), but worth being explicit that a
+   send-time-only check is decorative, not enforced, against that
+   boundary. Enforcing policy at **drain time** (the recipient evaluates
+   its own current config when claiming a row, not trusting whatever the
+   sender computed) closes that gap and independently resolves the
+   already-flagged pending-vs-held race, since the recipient's own current
+   policy is authoritative for its own inbox. This should be stated as a
+   design decision (drain-time enforcement) rather than left implicit.
+6. **Profile scoping is a UX boundary, not a security boundary, and the
+   doc should say so plainly.** Per-profile `state.db` isolation prevents
+   accidental cross-profile bleed, which is its stated purpose and is fine
+   for that. But any process running as the same OS user can open any
+   profile's `state.db` directly — nothing here is a security control
+   against another process owned by the same user. The already-flagged
+   "no threat model" gap (see below) should state the real trust boundary
+   explicitly: **the OS user**, not the profile.
+7. **SQLite multi-writer mechanics need explicit verification, not
+   assumption.** This design turns `state.db` into a genuinely
+   multi-writer database — every registered session heartbeating, every
+   send inserting, every poll cycle claiming rows — where today it may be
+   effectively single-writer-per-moment. Confirm WAL mode and a sane
+   `busy_timeout` are set on every connection path that will touch these
+   tables, or this feature will introduce `database is locked` errors into
+   a session's core path, not just its own feature surface. Separately:
+   `cross_session_registry`'s `ON DELETE CASCADE` FK does nothing unless
+   `PRAGMA foreign_keys=ON` is set per-connection — verify the codebase
+   already does this (it's easy to assume and be wrong); `cross_session_inbox`
+   has no FK to `sessions` at all, which is inconsistent with the registry
+   table and looks unintentional rather than deliberate, given the
+   already-flagged "dead session's pending messages never expire" gap is
+   exactly the kind of problem a FK + cascade would have caught structurally.
+8. **The hop_count ceiling caps legitimate supervised dialogue, not just
+   runaway loops, and the doc should say so rather than let it read as a
+   pure anti-loop mechanism.** The Round 2 corrected rule (increment on any
+   send from a turn that itself drained a delivered message, unconditionally)
+   is right for stopping two `accept`-mode sessions ping-ponging
+   autonomously, but it also increments on a turn a human explicitly
+   triggered by typing a reply after reading a delivered/held message — a
+   real back-and-forth between two sessions that a human is actively
+   steering hits the same ceiling (~4) as an unsupervised loop and simply
+   stops working, with no way to distinguish "runaway" from "human is
+   right here approving every step." A reset-on-human-initiated-turn
+   carve-out is the obvious fix but is also the obvious loophole for a
+   held/idle-delivered message to exploit (is the *next* turn
+   "human-initiated" just because the human happened to press Enter to
+   dismiss a notification?) — this needs real design thought, not a
+   one-line patch, and at minimum the doc should document the ceiling as
+   bounding total conversation depth including supervised exchanges, not
+   only autonomous ones, so this tradeoff is a stated decision rather than
+   a surprise once implemented.
+
+None of Round 3's findings invalidate the core architecture either — if
+anything they reinforce it (state.db, tail-append, throttling-as-required)
+while correcting one introduced bug (finding 2), one mislabeled guarantee
+(finding 3), and dissolving the one item that was blocking implementation
+outright (finding 1). Remaining before implementation: resolve findings
+4–8 above (name resolution, drain-time policy enforcement, the explicit
+OS-user trust boundary statement, SQLite connection settings, and a real
+decision on the hop_count/supervised-dialogue tradeoff), plus the
+already-open items in "Open questions" that Round 3 did not re-litigate
+(toolset opt-in surface, heartbeat/TTL numbers — now decoupled from the
+idle-wakeup question since that's resolved — and the `hermes agents inbox`
+subcommand's home).
