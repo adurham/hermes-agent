@@ -26,6 +26,11 @@ description: >
 
   Pure stdlib transport (http.server + urllib) — no a2a-sdk dependency required.
 author: Nous Research
+# Ship the lightweight *client* tools (a2a_call/discover/list/history/orchestrate)
+# in every process type, including plain `hermes chat` CLI/TUI sessions, without
+# forcing eager import of the heavy inbound adapter (see #78050). The named
+# submodule must be lightweight — no adapter/SDK imports at module scope.
+client_tools_module: tools
 # requires_env / optional_env are surfaced in the `hermes config` UI via the
 # platform-plugin env var injector in hermes_cli/config.py.
 requires_env: []
