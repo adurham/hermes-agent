@@ -253,6 +253,8 @@ The `delegation_id` is surfaced everywhere you'd need it — the dispatch confir
 
 Targeting distinguishes three outcomes rather than a blind "ok": the delegation is actively running/stalling and gets interrupted, it already finished (`already_done`), or the id doesn't match anything (`not_found`). A batch cancel interrupts every task in that batch; sibling delegations dispatched separately are untouched.
 
+On the gateway, targeted cancellation is scoped to your own session: `/stop <delegation_id>` and `delegate_task(cancel=...)` can only cancel a delegation your own session dispatched. A `delegation_id` belonging to a different session reports `not_found` — identical to a nonexistent id, so this can't be used to probe whether some other session's delegation exists. (The CLI has nothing to scope against, since each CLI process runs a single session.)
+
 ## Monitoring Running Subagents (`/agents`)
 
 The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegate_task` fan-out into a first-class audit surface:
