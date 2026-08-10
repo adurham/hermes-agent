@@ -52,6 +52,18 @@ def list_agents(*, agent: Any = None, **_kw) -> str:
     """List other live Hermes sessions reachable via ``send_agent_message``."""
     from tools.cross_session_integration import is_subagent
 
+    if agent is None:
+        # Fail closed — see the matching guard in
+        # tools/agent_messaging_tools.py (send_agent_message/send_to_parent)
+        # for the incident this defends against: a dispatch-path regression
+        # must never silently fall through to the more-privileged
+        # top-level-session behavior.
+        return tool_error(
+            "list_agents: caller identity unavailable — refusing rather "
+            "than guessing. This indicates a dispatch bug, not a usage "
+            "error."
+        )
+
     if is_subagent(agent):
         # Defense in depth — the toolset gate should already prevent this.
         return tool_error("list_agents is not available to subagents.")
