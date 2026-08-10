@@ -1637,6 +1637,7 @@ display:
     enabled: false
     fields: ["model", "context_pct", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
+  response_indent_width: 4  # Left-margin spaces for streamed response/reasoning text and final-response panels. 0 = flush-left (pre-2026-08 default).
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
@@ -1698,6 +1699,12 @@ Example footer when writes are blocked:
 ```
 
 If writes to Hermes state (cron jobs, skills, scripts under `~/.hermes/`) are failing, check whether `HERMES_WRITE_SAFE_ROOT` is set in your environment. For cron changes, use the `cronjob` tool or `hermes cron edit` instead of patching `jobs.json` directly.
+
+### Response box indent
+
+`display.response_indent_width` (CLI only, default `4`) sets the left margin on streamed response/reasoning text and the final-response panel (also used for background-task and out-of-credits notices). Long streamed lines are hard-wrapped to keep a matching right margin, so the box reads as framed on both sides rather than flush against the terminal wall on the right only. Set it to `0` to go back to the flush-left, unwrapped behavior from before this option existed.
+
+This knowingly trades off copy/paste ergonomics: a hard-wrapped paragraph pastes as several short lines instead of one line the terminal can soft-wrap and rejoin. `/copy` is unaffected either way — it writes the original unwrapped message text via the native clipboard, not a scrape of the rendered box.
 
 ### UI language for static messages
 
