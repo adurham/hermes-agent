@@ -2783,9 +2783,27 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
 _RST = "\033[0m"
-_STREAM_PAD = ""  # No indent for streamed response text — leading whitespace pollutes
-# terminal copy/paste (every selected line carried 4 spaces).  Matches the
-# response Panel's flush-left padding.
+def _load_stream_pad() -> str:
+    """Left-margin indent for streamed response/reasoning box text.
+
+    User-configurable via ``display.response_indent_width`` (default 4,
+    the pre-July-2026 upstream default). Set to 0 to restore the
+    flush-left rendering upstream switched to in July 2026 specifically
+    for clean mouse-copy/paste (every selected line otherwise carries
+    this many leading spaces). ``/copy`` writes the ORIGINAL message
+    text via the native clipboard regardless of this setting, so it
+    remains the clean-copy path no matter which value is configured
+    here — this indent is purely cosmetic on-screen framing.
+    """
+    try:
+        n = int(CLI_CONFIG["display"].get("response_indent_width", 4))
+    except Exception:
+        n = 4
+    return " " * max(0, n)
+
+
+_STREAM_PAD = _load_stream_pad()
+
 _STREAM_PARTIAL_PREVIEW_LEN = 60  # tail of an unfinished logical line mirrored
 # into the spinner while streaming (TTFT perception without hard-wrapping)
 
@@ -3235,13 +3253,13 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
 def _terminal_width_for_streaming() -> int:
     """Display cells available inside the streamed response box.
 
-    The streaming path prefixes every line with ``_STREAM_PAD`` (now
-    empty — flush-left so copy/paste stays clean) inside an open
-    response panel.  The realigner uses this number as its budget when
-    deciding whether to keep a horizontal table or fall back to
-    vertical key-value rendering.  We subtract a small safety margin
-    so terminal-resize races don't push a borderline table into
-    mid-cell soft-wrap.
+    The streaming path prefixes every line with ``_STREAM_PAD`` (a
+    configurable left-margin indent — see ``display.response_indent_width``,
+    default 4 spaces) inside an open response panel.  The realigner uses
+    this number as its budget when deciding whether to keep a horizontal
+    table or fall back to vertical key-value rendering.  We subtract a
+    small safety margin so terminal-resize races don't push a borderline
+    table into mid-cell soft-wrap.
     """
 
     try:
@@ -3255,17 +3273,16 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
 
-    # Estimate the cells available to the rendered table.  The Panel
-    # used by the background-task / final-response path renders
-    # flush-left (no horizontal padding — leading spaces pollute
-    # terminal copy/paste) with 1 cell of border on each side.
-    # Subtract a small safety margin so resize races don't push a
-    # borderline table into soft-wrap.
+    # Estimate the cells available to the rendered table.  The Panel used
+    # by the background-task / final-response path has ``len(_STREAM_PAD)``
+    # cells of left+right padding (see ``display.response_indent_width``)
+    # plus 1 cell of border on each side.  Subtract a small safety margin
+    # so resize races don't push a borderline table into soft-wrap.
     try:
         cols = shutil.get_terminal_size((80, 24)).columns
     except Exception:
         cols = 80
-    panel_width = max(20, cols - 4)
+    panel_width = max(20, cols - (2 * len(_STREAM_PAD)) - 4)
 
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
@@ -11636,7 +11653,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
+                        padding=(1, len(_STREAM_PAD)),
                         width=self._scrollback_box_width(),
                     ))
                 else:
@@ -16849,7 +16866,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 0),
+                        padding=(1, len(_STREAM_PAD)),
                         width=self._scrollback_box_width(),
                     ))
 
@@ -16882,7 +16899,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             title_align="left",
                             border_style="#CD7F32",
                             box=rich_box.HORIZONTALS,
-                            padding=(1, 4),
+                            padding=(1, len(_STREAM_PAD)),
                             width=self._scrollback_box_width(),
                         ))
                     except Exception:
