@@ -66,6 +66,119 @@ def get_peer_tokens() -> dict[str, str]:
     return out
 
 
+def get_trusted_proxies() -> list:
+    """Parse A2A_TRUSTED_PROXIES into a list of ipaddress networks.
+
+    Accepts a comma-separated list of IP addresses or CIDRs (``10.0.0.5``,
+    ``10.0.0.0/24``, ``2001:db8::/32``). Empty list (the default) means: never
+    trust any forwarded-for header — identity always comes from the raw socket
+    peer, as before.
+
+    A2A_TRUSTED_PROXIES is opt-in and MUST be an explicit allow-list. Trusting
+    an arbitrary client-supplied header would be a spoofing vector.
+
+    IPv4-mapped IPv6 entries (``::ffff:10.0.0.0/120``) are unwrapped to plain
+    IPv4 networks here, mirroring the unwrapping ``_is_trusted_proxy`` already
+    does for the socket peer address. Without this, an operator who
+    configures an IPv4-mapped allow-list entry would silently never match —
+    fails closed (never a security hole), but confusingly, since the address
+    family mismatch isn't obvious from the config alone.
+    """
+    import ipaddress as _ip
+    raw = os.getenv("A2A_TRUSTED_PROXIES", "").strip()
+    if not raw:
+        return []
+    nets = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            if "/" not in item:
+                item = item + ("/128" if ":" in item else "/32")
+            net = _ip.ip_network(item, strict=False)
+            if net.version == 6:
+                mapped = getattr(net.network_address, "ipv4_mapped", None)
+                if mapped is not None:
+                    prefixlen = max(0, net.prefixlen - 96)
+                    net = _ip.ip_network(f"{mapped}/{prefixlen}", strict=False)
+            nets.append(net)
+        except ValueError:
+            logger.warning(
+                "A2A: ignoring invalid A2A_TRUSTED_PROXIES entry %r "
+                "(expected IP address or CIDR)", item,
+            )
+    return nets
+
+
+def _is_trusted_proxy(client_ip: str) -> bool:
+    """True iff ``client_ip`` (the immediate socket peer) is in A2A_TRUSTED_PROXIES."""
+    import ipaddress as _ip
+    nets = get_trusted_proxies()
+    if not nets or not client_ip:
+        return False
+    try:
+        addr = _ip.ip_address(client_ip)
+    except ValueError:
+        return False
+    # Normalise IPv4-mapped IPv6 (``::ffff:10.0.0.1``) to plain IPv4 so a dual
+    # stack listener's socket peer still matches an IPv4 CIDR in the
+    # allow-list. Without this an operator's ``10.0.0.0/24`` entry silently
+    # fails to match, breaking the deployment (fail-closed, but confusingly).
+    if getattr(addr, "ipv4_mapped", None) is not None:
+        addr = addr.ipv4_mapped  # type: ignore[union-attr,assignment]
+    version = addr.version  # type: ignore[union-attr]
+    return any(addr in n for n in nets if version == n.version)
+
+
+def resolve_client_ip(socket_ip: str, forwarded_for: Optional[str]) -> str:
+    """Resolve the effective client IP for identity purposes.
+
+    If the immediate socket peer (``socket_ip``) is on the A2A_TRUSTED_PROXIES
+    allow-list AND a forwarded-for header is present, walk the header
+    right-to-left, skipping any hop that is itself a trusted proxy, and return
+    the first non-trusted hop — i.e. the real client that sent the request
+    into our trusted proxy chain. Otherwise return the raw socket peer.
+
+    Header format follows RFC 7239 style ``X-Forwarded-For: client, proxy1,
+    proxy2``. Entries are validated as IP addresses; a malformed entry fails
+    CLOSED (we return the socket peer) rather than continuing the walk into
+    attacker-controlled territory.
+
+    Security invariants:
+    - No trusted-proxy allow-list configured => header is IGNORED entirely.
+    - Socket peer not on allow-list => header is IGNORED entirely.
+    - Every hop we return has been validated as a parsable IP address.
+    - A malformed hop aborts resolution (fail closed), never skips.
+    """
+    import ipaddress as _ip
+    if not forwarded_for or not _is_trusted_proxy(socket_ip):
+        return socket_ip
+    hops = [h.strip() for h in forwarded_for.split(",") if h.strip()]
+    for hop in reversed(hops):
+        # Strip optional [ipv6] brackets and any :port suffix on IPv4.
+        candidate = hop
+        if candidate.startswith("[") and "]" in candidate:
+            candidate = candidate[1:candidate.index("]")]
+        elif candidate.count(":") == 1:  # ipv4:port
+            candidate = candidate.split(":", 1)[0]
+        try:
+            addr = _ip.ip_address(candidate)
+        except ValueError:
+            # Fail CLOSED. Everything to the left of a proxy-appended hop is
+            # attacker-controlled, so skipping a malformed entry and continuing
+            # the walk would hand identity to a value the client chose. A real
+            # proxy always appends a well-formed address, so a malformed hop
+            # means the chain is untrustworthy — fall back to the socket peer.
+            return socket_ip
+        if getattr(addr, "ipv4_mapped", None) is not None:
+            addr = addr.ipv4_mapped  # type: ignore[union-attr,assignment]
+        if _is_trusted_proxy(str(addr)):
+            continue
+        return str(addr)
+    return socket_ip
+
+
 def _parse_bearer(auth_header: Optional[str]) -> Optional[str]:
     if not auth_header:
         return None
@@ -75,7 +188,11 @@ def _parse_bearer(auth_header: Optional[str]) -> Optional[str]:
     return parts[1].strip()
 
 
-def authenticate(auth_header: Optional[str], client_ip: str = "") -> Optional[str]:
+def authenticate(
+    auth_header: Optional[str],
+    client_ip: str = "",
+    forwarded_for: Optional[str] = None,
+) -> Optional[str]:
     """Authenticate an inbound request; return the peer identity or None.
 
     - No tokens configured (localhost-only mode): identity is ``ip:<addr>``.
@@ -83,12 +200,21 @@ def authenticate(auth_header: Optional[str], client_ip: str = "") -> Optional[st
     - Token matches the shared A2A_BEARER_TOKEN: identity is ``ip:<addr>``.
     - Otherwise: None (reject with 401).
 
+    ``forwarded_for`` is the raw ``X-Forwarded-For`` (or equivalent) header
+    value from the request, if any. It is consulted **only** when the immediate
+    socket peer (``client_ip``) is in the A2A_TRUSTED_PROXIES allow-list —
+    otherwise it is ignored entirely, so a client cannot spoof its identity by
+    sending the header. See :func:`resolve_client_ip` for the exact resolution
+    rules. Peer-token identities are unaffected: those come from the matched
+    token name, which no request-supplied header can influence. See #80534.
+
     Comparisons are constant-time (hmac.compare_digest).
     """
     peer_tokens = get_peer_tokens()
     shared = get_bearer_token()
+    effective_ip = resolve_client_ip(client_ip, forwarded_for)
     if not peer_tokens and not shared:
-        return f"ip:{client_ip or 'local'}"
+        return f"ip:{effective_ip or 'local'}"
     presented = _parse_bearer(auth_header)
     if presented is None:
         return None
@@ -96,13 +222,45 @@ def authenticate(auth_header: Optional[str], client_ip: str = "") -> Optional[st
         if hmac.compare_digest(presented, token):
             return name
     if shared and hmac.compare_digest(presented, shared):
-        return f"ip:{client_ip or 'unknown'}"
+        return f"ip:{effective_ip or 'unknown'}"
     return None
 
 
 def localhost_only() -> bool:
     """True when we must refuse non-loopback binds (no token of any kind set)."""
     return not (get_bearer_token() or get_peer_tokens())
+
+
+def _warn_shared_token_without_proxy_config(bind_host: str) -> None:
+    """Warn loudly when the shared-token deployment shape is a known footgun.
+
+    When ``A2A_BEARER_TOKEN`` is used behind a reverse proxy (i.e. the bind
+    host is non-loopback and the operator has NOT configured
+    ``A2A_TRUSTED_PROXIES`` to un-collapse peer identities), every peer
+    resolves to the same ``ip:<proxy>`` identity — per-peer rate limiting, the
+    ``A2A_TRUSTED_PEERS`` allow-list, and audit attribution all silently stop
+    discriminating between peers. See #80534.
+
+    Per-peer tokens (``A2A_PEER_TOKENS``) do not have this problem; that's the
+    supported path for multi-peer remote deployments.
+    """
+    if bind_host in {"127.0.0.1", "localhost", "::1"}:
+        return
+    if not get_bearer_token() or get_peer_tokens():
+        return
+    if get_trusted_proxies():
+        return
+    logger.warning(
+        "A2A: shared A2A_BEARER_TOKEN in use on non-loopback bind (%s) with no "
+        "A2A_TRUSTED_PROXIES configured — behind a reverse proxy every peer "
+        "will collapse to a single ip:<proxy> identity, silently degrading "
+        "per-peer rate limiting, the A2A_TRUSTED_PEERS allow-list, and audit "
+        "attribution (see #80534). Fix by using A2A_PEER_TOKENS "
+        "(alice:tok1,bob:tok2) so each peer authenticates with its own name, "
+        "OR by setting A2A_TRUSTED_PROXIES=<proxy-ip-or-cidr> so the real "
+        "client IP is read from X-Forwarded-For.",
+        bind_host,
+    )
 
 
 def resolve_bind_host() -> str:
@@ -123,6 +281,7 @@ def resolve_bind_host() -> str:
             requested,
         )
         return "127.0.0.1"
+    _warn_shared_token_without_proxy_config(requested)
     return requested
 
 
