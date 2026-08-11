@@ -2487,6 +2487,60 @@ def _run_single_child(
                 "agent": child,
             }
         )
+        # Machine-wide, read-only subagent visibility (durable, cross-process
+        # -- distinct from the in-process _register_subagent call above,
+        # which only this process can see). This is what lets a DIFFERENT
+        # session's list_agents show "session X is running a subagent on
+        # goal Y in directory Z", so a user running multiple concurrent
+        # sessions can notice a working-directory collision before it
+        # happens. Deliberately NOT a send path -- see
+        # tools/cross_session_transport.py's RegisteredSubagent docstring
+        # and docs/design/local-agent-messaging.md's Finding 7: subagent-to-
+        # subagent messaging stays out of scope, only visibility is added.
+        _owner_sid = (
+            getattr(parent_agent, "session_id", None)
+            if isinstance(getattr(parent_agent, "session_id", None), str)
+            else None
+        )
+        if _owner_sid:
+            try:
+                from tools.cross_session_integration import (
+                    session_display_name,
+                    session_origin,
+                )
+                from tools.cross_session_transport import (
+                    heartbeat_registry,
+                    register_subagent,
+                )
+
+                # Force (not rate-limited) heartbeat of the OWNER's own
+                # registry row first. register_subagent's row FKs to
+                # cross_session_registry(session_id) -- on a session's very
+                # first subagent spawn, the owner may not have hit its own
+                # turn-boundary heartbeat_if_due tick yet (that's rate-
+                # limited to once per CROSS_SESSION_HEARTBEAT_SECONDS), so
+                # without this the INSERT below could hit a dangling FK. The
+                # underlying heartbeat_registry() call is a cheap idempotent
+                # upsert, so forcing it here at spawn time (rather than
+                # waiting on the rate limiter) is safe to do on every spawn.
+                heartbeat_registry(
+                    session_id=_owner_sid,
+                    name=session_display_name(parent_agent),
+                    cwd=_resolve_workspace_hint(parent_agent),
+                    platform="cli",
+                    session_origin=session_origin(),
+                )
+                register_subagent(
+                    subagent_id=_subagent_id,
+                    owner_session_id=_owner_sid,
+                    goal=goal,
+                    cwd=_resolve_workspace_hint(parent_agent),
+                    status="running",
+                )
+            except Exception as _exc:  # never block a spawn over registry bookkeeping
+                logger.debug(
+                    "cross-process subagent registration failed: %s", _exc
+                )
 
     try:
         _heartbeat_thread.start()
@@ -3052,6 +3106,19 @@ def _run_single_child(
         # child was never registered (e.g. ID missing on test doubles).
         if _subagent_id:
             _unregister_subagent(_subagent_id)
+            # Mirror the drop in the durable, cross-process registry (see
+            # the matching register_subagent() call at spawn). Safe/no-op if
+            # the spawn-time write never landed.
+            try:
+                from tools.cross_session_transport import (
+                    unregister_subagent as _cross_process_unregister_subagent,
+                )
+
+                _cross_process_unregister_subagent(_subagent_id)
+            except Exception as _exc:
+                logger.debug(
+                    "cross-process subagent unregistration failed: %s", _exc
+                )
 
         if child_pool is not None and leased_cred_id is not None:
             try:

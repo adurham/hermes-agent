@@ -154,6 +154,14 @@ def _connect() -> sqlite3.Connection:
     try:
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        # cross_session_subagents.owner_session_id FKs to
+        # cross_session_registry(session_id) ON DELETE CASCADE so a crashed
+        # session's subagent rows are reaped along with its own registry row
+        # -- but SQLite only enforces/cascades FKs on connections that opt in.
+        # reap_stale_registry() below also does the delete explicitly (belt
+        # and suspenders, matching the inbox cleanup in the same function),
+        # so this PRAGMA is defense-in-depth, not the only mechanism.
+        conn.execute("PRAGMA foreign_keys=ON")
         from hermes_state import apply_wal_with_fallback
 
         apply_wal_with_fallback(conn, db_label="state.db (cross_session)")
@@ -206,6 +214,20 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_inbox_sender_pair "
         "ON cross_session_inbox(from_session_id, to_session_id, created_at)"
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS cross_session_subagents (
+            subagent_id      TEXT PRIMARY KEY,
+            owner_session_id TEXT NOT NULL,
+            goal             TEXT,
+            cwd              TEXT,
+            status           TEXT NOT NULL,
+            started_at       REAL NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_subagents_owner "
+        "ON cross_session_subagents(owner_session_id)"
     )
 
 
@@ -327,6 +349,15 @@ def reap_stale_registry(*, now: Optional[float] = None) -> int:
                 "WHERE to_session_id = ? AND status IN (?, ?)",
                 [(STATUS_EXPIRED, sid, STATUS_PENDING, STATUS_HELD) for sid in dead],
             )
+            # Explicit delete alongside the ON DELETE CASCADE FK (see the
+            # _connect() PRAGMA foreign_keys=ON comment): belt-and-suspenders
+            # matching the inbox cleanup above, and the only mechanism at all
+            # for any older on-disk DB whose cross_session_subagents table
+            # predates the FK being added to a given creator's DDL.
+            conn.executemany(
+                "DELETE FROM cross_session_subagents WHERE owner_session_id = ?",
+                [(sid,) for sid in dead],
+            )
             return len(dead)
     except Exception as exc:
         logger.debug("cross_session reap failed: %s", exc)
@@ -364,6 +395,27 @@ class RegisteredSession:
         return max(0.0, time.time() - self.last_heartbeat)
 
 
+@dataclass(frozen=True)
+class RegisteredSubagent:
+    """Machine-wide, read-only subagent awareness row.
+
+    Deliberately NOT addressable by ``send_agent_message`` (Finding 7,
+    docs/design/local-agent-messaging.md, still applies to the SEND path) —
+    this dataclass exists only so ``list_agents`` can show what other
+    sessions' subagents are doing, to help a human or model operating
+    concurrent sessions notice a working-directory collision before it
+    happens. No transport registers a send callable against
+    ``subagent_id``.
+    """
+
+    subagent_id: str
+    owner_session_id: str
+    goal: Optional[str]
+    cwd: Optional[str]
+    status: str
+    started_at: float
+
+
 def _row_to_registered(row: Any) -> RegisteredSession:
     origin_raw = row["session_origin"]
     origin: Optional[SessionOrigin] = None
@@ -381,6 +433,117 @@ def _row_to_registered(row: Any) -> RegisteredSession:
         pid=row["pid"],
         last_heartbeat=float(row["last_heartbeat"]),
     )
+
+
+# Length cap for a subagent's free-text goal before it's written to the
+# durable, machine-wide-visible registry. Every other session's model reads
+# this string, so it is untrusted cross-process content the moment it's
+# written -- capped the same way check_message_size bounds message bodies,
+# for the same reason (module docstring: "Every delivered body is
+# marker-wrapped" / caps bound flooding, not just size).
+_SUBAGENT_GOAL_MAX_CHARS = 500
+
+
+def register_subagent(
+    *,
+    subagent_id: str,
+    owner_session_id: str,
+    goal: Optional[str],
+    cwd: Optional[str],
+    status: str = "running",
+    now: Optional[float] = None,
+) -> bool:
+    """Upsert a durable, cross-process-visible row for a live subagent.
+
+    Called synchronously at spawn (``tools/delegate_tool.py``), not on a
+    heartbeat cadence -- see the schema comment in ``hermes_state_common.py``
+    for why a periodic-refresh liveness model is wrong for something that
+    typically lives seconds. The owning session's OWN heartbeat is what keeps
+    this row from being reaped as stale (``reap_stale_registry`` cascades the
+    delete when the owner's row goes stale), not a heartbeat of its own.
+    """
+    if not subagent_id or not owner_session_id:
+        return False
+    ts = float(now if now is not None else time.time())
+    goal_text = (goal or "")[:_SUBAGENT_GOAL_MAX_CHARS] or None
+    try:
+        with _transaction() as conn:
+            conn.execute(
+                """INSERT INTO cross_session_subagents
+                       (subagent_id, owner_session_id, goal, cwd, status, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(subagent_id) DO UPDATE SET
+                       owner_session_id=excluded.owner_session_id,
+                       goal=excluded.goal,
+                       cwd=excluded.cwd,
+                       status=excluded.status""",
+                (subagent_id, owner_session_id, goal_text, cwd, status, ts),
+            )
+        return True
+    except Exception as exc:  # never block a spawn over registry bookkeeping
+        logger.debug("cross_session subagent registration failed: %s", exc)
+        return False
+
+
+def unregister_subagent(subagent_id: str) -> None:
+    """Drop a subagent's durable row. Called synchronously at completion.
+
+    Safe to call even if the row was never written (owner session had no
+    live registry row yet, or the write failed) -- mirrors
+    ``tools/delegate_tool.py``'s own ``_unregister_subagent`` for the
+    in-process registry.
+    """
+    if not subagent_id:
+        return
+    try:
+        with _transaction() as conn:
+            conn.execute(
+                "DELETE FROM cross_session_subagents WHERE subagent_id = ?",
+                (subagent_id,),
+            )
+    except Exception as exc:
+        logger.debug("cross_session subagent unregistration failed: %s", exc)
+
+
+def _row_to_registered_subagent(row: Any) -> RegisteredSubagent:
+    return RegisteredSubagent(
+        subagent_id=row["subagent_id"],
+        owner_session_id=row["owner_session_id"],
+        goal=row["goal"],
+        cwd=row["cwd"],
+        status=row["status"],
+        started_at=float(row["started_at"]),
+    )
+
+
+def list_registered_subagents(
+    *, owner_session_id: Optional[str] = None
+) -> List[RegisteredSubagent]:
+    """Machine-wide live subagents, optionally filtered to one owner.
+
+    No staleness filter of its own (unlike ``list_registered_sessions``):
+    rows are written/deleted synchronously by the owning process rather than
+    refreshed on a heartbeat, so "the row exists" already means "as of the
+    owner's last write, this subagent was running" -- a stale row only
+    survives a crashed owner until that owner's OWN registry row is reaped,
+    at which point ``reap_stale_registry`` cascades the delete here too.
+    """
+    try:
+        with _transaction() as conn:
+            if owner_session_id:
+                rows = conn.execute(
+                    "SELECT * FROM cross_session_subagents "
+                    "WHERE owner_session_id = ? ORDER BY started_at DESC",
+                    (owner_session_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM cross_session_subagents ORDER BY started_at DESC"
+                ).fetchall()
+    except Exception as exc:
+        logger.debug("cross_session subagent list failed: %s", exc)
+        return []
+    return [_row_to_registered_subagent(row) for row in rows]
 
 
 def list_registered_sessions(
@@ -995,6 +1158,7 @@ __all__ = [
     "STATUS_PENDING",
     "DrainedMessage",
     "RegisteredSession",
+    "RegisteredSubagent",
     "TurnMessageState",
     "approve_held",
     "deny_held",
@@ -1003,9 +1167,12 @@ __all__ = [
     "heartbeat_registry",
     "list_inbox",
     "list_registered_sessions",
+    "list_registered_subagents",
     "reap_stale_registry",
     "register_lookup",
+    "register_subagent",
     "resolve_inbound_policy",
     "resolve_recipient",
     "send_message",
+    "unregister_subagent",
 ]

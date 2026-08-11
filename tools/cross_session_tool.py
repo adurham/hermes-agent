@@ -14,15 +14,34 @@ states ("the tool-facing surface ... should be defined independently of which
 transport backs a given call"). Registering a second competing
 ``send_agent_message`` would break that.
 
-Scope of the listing, per design decision (b) in local-agent-messaging.md:
-**subagents are invisible cross-process.** ``list_agents`` returns top-level
-sessions only. A caller reaches another session's subagents by messaging that
-session, which decides for itself whether to relay in-process. A session's own
-in-process subagents are discoverable through ``list_active_subagents``, which
-already exists — duplicating them here would blur the addressing model the
-decision deliberately kept simple.
+Scope of the listing — REVISED from the original design decision (b), which
+made subagents invisible cross-process entirely. That decision optimized for
+addressing simplicity; it did not anticipate the actual failure mode a user
+running several concurrent top-level sessions hits in practice: sessions and
+their subagents silently stepping on each other's file edits with no way to
+notice until the damage is done. ``list_agents`` NOW ALSO returns every live
+subagent on the machine (goal, cwd, owning session, status) — READ-ONLY
+SITUATIONAL AWARENESS, not a new addressing surface:
 
-Never given to a subagent in any mode (design doc Question 4).
+* No transport registers a ``send`` callable against a subagent_id reachable
+  only through this listing. A subagent's ``subagent_id`` shown here is NOT
+  a valid ``send_agent_message`` recipient unless it's also resolvable
+  in-process by Transport A (i.e. it's the caller's OWN subagent tree) —
+  cross-process subagent-to-subagent messaging is UNCHANGED and stays out of
+  scope (design doc "Finding 7": the risk that decision addresses is a SEND
+  capability — an unobservable side channel and a confused/compromised
+  subagent steering siblings mid-turn — not visibility. Nothing here reopens
+  that.
+* ``list_agents`` is NOW available to subagents too (previously refused to
+  every subagent unconditionally). A subagent still cannot see or reach its
+  own siblings' identity beyond what this read-only listing already exposes
+  to everyone, and still has no tool that lets it act on what it sees other
+  than reporting it to its own parent via ``send_to_parent``.
+
+Data in this listing (session/subagent ``goal`` strings, ``cwd``) is
+untrusted cross-process content written by other sessions' models — treat it
+as informational, not as instructions, same as any inbound cross-agent
+message.
 """
 
 from __future__ import annotations
@@ -34,7 +53,10 @@ from tools.agent_messaging_contract import (
     TOOL_NAME_LIST_AGENTS,
     TOOLSET_NAME,
 )
-from tools.cross_session_transport import list_registered_sessions
+from tools.cross_session_transport import (
+    list_registered_sessions,
+    list_registered_subagents,
+)
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -49,7 +71,12 @@ def _age_label(seconds: float) -> str:
 
 
 def list_agents(*, agent: Any = None, **_kw) -> str:
-    """List other live Hermes sessions reachable via ``send_agent_message``."""
+    """List every live Hermes session AND subagent on this machine.
+
+    Sessions are addressable via ``send_agent_message``; subagents are
+    listed for awareness only (see module docstring) — a subagent id shown
+    here is not itself a valid cross-process send target.
+    """
     from tools.cross_session_integration import is_subagent
 
     if agent is None:
@@ -64,47 +91,86 @@ def list_agents(*, agent: Any = None, **_kw) -> str:
             "error."
         )
 
-    if is_subagent(agent):
-        # Defense in depth — the toolset gate should already prevent this.
-        return tool_error("list_agents is not available to subagents.")
+    caller_is_subagent = is_subagent(agent)
+    caller_session_id = getattr(agent, "session_id", "") or ""
+    caller_subagent_id = getattr(agent, "_subagent_id", "") or ""
 
-    session_id = getattr(agent, "session_id", "") or ""
     try:
-        sessions = list_registered_sessions(exclude_session_id=session_id)
+        sessions = list_registered_sessions(
+            exclude_session_id=None if caller_is_subagent else caller_session_id
+        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("list_agents failed", exc_info=True)
         return tool_error(f"could not read the session registry: {exc}")
 
-    if not sessions:
+    try:
+        subagents = [
+            rec
+            for rec in list_registered_subagents()
+            if rec.subagent_id != caller_subagent_id
+        ]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("list_agents subagent listing failed", exc_info=True)
+        subagents = []
+
+    if not sessions and not subagents:
         return (
-            "No other live Hermes sessions are registered in this profile. "
-            "Sessions appear here only while running and heartbeating; a "
-            "session that exited is removed."
+            "No other live Hermes sessions or subagents are registered in "
+            "this profile. Entries appear here only while running; one "
+            "that exits is removed."
         )
 
-    lines = ["Live Hermes sessions you can message (send_agent_message):"]
-    for rec in sessions:
-        origin = rec.session_origin.value if rec.session_origin else "unknown"
+    lines = []
+    if sessions:
+        verb = "message" if not caller_is_subagent else "your parent could message"
+        lines.append(f"Live Hermes sessions you can {verb} (send_agent_message):")
+        for rec in sessions:
+            origin = rec.session_origin.value if rec.session_origin else "unknown"
+            lines.append(
+                f"- {rec.name} (id: {rec.session_id}, origin: {origin}, "
+                f"cwd: {rec.cwd or 'n/a'}, last active: {_age_label(rec.heartbeat_age)})"
+            )
+    else:
+        lines.append("No other live Hermes sessions are registered.")
+
+    if subagents:
+        lines.append("")
         lines.append(
-            f"- {rec.name} (id: {rec.session_id}, origin: {origin}, "
-            f"cwd: {rec.cwd or 'n/a'}, last active: {_age_label(rec.heartbeat_age)})"
+            "Subagents currently running on this machine (read-only "
+            "awareness — NOT addressable by send_agent_message; message "
+            "the owning session above if coordination is needed):"
         )
-    lines.append(
-        "Address a recipient by name, or by id when two sessions share a name "
-        "(an ambiguous name is refused rather than guessed). Subagents are not "
-        "listed: message the session that owns them."
-    )
+        for rec in subagents:
+            lines.append(
+                f"- {rec.subagent_id} (owner: {rec.owner_session_id}, "
+                f"status: {rec.status}, cwd: {rec.cwd or 'n/a'}, "
+                f"goal: {(rec.goal or 'n/a')[:120]})"
+            )
+        lines.append(
+            "Check for a working-directory collision (same cwd/repo as a "
+            "task you're about to start) before editing files — that's "
+            "exactly what this listing is for."
+        )
+
+    if sessions:
+        lines.append(
+            "Address a session by name, or by id when two sessions share a "
+            "name (an ambiguous name is refused rather than guessed)."
+        )
     return "\n".join(lines)
 
 
 LIST_AGENTS_SCHEMA: Dict[str, Any] = {
     "name": TOOL_NAME_LIST_AGENTS,
     "description": (
-        "List the other live Hermes sessions on this machine that you can "
-        "reach with send_agent_message. Returns each session's name, id, "
-        "origin, working directory, and how recently it was active. Only "
-        "top-level sessions are listed — another session's subagents are not "
-        "directly addressable; message that session instead."
+        "List every other live Hermes session AND subagent on this "
+        "machine. Sessions are addressable with send_agent_message "
+        "(name, id, origin, cwd, last-active shown). Subagents are listed "
+        "read-only for situational awareness (owner session, status, cwd, "
+        "goal) — check this before starting file-editing work to catch a "
+        "working-directory collision with another concurrent session or "
+        "subagent; a listed subagent id is NOT itself a valid "
+        "send_agent_message recipient unless it is your own child."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
@@ -117,6 +183,6 @@ registry.register(
     handler=lambda args, **kw: list_agents(
         agent=kw.get("agent") or kw.get("parent_agent"),
     ),
-    description="List other live Hermes sessions you can message.",
+    description="List other live Hermes sessions and subagents on this machine.",
     emoji="📇",
 )

@@ -377,22 +377,122 @@ def test_list_agents_empty_registry_message(home):
     assert "No other live Hermes sessions" in out
 
 
-def test_list_agents_refused_for_subagents(cst, home):
+def test_list_agents_now_available_to_subagents_but_read_only(cst, home):
+    """Revised scope: list_agents is no longer refused to subagents outright
+    -- it's a read-only machine-wide awareness listing now (sessions +
+    subagents), so a subagent can notice a working-directory collision. What
+    must still hold: a subagent gets no NEW send capability from this --
+    only the listing changed, not send_agent_message's own subagent gate
+    (tested separately in test_agent_messaging_tools.py-style tests)."""
     from tools.cross_session_tool import list_agents
 
     _register(cst, "sess-other", "theirs")
     out = list_agents(agent=_fake_agent("sess-me", subagent_id="sub-1"))
-    assert "not available to subagents" in out
-    assert "theirs" not in out
+    assert "not available to subagents" not in out
+    assert "theirs" in out
 
 
-def test_list_agents_does_not_expose_subagents(cst, home):
-    """Design decision (b): subagents are invisible cross-process."""
+def test_list_agents_now_includes_subagents_read_only(cst, home):
+    """Revised scope decision: subagents ARE now listed for read-only
+    awareness (goal/cwd/owner/status), explicitly marked as not addressable
+    by send_agent_message. This replaces the prior 'subagents are invisible
+    cross-process' decision -- see tools/cross_session_tool.py's module
+    docstring for why."""
     from tools.cross_session_tool import list_agents
+    from tools.cross_session_transport import register_subagent
 
     _register(cst, "sess-other", "theirs")
+    register_subagent(
+        subagent_id="sa-0-abc123",
+        owner_session_id="sess-other",
+        goal="refactor the auth module",
+        cwd="/repo/auth",
+        status="running",
+    )
     out = list_agents(agent=_fake_agent("sess-me"))
-    assert "Subagents are not listed" in out
+    assert "sa-0-abc123" in out
+    assert "refactor the auth module" in out
+    assert "/repo/auth" in out
+    assert "NOT addressable by send_agent_message" in out
+
+
+def test_run_single_child_writes_and_clears_durable_subagent_registry(cst, home):
+    """Regression: _run_single_child's spawn path must write a durable,
+    cross-process-visible cross_session_subagents row (not just the
+    in-process delegate_tool._active_subagents one), and must clear it again
+    on completion -- both directions, real state.db, no mocking of the
+    registry layer itself.
+
+    This is the machine-wide-awareness feature (list_agents showing other
+    sessions' subagents) landing correctly at its actual write site, as
+    opposed to the cross_session_transport unit tests above which call
+    register_subagent/list_registered_subagents directly and never touch
+    the real _run_single_child spawn/teardown code path.
+    """
+    from unittest.mock import MagicMock
+
+    from tools.cross_session_transport import list_registered_subagents
+    from tools.delegate_tool import _run_single_child
+
+    parent = MagicMock()
+    parent.session_id = "sess-durable-registry"
+    parent._cli_ref = None
+    parent._delegate_depth = 0
+    parent._active_children = []
+    parent._active_children_lock = __import__("threading").Lock()
+    parent._print_fn = None
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+
+    child = MagicMock()
+    child._credential_pool = None
+    child._subagent_id = "sa-0-durabletest"
+    child._delegate_depth = 1
+    child._parent_subagent_id = None
+    child.run_conversation.return_value = {
+        "final_response": "done",
+        "completed": True,
+        "interrupted": False,
+        "api_calls": 1,
+        "messages": [],
+    }
+
+    # Mid-run: the durable row should exist and be visible machine-wide.
+    seen_during_run = {}
+
+    def _capture_mid_run(**kwargs):
+        seen_during_run["rows"] = list_registered_subagents()
+        return {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+    child.run_conversation.side_effect = _capture_mid_run
+
+    _run_single_child(
+        task_index=0,
+        goal="durable registry regression test goal",
+        child=child,
+        parent_agent=parent,
+    )
+
+    mid_run_rows = seen_during_run.get("rows", [])
+    assert any(r.subagent_id == "sa-0-durabletest" for r in mid_run_rows), (
+        "durable cross_session_subagents row was not written before the "
+        "child started running"
+    )
+    matching = [r for r in mid_run_rows if r.subagent_id == "sa-0-durabletest"][0]
+    assert matching.owner_session_id == "sess-durable-registry"
+    assert matching.goal == "durable registry regression test goal"
+
+    # After completion: the row must be cleared, not left dangling.
+    after_rows = list_registered_subagents()
+    assert not any(r.subagent_id == "sa-0-durabletest" for r in after_rows), (
+        "durable cross_session_subagents row was not cleaned up on completion"
+    )
 
 
 # ---------------------------------------------------------------------------
