@@ -3,6 +3,76 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only feature — 2026-08-11 (machine-wide subagent visibility, so concurrent sessions stop stomping on each other's file edits)
+
+**Context:** user runs multiple concurrent top-level Hermes sessions on one
+Mac, each dispatching `delegate_task` subagents, and reported they
+frequently step on each other's file edits with no way to notice until the
+damage is done. `docs/design/local-agent-messaging.md`'s "Finding 7" had
+made subagents invisible cross-process and refused `list_agents` to any
+subagent caller entirely — a deliberate call, made to avoid reopening a
+SEND-capability risk (unobservable side channel between subagents; a
+confused/compromised subagent steering its siblings mid-turn with no
+parent visibility).
+
+**Decision:** that risk is a property of SEND capability, not of
+visibility — nothing about "let people see what's running where" requires
+opening subagent-to-subagent messaging. Got an external second opinion
+(`mcp__consult`) before touching this shared, security-reviewed surface;
+it agreed: widen visibility only, keep the SEND boundary shut.
+
+**What shipped, read-only, no new send path:**
+- New durable `cross_session_subagents` table (subagent_id,
+  owner_session_id, goal, cwd, status, started_at), FK'd to
+  `cross_session_registry` ON DELETE CASCADE. Deliberately NOT
+  heartbeat-based like the session registry — subagents typically live
+  seconds-to-minutes, far shorter than the registry's heartbeat/reap
+  cadence. Liveness derives from the owning session instead: written
+  synchronously at spawn, deleted synchronously at completion,
+  cascade-reaped if the owner's own registry row goes stale (crash case).
+- `tools/cross_session_transport.py`: `register_subagent` /
+  `unregister_subagent` / `list_registered_subagents`, mirroring the
+  existing session registry API shape. `reap_stale_registry()` also
+  explicitly deletes orphaned subagent rows (belt-and-suspenders alongside
+  the FK cascade). This module's own `_connect()` now sets `PRAGMA
+  foreign_keys=ON` so the cascade actually fires on connections it opens
+  itself.
+- `tools/delegate_tool.py`'s `_run_single_child` spawn path now also writes
+  the durable row — forcing a non-rate-limited heartbeat of the OWNER's own
+  registry row first, since `register_subagent`'s row FKs to it and a
+  session's very first subagent spawn can otherwise race the owner's own
+  rate-limited `heartbeat_if_due` tick. Teardown unregisters it.
+- `tools/cross_session_tool.py`'s `list_agents`: revised from "subagents
+  invisible cross-process, refused entirely to subagent callers" to
+  returning both live sessions (addressable, as before) AND live subagents
+  (read-only: owner, goal, cwd, status) to ANY caller including subagents.
+  A listed `subagent_id` is explicitly NOT a valid `send_agent_message`
+  recipient unless it's the caller's own child — Transport B's
+  `_cross_process_lookup` still only ever resolves sessions, verified by a
+  new regression test. `list_agents` stays gated to background subagents
+  only (rides the existing `TOOLSET_NAME` gate shared with
+  `send_to_parent`) since a synchronous subagent has no live parent turn to
+  report a collision to anyway.
+
+**Verification:** updated the two tests that literally asserted the old
+scope decision to assert the new one instead (kept the SEND-boundary
+invariant they were really protecting). New
+`test_run_single_child_writes_and_clears_durable_subagent_registry`
+exercises the real spawn/teardown code path against a real temp
+`state.db` (not mocked), confirmed to fail against a temporary revert of
+the `delegate_tool.py` wiring and pass with it restored. Full targeted
+suite: 303/304 passing — the one failure
+(`test_wal_and_busy_timeout_on_this_modules_connections`) is a
+pre-existing environment issue (local SQLite 3.50.4 WAL-reset-bug
+fallback), confirmed failing identically on clean `origin/main` before
+this change. Commit `b5dc56457`.
+
+**Live retest, same session:** confirmed session↔session, session↔subagent
+(both directions), and the subagent-list-refusal boundary all working
+end-to-end in real concurrent processes before this feature was added
+(commits `34c4a3cab` + this one's predecessor bugfix). Live re-verification
+of the new visibility feature itself is the next step.
+
 ### Fork-only fix — 2026-08-10 (spawn-time Transport A session registration dropped the parent's `cli` ref, breaking a subagent's first `send_to_parent` before the next idle tick)
 
 **Context:** live retest of the local-agent-messaging feature (subagent
