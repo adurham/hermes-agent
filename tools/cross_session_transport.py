@@ -546,6 +546,57 @@ def list_registered_subagents(
     return [_row_to_registered_subagent(row) for row in rows]
 
 
+def _cwd_overlaps(a: Optional[str], b: Optional[str]) -> bool:
+    """Prefix-overlap test for working-directory collision detection.
+
+    Equality alone is the wrong granularity for this: two sessions working
+    in the SAME repo -- the common case that actually stomps -- typically
+    have the same top-level cwd, but a subagent's cwd can also be a
+    subdirectory a sibling's covers (e.g. ``/repo`` vs ``/repo/pkg/foo``),
+    which equality would miss entirely. Either direction of containment
+    counts as overlap: ``a`` under ``b``, or ``b`` under ``a``. Both paths
+    are normalized (resolved, trailing slash stripped) before comparing so
+    ``/repo/`` and ``/repo`` aren't treated as distinct.
+    """
+    if not a or not b:
+        return False
+    try:
+        norm_a = os.path.normpath(os.path.abspath(a))
+        norm_b = os.path.normpath(os.path.abspath(b))
+    except Exception:
+        return a == b
+    if norm_a == norm_b:
+        return True
+    return norm_a.startswith(norm_b + os.sep) or norm_b.startswith(norm_a + os.sep)
+
+
+def find_cwd_collisions(
+    cwd: Optional[str], *, exclude_subagent_id: Optional[str] = None
+) -> List[RegisteredSubagent]:
+    """Live subagents (any owner, machine-wide) whose cwd overlaps ``cwd``.
+
+    Used at ``delegate_task`` dispatch time (``tools/delegate_tool.py``) to
+    warn -- not block; see the design note on that call site for why --
+    when a new subagent is about to start work in a directory another live
+    subagent is already touching, regardless of which top-level session
+    owns either one. Returns an empty list (never raises) on ``cwd=None``
+    or on any registry read failure, so a broken collision check can never
+    block a spawn.
+    """
+    if not cwd:
+        return []
+    try:
+        candidates = list_registered_subagents()
+    except Exception as exc:
+        logger.debug("find_cwd_collisions failed: %s", exc)
+        return []
+    return [
+        rec
+        for rec in candidates
+        if rec.subagent_id != exclude_subagent_id and _cwd_overlaps(cwd, rec.cwd)
+    ]
+
+
 def list_registered_sessions(
     *,
     exclude_session_id: Optional[str] = None,
@@ -1164,6 +1215,7 @@ __all__ = [
     "deny_held",
     "drain_inbox",
     "expire_held_messages",
+    "find_cwd_collisions",
     "heartbeat_registry",
     "list_inbox",
     "list_registered_sessions",

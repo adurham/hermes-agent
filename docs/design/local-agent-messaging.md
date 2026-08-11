@@ -1240,6 +1240,72 @@ construction. Both are needed; neither substitutes for the other.
   credible without a synchronous dialog) — belt-and-suspenders, not
   either/or.
 
+## Post-implementation revision — 2026-08-11 (Finding 7's visibility half reopened; SEND half unchanged)
+
+The user's actual operating pattern surfaced a real gap after this design
+shipped: they run **multiple concurrent top-level Hermes sessions on one
+machine**, each dispatching its own `delegate_task` subagents, and those
+subagents frequently step on each other's file edits with no way to notice
+until the damage is done. Finding 7 (above) had made subagents invisible
+cross-process entirely and refused `list_agents` to any subagent caller —
+correct for the SEND-capability risk it was written to avoid (an
+unobservable side channel between subagents; a confused/compromised
+subagent steering its siblings mid-turn with no parent visibility), but it
+also meant NO visibility existed at all, even read-only, even across
+independently-started sessions.
+
+**Decision, confirmed via `mcp__consult` before implementation:** the risk
+Finding 7 protects against is a property of SEND capability, not of
+visibility. Widening visibility does not reopen it. Subagent-to-subagent
+messaging stays exactly as scoped in Finding 7 — still out of v1, still
+requiring the relay-through-parent pattern described there. What changed:
+
+1. **New durable, machine-wide subagent registry** (`cross_session_subagents`
+   table: subagent_id, owner_session_id, goal, cwd, status, started_at).
+   Deliberately not heartbeat-based like the session registry — a subagent's
+   lifetime (seconds to minutes) is far shorter than a heartbeat/reap cadence
+   tuned for sessions living minutes to hours. Written synchronously at
+   spawn, deleted synchronously at completion; liveness derives from the
+   owning session (cascade-reaped when the owner's own row goes stale on a
+   crash), not from a heartbeat of the subagent row itself.
+2. **`list_agents` now also returns live subagents**, read-only (owner,
+   goal, cwd, status), to ANY caller including subagents — not just top-level
+   sessions. A listed `subagent_id` is explicitly NOT a valid
+   `send_agent_message` recipient unless it's the caller's own child;
+   Transport B's cross-process resolution still only ever resolves sessions.
+3. **A second external review pass (Fable, again via `mcp__consult`) caught
+   that step 2 alone doesn't satisfy the actual goal.** Passive/on-demand
+   visibility (a tool a subagent has to remember to call) is not "aware" for
+   a stomping-*prevention* goal — a subagent given a terse, task-focused
+   prompt will not reliably think to check before editing files. Two
+   further gaps were closed as a result:
+   - `list_agents` had been gated on `background=true`, copy-pasting the
+     SEND tools' rationale ("parent's thread is blocked, can't react") onto
+     a read-only lookup that doesn't share that justification — starving
+     every *synchronous* subagent (the common file-editing case) of
+     visibility entirely. Split into its own toolset (`agent_visibility`,
+     `tools/agent_messaging_contract.py`/`toolsets.py`), granted
+     unconditionally to every spawned child regardless of `background`.
+   - Added a **proactive, dispatch-time cwd-collision check**
+     (`tools/cross_session_transport.find_cwd_collisions`, prefix-overlap
+     not exact-match — same repo, different subdirectories, is the actual
+     common collision shape) run at spawn time. On a hit: the new
+     subagent's own system prompt gets an explicit WARNING block (not a
+     block/refusal — the editing tools themselves are the real safety net
+     on a genuine conflict; a hard block would false-positive on the
+     common "two subagents in the same repo, unrelated files, no
+     coordination needed" pattern Finding 7 itself called out), and the
+     parent's `delegate_task` dispatch response also surfaces it via
+     `cwd_collision_warnings`, so the DISPATCHING session's own turn sees
+     the heads-up immediately rather than only via the child's eventual
+     summary.
+
+Net effect: every agent and subagent on the machine can now see what every
+other one is doing (goal + cwd + status), a subagent about to start
+file-editing work in a directory another live subagent already occupies is
+proactively told so before it starts (not just able to check), and none of
+this required reopening subagent-to-subagent SEND capability.
+
 ## Final status: all identified items resolved. Ready for user sign-off.
 
 Every item flagged across both Fable review rounds, both verification

@@ -219,16 +219,54 @@ TOOLSETS = {
     # Local agent messaging (docs/design/local-agent-messaging.md). Opt-in.
     # send_agent_message is parent/session-only and is additionally withheld
     # from gateway-origin sessions via its check_fn; send_to_parent is granted
-    # to a delegated child only under background=true. list_agents is a
-    # session-only discovery tool and is never granted to a subagent.
+    # to a delegated child only under background=true (a synchronous child's
+    # parent thread is blocked and can't act on anything sent to it). This
+    # toolset does NOT include list_agents any more -- that's the separate
+    # "agent_visibility" toolset below, granted to every delegated child
+    # (synchronous or background) once its parent has cross_session enabled,
+    # because read-only visibility has no "parent can't react" gating
+    # rationale the way SEND tools do (2026-08-11: gating list_agents on
+    # background=true was an unreviewed copy-paste of the send-tools' gate
+    # onto a read-only lookup that doesn't share its justification --
+    # synchronous subagents doing file edits are the common
+    # working-directory-collision case and were getting zero visibility).
     "cross_session": {
         "description": (
             "Message other local Hermes participants: other live sessions or "
             "your own running subagents (send_agent_message), or the parent "
-            "that delegated to you (send_to_parent); list_agents discovers "
-            "reachable sessions"
+            "that delegated to you (send_to_parent)"
         ),
-        "tools": ["send_agent_message", "send_to_parent", "list_agents"],
+        "tools": ["send_agent_message", "send_to_parent"],
+        # Enabling "cross_session" (the one config.yaml/`hermes tools`
+        # toggle users actually see) also brings in list_agents via this
+        # include, so a top-level session's UX is unchanged from before the
+        # split -- one switch, same three tools available to a session.
+        # Only the delegated-child gating differs now (see
+        # tools/delegate_tool.py): a child gets "agent_visibility"
+        # independent of background=true/false, but "cross_session" itself
+        # (the SEND tools) only under background=true, same as before.
+        "includes": ["agent_visibility"]
+    },
+
+    # Read-only machine-wide agent/subagent awareness (list_agents). Split
+    # out of "cross_session" (see that toolset's comment) so it can be
+    # granted to a delegated child regardless of background=true/false --
+    # unlike the SEND tools, there is no "parent can't react" reason to
+    # withhold a read-only lookup from a synchronous child. Still opt-in:
+    # only reaches a child at all when the parent has "cross_session"
+    # enabled (tools/delegate_tool.py wires both together at spawn time),
+    # matching the existing config.yaml toggle UX (one feature, one
+    # `hermes tools enable cross_session` switch) rather than adding a
+    # second config surface for what is, from the user's perspective, the
+    # same feature.
+    "agent_visibility": {
+        "description": (
+            "Read-only: list every other live Hermes session and subagent "
+            "on this machine (list_agents) -- goal, cwd, owner, status. Use "
+            "this to notice a working-directory collision with concurrent "
+            "work before editing files."
+        ),
+        "tools": ["list_agents"],
         "includes": []
     },
     

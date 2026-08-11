@@ -51,7 +51,7 @@ from typing import Any, Dict
 
 from tools.agent_messaging_contract import (
     TOOL_NAME_LIST_AGENTS,
-    TOOLSET_NAME,
+    TOOLSET_NAME_VISIBILITY,
 )
 from tools.cross_session_transport import (
     list_registered_sessions,
@@ -178,7 +178,7 @@ LIST_AGENTS_SCHEMA: Dict[str, Any] = {
 
 registry.register(
     name=TOOL_NAME_LIST_AGENTS,
-    toolset=TOOLSET_NAME,
+    toolset=TOOLSET_NAME_VISIBILITY,
     schema=LIST_AGENTS_SCHEMA,
     handler=lambda args, **kw: list_agents(
         agent=kw.get("agent") or kw.get("parent_agent"),
