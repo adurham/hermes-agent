@@ -228,10 +228,26 @@ class TestRegistry:
         assert cst.list_registered_sessions(now=past) == []
 
     def test_registry_holds_no_subagent_rows(self, cst):
-        """Session-only by construction: there is no subagent-facing API to
-        even attempt this with. Assert the surface stays session-shaped."""
-        assert not hasattr(cst, "register_subagent")
+        """Transport B's SEND path (cross-process message resolution) stays
+        session-only by construction, even though ``register_subagent``
+        exists now for read-only machine-wide awareness (list_agents). The
+        two are deliberately separate: a subagent row in
+        cross_session_subagents is never resolvable by
+        ``_cross_process_lookup`` / ``resolve_transport`` as a SEND target —
+        only ``cross_session_registry`` (sessions) is."""
+        assert hasattr(cst, "register_subagent")
         _register(cst, "s1", "alpha")
+        cst.register_subagent(
+            subagent_id="sub-1", owner_session_id="s1", goal="test", cwd=None
+        )
+        assert cst._cross_process_lookup(
+            Participant(
+                participant_id="x",
+                kind=ParticipantKind.SESSION,
+                owner_session_id="x",
+            ),
+            "sub-1",
+        ) is None, "a subagent id must never resolve as a Transport B send target"
         live = cst.list_registered_sessions()
         assert all(
             cst._cross_process_lookup(

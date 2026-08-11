@@ -8,8 +8,15 @@ Two distinctly-named tools, not one role-conditional schema (design doc:
 - ``send_agent_message(recipient, body)`` — parent/session callers. Takes
   a recipient. NEVER given to a subagent in any mode.
 - ``send_to_parent(body)`` — subagent callers. No recipient parameter; a
-  subagent has exactly one valid target (Finding 7), so discovery is dead
-  schema weight and ``list_agents`` is not given to subagents at all.
+  subagent has exactly one valid SEND target (Finding 7). ``list_agents``
+  (``tools/cross_session_tool.py``) IS now given to background subagents —
+  it was revised from "not given to subagents at all" to read-only
+  machine-wide awareness (session + subagent listing) so a subagent can
+  notice a working-directory collision with concurrent work elsewhere on
+  the machine. That listing is not an addressing surface: it does not make
+  ``send_agent_message`` reachable to a subagent, and no subagent_id shown
+  in it is a valid cross-process send target unless it's the caller's own
+  child (see ``tools/cross_session_tool.py``'s module docstring).
 
 Gating, per the design's Question 4 resolution and the final sign-off's
 wording fix:
@@ -17,7 +24,10 @@ wording fix:
 - ``send_to_parent`` is in a subagent's toolset ONLY when the delegation
   is ``background=true``. A synchronous subagent gets neither tool — its
   parent's thread is blocked inside the batch polling loop and cannot act
-  on anything until the batch returns.
+  on anything until the batch returns. ``list_agents`` rides the same
+  background-only gate (``TOOLSET_NAME`` is shared across all three tools)
+  for the same reason: a synchronous subagent has no live parent turn to
+  report a collision to.
 - ``send_agent_message`` is not registered at all for gateway-origin
   sessions (design doc: "Sender-permission-mode threat model"), killing
   the untrusted-external-chat-user-as-sender injection path at the source.

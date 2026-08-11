@@ -388,6 +388,30 @@ CREATE INDEX IF NOT EXISTS idx_inbox_recipient
 CREATE INDEX IF NOT EXISTS idx_inbox_sender_pair
     ON cross_session_inbox(from_session_id, to_session_id, created_at);
 
+-- Machine-wide subagent visibility (docs/design/local-agent-messaging.md
+-- "Finding 7" follow-up: read-only awareness across independently-started
+-- processes, NOT a send path -- subagent-to-subagent messaging stays
+-- explicitly out of scope). Deliberately NOT heartbeat-based: subagents
+-- typically live seconds-to-minutes, far shorter than the registry's
+-- heartbeat/reap cadence, so a periodic-refresh liveness model would either
+-- show dead subagents as busy for a full reap window or reap live-but-slow
+-- ones early. Liveness instead derives from the OWNING SESSION: a row is
+-- written synchronously at spawn and deleted synchronously at completion by
+-- the owning process, and reaped as a cascade whenever the owning session's
+-- OWN registry row is reaped (crash/kill case) rather than via its own
+-- separate heartbeat.
+CREATE TABLE IF NOT EXISTS cross_session_subagents (
+    subagent_id     TEXT PRIMARY KEY,
+    owner_session_id TEXT NOT NULL REFERENCES cross_session_registry(session_id) ON DELETE CASCADE,
+    goal            TEXT,
+    cwd             TEXT,
+    status          TEXT NOT NULL,
+    started_at      REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_subagents_owner
+    ON cross_session_subagents(owner_session_id);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
