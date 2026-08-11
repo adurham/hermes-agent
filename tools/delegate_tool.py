@@ -2439,12 +2439,26 @@ def _run_single_child(
         # an owner_session_id nobody has registered yet, and its
         # send_to_parent would fall through to Transport B's approval gate.
         # Registration is additive/idempotent, so doing it here too is free.
+        #
+        # Must pass cli= here too, not just agent=: register_session_participant
+        # preserves an existing agent/cli ref and never clobbers a known one
+        # with None, but on the VERY FIRST registration (no idle tick has run
+        # yet) a cli=None call creates the entry with no cli ref at all, and
+        # idle-branch delivery (_append_idle_atomically) needs cli._pending_input
+        # to deliver. A subagent that calls send_to_parent before its parent's
+        # next idle tick would otherwise hit "recipient session is idle but
+        # exposes no _pending_input queue; cannot deliver" even though the
+        # session resolved correctly in-process. parent_agent._cli_ref is set
+        # by cli.py right after agent construction for exactly this kind of
+        # back-reference (see tools/swarm_board.py for the existing pattern).
         try:
             from tools.cross_session_integration import (
                 register_session_participant_for,
             )
 
-            register_session_participant_for(parent_agent)
+            register_session_participant_for(
+                parent_agent, cli=getattr(parent_agent, "_cli_ref", None)
+            )
         except Exception as _exc:  # never block a spawn over messaging
             logger.debug("owner session participant registration failed: %s", _exc)
         _register_subagent(

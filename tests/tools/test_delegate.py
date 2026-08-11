@@ -2013,5 +2013,69 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestOwnerSessionParticipantRegistrationCarriesCliRef(unittest.TestCase):
+    """Regression: _run_single_child's spawn-time registration must pass the
+    parent's ``_cli_ref``, not just ``agent=``.
+
+    Bug: the spawn call site did ``register_session_participant_for(parent_agent)``
+    with no ``cli=``. register_session_participant_for/register_session_participant
+    never clobber a known cli ref with None on RE-registration, but on a
+    session's FIRST-EVER registration (before its idle tick has run even once,
+    e.g. a subagent spawned and immediately calling send_to_parent within the
+    same turn) that leaves the registry entry with cli=None. Transport A's idle
+    delivery branch (_append_idle_atomically) then can't find
+    cli._pending_input and errors instead of delivering -- even though
+    resolve_transport() correctly resolved the recipient IN_PROCESS. Verified
+    to fail (cli stored as None) against a revert of the fix and pass after.
+    """
+
+    def setUp(self):
+        import tools.agent_messaging_transport_a as ta
+
+        self._ta = ta
+        self._ta._reset_for_tests()
+        self.addCleanup(self._ta._reset_for_tests)
+
+    def test_spawn_registration_stores_parent_cli_ref(self):
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        parent.session_id = "sess-cliref"
+        sentinel_cli = MagicMock(name="cli")
+        parent._cli_ref = sentinel_cli
+
+        child = MagicMock()
+        child._credential_pool = None
+        child._subagent_id = "sa-0-abc12345"
+        child._delegate_depth = 1
+        child._parent_subagent_id = None
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        _run_single_child(
+            task_index=0,
+            goal="Register with cli ref",
+            child=child,
+            parent_agent=parent,
+        )
+
+        entry = self._ta._session_participants.get("sess-cliref")
+        self.assertIsNotNone(
+            entry, "spawn-time registration did not register the parent session"
+        )
+        self.assertIs(
+            entry.get("cli"),
+            sentinel_cli,
+            "spawn-time registration must carry parent_agent._cli_ref so a "
+            "subagent's send_to_parent can deliver via the idle "
+            "_pending_input branch without waiting for the next idle tick",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
