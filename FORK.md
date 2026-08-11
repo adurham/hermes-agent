@@ -3,6 +3,47 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-08-10 (spawn-time Transport A session registration dropped the parent's `cli` ref, breaking a subagent's first `send_to_parent` before the next idle tick)
+
+**Context:** live retest of the local-agent-messaging feature (subagent
+lifecycle + session↔subagent messaging), requested after the earlier
+`2487044e9`/`9f6a4da927` fixes landed. Ran the full targeted unit suite
+(240+ tests, all green) then dispatched a real background subagent to call
+`send_to_parent` end-to-end. It failed with `"recipient session is idle but
+exposes no _pending_input queue; cannot deliver"` even though
+`resolve_transport()` correctly resolved the recipient `IN_PROCESS` —
+Transport A engaged as designed, not a fallthrough to Transport B (the bug
+`9f6a4da927` already fixed).
+
+**Root cause:** `tools/delegate_tool.py`'s `_run_single_child` spawn path
+calls `register_session_participant_for(parent_agent)` with no `cli=`
+argument. `register_session_participant()` never clobbers an *existing*
+`cli` ref with `None` on re-registration, but on a session's first-ever
+registration — e.g. a subagent spawned and calling `send_to_parent` within
+the same turn, before the parent's next idle tick has run even once — that
+leaves the registry entry with `cli=None`. Transport A's idle delivery
+branch (`_append_idle_atomically`) then can't find `cli._pending_input` to
+inject into and errors instead of delivering. `cli.py`'s own idle-tick
+registration call (`_drain_cross_session_inbox`) already passes `cli=self`
+correctly — the spawn call site was the one gap.
+
+**Fix:** pass `cli=getattr(parent_agent, "_cli_ref", None)` at the spawn
+call site too. `parent_agent._cli_ref` is set by `cli.py` right after agent
+construction for exactly this kind of back-reference (see
+`tools/swarm_board.py` for the existing pattern), so it's already available
+at spawn time with no new plumbing needed.
+
+**Verification:** new regression test
+(`TestOwnerSessionParticipantRegistrationCarriesCliRef` in
+`tests/tools/test_delegate.py`) confirmed to fail against a revert of the
+fix (asserts the registry entry's `cli` is `None`, not the parent's
+`_cli_ref`) and pass with the fix restored. Full targeted suite —
+`test_delegate`, `test_agent_messaging_contract`,
+`test_agent_messaging_send_dispatch`, `test_async_delegation`,
+`test_subagent_lifecycle`, `test_subagent_progress`,
+`test_subagent_stop_hook` — 201 tests, 0 failures, no regressions. Commit
+`34c4a3cab`.
+
 ### Fork-only fix — 2026-08-10 (two review-flagged gaps in today's delegation/Transport A work: no session-ownership check on `/stop <id>`; gateway unregister could silently no-op or unregister the wrong id)
 
 **Context:** requested a second-opinion review (via `mcp__consult`, the
