@@ -239,3 +239,16 @@ class TestToolNaming:
 
     def test_toolset_name_matches_design_doc(self):
         assert TOOLSET_NAME == "cross_session"
+
+    def test_visibility_toolset_is_distinct_from_messaging_toolset(self):
+        """agent_visibility (list_agents) and cross_session (the SEND tools)
+        are deliberately two different toolsets now (2026-08-11) -- see
+        tools/delegate_tool.py's _build_child_agent for why: list_agents has
+        no "parent thread blocked, can't react" gating rationale the way
+        send_to_parent/send_agent_message do, so it can't share their
+        background=true-only gate without starving every synchronous
+        subagent of visibility (the exact bug this split fixes)."""
+        from tools.agent_messaging_contract import TOOLSET_NAME_VISIBILITY
+
+        assert TOOLSET_NAME_VISIBILITY == "agent_visibility"
+        assert TOOLSET_NAME_VISIBILITY != TOOLSET_NAME

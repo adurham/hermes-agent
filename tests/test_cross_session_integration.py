@@ -495,6 +495,118 @@ def test_run_single_child_writes_and_clears_durable_subagent_registry(cst, home)
     )
 
 
+def test_delegate_task_spawn_warns_on_real_cwd_collision(cst, home, monkeypatch):
+    """Regression, real temp state.db (not mocked): when another live
+    subagent is already registered at the same cwd, a newly spawned child
+    must (a) get the warning injected into its own system prompt, and (b)
+    carry it on _delegate_cwd_collision_warning so the parent's dispatch
+    payload can surface it too. This is the proactive half of the 2026-08-11
+    follow-up (Fable review: passive list_agents visibility alone doesn't
+    satisfy "aware of each other" for a stomping-prevention goal -- a
+    subagent has to actually be warned before it edits, not just be ABLE
+    to check).
+    """
+    from unittest.mock import MagicMock, patch
+
+    from tools.cross_session_transport import register_subagent
+    from tools.delegate_tool import _build_child_agent
+
+    collision_cwd = str(home / "shared-repo")
+
+    # Another live subagent (different owner, different process in reality)
+    # is already registered working in this exact directory.
+    register_subagent(
+        subagent_id="sa-0-existing",
+        owner_session_id="sess-other-owner",
+        goal="already editing this repo",
+        cwd=collision_cwd,
+        status="running",
+    )
+
+    parent = MagicMock()
+    parent.session_id = "sess-new-spawn"
+    parent._delegate_depth = 0
+    parent.provider = None
+    parent.base_url = None
+    parent.api_key = None
+    parent.model = "test-model"
+
+    with patch(
+        "tools.delegate_tool._resolve_workspace_hint", return_value=collision_cwd
+    ), patch("run_agent.AIAgent") as MockAgent:
+        mock_child = MagicMock()
+        MockAgent.return_value = mock_child
+
+        child = _build_child_agent(
+            task_index=0,
+            goal="edit something in the shared repo",
+            context=None,
+            toolsets=None,
+            model=None,
+            max_iterations=10,
+            parent_agent=parent,
+            task_count=1,
+        )
+
+    # (a) the warning reached the child's own system prompt
+    _, kwargs = MockAgent.call_args
+    prompt = kwargs.get("ephemeral_system_prompt") or ""
+    assert "sa-0-existing" in prompt
+    assert "WARNING" in prompt
+    assert collision_cwd in prompt
+
+    # (b) it's also stashed for the parent's dispatch payload to surface
+    assert "sa-0-existing" in (child._delegate_cwd_collision_warning or "")
+
+
+def test_delegate_task_spawn_no_warning_when_no_collision(cst, home, monkeypatch):
+    """Symmetric negative case, same real-DB setup: an unrelated cwd must
+    produce no warning at all, confirming the check doesn't false-positive."""
+    from unittest.mock import MagicMock, patch
+
+    from tools.cross_session_transport import register_subagent
+    from tools.delegate_tool import _build_child_agent
+
+    register_subagent(
+        subagent_id="sa-0-elsewhere",
+        owner_session_id="sess-other-owner",
+        goal="working on an unrelated repo",
+        cwd=str(home / "totally-different-repo"),
+        status="running",
+    )
+
+    parent = MagicMock()
+    parent.session_id = "sess-new-spawn-2"
+    parent._delegate_depth = 0
+    parent.provider = None
+    parent.base_url = None
+    parent.api_key = None
+    parent.model = "test-model"
+
+    with patch(
+        "tools.delegate_tool._resolve_workspace_hint",
+        return_value=str(home / "my-own-repo"),
+    ), patch("run_agent.AIAgent") as MockAgent:
+        mock_child = MagicMock()
+        MockAgent.return_value = mock_child
+
+        child = _build_child_agent(
+            task_index=0,
+            goal="edit something unrelated",
+            context=None,
+            toolsets=None,
+            model=None,
+            max_iterations=10,
+            parent_agent=parent,
+            task_count=1,
+        )
+
+    _, kwargs = MockAgent.call_args
+    prompt = kwargs.get("ephemeral_system_prompt") or ""
+    assert "WARNING" not in prompt
+    assert child._delegate_cwd_collision_warning is None
+
+
 # ---------------------------------------------------------------------------
 # hermes agents inbox
 # ---------------------------------------------------------------------------

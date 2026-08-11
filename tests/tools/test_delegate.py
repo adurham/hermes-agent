@@ -1181,9 +1181,17 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
                 task_count=1,
             )
 
+        # MCP toolset intersection stays strict (mcp-MiniMax correctly
+        # excluded, the thing this test actually verifies) -- but
+        # "agent_visibility" is unconditional delegation plumbing, not
+        # something a toolsets= request can narrow away (2026-08-11: every
+        # spawned child gets read-only machine-wide agent/subagent
+        # awareness regardless of what toolsets it explicitly asked for,
+        # same precedent as "delegation" being force-added for orchestrators
+        # and "kanban" always being force-disabled).
         self.assertEqual(
             MockAgent.call_args[1]["enabled_toolsets"],
-            ["web", "browser"],
+            ["web", "browser", "agent_visibility"],
         )
 
 
@@ -2011,6 +2019,83 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+class TestAgentVisibilityToolsetGating(unittest.TestCase):
+    """Regression for the 2026-08-11 fix: list_agents (agent_visibility)
+    must reach a SYNCHRONOUS subagent too, not just background=true ones.
+
+    Bug: list_agents was originally shipped folded into the "cross_session"
+    toolset alongside send_to_parent/send_agent_message, and gated on
+    background=true by copy-pasting those SEND tools' rationale ("parent's
+    thread is blocked, can't react to anything sent") onto a read-only
+    lookup that doesn't share that justification. A synchronous subagent
+    doing file edits -- the common working-directory-collision case this
+    feature exists to catch -- got ZERO visibility. Fixed by splitting
+    list_agents into its own "agent_visibility" toolset, granted
+    unconditionally to every spawned child regardless of background.
+    """
+
+    def test_synchronous_child_gets_visibility_but_not_messaging(self):
+        from tools.delegate_tool import _build_child_agent
+
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="sync child visibility test",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                background=False,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIn(
+            "agent_visibility",
+            kwargs["enabled_toolsets"],
+            "a synchronous (background=False) subagent must still get "
+            "read-only agent_visibility (list_agents) -- this is the exact "
+            "gap the 2026-08-11 fix closed",
+        )
+        self.assertNotIn(
+            "cross_session",
+            kwargs["enabled_toolsets"],
+            "the SEND toolset (send_to_parent/send_agent_message) must "
+            "stay background=true-only -- unchanged by this fix",
+        )
+        self.assertIn("cross_session", kwargs["disabled_toolsets"])
+        self.assertNotIn("agent_visibility", kwargs["disabled_toolsets"])
+
+    def test_background_child_gets_both_visibility_and_messaging(self):
+        from tools.delegate_tool import _build_child_agent
+
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="background child visibility test",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                background=True,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIn("agent_visibility", kwargs["enabled_toolsets"])
+        self.assertIn("cross_session", kwargs["enabled_toolsets"])
+        self.assertNotIn("agent_visibility", kwargs["disabled_toolsets"])
+        self.assertNotIn("cross_session", kwargs["disabled_toolsets"])
 
 
 class TestOwnerSessionParticipantRegistrationCarriesCliRef(unittest.TestCase):

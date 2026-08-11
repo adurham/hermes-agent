@@ -834,3 +834,90 @@ class TestConnectionHygiene:
         never opened SessionDB, so the fallback DDL has to hold."""
         _register(cst, "s1", "alpha")
         assert cst.list_inbox(session_id="s1", status=None) == []
+
+
+# ---------------------------------------------------------------------------
+# cwd-collision detection (2026-08-11 follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestCwdCollisionDetection:
+    def test_exact_cwd_match_is_a_collision(self, cst):
+        cst.register_subagent(
+            subagent_id="sub-1",
+            owner_session_id="sess-a",
+            goal="test",
+            cwd="/repo/project",
+        )
+        hits = cst.find_cwd_collisions("/repo/project")
+        assert len(hits) == 1
+        assert hits[0].subagent_id == "sub-1"
+
+    def test_subdirectory_overlap_is_a_collision_either_direction(self, cst):
+        """The actual failure mode this exists to catch: two subagents in
+        the SAME repo but different subdirectories -- equality alone would
+        miss this entirely."""
+        cst.register_subagent(
+            subagent_id="sub-parent",
+            owner_session_id="sess-a",
+            goal="working on the whole repo",
+            cwd="/repo",
+        )
+        # A new subagent about to start in a subdirectory of an existing one.
+        hits = cst.find_cwd_collisions("/repo/pkg/foo")
+        assert len(hits) == 1
+        assert hits[0].subagent_id == "sub-parent"
+
+        # And the reverse direction: existing subagent is in a subdirectory,
+        # new one is about to start at the repo root.
+        cst._reset_for_tests() if hasattr(cst, "_reset_for_tests") else None
+        with cst._transaction() as conn:
+            conn.execute("DELETE FROM cross_session_subagents")
+        cst.register_subagent(
+            subagent_id="sub-child",
+            owner_session_id="sess-b",
+            goal="working on one package",
+            cwd="/repo/pkg/foo",
+        )
+        hits = cst.find_cwd_collisions("/repo")
+        assert len(hits) == 1
+        assert hits[0].subagent_id == "sub-child"
+
+    def test_unrelated_directories_are_not_a_collision(self, cst):
+        cst.register_subagent(
+            subagent_id="sub-1",
+            owner_session_id="sess-a",
+            goal="test",
+            cwd="/repo/project-a",
+        )
+        assert cst.find_cwd_collisions("/repo/project-b") == []
+
+    def test_collision_detection_is_machine_wide_not_owner_scoped(self, cst):
+        """Must find a collision from a DIFFERENT owning session too -- this
+        is the actual point (catching stomps ACROSS concurrent top-level
+        sessions, not just within one session's own subagent tree)."""
+        cst.register_subagent(
+            subagent_id="sub-other-session",
+            owner_session_id="sess-totally-different",
+            goal="unrelated work",
+            cwd="/repo/shared",
+        )
+        hits = cst.find_cwd_collisions("/repo/shared")
+        assert len(hits) == 1
+        assert hits[0].owner_session_id == "sess-totally-different"
+
+    def test_excludes_self_by_subagent_id(self, cst):
+        cst.register_subagent(
+            subagent_id="sub-self",
+            owner_session_id="sess-a",
+            goal="test",
+            cwd="/repo",
+        )
+        assert cst.find_cwd_collisions("/repo", exclude_subagent_id="sub-self") == []
+
+    def test_none_cwd_never_collides(self, cst):
+        cst.register_subagent(
+            subagent_id="sub-1", owner_session_id="sess-a", goal="test", cwd=None
+        )
+        assert cst.find_cwd_collisions(None) == []
+        assert cst.find_cwd_collisions("/repo") == []

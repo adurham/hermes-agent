@@ -338,6 +338,17 @@ HELD_MESSAGE_EXPIRY_SECONDS = 3600.0
 
 TOOLSET_NAME = "cross_session"
 
+# Read-only machine-wide agent/subagent visibility (list_agents) lives in a
+# SEPARATE toolset from the SEND tools above (send_agent_message,
+# send_to_parent). See toolsets.py's "agent_visibility" entry for why: the
+# background=true-only gate that's correct for SEND tools (a synchronous
+# child's parent thread is blocked and can't act on anything sent to it) has
+# no equivalent justification for a read-only lookup, so it's granted to
+# every delegated child regardless of background=true/false, as long as the
+# parent has "cross_session" enabled (tools/delegate_tool.py wires the two
+# together at spawn time -- one feature, one config.yaml toggle).
+TOOLSET_NAME_VISIBILITY = "agent_visibility"
+
 TOOL_NAME_SEND_AGENT_MESSAGE = "send_agent_message"   # parent/session callers; has `recipient`
 TOOL_NAME_SEND_TO_PARENT = "send_to_parent"           # subagent callers; no `recipient` param
-TOOL_NAME_LIST_AGENTS = "list_agents"                 # session callers only — never subagents
+TOOL_NAME_LIST_AGENTS = "list_agents"                 # any caller, including subagents (read-only)

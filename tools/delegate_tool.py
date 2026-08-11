@@ -865,6 +865,7 @@ def _build_child_system_prompt(
     max_spawn_depth: int = 2,
     child_depth: int = 1,
     agent_type: Optional[str] = None,
+    cwd_collision_warning: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -878,6 +879,15 @@ def _build_child_system_prompt(
     inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
+
+    ``cwd_collision_warning``, when set, is a pre-formatted warning that
+    another live subagent (any owning session, machine-wide) is already
+    working in this child's workspace directory or a parent/child of it
+    (``tools/cross_session_transport.find_cwd_collisions``, called by the
+    spawn path right before this function). Surfaced prominently, near the
+    task itself, rather than buried after the skills/workspace boilerplate
+    -- it needs to be seen before the child starts editing files, not
+    discovered after a stomp already happened.
     """
     parts: list[str] = []
 
@@ -913,6 +923,11 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
+    if cwd_collision_warning:
+        # Placed right after the workspace path, before the generic
+        # boilerplate below -- this needs to be seen before the child
+        # starts editing files, not buried past instructions it'll skim.
+        parts.append(f"\n{cwd_collision_warning}")
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -1533,7 +1548,10 @@ def _build_child_agent(
     # anything it sends, so shipping the schema would be pure token cost.
     # send_agent_message (the recipient-taking tool) is never granted to a
     # subagent in any mode; it stays parent/session-only.
-    from tools.agent_messaging_contract import TOOLSET_NAME as _MSG_TOOLSET
+    from tools.agent_messaging_contract import (
+        TOOLSET_NAME as _MSG_TOOLSET,
+        TOOLSET_NAME_VISIBILITY as _VISIBILITY_TOOLSET,
+    )
 
     if background:
         if _MSG_TOOLSET not in child_toolsets:
@@ -1546,6 +1564,25 @@ def _build_child_agent(
         if _MSG_TOOLSET not in child_disabled_toolsets:
             child_disabled_toolsets.append(_MSG_TOOLSET)
 
+    # Read-only agent/subagent visibility (list_agents), UNCONDITIONAL on
+    # background=true/false -- unlike the SEND tools above, there is no
+    # "parent's thread is blocked, can't react" reason to withhold a
+    # read-only lookup from a synchronous child. A synchronous subagent
+    # doing file edits is the common working-directory-collision case this
+    # exists to catch, and it needs the same visibility a background child
+    # gets. Matches the send_to_parent precedent immediately above of
+    # overriding even an explicit inherited disable: this is delegation
+    # plumbing granted to every spawned child, not a per-session opt-in a
+    # user has to separately enable for subagents once they've enabled it
+    # anywhere (2026-08-11: this whole toolset started life folded into
+    # cross_session and background-gated by copy-paste from the SEND
+    # tools' rationale, which starved every synchronous child of it).
+    if _VISIBILITY_TOOLSET not in child_toolsets:
+        child_toolsets.append(_VISIBILITY_TOOLSET)
+    child_disabled_toolsets = [
+        name for name in child_disabled_toolsets if name != _VISIBILITY_TOOLSET
+    ]
+
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because
     # orchestrator capability is granted by role, not inherited — see the
@@ -1554,6 +1591,43 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+
+    # Proactive cwd-collision check (docs/design/local-agent-messaging.md
+    # follow-up, 2026-08-11): machine-wide, not scoped to this parent's own
+    # children -- catches a collision with a subagent under a DIFFERENT
+    # top-level session too, which is the actual problem this exists for.
+    # WARN, not block: the underlying repo-editing tools (patch, write_file,
+    # git) are the real safety net (they fail or produce a visible diff on
+    # a genuine conflict), and a hard block on cwd overlap would be a false
+    # positive every time two subagents legitimately work the same repo on
+    # unrelated files (the exact "no communication needed" pattern the
+    # design doc's Finding 7 called out as the common case). A warning the
+    # child sees before it starts editing is the right strength: enough to
+    # make it check first, not enough to break parallel non-conflicting work.
+    _collision_warning: Optional[str] = None
+    if workspace_hint:
+        try:
+            from tools.cross_session_transport import find_cwd_collisions
+
+            _collisions = find_cwd_collisions(workspace_hint)
+        except Exception:
+            _collisions = []
+        if _collisions:
+            _lines = [
+                f"- {c.subagent_id} (owner session: {c.owner_session_id}, "
+                f"status: {c.status}, goal: {(c.goal or 'n/a')[:100]})"
+                for c in _collisions[:5]
+            ]
+            _collision_warning = (
+                f"WARNING: {len(_collisions)} other live subagent(s) on this "
+                f"machine are already working in this same directory (or a "
+                f"parent/child of it): {workspace_hint}\n"
+                + "\n".join(_lines)
+                + "\n\nCheck list_agents for the current picture before "
+                "editing files here -- another concurrent session's "
+                "subagent may be mid-edit on the same repo right now."
+            )
+
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -1562,6 +1636,7 @@ def _build_child_agent(
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
         agent_type=agent_type,
+        cwd_collision_warning=_collision_warning,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1800,6 +1875,12 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
+    # Stash the cwd-collision warning (if any) so _run_single_child's result
+    # dict can surface it to the parent's own turn too -- not just the
+    # child's own system prompt. The parent dispatching two conflicting
+    # subagents in the same turn should see this immediately, not only
+    # discover it once the child's summary comes back.
+    child._delegate_cwd_collision_warning = _collision_warning
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
@@ -2836,6 +2917,22 @@ def _run_single_child(
                 ),
             },
             "tool_trace": tool_trace,
+            # cwd-collision warning stashed at spawn time (tools/
+            # cross_session_transport.find_cwd_collisions), if any -- lets
+            # the parent's own turn see the heads-up immediately, not only
+            # once the child's own summary comes back having (hopefully)
+            # self-reported the same thing. isinstance-guarded (not a bare
+            # getattr/None check) to match the _auto_route_info precedent
+            # just below: MagicMock test doubles auto-vivify unset
+            # attributes into a Mock object rather than the getattr default.
+            "cwd_collision_warning": (
+                _w
+                if isinstance(
+                    (_w := getattr(child, "_delegate_cwd_collision_warning", None)),
+                    str,
+                )
+                else None
+            ),
             # Finding 8: a message that landed after this child's last tool
             # batch but before its final text response has nothing left to
             # attach to, so turn_finalizer parks it on result["pending_steer"].
@@ -4285,6 +4382,26 @@ def delegate_task(
                     "task). Read or `tail -f` these paths at any time to watch "
                     "a child work while it runs."
                 )
+            # Surface any cwd-collision warnings (tools/cross_session_transport
+            # .find_cwd_collisions, checked at spawn) right in the dispatch
+            # response too -- not just buried in each child's own system
+            # prompt. This is the parent's OWN turn seeing the heads-up
+            # immediately, before any child summary comes back. isinstance
+            # check (not a bare getattr/truthiness check) because MagicMock
+            # test doubles auto-vivify any attribute access into a Mock
+            # object rather than raising/returning the default, so a naive
+            # getattr(...) or None check would treat every mocked child as
+            # having a collision warning.
+            _collision_notes = [
+                w
+                for (_, _, _c) in children
+                if isinstance(
+                    (w := getattr(_c, "_delegate_cwd_collision_warning", None)), str
+                )
+                and w
+            ]
+            if _collision_notes:
+                payload["cwd_collision_warnings"] = _collision_notes
             return json.dumps(payload, ensure_ascii=False)
 
         # Pool at capacity / schedule failure — children are still attached
