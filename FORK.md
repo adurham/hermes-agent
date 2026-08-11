@@ -3,6 +3,68 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only feature — 2026-08-11 (closed two real gaps in machine-wide subagent visibility, found by a second external review pass)
+
+**Context:** after shipping durable machine-wide subagent visibility
+(previous entry below), the user asked me to consult Fable
+(`mcp__consult`) on whether it actually satisfied their stated goal
+("every agent and subagent on my mac is aware of each other and what the
+others are working on", to stop concurrent sessions' subagents from
+stomping on each other's file edits). Verdict: only about half met.
+Passive/on-demand visibility (a tool the model has to remember to call)
+doesn't satisfy a stomping-*prevention* goal — a subagent given a terse,
+task-focused prompt won't reliably think to check before editing files.
+
+**Gap 1 — synchronous subagents had zero visibility.** `list_agents` had
+been gated on `background=true`, copy-pasting the SEND tools' rationale
+("parent's thread is blocked, can't react to anything sent") onto a
+read-only lookup that doesn't share that justification. Synchronous
+subagents doing file edits — the common collision case — got nothing.
+**Fix:** split `list_agents` into its own toolset (`agent_visibility`,
+`tools/agent_messaging_contract.py` + `toolsets.py`), granted
+unconditionally to every delegated child regardless of `background`.
+`cross_session` (the SEND tools) keeps its existing background-only gate,
+unchanged. Enabling `cross_session` (the one `hermes tools` toggle users
+see) still brings `agent_visibility` in automatically via `toolsets.py`'s
+`includes`, so top-level-session UX is identical to before the split.
+
+**Gap 2 — nothing was proactive.** Visibility existed but nothing surfaced
+it before a subagent started editing, and cwd *equality* is the wrong
+granularity anyway (two sessions in the same repo — the actual common
+collision — typically share a cwd, but a subagent's cwd can also be a
+subdirectory a sibling's covers). **Fix:**
+`tools/cross_session_transport.find_cwd_collisions` — prefix-overlap
+(either direction), machine-wide, not scoped to the calling parent's own
+children — checked at every `delegate_task` spawn. On a hit: the new
+subagent's own system prompt gets an explicit WARNING block (placed right
+after the workspace path, before the generic task boilerplate), and the
+parent's `delegate_task` dispatch response also surfaces it via a new
+`cwd_collision_warnings` field, so the dispatching session's own turn sees
+the heads-up immediately. WARN, not block — a hard block would
+false-positive on the "two subagents in the same repo, unrelated files, no
+coordination needed" pattern the original design doc's Finding 7 called
+out as the common, legitimate case; the editing tools themselves remain
+the real safety net on a genuine conflict.
+
+**Neither gap reopens subagent-to-subagent SEND capability** — Finding
+7's actual protected risk (unobservable side channel, a compromised
+subagent steering siblings) is a property of send, not visibility or
+proactive warning, and stays exactly as scoped.
+
+**Verification:** 4 new real-temp-`state.db` tests (cwd-collision-detection
+unit tests covering exact/subdirectory-overlap/unrelated/self-exclusion/
+none cases; integration tests exercising the actual `_build_child_agent`
+spawn path with the warning landing in the real `ephemeral_system_prompt`,
+plus the negative no-collision case) + 2 new toolset-gating regression
+tests + 1 toolset-naming test. Full targeted suite: 424/425 passing (the
+one failure is the same pre-existing environment issue from the prior
+entry, unrelated). **Live-verified end to end** in real concurrent
+background subagent processes: a second subagent dispatched into the same
+working directory as a still-running first subagent received the exact
+WARNING block in its own system prompt, quoted verbatim in its own
+summary, correctly citing the first subagent's id, owner session, status,
+and goal. Commit `12feba9d3`.
+
 ### Fork-only feature — 2026-08-11 (machine-wide subagent visibility, so concurrent sessions stop stomping on each other's file edits)
 
 **Context:** user runs multiple concurrent top-level Hermes sessions on one
