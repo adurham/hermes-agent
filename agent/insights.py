@@ -21,14 +21,26 @@ import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
+    format_cost_label,
     format_duration_compact,
     has_known_pricing,
 )
+
+
+def _fmt_est_cost(est_cost: float) -> str:
+    """Format an aggregate estimated cost via the shared cost-label helper.
+
+    Routes through ``format_cost_label`` so sub-cent aggregates render at
+    4dp instead of collapsing to "~$0.00" (#79220 bug class — the same
+    dishonesty this module's cost buckets exist to fix, #77223).
+    """
+    return format_cost_label(Decimal(str(est_cost)))
 
 
 
@@ -1030,6 +1042,29 @@ class InsightsEngine:
                 lines.append(
                     f"  {' ' * 19}  + {unknown_sessions} session(s) with unknown pricing (excluded)"
                 )
+        elif estimated > 0:
+            # No provider-billed figure and no fully-priced sessions to anchor
+            # an "Est. (this window)" line against, but there IS a nonzero
+            # estimate — surface it plainly so a sub-cent aggregate doesn't
+            # silently vanish (#79220 formatting fix reused via _fmt_est_cost).
+            lines.append(f"  Estimated:           {_fmt_est_cost(estimated)}")
+
+        # Included/Unknown bucket lines (#77223): subscription-included and
+        # unpriced sessions must be visible instead of silently collapsing
+        # to $0 or disappearing from the report entirely.
+        included_sessions = overview.get("included_cost_sessions") or 0
+        if included_sessions > 0:
+            lines.append(
+                f"  Included:            {included_sessions} session(s) "
+                f"(subscription — no provider invoice)"
+            )
+        if unknown_sessions > 0 and not (priced_sessions > 0 and estimated > 0):
+            # Only add a standalone Unknown line when it wasn't already
+            # folded into the "excluded" note on the Est. line above.
+            lines.append(
+                f"  Unknown:             {unknown_sessions} session(s) "
+                f"(no pricing data)"
+            )
 
         # Nothing authoritative and nothing priced — don't render the section.
         if not lines:
@@ -1096,6 +1131,7 @@ class InsightsEngine:
             lines.append("  " + "─" * 56)
             lines.extend(cost_lines)
             lines.append("")
+
 
         # Model breakdown
         if report["models"]:
@@ -1210,6 +1246,21 @@ class InsightsEngine:
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append("")
+
+        # Cost breakdown — surface buckets so included/unknown are visible
+        est_cost = o.get("estimated_cost", 0.0)
+        included = o.get("included_cost_sessions", 0)
+        unknown = o.get("unknown_cost_sessions", 0)
+        cost_parts: list[str] = []
+        if est_cost > 0:
+            cost_parts.append(f"{_fmt_est_cost(est_cost)} estimated")
+        if included > 0:
+            cost_parts.append(f"{included} included (subscription)")
+        if unknown > 0:
+            cost_parts.append(f"{unknown} unknown")
+        if cost_parts:
+            lines.append(f"**Cost:** {' | '.join(cost_parts)}")
+            lines.append("")
 
         # Models (top 5)
         if report["models"]:

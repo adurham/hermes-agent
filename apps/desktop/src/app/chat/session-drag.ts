@@ -51,8 +51,9 @@ import {
   $layoutTree,
   $treeDragging,
   type DropHint,
+  isMainStripPane,
   isSessionStripPane,
-  reorderTreePane,
+  reorderTreePanes,
   revealTreePane,
   SESSION_TILE_DRAG
 } from '@/components/pane-shell/tree/store'
@@ -90,13 +91,16 @@ function snapshotSurfaces(): SurfaceSnapshot[] {
   }))
 }
 
-/** A session may land in a zone only if it hosts a chat surface — never the
- *  sidebar/terminal zones. Returns the pane a stack anchors to. */
-function chatZonePane(groupId: string): null | string {
+/** A session may land in any zone hosting a MAIN tile — another chat stack, a
+ *  Browser tile, a page — never the sidebar/terminal zones. Returns the pane a
+ *  stack anchors to, plus whether the zone hosts a CHAT surface (only those
+ *  offer the link-to-composer center; a preview zone's center stacks). */
+function tileZoneHost(groupId: string): { chat: boolean; pane: string } | null {
   const tree = $layoutTree.get()
   const panes = tree ? (findGroup(tree, groupId)?.panes ?? []) : []
+  const pane = panes.find(isSessionStripPane) ?? panes.find(isMainStripPane)
 
-  return panes.find(isSessionStripPane) ?? null
+  return pane ? { chat: panes.some(isSessionStripPane), pane } : null
 }
 
 /**
@@ -119,7 +123,7 @@ export function startSessionDrag(
   let strips: StripSnapshot[] = []
   let surfaces: SurfaceSnapshot[] = []
   let composers: ZoneRect[] = []
-  let zoneHost = new Map<string, null | string>()
+  let zoneHost = new Map<string, ReturnType<typeof tileZoneHost>>()
 
   // The pane THIS session actually occupies on screen right now — the loaded
   // main session lives at 'workspace', every other open session at its own
@@ -166,7 +170,8 @@ export function startSessionDrag(
       strips = snapshotStrips()
       surfaces = snapshotSurfaces()
       composers = queryAllVisible('[data-slot="composer-root"]').map(snapRect)
-      zoneHost = new Map(zones.map(zone => [zone.id, chatZonePane(zone.id)]))
+      zoneHost = new Map(zones.map(zone => [zone.id, tileZoneHost(zone.id)]))
+      source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the
       // whole drop language (sheets, pills, caret, link overlay) lights up.
       $treeDragging.set(SESSION_TILE_DRAG)
@@ -207,7 +212,7 @@ export function startSessionDrag(
         // Exclude the tile's OWN tab from the slots so re-dropping it in its
         // home strip reorders cleanly (a no-op for a sidebar-row drag).
         const stack = slotBefore(strip.slots, x, ownPaneId)
-        split = { anchor: host, before: stack.before, pos: 'center' }
+        split = { anchor: host.pane, before: stack.before, pos: 'center' }
         link = null
 
         return { kind: 'group', groupId: zone.id, groupIds: [zone.id], pos: 'center', stack }
@@ -218,11 +223,16 @@ export function startSessionDrag(
       const pos = composers.some(rect => rectContains(rect, x, y)) ? 'center' : subZonePosition(zones, zone.id, x, y)
       const surface = surfaces.find(s => rectContains(s.rect, x, y))
 
-      if (pos === 'center') {
+      if (pos === 'center' && host.chat) {
         split = null
         link = surface?.composerTarget ?? 'main'
+      } else if (pos === 'center') {
+        // A preview/page zone has no composer to link to — its center stacks
+        // the session as a tab, same as dropping on the strip's tail.
+        split = { anchor: host.pane, pos: 'center' }
+        link = null
       } else {
-        split = { anchor: surface?.anchor ?? 'workspace', pos }
+        split = { anchor: surface?.anchor ?? host.pane, pos }
         link = null
       }
 
@@ -231,12 +241,12 @@ export function startSessionDrag(
 
     onCommit() {
       if (reorderStrip) {
-        // Slot -> index among the OTHER tabs (reorderTreePane inserts there).
+        // Slot -> index among the OTHER tabs (reorderTreePanes inserts there).
         const others = reorderStrip.slots.map(slot => slot.id).filter(id => id !== ownPaneId)
         const toIndex = reorderBefore ? others.indexOf(reorderBefore) : others.length
 
         if (toIndex >= 0) {
-          reorderTreePane(reorderStrip.groupId, ownPaneId, toIndex)
+          reorderTreePanes(reorderStrip.groupId, [ownPaneId], toIndex)
           reorderCommitHaptic()
         }
 
