@@ -48,7 +48,6 @@ FLOOR = 64 * 1024                     # = target; one internal constant
 _LADDER_GROWTH = 1.5
 _GROW_AT_OCCUPANCY = 0.85             # of the current window, at turn boundary
 SPEED_FLOOR_TOK_S = 6.0               # deepest measured spill bottomed near this
-_UMA_CTX_FRACTION = 0.25              # UMA guard: ctx mem <= 25% of unified
 _EARLY_COST_CTX_FRACTION = 0.15       # bounded early cost when weights spill
 
 # TARGET_WINDOW: the smallest ladder rung at which compression becomes the
@@ -91,20 +90,6 @@ class WindowDecision:
         return self.spill_bytes > 0
 
 
-def _uma_cap(profile: ModelProfile, budget: HardwareBudget) -> int | None:
-    if not budget.uma:
-        return None
-    cap_bytes = int(budget.total_device_bytes * _UMA_CTX_FRACTION)
-    # Largest window whose ctx fits the cap (monotone -> scan the ladder).
-    best = FLOOR
-    for rung in ladder(profile.n_ctx_train or FLOOR):
-        if ctx_bytes(profile, rung) <= cap_bytes:
-            best = rung
-        else:
-            break
-    return best
-
-
 def initial_window(profile: ModelProfile, budget: HardwareBudget,
                    *, flash_attention: bool = True,
                    overhead_bytes: int = 0) -> WindowDecision | PhysicsRefusal:
@@ -113,7 +98,7 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget,
     Zero-spill rung: weights + ctx + overhead fit usable VRAM entirely.
     Bounded-early-cost rung: weights already exceed VRAM; take the largest
     rung whose ctx stays <= ~15% of usable VRAM.
-    Floor everywhere, capped at native and the UMA guard.
+    Floor everywhere, capped at native.
 
     ``overhead_bytes``: runtime cost beyond weights+KV (RUNTIME_OVERHEAD
     plus the vision projector when one loads). Zero keeps this function
@@ -124,10 +109,7 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget,
         return refusal
 
     native = profile.n_ctx_train or FLOOR
-    uma_cap = _uma_cap(profile, budget)
-    rungs = [r for r in ladder(native) if uma_cap is None or r <= uma_cap]
-    if not rungs:
-        rungs = [min(FLOOR, native)]
+    rungs = ladder(native)
 
     reasons: list[str] = []
     best_zero_spill: int | None = None

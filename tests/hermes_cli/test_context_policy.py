@@ -230,12 +230,17 @@ def test_dense_on_small_card_holds_floor_and_spills():
     assert d.spilled
 
 
-def test_uma_guard_caps_context_memory():
+def test_uma_budget_caps_the_window_through_physics():
+    """Unified memory needs no special context rule: the budget already
+    encodes the constraint (usable = RAM minus headroom, ram_available=0),
+    so the ladder stops where weights + KV genuinely stop fitting."""
     p = hybrid(weights_gib=8, native=1024 * KIB)
-    unified = card(48, ram_gib=0, uma=True)
+    unified = card(38.4, ram_gib=0, uma=True)  # 48 GiB machine, 20% headroom
     d = initial_window(p, unified)
     assert isinstance(d, WindowDecision)
-    assert ctx_bytes(p, d.window) <= unified.total_device_bytes * 0.25 + 1
+    assert not d.spilled, "UMA budget must produce a resident decision"
+    need = 8 * GIB + ctx_bytes(p, d.window)
+    assert need <= unified.usable_vram_bytes
 
 
 # ── growth ───────────────────────────────────────────────────

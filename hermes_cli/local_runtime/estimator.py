@@ -75,9 +75,10 @@ class ModelProfile:
 class HardwareBudget:
     """Memory the physics check may budget against.
 
-    Budget-source rule: discrete cards may trust the device
-    query (V0LITE); UMA devices must budget from OS free physical memory
-    minus headroom (day 1 — the device query lies 3x). Callers construct
+    Budget-source rule: discrete cards may trust the device query
+    (measured honest); unified-memory devices must budget from OS free
+    physical memory minus headroom — their device queries have been
+    observed off by 3x. Callers construct
     this accordingly; the estimator just consumes it.
     """
 

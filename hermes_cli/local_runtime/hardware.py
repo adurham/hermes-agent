@@ -1,10 +1,10 @@
 """Live hardware budget probe.
 
-Budget-source rule: discrete cards may trust the device query
-(V0LITE — honest within rounding); UMA devices must budget from OS free
-physical memory minus headroom (day 1 — the device query lies 3x in both
-directions). The probe classifies the device and constructs the right
-HardwareBudget for the estimator.
+Budget-source rule: discrete cards may trust the device query (measured
+honest within rounding); unified-memory devices must budget from OS free
+physical memory minus headroom — their device queries have been observed
+off by 3x in both directions. The probe classifies the device and
+constructs the right HardwareBudget for the estimator.
 """
 
 from __future__ import annotations
@@ -21,8 +21,9 @@ _GIB = 1 << 30
 # 1 GiB is regressive on 8 GB cards and generous on 24 GB ones.
 _MARGIN_FLOOR = 512 << 20
 _MARGIN_FRACTION = 0.07
-# UMA heuristic: a "GPU" whose reported memory is within this fraction of
-# system RAM shares it (Apple Silicon, DGX/RTX Spark class).
+# UMA headroom: on unified-memory machines (Apple Silicon) the model shares
+# physical memory with the OS and every app, so budget from RAM minus this
+# fraction.
 _UMA_HEADROOM_FRACTION = 0.20
 
 
@@ -110,15 +111,6 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
                               ram_available_bytes=0, uma=True)
 
     total, free = vram
-    if ram_total and total >= ram_total * 0.9:
-        # Reported VRAM ≈ system RAM: UMA class (Spark). Never trust the
-        # device query here — OS physical memory minus headroom.
-        base = ram_total if planning else ram_avail
-        usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
-        return HardwareBudget(usable_vram_bytes=usable,
-                              total_device_bytes=total,
-                              ram_available_bytes=0, uma=True)
-
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
     base = total if planning else free
     return HardwareBudget(usable_vram_bytes=max(0, base - margin),
