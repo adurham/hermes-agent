@@ -794,6 +794,7 @@ def compute_toolset_availability(enabled_toolsets: List[str] = None) -> Dict[str
 def build_welcome_banner(console: "Console", model: str, cwd: str,
                          tools: List[dict] = None,
                          enabled_toolsets: List[str] = None,
+                         disabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
                          context_length: int = None,
@@ -808,6 +809,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         cwd: Current working directory.
         tools: List of tool definitions.
         enabled_toolsets: List of enabled toolset names.
+        disabled_toolsets: List of toolset names/ids the user has explicitly
+            disabled in config; these are hidden from the "unavailable" hints.
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
