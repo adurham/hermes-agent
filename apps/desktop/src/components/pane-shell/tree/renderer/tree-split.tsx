@@ -11,6 +11,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef, u
 
 import { beginSashDrag, endSashDrag } from '@/components/pane-shell/geometry'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
@@ -137,10 +138,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   const isCollapsed = (child: LayoutNode) => subtreeGone(child, trackCtx) || (isEmptyZone(child) && !editMode)
 
   // Min/max clamps come from a direct GROUP child's panes (the same clamps
-  // the app's Pane props express) — but ONLY when they can speak for the
-  // zone: a fixed track (pure sidebar stack) or a single-pane zone. A sidebar
-  // pane fronted in a mixed flex stack must not cap it. A fixed STACK
-  // aggregates its panes' clamps (largest-tenant semantics, mirroring the
+  // the app's Pane props express). Floors apply to every zone; caps only when
+  // they can speak for the whole zone: a fixed track (pure sidebar stack) or a
+  // single-pane zone — a sidebar pane fronted in a mixed flex stack must not
+  // cap it. Stacks aggregate clamps (largest-tenant semantics, mirroring the
   // max() track basis) — the active tab's caps must never resize the zone.
   const sizingFor = (child: LayoutNode, track: string | null): PaneSizing | null => {
     if (child.type === 'group') {
@@ -303,6 +304,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
       document.body.style.userSelect = 'none'
+      // Webview/iframe guests must not swallow the gesture — without this the
+      // drag froze the moment the pointer entered the in-app browser, so the
+      // seam could only shrink it a few px per press.
+      const releaseGuests = guardGuestPointers()
       // Suppress :root geometry-var writes for the gesture (see geometry.ts —
       // each one restyles the whole document; they republish on release).
       beginSashDrag()
@@ -368,13 +373,22 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       const resize = rafCoalesce(previewShift)
       let lastShift: null | number = null
+      let done = false
 
       const onMove = (ev: PointerEvent) => {
         lastShift = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
         resize.push(lastShift)
       }
 
+      // Ends through several racing paths (pointerup, pointercancel, window
+      // blur, lostpointercapture — releasePointerCapture below fires the
+      // latter re-entrantly), so it must run exactly once.
       const cleanup = () => {
+        if (done) {
+          return
+        }
+
+        done = true
         resize.finish()
 
         if (lastShift !== null) {
@@ -412,6 +426,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         // Geometry vars re-enable AFTER the final store commit above, so the
         // release publishes exactly one fresh measurement.
         endSashDrag()
+        releaseGuests()
         document.body.style.cursor = restoreCursor
         document.body.style.userSelect = restoreSelect
 
@@ -424,12 +439,16 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         window.removeEventListener('pointermove', onMove, true)
         window.removeEventListener('pointerup', cleanup, true)
         window.removeEventListener('pointercancel', cleanup, true)
+        window.removeEventListener('blur', cleanup)
+        handle.removeEventListener('lostpointercapture', cleanup)
         persistTree()
       }
 
       window.addEventListener('pointermove', onMove, true)
       window.addEventListener('pointerup', cleanup, true)
       window.addEventListener('pointercancel', cleanup, true)
+      window.addEventListener('blur', cleanup)
+      handle.addEventListener('lostpointercapture', cleanup)
     },
     // trackCtx is derived state rebuilt per render; the drag captures it once.
     // eslint-disable-next-line react-hooks/exhaustive-deps

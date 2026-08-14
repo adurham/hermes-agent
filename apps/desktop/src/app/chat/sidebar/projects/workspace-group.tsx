@@ -1,21 +1,25 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { newSessionInProfile } from '@/store/profile'
+import { newSessionInProfile, selectProfile } from '@/store/profile'
 import { switchBranchInRepo } from '@/store/projects'
+import { $sessionProfilesUsage } from '@/store/session'
+import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
-import { SidebarRowStack } from '../chrome'
-import { SidebarLoadMoreRow } from '../load-more-row'
-import { orderByIds } from '../order'
+import { SidebarGroupRow, SidebarRowLead, SidebarRowLink, SidebarRowStack } from '../chrome'
+import { orderByIds, rankSessions } from '../order'
 import { SortableGroup } from '../reorderable-list'
 
-import { SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
+import { PROJECT_PREVIEW_COUNT, SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
 import type { SidebarSessionGroup } from './workspace-groups'
 import {
   WorkspaceAddButton,
@@ -80,6 +84,10 @@ export function SidebarWorkspaceGroup({
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
+  // Totals for the whole profile, not the loaded page — a selector so a refresh
+  // that leaves this profile's spend unchanged doesn't repaint its header.
+  const usage = useStoreSelector($sessionProfilesUsage, all => all[group.id])
+  const rankIds = useStore($sidebarSessionRankIds)
   // Empty worktree/branch lanes start collapsed — they only show a "No sessions
   // yet" placeholder, so defaulting them open just adds noise. Profile lanes and
   // lanes that already hold sessions default open.
@@ -89,20 +97,19 @@ export function SidebarWorkspaceGroup({
 
   // A manual per-lane drag order (when set) wins over the backend's default
   // (recency) order — same pattern as the flat Recents list, just scoped to
-  // this one lane instead of the whole sidebar.
-  const orderedSessions = useMemo(
-    () => (laneSessionOrder?.length ? orderByIds(group.sessions, session => session.id, laneSessionOrder) : group.sessions),
-    [group.sessions, laneSessionOrder]
+  // this one lane instead of the whole sidebar. Otherwise fall back to
+  // whatever the active sort key ranks (`rankSessions`).
+  const sessions = useMemo(
+    () =>
+      laneSessionOrder?.length
+        ? orderByIds(group.sessions, session => session.id, laneSessionOrder)
+        : rankSessions(group.sessions, rankIds),
+    [group.sessions, laneSessionOrder, rankIds]
   )
-
-  const loadedCount = orderedSessions.length
-  const visibleSessions = orderedSessions.slice(0, visibleCount)
-  // Profile groups can have more rows on the server than are loaded — the
-  // aggregator reports `hasMore` so the lane can offer another page without
-  // pricing an exact total per refresh. Workspace groups only ever page within
-  // what's already loaded.
-  const hiddenLoaded = Math.max(0, loadedCount - visibleSessions.length)
-  const hiddenCount = isProfileGroup && group.hasMore ? Math.max(hiddenLoaded, 1) : hiddenLoaded
+  // A profile previews the same handful a project does, and clicking its label
+  // is how you see the rest. Workspace groups page within what's loaded.
+  const visibleSessions = sessions.slice(0, isProfileGroup ? PROJECT_PREVIEW_COUNT : visibleCount)
+  const hiddenCount = isProfileGroup ? 0 : sessions.length - visibleSessions.length
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 
   // Sessions only drag-to-reorder when there's more than one visible AND the
@@ -126,18 +133,6 @@ export function SidebarWorkspaceGroup({
       size="0.75rem"
     />
   )
-
-  // Reveal already-loaded rows first; only hit the backend when the next page
-  // crosses what's been fetched for this profile.
-  const handleProfileLoadMore = () => {
-    const target = visibleCount + SIDEBAR_GROUP_PAGE
-
-    setVisibleCount(target)
-
-    if (target > loadedCount && group.hasMore) {
-      group.onLoadMore?.()
-    }
-  }
 
   const handleNewSession = async () => {
     // Reveal the lane the new session targets — an empty worktree/branch lane
@@ -183,38 +178,72 @@ export function SidebarWorkspaceGroup({
       )
     )
 
+  // Profile groups start a fresh session in that profile but keep the
+  // all-profiles browse view; workspace groups seed the new session's cwd.
+  // Main checkout lanes are branch-targeted.
+  const addButton = (onNewSession || isProfileGroup) && (
+    <WorkspaceAddButton label={s.newSessionIn(group.label)} onClick={() => void handleNewSession()} />
+  )
+
   return (
     <SidebarRowStack className={dragging ? 'relative z-10 bg-(--ui-sidebar-surface-background)' : undefined} ref={ref} style={style}>
-      <WorkspaceContextMenu onRemove={onRemove} path={group.path}>
-        <WorkspaceHeader
-          action={
-            (onNewSession || isProfileGroup || onRemove) && (
-              <div className="flex items-center">
-                {(onNewSession || isProfileGroup) && (
-                  <WorkspaceAddButton
-                    label={s.newSessionIn(group.label)}
-                    // Profile groups start a fresh session in that profile but keep
-                    // the all-profiles browse view; workspace groups seed the new
-                    // session's cwd. Main checkout lanes are branch-targeted.
-                    onClick={() => void handleNewSession()}
-                  />
-                )}
-                {onRemove && <WorkspaceMenu onRemove={onRemove} path={group.path} />}
-              </div>
-            )
+      {isProfileGroup ? (
+        // A profile heads its sessions the way a project does, so it takes the
+        // project row's shape rather than the tree caption the lanes below use.
+        <SidebarGroupRow
+          actions={addButton}
+          // Clicking a profile scopes the sidebar to it, the way clicking a
+          // project enters that project. Capitalized to sit level with the
+          // project labels it alternates with (`Home`, and whatever the user
+          // named theirs) — profile keys are stored lowercase.
+          label={
+            <SidebarRowLink
+              aria-label={t.profiles.switchToProfile(group.label)}
+              labelClassName="capitalize hover:text-foreground hover:underline"
+              onClick={() => selectProfile(group.id)}
+            >
+              {group.label}
+            </SidebarRowLink>
           }
-          dragAriaLabel={s.projects.reorder(group.label)}
-          dragging={dragging}
-          dragHandleProps={dragHandleProps}
-          icon={leadingIcon}
-          label={group.label}
-          onToggle={toggleOpen}
-          open={open}
-          reorderable={reorderable}
-          title={group.path ? displayPath(group.path) : undefined}
-          workingWhileCollapsed={workingWhileCollapsed}
+          lead={
+            <SidebarRowLead>
+              {/* Fills the lead cell like a project's icon does: the glyph's own
+                  16px would sit 2px proud of the 14px column. */}
+              <ProfileGlyph
+                className="size-full"
+                color={group.color ?? null}
+                isDefault={group.id === 'default'}
+                name={group.label}
+              />
+            </SidebarRowLead>
+          }
+          toggle={{ ariaLabel: s.projects.toggle(group.label, !open), onToggle: toggleOpen, open }}
+          totals={{ costUsd: usage?.cost_usd ?? 0, tokens: usage?.tokens ?? 0 }}
         />
-      </WorkspaceContextMenu>
+      ) : (
+        <WorkspaceContextMenu onRemove={onRemove} path={group.path}>
+          <WorkspaceHeader
+            action={
+              (onNewSession || onRemove) && (
+                <div className="flex items-center">
+                  {addButton}
+                  {onRemove && <WorkspaceMenu onRemove={onRemove} path={group.path} />}
+                </div>
+              )
+            }
+            dragAriaLabel={s.projects.reorder(group.label)}
+            dragging={dragging}
+            dragHandleProps={dragHandleProps}
+            icon={leadingIcon}
+            label={group.label}
+            onToggle={toggleOpen}
+            open={open}
+            reorderable={reorderable}
+            title={group.path ? displayPath(group.path) : undefined}
+            workingWhileCollapsed={workingWhileCollapsed}
+          />
+        </WorkspaceContextMenu>
+      )}
       {open && (
         <>
           {sessionsSortable ? (
@@ -222,20 +251,13 @@ export function SidebarWorkspaceGroup({
           ) : (
             rows
           )}
-          {hiddenCount > 0 &&
-            (isProfileGroup ? (
-              <SidebarLoadMoreRow
-                loading={Boolean(group.loadingMore)}
-                onClick={handleProfileLoadMore}
-                step={nextCount}
-              />
-            ) : (
-              <WorkspaceShowMoreButton
-                count={nextCount}
-                label={group.label}
-                onClick={() => setVisibleCount(count => count + SIDEBAR_GROUP_PAGE)}
-              />
-            ))}
+          {hiddenCount > 0 && (
+            <WorkspaceShowMoreButton
+              count={nextCount}
+              label={group.label}
+              onClick={() => setVisibleCount(count => count + SIDEBAR_GROUP_PAGE)}
+            />
+          )}
         </>
       )}
     </SidebarRowStack>
