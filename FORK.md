@@ -3,6 +3,20 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-14 (crash on every launch: `NameError: disabled_toolsets`)
+
+Every `hermes` invocation crashed in `show_banner()` →
+`build_welcome_banner()` with `NameError: name 'disabled_toolsets' is not
+defined`. Root cause: `banner.py`'s `_disabled_set = set(disabled_toolsets
+or [])` (added to suppress user-disabled toolsets from the "unavailable"
+hints) referenced a name that was never declared as a parameter of
+`build_welcome_banner` — only `enabled_toolsets` was — and neither call
+site in `cli.py` (warm snapshot path or cold path) passed it either, even
+though `self.disabled_toolsets` already existed and is threaded through
+everywhere else (`get_tool_definitions`, `AIAgent`, etc.). Commit
+`66a1471c0` adds `disabled_toolsets` as a parameter and passes
+`self.disabled_toolsets` from both `cli.py` call sites.
+
 ### Upstream sync — 2026-08-13 (v2026.8.3 → v2026.8.13, 1620 commits)
 
 Merged `v2026.8.13` into `main` via `sync/v2026.8.13`. 66 conflicted files
