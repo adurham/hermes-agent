@@ -157,11 +157,16 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         mdir = models_dir()
         mdir.mkdir(parents=True, exist_ok=True)
 
-        # Context policy: one launch decision per staged model,
-        # carried to the router via the preset INI.
+        # Context policy: one launch decision per staged model, carried to
+        # the router via the preset INI. Priced against CAPACITY, not live
+        # free VRAM: this runs while the outgoing server instance may still
+        # hold the card (restart, refresh after a download), and its memory
+        # is freed before the new instance loads anything. Pricing against
+        # live-free here once pinned a fitting model's weights to CPU
+        # because the probe saw the predecessor's VRAM as gone.
         preset_path = get_hermes_home() / "runtimes" / "llamacpp" / "presets.ini"
         try:
-            entries = generate_presets(mdir, probe_budget(), preset_path)
+            entries = generate_presets(mdir, probe_budget(planning=True), preset_path)
             for entry in entries:
                 if entry.refusal:
                     logger.warning("model refused by physics check: %s", entry.refusal)

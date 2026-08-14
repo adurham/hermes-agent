@@ -114,7 +114,11 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         server_idle = False
 
     decision = growth_decision(
-        profile, probe_budget(),
+        # Capacity budget, not live-free: growth executes via a server
+        # bounce, so the grown instance loads onto a freed card. Live-free
+        # here is distorted by the very model being grown — it reads its
+        # own residency as unavailable and vetoes rungs that fit.
+        profile, probe_budget(planning=True),
         current_window=current_window,
         session_tokens=session_tokens,
         measured_decode_tok_s=measured_decode_tok_s,
