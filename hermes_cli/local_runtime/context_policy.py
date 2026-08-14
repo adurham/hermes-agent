@@ -1,0 +1,233 @@
+"""Context policy — the window ladder for managed local models.
+
+One contract: any model runs at any window up to its native max; hardware
+and session depth only change tokens/s. Constants, not knobs — nothing in
+this module reads config.
+
+The policy encodes behavior measured on real hardware (llama.cpp,
+discrete NVIDIA GPUs on Windows/WDDM, and unified-memory devices):
+
+- Windows never over-allocates VRAM ahead of need. On WDDM, allocating
+  past residency slows decode roughly 9x even at identical conversation
+  depth — the driver silently demotes pages instead of failing. Every
+  window grant therefore re-fits against live memory at grant time.
+- Models launch at the largest window that fits entirely in GPU memory
+  (zero-spill) and grow toward their native max as the session needs
+  room, at request boundaries only.
+- Growth re-prefills the conversation into the larger window. Measured
+  cost is comparable to save/restore on discrete GPUs, and recurrent or
+  hybrid-attention models cannot rewind mid-sequence anyway, so
+  re-prefill is the only mechanism that works for every architecture.
+- Every recommended model gets at least a 64K window. When weights alone
+  exceed VRAM, the fit deliberately spills weights to host RAM to
+  protect that floor (measured: an explicit context size makes the fit
+  spill weights and hold the window rather than shrink it).
+- Below ~6 tok/s decode, growth stops and compression becomes the
+  default; deeper context is an explicit per-session choice. The deepest
+  measured host-spilled configuration bottomed out near this rate.
+- Spilled mixture-of-experts configs pin expert/FFN weights to host so
+  attention and KV stay GPU-resident — measured ~1.75x faster than
+  spilling layers naively at the same host byte count.
+- Speculative decoding (MTP) defaults on only for spilled configs, where
+  its speedup is largest (measured 1.43x spilled vs 1.35x resident).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from hermes_cli.local_runtime.estimator import (
+    HardwareBudget,
+    ModelProfile,
+    PhysicsRefusal,
+    ctx_bytes,
+    physics_check,
+)
+
+FLOOR = 64 * 1024                     # = target; one internal constant
+_LADDER_GROWTH = 1.5
+_GROW_AT_OCCUPANCY = 0.85             # of the current window, at turn boundary
+SPEED_FLOOR_TOK_S = 6.0               # deepest measured spill bottomed near this
+_UMA_CTX_FRACTION = 0.25              # UMA guard: ctx mem <= 25% of unified
+_EARLY_COST_CTX_FRACTION = 0.15       # bounded early cost when weights spill
+
+
+def ladder(native: int) -> list[int]:
+    """64K -> 96K -> 128K -> ... -> native (native always the last rung)."""
+    rungs: list[int] = []
+    step = float(FLOOR)
+    while step < native:
+        rungs.append(int(step))
+        step *= _LADDER_GROWTH
+    rungs.append(native)
+    return rungs
+
+
+@dataclass
+class WindowDecision:
+    window: int
+    spill_bytes: int              # weights displaced to host at this window
+    kv_on_gpu: bool
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def spilled(self) -> bool:
+        return self.spill_bytes > 0
+
+
+def _uma_cap(profile: ModelProfile, budget: HardwareBudget) -> int | None:
+    if not budget.uma:
+        return None
+    cap_bytes = int(budget.total_device_bytes * _UMA_CTX_FRACTION)
+    # Largest window whose ctx fits the cap (monotone -> scan the ladder).
+    best = FLOOR
+    for rung in ladder(profile.n_ctx_train or FLOOR):
+        if ctx_bytes(profile, rung) <= cap_bytes:
+            best = rung
+        else:
+            break
+    return best
+
+
+def initial_window(profile: ModelProfile, budget: HardwareBudget,
+                   *, flash_attention: bool = True) -> WindowDecision | PhysicsRefusal:
+    """The launch decision: largest cheap rung, never below the floor.
+
+    Zero-spill rung: weights + ctx fit usable VRAM entirely.
+    Bounded-early-cost rung: weights already exceed VRAM; take the largest
+    rung whose ctx stays <= ~15% of usable VRAM.
+    Floor everywhere, capped at native and the UMA guard.
+    """
+    refusal = physics_check(profile, budget, FLOOR, flash_attention=flash_attention)
+    if refusal:
+        return refusal
+
+    native = profile.n_ctx_train or FLOOR
+    uma_cap = _uma_cap(profile, budget)
+    rungs = [r for r in ladder(native) if uma_cap is None or r <= uma_cap]
+    if not rungs:
+        rungs = [min(FLOOR, native)]
+
+    reasons: list[str] = []
+    best_zero_spill: int | None = None
+    for rung in rungs:
+        need = profile.weights_bytes + ctx_bytes(profile, rung,
+                                                 flash_attention=flash_attention)
+        if need <= budget.usable_vram_bytes:
+            best_zero_spill = rung
+        else:
+            break
+
+    if best_zero_spill is not None and best_zero_spill >= min(FLOOR, native):
+        window = best_zero_spill
+        reasons.append(f"largest zero-spill rung ({window // 1024}K)")
+    else:
+        # Weights spill from turn one (steep-curve model on a small card) —
+        # hold the floor, bound the early ctx cost.
+        cap = int(budget.usable_vram_bytes * _EARLY_COST_CTX_FRACTION)
+        window = min(FLOOR, native)
+        for rung in rungs:
+            if rung < window:
+                continue
+            if ctx_bytes(profile, rung, flash_attention=flash_attention) <= cap:
+                window = rung
+            else:
+                break
+        reasons.append(f"floor held at {window // 1024}K; weights spill (deliberate price of the guarantee)")
+
+    kv = ctx_bytes(profile, window, flash_attention=flash_attention)
+    spill = max(0, profile.weights_bytes + kv - budget.usable_vram_bytes)
+    return WindowDecision(window=window, spill_bytes=spill,
+                          kv_on_gpu=kv <= budget.usable_vram_bytes,
+                          reasons=reasons)
+
+
+@dataclass
+class GrowthDecision:
+    action: str                   # "grow" | "hold" | "compress-default"
+    next_window: int | None = None
+    reason: str = ""
+
+
+def growth_decision(profile: ModelProfile, budget: HardwareBudget, *,
+                    current_window: int, session_tokens: int,
+                    measured_decode_tok_s: float | None,
+                    server_idle: bool,
+                    flash_attention: bool = True,
+                    occupancy_confirmed: bool = False) -> GrowthDecision:
+    """One growth evaluation, END-OF-TURN ONLY (caller guarantees the turn
+    boundary; recurrent state cannot rewind mid-sequence).
+
+    Gate ordering:
+    1. occupancy (~85%) — nothing to do before the edge;
+    2. native cap — the contract tops out at trained context;
+    3. idleness — growth re-grants only on an otherwise-idle
+       server (concurrency design);
+    4. speed floor — below it, compression becomes the default and deeper
+       is an explicit user choice;
+    5. re-fit against LIVE free memory (the rung must fit residency
+       NOW, not at launch time — over-allocation is the slow path).
+
+    ``occupancy_confirmed``: the caller has independently established that
+    the session is at its window's edge (the agent's compression gate fired
+    on its own threshold). Skips gate 1 so two separately-derived edge
+    definitions can't deadlock into compress-before-grow.
+    """
+    if not occupancy_confirmed and session_tokens < current_window * _GROW_AT_OCCUPANCY:
+        return GrowthDecision("hold", reason="session below growth occupancy")
+
+    native = profile.n_ctx_train or current_window
+    if current_window >= native:
+        return GrowthDecision("compress-default",
+                              reason="at native window; compression is the only move")
+
+    if not server_idle:
+        return GrowthDecision("hold", reason="server busy; re-grant deferred to idle")
+
+    if measured_decode_tok_s is not None and measured_decode_tok_s < SPEED_FLOOR_TOK_S:
+        return GrowthDecision(
+            "compress-default",
+            reason=(f"decode {measured_decode_tok_s:.1f} tok/s below the "
+                    f"~{SPEED_FLOOR_TOK_S:.0f} tok/s floor; growth is now an "
+                    "explicit per-session choice"))
+
+    next_rung = next((r for r in ladder(native) if r > current_window), native)
+
+    # Re-fit against live free memory: allocation beyond residency is the
+    # slow path, so a rung that no longer fits doesn't get granted.
+    kv = ctx_bytes(profile, next_rung, flash_attention=flash_attention)
+    total_need = profile.weights_bytes + kv
+    if total_need > budget.usable_vram_bytes + budget.ram_available_bytes:
+        return GrowthDecision("compress-default",
+                              reason="next rung exceeds physics; compression instead")
+
+    return GrowthDecision("grow", next_window=next_rung,
+                          reason=f"rung {current_window // 1024}K -> {next_rung // 1024}K")
+
+
+def spill_overrides(profile: ModelProfile) -> list[str]:
+    """-ot placement for spilled configs: expert/FFN weights to host so
+    attention + KV stay GPU-resident. MoE gets the expert pattern;
+    hybrids push recurrent-layer FFNs (their n_head_kv==0 layers carry no
+    KV worth protecting)."""
+    if profile.moe:
+        return ["-ot", r"blk\.\d+\.ffn_.*_exps\.weight=CPU"]
+    if profile.recurrent_layer_count:
+        return ["-ot", r"blk\.\d+\.ffn_.*\.weight=CPU"]
+    return []  # dense: fit's back-to-front layer cut is the only axis
+
+
+def launch_args(profile: ModelProfile, decision: WindowDecision, *,
+                flash_attention: bool = True,
+                mtp_capable: bool = False) -> list[str]:
+    """Per-model launch flags from a window decision. Explicit -c puts fit
+    into spill-weights-and-hold-ctx; q8 KV cache wherever flash attention
+    exists; -ot placement and MTP spec decode on spilled configs."""
+    args = ["-c", str(decision.window)]
+    if flash_attention:
+        args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
+    if decision.spilled:
+        args += spill_overrides(profile)
+        if mtp_capable:
+            args += ["--spec-type", "draft-mtp"]
+    return args
