@@ -161,6 +161,30 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
     return entries
 
 
+def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEntry]:
+    """The launch decisions the running server was actually given, read
+    back from the preset INI (the INI is the record — it's what spawned
+    the children). Missing/unparseable file returns {}."""
+    import configparser
+
+    if preset_path is None:
+        from hermes_constants import get_hermes_home
+
+        preset_path = get_hermes_home() / "runtimes" / "llamacpp" / "presets.ini"
+    out: dict[str, PresetEntry] = {}
+    try:
+        parser = configparser.ConfigParser()
+        parser.read(preset_path, encoding="utf-8")
+        for section in parser.sections():
+            window = parser.getint(section, "ctx-size", fallback=0)
+            spilled = parser.has_option(section, "override-tensor")
+            out[section] = PresetEntry(model_id=section, window=window,
+                                       spilled=spilled)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("preset read-back failed: %s", exc)
+    return out
+
+
 def _strip_part(stem: str) -> str:
     import re
 

@@ -380,6 +380,7 @@ export function LocalModelsSettings() {
             const residency = activateTarget ? status.loaded_models[activateTarget] : undefined
             const isLoaded = residency === 'loaded' || residency === 'ready'
             const isLoadingNow = residency === 'loading'
+            const livePlacement = activateTarget ? status.placement?.[activateTarget] : undefined
 
             const aJob = jobs.find(
               j => j.kind === 'model-activate' && j.status === 'running' && j.model_id === activateTarget
@@ -392,7 +393,23 @@ export function LocalModelsSettings() {
                 action={
                   model.downloaded ? (
                     <div className="flex items-center justify-end gap-2">
-                      {isLoaded && <Pill>{copy.loadedPill}</Pill>}
+                      {isLoaded && livePlacement && (
+                        <Tip
+                          label={
+                            livePlacement.spilled
+                              ? copy.placementSpilledTip
+                              : copy.placementResidentTip
+                          }
+                        >
+                          <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
+                            <Cpu className="mr-1 size-3" />
+                            {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
+                            {' · '}
+                            {livePlacement.spilled ? copy.placementSpilled : copy.placementResident}
+                          </Pill>
+                        </Tip>
+                      )}
+                      {isLoaded && !livePlacement && <Pill>{copy.loadedPill}</Pill>}
 
                       {isLoadingNow && (
                         <Pill>

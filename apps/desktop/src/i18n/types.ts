@@ -774,6 +774,10 @@ export interface Translations {
       activeDetail: string
       activeNotLoaded: string
       loadedPill: string
+      placementResident: string
+      placementSpilled: string
+      placementResidentTip: string
+      placementSpilledTip: string
       loadingPill: string
       ejectTip: string
       ejected: string

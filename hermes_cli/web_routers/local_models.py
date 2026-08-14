@@ -305,6 +305,7 @@ async def local_models_status():
     # from the live router when it's up; {} when down. Feeds the pane's
     # Loaded pills and eject buttons.
     loaded: Dict[str, str] = {}
+    placement: Dict[str, Any] = {}
     if running is not None:
         try:
             import urllib.request as _url
@@ -322,6 +323,39 @@ async def local_models_status():
                 # single most important thing the pane can show).
                 if m.get("status", {}).get("value") in ("loaded", "ready", "loading")
             }
+            # How each loaded model is actually running: the granted window
+            # from the child itself, and the plan's spill facts from the
+            # preset decision. The pane shows this verbatim — placement is
+            # the difference between 'fast' and 'why is my CPU busy', so it
+            # must be inspectable, not inferred from Task Manager.
+            from hermes_cli.local_runtime.presets import read_preset_decisions
+
+            decisions = read_preset_decisions()
+            for model_id in loaded:
+                entry_facts: Dict[str, Any] = {}
+                plan = decisions.get(model_id)
+                if plan is not None:
+                    entry_facts["window"] = plan.window
+                    entry_facts["window_label"] = f"{plan.window // 1024}K"
+                    entry_facts["spilled"] = plan.spilled
+                if loaded[model_id] in ("loaded", "ready"):
+                    try:
+                        preq = _url.Request(
+                            running["base_url"].rsplit("/v1", 1)[0]
+                            + f"/props?model={model_id}",
+                            headers={"Authorization":
+                                     f"Bearer {running.get('api_key', '')}"})
+                        with _url.urlopen(preq, timeout=3) as pr:
+                            props = json.loads(pr.read())
+                        n_ctx = (props.get("default_generation_settings", {})
+                                 .get("n_ctx"))
+                        if n_ctx:
+                            entry_facts["granted_window"] = int(n_ctx)
+                            entry_facts["granted_window_label"] = f"{int(n_ctx) // 1024}K"
+                    except Exception:  # noqa: BLE001
+                        pass
+                if entry_facts:
+                    placement[model_id] = entry_facts
         except Exception as exc:  # noqa: BLE001
             # Never silent: an empty dict here renders as 'Not in memory'
             # on a machine whose VRAM is visibly full.
@@ -353,6 +387,7 @@ async def local_models_status():
         "server_base_url": (running or {}).get("base_url"),
         "active_model_id": active_model_id,
         "loaded_models": loaded,
+        "placement": placement,
         "models": staged,
         "models_dir": str(mdir),
     }

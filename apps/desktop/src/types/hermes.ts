@@ -1161,6 +1161,14 @@ export interface StatusResponse {
 
 // ── Managed local runtime (llama.cpp) ──────────────────────────
 
+export interface LocalModelPlacement {
+  window?: number
+  window_label?: string
+  spilled?: boolean
+  granted_window?: number
+  granted_window_label?: string
+}
+
 export interface LocalModelsStatus {
   enabled: boolean
   tag: string
@@ -1172,6 +1180,7 @@ export interface LocalModelsStatus {
   server_base_url: string | null
   active_model_id: string | null
   loaded_models: Record<string, string>
+  placement?: Record<string, LocalModelPlacement>
   models: { id: string; size_bytes: number; size_label: string }[]
   models_dir: string
 }

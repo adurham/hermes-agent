@@ -907,6 +907,11 @@ export const en: Translations = {
       activeDetail: 'New chats use this model — it loads when you send your first message',
       activeNotLoaded: 'Loads on your first message',
       loadedPill: 'In memory',
+      placementResident: 'all on GPU',
+      placementSpilled: 'partly in RAM',
+      placementResidentTip: 'Running entirely in GPU memory at this context window — full speed.',
+      placementSpilledTip:
+        'Part of this model runs from system RAM — it works, but slower. A more compact build or a smaller context would fit fully.',
       loadingPill: 'Loading…',
       ejectTip: 'Free GPU memory (loads again on the next message)',
       ejected: 'Model unloaded — GPU memory freed.',
