@@ -3,6 +3,38 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-14 (bogus "Unknown toolsets: a2a" warning on every CLI launch)
+
+`HermesCLI.__init__`'s toolset-validation block (`cli.py`, right after
+`self.disabled_toolsets` is set) ran `validate_toolset()` against every
+configured toolset in `platform_toolsets.cli` before plugin discovery had
+run. Plugin discovery (`hermes_cli.plugins.discover_plugins()`) is what
+registers the bundled `a2a` platform plugin's client toolset in the live
+tool registry (see `tests/plugins/test_a2a_cli_tui_toolset.py` / #78050);
+it normally only fires as a side effect of importing `model_tools.py`,
+which hadn't happened yet at this point in `HermesCLI.__init__`. Result:
+`validate_toolset("a2a")` returned `False` and every launch with `a2a` in
+`platform_toolsets.cli` printed a false-positive
+`Warning: Unknown toolsets: a2a` — the toolset and its tools
+(`a2a_call`/`a2a_discover`/`a2a_list`/`a2a_history`/`a2a_orchestrate`) were
+never actually broken, just not yet registered at validation time.
+
+**Fix:** call `discover_plugins()` (idempotent, already the established
+pattern used across `cli.py`/`model_tools.py`/`gateway/run.py`/etc. per
+`AGENTS.md`'s discovery-timing note) immediately before the validation
+loop, wrapped in try/except so a discovery failure degrades to the old
+behavior instead of crashing. `cli.py` only.
+
+**Verification:** `.venv/bin/python3 -c "from hermes_cli.plugins import
+discover_plugins; discover_plugins(force=True); from toolsets import
+validate_toolset; print(validate_toolset('a2a'))"` — `True` (was `False`
+pre-fix, matching the observed warning). Ran
+`tests/plugins/test_a2a_cli_tui_toolset.py`: 7/8 passing both before and
+after this change — confirmed the 1 pre-existing failure
+(`test_full_resolve_after_eager_client_tools_is_idempotent`) is unrelated,
+via a clean `git worktree add` at `HEAD` (pre-fix) reproducing the same
+failure.
+
 ### Fix + feature — 2026-08-14 (bogus .env deprecation warning; hideable status-bar title badge)
 
 Two independent items found and fixed in the same session:

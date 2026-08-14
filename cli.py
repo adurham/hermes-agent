@@ -4923,6 +4923,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
 
         if toolsets and "all" not in toolsets and "*" not in toolsets:
+            # Plugin-registered toolsets (e.g. the bundled `a2a` platform
+            # plugin's client tools) only become known to validate_toolset()
+            # after discover_plugins() has run. Plugin discovery normally
+            # happens lazily as a side effect of importing model_tools.py,
+            # which may not have happened yet at this point in startup —
+            # causing a false-positive "Unknown toolsets" warning for valid
+            # plugin toolsets. Ensure discovery has run before validating.
+            try:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+            except Exception:
+                logger.debug("Plugin discovery failed before toolset validation", exc_info=True)
             # Validate each toolset — MCP server names are resolved via
             # live registry aliases (registered during discover_mcp_tools),
             # but discovery hasn't run yet at this point, so exclude them.
