@@ -3,6 +3,73 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Upstream sync — 2026-08-13 (v2026.8.3 → v2026.8.13, 1620 commits)
+
+Merged `v2026.8.13` into `main` via `sync/v2026.8.13`. 66 conflicted files
+across `agent/*.py`, CLI/gateway, `tests/`, `apps/desktop/` (TS/TSX),
+website docs, and build config (`package.json`, `pyproject.toml`,
+`package-lock.json`). `main`'s 238 commits of fork-only history (vs the
+`upstream/main` merge-base) at the new base.
+
+Highlights from upstream's 10 days of work: `model_overrides` per-model
+metadata config, a cost-display honesty pass (sub-cent labels, cost
+buckets — see below), desktop statusbar reset-to-defaults + shown-by-default,
+kanban wake/notify subscription fixes, cron script-timeout classification,
+memory provider-discovery parity fixes, and prompt-caching-capability
+honoring for model aliases.
+
+**Beyond mechanical conflict resolution, found and fixed 3 real
+merge-induced regressions that would NOT have surfaced without running the
+full test suite (not just the fork-specific batch) post-merge:**
+
+1. `tools/delegate_tool.py` — a leftover dead code path from a half-merged
+   batch-submission loop referenced an undefined `executor` variable
+   (`UnboundLocalError` on every batch delegate call). Root cause: the
+   region above the *real* `with DaemonThreadPoolExecutor(...) as executor:`
+   block still had the OLD single-loop submission logic from before an
+   earlier refactor split it into a staggered/lead-then-rest submission
+   scheme; the merge's auto-resolution kept both. Removed the dead block,
+   and while there, found the *real* `_submit_child` closure wasn't
+   forwarding `owner_session_id`/`owner_transport`/`owner_session_record`
+   (fork's cross-session steer-authority fields) at all — wired them
+   through.
+2. `tools/send_message_tool.py` — resolving the merge onto upstream's new
+   unified `resolve_send_target()` helper silently dropped the fork's
+   #78396 fix (pass the raw target ref through as chat_id for plugin
+   platforms with no channel-directory entry and no bespoke parser, e.g.
+   A2A context ids) — ported it into the new function.
+3. `agent/insights.py` — the fork's `_format_cost_lines` rewrite (adds a
+   provider-authoritative "Billed this period" line) had dropped upstream's
+   #77223 Included/Unknown cost-bucket lines entirely instead of unioning
+   them. Restored as a union: billed line (fork) + est./included/unknown
+   bucket lines (upstream), all gated correctly so an all-zero report still
+   renders nothing.
+
+Also found and fixed two "git auto-merged past the conflict markers and
+silently dropped fork-only code" cases — `tools/close_terminal_tool.py`
+and `tools/read_terminal_tool.py` lost their `check_close_terminal_requirements`
+/ `check_read_terminal_requirements` HERMES_DESKTOP gating functions (git
+merged the surrounding emoji-only conflict cleanly but the function
+definitions sat just outside the marked region and got treated as
+"upstream deleted this," even though upstream's side of the file simply
+never had them). Restored both plus their `env_var_enabled` import.
+
+apps/desktop conflicts followed the usual patterns (see
+`fork-upstream-sync` skill's desktop reference) plus one new
+cross-file-signature shape: `projectRootCwd()` changed from an id-based
+fork signature to a node-based upstream signature, and while 3 already-
+merged call sites picked up the new signature automatically, a 4th
+(`right-sidebar/terminal/persistent.tsx`, not itself in conflict) silently
+kept calling it with a raw string id — caught by `tsc --noEmit`, not by
+the merge. `tsc --noEmit` on `apps/desktop` is now part of the sync
+verification loop, not just Python test runs.
+
+**Verification:** full fork-specific test suite (404 tests, all pass) +
+broader regression batch across every touched Python module (1292 tests,
+1 pre-existing unrelated test-isolation flake confirmed to reproduce on
+unmodified pre-merge fork HEAD too) + `tsc --noEmit` on `apps/desktop`
+clean + every added/modified Python file `py_compile` clean (1091 files).
+
 ### Fork-only feature — 2026-08-11 (closed two real gaps in machine-wide subagent visibility, found by a second external review pass)
 
 **Context:** after shipping durable machine-wide subagent visibility
