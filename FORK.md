@@ -3,6 +3,37 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-14 (double-bracket bracketed-paste garble surviving to the input line)
+
+Live symptom (screenshot from a fresh CLI tab): the input line showed
+`[[200~00283138^[[201~` instead of a clean paste — a bracketed-paste
+wrapper where ESC was dropped asymmetrically across the start and end
+markers (`[[200~` at the start with no leading ESC/caret at all, but
+`^[[201~` at the end). `hermes_cli/input_sanitize.py` already has a
+purpose-built sanitizer for exactly this class of leak (real ESC form,
+caret-prefixed single-bracket form, and the fully-degraded `00~`/`01~`
+form — see #14692/#16263/#62557), wired into three call sites in
+`cli.py` (bracketed-paste handler, buffer-accept, submit path), but its
+boundary-anchored regexes only matched a single leading `[` before
+`200~`/`201~`, so this particular double-bracket variant slipped through
+untouched.
+
+**Fix:** widened `_BRACKETED_PASTE_BOUNDARY_START`/`_END` in
+`hermes_cli/input_sanitize.py` from `\[200~`/`\[201~` to `\[{1,2}200~`/
+`\[{1,2}201~` so both the single- and double-bracket forms are caught by
+the same boundary-anchored regex (still requires a word/line boundary
+before the start marker and a word/line boundary or terminator after the
+end marker, so a genuine literal like `some[[200~notreal text` is left
+untouched exactly as before). `hermes_cli/input_sanitize.py` only.
+
+**Verification:** added 2 regression tests to
+`tests/hermes_cli/test_input_sanitize.py` — the exact garbled string from
+the screenshot now strips to the clean payload, and the boundary-less
+literal case still survives unchanged. Full file: 7/7 passing (5
+pre-existing + 2 new). Broader sweep `tests/hermes_cli/test_input_sanitize.py
+tests/cli/ -k "paste or sanitize or input"`: 81 passed, 2 skipped (no
+regressions).
+
 ### Fix — 2026-08-14 (bogus "Unknown toolsets: a2a" warning on every CLI launch)
 
 `HermesCLI.__init__`'s toolset-validation block (`cli.py`, right after

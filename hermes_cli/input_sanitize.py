@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-_BRACKETED_PASTE_BOUNDARY_START = re.compile(r"(^|[\s\n>:\]\)])\[200~")
-_BRACKETED_PASTE_BOUNDARY_END = re.compile(r"\[201~(?=$|[\s\n<\[\(\):;.,!?])")
+_BRACKETED_PASTE_BOUNDARY_START = re.compile(r"(^|[\s\n>:\]\)])\[{1,2}200~")
+_BRACKETED_PASTE_BOUNDARY_END = re.compile(r"\[{1,2}201~(?=$|[\s\n<\[\(\):;.,!?])")
 _BRACKETED_PASTE_DEGRADED_START = re.compile(r"(^|[\s\n>:\]\)])00~")
 _BRACKETED_PASTE_DEGRADED_END = re.compile(r"01~(?=$|[\s\n<\[\(\):;.,!?])")
 
