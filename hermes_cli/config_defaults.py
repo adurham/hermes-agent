@@ -1189,6 +1189,13 @@ DEFAULT_CONFIG = {
         #   "both"             — Either key interrupts; Ctrl+C keeps its
         #                        double-press force-exit behaviour.
         "interrupt_key": "ctrl-c",
+        # FORK: the session-title badge right-aligned in the status bar (the
+        # yellow " ─ <title> " chip, styled via the status-bar-session-title
+        # skin key). Set False to hide it — the rest of the status bar is
+        # unaffected; this only gates the auto-generated/typed session title
+        # display, not title generation itself (session titles are still
+        # saved and usable via /resume, `hermes -c`, etc.).
+        "status_bar_session_title": True,
         # When busy_input_mode="steer", suppress only the visible
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.

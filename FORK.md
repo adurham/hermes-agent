@@ -3,6 +3,35 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix + feature — 2026-08-14 (bogus .env deprecation warning; hideable status-bar title badge)
+
+Two independent items found and fixed in the same session:
+
+1. **`warn_deprecated_cwd_env_vars()` false-positived on every run.** It
+   checked `os.environ.get("TERMINAL_CWD")` and treated any hit as "found in
+   .env" — but `TERMINAL_CWD` legitimately lands in the process environment
+   from `cli.py`'s own config→env bridge (force-exported from
+   `config.yaml`'s `terminal.cwd` on every local-backend launch) and from
+   inherited shell/launchd/gateway parent environments, none of which mean
+   the user's `.env` file actually mentions it. Rewrote the function to read
+   `~/.hermes/.env` directly via `dotenv_values()` instead of trusting
+   `os.environ`. `hermes_cli/config.py`, tests rewritten in
+   `tests/hermes_cli/test_deprecated_cwd_warning.py` (4/4 passing, including
+   a regression case that reproduces the exact false-positive).
+2. **FORK: `display.status_bar_session_title` config toggle (default
+   `True`, preserves upstream behaviour).** The yellow right-aligned session-
+   title badge in the classic CLI's status bar (`status-bar-session-title`
+   skin key) had no way to hide it short of disabling title generation
+   entirely. Added a config-gated toggle: `HermesCLI._status_bar_session_title_visible`
+   read from `display.status_bar_session_title` at construction (same pattern
+   as the existing `_battery_visible`/`display.battery` toggle), consulted by
+   `_get_status_bar_session_title()` which now short-circuits to `""` when
+   disabled — title generation/persistence (`/resume`, `hermes -c`, etc.) is
+   untouched, only the status-bar display is gated. Set
+   `display: {status_bar_session_title: false}` in `config.yaml` to hide it.
+   `cli.py`, `hermes_cli/config_defaults.py`, 2 new tests in
+   `tests/cli/test_cli_status_bar.py` (29/29 passing).
+
 ### Fix — 2026-08-14 (crash on every launch: `NameError: disabled_toolsets`)
 
 Every `hermes` invocation crashed in `show_banner()` →

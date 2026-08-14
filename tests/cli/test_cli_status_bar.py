@@ -105,6 +105,31 @@ class TestCLIStatusBar:
 
         assert snapshot["session_title"] == "user-profiles"
 
+    def test_session_title_badge_hidden_when_disabled(self):
+        """FORK: display.status_bar_session_title=False hides the badge
+        entirely, without touching title generation/persistence."""
+        cli_obj = _make_cli()
+        cli_obj._status_bar_session_title_visible = False
+        cli_obj._pending_title = "weekly-digest"
+
+        text = cli_obj._build_status_bar_text(width=80)
+
+        assert "weekly-digest" not in text
+        # No badge segment means the bar should just be the plain content,
+        # not padded/right-aligned to make room for one.
+        assert not text.endswith(" ")
+
+    def test_session_title_badge_shown_by_default(self):
+        """Default (attribute absent, matching a freshly-constructed real
+        HermesCLI before __init__ sets it) must preserve upstream behaviour."""
+        cli_obj = _make_cli()
+        assert not hasattr(cli_obj, "_status_bar_session_title_visible")
+        cli_obj._pending_title = "weekly-digest"
+
+        text = cli_obj._build_status_bar_text(width=80)
+
+        assert "weekly-digest" in text
+
     def test_context_style_thresholds(self):
         cli_obj = _make_cli()
 
