@@ -62,7 +62,7 @@ def test_big_card_gets_best_quality():
 
 def test_quality_monotone_in_vram():
     """More VRAM never selects a smaller build."""
-    entry = catalog_by_id()["qwen3.6-27b"]
+    entry = catalog_by_id()["qwen3.8-27b"]
     sizes = []
     for vram in (8, 12, 16, 24, 32, 48):
         choice = select_variant(entry, budget(vram))
@@ -74,7 +74,7 @@ def test_quality_monotone_in_vram():
 def test_small_card_gets_q4_spilled_never_below():
     """8 GiB card + 27B: nothing zero-spills. The floor holds — the
     selector offers Q4 spilled (priced honestly), never a sub-Q4 build."""
-    entry = catalog_by_id()["qwen3.6-27b"]
+    entry = catalog_by_id()["qwen3.8-27b"]
     choice = select_variant(entry, budget(8))
     assert choice is not None
     assert not choice.zero_spill
