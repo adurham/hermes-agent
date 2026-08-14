@@ -17,6 +17,16 @@ class TestStripLeakedBracketedPasteWrappers:
         text = "literal[200~tag and literal[201~tag should stay"
         assert strip_leaked_bracketed_paste_wrappers(text) == text
 
+    def test_strips_double_bracket_variant_from_new_tab_startup_race(self):
+        # Seen live: a new CLI tab's startup race dropped ESC asymmetrically
+        # across the paste-wrapper start/end markers, leaving a literal
+        # "[[200~...^[[201~" in the input buffer instead of a clean paste.
+        assert strip_leaked_bracketed_paste_wrappers("[[200~00283138^[[201~") == "00283138"
+
+    def test_does_not_strip_double_bracket_form_without_boundary(self):
+        text = "some[[200~notreal text"
+        assert strip_leaked_bracketed_paste_wrappers(text) == text
+
 
 class TestCollapseRepeatedInputArtifacts:
     def test_issue_62557_corruption_tail(self):
