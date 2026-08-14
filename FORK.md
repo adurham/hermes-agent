@@ -60,6 +60,76 @@ stash-and-reproduce method) — zero regressions from this fix.
 `tests/tools/test_voice_mode_playback_env_scrub.py`,
 `tests/tools/test_voice_thinking_sound.py`, `pyproject.toml`.
 
+### Fix — 2026-08-14 (startup typeahead corrupting the session: `^[[99;5u`/`[[200~` composer garbage, per-second cursor-jump overwrite, pastes as ctrl codes)
+
+**Live symptoms (kitty, post-v2026.8.13 sync):** fresh CLI tabs showed
+literal `^[[99;5u3~^[[3~` / `[[200~…^[[201~` garbage in the composer, the
+cursor jumped to the start of the input line and overwrote it on every
+tick of the status-bar seconds counter, and pasting (text or images)
+produced ctrl codes instead of content. One live session was captured
+with its tty stuck in **icanon+echo (cooked) while the prompt_toolkit app
+kept rendering** — in that state every keypress kernel-echoes as caret
+junk at the cursor, and the per-second repaint fights the echo, which is
+exactly the "cursor jumps and overwrites every second" report.
+
+**Root cause (reproduced under scripted kitty via remote control):**
+input typed/pasted into a still-booting tab lands while the tty is still
+cooked and bracketed-paste mode (2004) is off. Three consequences
+compound: (1) kitty sends such pastes UNWRAPPED (no `\x1b[200~`), or the
+wrapper arrives torn across read/flush boundaries — the parser then
+either types the wrapper into the composer verbatim or wedges paste mode
+so every later keystroke inserts raw ESC bytes as text; (2) the kernel
+caret-echoes the queued bytes onto the banner; (3) in tabs where a
+previous hermes died without popping the kitty keyboard protocol, Ctrl+C
+arrives as `\x1b[99;5u` (no SIGINT) and joins the garbage instead of
+interrupting. Which outcome you get is a millisecond race — the same
+scenario produced clean, torn, and verbatim results across runs — which
+is why the earlier regex-level fixes (see 2026-08-14 entries below) kept
+"not working": they sanitized the submit path, not the display, and the
+race kept finding new byte boundaries. The v2026.8.13 sync widened the
+exposure (fast-chat-launch reordering, OSC 11 DA1-fence read window 0.1s
+→ 1s + 50ms drain, warm-banner background threads), which is why this
+"suddenly" became a daily problem.
+
+**Fixes (all `cli.py`):**
+1. `_query_osc11_background()` no longer eats typeahead: it skips the
+   query entirely when stdin already has pending bytes, restores with
+   TCSADRAIN (preserving queued input) when the DA1 fence closed with a
+   parsed payload, and only keeps the scrubbing TCSAFLUSH + 50ms drain on
+   the degraded exits (fence-without-payload, deadline, read error).
+2. One-time startup flush: immediately before the prompt_toolkit app
+   starts, any bytes already queued on stdin (FIONREAD) are discarded
+   with a visible "Discarded N byte(s) typed before the prompt was
+   ready" notice. Deterministic: nothing typed before the prompt exists
+   can corrupt the session. Tradeoff: early typeahead is dropped rather
+   than preserved — revisit if it annoys in practice.
+3. Raw-mode watchdog thread: samples termios every 2s while the app
+   claims to be running normally (guards: `_running_in_terminal`,
+   `_command_running`, double-sample requirement) and, if the tty is
+   found cooked, re-enters raw mode via prompt_toolkit's own `raw_mode`
+   context, resets the renderer, and repaints. Directly heals the
+   stuck-cooked-while-rendering state captured live.
+
+**Not fixed here:** stale kitty keyboard-protocol stack levels left in a
+tab by a hard-killed hermes (they make Ctrl+C non-interrupting during
+startup in that tab). Popping blindly at startup would strip a level
+pushed by a legitimate host TUI (vim/neovim terminals push the protocol),
+so no auto-pop. Recovery for a polluted tab: `printf '\x1b[<u'` or close
+the tab.
+
+**Verification:** `tests/cli/test_cli_light_mode.py` — 2 new typeahead
+tests (pending-typeahead skips the query and preserves the bytes;
+typeahead after a clean fence survives the restore), 1 amended (the
+straggler-drain test now delivers the DA1 reply after the query starts,
+since replies cannot precede the query in reality and pre-loading one
+trips the new typeahead guard). Full sweep `tests/hermes_cli/
+test_input_sanitize.py tests/cli/ -k "paste or sanitize or input or
+light"`: 113 passed, 2 skipped, 0 failed. Live validation under scripted
+kitty (remote control driving paste/Ctrl+C/Delete into a booting tab
+with a pre-pushed keyboard-protocol level, against a full clone of the
+real `~/.hermes`): 3/3 runs clean post-fix (garbage reproduced reliably
+pre-fix); normal post-prompt typing, paste, and Ctrl+C-clear unaffected.
+
 ### Fix — 2026-08-14 (double-bracket bracketed-paste garble surviving to the input line)
 
 Live symptom (screenshot from a fresh CLI tab): the input line showed

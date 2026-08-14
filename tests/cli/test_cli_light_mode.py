@@ -252,11 +252,20 @@ class TestOsc11DrainGuard:
         for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
             monkeypatch.delenv(v, raising=False)
 
-        # DA1 answered immediately (herdr-style: OSC 11 swallowed) — main
-        # loop exits fast — then a straggler payload lands during teardown.
-        os.write(write_fd, b"\x1b[?62;22c")
-
+        # DA1 answered almost immediately (herdr-style: OSC 11 swallowed) —
+        # main loop exits fast — then a straggler payload lands during
+        # teardown.  The reply is written from a thread shortly AFTER the
+        # function starts (replies can never precede the query in reality;
+        # pre-loading it would trip the typeahead guard, which correctly
+        # treats any pre-query bytes as the user's).
         import threading
+
+        def da1_reply():
+            import time
+            time.sleep(0.01)
+            os.write(write_fd, b"\x1b[?62;22c")
+
+        threading.Thread(target=da1_reply, daemon=True).start()
 
         def straggler():
             import time
@@ -272,6 +281,83 @@ class TestOsc11DrainGuard:
         import select
         r, _, _ = select.select([read_fd], [], [], 0)
         assert not r, "drain loop should have consumed the straggler bytes"
+
+        os.close(read_fd)
+        os.close(write_fd)
+
+    def _typeahead_fixture(self, cli_mod, monkeypatch):
+        import os, termios, tty as _tty
+
+        read_fd, write_fd = os.pipe()
+        fake_attrs = [0, 0, 0, 0, 0, 0, [b'\x00'] * 32]
+        monkeypatch.setattr(termios, "tcgetattr", lambda fd: fake_attrs)
+        monkeypatch.setattr(termios, "tcsetattr", lambda fd, when, attrs: None)
+        monkeypatch.setattr(_tty, "setcbreak", lambda fd: None)
+        monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(cli_mod.sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(cli_mod.sys.stdin, "fileno", lambda: read_fd, raising=False)
+        for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
+            monkeypatch.delenv(v, raising=False)
+        return read_fd, write_fd
+
+    def test_pending_typeahead_skips_query_and_preserves_bytes(
+        self, cli_mod, monkeypatch
+    ):
+        """Bytes already queued before the query (user typed/pasted into a
+        still-booting tab) must short-circuit the whole probe: no query is
+        written, nothing is read, and the typeahead survives intact for
+        prompt_toolkit to consume as a normal (bracketed) paste."""
+        import os, select
+
+        read_fd, write_fd = self._typeahead_fixture(cli_mod, monkeypatch)
+        typeahead = b"\x1b[200~muscle-memory paste\x1b[201~"
+        os.write(write_fd, typeahead)
+
+        writes: list = []
+        monkeypatch.setattr(
+            cli_mod.sys.stdout, "write", lambda s: writes.append(s) or len(s),
+            raising=False,
+        )
+
+        result = cli_mod._query_osc11_background()
+        assert result is None
+        assert not any("\x1b]11;?" in str(w) for w in writes), (
+            "query must not be written when typeahead is pending"
+        )
+        r, _, _ = select.select([read_fd], [], [], 0)
+        assert r, "typeahead must remain queued"
+        assert os.read(read_fd, 128) == typeahead
+
+        os.close(read_fd)
+        os.close(write_fd)
+
+    def test_typeahead_after_clean_fence_is_preserved(self, cli_mod, monkeypatch):
+        """On the healthy path (fence closed, payload parsed) the restore
+        must not scrub or drain — typeahead arriving right after the fence
+        belongs to the user."""
+        import os, select, threading, time as _time
+
+        read_fd, write_fd = self._typeahead_fixture(cli_mod, monkeypatch)
+
+        typeahead = b"\x1b[200~typed right after boot\x1b[201~"
+
+        def replies_then_typeahead():
+            _time.sleep(0.01)
+            os.write(write_fd, b"\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\\x1b[?62;22c")
+            _time.sleep(0.02)
+            os.write(write_fd, typeahead)
+
+        threading.Thread(target=replies_then_typeahead, daemon=True).start()
+
+        result = cli_mod._query_osc11_background()
+        assert result == "#0C0C0C"
+
+        # Give the writer thread time to land the typeahead, then confirm
+        # the clean-path restore left it untouched (no drain window ran).
+        _time.sleep(0.05)
+        r, _, _ = select.select([read_fd], [], [], 0)
+        assert r, "typeahead after a clean fence must not be drained"
+        assert os.read(read_fd, 128) == typeahead
 
         os.close(read_fd)
         os.close(write_fd)
