@@ -51,6 +51,14 @@ SPEED_FLOOR_TOK_S = 6.0               # deepest measured spill bottomed near thi
 _UMA_CTX_FRACTION = 0.25              # UMA guard: ctx mem <= 25% of unified
 _EARLY_COST_CTX_FRACTION = 0.15       # bounded early cost when weights spill
 
+# What a load really costs beyond weights + KV: CUDA contexts and compute
+# buffers. Measured on a 32 GiB card: a model estimated at 29.3 GiB
+# (weights+KV) loaded at ~31.2 GiB resident and the server's own fit still
+# shaved a layer to CPU — ~1.5 GiB of runtime overhead plus the vision
+# projector when present. A fit that ignores this passes on paper and
+# spills in practice. Callers add mmproj bytes on top.
+RUNTIME_OVERHEAD_BYTES = int(1.5 * (1 << 30))
+
 
 def ladder(native: int) -> list[int]:
     """64K -> 96K -> 128K -> ... -> native (native always the last rung)."""
@@ -90,13 +98,18 @@ def _uma_cap(profile: ModelProfile, budget: HardwareBudget) -> int | None:
 
 
 def initial_window(profile: ModelProfile, budget: HardwareBudget,
-                   *, flash_attention: bool = True) -> WindowDecision | PhysicsRefusal:
+                   *, flash_attention: bool = True,
+                   overhead_bytes: int = 0) -> WindowDecision | PhysicsRefusal:
     """The launch decision: largest cheap rung, never below the floor.
 
-    Zero-spill rung: weights + ctx fit usable VRAM entirely.
+    Zero-spill rung: weights + ctx + overhead fit usable VRAM entirely.
     Bounded-early-cost rung: weights already exceed VRAM; take the largest
     rung whose ctx stays <= ~15% of usable VRAM.
     Floor everywhere, capped at native and the UMA guard.
+
+    ``overhead_bytes``: runtime cost beyond weights+KV (RUNTIME_OVERHEAD
+    plus the vision projector when one loads). Zero keeps this function
+    pure physics for decision-table tests; production callers pass it.
     """
     refusal = physics_check(profile, budget, FLOOR, flash_attention=flash_attention)
     if refusal:
@@ -111,8 +124,8 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget,
     reasons: list[str] = []
     best_zero_spill: int | None = None
     for rung in rungs:
-        need = profile.weights_bytes + ctx_bytes(profile, rung,
-                                                 flash_attention=flash_attention)
+        need = (profile.weights_bytes + overhead_bytes
+                + ctx_bytes(profile, rung, flash_attention=flash_attention))
         if need <= budget.usable_vram_bytes:
             best_zero_spill = rung
         else:

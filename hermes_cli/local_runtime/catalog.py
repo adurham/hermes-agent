@@ -48,7 +48,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-from hermes_cli.local_runtime.context_policy import FLOOR
+from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget,
     LayerKind,
@@ -165,16 +165,18 @@ def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice
     3. None: even Q4 fails physics (true refusal).
     """
     floor_kv = None
+    overhead = RUNTIME_OVERHEAD_BYTES + (entry.mmproj.size_bytes if entry.mmproj else 0)
     for variant in entry.variants:
         profile = entry.profile(variant)
         if floor_kv is None:
             floor_kv = ctx_bytes(profile, min(FLOOR, entry.n_ctx_train or FLOOR))
-        if variant.weights_bytes + floor_kv <= budget.usable_vram_bytes:
+        if (variant.weights_bytes + floor_kv + overhead
+                <= budget.usable_vram_bytes):
             return VariantChoice(variant=variant, zero_spill=True,
                                  reason_key="best-fits")
 
     smallest = min(entry.variants, key=lambda v: v.size_bytes)
-    needed = smallest.weights_bytes + (floor_kv or 0)
+    needed = smallest.weights_bytes + (floor_kv or 0) + overhead
     if needed <= budget.usable_vram_bytes + budget.ram_available_bytes:
         return VariantChoice(variant=smallest, zero_spill=False,
                              reason_key="smallest-fits-spilled")

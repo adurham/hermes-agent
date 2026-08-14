@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
+    RUNTIME_OVERHEAD_BYTES,
     WindowDecision,
     initial_window,
     launch_args,
@@ -86,7 +87,17 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
         except (ValueError, OSError) as exc:
             logger.warning("preset skip %s: %s", gguf.name, exc)
             continue
-        decision = initial_window(profile, budget)
+        # Overhead beyond weights+KV: runtime buffers, plus the vision
+        # projector when this model ships one (it loads beside the weights).
+        entry = find_entry_for_model(model_id)
+        mmproj_bytes = 0
+        if entry is not None and entry.mmproj is not None:
+            mmproj_path = assets_dir() / entry.mmproj.local_name
+            if mmproj_path.exists():
+                mmproj_bytes = entry.mmproj.size_bytes
+        decision = initial_window(
+            profile, budget,
+            overhead_bytes=RUNTIME_OVERHEAD_BYTES + mmproj_bytes)
         if isinstance(decision, PhysicsRefusal):
             entries.append(PresetEntry(model_id=model_id, window=0,
                                        spilled=False, refusal=decision.message))
@@ -105,9 +116,10 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
             if override and override > decision.window:
                 target = min(int(override), native)
                 kv = ctx_bytes(profile, target)
-                if (profile.weights_bytes + kv
-                        <= budget.usable_vram_bytes + budget.ram_available_bytes):
-                    spill = max(0, profile.weights_bytes + kv - budget.usable_vram_bytes)
+                need = (profile.weights_bytes + kv
+                        + RUNTIME_OVERHEAD_BYTES + mmproj_bytes)
+                if need <= budget.usable_vram_bytes + budget.ram_available_bytes:
+                    spill = max(0, need - budget.usable_vram_bytes)
                     decision = WindowDecision(
                         window=target, spill_bytes=spill,
                         kv_on_gpu=kv <= budget.usable_vram_bytes,
