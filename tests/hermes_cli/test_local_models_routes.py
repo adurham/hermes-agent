@@ -140,6 +140,17 @@ def test_download_job_lifecycle_with_sha_failure(client, monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen",
                         lambda *a, **k: FakeResponse(b"not the real body"))
 
+    # Pin a generous budget: variant selection prices against the machine
+    # running the test, and a GPU-less CI runner honestly refuses every
+    # build (409) — this test is about the download path, not selection.
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    budget = HardwareBudget(usable_vram_bytes=64 << 30,
+                            total_device_bytes=64 << 30,
+                            ram_available_bytes=64 << 30)
+    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+                        lambda **kw: budget)
+
     from hermes_cli.local_runtime.catalog import CATALOG
 
     entry_id = CATALOG[0].id

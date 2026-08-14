@@ -229,7 +229,8 @@ def verify_install(install_dir: Path, tag: str) -> str:
     """Run --version; require the tag's build number in the output.
     (The binary prints the tag WITHOUT the 'b' prefix.)"""
     exe = server_binary(install_dir)
-    out = subprocess.run([str(exe), "--version"], capture_output=True, text=True,
+    out = subprocess.run([str(exe), "--version"], capture_output=True,
+                         text=True, encoding="utf-8", errors="replace",
                          timeout=60, cwd=str(exe.parent))
     text = (out.stdout + out.stderr).strip()
     if tag.lstrip("b") not in text:

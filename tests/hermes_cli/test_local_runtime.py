@@ -232,11 +232,15 @@ def test_sha256_mismatch_rejects(tmp_path, monkeypatch):
     from hermes_cli.local_runtime import binaries
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    # Pre-place a wrong-content "download" so no network is touched.
+    # Pre-place a wrong-content "download" so no network is touched. The
+    # asset name is host-dependent (win/.zip, ubuntu/.tar.gz, macos/.zip)
+    # — resolve it the way the installer will, so the poisoned file is the
+    # one it verifies on every CI platform.
+    plan = binaries.resolve_assets("b10290", "cpu")
+    asset = plan.assets[0]
     downloads = binaries.runtimes_root() / "downloads"
     downloads.mkdir(parents=True)
-    asset = "llama-b10290-bin-win-cpu-x64.zip"
-    (downloads / asset).write_bytes(b"not the real zip")
+    (downloads / asset).write_bytes(b"not the real archive")
     with pytest.raises(BinaryResolutionError, match="sha256 mismatch"):
         binaries.ensure_runtime_installed(
             "b10290", "cpu",
