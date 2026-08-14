@@ -2079,18 +2079,32 @@ class _AnthropicCompletionsAdapter:
         # form is the documented Anthropic SDK passthrough for non-standard
         # request body keys; merge on top of whatever build_anthropic_kwargs
         # already produced (e.g. fast-mode ``speed``) so call-time settings
-        # survive. Two exclusions:
+        # survive. Three exclusions:
         #   - ``reasoning``: the OpenAI-shaped config dict is TRANSLATED into
         #     the native ``thinking`` field above (build_anthropic_kwargs);
         #     forwarding the raw field alongside would double-specify
         #     reasoning and 400 on strict gateways.
+        #   - ``response_format``: an OpenAI-chat-completions-only field
+        #     (json_object / json_schema structured output). The native
+        #     Anthropic Messages API has no such field and its SDK rejects
+        #     unknown extra_body keys outright — "response_format: Extra
+        #     inputs are not permitted". Callers that want structured output
+        #     from an Anthropic-routed auxiliary task (e.g. title_generation's
+        #     _TITLE_RESPONSE_FORMAT) must express it as a native tool/schema
+        #     via build_anthropic_kwargs, not through this OpenAI-shaped
+        #     passthrough. Silently dropping it here just falls back to the
+        #     prose-parsing path in title_generator._extract_title_text(),
+        #     which already exists for providers that "don't honor
+        #     response_format" — Anthropic-native is simply always in that
+        #     bucket.
         #   - ``_``-prefixed keys: private Hermes plumbing (_reasoning_config
         #     et al.), never wire fields.
         caller_extra_body = kwargs.get("extra_body")
         if caller_extra_body and isinstance(caller_extra_body, dict):
             passthrough = {
                 k: v for k, v in caller_extra_body.items()
-                if k != "reasoning" and not str(k).startswith("_")
+                if k not in ("reasoning", "response_format")
+                and not str(k).startswith("_")
             }
             if passthrough:
                 existing = anthropic_kwargs.get("extra_body") or {}
