@@ -48,7 +48,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES
+from hermes_cli.local_runtime.context_policy import (
+    FLOOR,
+    RUNTIME_OVERHEAD_BYTES,
+    TARGET_WINDOW,
+)
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget,
     LayerKind,
@@ -152,28 +156,47 @@ class VariantChoice:
 
     variant: QuantVariant
     zero_spill: bool
-    reason_key: str             # "best-fits" | "smallest-fits-spilled"
+    reason_key: str  # "best-large-window" | "best-fits" | "smallest-fits-spilled"
 
 
 def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice | None:
     """Best build for this hardware, per the ladder policy.
 
-    1. Highest-quality variant whose weights + 64K-floor KV zero-spill in
-       usable VRAM (quality is free when it fits — take it).
-    2. Else Q4 spilled — the floor guarantee stands, fit spills weights,
-       picker prices it honestly (slow beats lobotomized).
-    3. None: even Q4 fails physics (true refusal).
+    Ranked rules (each a guarantee the ones below may not break):
+    1. Never below Q4 — the ladder's quality floor.
+    2. Never below a 64K window — every session must be viable.
+    3. Prefer reaching TARGET_WINDOW — compression should be the
+       exception, not the routine.
+    4. Then maximize quality — free once the above hold.
+
+    Concretely: highest-quality variant that zero-spills at the target
+    window; else highest-quality at the 64K floor (small cards keep the
+    old behavior); else the smallest build spilled; else refusal. One
+    quality step is worth multiple context rungs (dynamic-quant deltas
+    between adjacent rungs are small; 64K vs 216K changes what a session
+    can do), but nothing outranks full residency.
     """
-    floor_kv = None
     overhead = RUNTIME_OVERHEAD_BYTES + (entry.mmproj.size_bytes if entry.mmproj else 0)
+    native = entry.n_ctx_train or FLOOR
+    floor_kv = None
+    target_kv = None
+    floor_pick: QuantVariant | None = None
     for variant in entry.variants:
         profile = entry.profile(variant)
         if floor_kv is None:
-            floor_kv = ctx_bytes(profile, min(FLOOR, entry.n_ctx_train or FLOOR))
-        if (variant.weights_bytes + floor_kv + overhead
+            floor_kv = ctx_bytes(profile, min(FLOOR, native))
+            target_kv = ctx_bytes(profile, min(TARGET_WINDOW, native))
+        if (variant.weights_bytes + target_kv + overhead
                 <= budget.usable_vram_bytes):
             return VariantChoice(variant=variant, zero_spill=True,
-                                 reason_key="best-fits")
+                                 reason_key="best-large-window")
+        if floor_pick is None and (variant.weights_bytes + floor_kv + overhead
+                                   <= budget.usable_vram_bytes):
+            floor_pick = variant
+
+    if floor_pick is not None:
+        return VariantChoice(variant=floor_pick, zero_spill=True,
+                             reason_key="best-fits")
 
     smallest = min(entry.variants, key=lambda v: v.size_bytes)
     needed = smallest.weights_bytes + (floor_kv or 0) + overhead

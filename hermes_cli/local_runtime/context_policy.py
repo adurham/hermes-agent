@@ -51,6 +51,14 @@ SPEED_FLOOR_TOK_S = 6.0               # deepest measured spill bottomed near thi
 _UMA_CTX_FRACTION = 0.25              # UMA guard: ctx mem <= 25% of unified
 _EARLY_COST_CTX_FRACTION = 0.15       # bounded early cost when weights spill
 
+# TARGET_WINDOW: the smallest ladder rung at which compression becomes the
+# exception rather than the routine. Measured over 161 real agentic
+# sessions: 66% complete uncompressed in 64K, 82% in 96K, 91% in 144K —
+# and the marginal gain past 144K (+6 points for 216K) falls below the
+# quality cost of stepping down another quant. Quant selection prefers
+# the best build that reaches this; the FLOOR remains the guarantee.
+TARGET_WINDOW = 144 * 1024
+
 # What a load really costs beyond weights + KV: CUDA contexts and compute
 # buffers. Measured on a 32 GiB card: a model estimated at 29.3 GiB
 # (weights+KV) loaded at ~31.2 GiB resident and the server's own fit still

@@ -512,7 +512,14 @@ async def local_models_catalog():
             "size_label": _human_gb(download_total),
             "variant_count": len(entry.variants),
         })
-        if choice.reason_key == "best-fits":
+        if choice.reason_key == "best-large-window":
+            best = entry.variants[0]
+            row["quant_reason"] = (
+                "Best quality build — runs fully on your GPU with a large context window"
+                if variant.quant == best.quant
+                else (f"Best balance for your GPU ({variant.quant}) — a larger "
+                      "build would shrink the context window"))
+        elif choice.reason_key == "best-fits":
             best = entry.variants[0]
             row["quant_reason"] = (
                 "Best quality build — runs fully on your GPU"

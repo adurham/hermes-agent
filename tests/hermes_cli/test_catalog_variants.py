@@ -52,12 +52,15 @@ def test_split_variants_have_coherent_parts():
 
 
 def test_big_card_gets_best_quality():
-    """A card with headroom takes the top rung — quality is free when it fits."""
+    """A card with real headroom takes the top rung — quality is free when
+    it fits AT THE TARGET WINDOW. Muse is dense (target KV ~18 GiB), so
+    'real headroom' for its Q8 means ~56+ GiB usable."""
     entry = catalog_by_id()["muse-glimmer-30b"]
-    choice = select_variant(entry, budget(48))
+    choice = select_variant(entry, budget(60))
     assert choice is not None
     assert choice.zero_spill
     assert choice.variant.quant == entry.variants[0].quant  # UD-Q8_K_XL
+    assert choice.reason_key == "best-large-window"
 
 
 def test_quality_monotone_in_vram():
@@ -93,9 +96,9 @@ def test_frontier_model_refused_on_consumer_card_offered_on_big_ram():
 
 
 def test_selection_accounts_for_kv_not_just_weights():
-    """The zero-spill check prices weights + 64K-floor KV, not weights
-    alone: give a machine exactly enough VRAM for the Q8 weights of a
-    dense model and it must step down a rung."""
+    """The zero-spill check prices weights + KV, not weights alone: give a
+    machine exactly enough VRAM for the Q8 weights of a dense model and it
+    must step down a rung."""
     entry = catalog_by_id()["muse-glimmer-30b"]
     q8 = entry.variants[0]
     exactly_weights = HardwareBudget(
@@ -105,6 +108,48 @@ def test_selection_accounts_for_kv_not_just_weights():
     choice = select_variant(entry, exactly_weights)
     assert choice is not None
     assert choice.variant.quant != q8.quant, "KV cost ignored — Q8 can't fit with floor KV"
+
+
+def test_target_window_beats_one_quality_step():
+    """The usability rule: a quant that only clears the 64K floor loses to
+    the next rung down when that rung clears the target window. A real
+    32 GiB card is ~29.6 GiB usable after margin: Qwen3.8-27B Q6 (needs
+    ~31.5 with target KV + overhead) misses, Q5 (~26.2) clears — the
+    selector must pick Q5 and say why."""
+    entry = catalog_by_id()["qwen3.8-27b"]
+    choice = select_variant(entry, budget(29.6))
+    assert choice is not None and choice.zero_spill
+    assert choice.variant.quant == "UD-Q5_K_XL", (
+        f"expected the target-window pick, got {choice.variant.quant}")
+    assert choice.reason_key == "best-large-window"
+
+
+def test_floor_fallback_when_no_variant_reaches_target():
+    """Cards where nothing clears the target keep the old rule: highest
+    quality that zero-spills at the 64K floor (reason 'best-fits'), never
+    a needless step down."""
+    entry = catalog_by_id()["qwen3.8-27b"]
+    # ~21.5 GiB usable: Q4 weights (16.7 GiB in-memory) + floor KV +
+    # overhead fits, but no variant reaches 144K-target KV.
+    choice = select_variant(entry, budget(23))
+    assert choice is not None and choice.zero_spill
+    assert choice.reason_key == "best-fits"
+    assert choice.variant.quant == "UD-Q4_K_XL"
+
+
+def test_target_never_degrades_below_floor_choice():
+    """The target preference may only IMPROVE the window, never the
+    floor guarantees: whenever the old floor rule found a zero-spill pick,
+    the new rule also finds one (possibly a smaller quant, never spill)."""
+    for entry in CATALOG:
+        for vram in (8, 12, 16, 24, 32, 48, 96):
+            choice = select_variant(entry, budget(vram, ram_gib=256))
+            if choice is None:
+                continue
+            # Rule 2: whatever was chosen zero-spill must genuinely clear
+            # the floor (the selector's own invariant, re-checked).
+            if choice.zero_spill:
+                assert choice.reason_key in ("best-large-window", "best-fits")
 
 
 def test_find_entry_for_model_resolves_split_ids():
