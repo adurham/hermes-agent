@@ -2332,13 +2332,37 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
 
 
 def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> None:
-    """Warn if MESSAGING_CWD or TERMINAL_CWD is set in .env instead of config.yaml.
+    """Warn if MESSAGING_CWD or TERMINAL_CWD is actually set IN THE .env FILE.
 
     These env vars are deprecated — the canonical setting is terminal.cwd
     in config.yaml.  Prints a migration hint to stderr.
+
+    Deliberately reads the .env file directly instead of os.environ:
+    TERMINAL_CWD is legitimately present in the process environment on every
+    local-backend run (cli.py force-exports it from config.yaml's terminal.cwd
+    every startup — see the env_mappings bridge a few hundred lines up in this
+    module's cli.py counterpart), and it also survives in a shell/launchd/
+    gateway parent's inherited environment across process boundaries. Checking
+    os.environ alone made this warning false-positive on every run whose
+    ancestor process happened to have TERMINAL_CWD set for any of those
+    unrelated reasons, even when the user's .env never mentioned it.
     """
-    messaging_cwd = os.environ.get("MESSAGING_CWD")
-    terminal_cwd_env = os.environ.get("TERMINAL_CWD")
+    from hermes_constants import get_hermes_home
+
+    env_path = get_hermes_home() / ".env"
+    file_vars: Dict[str, str] = {}
+    if env_path.exists():
+        try:
+            from dotenv import dotenv_values
+
+            file_vars = {k: v for k, v in dotenv_values(str(env_path)).items() if v}
+        except Exception:
+            return
+
+    messaging_cwd = file_vars.get("MESSAGING_CWD")
+    terminal_cwd_env = file_vars.get("TERMINAL_CWD")
+    if not messaging_cwd and not terminal_cwd_env:
+        return
 
     if config is None:
         try:

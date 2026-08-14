@@ -5237,6 +5237,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Battery read-out in the status bar (toggled via /battery, off by
         # default). Persisted to display.battery so it survives restarts.
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
+        # FORK: session-title badge (the yellow right-aligned chip) in the
+        # status bar. On by default (upstream behaviour); set
+        # display.status_bar_session_title: false in config.yaml to hide it.
+        self._status_bar_session_title_visible = bool(
+            CLI_CONFIG["display"].get("status_bar_session_title", True)
+        )
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -5983,7 +5989,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return snapshot
 
     def _get_status_bar_session_title(self) -> str:
-        """Return the current title without polling state.db on every repaint."""
+        """Return the current title without polling state.db on every repaint.
+
+        FORK: gated by display.status_bar_session_title (default True). When
+        disabled, always returns "" so the badge never renders — title
+        generation and persistence (used by /resume, `hermes -c`, etc.) are
+        untouched; this only hides the status-bar display.
+        """
+        if not getattr(self, "_status_bar_session_title_visible", True):
+            return ""
         pending = str(getattr(self, "_pending_title", None) or "").strip()
         session_id = str(getattr(self, "session_id", "") or "")
         if pending:
