@@ -95,6 +95,61 @@ Two independent items found and fixed in the same session:
    `cli.py`, `hermes_cli/config_defaults.py`, 2 new tests in
    `tests/cli/test_cli_status_bar.py` (29/29 passing).
 
+### De-fork audit — 2026-08-14 (post-v2026.8.13: checked fork-only work against this tag's upstream changes)
+
+Follow-up to the 2026-08-04 de-fork pass, scoped to what changed in both
+trees since: upstream's 235 `feat` commits in `v2026.8.3..v2026.8.13`, and
+the fork's own independent work landed 2026-08-04 through 2026-08-13 (the
+subagent-visibility/Transport-A family, credential-rebuild fix, two-tier
+cache_ttl, etc.).
+
+**Found and fixed — real merge-induced duplication in `agent/conversation_loop.py`:**
+the sync's conflict resolution on the "cancel a still-running background
+review before a new live turn starts" block (originally the fork's
+2026-07-22 fix, since **filed and merged upstream as PR #82070** — see that
+entry below) landed **twice**, back to back, at the top of
+`run_conversation()`. Byte-identical logic, only comment wording/tense
+differed between the two copies (evidence of the same hunk being applied
+from both the fork's pre-merge history and upstream's absorbed version
+without git recognizing them as the same change). Not a correctness bug —
+`interrupt()` on an already-cancelled/`None` review is a no-op — but dead
+weight in a file that's a top-3 merge-conflict hot spot every sync. Removed
+the second copy. `agent/conversation_loop.py` compiles clean;
+`test_background_review*.py` + list-shapes + session-isolation suites
+(42 tests) pass unchanged.
+
+**Found and reconciled — convergent-evolution overlap, no fix needed:**
+the fork built its own subagent live-orchestration control plane
+independently on 2026-08-10/11 (`85f18c79c3` cancel-by-id,
+`60e1f7517c` undelivered-steer surfacing, plus the machine-wide
+`list_agents` visibility feature). Upstream shipped the same capability
+three days later, dated 2026-08-13: `2a26693e22 feat(delegation): live
+orchestration of running subagents via delegate_task action param` —
+`action='list'/'steer'/'stop'`, functionally the same shape. The sync's
+own regression-fix notes (see "Upstream sync — 2026-08-13" below, item 1)
+already re-wired the fork's `owner_session_id`/`owner_transport`/
+`owner_session_record` fields onto upstream's version during conflict
+resolution, and `tools/delegate_tool.py::delegate_task()` is a single
+unified dispatch (`action == "list"/"stop"/"steer"`, lines ~365-460) — no
+competing/duplicate code paths found. Nothing further to do here; this was
+already correctly merged, just undocumented as a resolved overlap until
+now.
+
+**Re-checked, still correctly fork-only (nothing upstream in this tag
+covers them):** `agent.pin_anthropic_token` (upstream PR #82095 not yet
+merged), the `trafilatura` free `web_extract` backend (issue #78624 / PR
+#50456 still open, no matching commits in this range), opt-in toolset
+deferral via `tool_search` (issues #60181/#60184, PRs #60182/#63844/#67457
+— none landed), and `pets.py` in profile clone. No commits matching any of
+these trackers appear in `v2026.8.3..v2026.8.13`.
+
+**Not investigated further this pass** (would need per-file diffing beyond
+keyword search to rule out silently): the desktop/TS side of the fork
+(Miku pet voice pipeline, HUD-adjacent desktop fixes) against upstream's
+new HUD surface (`e8b83f37c8` and family) — the two are almost certainly
+non-overlapping (different windows/surfaces) but not formally confirmed
+line-by-line this session.
+
 ### Fix — 2026-08-14 (crash on every launch: `NameError: disabled_toolsets`)
 
 Every `hermes` invocation crashed in `show_banner()` →
