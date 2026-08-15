@@ -39,73 +39,114 @@ not assume flags/behavior are stable release-to-release. DeepSeek is not
 accepting external PRs to the core repo; the intended extension path is
 plugins, not core contributions.
 
-**This has NOT yet been smoke-tested against the exo cluster in this repo.**
-Before delegating any real task, run the Verification section below first.
+Installed and confirmed locally on 2026-08-15: `dsh` v0.1.0-rc.6, installed
+via `npm install -g @deepseek-ai/dsh` (531 packages, ~19s). Binary resolves
+to `~/.local/bin/dsh`. **Not yet run against the exo cluster** — installation
+and CLI shape are verified; live inference through exo is not.
 
 ## Prerequisites
 
-- Node.js 22.19+ or 24+, and pnpm (Ollama also bundles/auto-installs
-  `@deepseek-ai/dsh` on demand if you're going through an Ollama integration
-  path instead of DeepSeek's own package).
-- Install: `npm install -g @deepseek-ai/dsh` (or `npx @deepseek-ai/dsh web`
-  for a one-off run without a global install).
+- Node.js 22.19+ or 24+ (confirmed working on Node v22.23.1). No pnpm needed
+  for the npm-published package — `npm install -g @deepseek-ai/dsh` pulls a
+  prebuilt CLI, pnpm is only needed if building from source.
 - No API key needed for the exo path — you're pointing dsh at a local
   OpenAI-compatible endpoint, not DeepSeek's hosted API.
 
-## Primary interface is a Web UI, not a TUI
+## Real CLI shape (confirmed from `dsh --help` on the installed binary)
 
-Unlike Claude Code / Grok / OpenCode / Codex, dsh's default UX is a **local
-web app**, not a terminal TUI:
-
-```
-terminal(command="npx @deepseek-ai/dsh web", background=true, notify_on_complete=true)
-# Serves at http://127.0.0.1:3080 by default
-```
-
-There is community reporting of a **headless run mode** for CI/scripted use
-(no interactive TUI, launcher flags parsed before the app's own args), but the
-exact flag syntax is NOT confirmed against DeepSeek's own docs as of this
-skill's authoring — run `dsh --help` / `dsh web --help` live and confirm
-before trusting any specific flag. Do not hardcode unverified flags into
-automation.
+dsh is a **profile-boot launcher**, not a single fixed-mode CLI. It boots an
+"ordered stack of plugin-bundle patch layers" (a Cordis profile) and forwards
+remaining args to that profile's own app:
 
 ```
-terminal(command="dsh --help")
-terminal(command="dsh web --help")
+Usage: dsh [options] [command] [args...]
+
+Options:
+  -V, --version               output the version number
+  --profile <name>            the profile under $DSH_HOME/profiles to boot
+  --patch <path>               extra patch-list overlay applied after the profile layer
+  --dump-config                print the composed profile tree and exit
+  --dump-default-config        print the profile tree without user/--patch overlays
+
+Commands:
+  web [options] [args...]      boot the web profile (alias of --profile web)
+  plugin [options] [args...]   manage a profile's plugins via pnpm
 ```
+
+Three built-in profiles ship out of the box: `web` (the browser UI, default),
+`headless`, and `tui`. **Headless is real and confirmed** — this is the
+one relevant to Hermes delegation (analogous to `claude -p`, `grok -p`,
+`opencode run`):
+
+```
+terminal(command='dsh --profile headless "your task text here"', workdir="/path/to/project")
+```
+
+`dsh --profile headless --help` confirms: "Answer one task, print the final
+assistant message, and exit." No `--output-format json` flag was found in
+the headless profile's own `--help` as of rc.6 — treat plain-text stdout as
+the only confirmed output format; re-check `--help` before assuming JSON
+output exists in a later version.
+
+`$DSH_HOME` defaults to `~/.dsh` (confirmed: `~/.dsh/profiles/{web,headless,tui}`
+each have their own `node_modules`, `package.json`, `cordis.yml`,
+`cordis.patch.yml`). Default model per `dsh --profile headless
+--dump-default-config`: provider `deepseek-official`, model
+`deepseek-v4-flash` — i.e. out of the box it targets DeepSeek's own hosted
+API, not a local endpoint. That has to be overridden per the section below.
 
 ## Pointing dsh at the exo cluster
 
-dsh's provider system supports custom OpenAI-compatible endpoints via a
-provider seam (analogous to OpenCode's `provider.<id>.options.baseURL`
-pattern). In the Web UI: Settings → Models → Add a custom provider, and
-supply:
+The LLM seam is `@deepseek-ai/dsh-llm-pi-ai` (backed by the
+`@earendil-works/pi-ai` multi-provider adapter library) — confirmed present
+in the installed package tree. It takes a `providers` dict keyed by route
+name in the profile's settings, e.g.:
 
-- Provider ID: `exo` (or similar)
-- Base URL: the exo cluster's OpenAI-compatible endpoint
-- API protocol: `openai-completions`
-- Key: none needed for a local/LAN endpoint (check what the UI requires; a
-  placeholder value may be needed even if unchecked)
-- Model list: the served model name exactly as exo reports it (see the
-  Hermes custom-provider model-naming gotcha below — same class of bug can
-  hit dsh if its catalog name doesn't exact-match the instance name)
+```yaml
+- id: llm
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      exo:
+        displayName: exo cluster
+        api: openai-completions
+        baseURL: http://<exo-endpoint>/v1
+        # apiKeyEnv omitted entirely for an unauthenticated local endpoint
+        models:
+          - id: <exact-model-name-exo-reports>
+            name: DeepSeek-V4-Flash (exo)
+            contextWindow: <value>
+            maxTokens: <value>
+```
 
-**Pitfall carried over from Hermes' own custom-provider handling:** if dsh
-does any fuzzy/auto-correct matching between a configured model name and its
-own catalog (the way Hermes' `/model` switch does — see
+This is a **hand-declared route** (pi-ai's built-in catalog doesn't know
+about your exo cluster), so `baseURL`, `api: openai-completions`, and the
+full `models` list must be spelled out — omitting `models` on a hand-declared
+route leaves it with nothing to serve. Apply via `--patch <path-to-yaml>` or
+by editing the active profile's settings file — confirm the exact settings
+file location/precedence live (`dsh --dump-config` after a `--patch` should
+show whether it composed correctly) before trusting it blind.
+
+**Pitfall carried over from Hermes' own custom-provider handling:** if dsh's
+pi-ai adapter does any fuzzy/auto-correct matching between a configured model
+id and its catalog (the way Hermes' `/model` switch does — see
 `skill:exo-cluster-operations` `references/connecting-openai-clients-model-naming.md`),
-a near-miss name can silently get rewritten and 404 against the real exo
-instance name. Confirm the exact served model string against exo before
-trusting dsh's model dropdown.
+a near-miss `id` can silently get rewritten and 404 against the real exo
+instance name. The pi-ai README states an unknown model id fails fast with
+`LlmError('UNKNOWN_MODEL')` rather than silently substituting — better
+behavior than Hermes' own fuzzy-match bug, but confirm this holds in practice
+before trusting it.
 
 ## Suggested evaluation procedure (do this before adopting)
 
-1. Confirm dsh installs cleanly: `npx @deepseek-ai/dsh web --version` (or
-   equivalent — verify the real flag first).
-2. Add exo as a custom provider pointing at the cluster's OpenAI-compatible
-   endpoint, using the exact DSv4-Flash instance name exo serves.
-3. Run ONE real, bounded coding task through dsh against exo — same task
-   given to the current `claude`-fork delegation path — and compare:
+1. Already done: `dsh` installs cleanly via npm, `--profile headless --help`
+   confirms the one-shot task mode.
+2. Add exo as a hand-declared `providers.exo` route per the YAML above,
+   pointing at the cluster's OpenAI-compatible endpoint, using the exact
+   DSv4-Flash instance name exo serves. Confirm with `dsh --dump-config`.
+3. Run ONE real, bounded coding task through
+   `dsh --profile headless "..."` against exo — same task given to the
+   current `claude`-fork delegation path — and compare:
    - Tool-call reliability (did it actually invoke file/shell tools cleanly,
      or garble the reasoning/tool-call wire format the way the fork exists to
      patch around?)
@@ -130,10 +171,12 @@ path; it's a parallel, independently-invoked option.
 ## Pitfalls & Gotchas
 
 1. **Developer preview — expect breaking changes.** Re-verify flags/behavior
-   each time before scripting against a new dsh version.
-2. **Web UI first, headless unconfirmed.** Don't assume a `-p`/`exec`-style
-   one-shot flag exists with the same shape as Claude Code / Grok / Codex
-   until you've confirmed it against `dsh --help` on the installed version.
+   each time before scripting against a new dsh version (this skill was
+   written against v0.1.0-rc.6; a later rc may change the profile/flag shape).
+2. **Default model targets DeepSeek's hosted API, not exo.** Out of the box
+   `--profile headless` resolves to `deepseek-official`/`deepseek-v4-flash`.
+   You must configure the `providers.exo` route (see above) or it silently
+   calls DeepSeek's real API instead of the local cluster.
 3. **No external PRs accepted upstream.** If dsh is missing something for
    this use case, the fix is a plugin or a wrapper on the Hermes side, not a
    PR to `deepseek-ai/deepseek-harness`.
@@ -147,11 +190,20 @@ path; it's a parallel, independently-invoked option.
 
 ## Verification
 
-Before ANY real delegation, confirm:
-- `dsh` (or `npx @deepseek-ai/dsh`) actually launches and reaches a UI/CLI
-  prompt without error.
-- The custom provider pointed at exo returns real completions (not a 404/
-  connection error) — test with a trivial prompt first.
+Confirmed 2026-08-15 (before any exo cluster testing, per user request):
+- `npm install -g @deepseek-ai/dsh` succeeds cleanly (531 packages).
+- `dsh --version` → `0.1.0-rc.6`.
+- `dsh --help` and `dsh --profile headless --help` confirm the profile-boot
+  launcher shape and the one-shot headless task mode described above.
+- `dsh --profile headless --dump-default-config` confirms the LLM seam
+  (`@deepseek-ai/dsh-llm-pi-ai`), default provider/model
+  (`deepseek-official`/`deepseek-v4-flash`), and that `$DSH_HOME/profiles/`
+  exists with real per-profile config files.
+
+Still unverified — confirm before any real delegation:
+- A `providers.exo` route configured against the cluster's OpenAI-compatible
+  endpoint returns real completions (not a 404/connection error) — test with
+  a trivial prompt first.
 - A bounded real coding task produces correct, verifiable output — file
   changes actually present on disk, tests actually passing, not just a
   transcript that claims success.
