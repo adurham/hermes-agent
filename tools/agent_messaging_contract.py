@@ -288,8 +288,8 @@ class SendResult:
 # path, not as a separate check from the append (final sign-off requirement).
 # ---------------------------------------------------------------------------
 
-PER_MESSAGE_CAP_BYTES = 4 * 1024       # 4KB per send_agent_message/send_to_parent call
-COALESCED_PENDING_CAP_BYTES = 16 * 1024  # 16KB on the recipient's total pending queue
+PER_MESSAGE_CAP_BYTES = 16 * 1024      # 16KB per send_agent_message/send_to_parent call
+COALESCED_PENDING_CAP_BYTES = 64 * 1024  # 64KB on the recipient's total pending queue
 
 
 class MessageTooLargeError(ValueError):
