@@ -262,6 +262,49 @@ def _current_profile() -> str:
     return os.environ.get("HERMES_PROFILE", "default") or "default"
 
 
+def _session_id_suffix(session_id: str) -> str:
+    """Short, stable, human-readable discriminator taken from a session id.
+
+    Session ids look like ``20260815_234533_b49c59``; the trailing random
+    segment is the part that actually distinguishes two sessions started in
+    the same directory, so prefer it over an arbitrary hash.
+    """
+    tail = session_id.rsplit("_", 1)[-1] if session_id else ""
+    tail = tail or session_id
+    return tail[-6:] or "session"
+
+
+def _disambiguated_name(
+    conn: sqlite3.Connection, *, session_id: str, name: str, cutoff: float
+) -> str:
+    """Return ``name``, id-suffixed when another LIVE session already uses it.
+
+    Session display names are auto-derived (``/rename`` title, else the cwd
+    folder name), so two concurrently live sessions can independently land on
+    the identical string — which makes ``list_agents`` output ambiguous to a
+    human reading it. Addressing already fails closed on ambiguity
+    (``resolve_recipient``), so this is purely discovery/UX clarity.
+
+    Only rows whose heartbeat is still within the staleness window count as a
+    collision: historical/ended sessions keep whatever name they stored, and
+    a session that has since died must not permanently poison the name.
+    """
+    if not name:
+        return name
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM cross_session_registry "
+            "WHERE name = ? AND session_id <> ? AND last_heartbeat >= ? LIMIT 1",
+            (name, session_id, cutoff),
+        ).fetchone()
+    except Exception as exc:  # cosmetic feature; never block the heartbeat
+        logger.debug("cross_session name-collision check failed: %s", exc)
+        return name
+    if row is None:
+        return name
+    return f"{name} ({_session_id_suffix(session_id)})"
+
+
 def heartbeat_registry(
     *,
     session_id: str,
@@ -288,6 +331,12 @@ def heartbeat_registry(
     origin_value = session_origin.value if session_origin is not None else None
     try:
         with _transaction() as conn:
+            name = _disambiguated_name(
+                conn,
+                session_id=session_id,
+                name=name,
+                cutoff=ts - CROSS_SESSION_REGISTRY_REAP_SECONDS,
+            )
             conn.execute(
                 """INSERT INTO cross_session_registry
                        (session_id, name, cwd, platform, profile,

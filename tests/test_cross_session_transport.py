@@ -20,6 +20,7 @@ from tools.agent_messaging_contract import (
     AGENT_MESSAGE_MARKER_OPEN,
     CROSS_SESSION_REGISTRY_REAP_SECONDS,
     HELD_MESSAGE_EXPIRY_SECONDS,
+    PER_MESSAGE_CAP_BYTES,
     DeliveryOutcome,
     MessageTooLargeError,
     Participant,
@@ -189,6 +190,30 @@ class TestRegistry:
         assert len(live) == 1
         assert live[0].name == "alpha-renamed"
         assert live[0].last_heartbeat == 1100.0
+
+    def test_live_name_collision_gets_id_suffixed(self, cst):
+        """Two CONCURRENTLY live sessions must never carry the same display
+        name — list_agents output is otherwise ambiguous to a human."""
+        _register(cst, "20260815_234533_b49c59", "Exo cluster recovery", now=1000.0)
+        _register(cst, "20260815_234901_a1b2c3", "Exo cluster recovery", now=1000.0)
+        names = sorted(r.name for r in cst.list_registered_sessions(now=1000.0))
+        assert names == ["Exo cluster recovery", "Exo cluster recovery (a1b2c3)"]
+        assert len(set(names)) == 2
+
+    def test_no_suffix_when_the_colliding_session_is_stale(self, cst):
+        """Historical/ended sessions must not poison a name forever."""
+        _register(cst, "old", "shared-name", now=1000.0)
+        later = 1000.0 + CROSS_SESSION_REGISTRY_REAP_SECONDS + 1
+        _register(cst, "20260815_234901_a1b2c3", "shared-name", now=later)
+        live = cst.list_registered_sessions(now=later)
+        assert [r.name for r in live] == ["shared-name"]
+
+    def test_own_rename_to_same_name_is_not_a_self_collision(self, cst):
+        """A session re-heartbeating its own unchanged name stays unsuffixed."""
+        _register(cst, "s1", "alpha", now=1000.0)
+        _register(cst, "s1", "alpha", now=1060.0)
+        live = cst.list_registered_sessions(now=1060.0)
+        assert [r.name for r in live] == ["alpha"]
 
     def test_cron_sessions_never_register(self, cst):
         """They always refuse inbound, so a heartbeat cost is pointless."""
@@ -361,9 +386,19 @@ class TestNameResolution:
 
     def test_ambiguous_name_fails_closed(self, cst):
         """Round 3 finding 4 — name has no uniqueness constraint, so guessing
-        which of two same-named sessions was meant is not acceptable."""
+        which of two same-named sessions was meant is not acceptable.
+
+        heartbeat_registry() now id-suffixes a live-name collision, so the
+        duplicate is written directly here: the fail-closed guard must survive
+        any row that got a duplicate name by another route (legacy DB, manual
+        edit, or a race between two heartbeats).
+        """
         _register(cst, "s1", "same")
-        _register(cst, "s2", "same")
+        _register(cst, "s2", "other")
+        with cst._transaction() as conn:
+            conn.execute(
+                "UPDATE cross_session_registry SET name = 'same' WHERE session_id = 's2'"
+            )
         assert cst.resolve_recipient("same") is None
         # Unambiguous ids still work.
         assert cst.resolve_recipient("s1").session_id == "s1"
@@ -414,13 +449,16 @@ class TestSend:
         assert "refuse" in res.detail
 
     def test_oversize_body_raises_per_contract(self, cst):
+        """PER_MESSAGE_CAP_BYTES was raised 4KB->16KB (fe16fbb6a8) to fit real
+        cross-session status reports; this body must stay over whatever the
+        current cap is, not hardcode the old 4KB boundary."""
         _register(cst, "s1", "alpha")
         with pytest.raises(MessageTooLargeError):
             cst.send_message(
                 from_session_id="s0",
                 from_name="zero",
                 recipient="alpha",
-                body="x" * 5000,
+                body="x" * (PER_MESSAGE_CAP_BYTES + 1),
             )
 
     def test_hop_ceiling_rejects(self, cst, monkeypatch):
