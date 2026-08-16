@@ -959,3 +959,117 @@ class TestCwdCollisionDetection:
         )
         assert cst.find_cwd_collisions(None) == []
         assert cst.find_cwd_collisions("/repo") == []
+
+
+# ---------------------------------------------------------------------------
+# Sender-side delivery visibility
+# ---------------------------------------------------------------------------
+#
+# Regression coverage for the observed friction: a PM session sent many
+# messages to a worker session, the worker was killed, and the PM had NO
+# signal -- it only found out when a LATER send failed recipient resolution.
+# Every message before that could have silently gone nowhere.
+
+
+class TestSentMessageStatus:
+    def test_send_returns_a_durable_message_id(self, cst):
+        _register(cst, "sender", "sender", now=1000.0)
+        _register(cst, "worker", "worker", origin=SessionOrigin.ACP, now=1000.0)
+        result = cst.send_message(
+            from_session_id="sender",
+            from_name="sender",
+            recipient="worker",
+            body="hello",
+            now=1000.0,
+        )
+        assert result.message_id is not None
+        # The handle must actually address the row it claims to.
+        rows = cst.sent_message_status(
+            from_session_id="sender", message_id=result.message_id, now=1000.0
+        )
+        assert [r.message_id for r in rows] == [result.message_id]
+
+    def test_status_tracks_pending_then_delivered(self, cst, monkeypatch):
+        _register(cst, "sender", "sender", now=1000.0)
+        _register(cst, "worker", "worker", now=1000.0)
+        _insert_pending(cst, "sender", "worker", "hi", now=1000.0)
+
+        before = cst.sent_message_status(from_session_id="sender", now=1000.0)
+        assert [r.status for r in before] == [cst.STATUS_PENDING]
+        assert before[0].delivered_at is None
+        assert before[0].recipient_live is True
+
+        # No shipped origin defaults to accept, so set the accepting policy
+        # explicitly -- this test is about the delivered transition, not about
+        # which origin happens to accept.
+        monkeypatch.setattr(
+            cst, "resolve_inbound_policy", lambda **_kw: cst.POLICY_ACCEPT
+        )
+        cst.drain_inbox(
+            session_id="worker", session_origin=SessionOrigin.CLI, now=1001.0
+        )
+
+        after = cst.sent_message_status(from_session_id="sender", now=1001.0)
+        assert [r.status for r in after] == [cst.STATUS_DELIVERED]
+        assert after[0].delivered_at == 1001.0
+
+    def test_recipient_death_is_visible_while_message_still_pending(self, cst):
+        """The core gap. The recipient dies with the message never drained;
+        the sender must be able to see that WITHOUT making another send."""
+        _register(cst, "sender", "sender", now=1000.0)
+        _register(cst, "worker", "worker", now=1000.0)
+        _insert_pending(cst, "sender", "worker", "did you get this?", now=1000.0)
+
+        # Worker stops heartbeating (killed). Registry row is not yet reaped.
+        dead = 1000.0 + CROSS_SESSION_REGISTRY_REAP_SECONDS + 1
+
+        rows = cst.sent_message_status(from_session_id="sender", now=dead)
+        assert len(rows) == 1
+        # Still pending -- it was never delivered -- and the recipient is gone.
+        assert rows[0].status == cst.STATUS_PENDING
+        assert rows[0].recipient_live is False
+
+    def test_reaped_recipient_leaves_message_expired(self, cst):
+        _register(cst, "sender", "sender", now=1000.0)
+        _register(cst, "worker", "worker", now=1000.0)
+        _insert_pending(cst, "sender", "worker", "stranded", now=1000.0)
+
+        cst.reap_stale_registry(
+            now=1000.0 + CROSS_SESSION_REGISTRY_REAP_SECONDS + 1
+        )
+
+        rows = cst.sent_message_status(from_session_id="sender", now=2000.0)
+        assert rows[0].status == cst.STATUS_EXPIRED
+        assert rows[0].recipient_live is False
+        assert "never saw it" in rows[0].meaning
+
+    def test_denied_message_reports_denied_to_sender(self, cst, monkeypatch):
+        _register(cst, "sender", "sender", now=1000.0)
+        _register(cst, "worker", "worker", now=1000.0)
+        _insert_pending(cst, "sender", "worker", "nope", now=1000.0)
+        monkeypatch.setattr(
+            cst, "resolve_inbound_policy", lambda **_kw: cst.POLICY_REFUSE
+        )
+        cst.drain_inbox(
+            session_id="worker", session_origin=SessionOrigin.GATEWAY, now=1001.0
+        )
+        rows = cst.sent_message_status(from_session_id="sender", now=1001.0)
+        assert rows[0].status == cst.STATUS_DENIED
+        assert "Do not resend" in rows[0].meaning
+
+    def test_scoped_to_the_calling_sender_only(self, cst):
+        """A session may inspect its own sends and nothing else."""
+        _register(cst, "sender", "sender", now=1000.0)
+        _register(cst, "other", "other", now=1000.0)
+        _register(cst, "worker", "worker", now=1000.0)
+        _insert_pending(cst, "sender", "worker", "mine", now=1000.0)
+        _insert_pending(cst, "other", "worker", "theirs", now=1000.0)
+
+        rows = cst.sent_message_status(from_session_id="sender", now=1000.0)
+        assert len(rows) == 1
+        assert rows[0].to_session_id == "worker"
+        # No body field is exposed at all -- this is not a read channel.
+        assert not hasattr(rows[0], "body")
+
+    def test_empty_sender_id_returns_nothing(self, cst):
+        assert cst.sent_message_status(from_session_id="") == []

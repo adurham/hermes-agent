@@ -54,8 +54,11 @@ from tools.agent_messaging_contract import (
     TOOLSET_NAME_VISIBILITY,
 )
 from tools.cross_session_transport import (
+    STATUS_HELD,
+    STATUS_PENDING,
     list_registered_sessions,
     list_registered_subagents,
+    sent_message_status,
 )
 from tools.registry import registry, tool_error
 
@@ -157,7 +160,62 @@ def list_agents(*, agent: Any = None, **_kw) -> str:
             "Address a session by name, or by id when two sessions share a "
             "name (an ambiguous name is refused rather than guessed)."
         )
+    lines.extend(_sent_message_lines(caller_session_id, caller_is_subagent))
     return "\n".join(lines)
+
+
+def _sent_message_lines(caller_session_id: str, caller_is_subagent: bool) -> list:
+    """Delivery status of the caller's own recent cross-session sends.
+
+    This is the sender-visibility half of the tool. Previously a sender's
+    only feedback was the send-time "queued" string, so a recipient that died
+    with messages still queued was undetectable until a LATER send happened
+    to fail recipient resolution — every message before that could have gone
+    nowhere silently.
+
+    Reported here rather than as a separate tool: a sender checking on a
+    correspondent already calls list_agents to see who is alive, and the two
+    questions ("is it live" / "did my message land") are answered from the
+    same registry read. Per the footprint ladder, extend the existing tool
+    rather than add core surface.
+
+    Subagents are skipped: their sends go through Transport A, which has no
+    durable row to report on.
+    """
+    if caller_is_subagent or not caller_session_id:
+        return []
+    try:
+        sent = sent_message_status(from_session_id=caller_session_id, limit=10)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("list_agents sent-status lookup failed", exc_info=True)
+        return []
+    if not sent:
+        return []
+
+    # Undelivered + recipient gone is the case that used to be invisible, so
+    # it leads and is called out explicitly rather than left for the model to
+    # infer from a status word.
+    stranded = [
+        rec
+        for rec in sent
+        if rec.status in (STATUS_PENDING, STATUS_HELD) and not rec.recipient_live
+    ]
+    lines = ["", "Delivery status of your recent messages to other sessions:"]
+    for rec in sent:
+        suffix = ""
+        if rec in stranded:
+            suffix = "  <-- recipient is NO LONGER LIVE; it never saw this"
+        lines.append(
+            f"- id {rec.message_id} to {rec.to_session_id}: "
+            f"{rec.status} — {rec.meaning}{suffix}"
+        )
+    if stranded:
+        lines.append(
+            f"{len(stranded)} message(s) above were still undelivered when "
+            f"their recipient session died. Anything you were waiting on from "
+            f"that session will not arrive; do not keep waiting for a reply."
+        )
+    return lines
 
 
 LIST_AGENTS_SCHEMA: Dict[str, Any] = {
@@ -170,7 +228,11 @@ LIST_AGENTS_SCHEMA: Dict[str, Any] = {
         "goal) — check this before starting file-editing work to catch a "
         "working-directory collision with another concurrent session or "
         "subagent; a listed subagent id is NOT itself a valid "
-        "send_agent_message recipient unless it is your own child."
+        "send_agent_message recipient unless it is your own child. Also "
+        "reports the delivery status of your own recent send_agent_message "
+        "calls (delivered / still queued / expired), including an explicit "
+        "warning when a recipient session died before ever seeing your "
+        "message — check here before waiting any longer on a reply."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }

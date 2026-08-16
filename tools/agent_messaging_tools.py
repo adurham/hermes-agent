@@ -158,6 +158,13 @@ def _format_result(result: SendResult) -> str:
             "Note: queued means accepted for delivery, not that the recipient "
             "has read or acted on it."
         )
+    if result.message_id is not None:
+        # Give the model the durable handle AND tell it where to redeem the
+        # handle, otherwise it has an id with no discoverable use.
+        note += (
+            f"\nMessage id {result.message_id} — call list_agents to see "
+            f"whether this was delivered, expired, or is still queued."
+        )
     return f"{result.outcome.value}: {result.detail}\n{note}"
 
 
