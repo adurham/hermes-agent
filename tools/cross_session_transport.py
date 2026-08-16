@@ -966,7 +966,7 @@ def send_message(
                         "moments ago and was suppressed as a repeat."
                     ),
                 )
-            conn.execute(
+            cur = conn.execute(
                 """INSERT INTO cross_session_inbox
                        (from_session_id, from_name, to_session_id, body,
                         status, hop_count, created_at, expires_at)
@@ -982,6 +982,7 @@ def send_message(
                     expires_at,
                 ),
             )
+            message_id = int(cur.lastrowid or 0) or None
     except Exception as exc:
         logger.warning("cross_session send failed: %s", exc)
         return SendResult(
@@ -996,12 +997,136 @@ def send_message(
                 f"queued for '{rec.name}', which holds inbound messages for "
                 f"human approval. It will not be delivered unless approved."
             ),
+            message_id=message_id,
         )
     return SendResult(
         outcome=DeliveryOutcome.QUEUED_DURABLE,
         detail=f"queued for '{rec.name}'. Queued is not delivered — the "
         f"recipient receives it at its next drain checkpoint.",
+        message_id=message_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Sender-side delivery visibility
+# ---------------------------------------------------------------------------
+
+
+# Human-facing gloss per status, written from the SENDER's point of view.
+# The raw status words are recipient-centric and read ambiguously to a sender
+# ("expired" does not say *why*), so each one states what actually happened
+# and whether a retry is meaningful.
+_SENDER_STATUS_MEANING = {
+    STATUS_PENDING: (
+        "still queued — the recipient has not reached a drain checkpoint yet. "
+        "It is alive as far as the registry knows; wait rather than resend."
+    ),
+    STATUS_HELD: (
+        "held for human approval by the recipient's inbound policy. It will "
+        "not be delivered unless a human approves it."
+    ),
+    STATUS_DELIVERED: (
+        "delivered — claimed by the recipient's drain and injected into its "
+        "conversation. Delivered is not the same as acted upon."
+    ),
+    STATUS_DENIED: (
+        "denied by the recipient's inbound policy. It was never delivered "
+        "and will not be. Do not resend."
+    ),
+    STATUS_EXPIRED: (
+        "expired without being delivered — either the recipient session died "
+        "while this was still queued, or a held message aged out. The "
+        "recipient never saw it."
+    ),
+}
+
+
+@dataclass(frozen=True)
+class SentMessageStatus:
+    """The fate of one message this session sent, from the sender's side."""
+
+    message_id: int
+    to_session_id: str
+    status: str
+    created_at: float
+    delivered_at: Optional[float]
+    recipient_live: bool
+
+    @property
+    def meaning(self) -> str:
+        return _SENDER_STATUS_MEANING.get(
+            self.status, f"unrecognized status '{self.status}'."
+        )
+
+
+def sent_message_status(
+    *,
+    from_session_id: str,
+    message_id: Optional[int] = None,
+    limit: int = 20,
+    now: Optional[float] = None,
+) -> List[SentMessageStatus]:
+    """Look up the delivery status of messages THIS session sent.
+
+    Closes the sender-visibility gap: ``send_message`` only ever reported a
+    send-time outcome, so a sender had no way to learn that a recipient later
+    died with its message still ``pending``. It could only find out by making
+    a LATER send that failed recipient resolution.
+
+    Scoped to ``from_session_id`` deliberately — a session may inspect the
+    fate of its own sends and nothing else. Message bodies are never returned,
+    so this cannot be used to read another session's traffic.
+
+    ``recipient_live`` is resolved against the registry at query time, which
+    is what makes recipient death observable: a ``pending`` row whose
+    recipient is no longer live means the message is stranded and the
+    reaper has simply not run yet.
+    """
+    if not from_session_id:
+        return []
+    ts = float(now if now is not None else time.time())
+    cutoff = ts - CROSS_SESSION_REGISTRY_REAP_SECONDS
+    sql = (
+        "SELECT id, to_session_id, status, created_at, delivered_at "
+        "FROM cross_session_inbox WHERE from_session_id = ?"
+    )
+    params: List[Any] = [from_session_id]
+    if message_id is not None:
+        sql += " AND id = ?"
+        params.append(int(message_id))
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+
+    try:
+        with _transaction() as conn:
+            rows = conn.execute(sql, params).fetchall()
+            live = {
+                r["session_id"]
+                for r in conn.execute(
+                    "SELECT session_id FROM cross_session_registry "
+                    "WHERE last_heartbeat >= ?",
+                    (cutoff,),
+                )
+            }
+    except Exception as exc:
+        logger.debug("cross_session sent-status lookup failed: %s", exc)
+        return []
+
+    return [
+        SentMessageStatus(
+            message_id=int(row["id"]),
+            to_session_id=row["to_session_id"],
+            status=row["status"],
+            created_at=float(row["created_at"]),
+            delivered_at=(
+                float(row["delivered_at"])
+                if row["delivered_at"] is not None
+                else None
+            ),
+            recipient_live=row["to_session_id"] in live,
+        )
+        for row in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1259,6 +1384,7 @@ __all__ = [
     "DrainedMessage",
     "RegisteredSession",
     "RegisteredSubagent",
+    "SentMessageStatus",
     "TurnMessageState",
     "approve_held",
     "deny_held",

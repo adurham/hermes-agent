@@ -281,6 +281,15 @@ class SendResult:
 
     outcome: DeliveryOutcome
     detail: str = ""
+    # Durable handle for a Transport B send, so the SENDER can ask about this
+    # specific message's fate later (see cross_session_transport.
+    # sent_message_status). Without it a sender's only feedback was this
+    # send-time string, leaving it blind to a recipient that later died with
+    # the message still undelivered.
+    #
+    # None for Transport A: an in-process message has no durable row to query,
+    # and its recipient's liveness is already observable in-process.
+    message_id: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
