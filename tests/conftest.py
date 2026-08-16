@@ -1780,15 +1780,33 @@ def _audio_playback_guard(request, monkeypatch):
     nobody would ever see, so a hard failure would neither stop the test nor
     surface. Silence is the whole point. Tests that genuinely want real audio
     can opt out with ``@pytest.mark.real_audio_playback``.
+
+    Patched at the SOURCE module (``tools.voice_mode.play_audio_file``), not
+    just ``hermes_cli.voice``'s re-exported name. ``hermes_cli.voice`` does
+    ``from tools.voice_mode import play_audio_file`` at module import time —
+    that binds a *second* name to the same function object in
+    ``hermes_cli.voice``'s own namespace, so patching only
+    ``hermes_cli.voice.play_audio_file`` never touches
+    ``tools.voice_mode.play_audio_file`` itself. Several real call sites
+    (``gateway/run.py``, ``gateway/platforms/base.py``,
+    ``plugins/platforms/discord/adapter.py``, ``cli.py``,
+    ``tools/tts_tool.py``'s own streaming/``_drain`` playback path) import
+    ``play_audio_file`` directly from ``tools.voice_mode`` inside their own
+    functions — those local imports re-resolve the current module attribute
+    on every call, so patching the source module closes every path at once
+    instead of only the ``hermes_cli.voice`` one (2026-08-16 incident: a
+    background full-suite run spoke "hello world" through real speakers via
+    one of these unpatched paths despite this guard already existing).
+
+    ``tools.tts_tool.text_to_speech_tool`` is deliberately NOT stubbed here:
+    it only synthesizes to a file and returns a MEDIA:/path tag — it never
+    calls ``play_audio_file``/``afplay``/a subprocess itself (that's the
+    messaging-gateway delivery path: the platform, not this machine, plays
+    it). Real synthesis to a throwaway tmp file is harmless and several
+    tests legitimately exercise it unmocked; only the local-speaker path
+    (``play_audio_file``) is the actual vulnerability.
     """
     if request.node.get_closest_marker(_AUDIO_GUARD_BYPASS_MARK):
-        yield
-        return
-
-    try:
-        import hermes_cli.voice as _voice
-    except Exception:
-        # Optional audio deps missing — nothing importable to speak with.
         yield
         return
 
@@ -1798,10 +1816,34 @@ def _audio_playback_guard(request, monkeypatch):
     def _blocked_play_audio_file(path, *args, **kwargs):
         return False
 
-    if hasattr(_voice, "speak_text"):
-        monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
-    if hasattr(_voice, "play_audio_file"):
-        monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
+    patched_anything = False
+
+    try:
+        import hermes_cli.voice as _voice
+    except Exception:
+        _voice = None
+
+    if _voice is not None:
+        if hasattr(_voice, "speak_text"):
+            monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
+            patched_anything = True
+        if hasattr(_voice, "play_audio_file"):
+            monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
+            patched_anything = True
+
+    try:
+        import tools.voice_mode as _voice_mode
+    except Exception:
+        _voice_mode = None
+
+    if _voice_mode is not None and hasattr(_voice_mode, "play_audio_file"):
+        monkeypatch.setattr(_voice_mode, "play_audio_file", _blocked_play_audio_file)
+        patched_anything = True
+
+    if not patched_anything:
+        # Optional audio deps missing — nothing importable to speak with.
+        yield
+        return
 
     yield
 

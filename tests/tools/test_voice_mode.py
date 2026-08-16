@@ -600,8 +600,17 @@ class TestMacOSAudioOutputPolicy:
     and `afplay` only resolves on a real macOS host."""
 
     @pytest.mark.macos_only
+    @pytest.mark.real_audio_playback
     def test_play_audio_file_skips_sounddevice_on_macos(self, monkeypatch, sample_wav):
-        """On macOS, WAV playback must not import sounddevice; it routes to afplay."""
+        """On macOS, WAV playback must not import sounddevice; it routes to afplay.
+
+        Marked ``real_audio_playback`` to opt back into the real
+        ``tools.voice_mode.play_audio_file`` (the 2026-08-16 audio-guard
+        fix stubs it at the source module for every other test) — this test
+        already neutralises the actual dangerous primitive itself via the
+        ``subprocess.Popen`` monkeypatch below, so no real audio can play;
+        it just needs the real control-flow to assert player selection.
+        """
 
         def _forbidden_import():
             raise AssertionError("sounddevice must not be imported for output on macOS")
@@ -1397,11 +1406,18 @@ class TestWSL2PowerShellFallback:
             return next(it)
         return _side_effect
 
+    @pytest.mark.real_audio_playback
     def test_powershell_pipeline_preserves_real_exit_status(self, sample_wav):
         """Regression (review of #63768): the shell pipeline must preserve
         the (ffmpeg && powershell) exit status past the unconditional
         cleanup, so a real conversion/playback failure falls through to the
-        next player instead of being masked by rm -f's always-zero exit."""
+        next player instead of being masked by rm -f's always-zero exit.
+
+        Marked ``real_audio_playback``: already mocks ``subprocess.Popen``
+        itself (see below), so no real audio can play — it just needs the
+        real ``play_audio_file`` control-flow, which the 2026-08-16
+        source-module audio-guard fix stubs out by default.
+        """
         from unittest.mock import patch, MagicMock
         from tools import voice_mode as vm
 
@@ -1447,8 +1463,13 @@ class TestWSL2PowerShellFallback:
             "Shell pipeline must preserve the real exit status past cleanup: " + sh_script
         )
 
+    @pytest.mark.real_audio_playback
     def test_wsl2_unique_temp_filename(self, monkeypatch, tmp_path, sample_wav):
-        """Two concurrent calls must use different temp WAV filenames."""
+        """Two concurrent calls must use different temp WAV filenames.
+
+        Marked ``real_audio_playback``: mocks ``subprocess`` itself below,
+        so it needs the real ``play_audio_file`` (see fix note above).
+        """
         from unittest.mock import patch, MagicMock
         from tools import voice_mode as vm
 
@@ -1494,8 +1515,13 @@ class TestWSL2PowerShellFallback:
             "Concurrent TTS calls must use unique temp WAV filenames"
         )
 
+    @pytest.mark.real_audio_playback
     def test_non_wsl_skips_powershell_fallback(self, monkeypatch, sample_wav):
-        """On non-WSL Linux, the PowerShell player must not be inserted."""
+        """On non-WSL Linux, the PowerShell player must not be inserted.
+
+        Marked ``real_audio_playback``: mocks ``subprocess`` itself below,
+        so it needs the real ``play_audio_file`` (see fix note above).
+        """
         from unittest.mock import patch, MagicMock
         from tools import voice_mode as vm
 
