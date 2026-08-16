@@ -12294,7 +12294,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         process using the same Hermes profile.  Always pass this CLI's stable
         session identity when draining so another window cannot claim and mark
         delivered a completion that belongs to this one.
+
+        Interrupt hold-off: when the user has just interrupted the current turn
+        (``_last_turn_interrupted``), do NOT drain queued completions here. A
+        drain injects the formatted notification into ``_pending_input``, which
+        the process_loop picks up as a new turn on the very next tick — racing
+        the user's interrupt and immediately re-starting the session they were
+        trying to stop. With many finished background processes queued, every
+        Ctrl+C gets clobbered by the next queued completion. The events stay in
+        ``completion_queue`` (not lost, not silently dropped) and are drained on
+        the next user-initiated turn, which resets ``_last_turn_interrupted`` at
+        turn start (see run_turn) and drains normally at its post-turn hook.
         """
+        if getattr(self, "_last_turn_interrupted", False):
+            return
         from tools.process_registry import process_registry
         from tools.async_delegation import (
             claim_event_delivery,
@@ -12335,7 +12348,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         Housekeeping (reaping dead registry rows, expiring stale holds) is
         throttled inside ``maintenance_tick``; this call site fires at 10Hz
         and must not run two DB writes per tick.
+
+        Interrupt hold-off: same rationale as ``_drain_process_notifications``.
+        A drain injects a framed message into ``_pending_input``, which
+        process_loop picks up as a new turn on the very next 0.1s tick —
+        racing the user's interrupt and immediately re-starting the session
+        they were trying to stop. Skip the drain entirely while
+        ``_last_turn_interrupted`` is set; the rows stay ``pending`` in
+        ``cross_session_inbox`` (not lost, not silently dropped) and are
+        drained on the next user-initiated turn, which resets
+        ``_last_turn_interrupted`` at turn start and drains normally at its
+        post-turn hook.
         """
+        if getattr(self, "_last_turn_interrupted", False):
+            return
         from tools.cross_session_integration import (
             drain_to_idle_injection,
             install_transport,
