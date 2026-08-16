@@ -455,6 +455,7 @@ markers = [
     "real_countdown: opt out of the autouse countdown stub in tests/hermes_cli/test_memory_confirm.py — those tests exercise the real _countdown_for_review helper and patch its internals themselves.",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
+    "real_audio_playback: opt out of the autouse _audio_playback_guard stub (tests/conftest.py) that blocks tools.voice_mode.play_audio_file / hermes_cli.voice.speak_text for every other test — those tests already neutralise the actual dangerous primitive themselves (subprocess.Popen / _play_audio_file_impl mocked) and need the real control-flow. Runs in CI exactly like every other test; this only swaps which implementation of play_audio_file it calls, not whether it runs.",
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",

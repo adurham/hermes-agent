@@ -3,6 +3,63 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-16 (test suite spoke real audio through the developer's speakers)
+
+Live incident: while a ~29,000-test full background suite run
+(`scripts/run_tests.sh -q`) was in progress, real synthesized speech
+("hello world") played out loud through the Mac's actual speakers, twice,
+along with real Chrome/AppleScript activity — initially indistinguishable
+from a compromised machine until traced through `log show`/TCC attribution/
+`state.db` tool-call history back to the test process itself.
+
+Root cause: `tests/conftest.py`'s existing `_audio_playback_guard` (an
+autouse fixture, itself built to close an earlier real incident — see the
+docstring in `tests/test_audio_playback_guard.py`) only patched
+`hermes_cli.voice.speak_text` / `hermes_cli.voice.play_audio_file` — but
+`hermes_cli/voice.py` gets `play_audio_file` via `from tools.voice_mode
+import play_audio_file` at module import time, which binds a *second* name
+to the same function object in `hermes_cli.voice`'s own namespace. Patching
+only that re-export never touches `tools.voice_mode.play_audio_file`
+itself. Real call sites in `gateway/run.py`, `gateway/platforms/base.py`,
+`plugins/platforms/discord/adapter.py`, `cli.py`, and `tools/tts_tool.py`'s
+own internal streaming `_drain` loop all do a local `from tools.voice_mode
+import play_audio_file` inside their own functions — those local imports
+re-resolve the *current* module attribute on every call, bypassing the old
+patch entirely. A background suite run reached one of these paths and
+triggered real synthesis through the keyless `edge` TTS provider.
+
+**Fix:** patch `tools.voice_mode.play_audio_file` at the source module
+(`tests/conftest.py`'s `_audio_playback_guard`), which every call path
+funnels through before any sound plays — closes all of them at once
+instead of one at a time. Deliberately left `tools.tts_tool.text_to_speech_tool`
+unstubbed: it only synthesizes to a file and returns a `MEDIA:/path` tag,
+it never calls `play_audio_file`/`afplay`/a subprocess itself (that's a
+gateway/messaging delivery concern — the receiving platform plays it, not
+the dev machine), so stubbing it would only have broken the ~16 legitimate
+tests that assert on its provider-routing/chunking/config logic for no
+security benefit. 4 pre-existing tests that already neutralize the real
+dangerous primitive themselves (mock `subprocess.Popen` /
+`_play_audio_file_impl` directly) got the codebase's existing
+`@pytest.mark.real_audio_playback` opt-out marker so they keep exercising
+`play_audio_file`'s real control-flow — registered in `pyproject.toml`'s
+`markers` list per the existing `real_countdown`/`real_concurrent_gate`/
+`real_agent_prewarm` convention. The marker only swaps which
+`play_audio_file` implementation a test gets; it does not exclude any test
+from collection, locally or in CI (no `-m` filter anywhere touches it).
+
+**Verification:** stashed the `conftest.py` fix only, kept the new
+regression test — it failed, reproducing a real generated MP3 via the
+keyless `edge` provider (proving the gap was real and the test catches
+it). Restored the fix, re-ran: pass. Full sweep of every test file
+touching `play_audio_file`/`text_to_speech_tool` (25 files, ~570 tests):
+519 passed, 46 skipped (platform-gated), 2 pre-existing failures (macOS
+`AF_UNIX` path-length bug, proven independent of this change via the same
+stash-and-reproduce method) — zero regressions from this fix.
+`tests/conftest.py`, `tests/test_audio_playback_guard.py`,
+`tests/tools/test_voice_mode.py`,
+`tests/tools/test_voice_mode_playback_env_scrub.py`,
+`tests/tools/test_voice_thinking_sound.py`, `pyproject.toml`.
+
 ### Fix — 2026-08-14 (double-bracket bracketed-paste garble surviving to the input line)
 
 Live symptom (screenshot from a fresh CLI tab): the input line showed

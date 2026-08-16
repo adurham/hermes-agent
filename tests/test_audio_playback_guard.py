@@ -124,3 +124,37 @@ def test_bypass_marker_restores_the_real_speak_text():
     import hermes_cli.voice as voice
 
     assert voice.speak_text.__name__ == "speak_text"
+
+
+def test_source_module_play_audio_file_is_blocked_too():
+    """2026-08-16 incident: the guard patched only ``hermes_cli.voice``'s
+    re-exported ``play_audio_file`` name, not ``tools.voice_mode``'s own
+    module attribute. ``gateway/run.py``, ``gateway/platforms/base.py``,
+    and ``cli.py`` all do a local ``from tools.voice_mode import
+    play_audio_file`` inside their own functions — those resolve the
+    *current* attribute on ``tools.voice_mode`` at call time, bypassing
+    the old patch entirely. A background full-suite run reached one of
+    these paths and played "hello world" through real speakers despite
+    the guard already existing for the ``hermes_cli.voice`` copy.
+
+    This calls the source module directly, exactly as those call sites do.
+    """
+    import tools.voice_mode as voice_mode
+
+    assert voice_mode.play_audio_file("/tmp/does-not-matter.wav") is False
+
+
+def test_text_to_speech_tool_itself_is_left_unstubbed_by_design():
+    """``text_to_speech_tool`` only synthesizes to a file and returns a
+    MEDIA:/path tag — it never calls ``play_audio_file``/``afplay``/a
+    subprocess itself (that's a gateway/messaging delivery concern: the
+    receiving platform plays it, not this machine). The guard deliberately
+    does NOT stub it, so real synthesis to a throwaway tmp file works
+    unmocked here exactly as it does for the ~16 legitimate tests elsewhere
+    that assert on its provider-routing/chunking/config logic. Only the
+    local-speaker path (``tools.voice_mode.play_audio_file``, asserted
+    above) is the actual vulnerability.
+    """
+    import tools.tts_tool as tts_tool
+
+    assert tts_tool.text_to_speech_tool.__name__ == "text_to_speech_tool"
