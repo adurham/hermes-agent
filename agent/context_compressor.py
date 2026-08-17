@@ -3980,6 +3980,28 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
+    def _apply_summary_route(self, call_kwargs: dict) -> None:
+        """Pin the summary route onto ``call_kwargs`` for both compression entry points.
+
+        After a fallback, an omitted route is NOT "use the main model": ``call_llm`` re-resolves
+        ``auxiliary.compression`` from config — the model that just failed — and a second fallback
+        is refused, so every later attempt aborts (#123362). Name the main runtime explicitly.
+        """
+        if self.summary_model:
+            call_kwargs["model"] = self.summary_model
+            return
+        if not getattr(self, "_summary_model_fallen_back", False):
+            return
+        for key, value in (
+            ("provider", self.provider),
+            ("model", self.model),
+            ("base_url", self.base_url),
+            ("api_key", self.api_key),
+            ("api_mode", getattr(self, "api_mode", "")),
+        ):
+            if value:
+                call_kwargs[key] = value
+
     def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
         """Issue the single aux summary call; return validated content text.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
@@ -3996,8 +4018,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.
         }
-        if self.summary_model:
-            call_kwargs["model"] = self.summary_model
+        self._apply_summary_route(call_kwargs)
         # Pinned route (stall fallback) overrides task routing so the retry leaves the stalled backend.
         call_kwargs.update(_pinned_summary_call_kwargs())
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
