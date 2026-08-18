@@ -880,6 +880,15 @@ line instead of showing what's actually in flight.
    wasn't already showing at a glance. Overflow line now reads "… +N more
    (completed hidden)" to make the hide-not-truncate behavior explicit.
 
+**DRIFTED 2026-08-18 (found in the FORK.md full behavioral audit,
+`FORK_md_audit_2026_08_18.md`):** `_TODO_BOARD_MAX_ROWS` is no longer a
+fixed `12` — it's now a dynamic ceiling of `30` combined with a
+`term_rows // 2` formula, clamped between `_TODO_BOARD_MIN_ROWS` and
+`_TODO_BOARD_MAX_ROWS`, so the board adapts to the actual terminal height
+instead of a hardcoded row count. The `_select_todo_display_items()`
+pending-first prioritization logic described above is unaffected and
+still applies against whatever the dynamic cap resolves to.
+
 **Files touched:** `cli.py` (todo board widget + `todo-border` style entry),
 `agent/display.py` (`_checklist_lines` markers), `tools/todo_tool.py`
 (`format_for_injection` markers), `tests/agent/test_display_todo_progress.py`
@@ -3177,11 +3186,19 @@ doesn't fully capture timbre fit.
 
 **Core-repo changes (all additive, no existing behavior changed):**
 - `tools/tts_tool.py`: `text_to_speech_tool()` gained an internal-only
-  `provider_override` kwarg that bypasses `tts.provider` for one call. NOT
-  exposed on the model-facing tool schema (the `registry.register()` call
-  site for the agent tool is untouched) — only the desktop's own REST
-  endpoint uses it, so the main "read replies aloud" TTS behavior for
-  everyone else is completely unaffected.
+  `provider_override` kwarg that bypasses `tts.provider` for one call. At
+  the time of this entry, NOT exposed on the model-facing tool schema —
+  only the desktop's own REST endpoint used it, so the main "read replies
+  aloud" TTS behavior for everyone else was completely unaffected.
+  **DRIFTED 2026-08-18 (found in the FORK.md full behavioral audit,
+  `FORK_md_audit_2026_08_18.md`):** a later commit
+  (`462b3cf994`, "feat(tts): add optional provider parameter to
+  text_to_speech tool") added a `provider` property directly to
+  `TTS_SCHEMA`'s model-facing parameters, so the model can now request a
+  specific TTS provider (including `miku`) on its own `text_to_speech`
+  calls, not just via the desktop REST endpoint. The desktop-endpoint
+  mechanism described below is unaffected and still works exactly as
+  documented — this only widens who can trigger it.
 - `hermes_cli/web_server.py`: `/api/audio/speak`'s `TTSSpeakRequest` gained an
   optional `provider` field, threaded into `text_to_speech_tool(...,
   provider_override=payload.provider)`.
@@ -4369,6 +4386,19 @@ still matches `closeTreePane`'s.
 **Files:** `apps/desktop/src/styles.css` (comment reword only).
 
 ### Fork-only chore — 2026-07-23 (desktop: bumped Vite chunk-size warning ceiling for the intentional single-bundle build)
+
+**SUPERSEDED 2026-08-18** (found in the FORK.md full behavioral audit,
+`FORK_md_audit_2026_08_18.md`) — a later commit (`6fb5d2d89c`, "split
+heavy lazy-only libs out of the renderer entry chunk") took a structurally
+different approach: it actually split the bundle to shrink it, rather than
+just raising the warning ceiling. Live `vite.config.ts` now has
+`chunkSizeWarningLimit: 25000` (reset back down from the `32000` this
+entry set) and an `advancedChunks` configuration replacing the
+`codeSplitting: false` single-bundle design this entry's investigation
+defended. The 2026-07-19 electron-builder-OOM finding that originally
+justified single-bundle is presumably still relevant context for why
+`6fb5d2d89c` had to be careful about *which* libs it split out — read
+that commit directly if revisiting this area.
 
 **Symptom:** `npm run build` in `apps/desktop` prints a `[plugin builtin:vite-reporter]` warning that "Some chunks are larger than 25000 kB after minification," suggesting dynamic `import()` / `codeSplitting` / raising `chunkSizeWarningLimit`.
 
@@ -5621,8 +5651,7 @@ will never touch them.
 || `plugins/web/claude_code/` | Claude Code web backend for the Hermes web interface. |
 || `plugins/web/trafilatura/` | Free, no-API-key `web_extract` backend — direct `httpx` fetch (manual redirect-hop walk with per-hop SSRF/policy re-check) + the open-source `trafilatura` library for local content extraction. Closes the gap where non-Anthropic providers (exo, ollama-cloud) had a free search backend (brave-free/ddgs) but no free extract backend — every existing extract-capable provider (firecrawl/tavily/exa/parallel) needs a paid API key. |
 || `tools/bridges/` | Fork-only tool bridges (CC proxy MCP bridge). |
-|| `tools/swarm_board.py` | Live SwarmBoard display for multi-agent task progress. |
-|| `tools/swarm_tool.py` | Swarm orchestration tool — multi-agent parallel task execution with live board, cost tracking. |
+|| `tools/swarm_board.py` | Live SwarmBoard display for multi-agent task progress (kept — see 2026-08-18 de-fork audit; the display widget is unaffected by the now-retired `swarm_tool.py`/`swarm_run` tool, see `toolsets.py`'s table row below). |
 || `tools/hermes_load_tools.py` | Fork tool loading bridge — loads fork-only tools into agent runtime. |
 || `tools/memory_warm.py` | Warm-tier memory tool — search/recall/pin/unpin warm facts. |
 || `tools/memory_extraction/` | Memory extraction system (extractor, buffer, conflict, prompts). |
@@ -5647,7 +5676,6 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/anthropic_adapter.py` | +1784 / -93 | CC wire-shape parity: alias translation (Bash/Read/Edit/Write/Grep), `metadata.user_id` identity blob, billing header, SSE ping observer, `.beta.messages` namespace. Upstream v2026.7.1 absorbed OAuth creds, beta headers, 1M-context gate. The OAuth path is no longer fork-only. |
 | `tools/delegate_tool.py` | +888 / -158 | Background-by-default delegation (adopted upstream's model), SwarmBoard, prompt-cache stagger, 1M-beta latch, cost/token rollup, `delegation.by_provider` provider-scoped config. |
 | `agent/chat_completion_helpers.py` | +858 / -114 | Streaming reliability: SDK monkey-patch for SSE events, heartbeat ticks, stream-drop reconnect, cold-start detection. |
-| `tools/swarm_tool.py` | +860 / -1 | Swarm orchestration: multi-agent parallel task execution with live board, cost tracking, prompt-cache management. |
 | `tools/mcp_tool.py` | +743 / -98 | MCP tool registration (no `mcp_` prefix — exact server provenance map), parallel-safety fix, disk cache. |
 | `agent/conversation_loop.py` | +640 / -14 | Per-turn callouts to fork modules, reasoning-channel budget-exhaustion detection, bare-XML tool-call recovery, 413 shrink-before-compress. |
 | `agent/auxiliary_client.py` | +580 / -34 | Exo-scoped aux delegation, Anthropic aux 401/400 fixes, provider-matched aux model (sonnet-5), per-task fallback_model, provider-first aux config schema, 1M-beta baked-client fix, single-provider auto failover. |
@@ -5667,9 +5695,9 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/prompt_caching.py` | +167 / -18 | System prompt cache split (stable/volatile), `split_system_for_cache` / `strip_volatile_sentinel`. |
 | `agent/usage_pricing.py` | +160 / -7 | Fork cost tracking (cache tiers, API-call level pricing), `claude-sonnet-5` pricing entry. |
 | `agent/agent_init.py` | +146 / -7 | Fork instance state initialization (delegated to `fork.<module>.init_state`). |
-| `agent/agent_runtime_helpers.py` | +141 / -23 | CC alias support in `repair_tool_call`, switch_model 1M-beta latch, swarm_run handling. |
+| `agent/agent_runtime_helpers.py` | +141 / -23 | CC alias support in `repair_tool_call`, switch_model 1M-beta latch. (`swarm_run` handling this line originally described was retired with `swarm_tool.py` — see 2026-08-18 de-fork audit.) |
 | `agent/title_generator.py` | +133 / -41 | Title generation fixes, thinking block stripping. |
-| `agent/tool_executor.py` | +129 / -12 | Skill-recall hooks, hermes_load_tools/swarm_run dispatch. |
+| `agent/tool_executor.py` | +129 / -12 | Skill-recall hooks, hermes_load_tools dispatch. (`swarm_run` dispatch this line originally described was retired with `swarm_tool.py` — see 2026-08-18 de-fork audit.) |
 | `hermes_cli/banner.py` | +117 / -107 | Thin forwarders to `fork_banner.py`; git-state plumbing, `_skin_branding`, `_resolve_repo_dir`. |
 | `tools/tool_search.py` | +108 / -11 | Core toolset deferral (`defer_toolsets`/`defer_tools`/`keep_eager_tools`), explicit-intent activation. |
 | `agent/insights.py` | +101 / -4 | Fork insights (account billing, usage stats). |
@@ -5689,7 +5717,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/conversation_compression.py` | +12 / -16 | Phase-2 auto-extraction hook (`memory_extraction.on_pre_compress`). `compress_context`'s docstring converged to upstream's fuller version 2026-07-21 (dropped the fork's trim-only divergence). |
 | `agent/tool_guardrails.py` | +11 / -4 | `hard_stop_enabled` default `False→True` — tool-call loop guardrails now block/halt instead of just warning. See "Fork-only fix — 2026-07-07" below. |
 | `plugins/model-providers/anthropic/__init__.py` | +2 / -2 | `default_aux_model` updated from haiku to sonnet-5. |
-| `toolsets.py` | +25 / -7 | `"swarm"` toolset (`swarm_run`) split out of `"delegation"` (composed back in via `includes`) so delegation-blocking can independently gate it — see 2026-07-21 sync entry above. |
+| `toolsets.py` | +25 / -7 | `"swarm"` toolset (`swarm_run`) split out of `"delegation"` (composed back in via `includes`) so delegation-blocking can independently gate it — see 2026-07-21 sync entry above. **RETIRED 2026-08-18** (found in the FORK.md full behavioral audit, `FORK_md_audit_2026_08_18.md`): `swarm_run` and `tools/swarm_tool.py` were later deleted entirely (`99c8f2c9c4 "remove(swarm): retire dead swarm_run tool and hermes-swarm dependency"`); `toolsets.py` now has zero swarm references. |
 
 Was 314 commits of fork-only history (vs `upstream/main`, refreshed
 2026-07-12 post v2026.7.7.2 sync) before the 2026-07-19 squash noted at the
