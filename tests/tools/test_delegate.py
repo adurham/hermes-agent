@@ -1796,10 +1796,13 @@ class TestConcurrencyDefaults(unittest.TestCase):
                     mock_loader.assert_not_called()
 
     @patch("tools.delegate_tool._load_config", return_value={})
-    def test_default_is_five(self, mock_cfg):
-        # Clear env var if set
+    def test_default_is_ten(self, mock_cfg):
+        # Clear env var if set. Default raised 5 -> 10 in the v2026.8.18
+        # upstream sync (upstream's higher default was taken over the fork's
+        # original 5 — see _DEFAULT_MAX_CONCURRENT_CHILDREN in
+        # tools/delegate_tool.py).
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_get_max_concurrent_children(), 5)
+            self.assertEqual(_get_max_concurrent_children(), 10)
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 10})
