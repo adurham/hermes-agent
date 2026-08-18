@@ -11072,3 +11072,151 @@ confirms no regression from either commit).
 merge alongside the fix — a future reader diffing FORK.md against `git
 log` should be able to tell which piece came from which session without
 re-deriving it from the SHAs.
+
+### Upstream sync — 2026-08-18 (v2026.8.13 → v2026.8.18, 1397 commits, 44 conflict files + 2-commit second-round reconciliation)
+
+**Target:** `v2026.8.18` (highest NousResearch release tag at sync time;
+verified no newer `v2026.*` tag landed before push). Prior sync was
+`v2026.8.13`.
+
+**Sequence:** safety tag `pre-upstream-sync-2026-08-18`, branch
+`sync/upstream-2026-08-18`, `git merge v2026.8.18 --no-edit` → 44
+conflict files. Resolved inline for the Python core (agent/*, cli.py,
+hermes_cli/*, tools/*, hermes_state.py, plugins/platforms/a2a/,
+website/docs/mcp.md) while delegating the apps/desktop TS/TSX batch and
+the Python test-file batch to two parallel subagents (a third subagent
+resolved tui_gateway/server.py + mcp.md cleanly). One subagent left a
+stray leftover marker + an extra closing brace in the largest desktop
+test file (`use-session-actions.test.tsx`, 8 markers) — finished by
+hand, verified with a project-wide `tsc --noEmit` (0 errors).
+
+**Conflict resolution patterns used** (see individual per-file rationale
+in commit `f1993d5a57`'s diff — too many files for a full per-file
+writeup here):
+- **Pure additive** (both sides add different things at the same spot):
+  kept both — `__slots__` union in `mcp_tool.py`, `pyproject.toml` dev
+  deps + `exclude-newer-package` dict, docstring merges, config-default
+  dict keys, `a2a/plugin.yaml`'s `client_tools_module`+`provides_tools`.
+- **Upstream absorbed a fork feature, took upstream's shape**:
+  `agent/system_prompt.py`'s timestamp (upstream's date+timezone version
+  supersedes the fork's date-only one, per FORK.md's already-documented
+  absorption note); `agent/gemini_native_adapter.py`'s tool-call merge
+  logic (upstream ported Gemini 3 tool-call-ID preservation on top of
+  the same merge shape the fork had).
+- **Fork feature ported onto upstream's new safer helper**:
+  `agent/usage_pricing.py` — kept the fork's Anthropic cache/server-tool
+  usage tracking (`cache_creation`, `server_tool_use` request counts)
+  but rewired it through upstream's new `_usage_get`/`_usage_count`
+  dict-or-object-safe helpers instead of raw `getattr`.
+- **Upstream extracted a function, fork logic re-homed into it**:
+  `agent/prompt_builder.py` — upstream split
+  `build_skills_system_prompt` into a thin per-profile-home wrapper
+  calling `_build_skills_system_prompt_inner`; the fork's
+  `skills.lazy_listing` short-circuit moved into the inner function
+  (also fixed 3 fork-only tests in `test_prompt_builder_fork.py` that
+  still `inspect.getsource`'d the old wrapper).
+- **Structural merge, both branches needed**: `cli.py`'s
+  `_run_cleanup`/`_run_cleanup_body` split — kept the fork's
+  Ctrl+C-skip-handler wrapper structure, wired in upstream's new
+  `_cleanup_in_progress` flag around the body call. `agent/conversation_loop.py`'s
+  compression-budget-rearm block — kept the fork's `_record_usage_history`
+  diagnostics forwarder call sitting directly beside upstream's new
+  `_should_rearm_compression_budget` gate (both fire independently, no
+  overlap despite adjacent placement).
+- **New upstream feature, fork's older code fixed on top of it**:
+  `tools/delegate_tool.py` — kept the fork's `agent_type=`/`background=`
+  kwargs on `_build_child_preserving_parent_tools`, wrapped upstream's
+  new `try/except ValueError` (#80450 explicit-pin preflight failures)
+  around the call. `hermes_cli/main.py`'s session browse picker — kept
+  the fork's `_TerminalTooSmall` graceful-fallback exception (upstream
+  still had the old getch() dead-end) layered on top of upstream's new
+  `session_db`-aware status/delete features.
+
+**Real merge-caused regressions found and fixed** (via full
+`tests/agent` + `tests/run_agent` suite runs, ~6423 tests, after every
+resolution batch):
+1. `tests/run_agent/test_compression_budget_rearm.py` — a bare
+   `MagicMock()` compressor auto-vivifies `last_server_tool_requests` as
+   a truthy `MagicMock` instead of the real `ContextCompressor`'s `int`
+   defaulting to 0; the fork's server-tool-inflation guard
+   (`not getattr(_compressor, "last_server_tool_requests", 0)`, added
+   2026-07-24) read that truthy mock and routed real-token estimation
+   through the wrong branch, producing a spurious 3rd compaction. Fixed
+   by explicitly setting `compressor.last_server_tool_requests = 0` in
+   the test (production code was correct — root-caused via a
+   `traceback.extract_stack()` instrumented repro comparing call counts
+   against a disposable `git worktree` of plain `v2026.8.18`, which
+   compresses only twice on the identical scenario).
+2. `tests/agent/test_prompt_builder_fork.py` — 3 tests asserted
+   `lazy_listing` was inside `build_skills_system_prompt`'s source via
+   `inspect.getsource`; fixed to inspect
+   `_build_skills_system_prompt_inner` instead (see the prompt_builder
+   resolution pattern above — behavior is correct, only the test's
+   introspection target was stale).
+
+**Pre-existing test debt surfaced (not merge-caused, fixed while
+here since already root-caused)**: `tests/run_agent/test_tool_activity_heartbeat.py`
+(new upstream file, `54aad0d6` "#84491") — its `_Stub` fixture's
+`_append_guardrail_observation` lambda had a stale 2-positional-arg
+signature (`lambda name, result`) against the real 3-arg method
+(`tool_name, function_args, function_result`), silently binding
+`function_args` (`{}`) into the `result` slot; also missing 4 fork-only
+forwarder stubs (`_maybe_skill_recall_hint`, `_maybe_memory_recall_hint`,
+`_maybe_consult_nudge`, `_record_file_mutation_result`/`_record_loaded_skill`/
+`_record_voluntary_consult`). All fixed test-side; confirmed via
+disposable `git worktree` comparison against plain `v2026.8.18` that
+production code was never at fault.
+
+**Final full-suite tally**: 12 failures / 6 files remaining out of
+~6423 tests in `tests/agent`+`tests/run_agent` (`test_auxiliary_explicit_base_anthropic`,
+`test_prompt_cache_ttl_propagation::test_every_fallback_activation_restarts_preflight`,
+`test_title_generator` x3, `test_start_order_gate` x3 — all missing the
+same `_maybe_skill_recall_hint` fork-forwarder stub as above but on a
+sibling test file not touched here, `test_anthropic_mid_tool_call_drop`
+x3). Every one individually confirmed to reproduce identically on an
+unmerged `pre-upstream-sync-2026-08-18` worktree via disposable `git
+worktree add` — genuinely pre-existing, none merge-caused. Two more
+(`test_vision_routing_31179`, `tests/agent/lsp/test_client_e2e.py`) are
+environment/order-dependent flakes that pass standalone.
+
+**Second-round reconciliation (origin/main, 2 commits landed mid-sync):**
+after fast-forwarding `main` to the completed `sync/upstream-2026-08-18`
+merge, `git status` showed local `main` 2 commits behind `origin/main`
+— a concurrent session had pushed `10cfc7866a` (startup-typeahead /
+cooked-mode-tty corruption fix) and `ff3945c7e3` (resize-safe
+status-bar patch, gated behind `_status_bar_suppressed_after_resize` to
+stop it misfiring on ordinary typing) while this sync was in progress.
+Merged `origin/main` into `main`; 2 conflicts in `cli.py` (both in the
+resize/redraw subsystem this sync had also touched) + 1 in
+`tests/cli/test_cli_force_redraw.py` (purely additive, no name
+collision):
+- `_install_resize_recovery`/`_install_resize_safe_screen_diff_patch`
+  split — kept both methods (they're independent: one wires
+  `app._on_resize`, the other monkey-patches
+  `prompt_toolkit._output_screen_diff`); at their two call sites, kept
+  origin/main's newly-extracted+gated patch call, kept the fork's
+  `_install_resize_recovery(app)` call (proper width-baseline seeding),
+  and preserved BOTH the fork's crash-retry safety net
+  (`_hermes_call_output_screen_diff`'s AttributeError/TypeError retry
+  with `previous_screen=None`, #83874 tmux-attach crash) and
+  origin/main's `_status_bar_suppressed_after_resize` gate (the actual
+  fix for the typing-corruption bug `ff3945c7e3` reports) inside the
+  single merged method — dropping either would reintroduce a bug.
+- Test file: two disjoint new classes
+  (`TestFirstSigwinchBaseline`/`TestFocusRegainRedraw` vs
+  `TestResizeSafeScreenDiffPatch`) — concatenated, no collision.
+`tests/cli/test_cli_force_redraw.py` 23/23 passing;
+`tests/cli/test_cli_light_mode.py` (auto-merged clean, no conflict) 27/27
+passing; `tests/cli/`+`tests/hermes_cli/` full suite 3 failures/6890
+(both pre-existing — confirmed via worktree against plain `origin/main`
+before this sync touched it, and one fork-only threading-race test that
+predates this sync by 2 weeks).
+
+**Verification:** `python -m py_compile` on every hand-resolved file,
+`python -c "import cli, run_agent, hermes_state, hermes_cli.banner"`
+boot smoke, `tsc --noEmit` clean on the whole `apps/desktop` project,
+`uv lock` regenerated cleanly against the merged `pyproject.toml`
+(`mcp` 1.28.1→2.0.0, added `httpx2`/`httpcore2`/`mcp-types`), zero
+`<<<<<<<`/`=======`/`>>>>>>>` markers anywhere in the tree before either
+commit. Deploy (remote `hermes update` / live probe) intentionally left
+to the user per standing policy — never run unprompted.
