@@ -18,6 +18,8 @@ import sys
 
 from rich.markup import escape as _escape
 
+from utils import base_url_host_matches
+
 
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
@@ -102,7 +104,11 @@ class CLIAgentSetupMixin:
             # no API key was found, use a placeholder so the OpenAI SDK
             # doesn't reject the request and local servers just ignore it.
             _source = runtime.get("source", "")
-            _has_custom_base = isinstance(base_url, str) and base_url and "openrouter.ai" not in base_url
+            _has_custom_base = (
+                isinstance(base_url, str)
+                and base_url
+                and not base_url_host_matches(base_url, "openrouter.ai")
+            )
             if _has_custom_base:
                 api_key = "no-key-required"
                 logger.debug(
@@ -243,7 +249,7 @@ class CLIAgentSetupMixin:
         return bool(
             isinstance(base_url, str)
             and base_url
-            and "openrouter.ai" not in base_url
+            and not base_url_host_matches(base_url, "openrouter.ai")
         )
 
     def _offer_first_run_setup(self) -> bool:
@@ -479,6 +485,7 @@ class CLIAgentSetupMixin:
                     )
                 self._restore_session_cwd(session_meta, quiet=_quiet_mode)
                 self._restore_session_yolo(session_meta, quiet=_quiet_mode)
+                self._restore_session_model(session_meta, quiet=_quiet_mode)
             else:
                 if _quiet_mode:
                     print(
@@ -745,6 +752,7 @@ class CLIAgentSetupMixin:
             )
             self._restore_session_cwd(session_meta)
             self._restore_session_yolo(session_meta)
+            self._restore_session_model(session_meta)
         else:
             accent_color = _accent_hex()
             self._console_print(

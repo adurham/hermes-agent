@@ -21,27 +21,34 @@ class TestPromptBuilderLazyListing:
         assert skills["lazy_listing"] is False
 
     def test_lazy_listing_added_to_cache_key(self):
-        """lazy_listing is part of the skills prompt cache key tuple."""
-        from agent.prompt_builder import build_skills_system_prompt
+        """lazy_listing is part of the skills prompt cache key tuple.
+
+        Upstream's v2026.8.18 sync extracted the body of
+        build_skills_system_prompt into _build_skills_system_prompt_inner
+        (build_skills_system_prompt is now a thin home-resolution wrapper
+        that delegates to it) -- the lazy_listing logic lives in the inner
+        function now.
+        """
+        from agent.prompt_builder import _build_skills_system_prompt_inner
         import inspect
-        source = inspect.getsource(build_skills_system_prompt)
+        source = inspect.getsource(_build_skills_system_prompt_inner)
         # The cache key should include lazy_listing
         assert "lazy_listing" in source
 
     def test_lazy_listing_short_circuits_when_true(self):
         """When lazy_listing is True, per-skill index is omitted."""
         # The code wraps the skill listing in an if not _lazy_listing block
-        from agent.prompt_builder import build_skills_system_prompt
+        from agent.prompt_builder import _build_skills_system_prompt_inner
         import inspect
-        source = inspect.getsource(build_skills_system_prompt)
+        source = inspect.getsource(_build_skills_system_prompt_inner)
         # Verify the lazy listing branch exists
         assert "lazy_listing" in source
         assert "skills_list" in source or "skill_view" in source
 
     def test_lazy_listing_imports(self):
         """lazy_listing uses hermes_cli.config.load_config."""
-        from agent.prompt_builder import build_skills_system_prompt
+        from agent.prompt_builder import _build_skills_system_prompt_inner
         import inspect
-        source = inspect.getsource(build_skills_system_prompt)
+        source = inspect.getsource(_build_skills_system_prompt_inner)
         assert "load_config" in source
         assert "lazy_listing" in source

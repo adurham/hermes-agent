@@ -16,6 +16,8 @@ interface StatusSectionProps {
    *  `Button` with `size="micro"` + `variant="text"` or `"link"`. */
   accessory?: ReactNode
   children: ReactNode
+  /** Optional inline status shown only while the group is collapsed. */
+  collapsedIndicator?: ReactNode
   defaultCollapsed?: boolean
   /** Optional glyph between the caret and the label (e.g. a `Codicon`). */
   icon?: ReactNode
@@ -37,6 +39,7 @@ interface StatusSectionProps {
 export function StatusSection({
   accessory,
   children,
+  collapsedIndicator,
   defaultCollapsed = true,
   icon,
   label,
@@ -84,7 +87,8 @@ export function StatusSection({
         >
           <DisclosureCaret className="shrink-0" open={!collapsed} size="1em" />
           {icon && <span className="flex shrink-0 items-center">{icon}</span>}
-          <span className="truncate">{label}</span>
+          <span className="min-w-0 truncate">{label}</span>
+          {collapsed && collapsedIndicator && <span className="flex shrink-0 items-center">{collapsedIndicator}</span>}
         </button>
         {accessory && <div className="flex shrink-0 items-center gap-1">{accessory}</div>}
       </div>
