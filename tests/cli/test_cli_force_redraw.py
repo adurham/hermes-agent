@@ -3,12 +3,15 @@
 Covers:
   - _force_full_redraw (#8688 cmux tab switch, /redraw, Ctrl+L)
   - the resize handler we install over prompt_toolkit's _on_resize (#5474)
+  - the resize-gated _output_screen_diff patch (text-overwrites-itself
+    regression, see TestResizeSafeScreenDiffPatch)
 
 Both behaviors are exercised against fake prompt_toolkit renderer/output
 objects — we're asserting the escape sequences the CLI sends, not that
 the terminal physically repainted.
 """
 
+import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -426,3 +429,123 @@ class TestFocusRegainRedraw:
         bare_cli._schedule_focus_regain_redraw(min_interval=0.0)
 
         assert calls == ["redraw", "redraw"]
+class TestResizeSafeScreenDiffPatch:
+    """Regression tests for the "text overwriting itself" bug.
+
+    The ghost-status-bar fix monkey-patches prompt_toolkit's
+    _output_screen_diff to inflate previous_screen.height whenever the new
+    frame is taller. That condition also fires on ordinary typing (the
+    completion menu popping open, inline auto-suggest ghost-text appearing)
+    with no resize involved — desyncing the renderer's cursor bookkeeping
+    and producing fragments of later text overwriting earlier text on the
+    input line (observed live: typing "testing that you are working"
+    rendered as "tou ing that ye..."). The patch must only inflate height
+    while `_status_bar_suppressed_after_resize` is true (the transient
+    post-resize recovery window), never during normal keystroke-driven
+    frame growth.
+    """
+
+    @pytest.fixture
+    def patched_diff(self, bare_cli, monkeypatch):
+        """Install the patch against the REAL prompt_toolkit.renderer module,
+        with its _output_screen_diff swapped for a recording stub, and
+        `_hermes_osd_patched` reset so each test re-installs cleanly.
+
+        Returns (bare_cli, patched_osd_callable, orig_osd_calls). Patches
+        module attributes directly (monkeypatch.setattr, auto-restored)
+        rather than swapping sys.modules — a dotted `import a.b as x`
+        performed *inside* the method under test resolves via the
+        package's cached submodule attribute, not a sys.modules swap, so
+        attribute-level patching is the reliable way to intercept it here.
+        """
+        import prompt_toolkit.renderer as _real_pt_renderer
+
+        calls = []
+
+        def fake_orig_osd(
+            app, output, screen, current_pos, color_depth,
+            previous_screen, last_style, is_done, full_screen,
+            attrs_for_style_string, style_string_has_style,
+            size, previous_width,
+        ):
+            calls.append(previous_screen.height if previous_screen is not None else None)
+            return "sentinel-return"
+
+        monkeypatch.setattr(_real_pt_renderer, "_output_screen_diff", fake_orig_osd)
+        monkeypatch.setattr(_real_pt_renderer, "_hermes_osd_patched", False, raising=False)
+
+        bare_cli._install_resize_safe_screen_diff_patch()
+        patched_osd = _real_pt_renderer._output_screen_diff
+        return bare_cli, patched_osd, calls
+
+    def _make_previous_screen(self, height):
+        return types.SimpleNamespace(height=height)
+
+    def test_does_not_inflate_height_outside_resize_window(self, patched_diff):
+        """Plain typing (menu/ghost-text growing the frame) must NOT
+        trigger the height inflate — this is the actual regression."""
+        bare_cli, patched_osd, calls = patched_diff
+        bare_cli._status_bar_suppressed_after_resize = False
+
+        previous_screen = self._make_previous_screen(height=1)
+        screen = types.SimpleNamespace(height=3)  # e.g. completion menu opened
+
+        result = patched_osd(
+            None, None, screen, None, None, previous_screen, None, False, False,
+            None, None, None, None,
+        )
+
+        assert result == "sentinel-return"
+        # Height must be passed through UNCHANGED to the real implementation.
+        assert previous_screen.height == 1
+        assert calls == [1]
+
+    def test_inflates_height_during_resize_recovery_window(self, patched_diff):
+        """The original ghost-status-bar fix must still work during an
+        actual resize (when _status_bar_suppressed_after_resize is True)."""
+        bare_cli, patched_osd, calls = patched_diff
+        bare_cli._status_bar_suppressed_after_resize = True
+
+        previous_screen = self._make_previous_screen(height=1)
+        screen = types.SimpleNamespace(height=3)
+
+        patched_osd(
+            None, None, screen, None, None, previous_screen, None, False, False,
+            None, None, None, None,
+        )
+
+        # Height WAS inflated to match before delegating to the real impl.
+        assert previous_screen.height == 3
+        assert calls == [3]
+
+    def test_never_shrinks_previous_screen_height(self, patched_diff):
+        """Only inflate (never shrink) — a taller previous frame than the
+        new one is left untouched even inside the resize window."""
+        bare_cli, patched_osd, calls = patched_diff
+        bare_cli._status_bar_suppressed_after_resize = True
+
+        previous_screen = self._make_previous_screen(height=5)
+        screen = types.SimpleNamespace(height=3)
+
+        patched_osd(
+            None, None, screen, None, None, previous_screen, None, False, False,
+            None, None, None, None,
+        )
+
+        assert previous_screen.height == 5
+        assert calls == [5]
+
+    def test_none_previous_screen_is_left_untouched(self, patched_diff):
+        """previous_screen=None (first paint) must reach the real impl
+        unmodified — never replaced with a fresh Screen()."""
+        bare_cli, patched_osd, calls = patched_diff
+        bare_cli._status_bar_suppressed_after_resize = True
+
+        screen = types.SimpleNamespace(height=3)
+
+        result = patched_osd(
+            None, None, screen, None, None, None, None, False, False,
+            None, None, None, None,
+        )
+        assert result == "sentinel-return"
+        assert calls == [None]

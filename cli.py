@@ -3207,6 +3207,22 @@ def _query_osc11_background() -> str | None:
     After the main read + TCSAFLUSH, a short drain window (50 ms) catches
     late-arriving bytes that slipped past the flush — a race observed on VPS
     and container terminals under load (#40250).
+
+    Typeahead safety: this function runs at ``cli`` import, seconds before
+    prompt_toolkit attaches — exactly when users type or paste ahead into a
+    still-booting tab.  Its read loop, TCSAFLUSH, and drain window are all
+    stdin *eaters*: any typeahead they consume (or tear mid-escape-sequence)
+    later surfaces as literal ``[200~…``/``^[[99;5u`` garbage in the
+    composer.  Three guards keep typeahead intact:
+      1. If stdin already has pending bytes before the query is written,
+         skip the query entirely (fall back to env hints / dark default).
+      2. When the DA1 fence closes with a parsed OSC 11 payload (healthy
+         terminal, in-order replies), restore with TCSADRAIN — never
+         TCSAFLUSH — and skip the drain window; there is nothing left to
+         scrub, and anything queued is the user's.
+      3. TCSAFLUSH + drain only run on the degraded paths (fence closed
+         without a payload, or deadline/read error), where a late reply
+         leak is still possible and typeahead was already protected by 1.
     """
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return None
@@ -3219,9 +3235,26 @@ def _query_osc11_background() -> str | None:
         old = termios.tcgetattr(fd)
     except Exception:
         return None
+    # "clean" = fence closed with a parsed payload → restore must preserve
+    # any queued typeahead (TCSADRAIN, no drain window).  Every other exit
+    # keeps the scrubbing restore (TCSAFLUSH + drain).
+    clean = False
     try:
         try:
             tty.setcbreak(fd)
+        except Exception:
+            return None
+        import select
+        try:
+            # Typeahead guard: if the user already typed/pasted into this
+            # still-booting tab, do not write the query at all — the read
+            # loop below would consume (and tear) their bytes, and the
+            # scrubbing restore would discard the rest.  Style falls back
+            # to COLORFGBG / env hints / the dark default.
+            pending, _, _ = select.select([fd], [], [], 0)
+            if pending:
+                clean = True  # nothing of ours is in flight; keep their bytes
+                return None
         except Exception:
             return None
         try:
@@ -3243,7 +3276,6 @@ def _query_osc11_background() -> str | None:
         # we keep listening until its DA1 reply follows, so the payload is
         # consumed here instead of leaking as typed input (the "gibberish
         # ANSI characters" seen inside terminal managers).
-        import select
         deadline = time.monotonic() + 1.0
         buf = b""
         while time.monotonic() < deadline:
@@ -3263,6 +3295,11 @@ def _query_osc11_background() -> str | None:
         m = re.search(rb"rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)", buf)
         if not m:
             return None
+        # Fence closed AND payload parsed: an in-order terminal answered
+        # both queries and both were consumed above.  Nothing of ours can
+        # still be in flight, so the scrubbing restore below must not run —
+        # it would eat typeahead that arrived after the fence.
+        clean = True
         # Each component is 1-4 hex digits — normalize to 8-bit
         def norm(h: bytes) -> int:
             v = int(h, 16)
@@ -3272,29 +3309,40 @@ def _query_osc11_background() -> str | None:
         r, g, b = norm(m.group(1)), norm(m.group(2)), norm(m.group(3))
         return f"#{r:02X}{g:02X}{b:02X}"
     finally:
-        # TCSAFLUSH discards any unread input as it restores the original
-        # attributes — scrubs a slow/partial OSC 11 reply out of the tty
-        # buffer before prompt_toolkit can read it as keystrokes.
-        try:
-            termios.tcsetattr(fd, termios.TCSAFLUSH, old)
-        except Exception:
-            pass
-        # Race guard: on slow terminals (VPS, container, heavy load), the
-        # OSC 11 reply can arrive *after* TCSAFLUSH completes.  Drain any
-        # late bytes with a short post-flush window so they don't leak into
-        # prompt_toolkit's input buffer as typed text.
-        try:
-            import select as _sel
-            drain_deadline = time.monotonic() + 0.05
-            while time.monotonic() < drain_deadline:
-                r, _, _ = _sel.select([fd], [], [], drain_deadline - time.monotonic())
-                if not r:
-                    break
-                late = os.read(fd, 64)
-                if not late:
-                    break
-        except Exception:
-            pass
+        if clean:
+            # Preserve queued input: TCSADRAIN waits for our own pending
+            # output but does NOT discard unread input (typeahead).
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            except Exception:
+                pass
+        else:
+            # Degraded exit (fence without payload, deadline, read error):
+            # a slow/partial reply may still be queued or in flight.
+            # TCSAFLUSH discards any unread input as it restores the
+            # original attributes — scrubs a slow/partial OSC 11 reply out
+            # of the tty buffer before prompt_toolkit can read it as
+            # keystrokes.
+            try:
+                termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+            except Exception:
+                pass
+            # Race guard: on slow terminals (VPS, container, heavy load),
+            # the OSC 11 reply can arrive *after* TCSAFLUSH completes.
+            # Drain any late bytes with a short post-flush window so they
+            # don't leak into prompt_toolkit's input buffer as typed text.
+            try:
+                import select as _sel
+                drain_deadline = time.monotonic() + 0.05
+                while time.monotonic() < drain_deadline:
+                    r, _, _ = _sel.select([fd], [], [], drain_deadline - time.monotonic())
+                    if not r:
+                        break
+                    late = os.read(fd, 64)
+                    if not late:
+                        break
+            except Exception:
+                pass
 
 
 def _heal_cooked_mode_drift(fd: int) -> bool:
@@ -6376,6 +6424,111 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._schedule_resize_recovery(app, original_on_resize)
 
         app._on_resize = _resize_clear_ghosts
+
+    def _install_resize_safe_screen_diff_patch(self) -> None:
+        """Monkey-patch prompt_toolkit's _output_screen_diff to suppress
+        the deliberate "reserve vertical space" scroll-up, but ONLY during
+        the transient post-resize recovery window.
+
+        Background: prompt_toolkit's renderer (renderer.py L232-242)
+        explicitly moves the cursor to the bottom of the canvas after
+        painting "to make sure the terminal scrolls up, even when the
+        lower lines of the canvas just contain whitespace".  In
+        non-fullscreen mode this scrolls chrome content (status bar,
+        input rules) into terminal scrollback on every render.  When
+        the terminal column-shrinks, the emulator reflows the previously
+        rendered full-width rows into multiple narrower rows that get
+        pushed up — leaving ghost duplicates AND polluting scrollback.
+        Same issue as pt #29 (open since 2014), #1675, #1933.
+
+        Surgical fix: wrap _output_screen_diff so that when its internal
+        `if current_height > previous_screen.height` branch fires (the
+        one that does the bottom-cursor-move), we make it fall through
+        by inflating previous_screen.height first — but ONLY while
+        ``_status_bar_suppressed_after_resize`` is true (the short window
+        right after a real terminal resize, set in _recover_after_resize
+        and cleared by a debounce timer once reflow settles — see
+        _schedule_resize_recovery / _schedule_status_bar_unsuppress).
+
+        Why the gate matters: current_height > previous_screen.height is
+        NOT resize-specific — it also fires on ordinary typing whenever
+        the completion menu pops open or inline history auto-suggest
+        ghost-text appears, since either grows the rendered frame by a
+        row. Inflating previous_screen.height on those frames desyncs the
+        renderer's cursor-position bookkeeping from the real terminal
+        cursor, so the FOLLOWING frame's cell writes land at stale
+        offsets — producing fragments of later text overwriting earlier
+        text on the input line (reported live: typing "testing that you
+        are working" rendered as "tou ing that ye..."). Restricting the
+        inflate to the actual resize-recovery window keeps the original
+        ghost-status-bar fix intact while no longer misfiring on every
+        keystroke that resizes the menu.
+
+        Also retries once with ``previous_screen=None`` on AttributeError/
+        TypeError from a corrupt previous paint buffer (classic after tmux
+        attach with the same width — "'cell' object has no attribute
+        'char'"), so pt takes the first-paint erase path instead of
+        wedging the event loop (#83874).
+        """
+        try:
+            import prompt_toolkit.renderer as _pt_renderer
+            from prompt_toolkit.renderer import _output_screen_diff as _orig_osd
+
+            if getattr(_pt_renderer, "_hermes_osd_patched", False):
+                return
+
+            cli_self = self
+
+            def _patched_output_screen_diff(
+                app, output, screen, current_pos, color_depth,
+                previous_screen, last_style, is_done, full_screen,
+                attrs_for_style_string, style_string_has_style,
+                size, previous_width,
+            ):
+                # Critical: do NOT replace a None previous_screen with a
+                # fresh Screen() — that would skip the proper
+                # reset_attributes()+erase_down() at L178-185 which fires
+                # when previous_screen is None (first-paint / width-
+                # change).  Without that reset, ANSI styles leak between
+                # renders.
+                try:
+                    if (
+                        previous_screen is not None
+                        and hasattr(previous_screen, "height")
+                        and getattr(cli_self, "_status_bar_suppressed_after_resize", False)
+                    ):
+                        if previous_screen.height < screen.height:
+                            previous_screen.height = screen.height
+                except Exception:
+                    pass
+
+                try:
+                    return _orig_osd(
+                        app, output, screen, current_pos, color_depth,
+                        previous_screen, last_style, is_done, full_screen,
+                        attrs_for_style_string, style_string_has_style,
+                        size, previous_width,
+                    )
+                except (AttributeError, TypeError):
+                    # Corrupt previous_screen / row cells after client
+                    # reattach (classic after tmux attach at the same
+                    # width — "'cell' object has no attribute 'char'").
+                    # Retry once with previous_screen=None so pt takes
+                    # the first-paint erase path instead of wedging the
+                    # event loop (#83874).
+                    return _orig_osd(
+                        app, output, screen, current_pos, color_depth,
+                        None,  # previous_screen -> first-paint erase path
+                        None,  # last_style
+                        is_done, full_screen,
+                        attrs_for_style_string, style_string_has_style,
+                        size, 0,  # previous_width -> treat as changed
+                    )
+
+            _pt_renderer._output_screen_diff = _patched_output_screen_diff
+            _pt_renderer._hermes_osd_patched = True
+        except Exception:
+            pass
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -22297,73 +22450,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._app = app  # Store reference for clarify_callback
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
-        # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff
-        # to suppress the deliberate "reserve vertical space" scroll-up.
-        #
-        # Background: prompt_toolkit's renderer (renderer.py L232-242)
-        # explicitly moves the cursor to the bottom of the canvas after
-        # painting "to make sure the terminal scrolls up, even when the
-        # lower lines of the canvas just contain whitespace".  In
-        # non-fullscreen mode this scrolls chrome content (status bar,
-        # input rules) into terminal scrollback on every render.  When
-        # the terminal column-shrinks, the emulator reflows the previously
-        # rendered full-width rows into multiple narrower rows that get
-        # pushed up — leaving ghost duplicates AND polluting scrollback.
-        # Same issue as pt #29 (open since 2014), #1675, #1933.
-        #
-        # Surgical fix: wrap _output_screen_diff so that when its internal
-        # `if current_height > previous_screen.height` branch fires (the
-        # one that does the bottom-cursor-move), we make it fall through
-        # by inflating previous_screen.height first.
-        try:
-            import prompt_toolkit.renderer as _pt_renderer
-            from prompt_toolkit.renderer import _output_screen_diff as _orig_osd
-
-            if not getattr(_pt_renderer, "_hermes_osd_patched", False):
-                def _patched_output_screen_diff(
-                    app, output, screen, current_pos, color_depth,
-                    previous_screen, last_style, is_done, full_screen,
-                    attrs_for_style_string, style_string_has_style,
-                    size, previous_width,
-                ):
-                    """Wraps pt's _output_screen_diff to suppress the
-                    reserve-vertical-space scroll (renderer.py L232-242).
-
-                    Strategy: ONLY when previous_screen is non-None and
-                    its current height is genuinely smaller than the new
-                    screen's height, inflate it to match.  This prevents
-                    the bottom-cursor-move at L242 without changing any
-                    other code path's behavior.
-
-                    Critical: do NOT replace a None previous_screen with
-                    a fresh Screen() on the happy path — that would skip
-                    the proper reset_attributes()+erase_down() at L178-185
-                    which fires when previous_screen is None (first-paint /
-                    width-change).  Without that reset, ANSI styles
-                    leak between renders.
-
-                    Safety net: if the diff crashes with AttributeError /
-                    TypeError (corrupt previous_screen after tmux attach —
-                    "'cell' object has no attribute 'char'"), retry once
-                    with previous_screen=None so pt takes the first-paint
-                    erase path instead of wedging the event loop.
-                    """
-                    return _hermes_call_output_screen_diff(
-                        _orig_osd,
-                        app, output, screen, current_pos, color_depth,
-                        previous_screen, last_style, is_done, full_screen,
-                        attrs_for_style_string, style_string_has_style,
-                        size, previous_width,
-                    )
-
-                _pt_renderer._output_screen_diff = _patched_output_screen_diff
-                _pt_renderer._hermes_osd_patched = True
-        except Exception:
-            pass
+        self._install_resize_safe_screen_diff_patch()
 
         # Apply bracketed-paste timeout recovery so torn ESC[201~ end marks
         # don't permanently freeze the input (issue #16263). Idempotent.
         _apply_bracketed_paste_timeout_patch()
+
+        # Discard input typed/pasted before prompt_toolkit attaches. During
+        # the multi-second startup window the tty is still in cooked mode:
+        # bracketed-paste mode (2004) is off, so pastes arrive UNWRAPPED or
+        # torn mid-wrapper; kitty-keyboard-protocol key events (\x1b[99;5u
+        # Ctrl+C etc.) queue as raw bytes; and everything kernel-echoes as
+        # caret junk (^[[200~…) onto the banner. Feeding that backlog into
+        # the parser is a byte-boundary lottery — sometimes it decodes,
+        # sometimes it wedges paste mode and every later keystroke inserts
+        # verbatim ESC garbage into the composer (seen live 2026-08-14, see
+        # FORK.md). A one-time flush with a visible notice is deterministic:
+        # nothing typed before the prompt exists can corrupt the session.
+        try:
+            import fcntl as _fcntl
+            import struct as _struct
+            import termios as _termios
+            if sys.stdin.isatty():
+                _fd = sys.stdin.fileno()
+                _pending = _struct.unpack(
+                    "i", _fcntl.ioctl(_fd, _termios.FIONREAD, b"\x00\x00\x00\x00")
+                )[0]
+                if _pending > 0:
+                    _termios.tcflush(_fd, _termios.TCIFLUSH)
+                    _cprint(
+                        f"  {_DIM}Discarded {_pending} byte(s) typed before the "
+                        f"prompt was ready — please re-type/re-paste.{_RST}"
+                    )
+        except Exception:
+            pass
 
         self._install_resize_recovery(app)
 
@@ -22394,6 +22514,80 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()
+
+        def _termios_watchdog_loop():
+            """Heal a tty stuck in cooked mode while the TUI is active.
+
+            Failure mode seen live (2026-08-14, see FORK.md): the terminal
+            ends up in icanon+echo while the prompt_toolkit app keeps
+            rendering — every keypress kernel-echoes as caret junk
+            (^[[99;5u), pastes arrive as ctrl codes, and the per-second
+            status repaint overwrites the input line from a desynced cursor.
+            Nothing inside prompt_toolkit notices, because its raw-mode
+            context believes it is still applied.
+
+            The watchdog samples termios every 2s while the app claims to be
+            running normally (not suspended via run_in_terminal, no slash
+            command that might own the terminal) and, if it sees ECHO or
+            ICANON set on TWO consecutive samples, re-enters raw mode via
+            prompt_toolkit's own raw_mode context and forces a full repaint.
+            The double-sample requirement plus the _running_in_terminal /
+            _command_running guards keep it from firing during legitimate
+            cooked windows (external editor, ! shell, pickers — all routed
+            through run_in_terminal).
+            """
+            import termios as _t
+            misses = 0
+            while not self._should_exit:
+                time.sleep(2.0)
+                app_ref = getattr(self, "_app", None)
+                if app_ref is None or not getattr(app_ref, "_is_running", False):
+                    misses = 0
+                    continue
+                if getattr(app_ref, "_running_in_terminal", False) or self._command_running:
+                    misses = 0
+                    continue
+                try:
+                    if not sys.stdin.isatty():
+                        continue
+                    attrs = _t.tcgetattr(sys.stdin.fileno())
+                except Exception:
+                    continue
+                if attrs[3] & (_t.ECHO | _t.ICANON):
+                    misses += 1
+                    if misses >= 2:
+                        misses = 0
+                        try:
+                            from prompt_toolkit.input.vt100 import raw_mode as _pt_raw_mode
+                            ctx = _pt_raw_mode(sys.stdin.fileno())
+                            ctx.__enter__()
+                            # Keep the context alive for the process
+                            # lifetime — exiting it would restore the very
+                            # cooked attrs we just escaped from.
+                            self._termios_watchdog_ctx = ctx
+                            logger.warning(
+                                "Terminal was in cooked mode while the TUI was "
+                                "active — re-asserted raw mode (watchdog)"
+                            )
+                            try:
+                                app_ref.renderer.reset()
+                            except Exception:
+                                pass
+                            try:
+                                app_ref.invalidate()
+                            except Exception:
+                                pass
+                        except Exception:
+                            logger.debug(
+                                "raw-mode watchdog reassert failed", exc_info=True
+                            )
+                else:
+                    misses = 0
+
+        termios_watchdog_thread = threading.Thread(
+            target=_termios_watchdog_loop, name="termios-watchdog", daemon=True
+        )
+        termios_watchdog_thread.start()
         
         # Background thread to process inputs and run agent
         def process_loop():
