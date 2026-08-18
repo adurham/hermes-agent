@@ -11393,3 +11393,40 @@ predates this session by weeks, in a file this sync never touched at
 all). `tests/tools/test_mcp_tool.py` 141/141, `tests/tools/test_delegate.py`
 95/95, `tests/tools/test_async_delegation.py` unchanged (its one failure
 already triaged pre-existing in the main sync entry above).
+
+### Fork-only fix — 2026-08-18 (v2026.8.18 merge reintroduced `agent-browser`/`@streamdown/math` as root npm deps, breaking `npm ci` on every `hermes update`)
+
+**Symptom:** `hermes update` printed an `npm ci` failure —
+`Missing: agent-browser@0.26.0 from lock file` — then quietly succeeded
+anyway via the `npm install --no-save` fallback in
+`_run_npm_install_deterministic` (`hermes_cli/main.py`). The update
+completed either way, so the failure read as noise rather than a
+regression.
+
+**Root cause:** the `v2026.8.18` sync merge (`f1993d5`, same-day sync
+entry above) reintroduced `agent-browser` and `@streamdown/math` into
+root `package.json`'s `dependencies`, undoing `5f5f8d5b6` ("fix(cli):
+drop agent-browser/@streamdown-math from root npm deps", #43564,
+2026-07-15) without regenerating `package-lock.json` to match. That fix
+exists because npm's arborist hardcodes `includeWorkspaceRoot=false` for
+`ci`/`install` in a workspace context — no flag combination keeps a
+root-only dependency from being pruned across a workspace-scoped
+`npm ci`, so root-only deps are permanently fragile in this layout.
+`agent-browser` resolves lazily via `npx agent-browser` instead
+(`tools/browser_tool.py`'s `_find_agent_browser` /
+`warm_agent_browser_npx_cache`), and `@streamdown/math` belongs in
+`apps/desktop/package.json`, the only place that imports it
+(`markdown-text.tsx`, `katex-memo.ts`). Both of those were already
+correct and untouched by the merge — only the root `package.json`
+dependency block itself reverted.
+
+**Fix:** removed `@streamdown/math` and `agent-browser` from root
+`package.json`'s `dependencies` again (`apps/desktop`'s own copy was
+already intact, no change needed there); regenerated `package-lock.json`
+via `npm install --workspaces=false`.
+
+**Verification:** `npm ci --include=dev` at root now exits 0, no
+fallback needed. `tests-js/package-json-lazy-deps.test.ts` — the
+regression test #43564 shipped specifically for this class of revert —
+6/6 passing. It would have caught this immediately post-sync; it wasn't
+in the original sync's test scope.
