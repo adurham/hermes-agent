@@ -429,6 +429,28 @@ def _lookup_supports_vision(
         return override
     if not provider or not model:
         return None
+
+    # Managed local runtime: the server that would receive the image is
+    # the authority on whether it can see (its /props reports modalities
+    # when a vision projector is loaded; the catalog covers staged-but-
+    # unloaded models). Cloud catalogs have never heard of a local GGUF,
+    # so without this answer every local model reads as text-only and
+    # images detour to a cloud auxiliary — wrong twice for a local-first
+    # user (broken feature, and a screenshot leaving the machine).
+    try:
+        from hermes_cli.local_runtime.capabilities import (
+            is_managed_provider,
+            managed_model_supports_vision,
+        )
+
+        if is_managed_provider(provider, _resolve_inference_base_url(cfg, provider) or ""):
+            managed = managed_model_supports_vision(model)
+            if managed is not None:
+                return managed
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("image_routing: managed-runtime caps lookup failed for %s:%s — %s",
+                     provider, model, exc)
+
     caps = None
     try:
         from agent.models_dev import get_model_capabilities
