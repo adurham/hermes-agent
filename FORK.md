@@ -11101,7 +11101,7 @@ merge alongside the fix — a future reader diffing FORK.md against `git
 log` should be able to tell which piece came from which session without
 re-deriving it from the SHAs.
 
-### Upstream sync — 2026-08-18 (v2026.8.13 → v2026.8.18, 1397 commits, 44 conflict files + 2-commit second-round reconciliation)
+### Upstream sync — 2026-08-18 (v2026.8.13 → v2026.8.18, 1396 commits, 44 conflict files + 2-commit second-round reconciliation)
 
 **Target:** `v2026.8.18` (highest NousResearch release tag at sync time;
 verified no newer `v2026.*` tag landed before push). Prior sync was
@@ -11309,3 +11309,87 @@ hard-fork/soft-fork file lists, cross-checked against
 <file>` for remaining delta; 2 of the subagents' most notable claims
 (gemini_native_adapter's zero-diff, empty_response_guard's
 non-overlap) spot-verified directly rather than taken on trust.
+
+### Fork-only fix — 2026-08-18 (3 real merge regressions caught by a post-sync second-opinion review, none surfaced by the original test scope)
+
+**Context:** after the sync + de-fork audit above, `mcp__consult`
+(claude-fable-5) reviewed the FORK.md sync entry and de-fork audit before
+push. Verdict: conflict-resolution decisions and de-fork methodology were
+sound, but flagged 3 concrete gaps — the `apps/desktop` TS/TSX test suite
+had only ever been `tsc --noEmit`'d, never actually run with `vitest`
+(6186 tests, zero of which had executed post-sync); no full-suite run had
+ever exercised `tests/tools/` (only `tests/agent`+`tests/run_agent` were
+in the original scoped audit); and the resize/redraw crash-retry path had
+only unit-test coverage, no live end-to-end exercise.
+
+**Running the desktop suite surfaced 1 real merge-caused regression:**
+`apps/desktop/src/app/contrib/surfaces.test.tsx` — the fork's
+`PetZoneSurface` (co-located in `surfaces.tsx`, needed for the pet-zone
+feature) imports `FloatingPet` and `store/pet`'s `$petZoneEnabled` at
+module top-level; `store/pet.ts` itself does a top-level
+`computed([$petActivity, $busy], ...)` read against `store/session`.
+Since the whole `surfaces.tsx` module body evaluates on import regardless
+of which named export a test actually uses, loading `ChatRoutesSurface`
+alone runs that entire chain — but the new upstream test file's
+`vi.mock('@/store/session', ...)` was written against upstream's own
+`surfaces.tsx`, which has no pet-zone feature and never needed `$busy`.
+Fixed by mocking `FloatingPet` and `store/pet` at their own module
+boundaries (matching every other real component the test already mocks),
+rather than chasing the deeper transitive store chain.
+
+**Running `tests/tools/` surfaced 2 more, both narrow test-staleness, no
+production-code fault in either:**
+1. `tests/tools/test_mcp_tool.py::test_native_tool_wins_over_generated_utility_on_collision`
+   — new upstream test for issue #87112 (a real collision-resolution fix:
+   a generated `read_resource` utility must not knock out a server-native
+   tool of the same name). The collision logic itself works correctly
+   (confirmed via the test's own captured log line). Only the test's
+   expected registered names were wrong — it asserted upstream's
+   `mcp__<server>__<tool>` convention; the fork deliberately uses
+   `<server>_<tool>` (see `_convert_mcp_schema`'s docstring for the
+   3-iteration history of why `mcp` can't appear in the registered name
+   at all). Fixed to match the fork's own convention, same as its passing
+   sibling test in the same class already does.
+2. `tests/tools/test_delegate.py::test_default_is_five` — asserted the
+   fork's old `_DEFAULT_MAX_CONCURRENT_CHILDREN` default of `5`; this
+   sync's own conflict resolution (see the sync entry above) took
+   upstream's raised default of `10`. This sibling test file (distinct
+   from `tests/tools/test_async_delegation.py`, which was in scope and
+   already correctly resolved during the sync) was missed. Renamed to
+   `test_default_is_ten` and updated the assertion.
+
+**Everything else in `tests/tools/` (24 files) is environment-only
+noise**, not merge-caused: individually triaged, each traces to a
+missing optional third-party SDK not installed in this dev venv
+(`daytona`, `fal-client`), a macOS `/private/tmp` vs `/tmp` symlink
+mismatch, an `AF_UNIX` socket path exceeding this machine's temp-dir
+nesting depth, or this machine's specific `man` binary behavior under
+pytest's tmp_path. One exception —
+`test_unresolved_plugin_target_requires_explicit_parser` — is a genuine
+pre-existing fork-vs-test design mismatch (the fork's
+`_KNOWN_PARSER_PLATFORMS` pass-through bypass applies unconditionally,
+while upstream's new test encodes upstream's stricter opt-in-only
+`pass_unresolved_references` default) confirmed via a disposable
+`git worktree` to already fail identically on the unmerged pre-sync fork
+HEAD — predates this session, flagged rather than silently patched since
+resolving it is a product decision (should the agent-tool call path
+respect `_KNOWN_PARSER_PLATFORMS` the same way the CLI path does?), not
+a regression to fix blind.
+
+**Live smoke test (the crash-retry path Fable specifically flagged as
+undertested):** launched the real built `cli.py` inside a `tmux` session
+and drove an actual `resize-window` cycle (80×24 → 100×30) to trigger a
+genuine same-width-adjacent SIGWINCH against the live process — the exact
+class of event `_hermes_call_output_screen_diff`'s AttributeError/TypeError
+retry (#83874) and `_status_bar_suppressed_after_resize` gate exist to
+survive. Process stayed alive (`tmux list-panes` confirmed non-dead PID
+throughout), status bar continued updating across both resize events, no
+traceback, no stuck rendering.
+
+**Verification:** `apps/desktop` full `vitest run` — 6183/6186 passing
+(1 pre-existing `lone-header.test.ts` failure, confirmed via disposable
+worktree to reproduce identically on unmerged pre-sync fork HEAD —
+predates this session by weeks, in a file this sync never touched at
+all). `tests/tools/test_mcp_tool.py` 141/141, `tests/tools/test_delegate.py`
+95/95, `tests/tools/test_async_delegation.py` unchanged (its one failure
+already triaged pre-existing in the main sync entry above).
