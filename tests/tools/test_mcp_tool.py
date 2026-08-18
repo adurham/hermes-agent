@@ -905,18 +905,22 @@ class TestDiscoverAndRegister:
             registered = _register_server_tools("srv", server, config)
 
         # The native tool is registered (before the fix it was dropped) and it
-        # is the server's tool, not the utility stub.
-        assert "mcp__srv__read_resource" in registered
-        entry = registry.get_entry("mcp__srv__read_resource")
+        # is the server's tool, not the utility stub. Fork-only naming: the
+        # registry uses "<server>_<tool>" (no "mcp_"/"mcp__" prefix — see
+        # mcp_tool.py's _convert_mcp_schema docstring for why upstream's
+        # mcp__<server>__<tool> convention is deliberately not used here),
+        # not upstream's "mcp__<server>__<tool>".
+        assert "srv_read_resource" in registered
+        entry = registry.get_entry("srv_read_resource")
         assert entry is not None
         assert entry.description == "Native read-resource tool"
-        assert "mcp__srv__safe_tool" in registered
+        assert "srv_safe_tool" in registered
 
         # The collision was resolved in favour of the native tool, not skipped
         # as ambiguous.
         assert not any(
             "name normalization collision" in record.message
-            and "mcp__srv__read_resource" in record.message
+            and "srv_read_resource" in record.message
             for record in caplog.records
         )
         assert any(

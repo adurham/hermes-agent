@@ -17,6 +17,18 @@ vi.mock('@/store/session', () => ({
   $freshDraftReady: atom(false),
   $gatewayState: atom('open')
 }))
+// Fork-only `PetZoneSurface` (also exported from this module, but untouched
+// by this test) imports `FloatingPet` at module top-level AND imports
+// `$petZoneEnabled` directly from `store/pet`. Since `./surfaces`'s whole
+// module body evaluates on import regardless of which export is used, both
+// chains run even for a test that only touches `ChatRoutesSurface` — and
+// `store/pet.ts` itself does a top-level `computed([...])` read of
+// `store/session`'s `$busy`, which upstream's own mock above never needed
+// before the fork's pet-zone feature existed. Mock both at their own
+// boundaries (matching every other real component mocked below) rather
+// than chasing the full transitive store chain (#post-2026-08-18-sync).
+vi.mock('@/components/pet/floating-pet', () => ({ FloatingPet: () => null }))
+vi.mock('@/store/pet', () => ({ $petZoneEnabled: atom(false) }))
 vi.mock('../chat', () => ({
   ChatView: ({ gateway }: { gateway: { id?: string } | null }) => <div data-testid="gateway">{gateway?.id}</div>
 }))
