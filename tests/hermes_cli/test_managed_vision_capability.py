@@ -108,3 +108,49 @@ def test_lookup_chain_consults_managed_runtime(hermes_home, monkeypatch):
                      "supports_vision": False}}
     got = ir._lookup_supports_vision("llamacpp", "Some-Local-Model", cfg)
     assert got is False
+
+
+def test_webp_transcodes_to_png_for_managed_provider(hermes_home, monkeypatch, tmp_path):
+    """A .webp attachment bound for the managed server must arrive as PNG:
+    llama.cpp's stb_image decoder has no WebP support and drops the part
+    SILENTLY — the model confabulates a description of an image it never
+    saw. Measured live: the same red square answered 'Red' as PNG and
+    'Unseen' as WebP."""
+    pytest.importorskip("PIL")
+    import io
+
+    from PIL import Image
+
+    import agent.image_routing as ir
+
+    webp_path = tmp_path / "shot.webp"
+    img = Image.new("RGB", (32, 32), (255, 0, 0))
+    img.save(webp_path, format="WEBP")
+
+    monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
+                        lambda k: {"provider": "llamacpp",
+                                   "base_url": ""}.get(k, ""))
+
+    data_url = ir._file_to_data_url(webp_path)
+    assert data_url is not None
+    assert data_url.startswith("data:image/png;base64,"), (
+        "webp must transcode to png for the managed server")
+
+
+def test_webp_passes_through_for_cloud_providers(hermes_home, monkeypatch, tmp_path):
+    """Cloud providers accept WebP natively — no transcode tax for them."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    import agent.image_routing as ir
+
+    webp_path = tmp_path / "shot.webp"
+    Image.new("RGB", (32, 32), (255, 0, 0)).save(webp_path, format="WEBP")
+
+    monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
+                        lambda k: {"provider": "anthropic",
+                                   "base_url": ""}.get(k, ""))
+
+    data_url = ir._file_to_data_url(webp_path)
+    assert data_url is not None
+    assert data_url.startswith("data:image/webp;base64,")

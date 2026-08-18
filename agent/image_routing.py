@@ -734,12 +734,31 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
     mime = _guess_mime(path, raw=raw)
-    if mime not in _UNIVERSALLY_SUPPORTED_MIMES:
+    accepted = _UNIVERSALLY_SUPPORTED_MIMES
+    # The managed local server decodes fewer formats than cloud providers
+    # (no WebP — and a WebP part fails SILENTLY: the model never sees an
+    # image and confabulates a description). When the active main model is
+    # served by the managed runtime, narrow the accepted set so those
+    # formats transcode to PNG here instead of vanishing server-side.
+    try:
+        from agent.auxiliary_client import _runtime_main_value
+        from hermes_cli.local_runtime.capabilities import (
+            ACCEPTED_IMAGE_MIMES,
+            is_managed_provider,
+        )
+
+        if is_managed_provider(
+                str(_runtime_main_value("provider") or ""),
+                str(_runtime_main_value("base_url") or "")):
+            accepted = ACCEPTED_IMAGE_MIMES
+    except Exception:  # noqa: BLE001 — best-effort narrowing only
+        pass
+    if mime not in accepted:
         transcoded = _transcode_to_png(raw)
         if transcoded is None:
             logger.warning(
-                "image_routing: %s is %s which is not accepted by all major "
-                "vision providers and could not be transcoded to PNG; "
+                "image_routing: %s is %s which is not accepted by the "
+                "active provider and could not be transcoded to PNG; "
                 "skipping this attachment.",
                 path, mime,
             )

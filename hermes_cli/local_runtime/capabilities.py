@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 
 _LLAMACPP_ALIASES = frozenset({"llamacpp", "llama.cpp", "llama-cpp"})
 
+# Image formats the managed server's decoder actually handles. llama.cpp
+# decodes with stb_image: PNG/JPEG/GIF/BMP yes, WebP NO — and a WebP part
+# fails SILENTLY (no HTTP error, no log line; the model just never sees an
+# image and confabulates a description). Anything outside this set must be
+# transcoded before the request. Measured against the live server: the
+# same red square answered 'Red' as PNG and 'Unseen' as WebP.
+ACCEPTED_IMAGE_MIMES = frozenset({"image/png", "image/jpeg"})
+
 
 def is_managed_provider(provider: str, base_url: str = "") -> bool:
     """True when this provider/base_url pair points at the managed server.
