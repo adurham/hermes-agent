@@ -154,3 +154,32 @@ def test_webp_passes_through_for_cloud_providers(hermes_home, monkeypatch, tmp_p
     data_url = ir._file_to_data_url(webp_path)
     assert data_url is not None
     assert data_url.startswith("data:image/webp;base64,")
+
+
+def test_vision_analyze_normalization_narrows_for_managed(hermes_home, monkeypatch, tmp_path):
+    """vision_analyze's native fast path embeds the image into conversation
+    history via _normalize_to_supported_image — for the managed server a
+    WebP must convert to PNG THERE too, or the tool path re-introduces the
+    silent-drop confabulation the attachment path just fixed."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    import tools.vision_tools as vt
+
+    webp_path = tmp_path / "img.webp"
+    Image.new("RGB", (32, 32), (255, 0, 0)).save(webp_path, format="WEBP")
+
+    monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
+                        lambda k: {"provider": "llamacpp",
+                                   "base_url": ""}.get(k, ""))
+    out_path, mime, err = vt._normalize_to_supported_image(webp_path, "image/webp")
+    assert err is None
+    assert mime == "image/png", "managed server: webp must normalize to png"
+
+    # Cloud providers keep webp untouched.
+    monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
+                        lambda k: {"provider": "anthropic",
+                                   "base_url": ""}.get(k, ""))
+    out_path, mime, err = vt._normalize_to_supported_image(webp_path, "image/webp")
+    assert err is None
+    assert mime == "image/webp"
