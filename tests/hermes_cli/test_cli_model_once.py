@@ -38,6 +38,15 @@ class _StubCLI:
     def _apply_reasoning_for_new_model(self, new_model: str) -> None:
         pass
 
+    def _confirm_and_apply_cli_model_switch(
+        self, result, persist_global, one_turn, custom_provs=None
+    ):
+        import cli as cli_mod
+
+        return cli_mod.HermesCLI._confirm_and_apply_cli_model_switch(
+            self, result, persist_global, one_turn, custom_provs
+        )
+
 
 def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
     import cli as cli_mod
