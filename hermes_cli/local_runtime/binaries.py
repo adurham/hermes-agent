@@ -67,7 +67,15 @@ class AssetPlan:
 
 
 def runtimes_root() -> Path:
-    return get_hermes_home() / "runtimes" / "llamacpp"
+    """Machine-scoped, deliberately NOT profile-scoped. Engine binaries,
+    presets, and server state describe this machine's hardware and its one
+    managed server (stable port) — a second profile re-downloading the
+    engine or fighting over the port would be the bug. Profile-scoped
+    things (which model is the default, enabled) live in each profile's
+    config.yaml as ever."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "runtimes" / "llamacpp"
 
 
 def installed_tags() -> list[str]:

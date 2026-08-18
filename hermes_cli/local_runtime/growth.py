@@ -22,13 +22,13 @@ from __future__ import annotations
 import json
 import logging
 
-from hermes_constants import get_hermes_home
-
 logger = logging.getLogger(__name__)
 
 
 def window_overrides_path():
-    return get_hermes_home() / "runtimes" / "llamacpp" / "window_overrides.json"
+    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    return runtimes_root() / "window_overrides.json"
 
 
 def load_window_overrides() -> dict:

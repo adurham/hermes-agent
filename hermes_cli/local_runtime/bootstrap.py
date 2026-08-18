@@ -18,7 +18,9 @@ import subprocess
 import time
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home  # noqa: F401 — config paths
+
+from hermes_cli.local_runtime.binaries import runtimes_root
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,12 @@ def _detect_gpu_vendor() -> str | None:
 
 
 def models_dir() -> Path:
-    return get_hermes_home() / "models"
+    """Machine-scoped, deliberately NOT profile-scoped: a 20 GB GGUF is a
+    machine asset, and every profile shares the one managed server that
+    serves it. See runtimes_root() for the same rule on the engine."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "models"
 
 
 def assets_dir() -> Path:
@@ -211,7 +218,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         # is freed before the new instance loads anything. Pricing against
         # live-free here once pinned a fitting model's weights to CPU
         # because the probe saw the predecessor's VRAM as gone.
-        preset_path = get_hermes_home() / "runtimes" / "llamacpp" / "presets.ini"
+        preset_path = runtimes_root() / "presets.ini"
         try:
             entries = generate_presets(mdir, probe_budget(planning=True), preset_path)
             for entry in entries:
