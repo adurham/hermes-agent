@@ -5602,6 +5602,89 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._resize_recovery_pending = False
             self._recover_after_resize(app, original_on_resize)
 
+    def _install_resize_safe_screen_diff_patch(self) -> None:
+        """Monkey-patch prompt_toolkit's _output_screen_diff to suppress
+        the deliberate "reserve vertical space" scroll-up, but ONLY during
+        the transient post-resize recovery window.
+
+        Background: prompt_toolkit's renderer (renderer.py L232-242)
+        explicitly moves the cursor to the bottom of the canvas after
+        painting "to make sure the terminal scrolls up, even when the
+        lower lines of the canvas just contain whitespace".  In
+        non-fullscreen mode this scrolls chrome content (status bar,
+        input rules) into terminal scrollback on every render.  When
+        the terminal column-shrinks, the emulator reflows the previously
+        rendered full-width rows into multiple narrower rows that get
+        pushed up — leaving ghost duplicates AND polluting scrollback.
+        Same issue as pt #29 (open since 2014), #1675, #1933.
+
+        Surgical fix: wrap _output_screen_diff so that when its internal
+        `if current_height > previous_screen.height` branch fires (the
+        one that does the bottom-cursor-move), we make it fall through
+        by inflating previous_screen.height first — but ONLY while
+        ``_status_bar_suppressed_after_resize`` is true (the short window
+        right after a real terminal resize, set in _recover_after_resize
+        and cleared by a debounce timer once reflow settles — see
+        _schedule_resize_recovery / _schedule_status_bar_unsuppress).
+
+        Why the gate matters: current_height > previous_screen.height is
+        NOT resize-specific — it also fires on ordinary typing whenever
+        the completion menu pops open or inline history auto-suggest
+        ghost-text appears, since either grows the rendered frame by a
+        row. Inflating previous_screen.height on those frames desyncs the
+        renderer's cursor-position bookkeeping from the real terminal
+        cursor, so the FOLLOWING frame's cell writes land at stale
+        offsets — producing fragments of later text overwriting earlier
+        text on the input line (reported live: typing "testing that you
+        are working" rendered as "tou ing that ye..."). Restricting the
+        inflate to the actual resize-recovery window keeps the original
+        ghost-status-bar fix intact while no longer misfiring on every
+        keystroke that resizes the menu.
+        """
+        try:
+            import prompt_toolkit.renderer as _pt_renderer
+            from prompt_toolkit.renderer import _output_screen_diff as _orig_osd
+
+            if getattr(_pt_renderer, "_hermes_osd_patched", False):
+                return
+
+            cli_self = self
+
+            def _patched_output_screen_diff(
+                app, output, screen, current_pos, color_depth,
+                previous_screen, last_style, is_done, full_screen,
+                attrs_for_style_string, style_string_has_style,
+                size, previous_width,
+            ):
+                # Critical: do NOT replace a None previous_screen with a
+                # fresh Screen() — that would skip the proper
+                # reset_attributes()+erase_down() at L178-185 which fires
+                # when previous_screen is None (first-paint / width-
+                # change).  Without that reset, ANSI styles leak between
+                # renders.
+                try:
+                    if (
+                        previous_screen is not None
+                        and hasattr(previous_screen, "height")
+                        and getattr(cli_self, "_status_bar_suppressed_after_resize", False)
+                    ):
+                        if previous_screen.height < screen.height:
+                            previous_screen.height = screen.height
+                except Exception:
+                    pass
+
+                return _orig_osd(
+                    app, output, screen, current_pos, color_depth,
+                    previous_screen, last_style, is_done, full_screen,
+                    attrs_for_style_string, style_string_has_style,
+                    size, previous_width,
+                )
+
+            _pt_renderer._output_screen_diff = _patched_output_screen_diff
+            _pt_renderer._hermes_osd_patched = True
+        except Exception:
+            pass
+
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
             return "class:status-bar-dim"
@@ -20918,69 +21001,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._app = app  # Store reference for clarify_callback
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
-        # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff
-        # to suppress the deliberate "reserve vertical space" scroll-up.
-        #
-        # Background: prompt_toolkit's renderer (renderer.py L232-242)
-        # explicitly moves the cursor to the bottom of the canvas after
-        # painting "to make sure the terminal scrolls up, even when the
-        # lower lines of the canvas just contain whitespace".  In
-        # non-fullscreen mode this scrolls chrome content (status bar,
-        # input rules) into terminal scrollback on every render.  When
-        # the terminal column-shrinks, the emulator reflows the previously
-        # rendered full-width rows into multiple narrower rows that get
-        # pushed up — leaving ghost duplicates AND polluting scrollback.
-        # Same issue as pt #29 (open since 2014), #1675, #1933.
-        #
-        # Surgical fix: wrap _output_screen_diff so that when its internal
-        # `if current_height > previous_screen.height` branch fires (the
-        # one that does the bottom-cursor-move), we make it fall through
-        # by inflating previous_screen.height first.
-        try:
-            import prompt_toolkit.renderer as _pt_renderer
-            from prompt_toolkit.renderer import _output_screen_diff as _orig_osd
-
-            if not getattr(_pt_renderer, "_hermes_osd_patched", False):
-                def _patched_output_screen_diff(
-                    app, output, screen, current_pos, color_depth,
-                    previous_screen, last_style, is_done, full_screen,
-                    attrs_for_style_string, style_string_has_style,
-                    size, previous_width,
-                ):
-                    """Wraps pt's _output_screen_diff to suppress the
-                    reserve-vertical-space scroll (renderer.py L232-242).
-
-                    Strategy: ONLY when previous_screen is non-None and
-                    its current height is genuinely smaller than the new
-                    screen's height, inflate it to match.  This prevents
-                    the bottom-cursor-move at L242 without changing any
-                    other code path's behavior.
-
-                    Critical: do NOT replace a None previous_screen with
-                    a fresh Screen() — that would skip the proper
-                    reset_attributes()+erase_down() at L178-185 which
-                    fires when previous_screen is None (first-paint /
-                    width-change).  Without that reset, ANSI styles
-                    leak between renders.
-                    """
-                    try:
-                        if previous_screen is not None and hasattr(previous_screen, "height"):
-                            if previous_screen.height < screen.height:
-                                previous_screen.height = screen.height
-                    except Exception:
-                        pass
-
-                    return _orig_osd(
-                        app, output, screen, current_pos, color_depth,
-                        previous_screen, last_style, is_done, full_screen,
-                        attrs_for_style_string, style_string_has_style,
-                        size, previous_width,
-                    )
-
-                _pt_renderer._output_screen_diff = _patched_output_screen_diff
-                _pt_renderer._hermes_osd_patched = True
-        except Exception:
-            pass
+        self._install_resize_safe_screen_diff_patch()
 
         # Apply bracketed-paste timeout recovery so torn ESC[201~ end marks
         # don't permanently freeze the input (issue #16263). Idempotent.
