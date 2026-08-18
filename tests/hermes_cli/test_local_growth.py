@@ -104,6 +104,37 @@ def _tiny_profile(model_id: str):
         layers=[(LayerKind.FULL, 512)] * 4)
 
 
+def test_preset_generation_for_catalog_model_with_mmproj(hermes_home, tmp_path, monkeypatch):
+    """generate_presets must survive a model that IS in the catalog and
+    carries a vision projector — this executes the find_entry_for_model +
+    mmproj overhead branch that synthetic test models skip. Regression:
+    the branch once treated the (entry, variant) tuple as the entry and
+    crashed every real boot into the stock-fit fallback."""
+    import hermes_cli.local_runtime.presets as presets_mod
+
+    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    # A real catalog id with an mmproj (the recommended row has one).
+    entry = next(e for e in CATALOG if e.mmproj is not None)
+    variant = entry.variants[-1]
+    mdir = tmp_path / "models"
+    _stage_fake_gguf(mdir, variant.model_id)
+
+    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: p)
+    monkeypatch.setattr(presets_mod, "profile_from_gguf",
+                        lambda h: _tiny_profile(variant.model_id))
+
+    gib = 1 << 30
+    budget = HardwareBudget(usable_vram_bytes=24 * gib,
+                            total_device_bytes=24 * gib,
+                            ram_available_bytes=64 * gib)
+    entries = presets_mod.generate_presets(mdir, budget, tmp_path / "p.ini")
+    assert len(entries) == 1
+    assert entries[0].refusal is None
+    assert entries[0].window > 0
+
+
 def test_preset_restores_grown_window_capped_at_native(hermes_home, tmp_path, monkeypatch):
     """A persisted override lifts the preset window; an absurd override is
     capped at native. GGUF parsing is stubbed — the contract under test is

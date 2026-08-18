@@ -89,7 +89,8 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
             continue
         # Overhead beyond weights+KV: runtime buffers, plus the vision
         # projector when this model ships one (it loads beside the weights).
-        entry = find_entry_for_model(model_id)
+        hit = find_entry_for_model(model_id)
+        entry = hit[0] if hit is not None else None
         mmproj_bytes = 0
         if entry is not None and entry.mmproj is not None:
             mmproj_path = assets_dir() / entry.mmproj.local_name

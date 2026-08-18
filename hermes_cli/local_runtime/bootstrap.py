@@ -225,8 +225,20 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                 if entry.refusal:
                     logger.warning("model refused by physics check: %s", entry.refusal)
         except Exception as exc:  # noqa: BLE001 — policy failure must not block serving
-            logger.warning("preset generation failed (%s); router runs stock fit", exc)
-            preset_path = None
+            # Degradation ladder: a STALE policy still beats no policy —
+            # stock fit (f16 KV at max context, no placement) is the
+            # silent-busy-wait failure on Windows. Keep serving with the
+            # previous INI when one exists; only a first boot with no INI
+            # at all falls to stock fit.
+            if preset_path.exists():
+                logger.error("preset generation failed (%s); serving with the "
+                             "PREVIOUS launch policies — models staged since "
+                             "the last successful generation run unpoliced "
+                             "until this is fixed", exc)
+            else:
+                logger.error("preset generation failed (%s) and no previous "
+                             "policy file exists; router runs stock fit", exc)
+                preset_path = None
 
         sup = LlamaServerSupervisor(
             install_dir, mdir,
