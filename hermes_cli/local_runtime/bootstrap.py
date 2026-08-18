@@ -13,6 +13,7 @@ sessions with local_runtime disabled never pay the import.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -70,6 +71,40 @@ def staged_model_ids() -> "list[str]":
     return [re.sub(r"-\d{5}-of-\d{5}$", "", p.stem) for p in staged_models()]
 
 
+def _presets_stale() -> bool:
+    """True when a staged model has no section in the preset INI — it
+    would autoload with stock fit instead of a policy decision."""
+    try:
+        from hermes_cli.local_runtime.presets import read_preset_decisions
+
+        known = set(read_preset_decisions())
+        return any(mid not in known for mid in staged_model_ids())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _stop_state_server(state: dict) -> None:
+    """Best-effort stop of the server the state file points at (an
+    incumbent this process doesn't supervise). The state pid is ours by
+    contract — the file only ever describes the managed server."""
+    pid = state.get("pid")
+    if not pid:
+        return
+    try:
+        import signal
+
+        os.kill(int(pid), signal.SIGTERM)
+    except (OSError, ValueError):
+        return
+    # Give it a moment to release the port and the GPU.
+    for _ in range(50):
+        try:
+            os.kill(int(pid), 0)
+        except OSError:
+            return
+        time.sleep(0.1)
+
+
 def refresh_local_runtime() -> bool:
     """Restart the managed server so it rescans the models directory.
 
@@ -114,12 +149,24 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         logger.info("local runtime enabled but no models staged; not booting")
         return None
 
-    # Another Hermes process may already be supervising — reuse via state.
+    # Another Hermes process may already be supervising — reuse via state,
+    # but ONLY while its launch policy still covers every staged model. A
+    # server whose preset file predates a download serves the new model
+    # with no policy at all (--models-autoload + stock fit: f16 KV at max
+    # context, no placement — the silent-demotion busy-wait on WDDM). A
+    # stale incumbent gets stopped and replaced by a fresh boot with
+    # regenerated presets; sessions ride through exactly like any other
+    # supervised restart (stable port + persisted key).
     from hermes_cli.local_runtime.endpoint import _state_endpoint
 
-    if _state_endpoint() is not None:
-        logger.info("managed llama-server already running (another process)")
-        return None
+    state = _state_endpoint()
+    if state is not None:
+        if not _presets_stale():
+            logger.info("managed llama-server already running (another process)")
+            return None
+        logger.info("running server's presets predate the staged models; "
+                    "replacing it so every model launches with a policy")
+        _stop_state_server(state)
 
     try:
         from hermes_cli.local_runtime.binaries import (
