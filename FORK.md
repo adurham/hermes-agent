@@ -11102,7 +11102,11 @@ writeup here):
   supersedes the fork's date-only one, per FORK.md's already-documented
   absorption note); `agent/gemini_native_adapter.py`'s tool-call merge
   logic (upstream ported Gemini 3 tool-call-ID preservation on top of
-  the same merge shape the fork had).
+  the same merge shape the fork had) — **fully converged, zero remaining
+  fork delta** (`git diff v2026.8.18 -- agent/gemini_native_adapter.py`
+  is empty; confirmed in the 2026-08-18 de-fork audit below). This file
+  is no longer a soft-fork edit — plain upstream code, kept only as a
+  historical marker of the merge shape it once needed.
 - **Fork feature ported onto upstream's new safer helper**:
   `agent/usage_pricing.py` — kept the fork's Anthropic cache/server-tool
   usage tracking (`cache_creation`, `server_tool_use` request counts)
@@ -11220,3 +11224,60 @@ boot smoke, `tsc --noEmit` clean on the whole `apps/desktop` project,
 `<<<<<<<`/`=======`/`>>>>>>>` markers anywhere in the tree before either
 commit. Deploy (remote `hermes update` / live probe) intentionally left
 to the user per standing policy — never run unprompted.
+
+### De-fork audit — 2026-08-18 (post-v2026.8.18: checked every hard-fork and soft-fork file against this tag's upstream changes)
+
+Follow-up to the sync above, scoped to whether any of the fork's ~35
+hard-fork-only files or ~45 soft-fork edits are now redundant with
+upstream's `v2026.8.13..v2026.8.18` work (1396 commits, 149 tagged
+`feat`).
+
+**One real convergence found:** `agent/gemini_native_adapter.py` —
+already noted in the sync entry above, confirmed here with
+`git diff v2026.8.18 -- agent/gemini_native_adapter.py` returning
+empty. Zero fork delta remains; the file is upstream code verbatim.
+
+**Everything else checked: no redundancy found.** Every other hard-fork
+file (consult tool + nudge, delegation router, warm-tier memory
+recall/session-pin, hot-tier audit, rate-limit hysteresis observability,
+stream-recovery cold-start grace window, lazy MCP tool-search stubs,
+xAI-403 diagnostics hint, `agent/fork/anthropic_recovery.py`'s
+refusal-retry sanitizer, `tools/content_filter_scrub.py`) either has no
+upstream analog at all, or upstream shipped something adjacent that
+solves a genuinely different problem — e.g. upstream's new
+`agent/empty_response_guard.py` (v2026.8.18) is a cost/retry-budget
+decision (how many retries to spend on a deterministically-empty
+completion); the fork's `_drop_trailing_empty_response_scaffolding` is
+transcript hygiene (strips synthetic recovery messages so the next
+turn's role-alternation stays valid). Different jobs, correctly
+coexisting — not a case of upstream catching up.
+
+**`tools/content_filter_scrub.py` — what it actually is**, since the
+first audit pass described it in fork-jargon that obscured the real
+mechanism: it's a small regex list of legitimate admin/DevOps shell
+commands (pg_dump-style DB exports, S3 presigned URLs) that
+superficially pattern-match Anthropic's credential-exfiltration content
+filter and trigger false-positive refusals. The scrub rewrites those
+patterns in tool-result text and historical context before it's resent,
+so a real `pg_dump` command run once doesn't get the user permanently
+refused on a later turn that includes it in context. No upstream
+equivalent — upstream doesn't have this false-positive class at all in
+its own refusal-retry path (its retry logic switches models, it doesn't
+sanitize content).
+
+**Not a de-fork question, a keep-or-cut question — held for explicit
+user decision, not auto-resolved:** `tools/swarm_board.py` (bordered
+live multi-row status widget shown during `delegate_task` batches — the
+box you watch subagents work in, including during this very sync).
+Confirmed zero upstream equivalent exists (`v2026.8.18`'s delegate_task
+progress reporting is inline text lines via
+`_build_child_progress_callback`, no persistent widget) — so this
+isn't upstream catching up, it's purely "does the user still want this
+UI." Not removed pending explicit go-ahead.
+
+**Audit method:** 4 parallel subagents each covering a slice of the
+hard-fork/soft-fork file lists, cross-checked against
+`git log v2026.8.13..v2026.8.18` per file plus `git diff v2026.8.18 --
+<file>` for remaining delta; 2 of the subagents' most notable claims
+(gemini_native_adapter's zero-diff, empty_response_guard's
+non-overlap) spot-verified directly rather than taken on trust.
