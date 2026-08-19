@@ -7,6 +7,7 @@ Hermes MCP tool calls and Claude Code's proxy protocol.
 import subprocess
 from unittest.mock import patch
 
+import mcp.client.streamable_http
 import tools.bridges.cc_proxy_mcp as cc_proxy_mcp
 
 
@@ -154,3 +155,69 @@ class TestCredStoreKeychainBackend:
             store = cc_proxy_mcp.CredStore(missing_file)
 
         assert store._backend == "file"
+
+
+class TestSDKCompat:
+    """Regression coverage for the mcp 2.0 SDK migration (2026-08-19).
+
+    ``tools/mcp_tool.py`` and friends were ported to mcp 2.0 in commit
+    11a9dcf5 ("feat(mcp): migrate to the mcp 2.x SDK"), but this bridge
+    module was not in that diff -- it lives under tools/bridges/, one
+    directory the migration's grep/review pass missed. mcp 2.0 dropped the
+    deprecated `streamablehttp_client` alias (module-import-time
+    ImportError -- broke every session using this bridge, e.g. the
+    Claude-Code-connector proxy for Slack/Notion/PagerDuty/Microsoft365/
+    StackOverflow) and removed `Server.list_tools()` / `Server.call_tool()`
+    decorators in favor of `on_list_tools=`/`on_call_tool=` constructor
+    kwargs. Both breakages were silent at the API-surface level (no
+    deprecation warning survived to 2.0) and only surfaced as an
+    ImportError or AttributeError at actual connection time -- exactly the
+    kind of thing `test_module_imports` should catch, and would have,
+    had it existed before this fix.
+    """
+
+    def test_module_imports_under_installed_mcp_sdk(self):
+        """Bare import must succeed against whatever mcp version is
+        installed. This is the single assertion that would have caught the
+        2.0 migration gap immediately (it failed with ImportError before
+        this fix, on any environment with mcp==2.0.0 installed)."""
+        import importlib
+        import tools.bridges.cc_proxy_mcp as mod
+        importlib.reload(mod)
+
+    def test_legacy_http_flag_matches_installed_sdk_generation(self):
+        """`_MCP_LEGACY_HTTP` must reflect which entry point the installed
+        SDK actually exposes, not a hardcoded assumption."""
+        has_legacy = hasattr(
+            mcp.client.streamable_http, "streamablehttp_client"
+        )
+        assert cc_proxy_mcp._MCP_LEGACY_HTTP == has_legacy
+
+    def test_server_construction_matches_sdk_generation(self):
+        """On mcp >= 1.24.0 (no decorator API), Server must be constructed
+        via on_list_tools=/on_call_tool= kwargs, not the removed
+        .list_tools()/.call_tool() decorators -- asserts the code path this
+        bridge would actually take at runtime, not just that import works."""
+        from mcp.server import Server
+
+        if cc_proxy_mcp._MCP_LEGACY_HTTP:
+            local = Server("cc-proxy-test")
+            assert hasattr(local, "list_tools")
+            assert hasattr(local, "call_tool")
+        else:
+            assert not hasattr(Server, "list_tools")
+            assert not hasattr(Server, "call_tool")
+
+            async def _on_list_tools(_ctx, _params):
+                raise NotImplementedError
+
+            async def _on_call_tool(_ctx, _params):
+                raise NotImplementedError
+
+            # Must not raise -- exercises the exact constructor call the
+            # non-legacy branch of run_proxy() makes.
+            Server(
+                "cc-proxy-test",
+                on_list_tools=_on_list_tools,
+                on_call_tool=_on_call_tool,
+            )

@@ -65,7 +65,21 @@ from typing import Any, Optional
 
 import httpx
 from mcp.client.session import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+try:
+    # mcp >= 1.24.0 renamed the entry point; mcp 2.0 dropped the old
+    # `streamablehttp_client` alias entirely (see tools/mcp_tool.py's
+    # _ensure_mcp_sdk / sdk_httpx for the same compat shims used by the
+    # core agent). mcp 2.0 also moved the HTTP transport from `httpx` to
+    # a separate `httpx2` distribution with the same public API — any
+    # AsyncClient/Auth object we hand to the new client must come from
+    # that module, not our own pinned `httpx`.
+    from mcp.client.streamable_http import streamablehttp_client
+    _MCP_LEGACY_HTTP = True
+except ImportError:
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
+    _MCP_LEGACY_HTTP = False
+    from mcp.client import streamable_http as _sdk_transport_mod
+    httpx2 = _sdk_transport_mod.httpx2  # the SDK's own httpx-compatible module
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
@@ -451,8 +465,14 @@ async def run_proxy(server_id: str, creds: CredStore) -> None:
     proxy_url = PROXY_URL_TMPL.format(server_id=server_id)
     log.info("Connecting upstream: %s", proxy_url)
 
-    class FreshBearerAuth(httpx.Auth):
-        """Per-request: ask CredStore for a fresh (refreshed-if-needed) token."""
+    class FreshBearerAuthLegacy(httpx.Auth):
+        """Per-request: ask CredStore for a fresh (refreshed-if-needed) token.
+
+        Built on Hermes' own pinned `httpx` -- only valid on mcp < 1.24.0,
+        whose `streamablehttp_client` manages its own httpx client internally
+        and accepts `headers=`/`auth=` kwargs built from any httpx-compatible
+        module.
+        """
 
         requires_request_body = False
         requires_response_body = False
@@ -479,27 +499,93 @@ async def run_proxy(server_id: str, creds: CredStore) -> None:
         "User-Agent": "cc-proxy-mcp/0.1 (hermes)",
     }
 
-    async with streamablehttp_client(
-        proxy_url,
-        headers=static_headers,
-        auth=FreshBearerAuth(creds),
-    ) as (read_stream, write_stream, _):
+    if _MCP_LEGACY_HTTP:
+        # mcp < 1.24.0: streamablehttp_client manages its own httpx client
+        # and takes headers=/auth= directly.
+        http_ctx = streamablehttp_client(
+            proxy_url,
+            headers=static_headers,
+            auth=FreshBearerAuthLegacy(creds),
+        )
+    else:
+        # mcp >= 1.24.0 (incl. 2.0): streamable_http_client takes a
+        # caller-owned http_client instead. Every object crossing the SDK
+        # boundary -- the AsyncClient, the Auth instance -- must come from
+        # the SDK's own httpx2 module, not our pinned httpx (mixing them
+        # fails at the transport layer, not at import).
+        class FreshBearerAuthNew(httpx2.Auth):
+            requires_request_body = False
+            requires_response_body = False
+
+            def __init__(self, store: CredStore) -> None:
+                self._store = store
+
+            async def async_auth_flow(self, request):
+                token = await self._store.get_access_token()
+                request.headers["Authorization"] = f"Bearer {token}"
+                response = yield request
+                if response.status_code == 401:
+                    log.warning("Upstream returned 401; forcing token refresh and retrying")
+                    token = await self._store.get_access_token(force_refresh=True)
+                    request.headers["Authorization"] = f"Bearer {token}"
+                    yield request
+
+        http_client = httpx2.AsyncClient(
+            headers=static_headers,
+            auth=FreshBearerAuthNew(creds),
+        )
+
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _http_ctx_cm():
+            async with http_client:
+                async with streamablehttp_client(proxy_url, http_client=http_client) as streams:
+                    # mcp 2.x yields (read, write); normalize to the 3-tuple
+                    # shape the rest of this function expects.
+                    yield (streams[0], streams[1], None)
+
+        http_ctx = _http_ctx_cm()
+
+    async with http_ctx as (read_stream, write_stream, _):
         async with ClientSession(read_stream, write_stream) as upstream:
             await upstream.initialize()
             tools_resp = await upstream.list_tools()
             log.info("Upstream initialized; %d tool(s)", len(tools_resp.tools))
 
-            local = Server("cc-proxy")
+            if _MCP_LEGACY_HTTP:
+                # mcp < 1.24.0: handlers registered via decorators.
+                local = Server("cc-proxy")
 
-            @local.list_tools()
-            async def _list_tools():  # type: ignore[no-redef]
-                resp = await upstream.list_tools()
-                return resp.tools
+                @local.list_tools()
+                async def _list_tools():  # type: ignore[no-redef]
+                    resp = await upstream.list_tools()
+                    return resp.tools
 
-            @local.call_tool()
-            async def _call_tool(name: str, arguments: dict[str, Any]):  # type: ignore[no-redef]
-                resp = await upstream.call_tool(name, arguments or {})
-                return resp.content
+                @local.call_tool()
+                async def _call_tool(name: str, arguments: dict[str, Any]):  # type: ignore[no-redef]
+                    resp = await upstream.call_tool(name, arguments or {})
+                    return resp.content
+            else:
+                # mcp >= 1.24.0 (incl. 2.0): decorator API removed; handlers
+                # are passed to the Server constructor as on_list_tools /
+                # on_call_tool, taking (ctx, params) and returning typed
+                # Result objects instead of bare lists.
+                import mcp_types as _types
+
+                async def _on_list_tools(_ctx, _params):
+                    resp = await upstream.list_tools()
+                    return _types.ListToolsResult(tools=resp.tools)
+
+                async def _on_call_tool(_ctx, params):
+                    resp = await upstream.call_tool(params.name, params.arguments or {})
+                    return _types.CallToolResult(content=resp.content)
+
+                local = Server(
+                    "cc-proxy",
+                    on_list_tools=_on_list_tools,
+                    on_call_tool=_on_call_tool,
+                )
 
             async with stdio_server() as (in_stream, out_stream):
                 init_opts = local.create_initialization_options()
