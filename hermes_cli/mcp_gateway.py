@@ -35,8 +35,16 @@ import os
 import subprocess
 from typing import Any, Dict, List, Optional
 
-# The `mcp` package is in the hermes-agent venv (FastMCP-based servers).
-from mcp.server.fastmcp import FastMCP
+# The `mcp` package is in the hermes-agent venv. mcp 2.0 removed
+# `mcp.server.fastmcp`; its decorator-driven server is now
+# `mcp.server.MCPServer`, which keeps the same `@server.tool()` /
+# `.run()` surface this file already uses (see mcp_serve.py, ported in
+# the same 2.0 migration, for the reference pattern). Older SDKs (< 2.0)
+# still have FastMCP, so fall back to it rather than hard-require 2.0.
+try:
+    from mcp.server import MCPServer as FastMCP
+except ImportError:
+    from mcp.server.fastmcp import FastMCP
 
 
 logger = logging.getLogger(__name__)
