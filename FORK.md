@@ -3,6 +3,43 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-19 (`hermes_cli/mcp_gateway.py` also broke on mcp 2.0 SDK — second file the migration missed)
+
+**Found via:** proactive sweep after the `cc_proxy_mcp.py` fix earlier
+today. Grepped every `.py` file outside `tests/`/`.venv/` importing
+from `mcp.*` (8 hits) and import-checked each by hand against the
+installed `mcp==2.0.0` — this was the only other real break.
+
+**Root cause:** same class of gap as `cc_proxy_mcp.py`, different
+file. The mcp 2.0 migration commit (`11a9dcf5`) explicitly says it
+ported `FastMCP` → `mcp.server.MCPServer` in `mcp_serve.py` and
+`agent/transports/hermes_tools_mcp_server.py` — but
+`hermes_cli/mcp_gateway.py` (the `hermes mcp-gateway` stdio server
+exposing the remote hermes gateway's `/v1/runs` API — `submit_task`,
+`get_run_status`, `tail_run_events`, `stop_run`, `list_recent_runs` —
+to Claude Code and other MCP clients) is a third `FastMCP` consumer
+that migration never touched. `mcp.server.fastmcp` was removed
+entirely in 2.0, so the module-level `from mcp.server.fastmcp import
+FastMCP` raised `ModuleNotFoundError` at import — `hermes mcp-gateway`
+couldn't start at all on an install with mcp==2.0.0. This file had
+**zero** test coverage before this fix, so nothing caught it.
+
+**Fix:** `try` the mcp≥2.0 `MCPServer` first — confirmed via
+`inspect.signature` against the installed SDK that it keeps the exact
+same `@server.tool()` decorator / `.run()` surface FastMCP had, so no
+other code in the file needed to change — and fall back to the
+removed `FastMCP` name for older SDKs.
+
+**Verification:** added `tests/hermes_cli/test_mcp_gateway.py` (this
+file's first-ever test coverage): import, server construction, and a
+real `list_tools()` call proving all 5 tools register under the
+resolved SDK generation. Confirmed via `git stash` that all 3 fail
+with the exact `ModuleNotFoundError` this bug produced against the
+pre-fix code, and pass after. Ran the full mcp-touching test surface
+(cc_proxy_mcp, mcp_gateway, mcp_serve, mcp_tool, computer_use, tui
+slash-worker discovery — 348 tests) clean.
+`hermes_cli/mcp_gateway.py`, `tests/hermes_cli/test_mcp_gateway.py`.
+
 ### Fix — 2026-08-19 (`cc_proxy_mcp.py` bridge broke on mcp 2.0 SDK, missed by the 2.x migration)
 
 **Live symptom:** every Claude-Code-connector proxy (Slack, Notion,
