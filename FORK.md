@@ -3,6 +3,49 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-19 (`cc_proxy_mcp.py` silently dropped isError/structuredContent on every tool-call relay — pre-existing, not from the mcp 2.0 port)
+
+**Found via:** a `consult()` second opinion after the two mcp-2.0-migration
+fixes below, prompted by the user asking "you positive about that?" —
+the grep-based import sweep only caught import-time crashes, not
+runtime field-forwarding bugs. Fable's answer named the exact class of
+bug to check (`mcp_field()`-style attribute renames at *read* sites,
+not just constructors); re-reading `run_proxy()`'s tool-call relay
+line by line found this one.
+
+**Bug:** the relay rebuilt `CallToolResult(content=resp.content)`
+from the upstream response instead of returning it directly, silently
+dropping `isError`/`structuredContent` (`is_error`/`structured_content`
+on mcp≥2.0 — the same field-rename class `tools/mcp_tool.py`'s
+`mcp_field()` already guards elsewhere, but this file never read
+either spelling on either SDK generation). Every failed upstream tool
+call — a Slack/Notion/PagerDuty/Microsoft365/StackOverflow tool
+erroring — surfaced as an apparently-successful empty-content result
+to anything consuming this bridge. Confirmed via `git show
+<pre-migration-commit>:tools/bridges/cc_proxy_mcp.py` that this
+predates the mcp 2.0 port entirely — it was never about the SDK
+rename, just that the field was never forwarded either way, on either
+generation, ever.
+
+**Fix:** return `upstream.call_tool()`'s `CallToolResult` straight
+through instead of reconstructing it, on both SDK generations. Safe
+on 1.x (`Server.call_tool()`'s own dispatch special-cases
+`isinstance(results, types.CallToolResult)` and forwards it
+unmodified) and on 2.x (`on_call_tool`'s declared return type is
+`CallToolResult | InputRequiredResult`, and `ClientSession.call_tool()`
+already returns an instance from the same installed SDK generation the
+local `Server` expects — no reconstruction needed on either side).
+
+**Verification:** added `TestCallToolErrorPropagation` — drives the
+real `run_proxy()` coroutine end-to-end (mocks only the transport/
+stdio boundary), captures whichever `call_tool` handler `run_proxy()`
+registers for the installed SDK generation, and asserts
+`is_error`/`structured_content` survive the relay. Confirmed via `git
+stash` that 2 of 3 new tests fail against the pre-fix code with the
+exact silent-drop behavior, and pass after. Full `test_cc_proxy_mcp.py`
+suite (18 tests) plus the wider mcp-touching surface (351 tests) clean.
+`tools/bridges/cc_proxy_mcp.py`, `tests/tools/test_cc_proxy_mcp.py`.
+
 ### Fix — 2026-08-19 (`hermes_cli/mcp_gateway.py` also broke on mcp 2.0 SDK — second file the migration missed)
 
 **Found via:** proactive sweep after the `cc_proxy_mcp.py` fix earlier
