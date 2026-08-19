@@ -554,7 +554,12 @@ async def run_proxy(server_id: str, creds: CredStore) -> None:
             log.info("Upstream initialized; %d tool(s)", len(tools_resp.tools))
 
             if _MCP_LEGACY_HTTP:
-                # mcp < 1.24.0: handlers registered via decorators.
+                # mcp < 1.24.0: handlers registered via decorators. Returning
+                # the CallToolResult straight through (rather than just
+                # resp.content) preserves isError/structuredContent -- the
+                # 1.x decorator's own dispatch special-cases
+                # isinstance(results, types.CallToolResult) and forwards it
+                # unmodified, so nothing else needs to change.
                 local = Server("cc-proxy")
 
                 @local.list_tools()
@@ -564,13 +569,27 @@ async def run_proxy(server_id: str, creds: CredStore) -> None:
 
                 @local.call_tool()
                 async def _call_tool(name: str, arguments: dict[str, Any]):  # type: ignore[no-redef]
-                    resp = await upstream.call_tool(name, arguments or {})
-                    return resp.content
+                    return await upstream.call_tool(name, arguments or {})
             else:
                 # mcp >= 1.24.0 (incl. 2.0): decorator API removed; handlers
                 # are passed to the Server constructor as on_list_tools /
                 # on_call_tool, taking (ctx, params) and returning typed
                 # Result objects instead of bare lists.
+                #
+                # upstream.call_tool() already returns a CallToolResult from
+                # the same installed SDK generation on_call_tool expects, so
+                # returning it directly preserves isError/structuredContent.
+                # The original code here rebuilt CallToolResult(content=
+                # resp.content) instead -- dropping isError and
+                # structuredContent (mcp 2.0 renamed to is_error/
+                # structured_content; see mcp_field() in tools/mcp_tool.py
+                # for the same rename), which silently turned every failed
+                # upstream tool call into an apparently-successful empty
+                # result for anything consuming this bridge (Slack, Notion,
+                # PagerDuty, Microsoft 365, Stack Overflow Teams). This bug
+                # predates the mcp 2.0 migration -- the pre-2.0 code path
+                # had the identical resp.content-only bug -- so it was never
+                # about the SDK rename, just never propagated either way.
                 import mcp_types as _types
 
                 async def _on_list_tools(_ctx, _params):
@@ -578,8 +597,7 @@ async def run_proxy(server_id: str, creds: CredStore) -> None:
                     return _types.ListToolsResult(tools=resp.tools)
 
                 async def _on_call_tool(_ctx, params):
-                    resp = await upstream.call_tool(params.name, params.arguments or {})
-                    return _types.CallToolResult(content=resp.content)
+                    return await upstream.call_tool(params.name, params.arguments or {})
 
                 local = Server(
                     "cc-proxy",
