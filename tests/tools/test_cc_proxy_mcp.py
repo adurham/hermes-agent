@@ -5,9 +5,10 @@ Hermes MCP tool calls and Claude Code's proxy protocol.
 """
 
 import subprocess
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import mcp.client.streamable_http
+import mcp_types
 import tools.bridges.cc_proxy_mcp as cc_proxy_mcp
 
 
@@ -221,3 +222,158 @@ class TestSDKCompat:
                 on_list_tools=_on_list_tools,
                 on_call_tool=_on_call_tool,
             )
+
+
+class TestCallToolErrorPropagation:
+    """Regression coverage for a pre-existing (not introduced by the mcp
+    2.0 port) bug found during a follow-up audit: run_proxy()'s call_tool
+    relay used to rebuild `CallToolResult(content=resp.content)` from the
+    upstream response instead of returning it directly, silently dropping
+    `isError`/`structuredContent` (`is_error`/`structured_content` on
+    mcp>=2.0 -- see `mcp_field()` in tools/mcp_tool.py for the same field
+    rename). That turned every failed upstream tool call -- a Slack/Notion/
+    PagerDuty/Microsoft365/StackOverflow tool erroring -- into an
+    apparently-successful empty-content result for anything consuming this
+    bridge. Confirmed via `git show <pre-migration-commit>:tools/bridges/
+    cc_proxy_mcp.py` that the bug predates the SDK migration; it was never
+    about the rename, just that the field was never forwarded either way.
+
+    These tests exercise the actual `run_proxy()` coroutine end-to-end
+    (mocking only the transport/stdio boundary) to assert the *registered
+    handler* returns the upstream error status unchanged, rather than just
+    checking source text for the fix.
+    """
+
+    async def _drive_run_proxy_and_capture_call_tool_handler(self, upstream_call_tool_result):
+        """Run `run_proxy()` far enough to register its call_tool handler,
+        capture that handler, invoke it with a mocked upstream session
+        returning `upstream_call_tool_result`, and return what the handler
+        returns to the local MCP Server. Mocks the transport (streamablehttp_
+        client / httpx2 client) and stdio boundary; exercises everything
+        from `ClientSession.__aenter__` onward for real.
+        """
+        captured = {}
+
+        mock_upstream = MagicMock()
+        mock_upstream.initialize = AsyncMock(return_value=None)
+        mock_upstream.list_tools = AsyncMock(
+            return_value=mcp_types.ListToolsResult(tools=[])
+        )
+        mock_upstream.call_tool = AsyncMock(return_value=upstream_call_tool_result)
+
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_upstream)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+        mock_read_write_cm = MagicMock()
+        mock_read_write_cm.__aenter__ = AsyncMock(
+            return_value=("fake-read-stream", "fake-write-stream", None)
+        )
+        mock_read_write_cm.__aexit__ = AsyncMock(return_value=False)
+
+        mock_stdio_cm = MagicMock()
+        mock_stdio_cm.__aenter__ = AsyncMock(
+            return_value=("fake-in-stream", "fake-out-stream")
+        )
+        mock_stdio_cm.__aexit__ = AsyncMock(return_value=False)
+
+        class _FakeLocalServer:
+            """Stand-in for mcp.server.Server capturing whichever
+            registration path run_proxy() takes for the installed SDK
+            generation (decorator vs. constructor kwargs)."""
+
+            def __init__(self, name, on_list_tools=None, on_call_tool=None):
+                if on_call_tool is not None:
+                    captured["call_tool_handler"] = on_call_tool
+                    captured["style"] = "constructor"
+
+            def list_tools(self):
+                def _decorator(fn):
+                    return fn
+                return _decorator
+
+            def call_tool(self):
+                def _decorator(fn):
+                    captured["call_tool_handler"] = fn
+                    captured["style"] = "decorator"
+                    return fn
+                return _decorator
+
+            def create_initialization_options(self):
+                return object()
+
+            async def run(self, *args, **kwargs):
+                return None
+
+        with patch.object(cc_proxy_mcp, "streamablehttp_client", return_value=mock_read_write_cm), \
+             patch.object(cc_proxy_mcp, "ClientSession", return_value=mock_session_cm), \
+             patch.object(cc_proxy_mcp, "Server", _FakeLocalServer), \
+             patch.object(cc_proxy_mcp, "stdio_server", return_value=mock_stdio_cm):
+            if not cc_proxy_mcp._MCP_LEGACY_HTTP:
+                mock_http_client_cm = MagicMock()
+                mock_http_client_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+                mock_http_client_cm.__aexit__ = AsyncMock(return_value=False)
+                with patch.object(cc_proxy_mcp.httpx2, "AsyncClient", return_value=mock_http_client_cm):
+                    await cc_proxy_mcp.run_proxy("test-server-id", MagicMock())
+            else:
+                await cc_proxy_mcp.run_proxy("test-server-id", MagicMock())
+
+        assert "call_tool_handler" in captured, "run_proxy() never registered a call_tool handler"
+        handler = captured["call_tool_handler"]
+
+        if captured["style"] == "decorator":
+            return await handler("some_tool", {})
+        else:
+            fake_params = MagicMock()
+            fake_params.name = "some_tool"
+            fake_params.arguments = {}
+            return await handler(MagicMock(), fake_params)
+
+    def test_error_result_propagates_isError(self):
+        """An upstream tool-call error must surface as an error downstream,
+        not silently look like success."""
+        import asyncio
+
+        error_result = mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text="boom")],
+            isError=True,
+        )
+        result = asyncio.run(
+            self._drive_run_proxy_and_capture_call_tool_handler(error_result)
+        )
+        # Handler must return the CallToolResult itself (or something that
+        # preserves is_error=True), not a bare content list that discards
+        # error status.
+        assert isinstance(result, mcp_types.CallToolResult)
+        assert result.is_error is True
+
+    def test_structured_content_propagates(self):
+        """structuredContent (mcp 2.0: structured_content) from the
+        upstream tool call must not be dropped on the way through."""
+        import asyncio
+
+        result_with_structured = mcp_types.CallToolResult(
+            content=[],
+            structuredContent={"key": "value"},
+        )
+        result = asyncio.run(
+            self._drive_run_proxy_and_capture_call_tool_handler(result_with_structured)
+        )
+        assert isinstance(result, mcp_types.CallToolResult)
+        assert result.structured_content == {"key": "value"}
+
+    def test_success_result_still_has_content(self):
+        """Sanity check: the success path (content, no error) still works
+        after the fix -- this isn't a one-sided fix that broke the common
+        case while fixing the error case."""
+        import asyncio
+
+        ok_result = mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text="fine")],
+        )
+        result = asyncio.run(
+            self._drive_run_proxy_and_capture_call_tool_handler(ok_result)
+        )
+        assert isinstance(result, mcp_types.CallToolResult)
+        assert result.is_error is False
+        assert len(result.content) == 1
