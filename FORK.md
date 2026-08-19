@@ -3,6 +3,61 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-19 (`cc_proxy_mcp.py` bridge broke on mcp 2.0 SDK, missed by the 2.x migration)
+
+**Live symptom:** every Claude-Code-connector proxy (Slack, Notion,
+PagerDuty, Microsoft 365, Stack Overflow Teams) failed to connect in a
+live Hermes session with `MCP server 'microsoft365' failed to connect:
+unhandled errors in a TaskGroup (1 sub-exception)`. `hermes mcp test
+microsoft365` reproduced it directly: `✗ Connection failed: Connection
+closed`. Running the bridge script by hand surfaced the real error —
+`ImportError: cannot import name 'streamablehttp_client' from
+'mcp.client.streamable_http'`.
+
+**Root cause:** the mcp 2.0 SDK migration (`11a9dcf5`, "feat(mcp):
+migrate to the mcp 2.x SDK", 2026-08-02) ported every other
+MCP-adjacent module in the tree — `mcp_tool.py`, `mcp_serve.py`,
+`mcp_oauth.py`, `computer_use/cua_backend.py`, and ~15 test files — but
+never touched `tools/bridges/cc_proxy_mcp.py`. It lives under
+`tools/bridges/`, a directory that migration's sweep apparently never
+grepped. Two mcp 2.0 breaking changes hit it directly:
+- `mcp.client.streamable_http.streamablehttp_client` (the deprecated
+  alias) was removed outright, so the bridge's bare top-level import
+  raised `ImportError` — the module couldn't even load.
+- `mcp.server.Server.list_tools()` / `.call_tool()` decorators were
+  removed in favor of `on_list_tools=`/`on_call_tool=` constructor
+  kwargs taking `(ctx, params)` and returning typed Result objects.
+
+Compounding it: `tests/tools/test_cc_proxy_mcp.py` already had a
+`test_module_imports` test — exactly the assertion that should have
+caught this on the first post-migration CI run — but the whole file
+only ever exercised `CredStore`/macOS-Keychain credential-parsing
+logic (added by an unrelated Keychain-bug commit, `bea82823`, that
+itself never noticed the module couldn't import — it only exercised
+`CredStore` directly via mocks, never the module-level import path).
+No test in the file actually imported-and-connected against the real
+installed SDK, so nothing caught the break until it surfaced live in
+an actual Hermes session.
+
+**Fix:** mirror the compat pattern `tools/mcp_tool.py` already uses
+for the same rename (`sdk_httpx()` / `_MCP_LEGACY_HTTP`): branch on
+which SDK generation is installed via a `try`/`except ImportError` at
+import time, route auth/headers through the SDK's own `httpx2` module
+on 2.x (mixing it with Hermes' pinned `httpx` fails at the transport
+layer, not at import — every object crossing the SDK boundary has to
+come from the module the SDK itself imports), and construct the local
+`Server` via whichever API the installed generation actually exposes.
+
+**Verification:** added `TestSDKCompat` (3 tests) to
+`test_cc_proxy_mcp.py`. Confirmed via `git stash` that all of them —
+including the pre-existing `test_module_imports` — fail with the exact
+`ImportError` this bug produced when run against the pre-fix code, and
+pass after. Ran the full `test_cc_proxy_mcp.py` + `test_mcp_tool.py`
+suites (156 tests) clean. Confirmed live: `hermes mcp test
+microsoft365` connects with 41 tools discovered, and pulled real
+calendar/Salesforce data through the fixed bridge in the same session.
+`tools/bridges/cc_proxy_mcp.py`, `tests/tools/test_cc_proxy_mcp.py`.
+
 ### Fix — 2026-08-16 (test suite spoke real audio through the developer's speakers)
 
 Live incident: while a ~29,000-test full background suite run
