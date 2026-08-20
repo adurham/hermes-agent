@@ -7716,23 +7716,53 @@ decision pending on any of them. Breakdown:
 
 * **Waiting on maintainer merge, nothing actionable right now:** #72164,
   #72151 (both `hermes-sweeper` `keep_open, salvageability=high`,
-  unchanged since the 2026-08-02 rebase round) and #72087 (reasoning
+  unchanged since the 2026-08-02 rebase round), #72087 (reasoning
   estimator dedup — `mergeable: MERGEABLE`/`mergeStateStatus: CLEAN`
-  against current `main`, confirmed still rebased correctly).
-* **Needs action — flagged by the `spfcraze` AI-triage bot on 2026-08-09,
-  untouched for ~11 days:**
-  - **#82103 (`consult` tool):** bot correctly flags that `consult` is
-    registered in `toolsets.py TOOLSETS` but missing from
-    `CONFIGURABLE_TOOLSETS` in `hermes_cli/tools_config.py`, so
-    `hermes tools enable consult` rejects it as an unknown toolset — the
-    same gap Step 0q.2 already called out (`vision`/`video` are the
-    precedent tuples to mirror). Not yet fixed on the PR branch.
-  - **#82095 (`agent.pin_anthropic_token`):** bot correctly flags that
-    `resolve_anthropic_token()` calls `_pin_static_anthropic_token()` (and
-    through it the deepcopy `load_config()`) on every single resolution,
-    not just when a static token is actually pinned — should move the
-    pin lookup inside the `if token:`/`if cc_token:` branches and switch
-    to `load_config_readonly()`. Not yet fixed on the PR branch.
+  against current `main`, confirmed still rebased correctly), #82103
+  (consult tool, fully fixed per below), and #82095 (pin_anthropic_token,
+  fully fixed + rebased per below).
+* **RESOLVED same-day (2026-08-20) — correction to the initial read of
+  this check-in.** The first pass of this section (below, struck through
+  in spirit) claimed #82103's and #82095's `spfcraze` bot findings were
+  "not yet fixed on the PR branch" — that was wrong. A closer look at
+  each PR's commit list (not just its review comments) showed both fixes
+  were already committed on 2026-08-09, the same day the bot flagged
+  them:
+  - **#82103 (`consult` tool):** commit `286a6ec8b` (2026-08-09) already
+    registers `consult` in `CONFIGURABLE_TOOLSETS` in
+    `hermes_cli/tools_config.py`, matching the `vision`/`video` tuple
+    shape, plus a regression test
+    (`test_consult_toolset_is_reachable_via_hermes_tools`). Re-verified
+    end-to-end 2026-08-20 against a worktree at PR HEAD: the toolset
+    flows through `_get_effective_configurable_toolsets()`, the CLI
+    enable/disable validation gate, and the web `/tools` endpoints; 29/29
+    in `tests/hermes_cli/test_tools_config.py` and 25/25 across the two
+    consult-tool test files pass. `mergeable: MERGEABLE`,
+    `mergeStateStatus: CLEAN`. Nothing further needed.
+  - **#82095 (`agent.pin_anthropic_token`):** commit `012b5807d`
+    (2026-08-09) already moves the `_pin_static_anthropic_token()` call
+    inside the `if token:`/`if cc_token:` branches and switches to
+    `load_config_readonly()`, plus 2 new regression tests. Re-verified
+    2026-08-20: a behavioral script with a call-counter on
+    `load_config`/`load_config_readonly` confirmed zero config reads when
+    no static token is present, and exactly one `load_config_readonly`
+    read (never the mutable `load_config`) when a token is present and
+    the pin is enabled — matching the bot's exact ask. BUT this PR had
+    genuinely gone `mergeable: CONFLICTING`/`mergeStateStatus: DIRTY`
+    against current `main` by 2026-08-20 (upstream had independently
+    added an unrelated new config key, `cron_drain_timeout`, at the same
+    insertion point in `hermes_cli/config_defaults.py` — a pure
+    line-adjacency conflict, not a semantic one: both keys belong,
+    upstream's `cron_drain_timeout` block was kept verbatim above the
+    fork's `pin_anthropic_token` block, no logic changed on either side).
+    Rebased onto `upstream-https/main` in a worktree, resolved the single
+    conflict by keeping both blocks in original order, re-ran
+    `tests/agent/test_anthropic_adapter.py` (100/100 passing on the
+    rebased tree), force-pushed the rebased 2-commit history to the same
+    branch (`upstream-pr/pin-anthropic-token`). Confirmed
+    `mergeable: MERGEABLE` post-push; CI re-ran clean (all required
+    checks `pass`, zero `fail`, only the non-blocking `nix flake check`
+    still finishing at last look). Nothing further needed.
 * **Quiet, no reviewer engagement yet, nothing to action:** #82245
   (config-unset comment-block fix, 0 reviews since filing 2026-08-09),
   #72155 and #72153 (both green, no activity since the 2026-08-02 rebase,
@@ -7744,9 +7774,9 @@ decision pending on any of them. Breakdown:
   per the maintainer's own close comment). #25234 stays closed per the
   "Why a fork" incident that motivates this whole section.
 
-**Next:** fix #82103 and #82095 per the bot's findings above (small,
-scoped, both already root-caused by the bot — no new investigation
-needed) and push to the existing PR branches, not new PRs.
+**Next:** none — both #82103 and #82095 are fully resolved as of
+2026-08-20 (see above). Nothing else in the current 8-PR queue needs
+action; the remaining open PRs are waiting on maintainer review/merge.
 
 ### Bucket B — needs de-forking first, or unverified/likely-contaminated (do NOT file as-is)
 
