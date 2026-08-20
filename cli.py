@@ -20231,6 +20231,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}"
                         )
                     elif _effective_mode == "interrupt":
+                        _redirect_degraded_to_steer = False
                         if not images and text:
                             try:
                                 if (
@@ -20244,9 +20245,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                     and hasattr(self.agent, "redirect")
                                 ):
                                     redirected = bool(self.agent.redirect(text))
+                                    # redirect() silently degrades to a queued
+                                    # steer() when a tool call is in flight
+                                    # (run_agent.py ~L3568) -- same return
+                                    # value, very different UX: a real
+                                    # redirect cancels the live model request
+                                    # NOW, a degraded steer only lands once
+                                    # the in-flight tool (e.g. a long SSH
+                                    # command) finishes on its own. Printing
+                                    # "Redirected current turn" for the
+                                    # degraded case lied to the user about
+                                    # when their correction would actually be
+                                    # seen -- see interrupt_debug.log cases
+                                    # where the same message had to be retyped
+                                    # because the turn ended (generic
+                                    # "Operation interrupted" filler) before
+                                    # the queued steer was ever drained.
+                                    _redirect_degraded_to_steer = bool(
+                                        getattr(
+                                            self.agent,
+                                            "_last_redirect_degraded_to_steer",
+                                            False,
+                                        )
+                                    )
                             except Exception:
                                 redirected = False
-                        if redirected:
+                        if redirected and _redirect_degraded_to_steer:
+                            preview = text[:80] + ("..." if len(text) > 80 else "")
+                            _cprint(
+                                f"  {_ACCENT}⏩ Queued (tool still running — "
+                                f"applies once it finishes): '{preview}'{_RST}"
+                            )
+                        elif redirected:
                             preview = text[:80] + ("..." if len(text) > 80 else "")
                             _cprint(f"  {_ACCENT}↪ Redirected current turn: '{preview}'{_RST}")
                         else:

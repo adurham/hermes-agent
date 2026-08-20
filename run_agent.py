@@ -3538,6 +3538,15 @@ class AIAgent(ForkForwardersMixin):
 
         Returns ``False`` when there is no live turn or the text is empty, so
         surfaces can fall back to their existing next-turn queue.
+
+        Sets ``self._last_redirect_degraded_to_steer`` on every accepted call
+        (True/False) so callers can tell a genuine live-cancel redirect apart
+        from a same-return-value degrade to a queued steer -- the two have
+        very different UX implications (applies now vs. applies once the
+        in-flight tool call finishes) and were previously indistinguishable
+        to the CLI, which printed the same "Redirected current turn" message
+        for both, misleading the user into thinking a correction queued
+        behind a long-running tool (e.g. SSH) was already live.
         """
         if not text or not text.strip():
             return False
@@ -3557,6 +3566,7 @@ class AIAgent(ForkForwardersMixin):
                 elif self._interrupt_requested:
                     return False
                 try:
+                    self._last_redirect_degraded_to_steer = False
                     return bool(_native_steer(cleaned))
                 except Exception:
                     logger.debug("Codex app-server turn/steer failed", exc_info=True)
@@ -3566,7 +3576,9 @@ class AIAgent(ForkForwardersMixin):
         # existing steer drain puts it on the final tool result before the next
         # model decision, including delegate_task children.
         if getattr(self, "_executing_tools", False):
+            self._last_redirect_degraded_to_steer = True
             return self.steer(cleaned)
+        self._last_redirect_degraded_to_steer = False
 
         _model_active = getattr(self, "_model_request_active", None)
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
