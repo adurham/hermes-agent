@@ -497,6 +497,34 @@ class TestSchemaValidation:
 
 
 
+    @pytest.mark.parametrize("role", [
+        "researcher",          # role already present in a typical config
+        "coder",
+        "brand-new-role-xyz",  # arbitrary, never-seen role name
+    ])
+    def test_model_by_role_subkeys_are_recognized(
+        self, role, _isolated_hermes_home, capsys
+    ):
+        """``delegation.model_by_role`` is an open, user-extensible map.
+
+        Any ``<role> -> <model>`` entry must validate without the
+        "not a recognized config key" notice — new agent-type roles are
+        added over time (via ``/delegation`` or by hand) and must not be
+        enumerated by the schema validator.
+        """
+        set_config_value(f"delegation.model_by_role.{role}", "claude-sonnet-5")
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["delegation"]["model_by_role"][role] == "claude-sonnet-5"
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    def test_bogus_delegation_subkey_still_warns(
+        self, _isolated_hermes_home, capsys
+    ):
+        """The open-map escape hatch is scoped: sibling typos still warn."""
+        set_config_value("delegation.model_by_rolez", "claude-sonnet-5")
+        assert "not a recognized config key" in capsys.readouterr().out
+
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
         """``--force`` writes unknown keys without the notice (scripted
         forward-compat writes)."""
