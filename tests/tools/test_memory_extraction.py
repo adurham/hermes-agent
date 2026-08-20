@@ -105,13 +105,142 @@ class TestParseExtractionResponse:
         result = mex_prompts.parse_extraction_response(text)
         assert result == []
 
-    def test_caps_at_5(self):
+    def test_default_cap_is_session_end_ceiling(self):
+        """Default parse cap must equal the session-end ceiling.
+
+        Behavior contract, not a frozen literal: the interactive
+        session-end pass must never be silently truncated below the
+        number of entries its own prompt asks the model for.
+        """
         text = json.dumps({"entries": [
             {"content": f"fact number {i} content here"}
-            for i in range(20)
+            for i in range(40)
         ]})
         result = mex_prompts.parse_extraction_response(text)
-        assert len(result) == 5
+        assert len(result) == mex_prompts.SESSION_END_MAX_ENTRIES
+        assert mex_prompts.DEFAULT_PARSE_MAX_ENTRIES == mex_prompts.SESSION_END_MAX_ENTRIES
+
+    def test_explicit_cap_is_honored(self):
+        text = json.dumps({"entries": [
+            {"content": f"fact number {i} content here"}
+            for i in range(40)
+        ]})
+        result = mex_prompts.parse_extraction_response(
+            text, max_entries=mex_prompts.MID_SESSION_MAX_ENTRIES,
+        )
+        assert len(result) == mex_prompts.MID_SESSION_MAX_ENTRIES
+
+    def test_session_end_cap_is_more_generous_than_mid_session(self):
+        assert mex_prompts.SESSION_END_MAX_ENTRIES > mex_prompts.MID_SESSION_MAX_ENTRIES
+
+
+class TestEntryCapPromptContract:
+    """The prompt text and the parser cap must agree.
+
+    If they drift, the model is either asked for more entries than we'll
+    keep (silent truncation of work the user never sees) or fewer than we
+    allow (wasted headroom).
+    """
+
+    def test_session_end_prompt_states_the_session_end_cap(self):
+        assert (
+            f"Maximum {mex_prompts.SESSION_END_MAX_ENTRIES} entries"
+            in mex_prompts.SESSION_END_SYSTEM
+        )
+        assert f"0-{mex_prompts.SESSION_END_MAX_ENTRIES} entries" in mex_prompts.SESSION_END_SYSTEM
+
+    def test_mid_session_prompts_keep_the_conservative_cap(self):
+        for prompt in (mex_prompts.PER_TURN_SYSTEM, mex_prompts.PRE_COMPRESS_SYSTEM):
+            assert (
+                f"Maximum {mex_prompts.MID_SESSION_MAX_ENTRIES} entries" in prompt
+            )
+            assert f"Maximum {mex_prompts.SESSION_END_MAX_ENTRIES} entries" not in prompt
+
+
+class TestParseCleanupResponse:
+    def test_clean_remove_action(self):
+        text = json.dumps({"cleanup": [
+            {"fact_id": 7, "action": "remove", "reason": "path moved this session"}
+        ]})
+        result = mex_prompts.parse_cleanup_response(text)
+        assert result == [
+            {"fact_id": 7, "action": "remove", "reason": "path moved this session"}
+        ]
+
+    def test_clean_merge_action(self):
+        text = json.dumps({"cleanup": [
+            {"fact_id": 7, "action": "merge", "reason": "dupe",
+             "merge_target_id": 9, "merged_content": "combined text"}
+        ]})
+        result = mex_prompts.parse_cleanup_response(text)
+        assert result[0]["merge_target_id"] == 9
+        assert result[0]["merged_content"] == "combined text"
+
+    def test_empty_cleanup_is_fine(self):
+        assert mex_prompts.parse_cleanup_response(json.dumps({"cleanup": []})) == []
+
+    def test_missing_key_returns_empty(self):
+        assert mex_prompts.parse_cleanup_response(json.dumps({"entries": []})) == []
+
+    def test_garbage_returns_empty(self):
+        assert mex_prompts.parse_cleanup_response("not json at all") == []
+        assert mex_prompts.parse_cleanup_response("") == []
+
+    def test_code_fence_tolerated(self):
+        text = (
+            "```json\n"
+            '{"cleanup": [{"fact_id": 3, "action": "remove", "reason": "stale"}]}\n'
+            "```"
+        )
+        assert mex_prompts.parse_cleanup_response(text)[0]["fact_id"] == 3
+
+    def test_unknown_action_dropped(self):
+        text = json.dumps({"cleanup": [
+            {"fact_id": 3, "action": "nuke", "reason": "x"}
+        ]})
+        assert mex_prompts.parse_cleanup_response(text) == []
+
+    def test_fact_id_outside_shown_set_is_dropped(self):
+        """Hard safety gate: the model cannot name a fact we never showed it."""
+        text = json.dumps({"cleanup": [
+            {"fact_id": 3, "action": "remove", "reason": "x"},
+            {"fact_id": 99, "action": "remove", "reason": "hallucinated"},
+        ]})
+        result = mex_prompts.parse_cleanup_response(text, valid_fact_ids={3})
+        assert [a["fact_id"] for a in result] == [3]
+
+    def test_merge_without_target_is_dropped_not_downgraded_to_remove(self):
+        text = json.dumps({"cleanup": [
+            {"fact_id": 3, "action": "merge", "reason": "x"}
+        ]})
+        assert mex_prompts.parse_cleanup_response(text) == []
+
+    def test_merge_into_itself_is_dropped(self):
+        text = json.dumps({"cleanup": [
+            {"fact_id": 3, "action": "merge", "merge_target_id": 3, "reason": "x"}
+        ]})
+        assert mex_prompts.parse_cleanup_response(text) == []
+
+    def test_merge_target_outside_shown_set_is_dropped(self):
+        text = json.dumps({"cleanup": [
+            {"fact_id": 3, "action": "merge", "merge_target_id": 99, "reason": "x"}
+        ]})
+        assert mex_prompts.parse_cleanup_response(text, valid_fact_ids={3}) == []
+
+    def test_duplicate_actions_on_same_fact_collapse(self):
+        text = json.dumps({"cleanup": [
+            {"fact_id": 3, "action": "remove", "reason": "first"},
+            {"fact_id": 3, "action": "remove", "reason": "second"},
+        ]})
+        result = mex_prompts.parse_cleanup_response(text)
+        assert len(result) == 1
+        assert result[0]["reason"] == "first"
+
+    def test_max_actions_cap_applied(self):
+        text = json.dumps({"cleanup": [
+            {"fact_id": i, "action": "remove", "reason": "x"} for i in range(50)
+        ]})
+        assert len(mex_prompts.parse_cleanup_response(text)) == 10
 
 
 class TestParseConflictResponse:
@@ -713,3 +842,229 @@ class TestExtractionCostLedger:
         # Must not raise despite the resolution failure.
         result = mex_extractor._call_extraction_llm(system="sys", user="usr", max_tokens=100)
         assert result == "{\"entries\": []}"
+
+
+# =========================================================================
+# extractor.py — session-end CLEANUP pass (real warm store, no mocked store)
+# =========================================================================
+
+class TestSessionEndCleanup:
+    """E2E over a real temp warm DB — only the LLM boundary is stubbed.
+
+    These exercise real ``WarmStore.add/get/remove/update`` calls so a
+    dispatch bug shows up as a wrong DB state, not a satisfied mock.
+    """
+
+    @staticmethod
+    def _cfg():
+        return {
+            "model": "claude-haiku-4-5", "provider": None, "timeout": 30,
+            "max_tokens_per_turn": 1024, "max_tokens_session_end": 2048,
+            "include_pre_compress": True, "auto_commit_session_end": False,
+        }
+
+    @staticmethod
+    def _llm(entries_json, cleanup_json):
+        """Route by system prompt: cleanup pass vs new-entry pass."""
+        def fake_llm(*, system, user, max_tokens, timeout=None):
+            if "auditing" in system:
+                return json.dumps(cleanup_json)
+            return json.dumps(entries_json)
+        return fake_llm
+
+    def test_propose_cleanup_annotates_with_existing_fact_text(self, warm):
+        fid = warm.add(content="the deploy script lives at /old/deploy.sh")["fact_id"]
+        actions = mex_extractor.propose_cleanup(
+            [{"role": "user", "content": "the deploy script lives somewhere"}],
+            [{"content": "the deploy script lives at /new/deploy.sh"}],
+            warm_store=warm,
+            llm_caller=lambda **kw: json.dumps({"cleanup": [
+                {"fact_id": fid, "action": "remove", "reason": "path moved"}
+            ]}),
+        )
+        assert len(actions) == 1
+        assert actions[0]["fact_id"] == fid
+        assert "/old/deploy.sh" in actions[0]["content"]
+
+    def test_propose_cleanup_empty_response_does_not_error(self, warm):
+        warm.add(content="the deploy script lives at /old/deploy.sh")
+        actions = mex_extractor.propose_cleanup(
+            [{"role": "user", "content": "deploy script talk"}],
+            [{"content": "the deploy script lives at /new/deploy.sh"}],
+            warm_store=warm,
+            llm_caller=lambda **kw: json.dumps({"cleanup": []}),
+        )
+        assert actions == []
+
+    def test_propose_cleanup_no_existing_facts_skips_llm(self, warm):
+        calls = []
+
+        def spy(**kw):
+            calls.append(kw)
+            return json.dumps({"cleanup": []})
+
+        actions = mex_extractor.propose_cleanup(
+            [{"role": "user", "content": "nothing stored yet at all"}],
+            [{"content": "some brand new fact about deployment"}],
+            warm_store=warm, llm_caller=spy,
+        )
+        assert actions == []
+        assert calls == []
+
+    def test_propose_cleanup_llm_failure_returns_empty(self, warm):
+        warm.add(content="the deploy script lives at /old/deploy.sh")
+
+        def boom(**kw):
+            raise RuntimeError("provider down")
+
+        assert mex_extractor.propose_cleanup(
+            [{"role": "user", "content": "deploy script"}],
+            [{"content": "the deploy script lives at /new/deploy.sh"}],
+            warm_store=warm, llm_caller=boom,
+        ) == []
+
+    def test_apply_remove_deletes_the_fact(self, warm):
+        fid = warm.add(content="stale fact about deployment paths")["fact_id"]
+        out = mex_extractor.apply_cleanup_action(
+            {"fact_id": fid, "action": "remove", "reason": "stale"},
+            warm_store=warm,
+        )
+        assert out["action"] == "cleanup_removed"
+        assert warm.get(fid) is None
+
+    def test_apply_merge_updates_target_then_removes_source(self, warm):
+        src = warm.add(content="cdsdb is the storage backend")["fact_id"]
+        tgt = warm.add(content="TDS stores records somewhere")["fact_id"]
+        out = mex_extractor.apply_cleanup_action(
+            {"fact_id": src, "action": "merge", "merge_target_id": tgt,
+             "merged_content": "TDS stores records in cdsdb", "reason": "dupe"},
+            warm_store=warm,
+        )
+        assert out["action"] == "cleanup_merged"
+        assert warm.get(src) is None
+        assert warm.get(tgt)["content"] == "TDS stores records in cdsdb"
+
+    def test_merge_failure_on_target_leaves_source_intact(self, warm):
+        """Update-target-first ordering: a failed merge must not delete."""
+        src = warm.add(content="source fact that must survive")["fact_id"]
+        out = mex_extractor.apply_cleanup_action(
+            {"fact_id": src, "action": "merge", "merge_target_id": 999999,
+             "merged_content": "merged text", "reason": "dupe"},
+            warm_store=warm,
+        )
+        assert out["action"] == "cleanup_skipped"
+        assert warm.get(src) is not None
+
+    def test_merge_without_merged_content_is_a_noop(self, warm):
+        src = warm.add(content="source fact that must survive")["fact_id"]
+        tgt = warm.add(content="target fact stays as written")["fact_id"]
+        out = mex_extractor.apply_cleanup_action(
+            {"fact_id": src, "action": "merge", "merge_target_id": tgt},
+            warm_store=warm,
+        )
+        assert out["action"] == "cleanup_skipped"
+        assert warm.get(src) is not None
+        assert warm.get(tgt)["content"] == "target fact stays as written"
+
+    def test_unknown_action_is_a_noop(self, warm):
+        fid = warm.add(content="a fact that should not be touched")["fact_id"]
+        out = mex_extractor.apply_cleanup_action(
+            {"fact_id": fid, "action": "nuke"}, warm_store=warm,
+        )
+        assert out["action"] == "cleanup_skipped"
+        assert warm.get(fid) is not None
+
+    def test_session_end_surfaces_cleanup_to_callback_and_applies_approved(
+        self, warm, auto_extract_on, monkeypatch,
+    ):
+        fid = warm.add(content="the deploy script lives at /old/deploy.sh")["fact_id"]
+        monkeypatch.setattr(mex_extractor, "_get_extraction_config", self._cfg)
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", self._llm(
+            {"entries": [{"content": "the deploy script lives at /new/deploy.sh"}]},
+            {"cleanup": [{"fact_id": fid, "action": "remove", "reason": "path moved"}]},
+        ))
+
+        seen = {}
+
+        def cb(entries, cleanup):
+            seen["entries"] = entries
+            seen["cleanup"] = cleanup
+            return {"entries": entries, "cleanup": cleanup}
+
+        result = mex_extractor.on_session_end(
+            "sid-cleanup", [{"role": "user", "content": "deploy script moved"}],
+            interactive=True, confirm_callback=cb,
+        )
+        assert [a["fact_id"] for a in seen["cleanup"]] == [fid]
+        assert result["cleanup_proposed"] == 1
+        assert result["cleanup_applied"] == 1
+        assert warm.get(fid) is None
+
+    def test_cleanup_not_applied_when_callback_approves_only_entries(
+        self, warm, auto_extract_on, monkeypatch,
+    ):
+        """Accept-all on NEW entries must not sweep cleanup along with it."""
+        fid = warm.add(content="the deploy script lives at /old/deploy.sh")["fact_id"]
+        monkeypatch.setattr(mex_extractor, "_get_extraction_config", self._cfg)
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", self._llm(
+            {"entries": [{"content": "the deploy script lives at /new/deploy.sh"}]},
+            {"cleanup": [{"fact_id": fid, "action": "remove", "reason": "path moved"}]},
+        ))
+
+        # Legacy single-arg callback shape returning a bare list == the
+        # "accept all new entries" path. Cleanup must be dropped.
+        result = mex_extractor.on_session_end(
+            "sid-nomix", [{"role": "user", "content": "deploy script moved"}],
+            interactive=True, confirm_callback=lambda proposals: list(proposals),
+        )
+        assert result["cleanup_proposed"] == 1
+        assert result["cleanup_applied"] == 0
+        assert result["cleanup_skipped"] == 1
+        assert warm.get(fid) is not None
+        assert result["committed"] >= 1
+
+    def test_cleanup_empty_does_not_error(
+        self, warm, auto_extract_on, monkeypatch,
+    ):
+        warm.add(content="the deploy script lives at /old/deploy.sh")
+        monkeypatch.setattr(mex_extractor, "_get_extraction_config", self._cfg)
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", self._llm(
+            {"entries": [{"content": "the deploy script lives at /new/deploy.sh"}]},
+            {"cleanup": []},
+        ))
+        result = mex_extractor.on_session_end(
+            "sid-empty", [{"role": "user", "content": "deploy script moved"}],
+            interactive=True,
+            confirm_callback=lambda e, c: {"entries": e, "cleanup": c},
+        )
+        assert result["cleanup_proposed"] == 0
+        assert result["cleanup_applied"] == 0
+        assert result["cleanup_actions"] == []
+
+    def test_non_interactive_never_proposes_or_applies_cleanup(
+        self, warm, auto_extract_on, monkeypatch,
+    ):
+        """auto_commit_session_end=True must NOT enable cleanup."""
+        fid = warm.add(content="the deploy script lives at /old/deploy.sh")["fact_id"]
+        cfg = dict(self._cfg())
+        cfg["auto_commit_session_end"] = True
+        monkeypatch.setattr(mex_extractor, "_get_extraction_config", lambda: cfg)
+
+        systems = []
+
+        def fake_llm(*, system, user, max_tokens, timeout=None):
+            systems.append(system)
+            return json.dumps({"entries": [
+                {"content": "the deploy script lives at /new/deploy.sh"}
+            ]})
+
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", fake_llm)
+        result = mex_extractor.on_session_end(
+            "sid-auto", [{"role": "user", "content": "deploy script moved"}],
+            interactive=False,
+        )
+        assert result["cleanup_proposed"] == 0
+        assert result["cleanup_applied"] == 0
+        assert warm.get(fid) is not None
+        # The cleanup prompt was never even sent.
+        assert not any("auditing" in s for s in systems)
