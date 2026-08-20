@@ -11669,3 +11669,96 @@ confirmed-via-`git stash` failures unrelated to this change —
 infrastructure (upstream has no `_pending_steer`/`_pending_redirect`
 slots) — stays local, same disposition as the 2026-08-09 redirect fix.
 
+
+### Fork-only feature — 2026-08-20 (session-end memory: raised entry cap + existing-fact cleanup pass)
+
+**Problem (A):** The Phase-2 session-end extraction pass was hard-capped at
+5 proposed entries — both in the prompt text ("Maximum 5 entries per
+response") and in `prompts.parse_extraction_response`'s `cleaned[:5]`
+slice. Long, dense technical sessions routinely produce more than five
+durable facts, and the surplus was silently discarded before the user ever
+saw it in the confirm UI.
+
+**Problem (B):** The warm tier only ever grew. Nothing ever proposed
+removing a fact that a later session made false, or merging two near-
+duplicate facts, so stale/redundant entries accreted indefinitely.
+
+**Fix (A) — raised cap, session-end only:**
+- `tools/memory_extraction/prompts.py` now carries two named caps:
+  `MID_SESSION_MAX_ENTRIES = 5` (per-turn / pre-compress — unchanged;
+  their output accumulates in the buffer unwatched, so a loose cap there
+  is pure bloat) and `SESSION_END_MAX_ENTRIES = 15` (the interactive,
+  user-reviewed final pass).
+- `OUTPUT_SCHEMA_DOCS` is now rendered by `_output_schema_docs(n)`, so the
+  prompt's stated cap and the parser's slice come from the same constant.
+  `parse_extraction_response(text, max_entries=...)` takes an explicit cap
+  and defaults to `DEFAULT_PARSE_MAX_ENTRIES` (= the session-end ceiling);
+  the two mid-session call sites in `extractor.py` pass
+  `MID_SESSION_MAX_ENTRIES` explicitly.
+
+**Fix (B) — session-end cleanup pass:**
+- New `SESSION_END_CLEANUP_SYSTEM` prompt + `session_end_cleanup_user()` +
+  `parse_cleanup_response()` in `prompts.py`. The model is shown the final
+  conversation, the NEW entries just proposed, and the EXISTING warm facts
+  recalled via `WarmStore.recall_related`, and returns
+  `{"cleanup": [{fact_id, action: "remove"|"merge", reason,
+  merge_target_id?, merged_content?}]}`. Empty list is the documented
+  expected answer.
+- `extractor.propose_cleanup()` gathers candidates (seeded from the
+  proposed entries plus the conversation tail, capped at 25 facts) and
+  annotates each action with the existing fact's text.
+  `extractor.apply_cleanup_action()` dispatches one approved action.
+- `on_session_end()` computes cleanup alongside `final_entries` and passes
+  BOTH to the confirm callback. The callback signature is widened
+  compatibly: `_invoke_confirm_callback` inspects arity and calls
+  `cb(entries, cleanup)` when supported, else the legacy `cb(entries)`;
+  a dict return `{"entries": [...], "cleanup": [...]}` opts into cleanup.
+  Summary gains `cleanup_proposed` / `cleanup_applied` / `cleanup_skipped`
+  / `cleanup_actions`.
+- `hermes_cli/memory_confirm.py` gains `_review_cleanup()` +
+  `_render_cleanup_action()`, rendered as a separate
+  "Proposed cleanup (N):" section after the new-entry review, with its own
+  independent `a, b, c` letter sequence.
+
+**Safety posture (deletion is higher-risk than addition):**
+- Cleanup NEVER auto-commits. `auto_commit_session_end=True` covers new
+  entries only; cleanup proposals on that path are dropped.
+- Cleanup is not even *computed* on a non-interactive exit — no callback
+  means the proposals would be discarded, so the LLM call is skipped.
+- The cleanup review has no auto-accept countdown and no blank-input
+  default (unlike the new-entry flow, where Enter/timeout accepts all).
+  Enter, `none`, EOF, Ctrl-C, and non-tty stdin all approve NOTHING.
+- `parse_cleanup_response(valid_fact_ids=...)` drops any action naming a
+  fact id we did not explicitly show the model — a hallucinated id can
+  never reach `WarmStore.remove`.
+- A merge updates the SURVIVING target first, then removes the absorbed
+  source, so an interruption between the two leaves both facts intact
+  (redundant content) rather than destroying the absorbed fact's text. A
+  failed target update short-circuits without deleting anything.
+- Cleanup is applied AFTER new entries are committed, so a "superseded"
+  removal never runs before its replacement exists.
+
+**Files:** `tools/memory_extraction/prompts.py`,
+`tools/memory_extraction/extractor.py`, `hermes_cli/memory_confirm.py`,
+`tests/tools/test_memory_extraction.py`,
+`tests/hermes_cli/test_memory_confirm.py`.
+
+**Verification:** 33 new tests. Extraction-side tests run E2E against a
+real temp-`HERMES_HOME` `WarmStore` (only the LLM boundary is stubbed), so
+remove/merge dispatch is asserted against actual DB state rather than mock
+calls. Coverage includes: the cap contract (parser default == prompt's
+stated session-end cap; mid-session prompts still state 5), cleanup
+parsing incl. hallucinated-id and self-merge rejection, empty-cleanup
+no-error, remove/merge dispatch, merge-failure-leaves-source-intact,
+accept-all-on-entries does NOT sweep cleanup, and
+`auto_commit_session_end=True` never sending the cleanup prompt. Touched-
+module suites: `tests/tools/test_memory_extraction.py`,
+`tests/hermes_cli/test_memory_confirm.py`, `tests/tools/test_memory_warm.py`,
+`tests/tools/test_memory_auto_feedback.py`,
+`tests/cli/test_memory_confirm_before_exit.py`,
+`tests/cli/test_exit_summary_before_cleanup_ordering.py`,
+`tests/run_agent/test_memory_tool_warm_dispatch.py`,
+`tests/agent/test_hot_tier_audit.py` — 248 passed.
+
+**Merge note:** pure fork-local; upstream has no Phase-2 auto-memory
+extraction layer at all.

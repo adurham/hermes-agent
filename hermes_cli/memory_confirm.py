@@ -217,7 +217,11 @@ def confirm_and_commit(
         "final_proposed": 0,
         "committed": 0,
         "skipped": 0,
+        "cleanup_proposed": 0,
+        "cleanup_applied": 0,
+        "cleanup_skipped": 0,
         "actions": [],
+        "cleanup_actions": [],
     }
     if not session_id:
         return summary
@@ -262,13 +266,18 @@ def confirm_and_commit(
     except Exception:
         _spinner = None
 
-    def _confirm_callback(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _confirm_callback(
+        proposals: List[Dict[str, Any]],
+        cleanup: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         if _spinner is not None:
             try:
                 _spinner.stop("")
             except Exception:
                 pass
-        return _interactive_review(proposals)
+        approved = _interactive_review(proposals)
+        approved_cleanup = _review_cleanup(cleanup or [])
+        return {"entries": approved, "cleanup": approved_cleanup}
 
     try:
         summary = extractor.on_session_end(
@@ -305,8 +314,123 @@ def confirm_and_commit(
                 "superseded": "!",
             }.get(action.get("outcome", ""), "?")
             print(f"  {tag} {_shorten(action.get('content') or '')}")
+    if summary.get("cleanup_applied"):
+        print(
+            f"Memory: applied {summary['cleanup_applied']} of "
+            f"{summary.get('cleanup_proposed', 0)} proposed cleanup action(s)."
+        )
+        for action in summary.get("cleanup_actions") or []:
+            tag = {
+                "cleanup_removed": "-",
+                "cleanup_merged": "&",
+                "cleanup_merged_source_retained": "&",
+            }.get(action.get("outcome", ""), "?")
+            print(f"  {tag} fact {action.get('fact_id')}: {action.get('reason') or ''}")
     _print_separator()
     return summary
+
+
+def _render_cleanup_action(i: int, action: Dict[str, Any]) -> None:
+    """Print one cleanup proposal.
+
+    Cleanup uses its OWN letter sequence starting at ``a``, independent of
+    the new-entry list, so the two review steps never share a namespace and
+    a stray letter from the first prompt can't select a deletion in the
+    second.
+    """
+    letter = chr(ord("a") + i)
+    kind = (action.get("action") or "").lower()
+    tag = "- REMOVE" if kind == "remove" else "& MERGE"
+    category = action.get("category") or "general"
+    print(f"  [{letter}] [{tag}] [warm:{category}] fact {action.get('fact_id')}")
+    print(_wrap_indented(action.get("content") or ""))
+    if kind == "merge":
+        target = action.get("merge_target_content") or ""
+        if target:
+            print(
+                f"      into fact {action.get('merge_target_id')}: "
+                f"{_shorten(target, 80)}"
+            )
+        merged = action.get("merged_content") or ""
+        if merged:
+            print(f"      result:   {_shorten(merged, 80)}")
+    if action.get("reason"):
+        print(f"      reason: {action['reason']}")
+
+
+def _review_cleanup(
+    cleanup: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Interactive review of proposed cleanup of EXISTING warm facts.
+
+    Rendered as a separate, clearly-labelled "Proposed cleanup (N):" section
+    AFTER the new-entry review, with its own ``a, b, c`` letter sequence.
+
+    Deliberate differences from the new-entry flow, because these actions
+    DELETE or rewrite facts the user already has:
+
+      * There is NO auto-accept countdown and NO blank-input default. The
+        user must type an explicit selection; pressing Enter re-prompts.
+      * The default on EOF / Ctrl-C / non-tty stdin is to approve NOTHING.
+      * Accepting new entries via 'all' in the previous step does NOT
+        accept cleanup — the two lists are never mixed.
+    """
+    if not cleanup:
+        return []
+
+    try:
+        if not sys.stdin.isatty():
+            # No human watching — never delete facts unattended.
+            logger.debug(
+                "memory cleanup: non-tty stdin, dropping %d proposal(s)", len(cleanup)
+            )
+            return []
+    except Exception:
+        return []
+
+    remaining = list(cleanup)
+
+    print()
+    _print_separator()
+    print(f"Proposed cleanup ({len(remaining)}) of EXISTING stored facts:")
+    print()
+    for i, action in enumerate(remaining):
+        _render_cleanup_action(i, action)
+    print()
+    print("Choices:")
+    print("  letters (e.g. 'a c') — apply those cleanup actions")
+    print("  'all' — apply every cleanup action listed")
+    print("  'none' — apply nothing (default; proposals dropped)")
+    print()
+
+    while True:
+        try:
+            raw = input("Apply which cleanup? [none]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n(skipping cleanup — no facts changed)")
+            return []
+
+        if not raw or raw in ("none", "skip"):
+            return []
+
+        if raw == "all":
+            return remaining
+
+        chosen: List[Dict[str, Any]] = []
+        invalid = False
+        for tok in raw.replace(",", " ").split():
+            if len(tok) != 1:
+                print(f"  invalid token {tok!r}")
+                invalid = True
+                break
+            idx = ord(tok) - ord("a")
+            if not (0 <= idx < len(remaining)):
+                print(f"  out of range: {tok!r}")
+                invalid = True
+                break
+            chosen.append(remaining[idx])
+        if not invalid:
+            return chosen
 
 
 def _interactive_review(

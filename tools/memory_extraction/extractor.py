@@ -330,7 +330,9 @@ def on_turn_end(
                 ),
                 max_tokens=int(cfg["max_tokens_per_turn"]),
             )
-            entries = _prompts.parse_extraction_response(response_text)
+            entries = _prompts.parse_extraction_response(
+                response_text, max_entries=_prompts.MID_SESSION_MAX_ENTRIES,
+            )
             if entries:
                 appended = _buffer.append(session_id, entries, source="per_turn")
                 if appended:
@@ -379,7 +381,9 @@ def on_pre_compress(
             user=_prompts.pre_compress_user(messages),
             max_tokens=int(cfg["max_tokens_per_turn"]),
         )
-        entries = _prompts.parse_extraction_response(response_text)
+        entries = _prompts.parse_extraction_response(
+            response_text, max_entries=_prompts.MID_SESSION_MAX_ENTRIES,
+        )
         if entries:
             appended = _buffer.append(session_id, entries, source="pre_compress")
             logger.info(
@@ -394,12 +398,244 @@ def on_pre_compress(
 # Session-end extraction + commit
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Session-end cleanup pass (fork-only)
+#
+# Alongside proposing NEW entries, the session-end sweep reviews EXISTING
+# warm-tier facts that are topically related to what this session touched and
+# proposes removals/merges for ones that have gone stale, been superseded by
+# a new proposal, or duplicate another existing fact.
+#
+# Safety posture — deletion is strictly higher-risk than addition, so:
+#   * cleanup NEVER auto-commits, regardless of ``auto_commit_session_end``;
+#   * with no interactive confirm callback, proposals are dropped (logged at
+#     debug), never applied;
+#   * the LLM can only name fact_ids we explicitly showed it (enforced in
+#     ``prompts.parse_cleanup_response`` via ``valid_fact_ids``);
+#   * a merge writes the surviving fact BEFORE removing the absorbed one, so
+#     a crash mid-way leaves both facts intact rather than losing content.
+# ---------------------------------------------------------------------------
+
+# Cap on how many existing facts we pull in as cleanup candidates. Keeps the
+# prompt bounded and keeps the blast radius of any single sweep small.
+_CLEANUP_CANDIDATE_LIMIT = 25
+
+
+def _cleanup_seed_text(
+    messages: List[Dict[str, Any]],
+    entries: List[Dict[str, Any]],
+) -> str:
+    """Build the FTS5 seed describing what this session was about.
+
+    Proposed entries are the highest-signal summary of the session's durable
+    content, so they lead. The tail of the conversation backfills topics that
+    didn't produce a proposal.
+    """
+    parts: List[str] = [str(e.get("content") or "") for e in entries]
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") not in ("user", "assistant"):
+            continue
+        text = _prompts._truncate_for_extraction(msg.get("content"), 600)
+        if text.strip():
+            parts.append(text)
+        if len(parts) >= 12:
+            break
+    return " ".join(parts)
+
+
+def _gather_cleanup_candidates(
+    messages: List[Dict[str, Any]],
+    entries: List[Dict[str, Any]],
+    warm_store: Any,
+) -> List[Dict[str, Any]]:
+    """Recall existing warm facts topically related to this session."""
+    seed = _cleanup_seed_text(messages, entries)
+    if not seed.strip():
+        return []
+    try:
+        rows = warm_store.recall_related(seed, top_k=_CLEANUP_CANDIDATE_LIMIT)
+    except Exception as e:
+        logger.debug("memory cleanup: recall_related failed: %s", e)
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for row in rows or []:
+        fact_id = row.get("fact_id")
+        if fact_id is None or fact_id in seen:
+            continue
+        seen.add(fact_id)
+        out.append(row)
+    return out
+
+
+def propose_cleanup(
+    messages: List[Dict[str, Any]],
+    entries: List[Dict[str, Any]],
+    *,
+    warm_store: Any = None,
+    llm_caller: Any = None,
+    max_tokens: int = 1024,
+) -> List[Dict[str, Any]]:
+    """Propose cleanup actions on EXISTING warm facts for this session.
+
+    Returns a list of action dicts, each annotated with the existing fact's
+    text so the confirm UI can render it without a second lookup::
+
+        {"fact_id": int, "action": "remove"|"merge", "reason": str,
+         "content": str, "category": str,
+         "merge_target_id": int?, "merge_target_content": str?,
+         "merged_content": str?}
+
+    Empty list on any failure — cleanup is strictly best-effort and doing
+    nothing is always the safe outcome.
+    """
+    if warm_store is None:
+        try:
+            from tools.memory_warm import get_warm_store
+            warm_store = get_warm_store()
+        except Exception as e:
+            logger.debug("memory cleanup: warm store unavailable: %s", e)
+            return []
+
+    candidates = _gather_cleanup_candidates(messages, entries, warm_store)
+    if not candidates:
+        return []
+
+    by_id = {c["fact_id"]: c for c in candidates}
+    if llm_caller is None:
+        llm_caller = _call_extraction_llm
+
+    try:
+        response_text = llm_caller(
+            system=_prompts.SESSION_END_CLEANUP_SYSTEM,
+            user=_prompts.session_end_cleanup_user(
+                messages or [], entries or [], candidates,
+            ),
+            max_tokens=max_tokens,
+        )
+    except Exception as e:
+        logger.debug("memory cleanup: LLM call failed: %s", e)
+        return []
+
+    actions = _prompts.parse_cleanup_response(
+        response_text, valid_fact_ids=set(by_id.keys()),
+    )
+
+    annotated: List[Dict[str, Any]] = []
+    for action in actions:
+        source = by_id.get(action["fact_id"])
+        if source is None:
+            continue
+        entry = {
+            **action,
+            "content": source.get("content") or "",
+            "category": source.get("category") or "general",
+        }
+        target_id = action.get("merge_target_id")
+        if target_id is not None:
+            target = by_id.get(target_id)
+            if target is None:
+                continue
+            entry["merge_target_content"] = target.get("content") or ""
+            if not entry.get("merged_content"):
+                # No merged text from the model — fall back to a lossless
+                # concatenation so a merge can never silently drop content.
+                entry["merged_content"] = (
+                    f"{entry['merge_target_content']} {entry['content']}"
+                ).strip()
+        annotated.append(entry)
+    return annotated
+
+
+def apply_cleanup_action(
+    action: Dict[str, Any],
+    *,
+    warm_store: Any = None,
+) -> Dict[str, Any]:
+    """Apply one approved cleanup action to the warm tier.
+
+    ``remove`` deletes the fact. ``merge`` writes the merged text onto the
+    surviving target FIRST and only then removes the absorbed source, so an
+    interruption between the two steps leaves both facts intact (duplicated
+    content) rather than destroying the absorbed fact's text.
+    """
+    if warm_store is None:
+        from tools.memory_warm import get_warm_store
+        warm_store = get_warm_store()
+
+    fact_id = action.get("fact_id")
+    kind = (action.get("action") or "").lower()
+
+    if kind == "merge":
+        target_id = action.get("merge_target_id")
+        merged = (action.get("merged_content") or "").strip()
+        if target_id is None or not merged:
+            return {"action": "cleanup_skipped", "fact_id": fact_id,
+                    "error": "merge missing target or merged content"}
+        updated = warm_store.update(fact_id=target_id, content=merged)
+        if not updated.get("success"):
+            return {"action": "cleanup_skipped", "fact_id": fact_id,
+                    "error": updated.get("error") or "merge target update failed"}
+        removed = warm_store.remove(fact_id)
+        if not removed.get("success"):
+            # Target already carries the merged content, so nothing is lost —
+            # the store just holds a redundant copy the user can clean later.
+            return {"action": "cleanup_merged_source_retained", "fact_id": fact_id,
+                    "merge_target_id": target_id,
+                    "error": removed.get("error")}
+        return {"action": "cleanup_merged", "fact_id": fact_id,
+                "merge_target_id": target_id}
+
+    if kind == "remove":
+        removed = warm_store.remove(fact_id)
+        if not removed.get("success"):
+            return {"action": "cleanup_skipped", "fact_id": fact_id,
+                    "error": removed.get("error") or "remove failed"}
+        return {"action": "cleanup_removed", "fact_id": fact_id}
+
+    return {"action": "cleanup_skipped", "fact_id": fact_id,
+            "error": f"unknown cleanup action {kind!r}"}
+
+
+def _invoke_confirm_callback(
+    confirm_callback: Callable[..., Any],
+    entries: List[Dict[str, Any]],
+    cleanup: List[Dict[str, Any]],
+) -> tuple:
+    """Call the confirm callback and normalize its return value.
+
+    Two callback shapes are supported so the hook stays usable by existing
+    single-argument callers:
+
+      * ``cb(entries)`` — legacy; returns the approved entry list. No
+        cleanup actions are approved.
+      * ``cb(entries, cleanup)`` — returns either the approved entry list
+        or a dict ``{"entries": [...], "cleanup": [...]}``.
+    """
+    import inspect
+    try:
+        arity = len(inspect.signature(confirm_callback).parameters)
+    except (TypeError, ValueError):
+        arity = 1
+
+    if arity >= 2:
+        result = confirm_callback(entries, cleanup)
+    else:
+        result = confirm_callback(entries)
+
+    if isinstance(result, dict):
+        return list(result.get("entries") or []), list(result.get("cleanup") or [])
+    return list(result or []), []
+
+
 def on_session_end(
     session_id: str,
     messages: List[Dict[str, Any]],
     *,
     interactive: bool = False,
-    confirm_callback: Optional[Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]] = None,
+    confirm_callback: Optional[Callable[..., Any]] = None,
 ) -> Dict[str, Any]:
     """Session-end extraction + commit.
 
@@ -410,8 +646,10 @@ def on_session_end(
             entry list and uses the returned list. When False, the
             ``auto_commit_session_end`` config flag decides whether entries
             are auto-committed.
-        confirm_callback: required when interactive=True — receives a list
-            of entry dicts and returns the user-approved subset.
+        confirm_callback: required when interactive=True. Called as
+            ``cb(entries, cleanup)`` when it accepts two parameters,
+            otherwise ``cb(entries)``. See ``_invoke_confirm_callback``
+            for the accepted return shapes.
 
     Returns a summary dict:
         {
@@ -420,7 +658,11 @@ def on_session_end(
           "final_proposed": int,     # entries after session-end LLM pass
           "committed": int,          # actually written to warm tier
           "skipped": int,            # rejected by user / dedup'd / errored
-          "actions": [...]           # per-entry verdict + outcome
+          "cleanup_proposed": int,   # existing-fact cleanup actions proposed
+          "cleanup_applied": int,    # cleanup actions the user approved+applied
+          "cleanup_skipped": int,    # proposed but not applied
+          "actions": [...],          # per-entry verdict + outcome
+          "cleanup_actions": [...]   # per-cleanup outcome
         }
 
     Failures degrade gracefully — on any error the buffer is preserved
@@ -432,7 +674,11 @@ def on_session_end(
         "final_proposed": 0,
         "committed": 0,
         "skipped": 0,
+        "cleanup_proposed": 0,
+        "cleanup_applied": 0,
+        "cleanup_skipped": 0,
         "actions": [],
+        "cleanup_actions": [],
     }
     if not is_enabled() or not session_id:
         return summary
@@ -450,7 +696,9 @@ def on_session_end(
             user=_prompts.session_end_user(messages or [], buffered),
             max_tokens=int(cfg["max_tokens_session_end"]),
         )
-        final_entries = _prompts.parse_extraction_response(response_text)
+        final_entries = _prompts.parse_extraction_response(
+            response_text, max_entries=_prompts.SESSION_END_MAX_ENTRIES,
+        )
         summary["final_proposed"] = len(final_entries)
     except Exception as e:
         logger.warning("memory extraction session_end failed: %s — falling back to buffer", e)
@@ -458,20 +706,42 @@ def on_session_end(
         final_entries = buffered
         summary["final_proposed"] = len(buffered)
 
-    if not final_entries:
+    # Step 1b: cleanup pass over EXISTING warm facts related to this session.
+    #
+    # Only worth running when a human will actually see the result: cleanup
+    # is never auto-committed (see the module note above), so computing it on
+    # a non-interactive exit would burn an LLM call to produce proposals we
+    # are contractually going to throw away.
+    cleanup_proposals: List[Dict[str, Any]] = []
+    if interactive and confirm_callback is not None:
+        try:
+            cleanup_proposals = propose_cleanup(messages or [], final_entries)
+        except Exception as e:
+            logger.debug("memory cleanup: proposal pass failed: %s", e)
+            cleanup_proposals = []
+        summary["cleanup_proposed"] = len(cleanup_proposals)
+
+    if not final_entries and not cleanup_proposals:
         # Nothing to commit. Clear the buffer to free space.
         _buffer.clear_session(session_id)
         return summary
 
     # Step 2: confirm UI (interactive) or auto-commit
     auto_commit = bool(cfg.get("auto_commit_session_end", False))
+    approved_cleanup: List[Dict[str, Any]] = []
     if interactive and confirm_callback is not None:
         try:
-            approved = confirm_callback(final_entries)
+            approved, approved_cleanup = _invoke_confirm_callback(
+                confirm_callback, final_entries, cleanup_proposals,
+            )
         except Exception as e:
             logger.warning("memory extraction confirm callback failed: %s", e)
             approved = []
+            approved_cleanup = []
     elif auto_commit:
+        # NOTE: auto_commit covers NEW entries only. Cleanup mutates/deletes
+        # existing facts and always requires explicit confirmation, so any
+        # proposals here are dropped rather than applied.
         approved = final_entries
     else:
         # Default safe path: skip auto-commit when the user isn't watching.
@@ -480,6 +750,13 @@ def on_session_end(
         _buffer.replace_session_entries(session_id, final_entries)
         summary["skipped"] = len(final_entries)
         return summary
+
+    if cleanup_proposals and not approved_cleanup:
+        logger.debug(
+            "memory cleanup: dropping %d unconfirmed cleanup proposal(s) for session %s",
+            len(cleanup_proposals), session_id,
+        )
+    summary["cleanup_skipped"] = len(cleanup_proposals) - len(approved_cleanup)
 
     # Step 3: dispatch each approved entry through conflict resolution
     #
@@ -519,6 +796,30 @@ def on_session_end(
         except Exception as e:
             logger.warning("memory extraction commit failed: %s", e)
             summary["skipped"] += 1
+
+    # Step 3b: apply approved cleanup actions — AFTER new entries are
+    # committed, so a "superseded" removal never runs before its replacement
+    # exists in the store.
+    for action in approved_cleanup:
+        try:
+            outcome = apply_cleanup_action(action)
+        except Exception as e:
+            logger.warning("memory cleanup: apply failed: %s", e)
+            outcome = {"action": "cleanup_skipped", "fact_id": action.get("fact_id"),
+                       "error": str(e)}
+        summary["cleanup_actions"].append({
+            "fact_id": outcome.get("fact_id"),
+            "requested": action.get("action"),
+            "outcome": outcome.get("action"),
+            "reason": action.get("reason", ""),
+            "error": outcome.get("error"),
+        })
+        if outcome.get("action") in (
+            "cleanup_removed", "cleanup_merged", "cleanup_merged_source_retained",
+        ):
+            summary["cleanup_applied"] += 1
+        else:
+            summary["cleanup_skipped"] += 1
 
     # Step 4: clear the buffer — proposals are now committed (or surfaced)
     _buffer.clear_session(session_id)

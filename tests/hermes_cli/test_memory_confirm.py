@@ -496,3 +496,163 @@ class TestAutoAcceptCountdown:
 
         # Should return True (caller falls through to interactive prompt).
         assert memory_confirm._countdown_for_review(seconds=3) is True
+
+
+# ---------------------------------------------------------------------------
+# Cleanup review — proposed removals/merges of EXISTING warm facts
+# ---------------------------------------------------------------------------
+
+def _cleanup(
+    fact_id: int,
+    action: str = "remove",
+    *,
+    content: str = "an existing stored fact",
+    reason: str = "stale",
+    merge_target_id: int | None = None,
+    merge_target_content: str | None = None,
+    merged_content: str | None = None,
+) -> Dict[str, Any]:
+    a: Dict[str, Any] = {
+        "fact_id": fact_id, "action": action,
+        "content": content, "reason": reason, "category": "general",
+    }
+    if merge_target_id is not None:
+        a["merge_target_id"] = merge_target_id
+        a["merge_target_content"] = merge_target_content or "the surviving fact"
+        a["merged_content"] = merged_content or "combined text"
+    return a
+
+
+@pytest.fixture()
+def tty_stdin(monkeypatch):
+    """Cleanup review refuses to run on non-tty stdin; fake a tty."""
+    monkeypatch.setattr(memory_confirm.sys.stdin, "isatty", lambda: True, raising=False)
+
+
+class TestReviewCleanup:
+    def test_empty_list_returns_empty_without_prompting(self, monkeypatch):
+        def boom(_):
+            raise AssertionError("should not prompt")
+        monkeypatch.setattr("builtins.input", boom)
+        assert memory_confirm._review_cleanup([]) == []
+
+    def test_non_tty_stdin_approves_nothing(self, monkeypatch):
+        monkeypatch.setattr(memory_confirm.sys.stdin, "isatty", lambda: False, raising=False)
+
+        def boom(_):
+            raise AssertionError("should not prompt on non-tty")
+        monkeypatch.setattr("builtins.input", boom)
+        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
+
+    def test_blank_input_defaults_to_none(self, tty_stdin, monkeypatch):
+        """No auto-accept default for deletions — Enter approves nothing."""
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        assert memory_confirm._review_cleanup([_cleanup(1), _cleanup(2)]) == []
+
+    def test_none_approves_nothing(self, tty_stdin, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "none")
+        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
+
+    def test_all_approves_everything(self, tty_stdin, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "all")
+        actions = [_cleanup(1), _cleanup(2)]
+        assert memory_confirm._review_cleanup(actions) == actions
+
+    def test_letters_select_subset_with_own_sequence(self, tty_stdin, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "a c")
+        actions = [_cleanup(1), _cleanup(2), _cleanup(3)]
+        chosen = memory_confirm._review_cleanup(actions)
+        assert [c["fact_id"] for c in chosen] == [1, 3]
+
+    def test_out_of_range_re_prompts(self, tty_stdin, monkeypatch, capsys):
+        replies = iter(["z", "none"])
+        monkeypatch.setattr("builtins.input", lambda _: next(replies))
+        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
+        assert "out of range" in capsys.readouterr().out
+
+    def test_eof_approves_nothing(self, tty_stdin, monkeypatch):
+        def eof(_):
+            raise EOFError
+        monkeypatch.setattr("builtins.input", eof)
+        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
+
+    def test_render_shows_action_content_and_reason(self, tty_stdin, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda _: "none")
+        memory_confirm._review_cleanup([
+            _cleanup(42, "remove", content="the old path is /old/x", reason="path moved"),
+        ])
+        out = capsys.readouterr().out
+        assert "Proposed cleanup (1)" in out
+        assert "REMOVE" in out
+        assert "fact 42" in out
+        assert "/old/x" in out
+        assert "path moved" in out
+
+    def test_render_merge_shows_target_and_result(self, tty_stdin, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda _: "none")
+        memory_confirm._review_cleanup([
+            _cleanup(7, "merge", merge_target_id=9,
+                     merge_target_content="the surviving fact text",
+                     merged_content="merged result text"),
+        ])
+        out = capsys.readouterr().out
+        assert "MERGE" in out
+        assert "into fact 9" in out
+        assert "merged result text" in out
+
+
+class TestConfirmCallbackKeepsListsSeparate:
+    """Accepting new entries must never implicitly accept cleanup."""
+
+    def test_accept_all_entries_with_cleanup_rejected(self, monkeypatch):
+        captured = {}
+
+        def fake_on_session_end(session_id, messages, *, interactive, confirm_callback):
+            captured["result"] = confirm_callback(
+                [{"content": "a new fact"}],
+                [_cleanup(5)],
+            )
+            return {
+                "session_id": session_id, "buffered": 0, "final_proposed": 1,
+                "committed": 1, "skipped": 0, "cleanup_proposed": 1,
+                "cleanup_applied": 0, "cleanup_skipped": 1,
+                "actions": [], "cleanup_actions": [],
+            }
+
+        from tools.memory_extraction import extractor as _ex
+        monkeypatch.setattr(_ex, "is_enabled", lambda: True)
+        monkeypatch.setattr(_ex, "on_session_end", fake_on_session_end)
+        monkeypatch.setattr(
+            memory_confirm, "_interactive_review", lambda p: list(p),
+        )
+        monkeypatch.setattr(memory_confirm, "_review_cleanup", lambda c: [])
+
+        memory_confirm.confirm_and_commit(
+            "sid", [{"role": "user", "content": "hi"}],
+        )
+        result = captured["result"]
+        assert isinstance(result, dict)
+        assert len(result["entries"]) == 1
+        assert result["cleanup"] == []
+
+    def test_callback_returns_both_lists_when_cleanup_approved(self, monkeypatch):
+        captured = {}
+        action = _cleanup(5)
+
+        def fake_on_session_end(session_id, messages, *, interactive, confirm_callback):
+            captured["result"] = confirm_callback([{"content": "a new fact"}], [action])
+            return {
+                "session_id": session_id, "buffered": 0, "final_proposed": 1,
+                "committed": 1, "skipped": 0, "cleanup_proposed": 1,
+                "cleanup_applied": 1, "cleanup_skipped": 0,
+                "actions": [], "cleanup_actions": [],
+            }
+
+        from tools.memory_extraction import extractor as _ex
+        monkeypatch.setattr(_ex, "is_enabled", lambda: True)
+        monkeypatch.setattr(_ex, "on_session_end", fake_on_session_end)
+        monkeypatch.setattr(memory_confirm, "_interactive_review", lambda p: list(p))
+        monkeypatch.setattr(memory_confirm, "_review_cleanup", lambda c: list(c))
+
+        memory_confirm.confirm_and_commit("sid", [{"role": "user", "content": "hi"}])
+        assert captured["result"]["cleanup"] == [action]
