@@ -7706,6 +7706,48 @@ the exact same bug through unrelated refactor work (as happened with
 #72087). All 6 open PRs (#72087, #72151, #72152, #72153, #72155, #72164)
 confirmed mergeable as of 2026-08-02.
 
+### PR status check-in (2026-08-20) — batch recheck of all 8 open PRs (Step 0o)
+
+Full `gh pr list --author adurham --state all` sweep. All 8 open PRs still
+show green CI (`Detect affected areas`, `Python tests`, `Python lints`,
+`Docker build`, `Supply-chain scan`, `All required checks pass` — every
+check `SUCCESS`, no `FAILURE`/`CONFLICTING`), no maintainer merge
+decision pending on any of them. Breakdown:
+
+* **Waiting on maintainer merge, nothing actionable right now:** #72164,
+  #72151 (both `hermes-sweeper` `keep_open, salvageability=high`,
+  unchanged since the 2026-08-02 rebase round) and #72087 (reasoning
+  estimator dedup — `mergeable: MERGEABLE`/`mergeStateStatus: CLEAN`
+  against current `main`, confirmed still rebased correctly).
+* **Needs action — flagged by the `spfcraze` AI-triage bot on 2026-08-09,
+  untouched for ~11 days:**
+  - **#82103 (`consult` tool):** bot correctly flags that `consult` is
+    registered in `toolsets.py TOOLSETS` but missing from
+    `CONFIGURABLE_TOOLSETS` in `hermes_cli/tools_config.py`, so
+    `hermes tools enable consult` rejects it as an unknown toolset — the
+    same gap Step 0q.2 already called out (`vision`/`video` are the
+    precedent tuples to mirror). Not yet fixed on the PR branch.
+  - **#82095 (`agent.pin_anthropic_token`):** bot correctly flags that
+    `resolve_anthropic_token()` calls `_pin_static_anthropic_token()` (and
+    through it the deepcopy `load_config()`) on every single resolution,
+    not just when a static token is actually pinned — should move the
+    pin lookup inside the `if token:`/`if cc_token:` branches and switch
+    to `load_config_readonly()`. Not yet fixed on the PR branch.
+* **Quiet, no reviewer engagement yet, nothing to action:** #82245
+  (config-unset comment-block fix, 0 reviews since filing 2026-08-09),
+  #72155 and #72153 (both green, no activity since the 2026-08-02 rebase,
+  last comment is this session's own).
+* **Closed but landed anyway (good outcomes, not rejections):** #82070
+  (merged via #82418, authorship preserved), #72054 (superseded by
+  #74139, already documented above), #72152 (merged via #88228, authorship
+  preserved — the interpreter-exec'd shim gap was verified live pre-merge
+  per the maintainer's own close comment). #25234 stays closed per the
+  "Why a fork" incident that motivates this whole section.
+
+**Next:** fix #82103 and #82095 per the bot's findings above (small,
+scoped, both already root-caused by the bot — no new investigation
+needed) and push to the existing PR branches, not new PRs.
+
 ### Bucket B — needs de-forking first, or unverified/likely-contaminated (do NOT file as-is)
 
 Moved here from the original Bucket A after re-review: FORK.md's own
