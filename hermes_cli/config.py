@@ -5580,6 +5580,23 @@ _DYNAMIC_TOP_LEVEL_KEYS = frozenset({
 # accepted because ``PlatformConfig`` carries an open ``extra`` mapping.
 _PLATFORM_CONTAINER_KEYS = frozenset({"platforms"})
 
+# Dotted paths (below the top level) that are open-ended, user-extensible
+# maps: the schema declares the container, the user populates its keys.
+# The path itself is valid, and ANY key below it is valid too — we must not
+# enumerate the children, because new ones legitimately appear over time.
+#
+# ``delegation.model_by_role`` is the headline case: the delegation router
+# and ``hermes_cli/personas.py`` read/write an arbitrary
+# ``<role> -> <model>`` map (scout-explorer, code-analyzer, coder, tester,
+# reviewer, planner, researcher, …) and new agent-type roles are added via
+# ``/delegation`` or by hand.  It is absent from ``DEFAULT_CONFIG`` (written
+# only when used), so without this entry every single
+# ``hermes config set delegation.model_by_role.<role> <model>`` printed a
+# spurious "not a recognized config key" warning.
+_OPEN_DICT_NESTED_PATHS = frozenset({
+    "delegation.model_by_role",
+})
+
 
 def _known_top_level_keys() -> set[str]:
     """Return the union of known top-level config keys for validation.
@@ -5680,6 +5697,12 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     node: Any = DEFAULT_CONFIG.get(top)
     consumed = [top]
     for seg in segments[1:]:
+        # Open-ended nested maps (e.g. ``delegation.model_by_role``): the
+        # container path itself is valid and its children are user-supplied,
+        # so accept the container and everything below it without checking
+        # the sub-keys against an enumeration.
+        if ".".join(consumed + [seg]) in _OPEN_DICT_NESTED_PATHS:
+            return True, None
         # ``gateway.platforms.<name>.<field>`` (and any other nested
         # ``platforms`` container) — the segment after ``platforms`` is a
         # user-supplied platform name, so accept everything below it.

@@ -3,6 +3,45 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-19 (`hermes config set delegation.model_by_role.<role>` spuriously warned "not a recognized config key" for every role, including existing ones)
+
+**Reported:** running `hermes config set delegation.model_by_role.researcher claude-sonnet-5`
+(changing the researcher role's pinned model away from claude-haiku-4-5, after a
+delegated researcher subagent under Haiku produced a shallower, partly-wrong
+investigation compared to a Sonnet re-run) printed the warning even though the
+write itself succeeded and landed correctly in `~/.hermes/config.yaml`.
+
+**Root cause:** `_validate_config_key()` in `hermes_cli/config.py` walks a dotted
+config path against `DEFAULT_CONFIG`. `DEFAULT_CONFIG["delegation"]` enumerates
+14 sub-keys (`model`, `provider`, `max_iterations`, …) and `model_by_role` is
+not among them — the map is populated only when used (by `hermes_cli/personas.py`
+/ `tools/delegation_router.py`), never seeded into the schema. So the segment
+walk hit an unknown key at `model_by_role` and bailed before it ever reached the
+role name. Confirmed by direct call: `delegation.model_by_role`, `.researcher`,
+and `.coder` all returned `(False, None)` pre-fix — every role already in the
+live config (~20 of them) was silently triggering this same warning, not just
+new ones. The existing open-dict escape hatches (`_OPEN_DICT_TOP_LEVEL_KEYS`,
+`_SCHEMA_DEFINED_DICT_KEYS`) only cover top-level open maps; there was no
+equivalent for an open-ended map nested one level down.
+
+**Fix:** added `_OPEN_DICT_NESTED_PATHS` (currently `{"delegation.model_by_role"}`)
+alongside the existing `_PLATFORM_CONTAINER_KEYS` pattern it mirrors, and a
+check at the top of `_validate_config_key()`'s segment-walk loop: once the
+consumed path matches an open nested path, accept it and everything below it
+without enumerating the children. Generic — any future nested open map is a
+one-line addition to the frozenset.
+
+**Verification:** added `test_model_by_role_subkeys_are_recognized`
+(parametrized over `researcher`, `coder`, and a brand-new never-seen role name —
+all three write silently, no warning) and `test_bogus_delegation_subkey_still_warns`
+(a typo sibling, `delegation.model_by_rolez`, still warns — proving the escape
+hatch is scoped, not a blanket bypass) to `tests/hermes_cli/test_set_config_value.py`.
+Full file: 88/88 passing (84 pre-existing + 4 new). End-to-end verified against
+the real editable install (`hermes config set delegation.model_by_role.coder
+claude-opus-5` — silent, no warning) with no test pollution (the value written
+already matched the live config). `hermes_cli/config.py`,
+`tests/hermes_cli/test_set_config_value.py`.
+
 ### Fix — 2026-08-19 (`cc_proxy_mcp.py` silently dropped isError/structuredContent on every tool-call relay — pre-existing, not from the mcp 2.0 port)
 
 **Found via:** a `consult()` second opinion after the two mcp-2.0-migration
