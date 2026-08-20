@@ -3266,6 +3266,19 @@ class AIAgent(ForkForwardersMixin):
         path that already recovers a plain interrupt() message dropped by a
         race against turn completion). The user's correction survives as the
         next thing sent instead of vanishing.
+
+        Note on ``_pending_steer``: the same problem applies to an accepted
+        ``steer()`` correction (a plain /steer, or a redirect() that degraded
+        to steer() because the agent was mid-tool-call -- the CLI still
+        prints "Redirected current turn" for that case). It is only consumed
+        once, by the tool-batch drain hook
+        (``apply_pending_steer_to_tool_results``), which won't run if the
+        stop lands first. ``clear_interrupt()`` used to unconditionally wipe
+        ``_pending_steer`` on every hard stop on the theory that the steer
+        was scoped to a specific in-flight tool call that will no longer
+        happen -- but folding it into the next prompt (exactly like a
+        redirect) is strictly safer than silently discarding text the user
+        already watched get accepted. Folded below, same as the redirect.
         """
         # A hard stop and redirect share one lock so /stop cannot race with an
         # accepted correction and accidentally turn itself into a retry.
@@ -3291,25 +3304,46 @@ class AIAgent(ForkForwardersMixin):
                     )
             event.set()
 
-        def _fold_dropped_redirect(_dropped):
-            # Preserve an accepted-but-undelivered redirect correction by
-            # merging it into the interrupt message instead of discarding it.
-            if not _dropped:
-                return message
-            return f"{message}\n\n{_dropped}" if message else _dropped
+        def _fold_dropped(_dropped_redirect, _dropped_steer):
+            # Preserve an accepted-but-undelivered redirect and/or steer
+            # correction by merging it into the interrupt message instead of
+            # discarding it.
+            parts = [message] if message else []
+            if _dropped_redirect:
+                parts.append(_dropped_redirect)
+            if _dropped_steer:
+                parts.append(_dropped_steer)
+            if not parts:
+                return None
+            return "\n\n".join(parts)
+
+        def _drain_steer_locked():
+            _steer_lock = getattr(self, "_pending_steer_lock", None)
+            if _steer_lock is None:
+                _dropped = getattr(self, "_pending_steer", None)
+                self._pending_steer = None
+                return _dropped
+            with _steer_lock:
+                _dropped = self._pending_steer
+                self._pending_steer = None
+            return _dropped
 
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is not None:
             with _redirect_lock:
-                _folded_message = _fold_dropped_redirect(self._pending_redirect)
+                # Nested inside the redirect lock (never the reverse anywhere
+                # else in this module) so no other call path can deadlock.
+                _dropped_steer = _drain_steer_locked()
+                _folded_message = _fold_dropped(self._pending_redirect, _dropped_steer)
                 self._interrupt_requested = True
                 self._interrupt_message = _folded_message
                 if hard_cancel:
                     _admit_hard_cancel()
                 self._pending_redirect = None
         else:
-            _folded_message = _fold_dropped_redirect(
-                getattr(self, "_pending_redirect", None)
+            _dropped_steer = _drain_steer_locked()
+            _folded_message = _fold_dropped(
+                getattr(self, "_pending_redirect", None), _dropped_steer
             )
             self._interrupt_requested = True
             self._interrupt_message = _folded_message
@@ -3442,10 +3476,13 @@ class AIAgent(ForkForwardersMixin):
                     _set_interrupt(False, _wtid)
                 except Exception:
                     pass
-        # A hard interrupt supersedes any pending /steer — the steer was
-        # meant for the agent's next tool-call iteration, which will no
-        # longer happen. Drop it instead of surprising the user with a
-        # late injection on the post-interrupt turn.
+        # Defense in depth: interrupt() (the normal path to reach here) already
+        # drains _pending_steer into _interrupt_message before it ever calls
+        # clear_interrupt(), so this is usually clearing an already-None
+        # slot. Kept for callers that invoke clear_interrupt() directly
+        # without going through interrupt() first (e.g. stale-flag cleanup) —
+        # a steer set outside interrupt()'s fold path has no partner
+        # tool-call left to attach to, so dropping it here is correct.
         _steer_lock = getattr(self, "_pending_steer_lock", None)
         if _steer_lock is not None:
             with _steer_lock:

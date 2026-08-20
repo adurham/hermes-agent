@@ -214,6 +214,68 @@ class TestActiveTurnRedirect:
         assert agent._pending_redirect is None
         assert agent._interrupt_message == "change course"
 
+    def test_hard_stop_folds_in_already_accepted_steer(self):
+        """Regression: a plain /steer accepted (and confirmed, e.g. the
+        CLI's "Steered: ...") but not yet drained by the tool-batch drain
+        hook must survive a subsequent hard stop (Ctrl+C / Escape) instead
+        of vanishing. Previously ``clear_interrupt()`` unconditionally did
+        ``self._pending_steer = None`` on every hard stop, silently
+        discarding an already-confirmed steer if the user stopped the agent
+        before the next tool batch could absorb it.
+        """
+        agent = _bare_agent()
+
+        accepted = agent.steer("also check the logs")
+        assert accepted is True
+        assert agent._pending_steer == "also check the logs"
+
+        agent.interrupt("stop requested")
+
+        assert agent._interrupt_requested is True
+        assert agent._pending_steer is None
+        assert agent._interrupt_message == "stop requested\n\nalso check the logs"
+
+    def test_hard_stop_folds_in_steer_degraded_from_redirect(self):
+        """A redirect() issued mid-tool-call degrades to steer() (the CLI
+        still prints "Redirected current turn" for this case — see
+        ``redirect()``'s docstring). That degraded correction must be
+        preserved by a subsequent hard stop exactly like a plain steer.
+        """
+        agent = _bare_agent()
+        agent._executing_tools = True
+
+        accepted = agent.redirect("also check migrations")
+        assert accepted is True
+        assert agent._pending_steer == "also check migrations"
+        assert agent._pending_redirect is None
+
+        agent.interrupt()
+
+        assert agent._interrupt_requested is True
+        assert agent._pending_steer is None
+        assert agent._interrupt_message == "also check migrations"
+
+    def test_hard_stop_folds_both_pending_redirect_and_steer(self):
+        """Belt-and-suspenders: if somehow both slots are populated at once
+        (e.g. a steer from an earlier tool batch plus a fresh redirect
+        accepted once the model came back), a hard stop must not drop
+        either — both ride out on the interrupt message.
+        """
+        agent = _bare_agent()
+        agent._model_request_active.set()
+
+        agent._pending_steer = "earlier steer note"
+        assert agent.redirect("change course") is True
+
+        agent.interrupt("stop requested")
+
+        assert agent._interrupt_requested is True
+        assert agent._pending_redirect is None
+        assert agent._pending_steer is None
+        assert agent._interrupt_message == (
+            "stop requested\n\nchange course\n\nearlier steer note"
+        )
+
     def test_codex_app_server_hard_stop_reaches_native_session(self):
         agent = _bare_agent()
         calls = []
