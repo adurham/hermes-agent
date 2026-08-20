@@ -1,4 +1,4 @@
-"""The llamacpp provider row in the model picker payload (Rollout 4).
+"""The llamacpp provider row in the model picker payload.
 
 Contract: staged local GGUFs appear as a selectable provider row in
 build_models_payload — the same payload /api/model/options and the desktop
@@ -65,3 +65,26 @@ def test_full_payload_includes_local_row(hermes_home):
     assert "llamacpp" in slugs
     row = payload["providers"][slugs.index("llamacpp")]
     assert row["models"] == ["Local-Model-X"]
+
+
+def test_explicit_only_filter_keeps_local_row_on_any_profile(hermes_home):
+    """The desktop dropdown requests explicit_only=True, and the local row
+    has no config credential by design (credential is reachability). The
+    filter must treat staged models as explicit configuration — otherwise
+    the row only survives on the profile whose config points at llamacpp,
+    and every other profile's dropdown silently loses local models."""
+    from hermes_cli.inventory import _filter_explicit_provider_rows, _local_runtime_row, load_picker_context
+
+    _stage(hermes_home, "Qwen3.8-27B-UD-Q5_K_XL")
+    ctx = load_picker_context()
+    row = _local_runtime_row(ctx)
+    assert row is not None
+
+    # Simulate a profile whose current provider is a cloud one (the normal
+    # profile's shape): explicit-only filtering must keep the local row.
+    import dataclasses
+
+    ctx = dataclasses.replace(ctx, current_provider="anthropic")
+    kept = _filter_explicit_provider_rows([row], ctx)
+    assert kept, "explicit-only filter dropped the local-runtime row"
+    assert kept[0]["slug"] == "llamacpp"

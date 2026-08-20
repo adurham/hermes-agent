@@ -693,6 +693,15 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
         if current_slug and slug == current_slug:
             kept.append(row)
             continue
+        if row.get("source") == "local-runtime":
+            # Managed local models are explicit configuration by existence:
+            # the user downloaded gigabytes into the machine-scoped models
+            # dir. There is deliberately no config credential to find
+            # (credential is reachability), so without this clause the row
+            # only survives on the profile where Use was last clicked —
+            # every other profile loses local models from its picker.
+            kept.append(row)
+            continue
         if slug == "moa":
             # MoA is a virtual routing mode, not an independently configured
             # provider. Hide it from explicit-only pickers unless it is the
