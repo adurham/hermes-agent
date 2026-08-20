@@ -299,6 +299,23 @@ class TestActiveTurnRedirect:
         assert agent._pending_redirect is None
         assert agent._pending_steer == "also check migrations"
         assert agent._interrupt_requested is False
+        # Surfaces (e.g. the CLI's Enter-key handler) need to tell a
+        # degraded-to-steer redirect apart from a genuine live-cancel
+        # redirect -- both return True from redirect(), but only the
+        # genuine one applies before the current tool call finishes.
+        # Regression coverage for the "Redirected current turn" UX lie:
+        # printing that confirmation for a degraded redirect told the user
+        # their correction was already live when it was actually queued
+        # behind whatever tool (e.g. a long SSH command) was still running.
+        assert agent._last_redirect_degraded_to_steer is True
+
+    def test_redirect_outside_tool_execution_is_not_flagged_degraded(self):
+        agent = _bare_agent()
+        agent._model_request_active.set()
+
+        assert agent.redirect("change course") is True
+        assert agent._pending_redirect == "change course"
+        assert agent._last_redirect_degraded_to_steer is False
 
 
 class TestActiveTurnRedirectCheckpoint:

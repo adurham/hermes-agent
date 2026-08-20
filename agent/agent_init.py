@@ -896,6 +896,13 @@ def init_agent(
     agent._pending_redirect: Optional[str] = None
     agent._pending_redirect_lock = threading.Lock()
 
+    # Set by every accepted redirect() call: True when it degraded to a
+    # queued steer() (mid-tool-call, applies once the tool finishes) rather
+    # than a genuine live-cancel redirect (applies immediately). Surfaces
+    # read this right after calling redirect() to print an honest
+    # confirmation instead of always claiming "Redirected current turn".
+    agent._last_redirect_degraded_to_steer = None
+
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker
     # threads have tids distinct from `_execution_thread_id`, so
