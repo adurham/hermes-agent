@@ -11604,3 +11604,68 @@ fallback needed. `tests-js/package-json-lazy-deps.test.ts` — the
 regression test #43564 shipped specifically for this class of revert —
 6/6 passing. It would have caught this immediately post-sync; it wasn't
 in the original sync's test scope.
+
+### Fork-only fix — 2026-08-19 (a confirmed /steer got silently dropped by a hard Ctrl+C/Esc stop)
+
+**Symptom:** user-reported — sending a steer/redirect correction mid-turn
+(Enter while the agent is busy, `display.busy_input_mode: interrupt`
+default) and then hitting Ctrl+C/Esc before the agent's next tool batch
+absorbed it made the correction vanish with no error. The CLI had already
+printed the confirmation (`↪ Redirected current turn: '...'` for the
+degraded-to-steer case, or `⏩ Steered: '...'` for a plain `/steer`), so
+the user reasonably expected it queued for delivery — instead a
+subsequent hard stop silently dropped it and the user had to retype the
+message.
+
+**Root cause:** `AIAgent.clear_interrupt()` — the method every hard-stop
+path (`Escape`, `Ctrl+Q`/`Ctrl+C`, the signal handler, `request_hard_interrupt()`)
+runs through — unconditionally did `self._pending_steer = None`
+regardless of whether that steer had already been accepted and confirmed
+to the user. This is the sibling bug to the `_pending_redirect` drop fixed
+2026-08-09 (see that entry above, `_fold_dropped_redirect`/
+`interrupt-redirect-steer-architecture.md`): `_pending_steer` is drained
+exactly once, by `apply_pending_steer_to_tool_results()` after the current
+tool batch finishes — if a hard stop lands before that drain point, the
+steer had nowhere left to go and was simply discarded. This affects BOTH
+a plain `/steer` and a `redirect()` that degraded to `steer()` because the
+agent was mid-tool-call (`redirect()`'s own docstring: "During tool
+execution it degrades to `steer()`" — the CLI still prints the "Redirected
+current turn" confirmation for that case, making the drop doubly
+surprising since the UI never distinguished the two).
+
+**Fix:** `interrupt()` (the single choke point behind every hard-stop
+surface) now drains `_pending_steer` under its lock and folds it into
+`_interrupt_message` alongside any dropped `_pending_redirect`, using the
+same `_interrupt_message` → `result["interrupt_message"]` → next-turn
+requeue path the 2026-08-09 redirect fix already wired up — extended
+`_fold_dropped_redirect` into a two-source `_fold_dropped(redirect, steer)`
+covering both slots, nested behind the existing `_pending_redirect_lock`
+(steer drain happens inside that lock so no new lock-ordering surface is
+introduced). `clear_interrupt()` itself is untouched and still
+unconditionally clears `_pending_steer` — that's now dead code on every
+path that goes through `interrupt()` first (which already drained the
+slot), and remains correct behavior for any caller that invokes
+`clear_interrupt()` directly without going through `interrupt()` (no
+associated tool call ever existed for that steer to attach to).
+
+**Files:** `run_agent.py` (`AIAgent.interrupt()`),
+`tests/run_agent/test_steer.py`.
+
+**Verification:** 3 new regression tests —
+`test_hard_stop_folds_in_already_accepted_steer` (plain `/steer` survives
+a hard stop and rides out as `interrupt_message`),
+`test_hard_stop_folds_in_steer_degraded_from_redirect` (the mid-tool-call
+`redirect()`→`steer()` degradation path also survives), and
+`test_hard_stop_folds_both_pending_redirect_and_steer` (both slots
+populated at once, neither dropped, joined in redirect-then-steer order).
+Full `tests/run_agent/test_steer.py`: 34/34 passing. Full
+`tests/run_agent/` suite (minus 2 files with pre-existing, independently
+confirmed-via-`git stash` failures unrelated to this change —
+`test_start_order_gate.py`'s `_maybe_skill_recall_hint` stub gap and
+`test_anthropic_mid_tool_call_drop.py`'s network-dependent stream tests):
+1796 passed, 13 skipped.
+
+**Merge note:** pure fork-local fix on fork-only steer/redirect
+infrastructure (upstream has no `_pending_steer`/`_pending_redirect`
+slots) — stays local, same disposition as the 2026-08-09 redirect fix.
+
