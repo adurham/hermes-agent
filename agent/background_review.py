@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Historical hardcoded iteration budget for the review fork.
-_REVIEW_MAX_ITERATIONS = 16
+_REVIEW_MAX_ITERATIONS = 50
 
 
 def _background_review_task_config(
