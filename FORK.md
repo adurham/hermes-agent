@@ -3,6 +3,49 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-20 (CLI's "Redirected current turn" confirmation lied when a redirect degraded to a queued steer)
+
+**Reported:** a message typed mid-turn while a long tool call (SSH, with an
+internal `nc -zv -w3` health check) was in flight got the CLI's normal
+`↪ Redirected current turn: '...'` confirmation, but the correction never
+surfaced in a real reply — the turn instead ended with a generic
+`Operation interrupted: waiting for model response` filler, and the user had
+to retype the identical message ~47s later.
+
+**Root cause:** `AIAgent.redirect(text)` (`run_agent.py`) silently degrades
+to `agent.steer(text)` whenever a tool call is in flight
+(`self._executing_tools` is True) — the correction only splices into the
+*next* tool result once the currently-running tool finishes; it does not
+cancel the live model request the way a genuine redirect does. Both paths
+return `True`, so `cli.py`'s Enter-key handler printed the identical
+"Redirected current turn" confirmation for either case, telling the user
+their correction was live when it was actually queued behind whatever tool
+was still running. If the turn then produced a generic interrupted/retry
+filler response before the queued steer's drain point
+(`_apply_pending_steer_to_tool_results`) was ever reached, the correction
+was silently orphaned in `_pending_steer` with no user-visible trace that it
+never landed. This is a sibling of (but distinct from) the 2026-08-19 fix
+where `clear_interrupt()` wiped an already-accepted `_pending_steer` on a
+hard stop — that fix covered messages getting *dropped*; this one covers
+messages getting *mislabeled* so the user has no idea they're stuck at all.
+
+**Fix:** `redirect()` now stamps `self._last_redirect_degraded_to_steer`
+(True/False) on every accepted call — set before returning on both the
+degrade branch and the genuine-redirect branch (and the Codex app-server
+native-steer branch, which is always a genuine live steer). `cli.py`'s
+Enter-key handler reads the flag immediately after calling `redirect()` and
+prints `⏩ Queued (tool still running — applies once it finishes): '...'`
+for the degraded case instead of the misleading `↪ Redirected current turn`.
+
+**Verification:** added `test_redirect_outside_tool_execution_is_not_flagged_degraded`
+and extended `test_redirect_during_tool_execution_uses_safe_steer_boundary`
+with a flag assertion in `tests/run_agent/test_steer.py` (35/35 passing,
+was 34/34). Full `tests/run_agent/` suite: 1797 passing (6 pre-existing
+unrelated failures in `test_anthropic_mid_tool_call_drop.py` and
+`test_start_order_gate.py` confirmed identical on clean `main` before this
+change — untouched by this fix). `run_agent.py`, `cli.py`,
+`agent/agent_init.py`, `tests/run_agent/test_steer.py`.
+
 ### Fix — 2026-08-19 (`hermes config set delegation.model_by_role.<role>` spuriously warned "not a recognized config key" for every role, including existing ones)
 
 **Reported:** running `hermes config set delegation.model_by_role.researcher claude-sonnet-5`
