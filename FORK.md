@@ -7796,25 +7796,25 @@ quick rename, before it's upstream-shaped.
   you first confirm upstream independently has an equivalent OAuth-refresh
   keychain-write code path with the same bug (unlikely).
 * **Bearer clients leak `ANTHROPIC_API_KEY` as `x-api-key`** (2026-07-14) —
-  only genuinely portable if upstream's `build_anthropic_client` has the same
-  bearer-token/API-key dual-auth branching. If that branching exists *because*
-  the fork added OAuth-bearer support for CC mimicry, this "fix" has nothing
-  to attach to upstream. Diff `build_anthropic_client` against
-  `upstream/main` before trusting this is a general SDK bug.
-* **`_sanitize_replay_block` fail-closed → fail-open** (2026-07-24) — FORK.md's
-  own description says this is "part of the invisible token/cost doubling
-  entry, tied to the fork's native-search feature" while separately claiming
-  it "stands on its own." That contradiction is the tell. Verify (a) whether
-  upstream's Anthropic adapter has `server_tool_use`/`web_search_tool_result`
-  replay logic at all, or whether native search is itself fork-only, and
-  (b) whether the isolated fail-open diff still references fork-only
-  cost-accounting/native-search state before assuming it's clean.
-* **Background skill/memory review racing a live turn** (2026-07-22) — likely
-  touches the same memory/skill-review subsystem already listed below as
-  "Hot-tier memory audit — needs de-forking first." If that subsystem is
-  fork infrastructure with no upstream equivalent, this concurrency bug has
-  no target upstream. Verify whether upstream has any background-review-vs-
-  live-turn concurrency mechanism at all before filing.
+  **RESOLVED, no action needed (re-verified 2026-08-20).** Upstream
+  implemented the identical guard independently — see the "CONVERGED
+  2026-08-04" note elsewhere in this file (`client.api_key = None`, same
+  env-inference-trap comment). No fork delta remains; nothing to file.
+* **`_sanitize_replay_block` fail-closed → fail-open** (2026-07-24) —
+  **RESOLVED, do not file (re-verified 2026-08-20).** Read upstream's
+  actual code: its whitelist deliberately treats `server_tool_use`
+  blocks as invalid input and drops them — a designed safety behavior,
+  not a gap. Flipping it to fail-open (as this fork did) would be
+  rejected by any careful reviewer. Also confirmed upstream doesn't even
+  ship the native web-search server-tool feature this bug depends on in
+  production code (only a test stub references the block type). No
+  target to file against. Settled.
+* **Background skill/memory review racing a live turn** (2026-07-22) —
+  **RESOLVED, already submitted and merged (re-verified 2026-08-20).**
+  This is the same fix that shipped as upstream PR #82070 (merged via
+  #82418, authorship preserved) — not a separate live gap. This
+  cross-reference had gone stale; removing it from the open-candidates
+  list.
 * `agent.pin_anthropic_token` (2026-07-25) — solves a real macOS
   Keychain-sharing problem (interactive `claude` login and a dedicated
   setup-token read from the same Keychain slot), but the motivating scenario
@@ -7837,9 +7837,13 @@ quick rename, before it's upstream-shaped.
   `defer_tools`/`keep_eager_tools`, 2026-06-22) — pure config, plausibly
   generalizable, but same rule: verify no exo-specific default sneaks through
   before filing, and file it standalone.
-* **`trafilatura` free `web_extract` backend** (2026-07-18) — closes a real
-  gap for users without a paid extract-capable provider key. Standalone
-  candidate once verified it doesn't import/depend on fork-only routing.
+* **`trafilatura` free `web_extract` backend** (2026-07-18) —
+  **RESOLVED, do not file (re-verified 2026-08-20).** Matching upstream
+  issue #78624 is now closed — resolved by upstream's own PR #90313,
+  which shipped a different keyless mechanism (free-tier Exa/Parallel
+  proxy) than this fork's trafilatura backend. No open gap left to fill,
+  and the earlier-noted competing PR #50456 would trigger the
+  never-compete rule anyway. Settled.
 * **Hot-tier memory audit** (stale-path detection + optional LLM
   classification, 2026-07-14, three entries) — **CHECKED 2026-08-08, NOT
   YET FILED — commented on #78307 first, per second-opinion advice.**
@@ -7861,6 +7865,11 @@ quick rename, before it's upstream-shaped.
   asking whether maintainers want it as-is (background-pass placement) or
   restructured as a standalone CLI command — the classification core ports
   over either way. Waiting on a maintainer steer before writing any PR.
+  **Re-checked 2026-08-20: still waiting.** The only reply on #78307
+  since this fork's own 2026-08-08 comment came from a commenter with
+  `author_association: NONE` (not a maintainer) — not the go-ahead it
+  might look like at a glance. 11+ days of silence isn't unusual for
+  this repo; stays parked exactly as recorded here, no action taken.
 * **Delegate auto-route to model tier + persona** (2026-07-07) —
   **CHECKED 2026-08-08, DO NOT FILE — deeper than a config-default check,
   genuinely fork-only infrastructure.** Verified `tools/delegation_router.py`
