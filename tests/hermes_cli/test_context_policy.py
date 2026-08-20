@@ -311,16 +311,22 @@ def test_launch_args_contract():
     resident = WindowDecision(window=131072, spill_bytes=0, kv_on_gpu=True)
 
     a = launch_args(p, spilled, mtp_capable=True)
-    assert a[:2] == ["-c", str(FLOOR)]           # explicit -c: A3 semantics
-    assert "q8_0" in a                            # B6 dtype behavior
-    assert "-ot" in a                             # D2 placement
-    assert "--spec-type" in a                     # D5: MTP on iff spilled
+    assert a[:2] == ["-c", str(FLOOR)]           # explicit window, always
+    assert "-ub" in a and a[a.index("-ub") + 1] == "2048"  # prefill hint
+    assert "q8_0" in a                            # q8 KV under flash attn
+    assert "-ot" in a                             # spill placement
+    assert "--spec-type" in a                     # MTP on spilled
 
-    b = launch_args(p, resident, mtp_capable=True)
-    assert "-ot" not in b and "--spec-type" not in b
+    # MTP is no longer gated on spill: resident decode measured +16% at
+    # depth 2 — spec decode runs wherever the model ships MTP heads.
+    b = launch_args(p, resident, mtp_capable=True, mtp_draft_depth=2)
+    assert "-ot" not in b, "placement is spill-only"
+    assert "--spec-type" in b, "MTP must run on resident configs too"
+    assert b[b.index("--spec-draft-n-max") + 1] == "2"
 
     c = launch_args(p, spilled, flash_attention=False, mtp_capable=False)
     assert "q8_0" not in c                        # f16 on non-FA fallback
+    assert "--spec-type" not in c
 
 
 def test_no_refusal_branch_past_physics():

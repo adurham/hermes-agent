@@ -31,11 +31,14 @@ logger = logging.getLogger(__name__)
 # of the preset (recipe sampling defaults merge in a later pass).
 _FLAG_TO_KEY = {
     "-c": "ctx-size",
+    "-b": "batch-size",
+    "-ub": "ubatch-size",
     "-ctk": "cache-type-k",
     "-ctv": "cache-type-v",
     "-fa": "flash-attn",
     "-ot": "override-tensor",
     "--spec-type": "spec-type",
+    "--spec-draft-n-max": "spec-draft-n-max",
 }
 
 
@@ -128,13 +131,23 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
         except Exception as exc:  # noqa: BLE001 — overrides are advisory
             logger.debug("window override skipped for %s: %s", model_id, exc)
 
-        args = launch_args(profile, decision,
-                           mtp_capable=model_id in (mtp_capable or set()))
+        hit = find_entry_for_model(model_id)
+        entry = hit[0] if hit is not None else None
+
+        # MTP: catalog knowledge wins (per-model measured draft depth);
+        # the caller's mtp_capable set covers non-catalog GGUFs.
+        is_mtp = (entry.mtp if entry is not None
+                  else model_id in (mtp_capable or set()))
+        args = launch_args(profile, decision, mtp_capable=is_mtp,
+                           mtp_draft_depth=(entry.mtp_draft_depth
+                                            if entry is not None else 3))
         keys = _args_to_keys(args)
 
-        hit = find_entry_for_model(model_id)
-        if hit is not None:
-            entry, _variant = hit
+        if entry is not None:
+            if is_mtp:
+                # Integrated-MTP targets sample on the backend (their
+                # measured pairing; draft sampling stays default).
+                keys["backend-sampling"] = "on"
             # Sampling defaults under the policy keys (policy wins on clash).
             for k, v in (entry.sampling or {}).items():
                 keys.setdefault(k, v)

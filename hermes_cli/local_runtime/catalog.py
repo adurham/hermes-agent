@@ -125,7 +125,12 @@ class CatalogEntry:
     swa_layers: int = 0
     swa_window: int = 0
     moe: bool = False
-    mtp: bool = False           # ships MTP heads (spec decode iff spilled)
+    mtp: bool = False           # ships MTP heads (spec decode when loaded)
+    # Speculative draft depth for MTP models. Per-model, measured: deeper
+    # drafting only pays while acceptance holds (Qwen3.6-35B: 76% at 2 ->
+    # 243.8 tok/s, 59% at 3 -> 221.6; Nemotron holds at 3). NVIDIA's
+    # per-SKU recipes seeded these; our receipts confirmed them.
+    mtp_draft_depth: int = 3
     mmproj: "AssetFile | None" = None    # vision projector, downloads with model
     draft: "AssetFile | None" = None     # spec-decode draft model (e.g. DSpark)
     sampling: dict = field(default_factory=dict)  # INI long-form launch defaults
@@ -273,7 +278,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         # Config-derived (Qwen/Qwen3.6-35B-A3B): 40 layers, 10 full-attn
         # (interval 4) + 30 linear; KV heads 2 x head_dim 256.
         full_layers=10, recurrent_layers=30, per_layer_f16=2048,
-        moe=True, mtp=True,
+        moe=True, mtp=True, mtp_draft_depth=2,
         mmproj=AssetFile("mmproj-BF16.gguf", 902822528,
                          "da63cb47a76763c712393f8a017070188a304fa39f8aeea6edc629ed7b975cfa",
                          local="mmproj-Qwen3.6-35B-A3B-BF16.gguf"),

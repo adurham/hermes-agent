@@ -62,9 +62,12 @@ TARGET_WINDOW = 144 * 1024
 # buffers. Measured on a 32 GiB card: a model estimated at 29.3 GiB
 # (weights+KV) loaded at ~31.2 GiB resident and the server's own fit still
 # shaved a layer to CPU — ~1.5 GiB of runtime overhead plus the vision
-# projector when present. A fit that ignores this passes on paper and
-# spills in practice. Callers add mmproj bytes on top.
-RUNTIME_OVERHEAD_BYTES = int(1.5 * (1 << 30))
+# projector when present. The -ub 2048 microbatch adds ~0.4 GiB of compute
+# buffer over the 512 default (measured: +367 MiB on the 35B) — the prefill
+# hint and this constant move together or the fit lies. A fit that ignores
+# this passes on paper and spills in practice. Callers add mmproj bytes on
+# top.
+RUNTIME_OVERHEAD_BYTES = int(1.9 * (1 << 30))
 
 
 def ladder(native: int) -> list[int]:
@@ -222,15 +225,20 @@ def spill_overrides(profile: ModelProfile) -> list[str]:
 
 def launch_args(profile: ModelProfile, decision: WindowDecision, *,
                 flash_attention: bool = True,
-                mtp_capable: bool = False) -> list[str]:
+                mtp_capable: bool = False,
+                mtp_draft_depth: int = 3) -> list[str]:
     """Per-model launch flags from a window decision. Explicit -c puts fit
     into spill-weights-and-hold-ctx; q8 KV cache wherever flash attention
-    exists; -ot placement and MTP spec decode on spilled configs."""
-    args = ["-c", str(decision.window)]
+    exists; -ot placement on spilled configs; MTP spec decode wherever the
+    model ships it (resident decode measured +16% at depth 2 on the 35B —
+    the old spilled-only gate left that on the table); large microbatch
+    for prefill (+27% measured at -ub 2048, priced in RUNTIME_OVERHEAD)."""
+    args = ["-c", str(decision.window), "-b", "2048", "-ub", "2048"]
     if flash_attention:
         args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
     if decision.spilled:
         args += spill_overrides(profile)
-        if mtp_capable:
-            args += ["--spec-type", "draft-mtp"]
+    if mtp_capable:
+        args += ["--spec-type", "draft-mtp",
+                 "--spec-draft-n-max", str(mtp_draft_depth)]
     return args

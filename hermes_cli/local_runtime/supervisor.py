@@ -174,6 +174,11 @@ class LlamaServerSupervisor:
             "--slots",            # /slots endpoint is also opt-in; is_idle reads it
             "--no-webui",
             "--jinja",
+            # Direct I/O on model load: bypasses the page cache, so a
+            # multi-GB load doesn't evict half the OS cache — measured
+            # faster loads on NVMe, and our router bounces (download/
+            # delete/activate) reload models often enough to care.
+            "-dio",
         ]
         if self.preset_path and self.preset_path.exists():
             cmd += ["--models-preset", str(self.preset_path)]
