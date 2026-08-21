@@ -90,3 +90,37 @@ def test_boot_replaces_incumbent_with_stale_presets(hermes_home, monkeypatch):
     # Boot proceeded past adoption (our fake raised inside the try block,
     # which ensure_local_runtime swallows into a None return).
     assert result is None or result is sentinel
+
+
+def test_refresh_bounces_an_adopted_server(hermes_home, monkeypatch):
+    """refresh_local_runtime with no in-process supervisor but a running
+    state-file server (the post-restart shape) must stop that server and
+    boot fresh — NOT silently no-op. Regression: the no-op meant every
+    download/delete after a backend restart left the router serving a
+    stale model catalog, and picking the new model failed with
+    'not found in this provider's model listing'."""
+    import hermes_cli.local_runtime.bootstrap as boot
+
+    stopped = {}
+    monkeypatch.setattr(boot, "_SUPERVISOR", None)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint._state_endpoint",
+        lambda: {"base_url": "http://127.0.0.1:18434/v1", "pid": 4242})
+    monkeypatch.setattr(boot, "_stop_state_server",
+                        lambda state: stopped.setdefault("pid", state["pid"]))
+    booted = {}
+    monkeypatch.setattr(boot, "ensure_local_runtime",
+                        lambda cfg, force=False: booted.setdefault("force", force) or object())
+
+    assert boot.refresh_local_runtime() is True
+    assert stopped.get("pid") == 4242, "adopted server was not stopped"
+    assert booted.get("force") is True, "fresh boot did not follow the stop"
+
+
+def test_refresh_no_server_anywhere_is_a_noop(hermes_home, monkeypatch):
+    import hermes_cli.local_runtime.bootstrap as boot
+
+    monkeypatch.setattr(boot, "_SUPERVISOR", None)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
+    assert boot.refresh_local_runtime() is False

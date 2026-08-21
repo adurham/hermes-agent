@@ -117,16 +117,30 @@ def refresh_local_runtime() -> bool:
 
     The router's model list is SPAWN-ONLY: a GGUF added after start is
     invisible to GET /models and 400s on completion, so anything that
-    changes the staged set while the server runs must bounce it. Only
-    touches a server THIS process supervises; returns False when there is
-    nothing to refresh (next boot scans fresh anyway)."""
+    changes the staged set while the server runs must bounce it. Covers
+    both ownership shapes: a supervised server restarts in-process; an
+    ADOPTED server (started by a previous backend session — the normal
+    shape after any restart) is stopped via its state-file pid and
+    replaced with a supervised boot. Without the adopted branch, every
+    download/delete in a post-restart session silently no-ops the bounce
+    and the router serves a stale catalog. Returns False when there is
+    nothing to refresh (no server anywhere; next boot scans fresh).
+    """
     global _SUPERVISOR
-    if _SUPERVISOR is None:
-        return False
     try:
         from hermes_cli.config import load_config
 
-        shutdown_local_runtime()
+        if _SUPERVISOR is None:
+            from hermes_cli.local_runtime.endpoint import _state_endpoint
+
+            state = _state_endpoint()
+            if state is None:
+                return False
+            logger.info("bouncing adopted llama-server (pid=%s) to rescan models",
+                        state.get("pid"))
+            _stop_state_server(state)
+        else:
+            shutdown_local_runtime()
         return ensure_local_runtime(load_config(), force=True) is not None
     except Exception as exc:  # noqa: BLE001
         logger.warning("local runtime refresh failed: %s", exc)
