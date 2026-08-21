@@ -155,7 +155,7 @@ class CatalogEntry:
     # architectures need the release where their support landed). Empty
     # means any installed engine. The pane gates download/activate on it.
     min_engine: str = ""
-    tags: tuple = field(default_factory=tuple)
+    recommended: bool = False   # the catalog's default pick, one entry
 
     def profile(self, variant: QuantVariant) -> ModelProfile:
         layers = ([(LayerKind.FULL, self.per_layer_f16)] * self.full_layers
@@ -291,7 +291,7 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
             draft=_asset_from(m.get("draft")),
             sampling=dict(m.get("sampling", {})),
             min_engine=str(m.get("min_engine", "")),
-            tags=tuple(m.get("tags", ())),
+            recommended=bool(m.get("recommended")),
         ))
     return tuple(entries)
 

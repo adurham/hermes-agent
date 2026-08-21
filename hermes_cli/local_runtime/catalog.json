@@ -60,13 +60,7 @@
         "top-k": "20",
         "min-p": "0.0"
       },
-      "tags": [
-        "recommended",
-        "hybrid",
-        "reasoning",
-        "vision",
-        "day-0"
-      ]
+      "recommended": true
     },
     {
       "id": "qwen3.6-35b-a3b",
@@ -130,13 +124,7 @@
         "top-p": "0.95",
         "top-k": "20",
         "min-p": "0.0"
-      },
-      "tags": [
-        "hybrid",
-        "moe",
-        "mtp",
-        "vision"
-      ]
+      }
     },
     {
       "id": "nemotron-3.5-lightning-30b",
@@ -192,14 +180,7 @@
         "temp": "0.6",
         "top-p": "0.95",
         "min-p": "0.01"
-      },
-      "tags": [
-        "day-0",
-        "long-context",
-        "hybrid",
-        "moe",
-        "mtp"
-      ]
+      }
     },
     {
       "id": "muse-glimmer-30b",
@@ -257,12 +238,7 @@
         "temp": "1.0",
         "top-p": "0.95",
         "top-k": "64"
-      },
-      "tags": [
-        "day-0",
-        "vision",
-        "dense"
-      ]
+      }
     },
     {
       "id": "deepseek-v4-flash",
@@ -335,13 +311,7 @@
         "temp": "1.0",
         "top-p": "0.95",
         "min-p": "0.01"
-      },
-      "tags": [
-        "day-0",
-        "long-context",
-        "moe",
-        "frontier"
-      ]
+      }
     }
   ]
 }

@@ -505,7 +505,7 @@ async def local_models_catalog():
             "description": entry.description,
             "native_context": entry.n_ctx_train,
             "native_context_label": f"{entry.n_ctx_train // 1024}K",
-            "tags": list(entry.tags),
+            "recommended": entry.recommended,
             "downloaded": downloaded_variant is not None,
             "downloaded_model_id": downloaded_variant.model_id if downloaded_variant else None,
             "downloaded_quant": downloaded_variant.quant if downloaded_variant else None,

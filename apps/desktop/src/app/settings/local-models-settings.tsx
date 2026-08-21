@@ -556,7 +556,7 @@ export function LocalModelsSettings() {
                   <span className="inline-flex items-center gap-2">
                     {model.display_name}
 
-                    {model.tags.includes('recommended') && <Pill tone="primary">{copy.recommended}</Pill>}
+                    {model.recommended && <Pill tone="primary">{copy.recommended}</Pill>}
 
                     <span className="text-[0.68rem] font-normal text-muted-foreground">
                       {model.downloaded_quant ?? model.quant ?? ''}

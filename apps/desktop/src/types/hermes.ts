@@ -1259,7 +1259,7 @@ export interface LocalCatalogModel {
   size_label: string
   native_context: number
   native_context_label: string
-  tags: string[]
+  recommended: boolean
   downloaded: boolean
   downloaded_model_id?: string | null
   downloaded_quant?: string | null
