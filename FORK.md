@@ -7778,6 +7778,75 @@ decision pending on any of them. Breakdown:
 2026-08-20 (see above). Nothing else in the current 8-PR queue needs
 action; the remaining open PRs are waiting on maintainer review/merge.
 
+### #72164 also found genuinely stale on the same check-in (2026-08-20 follow-up)
+
+The user asked directly whether all remaining open PRs were review-ready
+— re-querying live state (not trusting the "all green" summary written
+minutes earlier) turned up a real regression: #72164 had gone
+`mergeable: CONFLICTING`/`mergeStateStatus: DIRTY` since the initial
+sweep. Same class of drift as #82095 above.
+
+**Root cause:** a genuine test-file conflict in
+`tests/cli/test_exit_watchdog_signal_arm.py`. Upstream's `main` had
+independently added a `from_signal=True` kwarg to
+`_arm_exit_watchdog_on_shutdown_signal()`'s call to
+`_arm_exit_watchdog()`, but left one existing test's assertion
+(`test_bad_env_value_falls_back_to_default`) un-updated to expect the
+new kwarg — a real, live bug on upstream `main` independent of this PR
+(the assertion would fail against upstream's own current code). This
+PR's original commit predates the `from_signal` kwarg's introduction on
+its own arm-call assertion, producing a genuine three-way conflict, not
+mechanical drift.
+
+**Fix:** confirmed the correct value by reading the real
+`_arm_exit_watchdog_on_shutdown_signal()` implementation directly
+(`base * 2` = 120.0 when `HERMES_EXIT_WATCHDOG_S` defaults to 60,
+always passed with `from_signal=True`). Resolved to
+`arm.assert_called_once_with(timeout_s=120.0, from_signal=True)`. Found
+and fixed a **second** instance of the identical stale assertion in this
+PR's own new test file
+(`tests/cli/test_exit_summary_before_cleanup_ordering.py::test_arm_exit_watchdog_on_shutdown_signal_doubles_the_60s_default`)
+that the first pass initially missed — caught by running the actual
+test suite rather than assuming a rebase's `--continue` succeeding means
+the tree is correct.
+
+Ran `tests/cli/test_exit_watchdog_signal_arm.py` +
+`tests/cli/test_exit_summary_before_cleanup_ordering.py` (11/11) and the
+full `tests/e2e/test_platform_commands.py` (64/64 combined) on the
+rebased tree before pushing. Force-pushed the rebase to the same branch
+(`upstream-pr/exit-summary-before-cleanup`).
+
+**CI flake encountered and diagnosed, not chased blindly:** the first
+push's CI run showed `Python tests / e2e` as `fail`
+(`test_plaintext_restart_gateway_in_group_stays_plain_text[telegram]` —
+`Expected 'mock' to have been called once. Called 0 times.`). Before
+assuming the rebase broke something, verified: (1) this PR's copy of
+`tests/e2e/test_platform_commands.py` is byte-identical to
+`upstream-https/main`'s (the PR never touches this file); (2) the exact
+failing test passes standalone and as part of the full file, 5/5 runs,
+on both unpatched upstream `main` and this PR's rebased tree, run
+locally. Concluded this was CI-runner flakiness (Linux GHA runner,
+first run post-push), not a real regression. No admin rights to
+`gh run rerun` a specific failed job (confirmed: "Must have admin rights
+to Repository" — expected for an external contributor, not a bug to
+work around). Re-fetched upstream `main` (which had moved further in
+the interim), re-rebased, re-tested (64/64), and pushed a fresh commit
+to retrigger CI from scratch — the documented workaround for lacking
+rerun permission. Second CI run: all required checks passed clean, zero
+failures, only the non-blocking `nix flake check` still finishing.
+
+**Final state, all 8 open PRs re-verified 2026-08-20 (after a brief
+`mergeable: UNKNOWN` blip across all 8 simultaneously — GitHub API
+recompute lag, resolved itself ~20s later, not a real signal):**
+`mergeable: MERGEABLE` on every one. 7 of 8 (`72164`, `72087`, `82245`,
+`72155`, `72153`, `82103`, `82095`) are `mergeStateStatus: CLEAN`; `72151`
+is `BLOCKED` only on a still-finishing non-required check, no failures.
+Every open PR in the queue is genuinely review-ready — none need any
+further action from this side. Only a NousResearch maintainer can merge
+(confirmed via `gh api repos/NousResearch/hermes-agent -q '.permissions'`
+— `adurham` has `pull: true`, `push: false`, `maintain: false`,
+`admin: false`, the standard external-contributor level).
+
 ### Bucket B — needs de-forking first, or unverified/likely-contaminated (do NOT file as-is)
 
 Moved here from the original Bucket A after re-review: FORK.md's own
