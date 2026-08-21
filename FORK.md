@@ -11918,9 +11918,12 @@ duplicate facts, so stale/redundant entries accreted indefinitely.
   entries only; cleanup proposals on that path are dropped.
 - Cleanup is not even *computed* on a non-interactive exit — no callback
   means the proposals would be discarded, so the LLM call is skipped.
-- The cleanup review has no auto-accept countdown and no blank-input
-  default (unlike the new-entry flow, where Enter/timeout accepts all).
-  Enter, `none`, EOF, Ctrl-C, and non-tty stdin all approve NOTHING.
+- The cleanup review has no blank-input default — Enter always re-prompts,
+  never applies anything. `none`, EOF, Ctrl-C, and non-tty stdin all
+  approve NOTHING. It DOES have its own auto-*decline* countdown (added
+  2026-08-21, see that entry) so exit isn't blocked forever on an unwatched
+  session, but unlike the new-entry countdown its timeout polarity is
+  safe: silence drops every cleanup proposal rather than applying any.
 - `parse_cleanup_response(valid_fact_ids=...)` drops any action naming a
   fact id we did not explicitly show the model — a hallucinated id can
   never reach `WarmStore.remove`.
@@ -11955,3 +11958,56 @@ module suites: `tests/tools/test_memory_extraction.py`,
 
 **Merge note:** pure fork-local; upstream has no Phase-2 auto-memory
 extraction layer at all.
+
+### Fork-only fix — 2026-08-21 (session-end memory: cleanup prompt blocked exit indefinitely — added auto-decline countdown)
+
+**Symptom:** the "Proposed cleanup (N) of EXISTING stored facts" prompt
+(added 2026-08-20, see entry above) had zero timeout. If the user typed
+`/exit` and then walked away, or wasn't watching the terminal at the exact
+moment cleanup rendered, the session-end sequence would hang forever
+waiting on `input()` — worse than the new-entry prompt it sits right next
+to, which auto-accepts after a 3s countdown. User flagged this directly:
+cleanup review "needs to be automatic, not manual... at least automatic
+if no user action is taken in 5-10 seconds."
+
+**Root cause:** `_review_cleanup()` in `hermes_cli/memory_confirm.py` was
+deliberately built with NO countdown at all (see the 2026-08-20 entry's
+safety-posture note, now updated) — the asymmetry was intentional
+(deletions/merges are higher-risk than additions, so the original design
+erred toward requiring an explicit human decision) but had the side
+effect of blocking process exit with no escape hatch for an unattended
+terminal.
+
+**Fix:** `_countdown_for_review()` gained a `verb: str` parameter so its
+on-screen message ("Auto-accepting all" / "Auto-declining cleanup") can
+be customized per call site instead of always claiming "accepting."
+`_review_cleanup()` now calls it with `seconds=8, verb="Auto-declining
+cleanup"` right after rendering the proposal list and before the
+`Choices:` prompt. Critically the *timeout polarity is inverted* relative
+to the new-entry flow: when the 8s countdown expires with no keypress,
+`_review_cleanup()` returns `[]` (drops every cleanup proposal, nothing
+deleted or merged) rather than applying them. A keypress during the
+countdown still falls through to the pre-existing explicit
+letter/`all`/`none` prompt, which itself is unchanged — still no
+blank-input default there, Enter just re-prompts. Non-tty stdin and the
+EOF/Ctrl-C paths are untouched (they already dropped proposals before
+this fix and continue to short-circuit ahead of the countdown, never
+invoking it).
+
+**Files:** `hermes_cli/memory_confirm.py` (`_countdown_for_review` gains
+`verb` param; `_review_cleanup` gains the countdown call + updated
+docstring), `tests/hermes_cli/test_memory_confirm.py` (new
+`TestCleanupAutoDeclineCountdown` class, 4 tests).
+
+**Verification:** 41 tests in `tests/hermes_cli/test_memory_confirm.py`
+pass (37 pre-existing + 4 new): countdown-expires-declines-without-
+prompting, countdown passes the `verb="Auto-declining cleanup"` kwarg
+so the message text isn't misleading, a keypress still reaches the full
+explicit prompt with `all`/letter selection working exactly as before,
+and non-tty stdin short-circuits before the countdown helper is even
+called (asserted by making the countdown stub raise if invoked). `ruff
+check` clean on both touched files.
+
+**Merge note:** pure fork-local; extends the 2026-08-20 fork-only
+cleanup-pass feature, which upstream doesn't have.
+
