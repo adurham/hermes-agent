@@ -958,6 +958,23 @@ export interface Translations {
       pillFitsGpu: string
       pillUsesRam: string
       pillTooBig: string
+      browseTitle: string
+      browseHint: string
+      browsePlaceholder: string
+      browseSearching: string
+      browseListing: string
+      browseShowFiles: string
+      browseRefresh: string
+      browseDownloads: string
+      browseLikes: string
+      browseGated: string
+      browseNoGguf: string
+      browseFitUnknown: string
+      browseAlreadyDownloaded: string
+      sideloadButton: string
+      sideloadTitle: string
+      sideloadDone: string
+      sideloadAlreadyPresent: string
       pillFullContext: (max: string) => string
       pillFullContextTip: string
       pillStarts: (start: string) => string

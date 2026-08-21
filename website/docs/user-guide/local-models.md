@@ -75,6 +75,22 @@ Right-click the status bar and enable **System resources** to see live GPU
 utilization, GPU memory, and RAM while local models run. The context meter
 always reflects the window the model is actually running with.
 
+## Finding more models
+
+The catalog is a curated starting point, not a boundary. The **Find more
+models** section on the same page searches all of Hugging Face:
+
+- Results show download counts and a per-file fit check sized to your
+  machine, so you know before downloading whether a build runs fully on
+  your GPU.
+- Anything you download behaves exactly like a catalog model — Hermes
+  reads the model file itself to pick its context window and memory
+  placement. The only difference: community models don't carry our
+  "validated" testing badge.
+- Already have a `.gguf` file on disk? **Add model file** links it into
+  your library without copying it (the original stays where it is), and
+  it's usable immediately.
+
 ## Using your own llama-server
 
 If a llama-server is already running on your machine, Hermes detects it

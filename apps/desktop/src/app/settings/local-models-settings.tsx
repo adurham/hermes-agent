@@ -1,21 +1,27 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import {
   activateLocalModel,
   deleteLocalModel,
+  downloadBrowsedModel,
   downloadLocalModel,
   ejectLocalModel,
   getLocalCatalog,
   getLocalHardware,
   getLocalModelsStatus,
+  type HFFileGroup,
+  type HFSearchHit,
   installLocalRuntime,
-  setLocalServer
+  listHFRepoFiles,
+  searchHFModels,
+  setLocalServer,
+  sideloadLocalModel
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Check, CheckCircle2, Cpu, Download, Eject, Loader2, Monitor, Package, StopFilled, Trash2, Zap } from '@/lib/icons'
+import { Check, CheckCircle2, Cpu, Download, Eject, FolderOpen, Loader2, Monitor, Package, Search, StopFilled, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $localRuntimeJobs,
@@ -572,6 +578,228 @@ export function LocalModelsSettings() {
           <p className="text-[0.75rem] text-destructive">{lastError.error}</p>
         )}
       </SettingsSection>
+
+      <BrowseSection onChanged={refresh} />
     </SettingsContent>
+  )
+}
+
+function fitTone(fit: HFFileGroup['fit']): 'destructive' | 'muted' | 'success' | 'warn' {
+  if (fit === 'fits-gpu') {
+    return 'success'
+  }
+
+  if (fit === 'needs-ram') {
+    return 'warn'
+  }
+
+  if (fit === 'too-big') {
+    return 'destructive'
+  }
+
+  return 'muted'
+}
+
+function BrowseSection({ onChanged }: { onChanged: () => void }) {
+  const { t } = useI18n()
+  const copy = t.settings.localModels
+  const [query, setQuery] = useState('')
+  const [hits, setHits] = useState<HFSearchHit[]>([])
+  const [searching, setSearching] = useState(false)
+  const [openRepo, setOpenRepo] = useState<null | string>(null)
+  const [files, setFiles] = useState<HFFileGroup[]>([])
+  const [listing, setListing] = useState(false)
+  const [error, setError] = useState<null | string>(null)
+  // Guard against the past: a stale search result must never overwrite a
+  // newer query's hits (the desktop guide's out-of-order rule).
+  const searchSeq = useRef(0)
+
+  useEffect(() => {
+    const q = query.trim()
+
+    if (q.length < 2) {
+      setHits([])
+      setSearching(false)
+
+      return
+    }
+
+    const seq = ++searchSeq.current
+    setSearching(true)
+
+    const handle = setTimeout(() => {
+      searchHFModels(q)
+        .then(r => {
+          if (searchSeq.current === seq) {
+            setHits(r.hits)
+            setError(null)
+          }
+        })
+        .catch((e: Error) => {
+          if (searchSeq.current === seq) {
+            setError(e.message)
+          }
+        })
+        .finally(() => {
+          if (searchSeq.current === seq) {
+            setSearching(false)
+          }
+        })
+    }, 350)
+
+    return () => clearTimeout(handle)
+  }, [query])
+
+  const openFiles = useCallback((repo: string) => {
+    setOpenRepo(repo)
+    setFiles([])
+    setListing(true)
+    listHFRepoFiles(repo)
+      .then(r => setFiles(r.files))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setListing(false))
+  }, [])
+
+  const startBrowsedDownload = useCallback(
+    (repo: string, group: HFFileGroup) => {
+      downloadBrowsedModel(repo, group.paths)
+        .then(r => {
+          if (r.already_downloaded) {
+            notify({ durationMs: 3_000, kind: 'info', message: copy.browseAlreadyDownloaded, title: copy.browseTitle })
+          }
+
+          onChanged()
+        })
+        .catch((e: Error) => notifyError(e, copy.browseTitle))
+    },
+    [copy.browseAlreadyDownloaded, copy.browseTitle, onChanged]
+  )
+
+  const sideload = useCallback(() => {
+    window.hermesDesktop
+      .selectPaths({ filters: [{ extensions: ['gguf'], name: 'GGUF models' }], title: copy.sideloadTitle })
+      .then(paths => {
+        if (!paths.length) {
+          return
+        }
+
+        return sideloadLocalModel(paths[0]).then(r => {
+          notify({
+            durationMs: 3_000,
+            kind: 'success',
+            message: r.already_present ? copy.sideloadAlreadyPresent : copy.sideloadDone.replace('{name}', r.model_id),
+            title: copy.browseTitle
+          })
+          onChanged()
+        })
+      })
+      .catch((e: Error) => notifyError(e, copy.browseTitle))
+  }, [copy.browseTitle, copy.sideloadAlreadyPresent, copy.sideloadDone, copy.sideloadTitle, onChanged])
+
+  return (
+    <SettingsSection
+      aside={
+        <Button onClick={sideload} size="sm" variant="outline">
+          <FolderOpen className="mr-1 size-3.5" />
+          {copy.sideloadButton}
+        </Button>
+      }
+      icon={Search}
+      title={copy.browseTitle}
+    >
+      <p className="text-[0.75rem] text-muted-foreground">{copy.browseHint}</p>
+
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          className="w-full rounded-md border border-(--ui-border) bg-transparent py-1.5 pl-8 pr-3 text-[0.8rem] outline-none placeholder:text-muted-foreground focus:border-primary"
+          onChange={e => setQuery(e.target.value)}
+          placeholder={copy.browsePlaceholder}
+          value={query}
+        />
+      </div>
+
+      {searching && (
+        <p className="flex items-center gap-2 text-[0.75rem] text-muted-foreground">
+          <Loader2 className="size-3 animate-spin" />
+          {copy.browseSearching}
+        </p>
+      )}
+
+      {error && <p className="text-[0.75rem] text-destructive">{error}</p>}
+
+      <div className="grid gap-1">
+        {hits.map(hit => (
+          <div key={hit.repo}>
+            <ListRow
+              action={
+                <Button onClick={() => openFiles(hit.repo)} size="sm" variant="ghost">
+                  {openRepo === hit.repo ? copy.browseRefresh : copy.browseShowFiles}
+                </Button>
+              }
+              description={
+                <span>
+                  {Intl.NumberFormat().format(hit.downloads)} {copy.browseDownloads}
+                  {' · '}
+                  {Intl.NumberFormat().format(hit.likes)} {copy.browseLikes}
+                  {hit.gated ? ` · ${copy.browseGated}` : ''}
+                </span>
+              }
+              title={<span className="font-mono text-[0.8rem]">{hit.repo}</span>}
+            />
+
+            {openRepo === hit.repo && (
+              <div className="ml-4 grid gap-1 border-l border-(--ui-border) pl-3">
+                {listing && (
+                  <p className="flex items-center gap-2 py-1 text-[0.75rem] text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" />
+                    {copy.browseListing}
+                  </p>
+                )}
+
+                {!listing && files.length === 0 && (
+                  <p className="py-1 text-[0.75rem] text-muted-foreground">{copy.browseNoGguf}</p>
+                )}
+
+                {files.map(group => (
+                  <ListRow
+                    action={
+                      <Button
+                        disabled={group.fit === 'too-big'}
+                        onClick={() => startBrowsedDownload(hit.repo, group)}
+                        size="sm"
+                        variant="outline"
+                      >
+                        <Download className="mr-1 size-3.5" />
+                        {gbLabel(group.total_bytes)}
+                      </Button>
+                    }
+                    description={
+                      <Pill tone={fitTone(group.fit)}>
+                        <Cpu className="mr-1 size-3" />
+                        {group.fit === 'fits-gpu'
+                          ? copy.pillFitsGpu
+                          : group.fit === 'needs-ram'
+                            ? copy.pillUsesRam
+                            : group.fit === 'too-big'
+                              ? copy.pillTooBig
+                              : copy.browseFitUnknown}
+                      </Pill>
+                    }
+                    key={group.label}
+                    title={
+                      <span className="font-mono text-[0.78rem]">
+                        {group.label}
+                        {group.paths.length > 1 ? ` (${group.paths.length} files)` : ''}
+                      </span>
+                    }
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </SettingsSection>
   )
 }

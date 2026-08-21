@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
@@ -12,6 +12,7 @@ import { LocalModelsSettings } from './local-models-settings'
 vi.mock('@/hermes', () => ({
   activateLocalModel: vi.fn(),
   deleteLocalModel: vi.fn(),
+  downloadBrowsedModel: vi.fn(),
   downloadLocalModel: vi.fn(),
   ejectLocalModel: vi.fn(),
   getLocalCatalog: vi.fn(),
@@ -19,7 +20,10 @@ vi.mock('@/hermes', () => ({
   getLocalModelsJobs: vi.fn(),
   getLocalModelsStatus: vi.fn(),
   getLocalRuntimeJob: vi.fn(),
-  installLocalRuntime: vi.fn()
+  installLocalRuntime: vi.fn(),
+  listHFRepoFiles: vi.fn(),
+  searchHFModels: vi.fn(),
+  sideloadLocalModel: vi.fn()
 }))
 
 import * as hermes from '@/hermes'
@@ -242,7 +246,7 @@ describe('LocalModelsSettings', () => {
 
     // The fitting row shows byte progress; the remaining download
     // buttons belong to the other rows (spilled + refused).
-    expect(screen.getByText(/0\.0 GB of 0\.0 GB|of/)).toBeTruthy()
+    expect(screen.getAllByText(/0\.0 GB of 0\.0 GB|of/).length).toBeGreaterThan(0)
     const remaining = screen.queryAllByRole('button', { name: /download · 17\.6 GB/i })
     expect(remaining.length).toBe(2)
     expect(remaining.some(b => (b as HTMLButtonElement).disabled)).toBe(true)
@@ -273,5 +277,53 @@ describe('LocalModelsSettings', () => {
     await screen.findByText('Qwen3.6 27B')
 
     expect(await screen.findByText(/integrity check/)).toBeTruthy()
+  })
+})
+
+describe('BrowseSection', () => {
+  it('searches HF after a pause and shows fit-priced files on demand', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(hermes.searchHFModels).mockResolvedValue({
+        hits: [{ downloads: 872724, gated: false, likes: 47, repo: 'unsloth/Qwen3.8-27B-GGUF', updated: '2026-08-18' }]
+      })
+      vi.mocked(hermes.listHFRepoFiles).mockResolvedValue({
+        files: [
+          { fit: 'fits-gpu', label: 'Q4_K_M', paths: ['Qwen3.8-27B-Q4_K_M.gguf'], total_bytes: 17 * 2 ** 30 },
+          { fit: 'too-big', label: 'F16', paths: ['Qwen3.8-27B-F16.gguf'], total_bytes: 56 * 2 ** 30 }
+        ]
+      })
+
+      render(
+        <I18nProvider>
+          <LocalModelsSettings />
+        </I18nProvider>
+      )
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync()
+      })
+
+      const box = screen.getByPlaceholderText(/search models/i)
+      fireEvent.change(box, { target: { value: 'qwen' } })
+      // Debounce: no call until the pause elapses.
+      expect(hermes.searchHFModels).not.toHaveBeenCalled()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400)
+      })
+      expect(hermes.searchHFModels).toHaveBeenCalledWith('qwen')
+      expect(screen.getByText('unsloth/Qwen3.8-27B-GGUF')).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: /show files/i }))
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync()
+      })
+      expect(screen.getByText('Q4_K_M')).toBeTruthy()
+      // The too-big quant's download button is disabled; fits-gpu is live.
+      const buttons = screen.getAllByRole('button', { name: /GB/ })
+      expect(buttons.some(b => (b as HTMLButtonElement).disabled)).toBe(true)
+      expect(buttons.some(b => !(b as HTMLButtonElement).disabled)).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

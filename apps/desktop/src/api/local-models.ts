@@ -97,3 +97,52 @@ export function setLocalServer(action: 'start' | 'stop'): Promise<{ ok: boolean 
     path: '/api/local-models/server'
   })
 }
+
+// ── Hugging Face browser + sideload ─────────────────────────────
+
+export interface HFSearchHit {
+  repo: string
+  downloads: number
+  likes: number
+  updated: string
+  gated: boolean
+}
+
+export interface HFFileGroup {
+  label: string
+  paths: string[]
+  total_bytes: number
+  fit: 'fits-gpu' | 'needs-ram' | 'too-big' | 'unknown'
+}
+
+export function searchHFModels(q: string, limit = 20): Promise<{ hits: HFSearchHit[] }> {
+  return hermesApi<{ hits: HFSearchHit[] }>({
+    ...profileScoped(),
+    path: `/api/local-models/search?q=${encodeURIComponent(q)}&limit=${limit}`
+  })
+}
+
+export function listHFRepoFiles(repo: string): Promise<{ files: HFFileGroup[] }> {
+  return hermesApi<{ files: HFFileGroup[] }>({
+    ...profileScoped(),
+    path: `/api/local-models/search/files?repo=${encodeURIComponent(repo)}`
+  })
+}
+
+export function downloadBrowsedModel(repo: string, paths: string[]): Promise<{ already_downloaded?: boolean; job_id: null | string; model_id: string }> {
+  return hermesApi<{ already_downloaded?: boolean; job_id: null | string; model_id: string }>({
+    ...profileScoped(),
+    body: { paths, repo },
+    method: 'POST',
+    path: '/api/local-models/download-browsed'
+  })
+}
+
+export function sideloadLocalModel(path: string): Promise<{ already_present?: boolean; model_id: string; ok: boolean }> {
+  return hermesApi<{ already_present?: boolean; model_id: string; ok: boolean }>({
+    ...profileScoped(),
+    body: { path },
+    method: 'POST',
+    path: '/api/local-models/sideload'
+  })
+}
