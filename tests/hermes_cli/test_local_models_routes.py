@@ -124,14 +124,16 @@ def test_download_unknown_model_404s(client):
     assert r.status_code == 404
 
 
-def test_download_job_short_body_errors_and_cleans_up(client, monkeypatch):
-    """A download that delivers fewer bytes than the file's size must error
-    the job and leave nothing staged — with no hash check (product
-    decision: no download-time integrity verification), the byte count is
-    the only remaining wrong-file tripwire, so it must hold."""
+def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatch):
+    """Catalog sizes are advisory (upstream re-uploads may make them
+    stale — a mismatch against the CATALOG must not fail a download).
+    The server's own declared length is the only completeness check:
+    fewer bytes than the server promised means a dropped connection, so
+    the job errors and nothing is staged."""
 
     class FakeResponse(io.BytesIO):
-        headers = {"Content-Length": "16"}
+        # Body is 17 bytes; the server promises 32 — a truncated stream.
+        headers = {"Content-Length": "32"}
 
         def __enter__(self):
             return self
@@ -237,3 +239,55 @@ def test_eject_without_supervisor_is_not_a_500(client, monkeypatch):
         "hermes_cli.web_routers.local_models._state_endpoint", lambda: None)
     r = client.post("/api/local-models/eject", json={"model_id": "anything"})
     assert r.status_code == 409, (r.status_code, r.text)
+
+
+def test_download_tolerates_stale_catalog_size(client, monkeypatch):
+    """Upstream re-uploads make catalog sizes stale; a download whose
+    delivered bytes are self-consistent with the SERVER's declared length
+    must succeed even when the catalog said something else. (This is the
+    tolerance the sha removal was for — being out of date must not break
+    downloads.)"""
+
+    body = b"x" * 48  # server-consistent: Content-Length == body length
+
+    class FakeResponse(io.BytesIO):
+        headers = {"Content-Length": str(len(body))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda *a, **k: FakeResponse(body))
+
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    budget = HardwareBudget(usable_vram_bytes=64 << 30,
+                            total_device_bytes=64 << 30,
+                            ram_available_bytes=64 << 30)
+    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+                        lambda **kw: budget)
+    # Keep the post-download server bounce out of this unit.
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+        lambda: False)
+
+    from hermes_cli.local_runtime.catalog import CATALOG
+
+    # Catalog size for this entry is in the tens of GB — wildly stale
+    # versus our 48-byte body. The download must still land.
+    entry_id = CATALOG[0].id
+    r = client.post("/api/local-models/download", json={"model_id": entry_id})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+
+    deadline = time.time() + 10
+    status = None
+    while time.time() < deadline:
+        status = client.get(f"/api/local-models/jobs/{job_id}").json()
+        if status["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert status is not None and status["status"] == "done", status.get("error")

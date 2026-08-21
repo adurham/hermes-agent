@@ -122,16 +122,17 @@ def _variant_files_on_disk(model_id: str) -> "list[Path]":
 
 def download_file(url: str, dest: Path, job: Dict[str, Any],
                   *,
-                  expected_bytes: int = 0,
                   base_done: int = 0, keep_totals: bool = False) -> None:
     """Download url -> dest with byte progress on ``job``.
 
     Ranged-parallel when the server supports it, single-stream fallback
-    otherwise. There is no hash check by design (product decision) — the
-    byte count against ``expected_bytes`` (the catalog size) is the one
-    remaining wrong-file tripwire: a short or oversized body errors the
-    job instead of staging a file llama.cpp will crash on later. Never
-    leaves a .part behind.
+    otherwise. There is no integrity check against the CATALOG by design
+    (product decision): catalog sizes may lag an upstream re-upload, and a
+    newer file than we know about must download fine. Completeness is
+    checked only against what the SERVER declared for this transfer
+    (range-probe total / Content-Length) — self-consistent and always
+    current — so a dropped connection still errors instead of staging a
+    truncated file. Never leaves a .part behind.
 
     Multi-file variants: ``base_done`` offsets the progress so this file's
     bytes accumulate onto the files before it, and ``keep_totals=True``
@@ -198,7 +199,9 @@ def download_file(url: str, dest: Path, job: Dict[str, Any],
                 raise RuntimeError(
                     f"download incomplete ({file_done[0]} of {total} bytes)")
         else:
-            # No range support: single stream, large chunks.
+            # No range support: single stream, large chunks. Completeness
+            # is judged by the server's own Content-Length when it sent
+            # one — never by the catalog, which may lag a re-upload.
             with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
                 length = int(r.headers.get("Content-Length") or 0)
                 if length and not keep_totals:
@@ -209,11 +212,11 @@ def download_file(url: str, dest: Path, job: Dict[str, Any],
                         break
                     f.write(chunk)
                     bump(len(chunk))
+            if length and file_done[0] != length:
+                raise RuntimeError(
+                    f"Download ended at {file_done[0]:,} bytes but the server "
+                    f"said {length:,} — connection dropped? Removed; try again")
 
-        if expected_bytes and file_done[0] != expected_bytes:
-            raise RuntimeError(
-                f"Download ended at {file_done[0]:,} bytes but this file "
-                f"should be {expected_bytes:,} — removed; try again")
         shutil.move(str(tmp), str(dest))
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -707,7 +710,7 @@ async def local_models_download(body: ModelDownloadBody):
                     done_before += size
                     job["done_bytes"] = done_before
                     continue
-                download_file(url, dest, job, expected_bytes=size,
+                download_file(url, dest, job,
                               base_done=done_before, keep_totals=True)
                 job["phase"] = "downloading"
                 done_before += size
