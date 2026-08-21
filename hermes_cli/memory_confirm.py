@@ -68,12 +68,18 @@ def _print_separator() -> None:
     print("─" * 78, flush=True)
 
 
-def _countdown_for_review(seconds: int = 3) -> bool:
+def _countdown_for_review(seconds: int = 3, verb: str = "Auto-accepting all") -> bool:
     """Block briefly with a 'press any key to review' countdown.
 
     Returns True when the user pressed a key (caller should fall through
-    to the interactive prompt) or False when the timer ran out (caller
-    should auto-accept all).
+    to the interactive prompt) or False when the timer ran out (caller's
+    timeout behavior is up to it — new-entry review auto-accepts on
+    timeout, cleanup review auto-DECLINES on timeout; see callers).
+
+    ``verb`` customizes the leading phrase of the on-screen countdown
+    (e.g. "Auto-accepting all" vs "Auto-declining cleanup") so the two
+    call sites don't show a misleading message for their actual timeout
+    behavior.
 
     On a non-tty (CI, gateway, redirected stdin), returns False
     immediately — there's no human watching to press anything, and we
@@ -125,7 +131,7 @@ def _countdown_for_review(seconds: int = 3) -> bool:
             # Refresh the inline countdown each second.
             ticks = int(remaining) + 1
             sys.stdout.write(
-                f"\rAuto-accepting all in {ticks}s — press any key to review... "
+                f"\r{verb} in {ticks}s — press any key to review... "
             )
             sys.stdout.flush()
             ready, _, _ = select.select([sys.stdin], [], [], min(1.0, remaining))
@@ -369,8 +375,13 @@ def _review_cleanup(
     Deliberate differences from the new-entry flow, because these actions
     DELETE or rewrite facts the user already has:
 
-      * There is NO auto-accept countdown and NO blank-input default. The
-        user must type an explicit selection; pressing Enter re-prompts.
+      * There IS an auto-decline countdown (mirrors the new-entry flow's
+        auto-accept), but it times out to the SAFE default — 'none' — not
+        to applying the cleanup. A silent/away user never has facts
+        deleted or rewritten out from under them; they're just prompted
+        again next session. Pressing any key during the countdown falls
+        through to the normal explicit-selection prompt below (which
+        still has no blank-input default — Enter just re-prompts there).
       * The default on EOF / Ctrl-C / non-tty stdin is to approve NOTHING.
       * Accepting new entries via 'all' in the previous step does NOT
         accept cleanup — the two lists are never mixed.
@@ -397,6 +408,15 @@ def _review_cleanup(
     for i, action in enumerate(remaining):
         _render_cleanup_action(i, action)
     print()
+
+    # Auto-decline countdown. Unlike the new-entry countdown, timing out
+    # here means dropping ALL cleanup proposals (safe default) — never
+    # auto-applying a deletion/merge. Any keypress falls through to the
+    # explicit prompt below.
+    if not _countdown_for_review(seconds=8, verb="Auto-declining cleanup"):
+        print("(no input — cleanup skipped, no facts changed)")
+        return []
+
     print("Choices:")
     print("  letters (e.g. 'a c') — apply those cleanup actions")
     print("  'all' — apply every cleanup action listed")
