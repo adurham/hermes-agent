@@ -1038,6 +1038,8 @@ export const ja = defineLocale({
       browseNoGguf: 'このリポジトリには本アプリで実行できるモデルファイルがありません。',
       browseFitUnknown: '適合状況は不明',
       browseAlreadyDownloaded: 'そのモデルはダウンロード済みです。',
+      browseDownloadStarted: '{name} をダウンロード中 — 進捗はタイルに表示されます。',
+      browseDownloadAria: '{name} をダウンロード',
       sideloadButton: 'モデルファイルを追加',
       sideloadTitle: 'GGUF モデルファイルを選択',
       sideloadDone: '{name} を追加しました — モデル一覧に表示されます。',

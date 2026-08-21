@@ -600,9 +600,18 @@ function fitTone(fit: HFFileGroup['fit']): 'destructive' | 'muted' | 'success' |
   return 'muted'
 }
 
+function browsedModelId(group: HFFileGroup): string {
+  // Mirrors the backend's derivation: first file's name, split-part
+  // suffix stripped — the id the download job carries.
+  const first = group.paths[0].split('/').pop() ?? group.paths[0]
+
+  return first.replace(/-\d{5}-of-\d{5}\.gguf$/i, '').replace(/\.gguf$/i, '')
+}
+
 function BrowseSection({ onChanged }: { onChanged: () => void }) {
   const { t } = useI18n()
   const copy = t.settings.localModels
+  const jobs = useStore($localRuntimeJobs)
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<HFSearchHit[]>([])
   const [searching, setSearching] = useState(false)
@@ -666,13 +675,24 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
         .then(r => {
           if (r.already_downloaded) {
             notify({ durationMs: 3_000, kind: 'info', message: copy.browseAlreadyDownloaded, title: copy.browseTitle })
+
+            return
           }
 
+          // Same feedback loop as catalog downloads: the job store polls
+          // and the tile renders live progress from it.
+          watchLocalRuntimeJobs()
+          notify({
+            durationMs: 3_000,
+            kind: 'info',
+            message: copy.browseDownloadStarted.replace('{name}', r.model_id),
+            title: copy.browseTitle
+          })
           onChanged()
         })
         .catch((e: Error) => notifyError(e, copy.browseTitle))
     },
-    [copy.browseAlreadyDownloaded, copy.browseTitle, onChanged]
+    [copy.browseAlreadyDownloaded, copy.browseDownloadStarted, copy.browseTitle, onChanged]
   )
 
   const sideload = useCallback(() => {
@@ -761,43 +781,62 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
                   <p className="col-span-full py-1 text-[0.75rem] text-muted-foreground">{copy.browseNoGguf}</p>
                 )}
 
-                {files.map(group => (
-                  <button
-                    className={cn(
-                      'flex flex-col items-start gap-1 rounded-md border border-(--ui-border) px-2.5 py-1.5 text-left transition-colors',
-                      group.fit === 'too-big'
-                        ? 'cursor-not-allowed opacity-45'
-                        : 'hover:border-primary hover:bg-(--ui-bg-secondary)'
-                    )}
-                    disabled={group.fit === 'too-big'}
-                    key={group.label}
-                    onClick={() => startBrowsedDownload(hit.repo, group)}
-                    type="button"
-                  >
-                    <span className="flex w-full items-baseline justify-between gap-2">
-                      <span className="truncate font-mono text-[0.75rem]">
-                        {group.label}
-                        {group.paths.length > 1 ? ` ×${group.paths.length}` : ''}
+                {files.map(group => {
+                  const dJob = runningDownloadFor(jobs, browsedModelId(group))
+
+                  return (
+                    <div
+                      className={cn(
+                        'flex flex-col gap-1 rounded-md border border-(--ui-border) px-2.5 py-1.5',
+                        group.fit === 'too-big' && 'opacity-45'
+                      )}
+                      key={group.label}
+                    >
+                      <span className="flex w-full items-center justify-between gap-2">
+                        <span className="truncate font-mono text-[0.75rem]">
+                          {group.label}
+                          {group.paths.length > 1 ? ` ×${group.paths.length}` : ''}
+                        </span>
+
+                        <Button
+                          aria-label={copy.browseDownloadAria.replace('{name}', group.label)}
+                          className="h-6 shrink-0 px-2"
+                          disabled={group.fit === 'too-big' || Boolean(dJob)}
+                          onClick={() => startBrowsedDownload(hit.repo, group)}
+                          size="sm"
+                          variant="ghost"
+                        >
+                          {dJob ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+                        </Button>
                       </span>
 
-                      <span className="flex shrink-0 items-center gap-1 text-[0.7rem] text-muted-foreground">
-                        <Download className="size-3" />
-                        {gbLabel(group.total_bytes)}
-                      </span>
-                    </span>
+                      {dJob ? (
+                        <>
+                          <ProgressBar percent={dJob.percent} />
 
-                    <Pill tone={fitTone(group.fit)}>
-                      <Cpu className="mr-1 size-3" />
-                      {group.fit === 'fits-gpu'
-                        ? copy.pillFitsGpu
-                        : group.fit === 'needs-ram'
-                          ? copy.pillUsesRam
-                          : group.fit === 'too-big'
-                            ? copy.pillTooBig
-                            : copy.browseFitUnknown}
-                    </Pill>
-                  </button>
-                ))}
+                          <span className="text-[0.68rem] text-muted-foreground">
+                            {copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="flex items-center justify-between gap-2">
+                          <Pill tone={fitTone(group.fit)}>
+                            <Cpu className="mr-1 size-3" />
+                            {group.fit === 'fits-gpu'
+                              ? copy.pillFitsGpu
+                              : group.fit === 'needs-ram'
+                                ? copy.pillUsesRam
+                                : group.fit === 'too-big'
+                                  ? copy.pillTooBig
+                                  : copy.browseFitUnknown}
+                          </Pill>
+
+                          <span className="shrink-0 text-[0.7rem] text-muted-foreground">{gbLabel(group.total_bytes)}</span>
+                        </span>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>

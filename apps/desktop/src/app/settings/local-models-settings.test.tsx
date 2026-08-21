@@ -318,10 +318,19 @@ describe('BrowseSection', () => {
         await vi.runOnlyPendingTimersAsync()
       })
       expect(screen.getByText('Q4_K_M')).toBeTruthy()
-      // The too-big quant's download button is disabled; fits-gpu is live.
-      const buttons = screen.getAllByRole('button', { name: /GB/ })
-      expect(buttons.some(b => (b as HTMLButtonElement).disabled)).toBe(true)
-      expect(buttons.some(b => !(b as HTMLButtonElement).disabled)).toBe(true)
+      // Each tile has an explicit download button; the too-big quant's is
+      // disabled, the fitting one is live and starts the download.
+      const q4Btn = screen.getByRole('button', { name: 'Download Q4_K_M' })
+      const f16Btn = screen.getByRole('button', { name: 'Download F16' })
+      expect((f16Btn as HTMLButtonElement).disabled).toBe(true)
+      expect((q4Btn as HTMLButtonElement).disabled).toBe(false)
+
+      vi.mocked(hermes.downloadBrowsedModel).mockResolvedValue({ job_id: 'j1', model_id: 'Qwen3.8-27B-Q4_K_M' })
+      fireEvent.click(q4Btn)
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync()
+      })
+      expect(hermes.downloadBrowsedModel).toHaveBeenCalledWith('unsloth/Qwen3.8-27B-GGUF', ['Qwen3.8-27B-Q4_K_M.gguf'])
     } finally {
       vi.useRealTimers()
     }

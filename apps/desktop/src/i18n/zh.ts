@@ -1311,6 +1311,8 @@ export const zh: Translations = {
       browseNoGguf: '此仓库中没有本应用可运行的模型文件。',
       browseFitUnknown: '适配情况未知',
       browseAlreadyDownloaded: '该模型已下载。',
+      browseDownloadStarted: '正在下载 {name}——进度显示在其卡片上。',
+      browseDownloadAria: '下载 {name}',
       sideloadButton: '添加模型文件',
       sideloadTitle: '选择 GGUF 模型文件',
       sideloadDone: '{name} 已添加——它将出现在你的模型列表中。',
