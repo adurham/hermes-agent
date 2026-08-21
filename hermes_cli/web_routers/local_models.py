@@ -9,7 +9,8 @@ interpret.
 
 Long jobs (runtime install, model download) follow the repo's job pattern:
 start-POST -> {job_id} -> GET poll with byte progress. Downloads are
-sha256-verified; a hash mismatch deletes the file and reports it plainly.
+byte-size checked against the catalog (no hash verification by design);
+a short download deletes the file and reports it plainly.
 """
 
 from __future__ import annotations
@@ -63,9 +64,7 @@ def _job(kind: str, target: str, model_id: str | None = None) -> Dict[str, Any]:
 # ── fast download: ranged parallel streams ───────────────────
 
 # One TCP stream to a CDN rarely fills a fast line; 8 ranged connections
-# writing into a preallocated file saturate consumer gigabit. sha256 is
-# computed in a sequential pass afterwards (NVMe read is seconds, and it
-# keeps the hash independent of write ordering).
+# writing into a preallocated file saturate consumer gigabit.
 _DOWNLOAD_CONNECTIONS = 8
 _CHUNK = 4 << 20
 
@@ -122,19 +121,22 @@ def _variant_files_on_disk(model_id: str) -> "list[Path]":
 
 
 def download_file(url: str, dest: Path, job: Dict[str, Any],
-                  expected_sha256: str = "", *,
+                  *,
+                  expected_bytes: int = 0,
                   base_done: int = 0, keep_totals: bool = False) -> None:
     """Download url -> dest with byte progress on ``job``.
 
     Ranged-parallel when the server supports it, single-stream fallback
-    otherwise. Verifies sha256 when given; a mismatch deletes the file and
-    raises with a plain-language message. Never leaves a .part behind.
+    otherwise. There is no hash check by design (product decision) — the
+    byte count against ``expected_bytes`` (the catalog size) is the one
+    remaining wrong-file tripwire: a short or oversized body errors the
+    job instead of staging a file llama.cpp will crash on later. Never
+    leaves a .part behind.
 
     Multi-file variants: ``base_done`` offsets the progress so this file's
     bytes accumulate onto the files before it, and ``keep_totals=True``
     stops the per-file size from overwriting the variant's total.
     """
-    import hashlib
     import shutil
     import threading as _threading
 
@@ -149,13 +151,19 @@ def download_file(url: str, dest: Path, job: Dict[str, Any],
             job["done_bytes"] = base_done + file_done[0]
 
     try:
+        # The probe and the preallocation both take real seconds on a
+        # 20+ GB file — narrate them, or the pane shows a dead '— of X GB'
+        # until the first ranged byte lands.
+        job["detail"] = "Connecting"
         total = _probe_range_support(url)
         if total:
             if not keep_totals:
                 job["total_bytes"] = total
             # Preallocate so each worker writes at its own offset.
+            job["detail"] = f"Reserving {_human_gb(total)} of disk space"
             with open(tmp, "wb") as f:
                 f.truncate(total)
+            job["detail"] = ""
             errors: list[Exception] = []
             bounds = [(i * total // _DOWNLOAD_CONNECTIONS,
                        (i + 1) * total // _DOWNLOAD_CONNECTIONS - 1)
@@ -202,16 +210,10 @@ def download_file(url: str, dest: Path, job: Dict[str, Any],
                     f.write(chunk)
                     bump(len(chunk))
 
-        if expected_sha256:
-            job["phase"] = "verifying"
-            job["detail"] = "Checking file integrity"
-            digest = hashlib.sha256()
-            with open(tmp, "rb") as f:
-                for chunk in iter(lambda: f.read(16 << 20), b""):
-                    digest.update(chunk)
-            if digest.hexdigest() != expected_sha256:
-                raise RuntimeError(
-                    "Downloaded file failed its integrity check and was removed — try again")
+        if expected_bytes and file_done[0] != expected_bytes:
+            raise RuntimeError(
+                f"Download ended at {file_done[0]:,} bytes but this file "
+                f"should be {expected_bytes:,} — removed; try again")
         shutil.move(str(tmp), str(dest))
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -636,7 +638,7 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
     return {"job_id": job["job_id"], "backend": backend, "tag": tag}
 
 
-# ── model download (job with byte progress + sha256) ─────────
+# ── model download (job with byte progress) ──────────────────
 
 
 class ModelDownloadBody(BaseModel):
@@ -681,16 +683,16 @@ async def local_models_download(body: ModelDownloadBody):
         return {"job_id": None, "already_downloaded": True, "model_id": variant.model_id}
 
     # Everything this variant needs: split parts + mmproj/draft assets.
-    plan = []  # (url, dest, sha256, bytes)
+    plan = []  # (url, dest, bytes)
     for asset in variant.files:
         plan.append((f"https://huggingface.co/{entry.repo}/resolve/main/{asset.path}",
-                     _models_dir() / asset.local_name, asset.sha256, asset.size_bytes))
+                     _models_dir() / asset.local_name, asset.size_bytes))
     for asset in (entry.mmproj, entry.draft):
         if asset is not None:
             plan.append((f"https://huggingface.co/{entry.repo}/resolve/main/{asset.path}",
-                         assets_dir() / asset.local_name, asset.sha256, asset.size_bytes))
+                         assets_dir() / asset.local_name, asset.size_bytes))
 
-    total = sum(p[3] for p in plan)
+    total = sum(p[2] for p in plan)
     job = _job("model-download", f"{entry.display_name} ({variant.quant})",
                model_id=entry.id)
     job["total_bytes"] = total
@@ -700,12 +702,12 @@ async def local_models_download(body: ModelDownloadBody):
             job["phase"] = "downloading"
             job["detail"] = f"{entry.display_name} — {_human_gb(total)}"
             done_before = 0
-            for url, dest, sha, size in plan:
+            for url, dest, size in plan:
                 if dest.exists():
                     done_before += size
                     job["done_bytes"] = done_before
                     continue
-                download_file(url, dest, job, expected_sha256=sha,
+                download_file(url, dest, job, expected_bytes=size,
                               base_done=done_before, keep_totals=True)
                 job["phase"] = "downloading"
                 done_before += size

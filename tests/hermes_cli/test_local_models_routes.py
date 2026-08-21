@@ -124,9 +124,11 @@ def test_download_unknown_model_404s(client):
     assert r.status_code == 404
 
 
-def test_download_job_lifecycle_with_sha_failure(client, monkeypatch):
-    """Wrong-hash download must delete the file and error the job with a
-    human-readable message — never leave a corrupt GGUF staged."""
+def test_download_job_short_body_errors_and_cleans_up(client, monkeypatch):
+    """A download that delivers fewer bytes than the file's size must error
+    the job and leave nothing staged — with no hash check (product
+    decision: no download-time integrity verification), the byte count is
+    the only remaining wrong-file tripwire, so it must hold."""
 
     class FakeResponse(io.BytesIO):
         headers = {"Content-Length": "16"}
@@ -167,7 +169,7 @@ def test_download_job_lifecycle_with_sha_failure(client, monkeypatch):
             break
         time.sleep(0.05)
     assert status is not None and status["status"] == "error"
-    assert "integrity" in status["error"].lower()
+    assert "bytes" in status["error"].lower()
 
     from hermes_cli.local_runtime.bootstrap import models_dir
 

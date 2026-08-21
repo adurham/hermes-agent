@@ -30,7 +30,7 @@ def test_variants_ordered_best_first_and_floor_is_q4():
         assert sizes == sorted(sizes, reverse=True), f"{entry.id}: variants not best-first"
         for v in entry.variants:
             for asset in entry.download_files(v):
-                assert len(asset.sha256) == 64, f"{entry.id}/{v.quant}: unpinned {asset.path}"
+                assert asset.size_bytes > 0, f"{entry.id}/{v.quant}: no size on {asset.path}"
         # The quality floor: the ladder ends at Q4 — no Q3/Q2 builds ship
         # (product decision, 2026-08-09). Every floor rung is either
         # validated on real hardware or an explicit day-0 entry.

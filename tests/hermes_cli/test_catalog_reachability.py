@@ -1,10 +1,11 @@
-"""Catalog integrity: every entry's files must exist on the host with
-matching sha256s (HF LFS oids ARE the file hashes).
+"""Catalog reachability: every entry's files must exist upstream with the
+size the catalog claims (sizes feed the fit estimator and the download
+progress bar, and a silent upstream re-upload that changes file size means
+the fit math is stale).
 
 Network-marked (skipped in hermetic CI unless explicitly enabled) — this is
 the test that catches wrong repo names (the Nemotron 401), moved files, and
-upstream re-uploads before a user's download does. Run before any catalog
-commit:
+re-uploads that resize files. Run before any catalog commit:
 
     HERMES_TEST_NETWORK=1 scripts/run_tests.sh tests/hermes_cli/test_catalog_reachability.py
 """
@@ -31,7 +32,7 @@ def test_every_catalog_file_resolves():
         url = f"https://huggingface.co/api/models/{entry.repo}/tree/main?recursive=true"
         try:
             with urllib.request.urlopen(url, timeout=30) as r:
-                files = {f["path"]: f.get("lfs") or {} for f in json.load(r)}
+                files = {f["path"]: f.get("size") for f in json.load(r)}
         except Exception as exc:  # noqa: BLE001
             problems.append(f"{entry.id}: repo {entry.repo} unreachable ({exc})")
             continue
@@ -41,10 +42,10 @@ def test_every_catalog_file_resolves():
                     problems.append(
                         f"{entry.id}/{variant.quant}: {asset.path} not in {entry.repo}")
                     continue
-                live_sha = files[asset.path].get("oid", "")
-                if live_sha and live_sha != asset.sha256:
+                live_size = files[asset.path]
+                if live_size and live_size != asset.size_bytes:
                     problems.append(
-                        f"{entry.id}/{variant.quant}: sha drift on {asset.path} — "
-                        f"catalog {asset.sha256[:12]} vs live {live_sha[:12]} "
-                        f"(upstream re-uploaded; re-pin deliberately)")
+                        f"{entry.id}/{variant.quant}: size drift on {asset.path} — "
+                        f"catalog {asset.size_bytes} vs live {live_size} "
+                        f"(upstream re-uploaded; refresh the size deliberately)")
     assert not problems, "\n".join(problems)
