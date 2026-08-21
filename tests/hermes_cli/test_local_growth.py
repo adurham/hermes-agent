@@ -94,6 +94,16 @@ def _stage_fake_gguf(mdir, name):
     (mdir / f"{name}.gguf").write_bytes(b"GGUF" + b"\x00" * 64)
 
 
+def _header_stub(sampling: dict | None = None):
+    """A read_gguf_header stand-in for tests that monkeypatch the reader:
+    just enough surface for preset generation (sampling ladder included)."""
+
+    class _Stub:
+        sampling_defaults = dict(sampling or {})
+
+    return _Stub()
+
+
 def _tiny_profile(model_id: str):
     from hermes_cli.local_runtime.estimator import LayerKind, ModelProfile
 
@@ -121,7 +131,7 @@ def test_preset_generation_for_catalog_model_with_mmproj(hermes_home, tmp_path, 
     mdir = tmp_path / "models"
     _stage_fake_gguf(mdir, variant.model_id)
 
-    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: p)
+    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
     monkeypatch.setattr(presets_mod, "profile_from_gguf",
                         lambda h: _tiny_profile(variant.model_id))
 
@@ -146,7 +156,7 @@ def test_preset_restores_grown_window_capped_at_native(hermes_home, tmp_path, mo
 
     mdir = tmp_path / "models"
     _stage_fake_gguf(mdir, "tiny-dense")
-    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: p)
+    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
     monkeypatch.setattr(presets_mod, "profile_from_gguf",
                         lambda h: _tiny_profile("tiny-dense"))
 
@@ -175,7 +185,7 @@ def test_preset_ignores_override_below_launch_window(hermes_home, tmp_path, monk
 
     mdir = tmp_path / "models"
     _stage_fake_gguf(mdir, "tiny-dense")
-    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: p)
+    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
     monkeypatch.setattr(presets_mod, "profile_from_gguf",
                         lambda h: _tiny_profile("tiny-dense"))
     save_window_override("tiny-dense", 65536)
@@ -205,7 +215,7 @@ def test_preset_restores_grown_window_midladder(hermes_home, tmp_path, monkeypat
         layers=[(LayerKind.FULL, 4096)] * 60)
     mdir = tmp_path / "models"
     _stage_fake_gguf(mdir, "big-dense")
-    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: p)
+    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
     monkeypatch.setattr(presets_mod, "profile_from_gguf", lambda h: profile)
 
     budget = HardwareBudget(usable_vram_bytes=28 * gib,
@@ -218,3 +228,53 @@ def test_preset_restores_grown_window_midladder(hermes_home, tmp_path, monkeypat
     save_window_override("big-dense", grown)
     restored = presets_mod.generate_presets(mdir, budget, tmp_path / "b.ini")[0]
     assert restored.window >= grown, "override must lift the launch window"
+
+
+def test_sampling_ladder_file_beats_catalog_beats_nothing(hermes_home, tmp_path, monkeypatch):
+    """The sampling deference ladder: the GGUF's own general.sampling.*
+    wins per key, catalog fills only what the file left silent, and a
+    model with neither gets no sampling keys at all (llama.cpp defaults).
+    Policy keys (ctx-size, cache types) must never be displaced."""
+    import configparser
+
+    import hermes_cli.local_runtime.presets as presets_mod
+    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    # A real catalog entry WITH catalog sampling, staged on disk.
+    entry = next(e for e in CATALOG if e.sampling)
+    variant = entry.variants[-1]
+    mdir = tmp_path / "models"
+    _stage_fake_gguf(mdir, variant.model_id)
+    _stage_fake_gguf(mdir, "off-catalog-model")
+
+    gib = 1 << 30
+    budget = HardwareBudget(usable_vram_bytes=64 * gib,
+                            total_device_bytes=64 * gib,
+                            ram_available_bytes=64 * gib)
+    # The catalog model's file carries temp; catalog must fill the rest
+    # but NOT displace the file's value. The off-catalog file carries none.
+    def fake_header(path):
+        if variant.model_id in str(path):
+            return _header_stub({"temp": "0.42"})
+        return _header_stub()
+
+    monkeypatch.setattr(presets_mod, "read_gguf_header", fake_header)
+    monkeypatch.setattr(presets_mod, "profile_from_gguf",
+                        lambda h: _tiny_profile("x"))
+
+    out = tmp_path / "presets.ini"
+    presets_mod.generate_presets(mdir, budget, out)
+    ini = configparser.ConfigParser()
+    ini.read(out)
+
+    sec = ini[variant.model_id]
+    assert sec["temp"] == "0.42", "file's own sampling must win per key"
+    for k, v in entry.sampling.items():
+        if k != "temp":
+            assert sec[k] == v, f"catalog must fill the silent key {k}"
+    assert "ctx-size" in sec, "policy keys survive the ladder"
+
+    off = ini["off-catalog-model"]
+    assert "temp" not in off and "top-p" not in off, (
+        "no file keys + no catalog entry = llama.cpp defaults, not ours")

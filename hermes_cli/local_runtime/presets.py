@@ -87,7 +87,8 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
     for gguf in _staged_in(models_dir):
         model_id = _strip_part(gguf.stem)
         try:
-            profile = profile_from_gguf(read_gguf_header(gguf))
+            header = read_gguf_header(gguf)
+            profile = profile_from_gguf(header)
         except (ValueError, OSError) as exc:
             logger.warning("preset skip %s: %s", gguf.name, exc)
             continue
@@ -144,12 +145,20 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
                                             if entry is not None else 3))
         keys = _args_to_keys(args)
 
+        if entry is not None and is_mtp:
+            # Integrated-MTP targets sample on the backend (their
+            # measured pairing; draft sampling stays default).
+            keys["backend-sampling"] = "on"
+
+        # Sampling deference ladder, under the policy keys (policy wins
+        # on clash). The GGUF's own general.sampling.* metadata is the
+        # publisher's recommendation — it arrives with the file, updates
+        # with every re-upload, and covers models the catalog has never
+        # heard of. Catalog sampling applies only where the file is
+        # silent; a model carrying neither runs llama.cpp defaults.
+        for k, v in header.sampling_defaults.items():
+            keys.setdefault(k, v)
         if entry is not None:
-            if is_mtp:
-                # Integrated-MTP targets sample on the backend (their
-                # measured pairing; draft sampling stays default).
-                keys["backend-sampling"] = "on"
-            # Sampling defaults under the policy keys (policy wins on clash).
             for k, v in (entry.sampling or {}).items():
                 keys.setdefault(k, v)
             if entry.mmproj is not None:

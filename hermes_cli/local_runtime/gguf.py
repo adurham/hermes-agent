@@ -79,6 +79,31 @@ class GGUFHeader:
         return int(self._arch_key("context_length") or 0)
 
     @property
+    def sampling_defaults(self) -> dict:
+        """Upstream's recommended sampling, when the file carries it.
+
+        Model publishers bake general.sampling.* keys into the GGUF
+        (llama-server reads them as that model's default generation
+        settings), so the file itself is the source of truth for how its
+        publisher wants it run — it arrives with the download and updates
+        with every re-upload, no catalog required. Returned as preset INI
+        keys; empty when the file carries none.
+        """
+        ini_key = {"temp": "temp", "temperature": "temp", "top_p": "top-p",
+                   "top_k": "top-k", "min_p": "min-p",
+                   "repeat_penalty": "repeat-penalty",
+                   "presence_penalty": "presence-penalty"}
+        out = {}
+        for key, value in self.metadata.items():
+            if not key.startswith("general.sampling."):
+                continue
+            name = ini_key.get(key.rsplit(".", 1)[-1])
+            if name is not None and isinstance(value, (int, float)):
+                num = round(float(value), 4)
+                out[name] = str(int(num)) if num == int(num) else str(num)
+        return out
+
+    @property
     def n_embd(self) -> int:
         return int(self._arch_key("embedding_length") or 0)
 
