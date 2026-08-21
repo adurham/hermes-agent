@@ -480,8 +480,8 @@ export function LocalModelsSettings() {
                       <ProgressBar percent={dJob.percent} />
 
                       <p className="text-[0.68rem] text-muted-foreground">
-                        {dJob.phase === 'verifying'
-                          ? copy.verifying
+                        {!dJob.done_bytes && dJob.detail
+                          ? dJob.detail
                           : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
                       </p>
                     </div>
@@ -899,7 +899,9 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
                           <ProgressBar percent={dJob.percent} />
 
                           <span className="text-[0.68rem] text-muted-foreground">
-                            {copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
+                            {!dJob.done_bytes && dJob.detail
+                              ? dJob.detail
+                              : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
                           </span>
                         </>
                       ) : (

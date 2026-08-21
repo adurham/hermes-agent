@@ -953,7 +953,6 @@ export interface Translations {
       activating: string
       activateFailed: (model: string) => string
       activateDoneToast: (model: string) => string
-      verifying: string
       downloadFailed: (model: string) => string
       pillFitsGpu: string
       pillUsesRam: string
