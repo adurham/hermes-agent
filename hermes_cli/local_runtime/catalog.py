@@ -47,7 +47,12 @@ reviewed like a tag bump.
 
 from __future__ import annotations
 
+import json
+import logging
 import re
+import threading
+import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
@@ -63,6 +68,8 @@ from hermes_cli.local_runtime.estimator import (
     ModelProfile,
     ctx_bytes,
 )
+
+logger = logging.getLogger(__name__)
 
 _GIB = 1 << 30
 _PART_SUFFIX = re.compile(r"-\d{5}-of-\d{5}$")
@@ -144,6 +151,10 @@ class CatalogEntry:
     mmproj: "AssetFile | None" = None    # vision projector, downloads with model
     draft: "AssetFile | None" = None     # spec-decode draft model (e.g. DSpark)
     sampling: dict = field(default_factory=dict)  # INI long-form launch defaults
+    # Oldest llama.cpp release tag that can load this model (day-0
+    # architectures need the release where their support landed). Empty
+    # means any installed engine. The pane gates download/activate on it.
+    min_engine: str = ""
     tags: tuple = field(default_factory=tuple)
 
     def profile(self, variant: QuantVariant) -> ModelProfile:
@@ -224,155 +235,113 @@ def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice
     return None
 
 
-def _v(quant: str, *files, validated: bool = False) -> QuantVariant:
-    return QuantVariant(quant=quant,
-                        files=tuple(AssetFile(*f) for f in files),
-                        validated=validated)
+# ── catalog data: packaged JSON, refreshed from GitHub in memory ─
+#
+# The catalog DATA lives in catalog.json (checked in beside this module
+# and shipped as package data); this module keeps all policy. At import
+# we load the packaged copy — no network on the import path. A TTL-gated
+# background refresh fetches the same file from the repo's main branch
+# and swaps it in memory only: nothing on disk changes, so a git
+# checkout never sees a dirty tracked file and the packaged copy remains
+# the offline truth. A reverted commit on main heals every install on
+# its next fetch, and day-0 entries reach users without an app release.
+
+_CATALOG_URL = ("https://raw.githubusercontent.com/NousResearch/hermes-agent"
+                "/main/hermes_cli/local_runtime/catalog.json")
+_SCHEMA_VERSION = 1
+_REFRESH_TTL_S = 6 * 3600
+_refresh_lock = threading.Lock()
+_last_refresh_attempt = 0.0
 
 
-# Ordered: recommended first. File bytes pinned from HF LFS metadata.
-CATALOG: tuple[CatalogEntry, ...] = (
-    CatalogEntry(
-        id="qwen3.8-27b",
-        display_name="Qwen3.8 27B",
-        description="Best all-round agent model; sees images; long context stays fast",
-        repo="unsloth/Qwen3.8-27B-GGUF",
-        variants=(
-            _v("UD-Q8_K_XL",
-               ("Qwen3.8-27B-UD-Q8_K_XL.gguf", 31457991680)),
-            _v("UD-Q6_K_XL",
-               ("Qwen3.8-27B-UD-Q6_K_XL.gguf", 25299061664)),
-            _v("UD-Q5_K_XL",
-               ("Qwen3.8-27B-UD-Q5_K_XL.gguf", 20876938144)),
-            _v("UD-Q4_K_XL",
-               ("Qwen3.8-27B-UD-Q4_K_XL.gguf", 17559178144)),
-        ),
-        n_ctx_train=262144,
-        # Same hybrid family as Qwen3.6-27B (config-verified: 64 layers,
-        # 16 full-attention via full_attention_interval=4, 4 KV heads x
-        # 256 head_dim = 4 KiB/token per full layer). The GGUF header is
-        # the authority after download.
-        full_layers=16, recurrent_layers=48, per_layer_f16=4096,
-        n_vocab=248320,
-        mmproj=AssetFile("mmproj-BF16.gguf", 931146432,
-                         local="mmproj-Qwen3.8-27B-BF16.gguf"),
-        sampling={"temp": "1.0", "top-p": "0.95", "top-k": "20", "min-p": "0.0"},
-        tags=("recommended", "hybrid", "reasoning", "vision", "day-0"),
-    ),
-    CatalogEntry(
-        id="qwen3.6-35b-a3b",
-        display_name="Qwen3.6 35B-A3B",
-        description="Bigger mixture-of-experts with multi-token prediction; sees images",
-        repo="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
-        variants=(
-            _v("UD-Q8_K_XL",
-               ("Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf", 39099447584)),
-            _v("UD-Q6_K_XL",
-               ("Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf", 32611711264)),
-            _v("UD-Q5_K_XL",
-               ("Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf", 27159116064)),
-            # Validated on this repo's prior upload; upstream has since
-            # re-uploaded. Same model id + pipeline — re-verify at the
-            # next validation pass.
-            _v("UD-Q4_K_XL",
-               ("Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", 22853663008),
-               validated=True),
-        ),
-        n_ctx_train=262144,
-        # Config-derived (Qwen/Qwen3.6-35B-A3B): 40 layers, 10 full-attn
-        # (interval 4) + 30 linear; KV heads 2 x head_dim 256.
-        full_layers=10, recurrent_layers=30, per_layer_f16=2048,
-        moe=True, mtp=True, mtp_draft_depth=2, n_vocab=248320,
-        mmproj=AssetFile("mmproj-BF16.gguf", 902822528,
-                         local="mmproj-Qwen3.6-35B-A3B-BF16.gguf"),
-        sampling={"temp": "1.0", "top-p": "0.95", "top-k": "20", "min-p": "0.0"},
-        tags=("hybrid", "moe", "mtp", "vision"),
-    ),
-    CatalogEntry(
-        id="nemotron-3.5-lightning-30b",
-        display_name="Nemotron 3.5 Lightning 30B",
-        description="NVIDIA's fast tool-calling model; 1M-token context",
-        repo="unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
-        variants=(
-            _v("UD-Q8_K_XL",
-               ("NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q8_K_XL.gguf", 38615380032)),
-            _v("UD-Q6_K_XL",
-               ("NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q6_K_XL.gguf", 35004643392)),
-            _v("UD-Q5_K_XL",
-               ("NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q5_K_XL.gguf", 30414829632)),
-            _v("UD-Q4_K_XL",
-               ("NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q4_K_XL.gguf", 25505724480)),
-        ),
-        n_ctx_train=1048576,
-        # Prior from Nemotron-3-Nano (same hybrid family; base config gated
-        # upstream): 6 full-attn + 46 recurrent, ~1 KiB/tok/full-layer.
-        # Prior from the same hybrid family (measured: 1M ctx in ~3.2 GiB
-        # KV on the predecessor). GGUF header is
-        # the authority after download.
-        full_layers=6, recurrent_layers=46, per_layer_f16=1024,
-        moe=True, mtp=True, n_vocab=131072,
-        sampling={"temp": "0.6", "top-p": "0.95", "min-p": "0.01"},
-        tags=("day-0", "long-context", "hybrid", "moe", "mtp"),
-    ),
-    CatalogEntry(
-        id="muse-glimmer-30b",
-        display_name="Muse Glimmer 30B",
-        description="Meta's open vision model for coding and agent work",
-        repo="unsloth/Muse-Glimmer-30B-GGUF",
-        variants=(
-            _v("UD-Q8_K_XL",
-               ("Muse-Glimmer-30B-UD-Q8_K_XL.gguf", 32300651040)),
-            _v("UD-Q6_K_XL",
-               ("Muse-Glimmer-30B-UD-Q6_K_XL.gguf", 26265362976)),
-            _v("UD-Q5_K_XL",
-               ("Muse-Glimmer-30B-UD-Q5_K_XL.gguf", 21789618976)),
-            _v("UD-Q4_K_XL",
-               ("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", 15878222368)),
-        ),
-        n_ctx_train=262144,
-        # Conservative dense prior (base config gated upstream): 30B-class
-        # dense, ~60 layers x 4 KiB/tok. Dense KV is the expensive shape —
-        # overestimating here keeps the zero-spill promise safe until the
-        # GGUF header corrects it.
-        full_layers=60, recurrent_layers=0, per_layer_f16=4096,
-        n_vocab=202048,
-        mmproj=AssetFile("mmproj-Muse-Glimmer-30B-BF16.gguf", 3849173728),
-        sampling={"temp": "1.0", "top-p": "0.95", "top-k": "64"},
-        tags=("day-0", "vision", "dense"),
-    ),
-    CatalogEntry(
-        id="deepseek-v4-flash",
-        display_name="DeepSeek V4 Flash",
-        description="Frontier-class model for machines with 128GB+ memory",
-        repo="unsloth/DeepSeek-V4-Flash-0731-GGUF",
-        variants=(
-            # Q8 is bit-lossless vs the official QAT checkpoint; Q4 keeps
-            # the MXFP4 experts bit-exact and only requants the other 4%.
-            _v("UD-Q8_K_XL",
-               ("UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00001-of-00005.gguf", 5257408),
-               ("UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00002-of-00005.gguf", 49215492960),
-               ("UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00003-of-00005.gguf", 49700372160),
-               ("UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00004-of-00005.gguf", 49466495968),
-               ("UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00005-of-00005.gguf", 13481997024)),
-            _v("UD-Q4_K_XL",
-               ("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf", 5257408),
-               ("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00005.gguf", 48935523072),
-               ("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00003-of-00005.gguf", 48980787136),
-               ("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00004-of-00005.gguf", 49999168416),
-               ("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00005-of-00005.gguf", 7174505088)),
-        ),
-        n_ctx_train=1048576,
-        # Config-derived (deepseek-ai/DeepSeek-V4-Flash-0731): 43 layers,
-        # MLA compressed KV (rank 512 + 64 rope) ~1.15 KiB/tok/layer f16.
-        # Config shows sliding_window=128 with no per-layer map — priced
-        # all-full (conservative); GGUF header decides after download.
-        full_layers=43, recurrent_layers=0, per_layer_f16=1152,
-        moe=True, n_vocab=163840,
-        draft=AssetFile("dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", 10896057440),
-        sampling={"temp": "1.0", "top-p": "0.95", "min-p": "0.01"},
-        tags=("day-0", "long-context", "moe", "frontier"),
-    ),
-)
+def _asset_from(d: "dict | None") -> "AssetFile | None":
+    if not d:
+        return None
+    return AssetFile(path=d["path"], size_bytes=int(d["size_bytes"]),
+                     local=d.get("local"))
+
+
+def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
+    """Parse a catalog document into entries. Unknown fields are ignored
+    (newer catalogs stay readable by older apps); a major schema bump is
+    the signal that they wouldn't be, and the caller skips the document."""
+    if int(doc.get("schema_version", 0)) != _SCHEMA_VERSION:
+        raise ValueError(f"catalog schema {doc.get('schema_version')!r} "
+                         f"(this build reads {_SCHEMA_VERSION})")
+    entries = []
+    for m in doc["models"]:
+        variants = tuple(
+            QuantVariant(quant=v["quant"],
+                         files=tuple(_asset_from(f) for f in v["files"]),
+                         validated=bool(v.get("validated")))
+            for v in m["variants"])
+        entries.append(CatalogEntry(
+            id=m["id"], display_name=m["display_name"],
+            description=m["description"], repo=m["repo"], variants=variants,
+            n_ctx_train=int(m["n_ctx_train"]),
+            full_layers=int(m["full_layers"]),
+            recurrent_layers=int(m["recurrent_layers"]),
+            per_layer_f16=int(m["per_layer_f16"]),
+            swa_layers=int(m.get("swa_layers", 0)),
+            swa_window=int(m.get("swa_window", 0)),
+            moe=bool(m.get("moe")), mtp=bool(m.get("mtp")),
+            mtp_draft_depth=int(m.get("mtp_draft_depth", 3)),
+            n_vocab=int(m.get("n_vocab", 0)),
+            mmproj=_asset_from(m.get("mmproj")),
+            draft=_asset_from(m.get("draft")),
+            sampling=dict(m.get("sampling", {})),
+            min_engine=str(m.get("min_engine", "")),
+            tags=tuple(m.get("tags", ())),
+        ))
+    return tuple(entries)
+
+
+def _packaged_catalog() -> "tuple[CatalogEntry, ...]":
+    from importlib.resources import files
+
+    raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(
+        encoding="utf-8")
+    return _load_catalog(json.loads(raw))
+
+
+CATALOG: "tuple[CatalogEntry, ...]" = _packaged_catalog()
+
+
+def refresh_catalog(force: bool = False) -> bool:
+    """Fetch the current catalog from the repo and swap it in memory.
+
+    Best-effort by design: any failure (offline, GitHub down, unreadable
+    schema) leaves the running catalog untouched and retries after the
+    TTL. Returns True when a fetched document replaced the catalog."""
+    global CATALOG, _last_refresh_attempt
+
+    now = time.monotonic()
+    with _refresh_lock:
+        if not force and now - _last_refresh_attempt < _REFRESH_TTL_S:
+            return False
+        _last_refresh_attempt = now
+    try:
+        req = urllib.request.Request(
+            _CATALOG_URL, headers={"User-Agent": "hermes-local-runtime"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            fetched = _load_catalog(json.load(r))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("catalog refresh skipped: %s", exc)
+        return False
+    if fetched != CATALOG:
+        logger.info("catalog refreshed from repo (%d models)", len(fetched))
+    CATALOG = fetched
+    return True
+
+
+def refresh_catalog_soon() -> None:
+    """TTL-gated background refresh; returns immediately. The caller's
+    current request serves the catalog it already has — the refresh
+    lands for the next one."""
+    if time.monotonic() - _last_refresh_attempt < _REFRESH_TTL_S:
+        return
+    threading.Thread(target=refresh_catalog, daemon=True,
+                     name="catalog-refresh").start()
 
 
 def catalog_by_id() -> dict[str, CatalogEntry]:

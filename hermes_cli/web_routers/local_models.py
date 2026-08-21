@@ -230,6 +230,22 @@ def _models_dir() -> Path:
     return models_dir()
 
 
+def _engine_too_old(min_engine: str) -> bool:
+    """True when the installed llama.cpp predates a model's requirement.
+    Tags are release numbers (b10362); no engine installed compares as
+    too old only when the model states a requirement."""
+    if not min_engine:
+        return False
+    try:
+        from hermes_cli.local_runtime.binaries import default_tag, installed_tags
+
+        tags = installed_tags() or [default_tag()]
+        newest = max(int(t.lstrip("b")) for t in tags if t.lstrip("b").isdigit())
+        return newest < int(min_engine.lstrip("b"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _load_config() -> dict:
     from hermes_cli.config import load_config
 
@@ -453,7 +469,11 @@ async def local_models_catalog():
     build for this machine (highest quality that runs fully on the GPU at
     the 64K floor; else the smallest that works, spilled and priced). No
     entry is hidden; unaffordable models show WHY."""
-    from hermes_cli.local_runtime.catalog import CATALOG, select_variant
+    from hermes_cli.local_runtime.catalog import (
+        CATALOG,
+        refresh_catalog_soon,
+        select_variant,
+    )
     from hermes_cli.local_runtime.context_policy import (
         RUNTIME_OVERHEAD_BYTES,
         initial_window,
@@ -461,6 +481,11 @@ async def local_models_catalog():
     )
     from hermes_cli.local_runtime.estimator import PhysicsRefusal
     from hermes_cli.local_runtime.hardware import probe_budget
+
+    # This request serves the catalog already in memory; a TTL-gated
+    # background fetch from the repo lands new entries for the next one
+    # (day-0 models reach the pane without an app release).
+    refresh_catalog_soon()
 
     # Planning budget: price against machine capacity, not live-free VRAM.
     # A loaded model must not make the catalog call every row unaffordable.
@@ -486,6 +511,12 @@ async def local_models_catalog():
             "downloaded_quant": downloaded_variant.quant if downloaded_variant else None,
             "mtp": entry.mtp,
             "vision": entry.mmproj is not None,
+            # Day-0 architectures need the llama.cpp release where their
+            # support landed. True gates download/activate in the pane
+            # until the engine updates; the row still renders (visible +
+            # explained beats hidden).
+            "needs_engine": _engine_too_old(entry.min_engine),
+            "min_engine": entry.min_engine or None,
         }
         if choice is None:
             smallest = min(entry.variants, key=lambda v: v.size_bytes)
@@ -663,6 +694,11 @@ async def local_models_download(body: ModelDownloadBody):
     entry = catalog_by_id().get(body.model_id)
     variant = None
     if entry is not None:
+        if _engine_too_old(entry.min_engine):
+            raise HTTPException(
+                status_code=409,
+                detail=(f"{entry.display_name} needs llama.cpp {entry.min_engine} "
+                        f"or newer — update the engine first"))
         # Same planning budget as the catalog — the user downloads exactly
         # the build the row advertised.
         choice = select_variant(entry, probe_budget(planning=True))
