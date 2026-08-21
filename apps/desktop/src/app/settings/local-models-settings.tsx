@@ -749,51 +749,54 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
             />
 
             {openRepo === hit.repo && (
-              <div className="ml-4 grid gap-1 border-l border-(--ui-border) pl-3">
+              <div className="ml-4 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-1.5 border-l border-(--ui-border) py-1 pl-3">
                 {listing && (
-                  <p className="flex items-center gap-2 py-1 text-[0.75rem] text-muted-foreground">
+                  <p className="col-span-full flex items-center gap-2 py-1 text-[0.75rem] text-muted-foreground">
                     <Loader2 className="size-3 animate-spin" />
                     {copy.browseListing}
                   </p>
                 )}
 
                 {!listing && files.length === 0 && (
-                  <p className="py-1 text-[0.75rem] text-muted-foreground">{copy.browseNoGguf}</p>
+                  <p className="col-span-full py-1 text-[0.75rem] text-muted-foreground">{copy.browseNoGguf}</p>
                 )}
 
                 {files.map(group => (
-                  <ListRow
-                    action={
-                      <Button
-                        disabled={group.fit === 'too-big'}
-                        onClick={() => startBrowsedDownload(hit.repo, group)}
-                        size="sm"
-                        variant="outline"
-                      >
-                        <Download className="mr-1 size-3.5" />
-                        {gbLabel(group.total_bytes)}
-                      </Button>
-                    }
-                    description={
-                      <Pill tone={fitTone(group.fit)}>
-                        <Cpu className="mr-1 size-3" />
-                        {group.fit === 'fits-gpu'
-                          ? copy.pillFitsGpu
-                          : group.fit === 'needs-ram'
-                            ? copy.pillUsesRam
-                            : group.fit === 'too-big'
-                              ? copy.pillTooBig
-                              : copy.browseFitUnknown}
-                      </Pill>
-                    }
+                  <button
+                    className={cn(
+                      'flex flex-col items-start gap-1 rounded-md border border-(--ui-border) px-2.5 py-1.5 text-left transition-colors',
+                      group.fit === 'too-big'
+                        ? 'cursor-not-allowed opacity-45'
+                        : 'hover:border-primary hover:bg-(--ui-bg-secondary)'
+                    )}
+                    disabled={group.fit === 'too-big'}
                     key={group.label}
-                    title={
-                      <span className="font-mono text-[0.78rem]">
+                    onClick={() => startBrowsedDownload(hit.repo, group)}
+                    type="button"
+                  >
+                    <span className="flex w-full items-baseline justify-between gap-2">
+                      <span className="truncate font-mono text-[0.75rem]">
                         {group.label}
-                        {group.paths.length > 1 ? ` (${group.paths.length} files)` : ''}
+                        {group.paths.length > 1 ? ` ×${group.paths.length}` : ''}
                       </span>
-                    }
-                  />
+
+                      <span className="flex shrink-0 items-center gap-1 text-[0.7rem] text-muted-foreground">
+                        <Download className="size-3" />
+                        {gbLabel(group.total_bytes)}
+                      </span>
+                    </span>
+
+                    <Pill tone={fitTone(group.fit)}>
+                      <Cpu className="mr-1 size-3" />
+                      {group.fit === 'fits-gpu'
+                        ? copy.pillFitsGpu
+                        : group.fit === 'needs-ram'
+                          ? copy.pillUsesRam
+                          : group.fit === 'too-big'
+                            ? copy.pillTooBig
+                            : copy.browseFitUnknown}
+                    </Pill>
+                  </button>
                 ))}
               </div>
             )}
