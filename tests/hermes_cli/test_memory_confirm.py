@@ -601,6 +601,69 @@ class TestReviewCleanup:
         assert "merged result text" in out
 
 
+class TestCleanupAutoDeclineCountdown:
+    """Cleanup review has its own countdown, but it times out to the SAFE
+    default ('none') — the opposite polarity from the new-entry countdown,
+    which times out to 'accept all'. This class exists because deletions/
+    merges must never apply themselves just because the user stepped away.
+    """
+
+    def test_countdown_expires_declines_without_prompting(
+        self, tty_stdin, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: False)
+
+        def _bomb(*_, **__):
+            raise AssertionError("input() should not be called when countdown expires")
+        monkeypatch.setattr("builtins.input", _bomb)
+
+        result = memory_confirm._review_cleanup([_cleanup(1), _cleanup(2)])
+        assert result == []
+        assert "skipped" in capsys.readouterr().out.lower()
+
+    def test_countdown_uses_decline_verb(self, tty_stdin, monkeypatch):
+        """Cleanup must pass its own verb so the on-screen message doesn't
+        claim it's 'auto-accepting' when it actually auto-declines."""
+        captured = {}
+
+        def fake_countdown(*args, **kwargs):
+            captured["seconds"] = kwargs.get("seconds", args[0] if args else None)
+            captured["verb"] = kwargs.get("verb")
+            return False
+
+        monkeypatch.setattr(memory_confirm, "_countdown_for_review", fake_countdown)
+        monkeypatch.setattr("builtins.input", lambda *_: (_ for _ in ()).throw(
+            AssertionError("input() should not be called")
+        ))
+        memory_confirm._review_cleanup([_cleanup(1)])
+        assert captured["verb"] is not None
+        assert "declin" in captured["verb"].lower()
+
+    def test_keypress_falls_through_to_explicit_prompt(
+        self, tty_stdin, monkeypatch,
+    ):
+        """A keypress during the countdown must NOT auto-apply anything —
+        it only unlocks the normal explicit-selection prompt, which still
+        has no blank-input default for cleanup."""
+        monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: True)
+        monkeypatch.setattr("builtins.input", lambda _: "all")
+        actions = [_cleanup(1), _cleanup(2)]
+        assert memory_confirm._review_cleanup(actions) == actions
+
+    @pytest.mark.real_countdown
+    def test_non_tty_stdin_still_short_circuits_before_countdown(self, monkeypatch):
+        """Non-tty stdin must drop proposals before ever touching the
+        countdown helper (no human watching at all, not even a wait)."""
+        import sys
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+        def _bomb(*_, **__):
+            raise AssertionError("_countdown_for_review should not run on non-tty")
+        monkeypatch.setattr(memory_confirm, "_countdown_for_review", _bomb)
+
+        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
+
+
 class TestConfirmCallbackKeepsListsSeparate:
     """Accepting new entries must never implicitly accept cleanup."""
 
