@@ -218,3 +218,20 @@ def test_runtime_install_rejects_impossible_combo(client, monkeypatch):
 
 def test_job_poll_unknown_404s(client):
     assert client.get("/api/local-models/jobs/deadbeef").status_code == 404
+
+
+def test_eject_without_supervisor_is_not_a_500(client, monkeypatch):
+    """Eject on an ADOPTED server (no in-process supervisor — the shape
+    every backend restart produces, since boot adopts the running server
+    via the state file) must route through the persisted endpoint, not
+    crash. Regression: _state_endpoint was only imported inside the
+    status route, so eject raised NameError -> 500 for every adopted-
+    server session."""
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.bootstrap.get_supervisor", lambda: None)
+    # No running server either: the route must answer 409 (no server),
+    # never a NameError 500.
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.local_models._state_endpoint", lambda: None)
+    r = client.post("/api/local-models/eject", json={"model_id": "anything"})
+    assert r.status_code == 409, (r.status_code, r.text)

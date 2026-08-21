@@ -26,6 +26,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from hermes_cli.local_runtime.endpoint import _state_endpoint
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -249,7 +251,6 @@ async def local_models_status():
         runtimes_root,
         server_binary,
     )
-    from hermes_cli.local_runtime.endpoint import _state_endpoint
 
     section = _runtime_section()
     configured_tag = section.get("tag") or default_tag()
@@ -908,9 +909,7 @@ async def local_models_activate(body: ModelActivateBody):
             config = load_config()
             sup = ensure_local_runtime(config, force=True)
             if sup is None:
-                from hermes_cli.local_runtime.endpoint import _state_endpoint as _se
-
-                if _se() is None:
+                if _state_endpoint() is None:
                     raise RuntimeError(
                         "The local server could not start — check the runtime is installed")
 
