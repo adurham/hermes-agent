@@ -19,6 +19,7 @@ import json
 import logging
 import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -980,3 +981,140 @@ async def local_models_job(job_id: str):
     if out["total_bytes"]:
         out["percent"] = min(100, round(out["done_bytes"] / out["total_bytes"] * 100))
     return out
+
+
+# ── Hugging Face browser: search, repo files, arbitrary download ─
+
+
+@router.get("/api/local-models/search")
+async def local_models_search(q: str, limit: int = 20):
+    """Full-text HF search over GGUF models — the firehose behind the
+    curated catalog. The pane's per-quant fit pills come from the
+    repo-files call once the user opens a hit."""
+    from starlette.concurrency import run_in_threadpool
+
+    from hermes_cli.local_runtime.hf_browse import search_models
+
+    if not q.strip():
+        return {"hits": []}
+    try:
+        hits = await run_in_threadpool(search_models, q, limit)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502,
+                            detail=f"Hugging Face search unavailable: {exc}") from exc
+    return {"hits": [h.__dict__ for h in hits]}
+
+
+@router.get("/api/local-models/search/files")
+async def local_models_search_files(repo: str):
+    """The servable GGUFs in one HF repo with a rough pre-download fit
+    verdict per quant (file size + conservative fill-ins — the GGUF
+    header refines it after download)."""
+    from starlette.concurrency import run_in_threadpool
+
+    from hermes_cli.local_runtime.hardware import probe_budget
+    from hermes_cli.local_runtime.hf_browse import priced_repo_files
+
+    try:
+        groups = await run_in_threadpool(
+            priced_repo_files, repo, probe_budget(planning=True))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502,
+                            detail=f"Could not list {repo}: {exc}") from exc
+    return {"files": [dict(g.__dict__, paths=list(g.paths)) for g in groups]}
+
+
+class BrowsedDownloadBody(BaseModel):
+    repo: str
+    paths: list[str]            # one GGUF, or every part of a split, in order
+
+
+@router.post("/api/local-models/download-browsed")
+async def local_models_download_browsed(body: BrowsedDownloadBody):
+    """Download an arbitrary HF GGUF (browsed or pasted) into the managed
+    models dir. From the moment it lands it is a normal staged model: the
+    post-download bounce regenerates presets from its real header and the
+    fit policy owns its launch. No catalog entry — it serves 'unverified',
+    capabilities answered from the live server only."""
+    import re as _re
+
+    from hermes_cli.local_runtime.bootstrap import staged_model_ids
+
+    paths = [p for p in (body.paths or []) if p.lower().endswith(".gguf")]
+    if not paths:
+        raise HTTPException(status_code=422, detail="no .gguf files given")
+    first = paths[0].rsplit("/", 1)[-1]
+    model_id = _re.sub(r"-\d{5}-of-\d{5}\.gguf$", "", first, flags=_re.IGNORECASE)
+    model_id = model_id[:-5] if model_id.lower().endswith(".gguf") else model_id
+    if model_id in staged_model_ids():
+        return {"job_id": None, "already_downloaded": True, "model_id": model_id}
+
+    job = _job("model-download", f"{model_id} (from {body.repo})",
+               model_id=model_id)
+
+    def _run():
+        try:
+            job["phase"] = "downloading"
+            for p in paths:
+                url = (f"https://huggingface.co/{body.repo}"
+                       f"/resolve/main/{urllib.parse.quote(p)}")
+                dest = _models_dir() / p.rsplit("/", 1)[-1]
+                if dest.exists():
+                    continue
+                download_file(url, dest, job,
+                              base_done=int(job.get("done_bytes") or 0),
+                              keep_totals=bool(job.get("total_bytes")))
+                job["phase"] = "downloading"
+            job["phase"] = "done"
+            job["status"] = "done"
+            job["detail"] = f"{model_id} ready"
+            try:
+                from hermes_cli.local_runtime.bootstrap import refresh_local_runtime
+
+                refresh_local_runtime()
+            except Exception:  # noqa: BLE001
+                logger.debug("post-download runtime refresh skipped", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            job["status"] = "error"
+            job["error"] = str(exc)
+
+    threading.Thread(target=_run, daemon=True, name="lm-download-browsed").start()
+    return {"job_id": job["job_id"], "model_id": model_id}
+
+
+class SideloadBody(BaseModel):
+    path: str                   # absolute path to a .gguf on this machine
+
+
+@router.post("/api/local-models/sideload")
+async def local_models_sideload(body: SideloadBody):
+    """Register a GGUF that already exists on this machine: link it into
+    the managed models dir (copy only when linking is impossible) and
+    bounce the router so it serves immediately. The original stays where
+    it is; delete-from-Hermes removes only our link."""
+    import os
+    import shutil
+
+    from starlette.concurrency import run_in_threadpool
+
+    src = Path(body.path)
+    if not src.is_file() or src.suffix.lower() != ".gguf":
+        raise HTTPException(status_code=422, detail="Pick a .gguf model file")
+    dest = _models_dir() / src.name
+    if dest.exists():
+        return {"ok": True, "model_id": dest.stem, "already_present": True}
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dest)          # hardlink: instant, no extra disk
+    except OSError:
+        try:
+            os.symlink(src, dest)   # cross-volume fallback
+        except OSError:
+            await run_in_threadpool(shutil.copyfile, src, dest)
+    try:
+        from hermes_cli.local_runtime.bootstrap import refresh_local_runtime
+
+        refresh_local_runtime()
+    except Exception:  # noqa: BLE001
+        logger.debug("post-sideload runtime refresh skipped", exc_info=True)
+    return {"ok": True, "model_id": dest.stem}
