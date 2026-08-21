@@ -153,9 +153,7 @@ export function LocalModelsSettings() {
     }
   }
 
-  async function handleActivate(model: LocalCatalogModel) {
-    const target = model.downloaded_model_id ?? model.model_id
-
+  async function handleActivate(target: null | string, displayName: string) {
     if (!target) {
       return
     }
@@ -164,7 +162,7 @@ export function LocalModelsSettings() {
       await activateLocalModel(target)
       watchLocalRuntimeJobs()
     } catch (err) {
-      notifyError(err, copy.activateFailed(model.display_name))
+      notifyError(err, copy.activateFailed(displayName))
     }
   }
 
@@ -197,14 +195,12 @@ export function LocalModelsSettings() {
     }
   }
 
-  async function handleDelete(model: LocalCatalogModel) {
-    const target = model.downloaded_model_id ?? model.id
-
+  async function handleDelete(target: string, rowId: string) {
     if (!window.confirm(copy.deleteConfirm(target))) {
       return
     }
 
-    setDeleting(model.id)
+    setDeleting(rowId)
 
     try {
       await deleteLocalModel(target)
@@ -435,7 +431,7 @@ export function LocalModelsSettings() {
                         <Button
                           className={cn(aJob && '[&_svg]:animate-spin')}
                           disabled={anyActivateRunning}
-                          onClick={() => void handleActivate(model)}
+                          onClick={() => void handleActivate(activateTarget ?? null, model.display_name)}
                           size="sm"
                         >
                           {aJob ? <Loader2 /> : <Check />}
@@ -458,7 +454,7 @@ export function LocalModelsSettings() {
                       <Tip label={copy.deleteAction}>
                         <Button
                           className={cn(deleting === model.id && '[&_svg]:animate-spin')}
-                          onClick={() => void handleDelete(model)}
+                          onClick={() => void handleDelete(model.downloaded_model_id ?? model.id, model.id)}
                           size="icon"
                           variant="ghost"
                         >
@@ -572,6 +568,94 @@ export function LocalModelsSettings() {
               />
             )
           })}
+
+          {status.models
+            .filter(m => !catalog.some(c => c.downloaded_model_id === m.id || c.model_id === m.id))
+            .map(m => {
+              const isActive = status.active_model_id === m.id
+              const residency = status.loaded_models[m.id]
+              const isLoaded = residency === 'loaded' || residency === 'ready'
+              const isLoadingNow = residency === 'loading'
+              const livePlacement = status.placement?.[m.id]
+              const aJob = jobs.find(
+                j => j.kind === 'model-activate' && j.status === 'running' && j.model_id === m.id
+              )
+              const anyActivateRunning = jobs.some(j => j.kind === 'model-activate' && j.status === 'running')
+
+              return (
+                <ListRow
+                  action={
+                    <div className="flex items-center justify-end gap-2">
+                      {isLoaded && livePlacement && (
+                        <Tip
+                          label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}
+                        >
+                          <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
+                            <Cpu className="mr-1 size-3" />
+                            {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
+                            {' · '}
+                            {livePlacement.spilled ? copy.placementSpilled : copy.placementResident}
+                          </Pill>
+                        </Tip>
+                      )}
+                      {isLoaded && !livePlacement && <Pill>{copy.loadedPill}</Pill>}
+
+                      {isLoadingNow && (
+                        <Pill>
+                          <Loader2 className="mr-1 size-3 animate-spin" />
+                          {copy.loadingPill}
+                        </Pill>
+                      )}
+
+                      {isActive ? (
+                        <Pill tone="primary">
+                          <CheckCircle2 className="mr-1 size-3" />
+                          {copy.activePill}
+                        </Pill>
+                      ) : (
+                        <Button
+                          className={cn(aJob && '[&_svg]:animate-spin')}
+                          disabled={anyActivateRunning}
+                          onClick={() => void handleActivate(m.id, m.id)}
+                          size="sm"
+                        >
+                          {aJob ? <Loader2 /> : <Check />}
+                          {copy.useAction}
+                        </Button>
+                      )}
+
+                      {isLoaded && (
+                        <Tip label={copy.ejectTip}>
+                          <Button onClick={() => void handleEject(m.id)} size="icon" variant="ghost">
+                            <Eject />
+                          </Button>
+                        </Tip>
+                      )}
+
+                      <Tip label={copy.deleteAction}>
+                        <Button
+                          className={cn(deleting === m.id && '[&_svg]:animate-spin')}
+                          onClick={() => void handleDelete(m.id, m.id)}
+                          size="icon"
+                          variant="ghost"
+                        >
+                          {deleting === m.id ? <Loader2 /> : <Trash2 />}
+                        </Button>
+                      </Tip>
+                    </div>
+                  }
+                  description={<span>{copy.addedByYou}</span>}
+                  key={m.id}
+                  title={
+                    <span className="inline-flex items-center gap-2">
+                      <span className="truncate font-mono text-[0.8rem]">{m.id}</span>
+
+                      <span className="text-[0.68rem] font-normal text-muted-foreground">{m.size_label}</span>
+                    </span>
+                  }
+                />
+              )
+            })}
         </div>
 
         {lastError?.kind === 'model-download' && (

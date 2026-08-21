@@ -971,6 +971,7 @@ export interface Translations {
       browseNoGguf: string
       browseFitUnknown: string
       browseAlreadyDownloaded: string
+      addedByYou: string
       browseDownloadStarted: string
       browseDownloadAria: string
       sideloadButton: string

@@ -1116,6 +1116,7 @@ export const en: Translations = {
       browseNoGguf: 'No model files this app can run were found in this listing.',
       browseFitUnknown: 'Fit unknown',
       browseAlreadyDownloaded: 'That model is already downloaded.',
+      addedByYou: 'Added by you — works like any model here, not tested by us',
       browseDownloadStarted: 'Downloading {name} — progress shows on its tile.',
       browseDownloadAria: 'Download {name}',
       sideloadButton: 'Add model file',

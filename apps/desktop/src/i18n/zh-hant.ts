@@ -1006,6 +1006,7 @@ export const zhHant = defineLocale({
       browseNoGguf: '此儲存庫中沒有本應用可執行的模型檔案。',
       browseFitUnknown: '適配情況未知',
       browseAlreadyDownloaded: '該模型已下載。',
+      addedByYou: '由你新增——和這裡的其他模型一樣使用，但未經我們測試',
       browseDownloadStarted: '正在下載 {name}——進度顯示在其卡片上。',
       browseDownloadAria: '下載 {name}',
       sideloadButton: '新增模型檔案',

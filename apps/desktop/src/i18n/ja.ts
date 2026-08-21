@@ -1038,6 +1038,7 @@ export const ja = defineLocale({
       browseNoGguf: 'このリポジトリには本アプリで実行できるモデルファイルがありません。',
       browseFitUnknown: '適合状況は不明',
       browseAlreadyDownloaded: 'そのモデルはダウンロード済みです。',
+      addedByYou: 'あなたが追加 — ここの他のモデルと同様に動作しますが、当方でのテストは行われていません',
       browseDownloadStarted: '{name} をダウンロード中 — 進捗はタイルに表示されます。',
       browseDownloadAria: '{name} をダウンロード',
       sideloadButton: 'モデルファイルを追加',
