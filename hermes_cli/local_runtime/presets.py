@@ -17,6 +17,7 @@ from hermes_cli.local_runtime.context_policy import (
     WindowDecision,
     initial_window,
     launch_args,
+    ub_logits_bytes,
 )
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget,
@@ -90,18 +91,23 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
         except (ValueError, OSError) as exc:
             logger.warning("preset skip %s: %s", gguf.name, exc)
             continue
-        # Overhead beyond weights+KV: runtime buffers, plus the vision
-        # projector when this model ships one (it loads beside the weights).
+        # Overhead beyond weights+KV: runtime buffers, the vision projector
+        # when this model ships one, and the logits buffers of whichever
+        # microbatch/MTP posture launch_args will choose — flag and price
+        # decided together, from the same facts.
         hit = find_entry_for_model(model_id)
         entry = hit[0] if hit is not None else None
+        is_mtp = (entry.mtp if entry is not None
+                  else model_id in (mtp_capable or set()))
         mmproj_bytes = 0
         if entry is not None and entry.mmproj is not None:
             mmproj_path = assets_dir() / entry.mmproj.local_name
             if mmproj_path.exists():
                 mmproj_bytes = entry.mmproj.size_bytes
+        logits_bytes = ub_logits_bytes(profile.n_vocab, mtp_capable=is_mtp)
         decision = initial_window(
             profile, budget,
-            overhead_bytes=RUNTIME_OVERHEAD_BYTES + mmproj_bytes)
+            overhead_bytes=RUNTIME_OVERHEAD_BYTES + mmproj_bytes + logits_bytes)
         if isinstance(decision, PhysicsRefusal):
             entries.append(PresetEntry(model_id=model_id, window=0,
                                        spilled=False, refusal=decision.message))
@@ -121,7 +127,7 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
                 target = min(int(override), native)
                 kv = ctx_bytes(profile, target)
                 need = (profile.weights_bytes + kv
-                        + RUNTIME_OVERHEAD_BYTES + mmproj_bytes)
+                        + RUNTIME_OVERHEAD_BYTES + mmproj_bytes + logits_bytes)
                 if need <= budget.usable_vram_bytes + budget.ram_available_bytes:
                     spill = max(0, need - budget.usable_vram_bytes)
                     decision = WindowDecision(
@@ -131,13 +137,8 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
         except Exception as exc:  # noqa: BLE001 — overrides are advisory
             logger.debug("window override skipped for %s: %s", model_id, exc)
 
-        hit = find_entry_for_model(model_id)
-        entry = hit[0] if hit is not None else None
-
-        # MTP: catalog knowledge wins (per-model measured draft depth);
-        # the caller's mtp_capable set covers non-catalog GGUFs.
-        is_mtp = (entry.mtp if entry is not None
-                  else model_id in (mtp_capable or set()))
+        # (entry and is_mtp resolved above, where the overhead was priced —
+        # the launch flags below MUST match that pricing.)
         args = launch_args(profile, decision, mtp_capable=is_mtp,
                            mtp_draft_depth=(entry.mtp_draft_depth
                                             if entry is not None else 3))

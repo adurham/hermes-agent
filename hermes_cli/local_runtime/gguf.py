@@ -64,6 +64,17 @@ class GGUFHeader:
         return int(self._arch_key("block_count") or 0)
 
     @property
+    def n_vocab(self) -> int:
+        """Vocabulary size: prices the GPU logits buffers (they scale
+        ubatch x vocab). vocab_size metadata when present, else the
+        tokenizer list length."""
+        v = self._arch_key("vocab_size")
+        if v:
+            return int(v)
+        toks = self.metadata.get("tokenizer.ggml.tokens")
+        return len(toks) if isinstance(toks, list) else 0
+
+    @property
     def n_ctx_train(self) -> int:
         return int(self._arch_key("context_length") or 0)
 

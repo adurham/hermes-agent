@@ -450,6 +450,7 @@ async def local_models_catalog():
     from hermes_cli.local_runtime.context_policy import (
         RUNTIME_OVERHEAD_BYTES,
         initial_window,
+        ub_logits_bytes,
     )
     from hermes_cli.local_runtime.estimator import PhysicsRefusal
     from hermes_cli.local_runtime.hardware import probe_budget
@@ -496,11 +497,12 @@ async def local_models_catalog():
         variant = choice.variant
         profile = entry.profile(variant)
         # Same overhead the launch decision prices (runtime buffers +
-        # vision projector): the row must advertise the window the model
-        # will actually get, not a paper number the server's own fit then
-        # shaves down.
-        overhead = RUNTIME_OVERHEAD_BYTES + (
-            entry.mmproj.size_bytes if entry.mmproj else 0)
+        # vision projector + the microbatch/MTP logits buffers): the row
+        # must advertise the window the model will actually get, not a
+        # paper number the server's own fit then shaves down.
+        overhead = (RUNTIME_OVERHEAD_BYTES
+                    + (entry.mmproj.size_bytes if entry.mmproj else 0)
+                    + ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
         decision = initial_window(profile, budget, overhead_bytes=overhead)
         download_total = entry.download_bytes(variant)
         row.update({

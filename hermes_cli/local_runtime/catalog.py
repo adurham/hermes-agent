@@ -52,6 +52,7 @@ from hermes_cli.local_runtime.context_policy import (
     FLOOR,
     RUNTIME_OVERHEAD_BYTES,
     TARGET_WINDOW,
+    ub_logits_bytes,
 )
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget,
@@ -131,6 +132,10 @@ class CatalogEntry:
     # 243.8 tok/s, 59% at 3 -> 221.6; Nemotron holds at 3). NVIDIA's
     # per-SKU recipes seeded these; our receipts confirmed them.
     mtp_draft_depth: int = 3
+    # Vocab size prices the GPU logits buffers (ubatch x vocab x fp32,
+    # doubled under MTP backend sampling) — a 248K-vocab model once packed
+    # a card 3.9 GiB past a fit that ignored this.
+    n_vocab: int = 0
     mmproj: "AssetFile | None" = None    # vision projector, downloads with model
     draft: "AssetFile | None" = None     # spec-decode draft model (e.g. DSpark)
     sampling: dict = field(default_factory=dict)  # INI long-form launch defaults
@@ -143,7 +148,8 @@ class CatalogEntry:
         return ModelProfile(
             name=variant.model_id, weights_bytes=variant.weights_bytes,
             embd_table_bytes=0, n_ctx_train=self.n_ctx_train,
-            layers=layers, swa_window=self.swa_window, moe=self.moe)
+            layers=layers, swa_window=self.swa_window, moe=self.moe,
+            n_vocab=self.n_vocab)
 
     def download_files(self, variant: QuantVariant) -> tuple:
         """Everything a download job fetches for this variant, in order."""
@@ -181,7 +187,9 @@ def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice
     between adjacent rungs are small; 64K vs 216K changes what a session
     can do), but nothing outranks full residency.
     """
-    overhead = RUNTIME_OVERHEAD_BYTES + (entry.mmproj.size_bytes if entry.mmproj else 0)
+    overhead = (RUNTIME_OVERHEAD_BYTES
+                + (entry.mmproj.size_bytes if entry.mmproj else 0)
+                + ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
     native = entry.n_ctx_train or FLOOR
     floor_kv = None
     target_kv = None
@@ -245,6 +253,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         # 256 head_dim = 4 KiB/token per full layer). The GGUF header is
         # the authority after download.
         full_layers=16, recurrent_layers=48, per_layer_f16=4096,
+        n_vocab=248320,
         mmproj=AssetFile("mmproj-BF16.gguf", 931146432,
                          "83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53",
                          local="mmproj-Qwen3.8-27B-BF16.gguf"),
@@ -278,7 +287,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         # Config-derived (Qwen/Qwen3.6-35B-A3B): 40 layers, 10 full-attn
         # (interval 4) + 30 linear; KV heads 2 x head_dim 256.
         full_layers=10, recurrent_layers=30, per_layer_f16=2048,
-        moe=True, mtp=True, mtp_draft_depth=2,
+        moe=True, mtp=True, mtp_draft_depth=2, n_vocab=248320,
         mmproj=AssetFile("mmproj-BF16.gguf", 902822528,
                          "da63cb47a76763c712393f8a017070188a304fa39f8aeea6edc629ed7b975cfa",
                          local="mmproj-Qwen3.6-35B-A3B-BF16.gguf"),
@@ -311,7 +320,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         # KV on the predecessor). GGUF header is
         # the authority after download.
         full_layers=6, recurrent_layers=46, per_layer_f16=1024,
-        moe=True, mtp=True,
+        moe=True, mtp=True, n_vocab=131072,
         sampling={"temp": "0.6", "top-p": "0.95", "min-p": "0.01"},
         tags=("day-0", "long-context", "hybrid", "moe", "mtp"),
     ),
@@ -340,6 +349,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         # overestimating here keeps the zero-spill promise safe until the
         # GGUF header corrects it.
         full_layers=60, recurrent_layers=0, per_layer_f16=4096,
+        n_vocab=202048,
         mmproj=AssetFile("mmproj-Muse-Glimmer-30B-BF16.gguf", 3849173728,
                          "d08cdcfa0b41d8e20554b52df404ba4f7b440d0bc502a90038508b6407df8ee1"),
         sampling={"temp": "1.0", "top-p": "0.95", "top-k": "64"},
@@ -382,7 +392,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         # Config shows sliding_window=128 with no per-layer map — priced
         # all-full (conservative); GGUF header decides after download.
         full_layers=43, recurrent_layers=0, per_layer_f16=1152,
-        moe=True,
+        moe=True, n_vocab=163840,
         draft=AssetFile("dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", 10896057440,
                         "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249"),
         sampling={"temp": "1.0", "top-p": "0.95", "min-p": "0.01"},

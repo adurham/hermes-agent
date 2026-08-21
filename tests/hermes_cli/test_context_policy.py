@@ -20,6 +20,7 @@ from hermes_cli.local_runtime.context_policy import (
     ladder,
     launch_args,
     spill_overrides,
+    ub_logits_bytes,
 )
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget,
@@ -312,21 +313,40 @@ def test_launch_args_contract():
 
     a = launch_args(p, spilled, mtp_capable=True)
     assert a[:2] == ["-c", str(FLOOR)]           # explicit window, always
-    assert "-ub" in a and a[a.index("-ub") + 1] == "2048"  # prefill hint
     assert "q8_0" in a                            # q8 KV under flash attn
     assert "-ot" in a                             # spill placement
     assert "--spec-type" in a                     # MTP on spilled
 
-    # MTP is no longer gated on spill: resident decode measured +16% at
-    # depth 2 — spec decode runs wherever the model ships MTP heads.
+    # MTP is not gated on spill: resident decode measured +16% at depth 2.
     b = launch_args(p, resident, mtp_capable=True, mtp_draft_depth=2)
     assert "-ot" not in b, "placement is spill-only"
     assert "--spec-type" in b, "MTP must run on resident configs too"
     assert b[b.index("--spec-draft-n-max") + 1] == "2"
+    assert "--backend-sampling" in b
 
-    c = launch_args(p, spilled, flash_attention=False, mtp_capable=False)
-    assert "q8_0" not in c                        # f16 on non-FA fallback
+    # MTP and the large microbatch are mutually exclusive: backend
+    # sampling keeps ubatch x vocab fp32 logits on the GPU and MTP
+    # doubles it — stacked, they packed a 32 GiB card 3.9 GiB past the
+    # priced overhead. MTP configs stay at the default ubatch.
+    assert "-ub" not in b, "MTP configs must not carry the large microbatch"
+
+    c = launch_args(p, resident, mtp_capable=False)
+    assert "-ub" in c and c[c.index("-ub") + 1] == "2048"  # prefill hint
     assert "--spec-type" not in c
+
+    d = launch_args(p, spilled, flash_attention=False, mtp_capable=False)
+    assert "q8_0" not in d                        # f16 on non-FA fallback
+
+
+def test_ub_logits_bytes_prices_the_flag_choice():
+    """The logits-buffer price must match the microbatch launch_args
+    chooses: 2048 x vocab x 4 for non-MTP, 512 x vocab x 4 x 2 for MTP
+    (draft context doubles it). 248320-vocab receipts: ~1.9 GiB at
+    ub2048, ~0.95 GiB under MTP."""
+    v = 248320
+    assert ub_logits_bytes(v, mtp_capable=False) == 2048 * v * 4
+    assert ub_logits_bytes(v, mtp_capable=True) == 512 * v * 4 * 2
+    assert ub_logits_bytes(0, mtp_capable=True) == 0   # unknown vocab: no charge
 
 
 def test_no_refusal_branch_past_physics():

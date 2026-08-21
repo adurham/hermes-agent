@@ -60,6 +60,7 @@ class ModelProfile:
     swa_window: int = 0
     moe: bool = False
     architecture: str = ""
+    n_vocab: int = 0            # prices logits buffers (ubatch x vocab)
 
     @property
     def per_token_kv_f16(self) -> int:
@@ -118,6 +119,7 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
         swa_window=header.sliding_window,
         moe=header.expert_count > 0,
         architecture=header.architecture,
+        n_vocab=header.n_vocab,
     )
 
 

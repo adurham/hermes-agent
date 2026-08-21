@@ -59,15 +59,14 @@ _EARLY_COST_CTX_FRACTION = 0.15       # bounded early cost when weights spill
 TARGET_WINDOW = 144 * 1024
 
 # What a load really costs beyond weights + KV: CUDA contexts and compute
-# buffers. Measured on a 32 GiB card: a model estimated at 29.3 GiB
-# (weights+KV) loaded at ~31.2 GiB resident and the server's own fit still
-# shaved a layer to CPU — ~1.5 GiB of runtime overhead plus the vision
-# projector when present. The -ub 2048 microbatch adds ~0.4 GiB of compute
-# buffer over the 512 default (measured: +367 MiB on the 35B) — the prefill
-# hint and this constant move together or the fit lies. A fit that ignores
-# this passes on paper and spills in practice. Callers add mmproj bytes on
+# buffers at the DEFAULT microbatch (-ub 512, no MTP). Measured on a
+# 32 GiB card: a model estimated at 29.3 GiB (weights+KV) loaded at
+# ~31.2 GiB resident and the server's own fit still shaved a layer to
+# CPU. Microbatch/MTP logits buffers are priced separately per model
+# (ub_logits_bytes — they scale with the model's vocab and doubled once
+# packed a card 3.9 GiB past this constant). Callers add mmproj bytes on
 # top.
-RUNTIME_OVERHEAD_BYTES = int(1.9 * (1 << 30))
+RUNTIME_OVERHEAD_BYTES = int(1.5 * (1 << 30))
 
 
 def ladder(native: int) -> list[int]:
@@ -229,16 +228,33 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *,
                 mtp_draft_depth: int = 3) -> list[str]:
     """Per-model launch flags from a window decision. Explicit -c puts fit
     into spill-weights-and-hold-ctx; q8 KV cache wherever flash attention
-    exists; -ot placement on spilled configs; MTP spec decode wherever the
-    model ships it (resident decode measured +16% at depth 2 on the 35B —
-    the old spilled-only gate left that on the table); large microbatch
-    for prefill (+27% measured at -ub 2048, priced in RUNTIME_OVERHEAD)."""
-    args = ["-c", str(decision.window), "-b", "2048", "-ub", "2048"]
+    exists; -ot placement on spilled configs.
+
+    MTP and the large prefill microbatch are BOTH wins but must not stack:
+    backend sampling keeps a ubatch x vocab x fp32 logits buffer on the
+    GPU, and MTP's draft context doubles it — measured 5.8 GiB of overhead
+    on a 248K-vocab model at -ub 2048 vs 1.9 priced, which silently packed
+    a 32 GiB card. So MTP models run decode-optimized (-ub 512, measured
+    247 tok/s) and non-MTP models run prefill-optimized (-ub 2048,
+    measured +27%); ub_logits_bytes() prices whichever was chosen."""
+    args = ["-c", str(decision.window)]
+    if mtp_capable:
+        args += ["--spec-type", "draft-mtp",
+                 "--spec-draft-n-max", str(mtp_draft_depth),
+                 "--backend-sampling"]
+    else:
+        args += ["-b", "2048", "-ub", "2048"]
     if flash_attention:
         args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
     if decision.spilled:
         args += spill_overrides(profile)
-    if mtp_capable:
-        args += ["--spec-type", "draft-mtp",
-                 "--spec-draft-n-max", str(mtp_draft_depth)]
     return args
+
+
+def ub_logits_bytes(n_vocab: int, *, mtp_capable: bool) -> int:
+    """GPU logits-buffer cost of the microbatch choice made by
+    launch_args, priced from the model's own vocab: ubatch x vocab x fp32,
+    doubled by MTP's draft context. Callers add this to RUNTIME_OVERHEAD
+    per model — the flag and its price travel together or the fit lies."""
+    ubatch = 512 if mtp_capable else 2048
+    return ubatch * max(0, int(n_vocab)) * 4 * (2 if mtp_capable else 1)
