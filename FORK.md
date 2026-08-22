@@ -3,6 +3,79 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-22 (Anthropic-native auxiliary calls silently dropped the per-task `timeout`, letting a hung connection stall CLI exit for 11+ minutes past the configured budget)
+
+**Symptom:** user reported a CLI session hanging on exit at the
+"Memory: reviewing proposals from this session..." step. Live investigation
+(`lsof` on the running `hermes` process) found the Anthropic auxiliary
+client sitting on TCP sockets to the API edge in `CLOSE_WAIT` — the remote
+side had already hung up, but the client's pooled keep-alive connection
+never got torn down, so a reused dead connection sat idle instead of
+erroring. `~/.hermes/logs/memory_extraction.log` showed a clean 11-minute
+gap between calls (20:22:18 → 20:33:35) despite
+`auxiliary.memory_extraction.timeout: 180` in config — the classification
+loop in `hermes_cli/memory_confirm.py::_classify_proposals()` (one
+`conflict.classify()` → `_call_extraction_llm()` LLM call per proposed
+memory entry) should have failed over at 180s per call but instead blocked
+for ~3.5x that on a single stuck item.
+
+**Root cause:** `agent/auxiliary_client.py::call_llm()` /
+`_call_llm_impl()` correctly resolve the per-task timeout and pass it as
+`call_kwargs["timeout"]` into the OpenAI-client-compatible `.create()`
+call. The Codex Responses adapter (`_CodexResponsesCompletionsAdapter`)
+correctly reads `kwargs.get("timeout")` and forwards it into
+`resp_kwargs["timeout"]` with an explicit comment explaining why. The
+Anthropic-native adapter (`_AnthropicCompletionsAdapter.create()`,
+~line 1994) had no equivalent line at all — it built `anthropic_kwargs`
+via `build_anthropic_kwargs()` and called `create_anthropic_message()`
+without ever reading `kwargs["timeout"]`. The effective per-request ceiling
+silently fell back to whatever `anthropic_adapter.build_anthropic_client()`
+baked into the SDK client's `httpx.Timeout` at *construction* time (900s
+default read timeout, set once when the client object is built, not
+reconfigurable per-call through this path). Any auxiliary task routed
+through Anthropic-native (memory_extraction, title_generation, compression,
+skills_hub, etc.) was exposed: a per-task `timeout` config value shorter
+than 900s was pure decoration for this transport.
+
+**Fix:** `_AnthropicCompletionsAdapter.create()` now reads
+`kwargs.get("timeout")` and — mirroring the Codex adapter's existing
+pattern exactly — sets `anthropic_kwargs["timeout"] = _timeout` when
+present, right before the call to `create_anthropic_message()`. The
+Anthropic Python SDK's `messages.create()`/`messages.stream()` both accept
+a native per-call `timeout: float | httpx.Timeout | None` override (verified
+against the installed `anthropic==0.100.0` signatures), so this rides the
+same code path `create_anthropic_message()` already uses — no new
+plumbing. Confirmed `sanitize_anthropic_kwargs()` (which strips
+Responses-API-only leaked keys) does not touch `timeout`, and
+`build_anthropic_kwargs()` never sets a `timeout` key itself, so there's
+no collision to guard against.
+
+**Files:** `agent/auxiliary_client.py`
+(`_AnthropicCompletionsAdapter.create()`), `tests/agent/test_auxiliary_client.py`
+(two new tests: `test_anthropic_aux_client_forwards_timeout` asserts a
+passed `timeout=180` reaches `create_anthropic_message()`'s api_kwargs;
+`test_anthropic_aux_client_omits_timeout_when_not_passed` asserts no
+`timeout` key is injected when the caller didn't pass one, preserving prior
+behavior for callers that rely on the client-level default).
+
+**Verification:** `tests/agent/test_auxiliary_client.py` (334 incl. the 2
+new), `tests/agent/test_anthropic_adapter.py`, `tests/hermes_cli/test_timeouts.py`
+— all pass (334 total across the three files). Root cause identified via
+live process inspection (`lsof -p <pid>` showing `CLOSE_WAIT` sockets) and
+log-gap correlation (`memory_extraction.log` timestamps vs the configured
+180s budget) rather than speculation — the stuck session actually recovered
+on its own mid-investigation once the dead connection finally errored out
+past the SDK's 900s ceiling, which is the smoking gun that confirmed the
+180s task timeout was never being applied.
+
+**Merge note:** plausible upstream bug too — `_AnthropicCompletionsAdapter`
+is fork-added (the fork's Anthropic-native auxiliary transport layer;
+upstream's Nous fork architecture differs enough that a direct cherry-pick
+isn't guaranteed to apply), but the missing-timeout-forwarding class of bug
+could exist wherever upstream's own Anthropic auxiliary adapter (if any)
+omits the same forwarding line. Worth checking upstream separately; not
+attempted in this session.
+
 ### Fix — 2026-08-22 (`consult` tool: calling model writes a literal "[truncated]"/"(see above)" placeholder into `question`/`context` instead of real content, wasting a full reference-model call)
 
 **Reported:** user said "that truncation on consult happens alot" — recurring

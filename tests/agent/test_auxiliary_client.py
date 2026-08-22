@@ -2482,6 +2482,64 @@ class TestAuxiliaryTaskExtraBody:
             "thinking": {"type": "disabled"}, "metadata": {"user_id": "u1"},
         }
 
+    def test_anthropic_aux_client_forwards_timeout(self):
+        """Regression: call_llm()'s per-task ``timeout`` (e.g.
+        auxiliary.memory_extraction.timeout=180) must reach the Anthropic
+        SDK call, mirroring the Codex Responses adapter's existing
+        ``resp_kwargs["timeout"] = timeout`` forwarding.
+
+        Previously ``_AnthropicCompletionsAdapter.create()`` silently dropped
+        ``kwargs["timeout"]``: the actual per-request ceiling fell back to
+        whatever build_anthropic_client() baked into the SDK client at
+        construction (900s default), so a stalled/dead connection on a
+        memory_extraction call could block CLI exit far past its configured
+        180s budget instead of failing over.
+        """
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        adapter = _AnthropicCompletionsAdapter(MagicMock(), "claude-sonnet-4-6", is_oauth=False)
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs",
+                   return_value={"model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64}), \
+             patch("agent.anthropic_adapter.create_anthropic_message") as mock_create, \
+             patch("agent.transports.get_transport") as mock_gt:
+            mock_gt.return_value.normalize_response.return_value = MagicMock(
+                content="ok", tool_calls=None, reasoning=None, finish_reason="stop",
+                usage=None, provider_data=None,
+            )
+            adapter.create(
+                model="claude-sonnet-4-6",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=64,
+                timeout=180,
+            )
+
+        api_kwargs = mock_create.call_args.args[1]
+        assert api_kwargs["timeout"] == 180
+
+    def test_anthropic_aux_client_omits_timeout_when_not_passed(self):
+        """No timeout kwarg means no ``timeout`` key injected — the SDK
+        client's own construction-time default (900s / per-provider config)
+        keeps governing, unchanged from before this fix."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        adapter = _AnthropicCompletionsAdapter(MagicMock(), "claude-sonnet-4-6", is_oauth=False)
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs",
+                   return_value={"model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64}), \
+             patch("agent.anthropic_adapter.create_anthropic_message") as mock_create, \
+             patch("agent.transports.get_transport") as mock_gt:
+            mock_gt.return_value.normalize_response.return_value = MagicMock(
+                content="ok", tool_calls=None, reasoning=None, finish_reason="stop",
+                usage=None, provider_data=None,
+            )
+            adapter.create(
+                model="claude-sonnet-4-6",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=64,
+            )
+
+        api_kwargs = mock_create.call_args.args[1]
+        assert "timeout" not in api_kwargs
+
 
 
 

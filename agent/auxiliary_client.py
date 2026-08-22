@@ -2074,6 +2074,22 @@ class _AnthropicCompletionsAdapter:
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
+        # Preserve the chat.completions timeout contract (mirrors the Codex
+        # Responses adapter above). Without this, the per-task auxiliary
+        # timeout (e.g. auxiliary.memory_extraction.timeout=180s) computed by
+        # call_llm()/_call_llm_impl() and passed in via kwargs["timeout"] is
+        # silently dropped, and the actual ceiling falls back to whatever
+        # build_anthropic_client() baked into the SDK client at construction
+        # (900s default — see anthropic_adapter.build_anthropic_client). A
+        # single hung/dead connection can then stall an auxiliary call (and
+        # anything blocking on it, e.g. CLI exit-time memory review) for
+        # minutes past its configured budget. The Anthropic SDK's
+        # messages.create()/stream() both accept a per-call ``timeout``
+        # override, so forward it explicitly here.
+        _timeout = kwargs.get("timeout")
+        if _timeout is not None:
+            anthropic_kwargs["timeout"] = _timeout
+
         # Use upstream's create_anthropic_message() helper — it prefers
         # messages.stream().get_final_message() (matching the main turn path,
         # robust against SSE-only gateways) and falls back to messages.create().
