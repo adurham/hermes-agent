@@ -3280,6 +3280,22 @@ class AIAgent(ForkForwardersMixin):
         redirect) is strictly safer than silently discarding text the user
         already watched get accepted. Folded below, same as the redirect.
         """
+        # ``message`` is typed Optional[str], but at least one caller path
+        # (CLI's queued-Enter-with-images payload, ``(text, [Path, ...])``)
+        # has been observed handing a multimodal tuple straight through to
+        # this method. ``_fold_dropped`` below does ``"\n\n".join(parts)``
+        # on ``message``, which raises ``TypeError: sequence item 0:
+        # expected str instance, tuple found`` for a non-str message —
+        # crashing the interrupt path itself instead of interrupting.
+        # Coerce defensively here so every caller (gateway, tui_gateway,
+        # cron, CLI) gets a safe str regardless of what slipped through;
+        # the image half of a multimodal payload has no home on this
+        # text-only channel and is dropped here (callers that need it
+        # preserved should route the full payload through _pending_input
+        # instead, as the CLI does after this fix).
+        if isinstance(message, (tuple, list)):
+            message = message[0] if message else None
+
         # A hard stop and redirect share one lock so /stop cannot race with an
         # accepted correction and accidentally turn itself into a retry.
         def _admit_hard_cancel() -> None:

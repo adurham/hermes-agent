@@ -18669,7 +18669,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             # Signal TTS to stop on interrupt
                             if stop_event is not None:
                                 stop_event.set()
-                            self.agent.interrupt(interrupt_msg)
+                            # interrupt_msg may be a (text, [Path, ...]) tuple
+                            # when the queued Enter press had images attached
+                            # (see payload = (text, images) at ~L20190).
+                            # agent.interrupt() is Optional[str]-typed — its
+                            # internal _fold_dropped() does "\n\n".join(parts)
+                            # on the message, which raises
+                            # "TypeError: sequence item 0: expected str
+                            # instance, tuple found" if handed the raw tuple.
+                            # Only the text half has anywhere to go on the
+                            # interrupt-message channel; the image half is
+                            # preserved separately via interrupt_msg itself
+                            # when it's re-queued into _pending_input below.
+                            _interrupt_text = (
+                                interrupt_msg[0]
+                                if isinstance(interrupt_msg, tuple)
+                                else interrupt_msg
+                            )
+                            self.agent.interrupt(_interrupt_text)
                             # Clear any active overlay states the interrupted agent
                             # left behind.  approval/clarify/sudo/secret prompts gate
                             # input (read_only condition + keypress filter) until
