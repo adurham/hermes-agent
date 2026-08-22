@@ -3,6 +3,43 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-22 (typing a message with an attached image while the agent was busy could crash the interrupt path: `TypeError: sequence item 0: expected str instance, tuple found`)
+
+**Reported:** user saw `⚡ New message detected, interrupting...` immediately
+followed by an unhandled `TypeError: sequence item 0: expected str instance,
+tuple found` in the CLI, breaking the interrupt instead of delivering it.
+
+**Root cause:** when the user hits Enter with one or more images attached
+while the agent is running (`busy_input_mode == "interrupt"`), `cli.py`
+builds `payload = (text, images)` — a tuple — and pushes it onto
+`_interrupt_queue` (~L20190/L20285). The queue-drain loop in `chat()` pulls
+that tuple back out as `interrupt_msg` and passed it straight into
+`self.agent.interrupt(interrupt_msg)` (~L18672), even though `interrupt()`
+is `Optional[str]`-typed. Inside `AIAgent.interrupt()`, `_fold_dropped()`
+does `parts = [message] if message else []` then `"\n\n".join(parts)` —
+`join()` raises `TypeError` the instant `message` is a tuple rather than a
+`str`, so the interrupt handler itself crashed instead of interrupting.
+
+**Fix:** two layers. (1) Root-cause fix at the CLI call site: unpack the
+tuple's text element before calling `self.agent.interrupt(...)`, since the
+interrupt-message channel is text-only and the image half has no home on
+it (it's preserved separately via `interrupt_msg` when re-queued into
+`_pending_input`). (2) Defense in depth in `AIAgent.interrupt()` itself:
+coerce a tuple/list `message` down to its first (text) element before doing
+anything else, since several other callers across the codebase (gateway,
+tui_gateway, cron) also call `agent.interrupt(text)` and any of them
+passing a non-str payload would hit the same crash.
+
+**Verification:** added
+`test_interrupt_with_multimodal_tuple_message_does_not_raise` to
+`tests/run_agent/test_interrupt_propagation.py` (11/11 passing, was 10/10).
+Ran the full interrupt/steer regression surface —
+`tests/run_agent/test_interrupt_propagation.py`,
+`tests/run_agent/test_steer.py`, `tests/tools/test_interrupt.py`,
+`tests/agent/test_interrupt_compat.py`,
+`tests/cli/test_cli_interrupt_ack_race.py` — 64 passed, 1 skipped.
+`cli.py`, `run_agent.py`, `tests/run_agent/test_interrupt_propagation.py`.
+
 ### Fix — 2026-08-20 (CLI's "Redirected current turn" confirmation lied when a redirect degraded to a queued steer)
 
 **Reported:** a message typed mid-turn while a long tool call (SSH, with an

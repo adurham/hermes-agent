@@ -168,6 +168,21 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         child_thread.join(timeout=1)
         set_interrupt(False)
 
+    def test_interrupt_with_multimodal_tuple_message_does_not_raise(self):
+        """CLI's queued-Enter-with-images payload is a (text, [Path, ...])
+        tuple. Passing it straight into interrupt() used to raise
+        ``TypeError: sequence item 0: expected str instance, tuple found``
+        from ``_fold_dropped``'s ``"\\n\\n".join(parts)`` -- crashing the
+        interrupt path itself instead of interrupting. interrupt() must
+        coerce a tuple/list message down to its text element.
+        """
+        agent = self._make_bare_agent()
+
+        agent.interrupt(("typed while busy", ["/tmp/fake.png"]))
+
+        assert agent._interrupt_requested is True
+        assert agent._interrupt_message == "typed while busy"
+
     def test_prestart_interrupt_binds_to_execution_thread(self):
         """An interrupt that arrives before startup should bind to the agent thread."""
         agent = self._make_bare_agent()
