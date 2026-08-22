@@ -3,6 +3,51 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-22 (`consult` tool: calling model writes a literal "[truncated]"/"(see above)" placeholder into `question`/`context` instead of real content, wasting a full reference-model call)
+
+**Reported:** user said "that truncation on consult happens alot" — recurring
+pattern where a `consult()` call comes back with the reference model saying
+it can only see part of the request (e.g. "I can only see option (1)...
+Options (2) onward and the actual baseline numbers were cut off"), forcing
+an immediate wasted resend of the same call.
+
+**Root cause:** this was never a length-cap issue — real logged instances
+(session `20260822_085140_433ad3`, msg 283451) show both `question` and
+`context` sitting at ~1-2KB, far under `MAX_QUESTION_CHARS`/`MAX_CONTEXT_CHARS`
+(4000/40000). The calling MAIN model itself generated a tool call where the
+early part of `context` was real content and the rest was a literal string
+like `"...[truncated]"` in place of the actual numbers/options it was
+supposed to write out — elision/laziness in tool-argument generation, the
+same class of bug as code-elision in file edits, not a transport or
+length-cap truncation. `consult_tool()` had no way to detect this before
+spending a real (observed 25-60s) reference-model API call on input the
+calling model already knew was incomplete; the reference model correctly
+reported the gap, but only after the round trip was paid for.
+
+**Fix:** two-part, addressing generation and post-hoc detection. (1)
+`CONSULT_SCHEMA`'s `question`/`context` parameter descriptions now
+explicitly tell the model: write the full text out, "trim" means leave
+material out entirely (never replace it with a placeholder), and the
+reviewer has no other source to fill a gap from. (2) New
+`_elided_request_reason()` pre-flight guard in `tools/consult_tool.py`,
+mirroring the existing `_degenerate_answer_reason()` check on the *incoming*
+answer but applied to the *outgoing* request: scans `question`/`context`
+(before the length-cap truncation, so the cap's own synthetic
+`"...(truncated)"` marker can't self-trigger it) for a fixed list of
+placeholder markers (`[truncated]`, `(see above)`, `[rest omitted]`, etc.)
+and rejects with `unavailable: true` immediately — before `call_llm` fires —
+if found, telling the calling model exactly what to fix and retry with.
+
+**Verification:** added `TestConsultToolElisionGuard` (5 new tests) to
+`tests/tools/test_consult_tool.py` covering: marker in question, marker in
+context, `(see above)` variant, a normal mid-sentence `"..."` is NOT flagged
+(guard only matches the specific bracketed/parenthesized placeholders, not
+bare ellipses), and the length-cap's own truncation marker doesn't
+self-trigger the guard. Full run: `tests/tools/test_consult_tool.py`,
+`tests/tools/test_consult_degenerate_guard.py`,
+`tests/test_consult_nudge_reminder.py` — 38 passed (was 33).
+`tools/consult_tool.py`, `tests/tools/test_consult_tool.py`.
+
 ### Fix — 2026-08-22 (typing a message with an attached image while the agent was busy could crash the interrupt path: `TypeError: sequence item 0: expected str instance, tuple found`)
 
 **Reported:** user saw `⚡ New message detected, interrupting...` immediately

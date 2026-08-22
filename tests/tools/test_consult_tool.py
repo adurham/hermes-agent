@@ -106,6 +106,71 @@ class TestConsultToolGracefulDegradation:
         assert result["unavailable"] is True
 
 
+class TestConsultToolElisionGuard:
+    """The calling model sometimes writes a literal placeholder like
+    "[truncated]" or "(see above)" into question/context instead of the
+    real content (observed 2026-08-22: a well-under-cap ~2000-char context
+    had real early options followed by a literal "...[truncated]" marker
+    covering the rest). This must be caught BEFORE the reference-model call
+    fires -- it's the calling model's own laziness, not a length overflow,
+    and burning a real (often 25-60s) aux call on known-incomplete input is
+    pure waste."""
+
+    def test_question_with_elision_marker_is_rejected_before_call(self):
+        with patch("agent.auxiliary_client.call_llm") as mock_call:
+            result = json.loads(
+                consult_tool("Options: (1) foo (2) bar...[truncated]")
+            )
+        mock_call.assert_not_called()
+        assert result["unavailable"] is True
+        assert result["answer"] is None
+        assert "placeholder" in result["reason"]
+
+    def test_context_with_elision_marker_is_rejected_before_call(self):
+        with patch("agent.auxiliary_client.call_llm") as mock_call:
+            result = json.loads(
+                consult_tool(
+                    "Is this plan sound?",
+                    context="Baseline numbers: 100K=... [rest omitted]",
+                )
+            )
+        mock_call.assert_not_called()
+        assert result["unavailable"] is True
+
+    def test_see_above_placeholder_is_rejected(self):
+        with patch("agent.auxiliary_client.call_llm") as mock_call:
+            result = json.loads(
+                consult_tool("q", context="full details (see above)")
+            )
+        mock_call.assert_not_called()
+        assert result["unavailable"] is True
+
+    def test_normal_ellipsis_is_not_flagged(self):
+        # A bare "..." (e.g. mid-sentence trailing off) must NOT trip the
+        # guard -- only the specific bracketed/parenthesized placeholders
+        # the calling model actually emits.
+        resp = _fake_response("ok")
+        with patch("agent.auxiliary_client.call_llm", return_value=resp) as mock_call:
+            result = json.loads(
+                consult_tool("Should we proceed with plan A or B...?")
+            )
+        mock_call.assert_called_once()
+        assert result["unavailable"] is False
+
+    def test_elision_guard_runs_before_length_cap_truncation(self):
+        # The length-cap truncation path (MAX_QUESTION_CHARS) appends its
+        # own "...(truncated)" marker -- confirm the elision guard doesn't
+        # spuriously fire on THAT synthetic marker for an otherwise-clean
+        # long question (it must only catch markers the caller itself
+        # wrote, checked before the cap is applied).
+        resp = _fake_response("ok")
+        long_q = "x" * (MAX_QUESTION_CHARS + 500)
+        with patch("agent.auxiliary_client.call_llm", return_value=resp) as mock_call:
+            result = json.loads(consult_tool(long_q))
+        mock_call.assert_called_once()
+        assert result["unavailable"] is False
+
+
 class TestConsultToolValidation:
     def test_empty_question_is_error(self):
         result = json.loads(consult_tool(""))
