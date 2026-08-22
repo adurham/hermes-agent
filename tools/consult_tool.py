@@ -39,6 +39,54 @@ MAX_CONTEXT_CHARS = 40000
 # template/control text from the aux model, not an opinion.
 _DSML_SENTINEL = "｜DSML｜"
 
+# Markers the calling MAIN model sometimes writes verbatim into `question`/
+# `context` instead of the real content -- e.g. "(1) foo... (2) onward and
+# the actual baseline numbers were cut off[truncated]" or "see above for
+# details". This is elision/laziness in the tool-call generation itself, not
+# a length-cap truncation: both fields are well under MAX_QUESTION_CHARS /
+# MAX_CONTEXT_CHARS when this happens (observed 2026-08-22 on claude-sonnet-5
+# -- a >2000-char context was generated with real early options followed by
+# a literal "...[truncated]" placeholder for options 2-5 and the numbers,
+# then the reference model correctly reported it couldn't see the missing
+# material, forcing an immediate wasted resend). Catching this BEFORE the
+# aux call fires saves a real (often 25-60s, non-trivial-cost) reference
+# model round trip on input the model already knows is incomplete.
+_ELISION_MARKERS = (
+    "[truncated]",
+    "...[truncated]",
+    "…[truncated]",
+    "(truncated)",
+    "[cut off]",
+    "(cut off for length)",
+    "[rest omitted]",
+    "(rest omitted)",
+    "[continued]",
+    "(see above)",
+    "(see full context above)",
+    "...(omitted)",
+    "[omitted for brevity]",
+)
+
+
+def _elided_request_reason(question: str, context: str) -> Optional[str]:
+    """Return a reason string when *question*/*context* contain a literal
+    elision placeholder the calling model wrote instead of real content.
+
+    This is a pre-flight guard on the OUTGOING request (contrast with
+    ``_degenerate_answer_reason``, which checks the incoming answer). Both
+    fields are already known-short at this point (post length-cap
+    truncation above), so a marker found here is the calling model's own
+    laziness, not a genuine size overflow.
+    """
+    combined_lower = f"{question}\n{context}".lower()
+    for marker in _ELISION_MARKERS:
+        if marker in combined_lower:
+            return (
+                f"the request text itself contains a literal placeholder "
+                f"({marker!r}) instead of real content"
+            )
+    return None
+
 
 def _degenerate_answer_reason(
     answer: str, question: str, context: str
@@ -109,10 +157,37 @@ def consult_tool(question: str, context: Optional[str] = None) -> str:
         return tool_error("question is required.")
 
     question = question.strip()
+    context = (context or "").strip()
+
+    # Guard the OUTGOING request before the length-cap truncation below
+    # (which appends its own "...(truncated)" marker and would otherwise
+    # self-trigger this check). See _elided_request_reason's docstring:
+    # this catches the calling model writing a literal placeholder like
+    # "...[truncated]" or "(see above)" into question/context in place of
+    # the real content it was supposed to include -- fails fast instead of
+    # spending a real reference-model call on input known to be incomplete.
+    _elision = _elided_request_reason(question, context)
+    if _elision:
+        return json.dumps(
+            {
+                "unavailable": True,
+                "answer": None,
+                "reason": (
+                    f"Consult request rejected before calling the reference "
+                    f"model: {_elision}. Write the FULL question/context "
+                    f"text out -- do not summarize with a placeholder like "
+                    f"\"[truncated]\" or \"(see above)\"; the reviewer has no "
+                    f"access to anything outside these two arguments. Retry "
+                    f"with the complete text (trim genuinely unnecessary "
+                    f"detail instead of eliding it)."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
     if len(question) > MAX_QUESTION_CHARS:
         question = question[:MAX_QUESTION_CHARS] + "...(truncated)"
 
-    context = (context or "").strip()
     if context:
         if len(context) > MAX_CONTEXT_CHARS:
             context = context[:MAX_CONTEXT_CHARS] + "\n...(truncated)"
@@ -235,7 +310,12 @@ CONSULT_SCHEMA = {
                 "description": (
                     "The specific question or judgment call you want a "
                     "second opinion on. Be precise -- a vague question gets "
-                    "a vague answer."
+                    "a vague answer. Write it out in full: the reviewer sees "
+                    "ONLY this string and `context`, nothing else from this "
+                    "conversation. Never write a placeholder like "
+                    "\"[truncated]\", \"(see above)\", or \"...\" in place of "
+                    "real content -- there is no \"above\" for the reviewer "
+                    "to see, so that produces a broken, wasted call."
                 ),
             },
             "context": {
@@ -244,7 +324,13 @@ CONSULT_SCHEMA = {
                     "Relevant background the reviewer needs to judge the "
                     "question: code, a plan, a diff, a reasoning trace, or "
                     "key facts. Keep it focused -- trim to what's actually "
-                    "relevant rather than pasting the whole conversation."
+                    "relevant rather than pasting the whole conversation. "
+                    "'Trim' means leave material OUT entirely, never means "
+                    "replace it with a placeholder like \"[truncated]\" or "
+                    "\"(cut off for length)\" -- the reviewer has no other "
+                    "source to fill the gap from, so a placeholder produces "
+                    "an unusable request that fails before the model is even "
+                    "called."
                 ),
             },
         },
