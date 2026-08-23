@@ -3,6 +3,53 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Cleanup — 2026-08-23 (removed dead `_get_child_max_runtime()` / `delegation.child_max_runtime_seconds`)
+
+**Why:** while verifying `delegation.child_timeout_seconds: 0` (disabled)
+was actually sufficient to let a long-running P3 delegation (Fable
+orchestrator → Opus coder/reviewer workers, exo cluster investigation)
+run without being killed mid-work, found a SECOND, separate timeout
+knob — `_get_child_max_runtime()` / `delegation.child_max_runtime_seconds`
+— with a docstring describing it as a "belt-and-suspenders" 1-hour
+wall-clock ceiling on stuck-but-ticking children. User correctly flagged
+this as confusing (two timeout mechanisms that sound like they solve the
+same problem). Investigation found `_get_child_max_runtime()` is **never
+called anywhere in the codebase** — defined, documented, read from config,
+but no caller wires its return value into anything. `FORK.md`'s existing
+2026-08-22 entry on the 420s generic-tool-deadline bug
+(`owns_own_deadline`) had already independently flagged this exact
+function as a "secondary bug, same class" (dead transitive runtime bound)
+without removing it.
+
+**Fix:** deleted `_get_child_max_runtime()` entirely from
+`tools/delegate_tool.py` (was between `_get_child_timeout()` and
+`_get_max_spawn_depth()`). No config-schema registration, no doc
+references, no test references existed for `child_max_runtime_seconds` —
+confirmed via grep across `tests/`, `hermes_cli/config.py`,
+`hermes_cli/config_defaults.py`, and `docs/`/`website/` before deleting.
+Net effect: `delegation.child_timeout_seconds` (the live, wired-up cap,
+default disabled per the 2026-04 `bba9b519aa` upstream fix) is now the
+**only** child wall-clock timeout mechanism — one knob, not two. Stuck
+(vs. slow-but-progressing) children are still caught by the separate
+heartbeat/staleness monitor, which is unrelated to either wall-clock
+setting and was not touched.
+
+**Verification:** `ast.parse` + `ruff check tools/delegate_tool.py` clean.
+`pytest tests/tools/test_delegate.py
+tests/tools/test_delegate_subagent_timeout_diagnostic.py
+tests/tools/test_async_delegation.py
+tests/tools/test_delegate_nested_deadline_orphaning.py`: 167 passed, 1
+failed both BEFORE and AFTER the change (`git stash` confirmed identical
+failure on unmodified `main` —
+`test_delegate_task_background_batch_runs_as_one_unit`, pre-existing and
+unrelated, not touched by this diff).
+
+**Merge note:** pure fork-local dead-code removal; upstream still has the
+same dead function (never wired up there either, per the 2026-04
+`bba9b519aa` PR that removed the *caller* but left `child_max_runtime`
+undisturbed) — not filing upstream since it's a trivial one-line-docstring
+cleanup with no user-facing behavior change on their side either.
+
 ### Feature — 2026-08-23 (per-role reasoning-effort override for delegated subagents — `delegation.reasoning_effort_by_role`)
 
 **Motivation:** `delegation.reasoning_effort` was a single global knob

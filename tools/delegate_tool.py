@@ -988,32 +988,6 @@ def _get_child_timeout() -> Optional[float]:
     return DEFAULT_CHILD_TIMEOUT
 
 
-def _get_child_max_runtime() -> float:
-    """Hard wall-clock ceiling for a single child agent.
-
-    Belt-and-suspenders cap to bound runaway children whose activity
-    tracker keeps ticking but who aren't actually making forward progress
-    (e.g. infinite loops between two tool calls).  Defaults to 1 hour;
-    raise via ``delegation.child_max_runtime_seconds``.  The idle timeout
-    above is the primary kill signal — this only fires when the idle
-    detector misses something.
-    """
-    cfg = _load_config()
-    val = cfg.get("child_max_runtime_seconds")
-    if val is not None:
-        try:
-            return max(60.0, float(val))
-        except (TypeError, ValueError):
-            pass
-    env_val = os.getenv("DELEGATION_CHILD_MAX_RUNTIME_SECONDS")
-    if env_val:
-        try:
-            return max(60.0, float(env_val))
-        except (TypeError, ValueError):
-            pass
-    return 3600.0  # 1 hour
-
-
 def _get_max_spawn_depth() -> int:
     """Read delegation.max_spawn_depth from config, floored at 1 (no ceiling).
 
