@@ -3,6 +3,51 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-08-23 (swarm board: distinct status for a PM/orchestrator row blocked on its own dispatched children)
+
+**Motivation:** while live-supervising a nested delegation (Fable
+orchestrator PM → 2 Opus coder/reviewer workers, exo cluster P3
+investigation), the user pointed out the swarm board rendered ALL THREE
+rows identically as "running" — Fable's own row showed 🔀 running even
+though Fable's `delegate_task` tool call was blocked waiting on its two
+dispatched grandchildren, giving no visual signal that the PM row itself
+had nothing left to do but wait. Every row read as equally "busy"
+regardless of whether it was a leaf actively calling tools or an
+orchestrator idling inside a blocking nested `delegate_task` call.
+
+**Fix:** `tools/swarm_board.py` — added a new `"waiting_on_children"`
+status to `_STATUS_GLYPH` (👥, distinct from 🔀 running).
+`tools/delegate_tool.py`'s `TASK_TOOL_STARTED` handler (fires on
+`tool.started` events relayed up from a child) now checks whether the
+tool being started is itself `delegate_task` — if so, the row's status is
+set to `waiting_on_children` instead of `running`. This is exactly the
+signal available: a nested `delegate_task` call blocks the orchestrator's
+own agent loop until every dispatched grandchild finishes, so "starting a
+delegate_task tool call" is an unambiguous proxy for "now idle, waiting on
+children" for the duration of that call. No new callback plumbing needed
+— reused the existing `tool.started`/`TASK_TOOL_STARTED` event that was
+already relayed for every tool including nested delegate_task calls, just
+previously collapsed to the same generic "running" status as everything
+else.
+
+**Known gap, accepted as-is:** `TASK_TOOL_COMPLETED` (`tool.completed`)
+is a pre-existing no-op in this handler (`return` with no board update)
+for every tool, not just delegate_task — so the row doesn't flip back to
+"running" the instant the nested delegate_task call returns; it self-corrects
+on the PM's next real action (next tool call → running, or final answer →
+summarizing via the existing `_looks_like_summary_phase` heuristic). Left
+as a sub-second display lag rather than adding new completion-event
+plumbing that nothing else in the file has either — consistent with the
+existing pattern, not a regression.
+
+**Verification:** `ast.parse` + `ruff check tools/delegate_tool.py
+tools/swarm_board.py` clean. `pytest tests/tools/test_swarm_board.py
+tests/tools/test_delegate.py`: 177 passed, 0 failed.
+
+**Merge note:** pure fork-local UX polish on the swarm-board widget;
+upstream has no swarm-board display for this to apply to (per the prior
+2026-08-22 nested-orchestrator-rendering entry's merge note).
+
 ### Cleanup — 2026-08-23 (removed dead `_get_child_max_runtime()` / `delegation.child_max_runtime_seconds`)
 
 **Why:** while verifying `delegation.child_timeout_seconds: 0` (disabled)

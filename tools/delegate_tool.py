@@ -1724,12 +1724,23 @@ def _build_child_progress_callback(
                     rec["tool_count"] = _tool_count[0]
                     rec["last_tool"] = tool_name or ""
         if board and subagent_id:
+            # A nested delegate_task call blocks this row's own agent loop
+            # until its dispatched grandchildren finish — it isn't "running"
+            # in the same sense as a normal tool call. Surface that
+            # distinctly (see swarm_board._STATUS_GLYPH) so a supervisor
+            # watching a multi-level swarm (PM → workers) can tell "this
+            # row is idle, waiting on its children" apart from "this row
+            # is actively doing work" at a glance instead of every row
+            # reading identically as "running".
+            _row_status = (
+                "waiting_on_children" if tool_name == "delegate_task" else "running"
+            )
             try:
                 board.update(
                     subagent_id,
                     tool_count=_tool_count[0],
                     last_tool=tool_name or "",
-                    status="running",
+                    status=_row_status,
                 )
             except Exception as e:
                 logger.debug("Swarm board update failed: %s", e)
