@@ -304,6 +304,105 @@ def test_lookup_model_for_role_returns_none_when_unset(monkeypatch):
     assert ruflo_agents.lookup_model_for_role(None) is None
 
 
+# ── Role-reasoning-effort map (config-backed) ──────────────────────────────
+#
+# Mirrors the role-model tests above but for
+# delegation.reasoning_effort_by_role — lets an orchestrator role run at a
+# deeper thinking budget than the leaf personas it dispatches.
+
+
+def test_get_role_reasoning_map_empty_when_no_delegation(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {},
+    )
+    assert ruflo_agents.get_role_reasoning_map() == {}
+
+
+def test_get_role_reasoning_map_reads_delegation_section(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "delegation": {
+                "reasoning_effort_by_role": {
+                    "orchestrator": "max",
+                    "coder": "high",
+                    "reviewer": "high",
+                }
+            }
+        },
+    )
+    m = ruflo_agents.get_role_reasoning_map()
+    assert m == {
+        "orchestrator": "max",
+        "coder": "high",
+        "reviewer": "high",
+    }
+
+
+def test_get_role_reasoning_map_filters_non_string_values(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "delegation": {
+                "reasoning_effort_by_role": {
+                    "orchestrator": "max",
+                    "bogus": 42,        # non-string value — drop
+                    "blank": "   ",     # whitespace-only — drop
+                    "good": "high",
+                }
+            }
+        },
+    )
+    m = ruflo_agents.get_role_reasoning_map()
+    assert m == {
+        "orchestrator": "max",
+        "good": "high",
+    }
+
+
+def test_set_role_reasoning_writes_through(monkeypatch, tmp_path):
+    """`set_role_reasoning` writes to the active config.yaml via the inline saver."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert ruflo_agents.set_role_reasoning("orchestrator", "max") is True
+    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "orchestrator:" in written
+    assert "max" in written
+
+
+def test_set_role_reasoning_clears_when_effort_empty(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "delegation": {
+                "reasoning_effort_by_role": {"orchestrator": "max"}
+            }
+        },
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "delegation:\n  reasoning_effort_by_role:\n    orchestrator: max\n",
+        encoding="utf-8",
+    )
+    assert ruflo_agents.set_role_reasoning("orchestrator", None) is True
+    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "orchestrator" not in written
+
+
+def test_lookup_reasoning_for_role_returns_none_when_unset(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "delegation": {"reasoning_effort_by_role": {"orchestrator": "max"}}
+        },
+    )
+    assert ruflo_agents.lookup_reasoning_for_role("orchestrator") == "max"
+    assert ruflo_agents.lookup_reasoning_for_role("unset_role") is None
+    assert ruflo_agents.lookup_reasoning_for_role("") is None
+    assert ruflo_agents.lookup_reasoning_for_role(None) is None
+
+
 # ── apply_suggested_defaults ──────────────────────────────────────────────
 
 

@@ -25,10 +25,13 @@ from hermes_cli.personas import (
     get_personas_path,
     get_personas_path as get_ruflo_path,  # legacy name for the resolver
     get_role_model_map,
+    get_role_reasoning_map,
     group_by_category,
     lookup_agent,
     lookup_model_for_role,
+    lookup_reasoning_for_role,
     set_role_model,
+    set_role_reasoning,
     sync_from_ruflo,
 )
 
@@ -43,9 +46,12 @@ __all__ = [
     "get_personas_path",
     "get_ruflo_path",
     "get_role_model_map",
+    "get_role_reasoning_map",
     "group_by_category",
     "lookup_agent",
     "lookup_model_for_role",
+    "lookup_reasoning_for_role",
     "set_role_model",
+    "set_role_reasoning",
     "sync_from_ruflo",
 ]
