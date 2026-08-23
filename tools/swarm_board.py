@@ -62,6 +62,15 @@ _STATUS_GLYPH = {
     "queued":     "⏸",
     "starting":   "⏳",
     "running":    "🔀",
+    # Distinct from "running": this row's own delegate_task tool call is
+    # blocked waiting on grandchildren it dispatched (a nested orchestrator
+    # like a Fable PM fanned out to Opus workers). Without this the board
+    # showed every row as "running" identically whether it was actively
+    # doing work or sitting idle inside a blocking nested delegate_task
+    # call — misleading when supervising a multi-level swarm (a PM's row
+    # looked exactly as "busy" as its workers even while it had nothing
+    # left to do but wait).
+    "waiting_on_children": "👥",
     "summarizing": "📝",
     "completed":  "✅",
     "ok":         "✅",
