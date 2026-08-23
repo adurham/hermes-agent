@@ -774,6 +774,42 @@ def _resolve_sequential_tool_timeout() -> float | None:
     )
 
 
+def _resolve_call_tool_timeout(
+    agent, function_name: str, function_args: dict, base_timeout: float | None
+) -> float | None:
+    """Per-CALL deadline: ``None`` when this call owns its own bound.
+
+    The generic deadline is correct for a tool bounded by its own code and
+    actively harmful for one whose legitimate runtime is the runtime of work
+    it SUPERVISES. Abandoning such a call does not cancel the supervised
+    work — the executor's own abandon path is documented as leaving a wedged
+    worker running detached — it only severs the supervisor from any consumer
+    of its result, silently orphaning everything beneath it.
+
+    Tools opt in via ``registry.register(owns_own_deadline=...)``; the hook
+    fails closed, so an unregistered tool or a raising predicate keeps the
+    deadline. Interrupt polling is unaffected: the wait loops treat
+    ``timeout_s=None`` as "no deadline", never as "no interrupt checks".
+    """
+    if base_timeout is None:
+        return None
+    try:
+        from tools.registry import registry
+
+        if registry.tool_owns_own_deadline(function_name, function_args, agent):
+            logger.debug(
+                "tool %s owns its own completion bound; generic %.1fs deadline "
+                "not applied to this call", function_name, base_timeout,
+            )
+            return None
+    except Exception:
+        logger.debug(
+            "owns_own_deadline lookup failed for %s; applying the generic "
+            "deadline", function_name, exc_info=True,
+        )
+    return base_timeout
+
+
 def _run_sequential_tool_execution_middleware(
     agent,
     *,
@@ -793,7 +829,9 @@ def _run_sequential_tool_execution_middleware(
     ``<= 0``) owns that wait. Applying the generic tool deadline here would
     return ``tool_timeout`` while the prompt and worker stay active.
     """
-    timeout_s = _resolve_sequential_tool_timeout()
+    timeout_s = _resolve_call_tool_timeout(
+        agent, function_name, function_args, _resolve_sequential_tool_timeout()
+    )
     kwargs = {
         "function_name": function_name,
         "function_args": function_args,
@@ -1252,7 +1290,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # Resolved before the workers are defined so the start-order gate can clamp
     # its own bound against the batch deadline it must stay under.
+    #
+    # The deadline is BATCH-wide, so a single call that owns its own completion
+    # bound (registry ``owns_own_deadline`` — e.g. a blocking nested
+    # delegate_task that waits on whole child agents) disables it for the whole
+    # batch. Abandoning the batch abandons every worker in it (documented
+    # ``shutdown(wait=False)`` — "a wedged tool thread is left running
+    # detached"), which would sever exactly the supervisor we must not detach.
+    # Interrupt polling is unaffected: the wait loop below still breaks on
+    # ``agent._interrupt_requested`` when ``deadline is None``.
     timeout_s = _resolve_concurrent_tool_timeout()
+    for _tc, _name, _args, _trace, _perr, _sblock in parsed_calls:
+        if _perr is not None:
+            continue
+        if _resolve_call_tool_timeout(agent, _name, _args, timeout_s) is None:
+            timeout_s = None
+            break
     gate_timeout_s = _start_order_gate_timeout(timeout_s)
 
     # Touch activity before launching workers so the gateway knows

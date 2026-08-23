@@ -31,7 +31,7 @@ import weakref
 from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from toolsets import TOOLSETS
@@ -118,6 +118,24 @@ def _get_subagent_approval_callback():
 # NOTE: nested delegation is granted by role='orchestrator' (which re-adds the
 # "delegation" toolset in _build_child_agent), NOT by the model naming toolsets
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
+#
+# A nested delegation (depth > 0) is ALWAYS synchronous — single task and batch
+# alike — and blocks the orchestrator's turn until every one of its own workers
+# finishes. This is structural, not a tuning choice: the orchestrator subagent's
+# turn is the ONLY consumer its workers have, and that turn ends the moment it
+# answers its parent. Anything that lets such a call return before its children
+# are joined orphans them with no listener left to act on their completion.
+#
+# Two things must therefore stay true of any nested-dispatch code path:
+#   1. background is clamped to False for depth > 0 (enforced in delegate_task
+#      itself, not only at the dispatch call sites).
+#   2. The blocking call is NOT subject to the generic per-tool executor
+#      deadline. That deadline cannot cancel a delegation — the executor
+#      abandons the worker and leaves it running detached — so applying it
+#      severs the supervisor from its result while its children keep running.
+#      delegate_task opts out via registry ``owns_own_deadline``; the
+#      aggregation loops poll ``_owner_abandoned`` and tear their children down
+#      if the owner walks away anyway.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 10
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
@@ -1133,6 +1151,21 @@ _MIN_SUMMARY_CHARS = 2000
 # mid-task. Errors should come from what the child actually does; stuck-child
 # detection lives in the heartbeat staleness monitor below. Users can opt back
 # in via delegation.child_timeout_seconds.
+class _DelegationAbandoned(Exception):
+    """Raised when a synchronous delegation's owner stopped waiting for it.
+
+    Distinct from a timeout: the child was NOT over budget, the consumer went
+    away (generic tool deadline abandoning this worker thread, or a parent
+    interrupt). Surfaced as status='abandoned' rather than 'timeout' so the
+    transcript never claims the subagent was too slow when it was actually
+    orphaned.
+    """
+
+
+# How often a blocking single-child wait re-checks for owner abandonment.
+# Short enough that teardown lands promptly, long enough to be free.
+_ABANDON_POLL_INTERVAL = 1.0
+
 DEFAULT_CHILD_TIMEOUT: Optional[float] = None
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no observable progress is either:
@@ -2785,6 +2818,7 @@ def _run_single_child(
     owner_session_id: Optional[str] = None,
     owner_transport: Any = None,
     owner_session_record: Any = None,
+    abandon_check: Optional[Callable[[], bool]] = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -3314,7 +3348,37 @@ def _run_single_child(
             _run_with_thread_capture,
         )
         try:
-            result = _child_future.result(timeout=child_timeout)
+            if abandon_check is None:
+                result = _child_future.result(timeout=child_timeout)
+            else:
+                # Single-task sibling of the batch join loop: poll in slices so
+                # an owner that walked away (generic tool deadline abandoning
+                # this worker thread, or a parent interrupt) is noticed instead
+                # of blocking on a child whose result nobody will ever read.
+                # child_timeout is None by default, so the plain .result() call
+                # above would otherwise wait forever against a dead consumer.
+                _deadline = (
+                    time.monotonic() + child_timeout
+                    if child_timeout is not None
+                    else None
+                )
+                while True:
+                    if abandon_check():
+                        raise _DelegationAbandoned(
+                            "Delegation abandoned by its owner before the "
+                            "subagent finished"
+                        )
+                    _slice = _ABANDON_POLL_INTERVAL
+                    if _deadline is not None:
+                        _remaining = _deadline - time.monotonic()
+                        if _remaining <= 0:
+                            raise FuturesTimeoutError()
+                        _slice = min(_slice, _remaining)
+                    try:
+                        result = _child_future.result(timeout=_slice)
+                        break
+                    except FuturesTimeoutError:
+                        continue
         except Exception as _timeout_exc:
             # No consumer boundary remains once this owner stops waiting for
             # the child. Close acceptance before any completion callback and
@@ -3330,12 +3394,20 @@ def _run_single_child(
             except Exception:
                 pass
 
-            is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
+            _abandoned = isinstance(_timeout_exc, _DelegationAbandoned)
+            # An abandoned child is NOT a timeout: it was within budget, its
+            # consumer went away. Keep the two distinguishable so the
+            # transcript never blames the subagent for being slow.
+            is_timeout = not _abandoned and isinstance(
+                _timeout_exc, (FuturesTimeoutError, TimeoutError)
+            )
             duration = round(time.monotonic() - child_start, 2)
             logger.warning(
                 "Subagent %d %s after %.1fs",
                 task_index,
-                "timed out" if is_timeout else f"raised {type(_timeout_exc).__name__}",
+                "abandoned by its owner" if _abandoned
+                else "timed out" if is_timeout
+                else f"raised {type(_timeout_exc).__name__}",
                 duration,
             )
 
@@ -3411,10 +3483,12 @@ def _run_single_child(
                 # send_agent_message without a list_active_subagents round
                 # trip (docs/design/local-agent-messaging.md, Question 2).
                 "subagent_id": _subagent_id,
-                "status": "timeout" if is_timeout else "error",
+                "status": "timeout" if is_timeout else "abandoned" if _abandoned else "error",
                 "summary": None,
                 "error": _err,
-                "exit_reason": "timeout" if is_timeout else "error",
+                "exit_reason": (
+                    "timeout" if is_timeout else "abandoned" if _abandoned else "error"
+                ),
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
                 "timeout_seconds": child_timeout if is_timeout else None,
@@ -4230,6 +4304,73 @@ def _finalize_child_results(
                 logger.debug("Subagent cost rollup failed", exc_info=True)
 
 
+def _owner_abandoned(parent_agent: Any, honor_parent_interrupt: bool) -> bool:
+    """True when nothing is left waiting for this synchronous delegation.
+
+    Two independent abandonment signals, and BOTH must be polled:
+
+    1. ``parent_agent._interrupt_requested`` — a user /stop or a new message
+       interrupting the parent turn.
+    2. The THREAD-LOCAL interrupt bit (``tools.interrupt.is_interrupted()``) —
+       set on this very worker thread by the tool executor when it gives up on
+       the call (generic tool deadline, or a batch abandon). This is the signal
+       that was previously missed: the executor sets the bit, returns a
+       synthetic "timed out" result to the model, and does
+       ``shutdown(wait=False)`` — explicitly documented as leaving the worker
+       "running detached". Polling only signal (1) meant the aggregation loop
+       never learned it had been abandoned, kept joining on its children, and
+       finally returned a fully-formed consolidated result into a Future that
+       no longer had a reader. The children's work was silently discarded and
+       the orchestrator reported "completed" upward. (2026-08-23 incident.)
+
+    Signal (2) is thread-scoped, so it is only meaningful on the thread that
+    actually runs the aggregation — which is where this is called from.
+
+    Both signals are gated on *honor_parent_interrupt*, which is precisely the
+    "this delegation is owned by the caller's turn" flag. A detached background
+    batch passes False: its lifecycle belongs to the async registry (cancelled
+    via ``_batch_interrupt``) and it has a durable consumer in the completion
+    queue, so neither signal applies to it — and skipping the thread-local read
+    there also avoids any false positive from ident reuse on the async daemon
+    pool.
+    """
+    if not honor_parent_interrupt:
+        return False
+    if getattr(parent_agent, "_interrupt_requested", False) is True:
+        return True
+    try:
+        from tools.interrupt import is_interrupted as _thread_interrupted
+
+        return bool(_thread_interrupted())
+    except Exception:
+        return False
+
+
+def _teardown_abandoned_children(children: Any, reason: str) -> None:
+    """Hard-interrupt every child of an abandoned delegation. Idempotent.
+
+    Abandonment must be deterministic teardown, never silent orphaning: if
+    nothing will consume this delegation's result, its children must not keep
+    burning tokens against a dead consumer. Best-effort per child so one
+    failure cannot block the rest.
+    """
+    for _entry in children or ():
+        if isinstance(_entry, tuple):
+            # (task_index, task, child) triples as built by delegate_task; a
+            # malformed/short tuple carries no child and is skipped outright
+            # (never fall through to interrupting the tuple itself).
+            _c = _entry[2] if len(_entry) >= 3 else None
+        else:
+            _c = _entry
+        if _c is None:
+            continue
+        try:
+            if not request_hard_interrupt(_c, reason) and hasattr(_c, "_interrupt_requested"):
+                _c._interrupt_requested = True
+        except Exception:
+            logger.debug("Abandoned-child teardown failed", exc_info=True)
+
+
 def _run_child_lifecycle(
     task_index: int,
     goal: str,
@@ -4819,6 +4960,12 @@ def delegate_task(
                         owner_session_id=_origin_ui_session_id or None,
                         owner_transport=_origin_owner_transport,
                         owner_session_record=_origin_owner_session_record,
+                        # Sibling of the batch join loop's abandonment check:
+                        # notice an owner that walked away instead of blocking
+                        # on a child nobody will read the result of.
+                        abandon_check=lambda: _owner_abandoned(
+                            parent_agent, honor_parent_interrupt
+                        ),
                     )
                 finally:
                     parent_agent._swarm_board = None
@@ -4912,10 +5059,7 @@ def delegate_task(
                         _stagger_start = time.monotonic()
                         _lead_child = lead[2]
                         while time.monotonic() - _stagger_start < _STAGGER_MAX_WAIT:
-                            if (
-                                honor_parent_interrupt
-                                and getattr(parent_agent, "_interrupt_requested", False) is True
-                            ):
+                            if _owner_abandoned(parent_agent, honor_parent_interrupt):
                                 break
                             # Lead already finished?  Then cache (if any) is
                             # written and there's no point waiting further —
@@ -4955,13 +5099,17 @@ def delegate_task(
 
                     pending = set(futures.keys())
                     while pending:
-                        if (
-                            honor_parent_interrupt
-                            and getattr(parent_agent, "_interrupt_requested", False) is True
-                        ):
-                            # Parent interrupted — collect whatever finished and
-                            # abandon the rest.  Children already received the
-                            # interrupt signal; we just can't wait forever.
+                        if _owner_abandoned(parent_agent, honor_parent_interrupt):
+                            # Abandoned — either the parent turn was interrupted,
+                            # or the tool executor gave up on THIS call and set
+                            # our thread's interrupt bit (generic tool deadline /
+                            # batch abandon). Either way no consumer remains for
+                            # this delegation's result, so tear the children down
+                            # instead of letting them run headless, then collect
+                            # whatever already finished.
+                            _teardown_abandoned_children(
+                                children, "Delegation abandoned by its owner"
+                            )
                             for f in pending:
                                 idx = futures[f]
                                 if f.done():
@@ -5108,8 +5256,36 @@ def delegate_task(
         except Exception:
             _async_ok = True
 
+        # A depth>0 subagent turn is itself a finite session — the same class
+        # as the stateless/one-shot runners above, and the reason the nested
+        # case is documented as synchronous. Its own agent loop ENDS when it
+        # answers its parent; nothing in that process survives to drain a
+        # completion queue, so a handle handed out here has no durable
+        # consumer and its grandchildren would finish into the void (that is
+        # exactly the 2026-08-23 orphaned-work incident, one layer down).
+        #
+        # Both live dispatch sites already compute background=False for
+        # depth>0 (``run_agent._dispatch_delegate_task`` and
+        # ``_model_background_value``). This is the invariant backstop at the
+        # TOOL boundary so a future call site, plugin, or direct Python caller
+        # cannot reintroduce the orphan by passing background=True. Clamped
+        # with a warning, never an error: the orchestrator did not choose this
+        # and must not have its turn fail over it.
+        if _async_ok and getattr(parent_agent, "_delegate_depth", 0) > 0:
+            logger.warning(
+                "delegate_task: background=true requested from a depth-%s "
+                "subagent; forcing synchronous execution. A subagent's turn "
+                "ends when it answers its parent, so it cannot consume a "
+                "detached result and its children would be orphaned.",
+                getattr(parent_agent, "_delegate_depth", 0),
+            )
+            _async_ok = False
+            _nested_forced_sync = True
+        else:
+            _nested_forced_sync = False
+
         _wake_sid = ""
-        if not _async_ok:
+        if not _async_ok and not _nested_forced_sync:
             # The adapter itself cannot push, but if a raw session id is
             # bound (the API server always binds one — see
             # ApiServerAdapter._bind_api_server_session), gateway.wake can
@@ -5133,12 +5309,21 @@ def delegate_task(
 
         if not _async_ok:
             logger.info(
-                "delegate_task: async delivery unsupported on this session "
-                "runtime; running the batch synchronously instead."
+                "delegate_task: %s; running the batch synchronously instead.",
+                "nested delegation from a subagent (no durable consumer for a "
+                "detached result)" if _nested_forced_sync
+                else "async delivery unsupported on this session runtime",
             )
             _sync_result = _execute_and_aggregate()
             if isinstance(_sync_result, dict):
                 _sync_result["note"] = (
+                    "Your nested delegation ran SYNCHRONOUSLY and its full "
+                    "result is included above — this is the documented "
+                    "contract for an orchestrator subagent. Your own turn is "
+                    "the only consumer your workers have, so you must use "
+                    "these results now; there is no handle to poll and "
+                    "nothing will be delivered to you later."
+                    if _nested_forced_sync else
                     "background=true is not available in this session — it cannot "
                     "receive a detached subagent result after the turn ends (a "
                     "one-shot runner such as `hermes -z`, a cron job, a Kanban "
@@ -6009,12 +6194,71 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     ``run_agent._dispatch_delegate_task``; this lambda mirrors it for the rare
     case the intercept is bypassed. Direct Python callers of ``delegate_task``
     keep the historical synchronous default.
+
+    The depth > 0 exception covers the BATCH form exactly as it covers the
+    single-task form — there is no batch-specific escape into async. Two
+    layers enforce it: this helper (and its twin at the run_agent dispatch
+    site) computing the flag, and ``delegate_task`` itself clamping
+    ``background`` to False for any depth > 0 caller regardless of what it was
+    passed. The clamp is what makes this an invariant rather than a
+    convention: a subagent's turn ends when it answers its parent, so it can
+    never be the durable consumer an async completion requires.
     """
     is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
     return not is_subagent
 
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
+
+
+def _is_blocking_spawn_call(args: dict, parent_agent: Any = None) -> bool:
+    """True when this delegate_task call BLOCKS on child agents it supervises.
+
+    Consumed by the tool registry's ``owns_own_deadline`` hook so the generic
+    per-call executor deadline is not applied to a call whose runtime is, by
+    design, the runtime of the whole child agent tree beneath it.
+
+    Only the SPAWN form qualifies, and only when it actually blocks:
+
+    * ``action`` in {list, steer, stop} and the ``cancel=`` form are cheap
+      in-turn control calls that return immediately — they keep the deadline.
+    * A top-level (depth 0) spawn is forced ``background=True``: it dispatches
+      and returns a handle in milliseconds, and the persistent CLI/gateway
+      process drains the completion later. It keeps the deadline too.
+    * A NESTED spawn from an orchestrator subagent (depth > 0) is forced
+      synchronous — it must block until its own workers finish, because a
+      bounded subagent turn is not a persistent listener that could ever
+      consume an async completion. That is the call this exemption exists for.
+
+    Depth is read from the live parent agent rather than the args, so the
+    exemption tracks the same signal the sync/async decision itself uses
+    (``run_agent._dispatch_delegate_task`` / ``_model_background_value``).
+
+    The incident this closes (2026-08-23): a depth-1 orchestrator's nested
+    batch hit the 420s generic deadline at 07:00 into a legitimate multi-child
+    run. The executor abandoned the worker but could NOT cancel it, so the
+    aggregation kept running headless, its children finished ~70s later, and
+    the consolidated result was returned into a Future nobody would ever read.
+    The orchestrator meanwhile reported "completed" to its own parent. Work
+    stalled silently for ~7 hours.
+    """
+    if not isinstance(args, dict):
+        return False
+    action = str(args.get("action") or "").strip().lower()
+    if action in {"list", "steer", "stop"}:
+        return False
+    if str(args.get("cancel") or "").strip():
+        return False
+    if not (args.get("goal") or args.get("tasks")):
+        return False
+    # Only the synchronous (nested, depth > 0) spawn blocks. A top-level spawn
+    # returns a handle immediately and must stay bounded.
+    return not _model_background_value(args, parent_agent)
+
+
+def _delegate_owns_own_deadline(args: dict, parent_agent: Any = None) -> bool:
+    """Registry hook: blocking spawns own their bound, everything else doesn't."""
+    return _is_blocking_spawn_call(args, parent_agent)
 
 
 def _strip_model_hidden_task_fields(tasks: Any) -> Any:
@@ -6057,6 +6301,7 @@ registry.register(
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
+    owns_own_deadline=_delegate_owns_own_deadline,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
 )
