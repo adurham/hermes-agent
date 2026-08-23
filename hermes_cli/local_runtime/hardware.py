@@ -5,12 +5,24 @@ honest within rounding); unified-memory devices must budget from OS free
 physical memory minus headroom — their device queries have been observed
 off by 3x in both directions. The probe classifies the device and
 constructs the right HardwareBudget for the estimator.
+
+Vendor probe quirk (RTX-Spark-class WDDM carve-out): on unified-memory
+NVIDIA devices under Windows, nvidia-smi answers from the legacy
+dedicated-VRAM carve-out (measured 16 GiB reported vs a 45.4 GiB pool the
+allocator addresses uniformly at full bandwidth). The CUDA driver API is
+the tiebreaker: cuDeviceGetAttribute(INTEGRATED) is the vendor's own
+declaration and always wins — 1 budgets unified, 0 stays discrete no
+matter what any other number says. Only when the driver API is
+unreachable does the engine's --list-devices view apply, and then only
+behind two independent conditions no discrete card can meet.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
+import time
 
 from hermes_cli.local_runtime.estimator import HardwareBudget
 
@@ -21,10 +33,35 @@ _GIB = 1 << 30
 # 1 GiB is regressive on 8 GB cards and generous on 24 GB ones.
 _MARGIN_FLOOR = 512 << 20
 _MARGIN_FRACTION = 0.07
-# UMA headroom: on unified-memory machines (Apple Silicon) the model shares
-# physical memory with the OS and every app, so budget from RAM minus this
-# fraction.
+# UMA headroom: on unified-memory machines (Apple Silicon, Spark-class
+# NVIDIA) the model shares physical memory with the OS and every app, so
+# budget from RAM minus this fraction.
 _UMA_HEADROOM_FRACTION = 0.20
+
+# Engine-fallback gates for the unified-pool quirk — BOTH must hold, and
+# no discrete card can meet either: (1) the allocator's pool exceeds the
+# smi report by well past rounding/ECC slack (discrete cards agree within
+# ~2%; measured Spark disagreement is 2.85x), and (2) the pool is
+# system-RAM-sized — a workstation card in a RAM-matched box fails (1)
+# because its smi and allocator AGREE, and a big discrete card in a
+# bigger box fails (2). The driver's INTEGRATED attribute, when
+# readable, bypasses both gates in whichever direction it points.
+_POOL_DISAGREEMENT_FACTOR = 1.5
+_POOL_RAM_FRACTION = 0.75
+
+# cuDeviceGetAttribute enum: device is integrated with host memory.
+_CU_DEVICE_ATTRIBUTE_INTEGRATED = 18
+
+# One probe per process once a device answers (silicon doesn't change);
+# a miss retries after this long so a runtime installed mid-session gets
+# picked up by the engine fallback.
+_POOL_NEGATIVE_TTL_S = 60.0
+_pool_probe_cache: tuple[float, "tuple[int, bool | None] | None"] | None = None
+
+# '  CUDA0: NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU) (46464 MiB, 46284 MiB free)'
+# — greedy .* pins the LAST parenthesized group, so device names carrying
+# their own parentheses parse correctly.
+_DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
 
 
 def _ram_bytes() -> tuple[int, int]:
@@ -82,6 +119,115 @@ def _nvidia_vram() -> tuple[int, int] | None:
         return None
 
 
+def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
+    """(allocator_total_bytes, integrated_or_None) from the CUDA driver
+    API, or None when unreachable. ctypes against the driver's own DLL/SO
+    — no toolkit, no subprocess, ~ms. INTEGRATED is the vendor's own
+    unified-memory declaration; total is the pool the allocator will
+    actually hand out (observed 45.4 GiB where nvidia-smi says 16 on
+    Spark-class firmware)."""
+    import ctypes
+
+    for name in ("nvcuda.dll", "libcuda.so.1", "libcuda.so"):
+        try:
+            cuda = ctypes.CDLL(name)
+            break
+        except OSError:
+            continue
+    else:
+        return None
+    try:
+        if cuda.cuInit(0) != 0:
+            return None
+        dev = ctypes.c_int()
+        if cuda.cuDeviceGet(ctypes.byref(dev), 0) != 0:
+            return None
+        total = ctypes.c_size_t()
+        getter = getattr(cuda, "cuDeviceTotalMem_v2", None) or cuda.cuDeviceTotalMem
+        if getter(ctypes.byref(total), dev) != 0 or total.value <= 0:
+            return None
+        integrated: bool | None = None
+        attr = ctypes.c_int()
+        if cuda.cuDeviceGetAttribute(
+                ctypes.byref(attr), _CU_DEVICE_ATTRIBUTE_INTEGRATED, dev) == 0:
+            integrated = bool(attr.value)
+        return total.value, integrated
+    except (OSError, AttributeError):
+        return None
+
+
+def _engine_device_pool() -> "tuple[int, bool | None] | None":
+    """(engine_total_bytes, None) from the installed runtime's own
+    --list-devices, or None. The fallback truth source when the driver
+    API is unreachable: asks the exact binary that will do the
+    allocating. Carries no integrated verdict — callers must gate it."""
+    try:
+        from hermes_cli.local_runtime.binaries import (
+            installed_tags,
+            runtimes_root,
+            server_binary,
+        )
+
+        tags = installed_tags()
+        if not tags:
+            return None
+        tag_dir = runtimes_root() / tags[0]
+        backend_dirs = [d for d in tag_dir.iterdir() if d.is_dir()]
+        if not backend_dirs:
+            return None
+        exe = server_binary(backend_dirs[0])
+        out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
+                             text=True, timeout=30, cwd=str(exe.parent))
+        if out.returncode != 0:
+            return None
+        for line in (out.stdout + out.stderr).splitlines():
+            m = _DEVICE_LINE_RE.search(line)
+            if m:
+                return int(m.group(1)) << 20, None
+        return None
+    except Exception:  # noqa: BLE001 — a probe miss must never block budgeting
+        return None
+
+
+def _device_pool_view() -> "tuple[int, bool | None] | None":
+    """Best available allocator-side view, cached: a hit is permanent for
+    the process, a miss retries after a short TTL (the engine binary can
+    appear mid-session via a pane install)."""
+    global _pool_probe_cache
+    now = time.monotonic()
+    if _pool_probe_cache is not None:
+        stamp, view = _pool_probe_cache
+        if view is not None or now - stamp < _POOL_NEGATIVE_TTL_S:
+            return view
+    view = _cuda_driver_pool() or _engine_device_pool()
+    _pool_probe_cache = (now, view)
+    return view
+
+
+def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
+    """The real pool size when this NVIDIA device is unified memory behind
+    a WDDM carve-out, else None (trust nvidia-smi as ever).
+
+    The driver's INTEGRATED attribute decides when readable — in BOTH
+    directions (0 pins discrete even if the numbers look weird; a driver
+    that declares integrated is believed even at modest pool sizes). Only
+    an attribute-less view (engine fallback) needs the two numeric gates;
+    both must hold and no discrete card meets either.
+    """
+    view = _device_pool_view()
+    if view is None:
+        return None
+    pool, integrated = view
+    if integrated is False:
+        return None
+    if integrated is True:
+        return pool
+    if (smi_total > 0 and pool >= int(smi_total * _POOL_DISAGREEMENT_FACTOR)
+            and ram_total > 0 and pool >= int(ram_total * _POOL_RAM_FRACTION)):
+        return pool
+    return None
+
+
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
     """Construct the budget per the source rules above.
 
@@ -111,6 +257,28 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
                               ram_available_bytes=0, uma=True)
 
     total, free = vram
+
+    # Spark-class quirk: nvidia-smi answers from the WDDM carve-out while
+    # the allocator addresses the whole unified pool at full bandwidth
+    # (measured flat ~200 GB/s effective 8 GiB past the carve-out).
+    # Budget like Apple Silicon: the pool minus headroom IS the budget,
+    # ram_available=0 so host memory never double-counts as spill room.
+    unified = _unified_pool_bytes(total, ram_total)
+    if unified is not None:
+        logger.info(
+            "unified-memory NVIDIA device: allocator pool %.1f GiB "
+            "(nvidia-smi carve-out %.1f GiB); budgeting from the pool",
+            unified / _GIB, total / _GIB)
+        # The allocator's pool can slightly exceed what the OS will really
+        # give it (firmware reserve); budget from the smaller of the two
+        # views, live-clamped by OS availability outside planning.
+        pool_total = min(unified, ram_total) if ram_total else unified
+        base = pool_total if planning else min(pool_total, ram_avail)
+        usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
+        return HardwareBudget(usable_vram_bytes=usable,
+                              total_device_bytes=pool_total,
+                              ram_available_bytes=0, uma=True)
+
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
     base = total if planning else free
     return HardwareBudget(usable_vram_bytes=max(0, base - margin),
