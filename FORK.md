@@ -12241,3 +12241,50 @@ supervised-deadline-opt-out mechanism, and the incident itself (nested
 orchestrator subagent dispatch) only exists in this fork's delegation
 depth/role model.
 
+### Fork-only fix — 2026-08-23 (swarm board: nested orchestrator subagents rendered as a flat, unbounded row list with no hierarchy)
+
+**Symptom:** when an orchestrator subagent (`role='orchestrator'`) dispatches
+its own nested worker(s), the CLI's live swarm board showed the orchestrator
+itself, its grandchildren, and any unrelated concurrent top-level dispatches
+all as visually identical rows in one flat list — no indentation, no
+grouping, nothing distinguishing siblings-under-one-parent from independent
+work. `get_swarm_board_height()` also had no cap: the panel grew one line
+per active subagent, unbounded, summed across every concurrent board, so a
+busy delegation tree could crowd the conversation area on a normal-height
+terminal.
+
+**Fix:** `RowSnapshot`/`_Row` in `tools/swarm_board.py` gained `depth` and
+`parent_subagent_id` fields, populated at `register()` time via a new
+`resolve_row_lineage(parent_agent)` helper that reads the delegation
+hierarchy already stamped on the agent object. `format_row()` now renders
+per-level indentation (`_INDENT_WIDTH` spaces + a `└─` elbow) up to a
+`_MAX_RENDER_DEPTH` ceiling so the display never breaks if
+`delegation.max_spawn_depth` is raised past what's practical to show. A new
+`order_rows_for_display()` regroups the concatenation of every active
+board's rows into parent → child order and re-derives an *effective* depth
+from parent links actually present in the current render set, so an orphan
+row (parent already finished and tore its board down) doesn't render
+indented under nothing. `collapse_rows_to_limit()` enforces a hard row cap
+— `resolve_max_board_rows()` picks the smaller of an absolute ceiling
+(`DEFAULT_MAX_BOARD_ROWS=12`) and roughly a third of the terminal's visible
+rows (never below `MIN_MAX_BOARD_ROWS=3`), and any rows past the cap
+collapse into a `+N more subagents` summary line instead of growing the
+panel unbounded.
+
+**Files:** `tools/swarm_board.py` (lineage fields, indentation/grouping/cap
+helpers), `cli.py` (widget wiring: terminal-height-aware cap, ordered
+render), `tools/delegate_tool.py` (threads lineage into `board.register()`
+calls), `tests/tools/test_swarm_board.py` (expanded, 82 tests total).
+
+**Verification:** `tests/tools/test_swarm_board.py` — 82/82 pass. `ruff
+check` clean on all four changed files. `ty check` against a pristine
+`origin/main` worktree baseline: zero new diagnostics (331 vs. 335 baseline
+— 4 pre-existing diagnostics were fixed as a drive-by in the touched
+`register()` signature). Two `tests/cli/*` failures observed in a
+full-suite run were confirmed pre-existing/order-dependent, not caused by
+this change — both pass in isolation on this tree and on a clean baseline
+worktree.
+
+**Merge note:** pure fork-local; upstream has no swarm-board widget or
+nested-orchestrator delegation model for this to apply to.
+

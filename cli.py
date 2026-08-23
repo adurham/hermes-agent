@@ -7138,6 +7138,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return shutil.get_terminal_size(default).columns
 
+    @staticmethod
+    def _get_tui_terminal_height(default: tuple[int, int] = (80, 24)) -> int:
+        """Return the live prompt_toolkit height, falling back to ``shutil``.
+
+        Height twin of ``_get_tui_terminal_width`` — same prompt_toolkit-first
+        ordering and same reason (the TUI layout knows its real size; shutil
+        can report stale/fallback values, notably on Termux/mobile shells).
+        Used to bound the swarm board's row budget so a wide/deep delegation
+        tree can't grow that panel until it crowds out the conversation.
+        """
+        try:
+            from prompt_toolkit.application import get_app
+            return get_app().output.get_size().rows
+        except Exception:
+            return shutil.get_terminal_size(default).lines
+
     def _use_minimal_tui_chrome(self, width: Optional[int] = None) -> bool:
         """Hide low-value chrome on narrow/mobile terminals to preserve rows."""
         if width is None:
@@ -22080,12 +22096,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return rows
 
         def _swarm_board_rows() -> list:
-            """Raw (unpadded) text rows: one per active subagent."""
+            """Text rows, hierarchy-ordered and capped to a bounded height.
+
+            Three steps, all in tools/swarm_board.py so they're testable
+            without a prompt_toolkit app:
+
+            1. ``order_rows_for_display`` regroups the flat concatenation
+               into parent → child order with effective depths. Rows from a
+               nested orchestrator's board live on a DIFFERENT board object
+               than the orchestrator's own row, so raw concatenation could
+               interleave a grandchild with an unrelated concurrent
+               top-level dispatch — right depth, wrong neighbours.
+            2. ``resolve_max_board_rows`` derives the line budget from the
+               live terminal height (mirroring ``_get_tui_terminal_width``'s
+               prompt_toolkit-first, shutil-fallback approach).
+            3. ``collapse_rows_to_limit`` renders with per-depth indentation
+               and replaces any overflow with one "+N more subagents" line,
+               so the panel's height is bounded no matter how wide or deep
+               the delegation tree gets.
+            """
             rows = _all_swarm_rows()
             if not rows:
                 return []
-            from tools.swarm_board import format_row as _format_swarm_row
-            return [_format_swarm_row(row) for row in rows]
+            from tools.swarm_board import (
+                collapse_rows_to_limit as _collapse_swarm_rows,
+                order_rows_for_display as _order_swarm_rows,
+                resolve_max_board_rows as _max_swarm_rows,
+            )
+            entries = _order_swarm_rows(rows)
+            return _collapse_swarm_rows(
+                entries, _max_swarm_rows(HermesCLI._get_tui_terminal_height())
+            )
 
         def _swarm_board_box_width(rows: list) -> int:
             term_cols = HermesCLI._get_tui_terminal_width()
@@ -22112,6 +22153,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return fragments
 
         def get_swarm_board_height():
+            """Panel height: rendered rows + 2 border lines, hard-bounded.
+
+            ``_swarm_board_rows()`` is already capped by
+            ``collapse_rows_to_limit``, so this can never exceed
+            ``resolve_max_board_rows(...) + 2`` no matter how many
+            subagents are active across how many concurrent boards.
+            Previously this was a raw ``len(rows) + 2`` over every row of
+            every board, which grew the panel one line per active subagent
+            without limit.
+            """
             rows = _swarm_board_rows()
             if not rows:
                 return 0

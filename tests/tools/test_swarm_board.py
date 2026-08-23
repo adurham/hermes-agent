@@ -7,16 +7,26 @@ child-print interceptor.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 import unittest
+import weakref
 
 from tools.swarm_board import (
+    DEFAULT_MAX_BOARD_ROWS,
+    MIN_MAX_BOARD_ROWS,
+    RowSnapshot,
     SwarmBoard,
+    _MAX_RENDER_DEPTH,
     _NoopBoard,
     _Row,
+    collapse_rows_to_limit,
     format_row,
     make_child_print_fn,
+    order_rows_for_display,
+    resolve_max_board_rows,
+    resolve_row_lineage,
 )
 
 
@@ -425,6 +435,473 @@ class TestFormatRow(unittest.TestCase):
         b.update("a1", last_tool="some_tool\nwith_newline")
         line = format_row(b.get_rows_snapshot()[0])
         assert "\n" not in line
+
+
+def _snap(sid, *, parent=None, depth=0, status="running"):
+    """Minimal RowSnapshot for the pure ordering/collapse helpers."""
+    return RowSnapshot(
+        subagent_id=sid,
+        model="claude-opus-4-5",
+        goal="g",
+        status=status,
+        tool_count=0,
+        last_tool="",
+        last_note="",
+        elapsed_seconds=1.0,
+        depth=depth,
+        parent_subagent_id=parent,
+    )
+
+
+def _leading_spaces(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+class _StubAgent:
+    """Stand-in for an AIAgent carrying only the attributes the board reads.
+
+    Declared (rather than assigned onto a bare ``type()``) so the delegation
+    attributes the board walks are real, typed fields.
+    """
+
+    def __init__(
+        self,
+        *,
+        cli_ref=None,
+        delegate_depth: object = 0,
+        subagent_id=None,
+        parent=None,
+    ):
+        self._cli_ref = cli_ref
+        self._delegate_depth = delegate_depth
+        self._subagent_id = subagent_id
+        # Mirrors what delegate_tool._build_child_agent stamps at build time.
+        self._delegate_parent_ref = weakref.ref(parent) if parent else None
+
+
+class TestRowLineageFields(unittest.TestCase):
+    """RowSnapshot carries the delegation hierarchy, defaulting to flat."""
+
+    def test_defaults_are_top_level(self):
+        b = SwarmBoard()
+        b.register("a1")
+        row = b.get_rows_snapshot()[0]
+        assert row.depth == 0
+        assert row.parent_subagent_id is None
+
+    def test_register_records_depth_and_parent(self):
+        b = SwarmBoard()
+        b.register("kid", depth=1, parent_subagent_id="orch")
+        row = b.get_rows_snapshot()[0]
+        assert row.depth == 1
+        assert row.parent_subagent_id == "orch"
+
+    def test_lineage_survives_updates_and_finish(self):
+        # The hierarchy must not be lost as the row moves through its
+        # lifecycle — otherwise a child un-nests itself mid-flight.
+        b = SwarmBoard()
+        b.register("kid", depth=2, parent_subagent_id="orch")
+        b.update("kid", status="running", tool_count=4)
+        b.note("kid", "working")
+        b.finish("kid", status="completed", summary="done")
+        row = b.get_rows_snapshot()[0]
+        assert row.depth == 2
+        assert row.parent_subagent_id == "orch"
+
+    def test_negative_depth_is_clamped(self):
+        b = SwarmBoard()
+        b.register("a1", depth=-3)
+        assert b.get_rows_snapshot()[0].depth == 0
+
+    def test_reregister_does_not_clobber_lineage(self):
+        # register() is called again on refresh; absent kwargs must not
+        # reset an already-known parent to None.
+        b = SwarmBoard()
+        b.register("kid", depth=1, parent_subagent_id="orch")
+        b.register("kid", model="new-model")
+        row = b.get_rows_snapshot()[0]
+        assert row.depth == 1
+        assert row.parent_subagent_id == "orch"
+
+
+class TestResolveRowLineage(unittest.TestCase):
+    """Lineage is read off attributes delegation already maintains."""
+
+    def test_top_level_agent_is_flat(self):
+        parent = _StubAgent(delegate_depth=0)
+        assert resolve_row_lineage(parent) == (0, None)
+
+    def test_subagent_parent_yields_depth_and_id(self):
+        parent = _StubAgent(delegate_depth=1, subagent_id="sa-0-abcd")
+        assert resolve_row_lineage(parent) == (1, "sa-0-abcd")
+
+    def test_non_int_depth_degrades_to_flat(self):
+        # MagicMock-ish parents in tests must not produce a garbage depth.
+        parent = _StubAgent(delegate_depth=object())
+        depth, sid = resolve_row_lineage(parent)
+        assert depth == 0
+        assert sid is None
+
+
+class TestOrderRowsForDisplay(unittest.TestCase):
+    """Grouping must survive rows arriving from separate board objects."""
+
+    def test_flat_rows_keep_input_order_at_depth_zero(self):
+        rows = [_snap("a"), _snap("b"), _snap("c")]
+        ordered = order_rows_for_display(rows)
+        assert [r.subagent_id for r, _ in ordered] == ["a", "b", "c"]
+        assert all(d == 0 for _, d in ordered)
+
+    def test_child_renders_directly_after_its_parent(self):
+        # THE core scenario: an orchestrator's grandchildren live on a
+        # different board, so raw concatenation puts an unrelated
+        # top-level dispatch between parent and child.
+        rows = [
+            _snap("orch"),
+            _snap("unrelated"),          # different, concurrent dispatch
+            _snap("kid1", parent="orch"),  # nested board's rows appended last
+            _snap("kid2", parent="orch"),
+        ]
+        ordered = order_rows_for_display(rows)
+        ids = [r.subagent_id for r, _ in ordered]
+        assert ids.index("kid1") == ids.index("orch") + 1
+        assert ids.index("kid2") == ids.index("kid1") + 1
+        assert "unrelated" in ids
+
+    def test_children_are_deeper_than_their_parent(self):
+        rows = [_snap("orch"), _snap("kid", parent="orch")]
+        depths = {r.subagent_id: d for r, d in order_rows_for_display(rows)}
+        assert depths["kid"] > depths["orch"]
+
+    def test_three_levels_strictly_increase_in_depth(self):
+        rows = [
+            _snap("top"),
+            _snap("mid", parent="top"),
+            _snap("leaf", parent="mid"),
+        ]
+        depths = {r.subagent_id: d for r, d in order_rows_for_display(rows)}
+        assert depths["top"] < depths["mid"] < depths["leaf"]
+
+    def test_orphan_renders_as_root_not_indented(self):
+        # Parent already finished and dropped its board; the surviving
+        # child must not indent under a row that isn't there.
+        rows = [_snap("kid", parent="gone-orch")]
+        ordered = order_rows_for_display(rows)
+        assert ordered[0][1] == 0
+
+    def test_every_row_appears_exactly_once(self):
+        rows = [
+            _snap("a"),
+            _snap("b", parent="a"),
+            _snap("c", parent="b"),
+            _snap("d"),
+        ]
+        ordered = order_rows_for_display(rows)
+        assert len(ordered) == len(rows)
+        assert sorted(r.subagent_id for r, _ in ordered) == ["a", "b", "c", "d"]
+
+    def test_parent_cycle_does_not_hang_or_drop_rows(self):
+        rows = [_snap("x", parent="y"), _snap("y", parent="x")]
+        ordered = order_rows_for_display(rows)
+        assert len(ordered) == 2
+
+    def test_self_parent_does_not_hang(self):
+        rows = [_snap("solo", parent="solo")]
+        ordered = order_rows_for_display(rows)
+        assert len(ordered) == 1
+        assert ordered[0][1] == 0
+
+    def test_duplicate_ids_all_render(self):
+        rows = [_snap("dup"), _snap("dup")]
+        assert len(order_rows_for_display(rows)) == 2
+
+    def test_empty_input(self):
+        assert order_rows_for_display([]) == []
+
+    def test_runaway_nesting_stops_deepening(self):
+        # Depth is bounded so rows can't march off the right edge.
+        rows = [_snap("n0")]
+        for i in range(1, 12):
+            rows.append(_snap(f"n{i}", parent=f"n{i - 1}"))
+        depths = [d for _, d in order_rows_for_display(rows)]
+        assert max(depths) <= _MAX_RENDER_DEPTH
+        assert len(depths) == len(rows)
+
+
+class TestFormatRowIndentation(unittest.TestCase):
+    """Indentation is the visible hierarchy signal."""
+
+    def test_deeper_rows_are_indented_more_than_parents(self):
+        rows = [
+            _snap("top"),
+            _snap("mid", parent="top"),
+            _snap("leaf", parent="mid"),
+        ]
+        lines = [
+            format_row(r, depth=d) for r, d in order_rows_for_display(rows)
+        ]
+        indents = [_leading_spaces(line) for line in lines]
+        assert indents[0] < indents[1] < indents[2], indents
+
+    def test_top_level_row_is_not_indented(self):
+        assert _leading_spaces(format_row(_snap("a"), depth=0)) == 0
+
+    def test_effective_depth_argument_overrides_row_depth(self):
+        # An orphan whose stamped depth is 2 renders flat when its parent
+        # isn't on the board.
+        row = _snap("kid", parent="gone", depth=2)
+        assert _leading_spaces(format_row(row, depth=0)) == 0
+        assert _leading_spaces(format_row(row)) > 0  # falls back to row.depth
+
+    def test_indented_row_stays_single_line(self):
+        # A row that renders as 2 visual lines breaks the widget's height
+        # allocation — the same class of bug the note-flattening fixed.
+        row = _snap("kid", parent="orch")
+        line = format_row(row, depth=3)
+        assert "\n" not in line and "\r" not in line
+
+    def test_indentation_preserves_row_content(self):
+        b = SwarmBoard()
+        b.register("kid", model="anthropic/claude-opus-4-5", depth=1)
+        b.update("kid", last_tool="mcp_jira_search", tool_count=2)
+        line = format_row(b.get_rows_snapshot()[0], depth=1)
+        assert "claude-opus-4-5" in line
+        assert "anthropic/" not in line
+        assert "jira_search" in line
+        assert "2 tools" in line
+
+
+class TestBoardHeightCap(unittest.TestCase):
+    """The panel must stay bounded under heavy concurrent delegation."""
+
+    def test_under_limit_renders_every_row(self):
+        entries = [(_snap(f"a{i}"), 0) for i in range(4)]
+        lines = collapse_rows_to_limit(entries, 12)
+        assert len(lines) == 4
+        assert not any("more subagent" in ln for ln in lines)
+
+    def test_output_never_exceeds_the_cap(self):
+        for total in (13, 20, 50, 200):
+            entries = [(_snap(f"a{i}"), 0) for i in range(total)]
+            lines = collapse_rows_to_limit(entries, 12)
+            assert len(lines) <= 12, (total, len(lines))
+
+    def test_exactly_at_limit_is_not_collapsed(self):
+        entries = [(_snap(f"a{i}"), 0) for i in range(12)]
+        lines = collapse_rows_to_limit(entries, 12)
+        assert len(lines) == 12
+        assert not any("more subagent" in ln for ln in lines)
+
+    def test_overflow_is_summarized_with_the_hidden_count(self):
+        entries = [(_snap(f"a{i}"), 0) for i in range(20)]
+        lines = collapse_rows_to_limit(entries, 12)
+        # 11 real rows + 1 summary covering the remaining 9.
+        assert len(lines) == 12
+        assert "+9 more subagent" in lines[-1]
+
+    def test_summary_reports_hidden_rows_still_running(self):
+        entries = [(_snap(f"a{i}"), 0) for i in range(11)]
+        entries += [(_snap("busy", status="running"), 0)]
+        entries += [(_snap("done", status="completed"), 0)]
+        lines = collapse_rows_to_limit(entries, 12)
+        assert "2 more subagents" in lines[-1]
+        assert "1 running" in lines[-1]
+
+    def test_all_hidden_finished_omits_running_count(self):
+        entries = [(_snap(f"a{i}"), 0) for i in range(11)]
+        entries += [
+            (_snap("d1", status="completed"), 0),
+            (_snap("d2", status="failed"), 0),
+        ]
+        lines = collapse_rows_to_limit(entries, 12)
+        assert "running" not in lines[-1]
+
+    def test_collapse_keeps_the_head_so_parents_stay_visible(self):
+        entries = [(_snap("orch"), 0), (_snap("kid", parent="orch"), 1)]
+        entries += [(_snap(f"x{i}"), 0) for i in range(20)]
+        lines = collapse_rows_to_limit(entries, 5)
+        assert "orch" in lines[0]
+        assert "kid" in lines[1]
+
+    def test_summary_line_is_single_line(self):
+        entries = [(_snap(f"a{i}"), 0) for i in range(30)]
+        lines = collapse_rows_to_limit(entries, 6)
+        assert all("\n" not in ln for ln in lines)
+
+    def test_zero_or_negative_cap_renders_nothing(self):
+        entries = [(_snap("a"), 0)]
+        assert collapse_rows_to_limit(entries, 0) == []
+        assert collapse_rows_to_limit(entries, -1) == []
+
+    def test_empty_entries(self):
+        assert collapse_rows_to_limit([], 12) == []
+
+
+class TestResolveMaxBoardRows(unittest.TestCase):
+    """Row budget scales with the terminal but is always bounded."""
+
+    def test_unknown_height_falls_back_to_the_ceiling(self):
+        assert resolve_max_board_rows(None) == DEFAULT_MAX_BOARD_ROWS
+        assert resolve_max_board_rows(0) == DEFAULT_MAX_BOARD_ROWS
+
+    def test_tall_terminal_is_still_capped(self):
+        assert resolve_max_board_rows(200) == DEFAULT_MAX_BOARD_ROWS
+
+    def test_short_terminal_shrinks_the_board(self):
+        assert resolve_max_board_rows(15) < DEFAULT_MAX_BOARD_ROWS
+
+    def test_board_never_takes_more_than_a_third_of_the_screen(self):
+        for rows in range(10, 120):
+            budget = resolve_max_board_rows(rows)
+            # +2 border lines must still leave the transcript the majority.
+            assert budget + 2 < rows, rows
+
+    def test_tiny_terminal_keeps_a_usable_floor(self):
+        assert resolve_max_board_rows(4) >= MIN_MAX_BOARD_ROWS
+
+
+class TestNestedBoardReachesCLIHost(unittest.TestCase):
+    """A nested orchestrator's board must find the CLI via its ancestors.
+
+    ``_cli_ref`` is stamped only on the top-level agent, so before this a
+    subagent dispatching its own workers got a _NoopBoard and the
+    grandchildren rendered nowhere at all.
+    """
+
+    def setUp(self):
+        self.cli = _StubCLI()
+        self.top = _StubAgent(cli_ref=self.cli, delegate_depth=0)
+
+    def _child_of(self, parent, sid, depth):
+        return _StubAgent(
+            delegate_depth=depth, subagent_id=sid, parent=parent
+        )
+
+    def test_top_level_agent_gets_a_real_board(self):
+        board = SwarmBoard.maybe_start(self.top, 1)
+        assert isinstance(board, SwarmBoard)
+
+    def test_nested_orchestrator_gets_a_real_board(self):
+        orch = self._child_of(self.top, "sa-0-orch", 1)
+        board = SwarmBoard.maybe_start(orch, 2)
+        assert isinstance(board, SwarmBoard), (
+            "an orchestrator subagent's own workers must render on the "
+            "CLI board, not vanish into a _NoopBoard"
+        )
+
+    def test_deeply_nested_agent_still_finds_the_host(self):
+        a = self._child_of(self.top, "sa-0-a", 1)
+        b = self._child_of(a, "sa-0-b", 2)
+        c = self._child_of(b, "sa-0-c", 3)
+        assert isinstance(SwarmBoard.maybe_start(c, 1), SwarmBoard)
+
+    def test_detached_chain_still_degrades_to_noop(self):
+        # No CLI anywhere up the chain (gateway / library run).
+        headless = _StubAgent(delegate_depth=0)
+        orphan = self._child_of(headless, "sa-0-x", 1)
+        assert isinstance(SwarmBoard.maybe_start(orphan, 1), _NoopBoard)
+
+    def test_broken_weakref_degrades_to_noop(self):
+        dead = self._child_of(_StubAgent(), "sa-0-dead", 1)
+        # Referent already collected -> weakref returns None.
+        assert isinstance(SwarmBoard.maybe_start(dead, 1), _NoopBoard)
+
+    def test_cycle_in_parent_chain_terminates(self):
+        a = _StubAgent()
+        b = _StubAgent(parent=a)
+        a._delegate_parent_ref = weakref.ref(b)
+        assert isinstance(SwarmBoard.maybe_start(a, 1), _NoopBoard)
+
+    def test_env_disable_still_wins_for_nested_boards(self):
+        orch = self._child_of(self.top, "sa-0-orch", 1)
+        os.environ["HERMES_SWARM_BOARD"] = "0"
+        try:
+            assert isinstance(SwarmBoard.maybe_start(orch, 2), _NoopBoard)
+        finally:
+            del os.environ["HERMES_SWARM_BOARD"]
+
+
+class TestNestedDelegationEndToEnd(unittest.TestCase):
+    """The reported scenario, driven through the real public surface."""
+
+    def test_orchestrator_and_grandchildren_render_grouped_and_bounded(self):
+        cli = _StubCLI()
+        top = _StubAgent(cli_ref=cli, delegate_depth=0)
+
+        # 1. Top-level agent dispatches an orchestrator + an unrelated worker.
+        top_board = SwarmBoard.maybe_start(top, 2)
+        top_board.__enter__()
+        d, p = resolve_row_lineage(top)
+        top_board.register("sa-0-orch", model="fable", depth=d,
+                           parent_subagent_id=p)
+        top_board.register("sa-1-solo", model="opus", depth=d,
+                           parent_subagent_id=p)
+
+        # 2. The orchestrator subagent dispatches its OWN workers. Its board
+        #    is a separate object appended after the top-level board.
+        orch = _StubAgent(
+            delegate_depth=1, subagent_id="sa-0-orch", parent=top
+        )
+
+        nested_board = SwarmBoard.maybe_start(orch, 2)
+        assert isinstance(nested_board, SwarmBoard)
+        nested_board.__enter__()
+        nd, np_ = resolve_row_lineage(orch)
+        nested_board.register("sa-0-kid", model="opus", depth=nd,
+                              parent_subagent_id=np_)
+        nested_board.register("sa-1-kid", model="opus", depth=nd,
+                              parent_subagent_id=np_)
+
+        # 3. Render exactly as the CLI widget does: concatenate every active
+        #    board, then order + collapse.
+        assert len(cli._swarm_boards) == 2
+        rows = []
+        for b in list(cli._swarm_boards):
+            rows.extend(b.get_rows_snapshot())
+        ordered = order_rows_for_display(rows)
+        lines = collapse_rows_to_limit(ordered, resolve_max_board_rows(40))
+
+        ids = [r.subagent_id for r, _ in ordered]
+        # Grandchildren group under their orchestrator, NOT after the
+        # unrelated top-level dispatch that sat between them in raw order.
+        assert ids.index("sa-0-kid") == ids.index("sa-0-orch") + 1
+        assert ids.index("sa-1-kid") == ids.index("sa-0-kid") + 1
+        # And they are visibly deeper than both their parent and the
+        # unrelated sibling dispatch.
+        depths = {r.subagent_id: d for r, d in ordered}
+        assert depths["sa-0-kid"] > depths["sa-0-orch"]
+        assert depths["sa-0-kid"] > depths["sa-1-solo"]
+        by_id = {}
+        for line in lines:
+            for sid in ("sa-0-orch", "sa-1-solo", "sa-0-kid", "sa-1-kid"):
+                if f"[{sid}]" in line:
+                    by_id[sid] = line
+        assert _leading_spaces(by_id["sa-0-kid"]) > _leading_spaces(
+            by_id["sa-0-orch"]
+        )
+
+        # 4. The nested batch finishes and drops its board; the still-active
+        #    top-level rows must survive.
+        nested_board.__exit__(None, None, None)
+        assert len(cli._swarm_boards) == 1
+        remaining = []
+        for b in list(cli._swarm_boards):
+            remaining.extend(b.get_rows_snapshot())
+        assert {r.subagent_id for r in remaining} == {"sa-0-orch", "sa-1-solo"}
+        top_board.__exit__(None, None, None)
+        assert cli._swarm_boards == []
+
+    def test_wide_nested_tree_stays_within_the_height_budget(self):
+        # 1 orchestrator + 30 grandchildren + 8 unrelated dispatches.
+        rows = [_snap("orch")]
+        rows += [_snap(f"kid{i}", parent="orch") for i in range(30)]
+        rows += [_snap(f"solo{i}") for i in range(8)]
+        budget = resolve_max_board_rows(40)
+        lines = collapse_rows_to_limit(order_rows_for_display(rows), budget)
+        assert len(lines) <= budget
+        # Panel height (rows + 2 borders) leaves the transcript room.
+        assert len(lines) + 2 < 40
+        assert "more subagent" in lines[-1]
 
 
 if __name__ == "__main__":
