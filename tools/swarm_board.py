@@ -22,13 +22,27 @@ the CLI does with the ``swarm_board_widget`` hung off the root ``HSplit``.
 Public surface used by ``delegate_tool.py``:
 
 * ``SwarmBoard.maybe_start(parent_agent, n_children)`` — returns either a real
-  ``SwarmBoard`` (when the parent is attached to a CLI that can host the
-  widget) or a ``_NoopBoard`` (everything else: gateway, library, piped runs).
-* ``board.register(sid, model=..., goal=...)``
+  ``SwarmBoard`` (when a CLI host is reachable from the parent — directly for a
+  top-level agent, or via the delegation weakref chain for a nested
+  orchestrator subagent) or a ``_NoopBoard`` (everything else: gateway,
+  library, piped runs).
+* ``board.register(sid, model=..., goal=..., depth=..., parent_subagent_id=...)``
 * ``board.update(sid, status=..., tool_count=..., last_tool=..., last_note=...)``
 * ``board.note(sid, text)`` — convenience for setting only ``last_note``.
 * ``board.finish(sid, status=..., summary=...)``
 * ``board.get_rows_snapshot()`` — used by the widget's text getter.
+
+Rendering helpers the CLI widget composes (all pure, no lock needed):
+
+* ``resolve_row_lineage(parent_agent)`` — the ``(depth, parent_subagent_id)``
+  pair to pass to ``register()``, read off attributes delegation already sets.
+* ``order_rows_for_display(rows)`` — regroups the concatenation of every
+  active board's rows into parent → child order with effective depths, so a
+  grandchild renders under its orchestrator even though the two live on
+  different board objects.
+* ``collapse_rows_to_limit(entries, max_rows)`` — renders to text with a hard
+  line cap, replacing the overflow with a ``+N more subagents`` summary.
+* ``resolve_max_board_rows(terminal_rows)`` — how many rows the cap allows.
 
 Both ``SwarmBoard`` and ``_NoopBoard`` are context managers; ``__enter__`` /
 ``__exit__`` handle showing and hiding the widget by toggling a CLI-side flag.
@@ -57,10 +71,67 @@ _STATUS_GLYPH = {
     "interrupted": "⛔",
 }
 
+# Statuses that mean "this row is done" — used by the collapse summary to
+# report how many HIDDEN rows are still doing work.
+_TERMINAL_STATUSES = frozenset(
+    {"completed", "ok", "failed", "error", "timeout", "interrupted"}
+)
+
+# Spaces of indent per nesting level.  2 is enough to read as a hierarchy
+# without eating the (already tight) horizontal budget a row shares with
+# model + status + tool + note.
+_INDENT_WIDTH = 2
+
+# Hard ceiling on rendered indentation.  delegation.max_spawn_depth bounds
+# real nesting well below this, but a display path must not be the thing
+# that breaks when a config raises it — past this level rows stack at the
+# same indent instead of marching off the right edge.
+_MAX_RENDER_DEPTH = 4
+
+# Default cap on total rendered rows across ALL active boards (the panel is
+# chrome above the conversation; it must not grow without bound as
+# delegation breadth/depth increases).  The CLI passes a terminal-height
+# derived value; this is the fallback when height can't be determined.
+DEFAULT_MAX_BOARD_ROWS = 12
+
+# Never shrink the board below this many rows even on a very short terminal —
+# a 1-row board with "+11 more" is strictly less useful than no board.
+MIN_MAX_BOARD_ROWS = 3
+
+
+def resolve_max_board_rows(terminal_rows: Optional[int] = None) -> int:
+    """Return how many subagent rows the board may render.
+
+    Bounded by BOTH an absolute ceiling (``DEFAULT_MAX_BOARD_ROWS``) and a
+    share of the terminal, so the panel can never crowd out the conversation
+    on a short window.  The board is allotted at most a third of the visible
+    rows: the panel also spends 2 lines on its borders, and it shares the
+    area below the transcript with the todo board, spinner, and status bar.
+
+    ``terminal_rows=None`` (height unknown / not a TTY) falls back to the
+    absolute ceiling rather than guessing small.
+    """
+    if not terminal_rows or terminal_rows <= 0:
+        return DEFAULT_MAX_BOARD_ROWS
+    share = int(terminal_rows) // 3
+    return max(MIN_MAX_BOARD_ROWS, min(DEFAULT_MAX_BOARD_ROWS, share))
+
 
 @dataclass
 class RowSnapshot:
-    """Frozen view of a row, safe to render without holding the lock."""
+    """Frozen view of a row, safe to render without holding the lock.
+
+    ``depth`` / ``parent_subagent_id`` carry the delegation hierarchy so the
+    renderer can nest a grandchild under the orchestrator that spawned it
+    instead of painting one flat sibling list.  Both default to a top-level
+    row so existing single-level callers are unaffected.
+
+    ``depth`` is the DECLARED nesting level as stamped at registration time
+    (0 = a direct child of the CLI's own agent).  ``order_rows_for_display``
+    re-derives an effective depth from the parent links actually present in
+    the render set, so an orphan row (parent already finished and torn its
+    board down) doesn't render indented under nothing.
+    """
     subagent_id: str
     model: str
     goal: str
@@ -69,6 +140,8 @@ class RowSnapshot:
     last_tool: str
     last_note: str
     elapsed_seconds: float
+    depth: int = 0
+    parent_subagent_id: Optional[str] = None
 
 
 @dataclass
@@ -80,6 +153,8 @@ class _Row:
     tool_count: int = 0
     last_tool: str = ""
     last_note: str = ""
+    depth: int = 0
+    parent_subagent_id: Optional[str] = None
     started_at: float = field(default_factory=time.time)
     ended_at: Optional[float] = None
     # Freeze point for the displayed elapsed clock once the child stops
@@ -113,6 +188,8 @@ class _Row:
             last_tool=self.last_tool,
             last_note=self.last_note,
             elapsed_seconds=self.elapsed(),
+            depth=self.depth,
+            parent_subagent_id=self.parent_subagent_id,
         )
 
 
@@ -137,12 +214,21 @@ def _flatten_to_oneline(text: str, max_len: int) -> str:
     return flat
 
 
-def format_row(row: RowSnapshot) -> str:
+def format_row(row: RowSnapshot, *, depth: Optional[int] = None) -> str:
     """Render a single row to a one-line status string.
 
     Pure function so the CLI's widget getter can call it without taking the
     board's lock.
+
+    ``depth`` overrides ``row.depth`` for indentation — the renderer passes
+    the EFFECTIVE depth computed by ``order_rows_for_display`` (which only
+    counts ancestors actually present in the current render set) so an
+    orphaned grandchild isn't indented under a parent that already left the
+    board.  Each level adds ``_INDENT_WIDTH`` spaces plus a ``└─`` elbow, so
+    nesting is legible without relying on color.
     """
+    eff_depth = row.depth if depth is None else depth
+    eff_depth = max(0, min(int(eff_depth or 0), _MAX_RENDER_DEPTH))
     glyph = _STATUS_GLYPH.get(row.status, "🔀")
     sid = row.subagent_id[-12:] if len(row.subagent_id) > 12 else row.subagent_id
     model = row.model or "?"
@@ -154,8 +240,11 @@ def format_row(row: RowSnapshot) -> str:
         tool = tool[4:]
     n = row.tool_count
     note = _flatten_to_oneline(row.last_note or "", 60)
+    # Indent + elbow marks the row as a child of the row above it.  Top-level
+    # rows (depth 0) keep the exact pre-nesting format — no prefix at all.
+    prefix = (" " * (_INDENT_WIDTH * eff_depth)) + "└─ " if eff_depth else ""
     parts = [
-        f"{glyph} [{sid}]",
+        f"{prefix}{glyph} [{sid}]",
         f"{model}",
         f"{row.status}",
         f"{n} tool{'s' if n != 1 else ''}",
@@ -166,6 +255,193 @@ def format_row(row: RowSnapshot) -> str:
         parts.append(note)
     parts.append(elapsed)
     return " · ".join(parts)
+
+
+def order_rows_for_display(
+    rows: List[RowSnapshot],
+) -> List[tuple]:
+    """Group rows into parent → child order and compute effective depths.
+
+    Returns a list of ``(row, effective_depth)`` pairs.
+
+    Rows arrive from the CLI widget as the concatenation of EVERY active
+    board's snapshot (``cli_ref._swarm_boards`` — one board per in-flight
+    ``delegate_task()`` call).  A nested orchestrator's children therefore
+    live on a *different* board object than the orchestrator's own row, and
+    plain concatenation can interleave them with an unrelated concurrent
+    top-level dispatch: correct depth, wrong neighbours.  This function
+    reassembles the forest by parent link so a child always renders
+    immediately beneath its parent regardless of which board it came from.
+
+    Rules:
+      * Roots (no parent, or a parent not present in ``rows``) keep their
+        relative input order — that's registration order within a board and
+        board-activation order across boards.
+      * A child renders directly after its parent, siblings in input order.
+      * Effective depth is ``parent's effective depth + 1``, computed from
+        links actually present, so an orphan renders as a root at depth 0
+        instead of floating at an indent with nothing above it.
+      * Duplicate ids (same subagent registered on two boards) and parent
+        cycles are handled defensively — every input row appears exactly
+        once in the output.
+    """
+    if not rows:
+        return []
+
+    # First occurrence wins for duplicate ids; keep every row object though,
+    # so a duplicate still renders (as a root) rather than vanishing.
+    by_id: Dict[str, RowSnapshot] = {}
+    for row in rows:
+        by_id.setdefault(row.subagent_id, row)
+
+    children: Dict[str, List[RowSnapshot]] = {}
+    roots: List[RowSnapshot] = []
+    for row in rows:
+        parent = row.parent_subagent_id
+        # A row whose parent isn't on the board (parent already finished, or
+        # the parent is the CLI's own agent) is a root for display purposes.
+        # `by_id.get(parent) is row` guards the degenerate self-parent case.
+        if parent and parent in by_id and by_id[parent] is not row:
+            children.setdefault(parent, []).append(row)
+        else:
+            roots.append(row)
+
+    ordered: List[tuple] = []
+    seen: set = set()
+
+    def _emit(row: RowSnapshot, depth: int) -> None:
+        # id() keyed, not subagent_id keyed: duplicate-id rows are distinct
+        # objects that should each render once.
+        marker = id(row)
+        if marker in seen:
+            return
+        seen.add(marker)
+        ordered.append((row, depth))
+        if depth >= _MAX_RENDER_DEPTH:
+            # Past the indent ceiling, keep descending but stop deepening —
+            # runaway nesting must not push rows off the right edge.
+            next_depth = depth
+        else:
+            next_depth = depth + 1
+        for child in children.get(row.subagent_id, ()):
+            _emit(child, next_depth)
+
+    for root in roots:
+        _emit(root, 0)
+
+    # Safety net: anything unreachable from a root (a parent cycle among
+    # non-root rows) still renders, as a root, so no row is ever dropped.
+    for row in rows:
+        if id(row) not in seen:
+            _emit(row, 0)
+
+    return ordered
+
+
+def collapse_rows_to_limit(
+    entries: List[tuple],
+    max_rows: int,
+) -> List[str]:
+    """Render ``(row, depth)`` pairs to text, capped at ``max_rows`` lines.
+
+    The panel is a fixed piece of chrome sitting above the conversation, so
+    its height must be bounded: without this, one line was added per active
+    subagent, summed across every concurrent board, and a deep/wide
+    delegation tree could grow the panel until it crowded the transcript off
+    a normal-height terminal.
+
+    When the entry count exceeds ``max_rows``, the first ``max_rows - 1``
+    rows render normally and the final line becomes a ``+N more subagents``
+    summary, so the returned list NEVER exceeds ``max_rows``.  Keeping the
+    head (rather than the tail) preserves the parent-before-child ordering
+    that makes the tree readable — a truncated tail reads as "there's more
+    below", a truncated head would orphan every remaining child.
+
+    The summary line breaks out how many of the hidden rows are still
+    running, since "12 hidden, all finished" and "12 hidden, all running"
+    are very different situations for someone watching a live board.
+    """
+    if max_rows <= 0:
+        return []
+    if len(entries) <= max_rows:
+        return [format_row(row, depth=depth) for row, depth in entries]
+
+    visible = entries[: max_rows - 1]
+    hidden = entries[max_rows - 1:]
+    lines = [format_row(row, depth=depth) for row, depth in visible]
+    hidden_active = sum(
+        1 for row, _ in hidden if row.status not in _TERMINAL_STATUSES
+    )
+    n = len(hidden)
+    suffix = f", {hidden_active} running" if hidden_active else ""
+    lines.append(f"   … +{n} more subagent{'s' if n != 1 else ''}{suffix}")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Locating the CLI host across a nested delegation chain.
+# ---------------------------------------------------------------------------
+
+# Matches ``tools/delegate_tool.py::_is_descendant_of``'s hop bound — the
+# same weakref chain, walked for the same reason (bounded so a corrupted or
+# cyclic chain can't spin).
+_MAX_ANCESTOR_HOPS = 8
+
+_CLI_HOOKS = ("_swarm_board_show", "_swarm_board_hide", "_invalidate_app")
+
+
+def _has_cli_hooks(cli_ref) -> bool:
+    """True when ``cli_ref`` exposes every hook the board drives."""
+    if cli_ref is None:
+        return False
+    return all(callable(getattr(cli_ref, attr, None)) for attr in _CLI_HOOKS)
+
+
+def _find_cli_host(agent, max_hops: int = _MAX_ANCESTOR_HOPS):
+    """Return the nearest CLI host reachable from *agent*, else ``None``.
+
+    ``_cli_ref`` is stamped by ``cli.py`` on the TOP-LEVEL agent only.  A
+    subagent built by ``delegate_tool._build_child_agent`` is a fresh
+    ``AIAgent`` that never receives it, so an orchestrator subagent
+    dispatching its own workers used to get a ``_NoopBoard`` and its
+    grandchildren rendered nowhere at all — invisible, not merely flat.
+
+    Delegation already stamps ``child._delegate_parent_ref =
+    weakref.ref(parent_agent)`` at build time for the control plane
+    (``action=list/steer/stop``).  Reuse that existing chain rather than
+    threading a second parallel reference: walk up until we find an agent
+    carrying a usable ``_cli_ref``.  Bounded by ``max_hops`` for the same
+    reason ``_is_descendant_of`` is.
+    """
+    cur = agent
+    for _ in range(max_hops + 1):
+        if cur is None:
+            return None
+        cli_ref = getattr(cur, "_cli_ref", None)
+        if _has_cli_hooks(cli_ref):
+            return cli_ref
+        ref = getattr(cur, "_delegate_parent_ref", None)
+        # weakref.ref is callable and returns None once the referent dies.
+        cur = ref() if callable(ref) else None
+    return None
+
+
+def resolve_row_lineage(parent_agent) -> tuple:
+    """Return ``(depth, parent_subagent_id)`` for children of *parent_agent*.
+
+    Both values are read from attributes delegation already maintains:
+    ``_delegate_depth`` (0 on a top-level agent, incremented per level in
+    ``_build_child_agent``) and ``_subagent_id`` (non-None only when the
+    parent is ITSELF a subagent — i.e. exactly the nested-orchestrator case).
+
+    A child of the top-level agent is depth 0, matching the pre-existing
+    flat rendering.  A child of a subagent is depth 1, and so on.
+    """
+    raw_depth = getattr(parent_agent, "_delegate_depth", 0)
+    depth = raw_depth if isinstance(raw_depth, int) and raw_depth > 0 else 0
+    raw_parent_sid = getattr(parent_agent, "_subagent_id", None)
+    parent_sid = raw_parent_sid if isinstance(raw_parent_sid, str) else None
+    return depth, parent_sid
 
 
 class _NoopBoard:
@@ -262,9 +538,10 @@ class SwarmBoard:
             making a long single delegation look like it was spamming or
             frozen). A lone child now gets the same one-row-updated-in-place
             treatment as a batch.
-          * the parent agent carries a ``_cli_ref`` that exposes the
-            ``_swarm_board_show`` / ``_swarm_board_hide`` /
-            ``_invalidate_app`` hooks
+          * a CLI host is reachable from the parent agent — either the
+            parent carries ``_cli_ref`` directly (a top-level agent; the CLI
+            stamps it in ``cli.py``) or one of its ancestors does (a nested
+            orchestrator subagent; see ``_find_cli_host``)
           * not explicitly disabled via ``HERMES_SWARM_BOARD=0``
 
         Otherwise returns a no-op board so callers don't have to branch.
@@ -274,14 +551,12 @@ class SwarmBoard:
         if n_children < 1:
             return _NoopBoard()
 
-        cli_ref = getattr(parent_agent, "_cli_ref", None)
+        cli_ref = _find_cli_host(parent_agent)
         if cli_ref is None:
+            # Either no CLI at all (gateway / library / piped run) or a
+            # wrapper CLI that doesn't expose the hooks we drive — degrade
+            # rather than crash.  ``_find_cli_host`` validates the hooks.
             return _NoopBoard()
-        # Sanity: the CLI must expose the hooks we need.  If a wrapper CLI
-        # subclasses HermesCLI without these, we degrade rather than crash.
-        for attr in ("_swarm_board_show", "_swarm_board_hide", "_invalidate_app"):
-            if not callable(getattr(cli_ref, attr, None)):
-                return _NoopBoard()
 
         board = cls(
             on_change=cli_ref._invalidate_app,
@@ -329,6 +604,8 @@ class SwarmBoard:
         model: str = "",
         goal: str = "",
         status: Optional[str] = None,
+        depth: int = 0,
+        parent_subagent_id: Optional[str] = None,
     ) -> None:
         """Add or refresh a row.
 
@@ -337,17 +614,26 @@ class SwarmBoard:
         submitted but are waiting on an executor slot — distinct from
         rows where the child has actually begun work.  The orchestrator's
         ``subagent.start`` event transitions the row to ``"running"``.
+
+        ``depth`` / ``parent_subagent_id`` describe where this child sits
+        in the delegation tree.  Both are optional and default to a
+        top-level row, so a caller that doesn't know (or care about)
+        nesting gets exactly the previous flat behavior.  When supplied,
+        ``order_rows_for_display`` groups children under their parent and
+        ``format_row`` indents them.
         """
         with self._lock:
             if subagent_id not in self._rows:
-                row_kwargs = {
-                    "subagent_id": subagent_id,
-                    "model": model,
-                    "goal": goal,
-                }
+                row = _Row(
+                    subagent_id=subagent_id,
+                    model=model,
+                    goal=goal,
+                    depth=max(0, int(depth or 0)),
+                    parent_subagent_id=parent_subagent_id or None,
+                )
                 if status:
-                    row_kwargs["status"] = status
-                self._rows[subagent_id] = _Row(**row_kwargs)
+                    row.status = status
+                self._rows[subagent_id] = row
                 self._row_order.append(subagent_id)
             else:
                 row = self._rows[subagent_id]
@@ -357,6 +643,10 @@ class SwarmBoard:
                     row.goal = goal
                 if status:
                     row.status = status
+                if depth:
+                    row.depth = max(0, int(depth))
+                if parent_subagent_id:
+                    row.parent_subagent_id = parent_subagent_id
         self._notify()
 
     def update(

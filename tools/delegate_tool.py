@@ -4918,7 +4918,11 @@ def delegate_task(
             # instead of every 30s heartbeat/"still waiting on provider"
             # tick printing a fresh scrollback line (looked like a frozen
             # status line spamming duplicate text).
-            from tools.swarm_board import SwarmBoard, make_child_print_fn
+            from tools.swarm_board import (
+                SwarmBoard,
+                make_child_print_fn,
+                resolve_row_lineage,
+            )
 
             _i, _t, child = children[0]
             sid = getattr(child, "_subagent_id", None) or "subagent-0"
@@ -4940,11 +4944,17 @@ def delegate_task(
             # pre-existing limitation, not introduced here.
             with SwarmBoard.maybe_start(parent_agent, n_tasks) as _swarm_board:
                 parent_print_fn = getattr(parent_agent, "_print_fn", None) or print
+                # Lineage so the widget can nest this row under the
+                # orchestrator that dispatched it (both are 0/None when the
+                # parent is the top-level agent — i.e. the flat case).
+                _row_depth, _row_parent_sid = resolve_row_lineage(parent_agent)
                 _swarm_board.register(
                     sid,
                     model=getattr(child, "model", "") or "",
                     goal=(_t.get("goal") or "")[:60],
                     status="running",
+                    depth=_row_depth,
+                    parent_subagent_id=_row_parent_sid,
                 )
                 child._print_fn = make_child_print_fn(
                     _swarm_board, sid, fallback=parent_print_fn
@@ -4976,7 +4986,11 @@ def delegate_task(
             # multi-row board above the parent's spinner instead of letting
             # each child print its chatter directly.  Errors and final
             # summaries still flow up to stdout above the board.
-            from tools.swarm_board import SwarmBoard, make_child_print_fn
+            from tools.swarm_board import (
+                SwarmBoard,
+                make_child_print_fn,
+                resolve_row_lineage,
+            )
 
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
@@ -4997,6 +5011,9 @@ def delegate_task(
                 # larger than max_concurrent_children look identical to running
                 # children stuck on tool 0 (just "starting · 0 tools" forever).
                 futures = {}
+                # Lineage is per-dispatch, not per-child: every child in this
+                # batch hangs off the same parent, so resolve once.
+                _row_depth, _row_parent_sid = resolve_row_lineage(parent_agent)
                 for i, t, child in children:
                     sid = getattr(child, "_subagent_id", None) or f"subagent-{i}"
                     _swarm_board.register(
@@ -5004,6 +5021,8 @@ def delegate_task(
                         model=getattr(child, "model", "") or "",
                         goal=(t.get("goal") or "")[:60],
                         status="queued",
+                        depth=_row_depth,
+                        parent_subagent_id=_row_parent_sid,
                     )
                     # Patch the child's _print_fn so its chatter goes to its
                     # row's note slot instead of stdout.  No-op when the
