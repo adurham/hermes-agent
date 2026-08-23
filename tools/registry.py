@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key
 
@@ -208,11 +208,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "owns_own_deadline",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 owns_own_deadline=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -231,6 +233,18 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        # Optional zero-arg predicate: given this call's args, return True when
+        # the tool owns its OWN completion bound and the generic per-call
+        # executor deadline must NOT be applied. Set for tools whose legitimate
+        # runtime is the runtime of work they supervise (delegate_task blocking
+        # spawns) rather than of their own code. The executor still runs them on
+        # a worker with interrupt polling — "no deadline" never means "no
+        # interrupt checks" — it only skips the synthetic timeout+abandon path
+        # that would detach a still-running supervisor from its result.
+        # Signature: fn(args: dict, agent: Any) -> bool. Exceptions fail
+        # CLOSED (deadline applies) so a buggy predicate can never remove a
+        # bound silently.
+        self.owns_own_deadline = owns_own_deadline
 
 
 class _PluginOverridePolicy:
@@ -747,6 +761,7 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
+        owns_own_deadline: Optional[Callable] = None,
         override: bool = False,
         scope: Optional[str] = None,
     ):
@@ -844,6 +859,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                owns_own_deadline=owns_own_deadline,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -1172,6 +1188,41 @@ class ToolRegistry:
         """Return the toolset a tool belongs to, or None."""
         entry = self.get_entry(name)
         return entry.toolset if entry else None
+
+    def tool_owns_own_deadline(
+        self, name: str, args: Optional[dict] = None, agent: Any = None
+    ) -> bool:
+        """True when *name* (with these args) must bypass the generic tool deadline.
+
+        The executor applies one blanket per-call deadline
+        (``timeouts.tools.sequential_call`` / ``.concurrent_batch``, default
+        420s) to every tool. That is correct for a tool bounded by its own
+        code, and WRONG for one whose legitimate runtime is the runtime of
+        work it supervises — a blocking ``delegate_task`` waits for whole
+        child agents, which deliberately carry no wall-clock cap by default.
+
+        Applying the generic deadline there does not cancel the supervised
+        work: the executor abandons the worker (``shutdown(wait=False)``) and
+        the still-running supervisor is detached from any consumer of its
+        result. Registering a predicate here keeps the deadline off the calls
+        that own their own bound while leaving it on every sibling call.
+
+        Fails CLOSED: an unregistered tool, a missing predicate, or a
+        predicate that raises all mean "apply the deadline". Removing a bound
+        must always be an explicit, working opt-in.
+        """
+        entry = self.get_entry(name)
+        predicate = getattr(entry, "owns_own_deadline", None) if entry else None
+        if not callable(predicate):
+            return False
+        try:
+            return bool(predicate(args if isinstance(args, dict) else {}, agent))
+        except Exception:
+            logger.debug(
+                "owns_own_deadline predicate for %s raised; applying the "
+                "generic tool deadline", name, exc_info=True,
+            )
+            return False
 
     def get_emoji(self, name: str, default: str = "⚡") -> str:
         """Return the emoji for a tool, or *default* if unset."""

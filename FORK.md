@@ -12166,3 +12166,78 @@ check` clean on both touched files.
 **Merge note:** pure fork-local; extends the 2026-08-20 fork-only
 cleanup-pass feature, which upstream doesn't have.
 
+### Fork-only fix — 2026-08-23 (nested delegation: orchestrator subagent's blocking `delegate_task` killed at 420s by the generic tool deadline, orphaning its own grandchildren for ~7h)
+
+**Symptom:** An orchestrator subagent (depth 1) dispatched a nested batch
+via `delegate_task(tasks=[...])`. It reported itself `completed` to its
+parent with a placeholder summary while its grandchildren were still
+running. Nothing ever consumed their completion; the task chain stalled
+silently for ~7 hours before a human noticed no progress had been made.
+
+**Root cause — NOT the sync/async logic.** `_model_background_value` and
+the depth>0 → `background=False` rule are correct and do cover the batch
+form; the call entered the synchronous blocking path exactly as
+documented. It was killed by `_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0`
+in `agent/tool_executor.py` — a generic per-tool-call deadline applied
+uniformly to `delegate_task`, a tool whose legitimate blocking runtime is
+unbounded (`delegate_task` is not in `_NEVER_PARALLEL_TOOLS`, so it rides
+the sequential executor path that enforces this deadline). Evidence:
+session `20260822_230340_72a02e`, msg 286168 → 286379, delta exactly
+420.0s. The grandchildren are daemon threads spawned inside the tool
+call; abandoning the future when the deadline fires does not stop them —
+it only removes the joiner that would have consumed their result. This
+is a category error: a bounded deadline applied to a tool that is itself
+a supervisor over unbounded child work.
+
+**Secondary bug, same class:** `_get_child_max_runtime()` /
+`delegation.child_max_runtime_seconds` was defined, documented, and
+never called anywhere in the repo — so no transitive runtime bound
+existed on nested children either.
+
+**Fix:** A generic `owns_own_deadline` predicate on `ToolEntry`
+(`tools/registry.py`) lets a tool opt out of the executor's blanket
+deadline; `agent/tool_executor.py`'s `_resolve_call_tool_timeout()`
+returns `None` for such calls on the sequential path, and the concurrent
+path drops the batch-wide deadline if any call in the batch owns its own
+bound (one future in a batch can't be abandoned while the executor is
+still joining its siblings). `tools/delegate_tool.py` registers
+`delegate_task` as owning its own deadline via
+`_delegate_owns_own_deadline(args, agent)`, adds `_owner_abandoned()`
+supervision polling (parent-agent interrupt + thread-scoped interrupt,
+gated behind `honor_parent_interrupt` so legitimate detached/background
+runs don't self-cancel) wired into both aggregation wait loops (stagger
++ join) and the single-task sibling path (new `abandon_check` param on
+`_run_single_child`), a distinct `DelegationAbandoned` exception/status
+so abandonment is never confused with a plain timeout, and a hard clamp
+preventing any depth>0 subagent from dispatching `background=True` at
+all — a bounded subagent turn is not a persistent listener and can never
+safely own an async completion the way the top-level CLI/gateway
+process's `process_registry.completion_queue` drain does. Stale
+docstrings at `_model_background_value` and the nested-orchestration
+note were corrected to describe this precisely.
+
+**Files:** `tools/registry.py` (`owns_own_deadline` predicate + query
+helper), `tools/delegate_tool.py` (deadline opt-out wiring, abandonment
+detection/supervision, async clamp for depth>0), `agent/tool_executor.py`
+(`_resolve_call_tool_timeout()` deadline-skip on both executor paths),
+`tests/tools/test_delegate_nested_deadline_orphaning.py` (new, 13 tests).
+
+**Verification:** New regression suite (13 tests) proven RED on pre-fix
+code (fails with the exact incident signature — `timed out after Ns` on
+a scaled-down deadline) and GREEN post-fix. `ruff check .` (blocking CI
+gate) clean. Zero new `ty` diagnostics vs. a pristine-`main` worktree
+baseline (one pre-existing `invalid-parameter-default` diagnostic was
+fixed as a drive-by since it was adjacent to the changed code). Sibling
+suites `tests/tools/test_delegate_tool.py`,
+`tests/tools/test_async_delegation.py`, `tests/agent/test_tool_executor.py`
+run clean except one failure
+(`test_delegate_task_background_batch_runs_as_one_unit`, `KeyError:
+'status'`) independently confirmed pre-existing and unrelated via a
+clean `git worktree` comparison against pristine `main` HEAD before this
+fix — not a regression introduced here.
+
+**Merge note:** pure fork-local; upstream has no analog of this
+supervised-deadline-opt-out mechanism, and the incident itself (nested
+orchestrator subagent dispatch) only exists in this fork's delegation
+depth/role model.
+
