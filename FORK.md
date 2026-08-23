@@ -3,6 +3,60 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-08-23 (per-role reasoning-effort override for delegated subagents — `delegation.reasoning_effort_by_role`)
+
+**Motivation:** `delegation.reasoning_effort` was a single global knob
+applied uniformly to every delegated child regardless of its job — an
+orchestrator/PM child (e.g. a Fable persona dispatched with
+`role="orchestrator"`) got the same thinking budget as the leaf workers it
+fans out to (e.g. Opus `agent_type="coder"`/`"reviewer"` personas doing
+narrowly-scoped, precisely-briefed single tasks that don't need max
+reasoning). User wanted the PM to run at `max` while its coder/reviewer
+workers run at `high` — not achievable with the existing single global
+value.
+
+**Change:** added `delegation.reasoning_effort_by_role` (a `dict[str,str]`,
+mirroring the existing `delegation.model_by_role` shape and persistence
+pattern exactly) keyed first by `agent_type` persona (`"coder"`,
+`"reviewer"`, etc.) then by spawn `role` (`"orchestrator"`, `"leaf"`).
+`_build_child_agent()` in `tools/delegate_tool.py` now resolves reasoning
+effort as: per-agent_type override → per-role override → the existing
+global `delegation.reasoning_effort` → parent inherit (unchanged fallback
+chain, just with two new lookups spliced in ahead of it). New helpers
+`get_role_reasoning_map()` / `set_role_reasoning()` /
+`lookup_reasoning_for_role()` added to `hermes_cli/personas.py` (config
+read/write, identical pattern to the existing `*_role_model_map`/
+`set_role_model`/`lookup_model_for_role` trio) and re-exported through the
+`hermes_cli/ruflo_agents.py` legacy shim. Registered
+`delegation.reasoning_effort_by_role` in `_OPEN_DICT_NESTED_PATHS`
+(`hermes_cli/config.py`) so `hermes config set
+delegation.reasoning_effort_by_role.<role> <effort>` doesn't spuriously
+warn "not a recognized config key" (same fix class as the 2026-08-19
+`model_by_role` entry above). Added the default empty-dict key + doc
+comment to `DEFAULT_CONFIG["delegation"]` in
+`hermes_cli/config_defaults.py`.
+
+**Usage:** `hermes config set delegation.reasoning_effort_by_role.orchestrator max`,
+`hermes config set delegation.reasoning_effort_by_role.coder high`,
+`hermes config set delegation.reasoning_effort_by_role.reviewer high`.
+Takes effect on next session (config is loaded once at startup — same
+caveat as every other delegation config change).
+
+**Tests:** six new tests in `tests/hermes_cli/test_ruflo_agents.py`
+mirroring the existing `model_by_role` test block exactly (empty-when-unset,
+reads-section, filters-non-string-values, writes-through, clears-when-empty,
+lookup-returns-none-when-unset). `ruff check` clean; 119 passed / 6 skipped
+across `tests/hermes_cli/test_ruflo_agents.py` +
+`tests/tools/test_delegate.py` (up from 113 passed pre-change — the 6 new
+tests all landed green, zero regressions). `basedpyright` not run this pass
+— unavailable outside the nix dev shell in this session (`nix: command not
+found`); syntax-validated via `ast.parse` on all five touched files as a
+substitute gate.
+
+**Files:** `tools/delegate_tool.py`, `hermes_cli/personas.py`,
+`hermes_cli/ruflo_agents.py`, `hermes_cli/config.py`,
+`hermes_cli/config_defaults.py`, `tests/hermes_cli/test_ruflo_agents.py`.
+
 ### Fix — 2026-08-22 (Anthropic-native auxiliary calls silently dropped the per-task `timeout`, letting a hung connection stall CLI exit for 11+ minutes past the configured budget)
 
 **Symptom:** user reported a CLI session hanging on exit at the

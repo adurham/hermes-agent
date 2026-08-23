@@ -351,6 +351,88 @@ def lookup_model_for_role(role: Optional[str]) -> Optional[str]:
     return get_role_model_map().get(role.strip())
 
 
+# ---------------------------------------------------------------------------
+# Per-role reasoning-effort config (hermes ~/.hermes/config.yaml)
+#
+# Mirrors the model_by_role helpers above, but for delegation.
+# reasoning_effort_by_role — lets an orchestrator role (e.g. a PM persona
+# dispatched with role="orchestrator") run at a higher thinking budget than
+# its leaf workers (e.g. agent_type="coder"/"reviewer"), instead of the
+# single global delegation.reasoning_effort knob applying uniformly to
+# every delegated child regardless of its job.
+# ---------------------------------------------------------------------------
+
+
+def get_role_reasoning_map() -> dict[str, str]:
+    """Read ``delegation.reasoning_effort_by_role`` from ~/.hermes/config.yaml.
+
+    Returns an empty dict when the section is missing or unparseable.
+    """
+    try:
+        from hermes_cli.config import load_config
+    except Exception:
+        return {}
+    try:
+        cfg = load_config()
+    except Exception:
+        return {}
+    delegation = cfg.get("delegation") if isinstance(cfg, dict) else None
+    if not isinstance(delegation, dict):
+        return {}
+    raw = delegation.get("reasoning_effort_by_role")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and isinstance(v, str) and v.strip():
+            out[k] = v.strip()
+    return out
+
+
+def set_role_reasoning(role: str, effort: Optional[str]) -> bool:
+    """Persist a per-role reasoning-effort assignment to ~/.hermes/config.yaml.
+
+    Pass ``effort=None`` or empty string to remove the assignment.
+    """
+    try:
+        from hermes_cli.config import load_config
+    except Exception:
+        return False
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    delegation = cfg.get("delegation") if isinstance(cfg, dict) else None
+    if not isinstance(delegation, dict):
+        delegation = {}
+    by_role = delegation.get("reasoning_effort_by_role")
+    if not isinstance(by_role, dict):
+        by_role = {}
+    role = role.strip()
+    if not role:
+        return False
+    if effort and effort.strip():
+        by_role[role] = effort.strip()
+    else:
+        by_role.pop(role, None)
+    return _save_to_config_yaml("delegation.reasoning_effort_by_role", by_role)
+
+
+def lookup_reasoning_for_role(role: Optional[str]) -> Optional[str]:
+    """Return the configured reasoning effort for ``role``, or ``None`` if unset.
+
+    Used by ``tools/delegate_tool.py`` to resolve per-role thinking depth.
+    Callers should try the ``agent_type`` (persona, e.g. "coder"/"reviewer")
+    first, then fall back to the spawn ``role`` ("orchestrator"/"leaf") when
+    no persona-specific entry exists, before falling through to the existing
+    precedence chain (``delegation.reasoning_effort`` global → parent's
+    reasoning config) when both return None.
+    """
+    if not role:
+        return None
+    return get_role_reasoning_map().get(role.strip())
+
+
 __all__ = [
     "DEFAULT_PERSONAS_PATH",
     "Persona",
@@ -361,10 +443,13 @@ __all__ = [
     "discover_ruflo_agents",
     "get_personas_path",
     "get_role_model_map",
+    "get_role_reasoning_map",
     "get_ruflo_path",
     "group_by_category",
     "lookup_agent",
     "lookup_model_for_role",
+    "lookup_reasoning_for_role",
     "set_role_model",
+    "set_role_reasoning",
     "sync_from_ruflo",
 ]

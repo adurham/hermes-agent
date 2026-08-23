@@ -2166,23 +2166,45 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: per-role override > delegation global > parent inherit
+    #
+    # Precedence: delegation.reasoning_effort_by_role[agent_type] (e.g. a
+    # "coder"/"reviewer" persona pinned to "high") beats
+    # delegation.reasoning_effort_by_role[role] (e.g. the spawn role
+    # "orchestrator" pinned to "max") beats the single global
+    # delegation.reasoning_effort > parent inherit. This lets an
+    # orchestrator/PM child (Fable) run at max reasoning while the leaf
+    # workers it dispatches (Opus coder/reviewer personas) run cheaper,
+    # instead of one global knob forcing every delegated child to the same
+    # depth regardless of job.
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
-        # False (``reasoning_effort: false``) to "" and inherit the parent
-        # instead of disabling thinking for children.
-        delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
+        from hermes_constants import parse_reasoning_effort
 
+        delegation_effort = None
+        try:
+            from hermes_cli.personas import lookup_reasoning_for_role
+
+            delegation_effort = lookup_reasoning_for_role(agent_type) or (
+                lookup_reasoning_for_role(role) if role else None
+            )
+        except Exception:
+            logger.debug(
+                "Could not load delegation reasoning_effort_by_role", exc_info=True
+            )
+        if not delegation_effort:
+            # Keep the raw value — ``str(x or "")`` would coerce a YAML
+            # boolean False (``reasoning_effort: false``) to "" and inherit
+            # the parent instead of disabling thinking for children.
+            delegation_effort = delegation_cfg.get("reasoning_effort")
+        if delegation_effort or delegation_effort is False:
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is not None:
                 child_reasoning = parsed
             else:
                 logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                    "Unknown delegation reasoning effort '%s', inheriting parent level",
                     delegation_effort,
                 )
     except Exception as exc:

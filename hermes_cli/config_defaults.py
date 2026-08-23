@@ -1917,6 +1917,15 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
+        # Per-role reasoning-effort overrides, keyed first by agent_type
+        # persona (e.g. "coder", "reviewer") then by spawn role
+        # ("orchestrator", "leaf") — see delegation.model_by_role for the
+        # equivalent model map. Lets an orchestrator/PM child run at a
+        # deeper thinking budget than the leaf workers it dispatches,
+        # instead of the single reasoning_effort knob above applying
+        # uniformly to every delegated child. Empty by default (falls
+        # through to reasoning_effort, then parent inherit).
+        "reasoning_effort_by_role": {},
         "max_concurrent_children": 10,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
