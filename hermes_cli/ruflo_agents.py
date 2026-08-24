@@ -16,6 +16,7 @@ from hermes_cli.personas import (
     DEFAULT_PERSONAS_PATH as DEFAULT_RUFLO_PATH,
     Persona,
     Persona as RufloAgent,  # legacy name for the dataclass
+    ROLE_ALIASES,
     SUGGESTED_ROLE_MODELS,
     _parse_frontmatter,  # re-exported for legacy callers
     _strip_frontmatter,  # re-exported for legacy callers
@@ -33,6 +34,8 @@ from hermes_cli.personas import (
     lookup_model_for_role,
     lookup_provider_for_role,
     lookup_reasoning_for_role,
+    lookup_role_entry,
+    resolve_role_alias,
     set_role_model,
     set_role_reasoning,
     sync_from_ruflo,
@@ -41,6 +44,7 @@ from hermes_cli.personas import (
 __all__ = [
     "DEFAULT_RUFLO_PATH",
     "Persona",
+    "ROLE_ALIASES",
     "RufloAgent",
     "SUGGESTED_ROLE_MODELS",
     "apply_suggested_defaults",
@@ -57,6 +61,8 @@ __all__ = [
     "lookup_model_for_role",
     "lookup_provider_for_role",
     "lookup_reasoning_for_role",
+    "lookup_role_entry",
+    "resolve_role_alias",
     "set_role_model",
     "set_role_reasoning",
     "sync_from_ruflo",

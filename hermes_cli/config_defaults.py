@@ -1934,6 +1934,14 @@ DEFAULT_CONFIG = {
         # api_key / api_mode is accepted alongside model + provider. An entry
         # carrying a provider but NO model is ignored — a provider is never
         # applied without its own model.
+        # Role aliases: a few role names are pure synonyms for another role
+        # and need no entry of their own — they resolve to their target's
+        # model, provider, reasoning effort, and persona prompt. Currently
+        # "sr-coder" -> "coder" (so the Jr/Mid/Sr coder tiering can be named
+        # symmetrically at a dispatch site without forking "coder"'s config
+        # into a second entry that would silently drift). Configuring the
+        # alias name explicitly always overrides the aliased value. The
+        # table lives in hermes_cli/personas.py (ROLE_ALIASES).
         # Per-role reasoning-effort overrides, keyed first by agent_type
         # persona (e.g. "coder", "reviewer") then by spawn role
         # ("orchestrator", "leaf") — see delegation.model_by_role for the
