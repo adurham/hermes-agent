@@ -27,9 +27,12 @@ function MeterRow({ label, percent, value }: { label: string; percent: number | 
   return (
     <div className="grid gap-1">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-muted-foreground">{label}</span>
+        {/* Label yields, value never does: if anything ever narrows the row
+            again, a truncated label beats a clipped number — "15.2 GB" losing
+            its tail reads as a wrong number, not a cut one. */}
+        <span className="truncate text-muted-foreground">{label}</span>
 
-        <span className="tabular-nums text-foreground">{value}</span>
+        <span className="shrink-0 whitespace-nowrap tabular-nums text-foreground">{value}</span>
       </div>
 
       {percent !== null && (
@@ -117,12 +120,20 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
     menuAlign: 'end',
     menuClassName: 'w-64 p-0',
     menuContent: (
-      <div className="grid gap-3 p-3 text-[0.75rem]" data-slot="system-resources-panel">
-        <div className="flex items-baseline justify-between gap-2">
-          <p className="font-medium text-foreground">{copy.title}</p>
+      <div
+        className="grid grid-cols-[minmax(0,1fr)] gap-3 p-3 text-[0.75rem]"
+        data-slot="system-resources-panel"
+      >
+        {/* min-w-0 everywhere a flex/grid child must shrink: grid items
+            default min-width:auto, so the long GPU name's nowrap min-content
+            (263px on the RTX Spark prototype) props the track open past the
+            w-64 box and overflow-x:hidden shears off every right-aligned
+            value. With the track clamped, `truncate` can finally act. */}
+        <div className="flex min-w-0 items-baseline justify-between gap-2">
+          <p className="shrink-0 font-medium text-foreground">{copy.title}</p>
 
           {hardware?.gpu_name && (
-            <span className="truncate text-[0.6875rem] text-muted-foreground">{hardware.gpu_name}</span>
+            <span className="min-w-0 truncate text-[0.6875rem] text-muted-foreground">{hardware.gpu_name}</span>
           )}
         </div>
 
