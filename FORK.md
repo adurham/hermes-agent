@@ -12565,3 +12565,94 @@ worktree.
 **Merge note:** pure fork-local; upstream has no swarm-board widget or
 nested-orchestrator delegation model for this to apply to.
 
+### Fork-only fix — 2026-08-23 (status bar context counter permanently stuck at "0/1M" for the whole session)
+
+**Symptom:** user-reported, recurring — the status bar's context counter
+(`X/1M`) and percent bar showed `0/1M` / `0%` for an entire session,
+never updating even after dozens of API calls with real, large prompts
+(observed live: `61,744 prompt (cache 72%)` in the debug overlay while
+the bar itself showed `0/1M`). Previously "fixed" (2026-06-30/07-01,
+`da796e6bd`) by introducing `ContextCompressor.display_prompt_tokens()`,
+but the bug came back on a different trigger.
+
+**Root cause:** `agent/fork/anthropic_native_web_search.py` swaps in
+Anthropic's native `web_search_20250305` server tool on essentially
+every Claude turn (first-party endpoint). When the model actually
+searches, the provider folds the extra server-side inference pass into
+`prompt_tokens`, inflating it far above the real next-request context
+size — `update_from_response()` tracks this via
+`last_server_tool_requests` and (as of the 2026-07-18 anti-thrash fix)
+skips writing `last_real_prompt_tokens` from an inflated reading,
+"leaving it at its last trustworthy value." That guard assumed a
+trustworthy value already existed. `last_real_prompt_tokens` starts at
+`0` (set in `__init__`/`on_session_reset`/`update_model`) and is
+written ONLY from this one method — so a session whose very *first*
+real API response happened to include a web_search pass (extremely
+common, since the tool fires on essentially every Claude turn) left
+`last_real_prompt_tokens` at `0` with no other write path to ever
+recover it. `display_prompt_tokens()` returns `0` whenever
+`last_real_prompt_tokens <= 0`, so the status bar was pinned at `0/1M`
+for the rest of the session, no matter how large the real context grew.
+
+Confirmed live via `state.db`/`agent.log` correlation: session
+`20260823_204720_2914fb`'s first API call fired
+`server_tool_passes=2 (web_search=2)`, and the bar never recovered for
+the rest of that session.
+
+**Fix:** `ContextCompressor.update_from_response()` gains a narrow
+`elif self.last_real_prompt_tokens <= 0:` branch, sibling to the
+existing `if not self.last_server_tool_requests:` branch, that seeds
+ONLY `last_real_prompt_tokens` (the display baseline) from the inflated
+reading when — and only when — no trustworthy baseline exists yet. It
+deliberately does not touch `last_rough_tokens_when_real_prompt_fit` or
+call `_record_ineffective_compression_verdict(0)` — those drive
+compression *decisions* and must never be judged against an inflated
+reading; only the sibling non-inflated branch is allowed to update
+them. The trailing anti-thrash "did compaction clear the threshold"
+verdict block reads `self.last_prompt_tokens`/`last_server_tool_requests`
+directly (never `last_real_prompt_tokens`), so it is unaffected either
+way. Once a real baseline exists (`last_real_prompt_tokens > 0`), this
+branch never fires again — the original 2026-07-18 anti-balloon
+protection for an ESTABLISHED baseline is untouched, verified by a new
+regression test asserting a 50K real baseline survives a subsequent
+975K server-tool-inflated reading unchanged.
+
+Second-opinion review flagged (and this write-up addresses) two risks
+before landing: (1) whether the post-compaction `-1` sentinel could
+hit this new branch and poison the anti-thrash verdict — confirmed
+`last_real_prompt_tokens` is never actually parked at `-1` in
+production (only synthetic in one test); after compaction it just
+retains its stale pre-compaction value, which is always `> 0`, so the
+new branch only ever fires on a genuinely fresh session/model-switch;
+(2) whether `should_defer_preflight_to_real_usage()` misbehaves with
+an inflated seed — it already has an unconditional
+`last_real_prompt_tokens >= threshold_tokens: return False` (never
+defer) check that an inflated value trivially satisfies, and for a
+first-turn inflated-but-under-threshold reading the projection formula
+(`last_real + (rough_now - baseline)`) with `baseline=0` massively
+over-projects, landing on the same safe "don't defer" outcome as before
+— no more aggressive than the prior `last_real_prompt_tokens <= 0:
+return False` early-exit it replaces for this one case.
+
+**Files:** `agent/context_compressor.py`
+(`ContextCompressor.update_from_response()`),
+`tests/agent/test_context_compressor.py`.
+
+**Verification:** 2 new regression tests —
+`test_server_tool_inflated_first_reading_still_seeds_display_baseline`
+(a fresh session's server-tool-heavy first response now seeds the
+display baseline instead of leaving it at 0) and
+`test_server_tool_inflated_reading_never_overwrites_established_baseline`
+(the original 2026-07-18 protection for an established baseline still
+holds). `tests/agent/test_context_compressor.py`: 147/147 passing (was
+145). `tests/cli/test_cli_status_bar.py` +
+`test_context_compressor_session_end_clears_state.py` +
+`test_context_compressor_cross_session_guard.py`: 185/185 passing. Full
+`tests/agent/` suite: 130 failures reproduced identically on unmodified
+`main` via `git stash` (5105 passed baseline vs. 5107 with this
+change's 2 new tests) — zero new failures.
+
+**Merge note:** pure fork-local fix — upstream has no
+`agent/fork/anthropic_native_web_search.py` (the trigger) and no
+`last_server_tool_requests`/`display_prompt_tokens()` display-baseline
+machinery for this to apply to.

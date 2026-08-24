@@ -3104,6 +3104,27 @@ class ContextCompressor(ContextEngine):
                     self._record_ineffective_compression_verdict(0)
                 else:
                     self.last_rough_tokens_when_real_prompt_fit = 0
+            elif self.last_real_prompt_tokens <= 0:
+                # No trustworthy baseline exists yet (fresh session, or a
+                # session that has genuinely never had a non-inflated real
+                # reading). Anthropic's native web_search tool
+                # (agent/fork/anthropic_native_web_search.py) is swapped in
+                # on every Claude turn, and a model that searches on its
+                # very first response would otherwise starve the display
+                # baseline forever — display_prompt_tokens() returns 0
+                # whenever last_real_prompt_tokens <= 0, so the status bar
+                # context counter (X/1M) got permanently stuck at "0/1M"
+                # for the whole session (#89441). Seed the DISPLAY baseline
+                # only — an inflated first reading is still far more honest
+                # than showing 0 while the real context is in the hundreds
+                # of thousands. Deliberately does NOT touch
+                # last_rough_tokens_when_real_prompt_fit or the ineffective-
+                # compaction verdict: those drive compression *decisions*
+                # and must never be judged against an inflated reading —
+                # only the sibling ``if not self.last_server_tool_requests``
+                # branch above is allowed to update them. This branch also
+                # never fires again once a real baseline exists.
+                self.last_real_prompt_tokens = self.last_prompt_tokens
             self._pending_request_rough_tokens = 0
 
 

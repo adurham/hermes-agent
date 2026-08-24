@@ -294,6 +294,42 @@ class TestUpdateFromResponse:
         # The pending verdict is still consumed (bounded window), not left armed.
         assert compressor._verify_compaction_cleared_threshold is False
 
+    def test_server_tool_inflated_first_reading_still_seeds_display_baseline(self, compressor):
+        """Regression (#89441): a session whose very first real API response
+        used a server tool (e.g. Anthropic native web_search, swapped in on
+        every Claude turn by agent/fork/anthropic_native_web_search.py) must
+        NOT leave last_real_prompt_tokens at its initial 0 forever.
+        display_prompt_tokens() returns 0 whenever last_real_prompt_tokens
+        <= 0, so with no seed the status bar's context counter (X/1M)
+        showed a permanently stuck "0/1M" for the whole session — the
+        "context in the status bar disappearing" bug reported live in
+        production. A first inflated reading is still far more honest than
+        showing 0 while the real context is in the hundreds of thousands.
+        """
+        assert compressor.last_real_prompt_tokens == 0
+        compressor.update_from_response({
+            "prompt_tokens": 61_744,
+            "completion_tokens": 500,
+            "server_tool_requests": 2,
+        })
+        assert compressor.last_real_prompt_tokens == 61_744
+        assert compressor.display_prompt_tokens() == 61_744
+
+    def test_server_tool_inflated_reading_never_overwrites_established_baseline(self, compressor):
+        """Once a real (non-inflated) baseline exists, the original
+        anti-balloon protection must still hold: an inflated server-tool
+        reading must never overwrite it, matching
+        test_server_tool_inflated_reading_does_not_overwrite_display_baseline
+        above but asserted directly against last_real_prompt_tokens."""
+        compressor.update_from_response({"prompt_tokens": 50_000, "completion_tokens": 300})
+        assert compressor.last_real_prompt_tokens == 50_000
+        compressor.update_from_response({
+            "prompt_tokens": 975_000,
+            "completion_tokens": 300,
+            "server_tool_requests": 4,
+        })
+        assert compressor.last_real_prompt_tokens == 50_000
+
     def test_uninflated_reading_still_flags_ineffective_compaction(self, compressor):
         """Sanity check that the guard above didn't disable the real check."""
         compressor._verify_compaction_cleared_threshold = True
