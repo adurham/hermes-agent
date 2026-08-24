@@ -3,6 +3,101 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-08-23 (`sr-coder` role alias — role-name synonyms resolve to their target's model/provider/effort/persona)
+
+**Problem:** the Jr/Mid/Sr coder tiering the provider-aware
+`model_by_role` feature (above) exists to serve names only two of its three
+tiers. `jr-coder` and `mid-coder` are explicit, but the top tier kept the
+bare historical name `coder` — it is "Sr" only implicitly, by virtue of
+staying pinned to `claude-opus-5` while the cheaper tiers moved to Ollama
+Cloud. At a dispatch site that reads asymmetric: `agent_type="jr-coder"`
+and `agent_type="mid-coder"` next to `agent_type="coder"` gives no visual
+signal that the third is the senior tier, and `agent_type="sr-coder"` —
+the name you would reach for — silently resolved to nothing and fell
+through to the batch default model.
+
+**Fix:** a role-alias table. `hermes_cli/personas.py` gained
+`ROLE_ALIASES = {"sr-coder": "coder"}` plus `resolve_role_alias()` (one
+hop, no chaining) and `lookup_role_entry()` — the single alias-aware read
+of `get_role_entry_map()`. An alias is a role name that is a pure
+**synonym**: it carries no config of its own and resolves to its target's
+model, provider (and the rest of the endpoint credential bundle),
+reasoning effort, and persona prompt. `lookup_model_for_role()`,
+`lookup_provider_for_role()`, `lookup_reasoning_for_role()` and
+`lookup_agent()` each gained the same fallback shape, and all three new
+names are re-exported through the `ruflo_agents.py` legacy shim.
+
+In `tools/delegate_tool.py` the dispatch loop resolves the alias **once**
+into `_role_cfg_key` and uses that for both role-keyed lookups (the
+flattened model map and the credential entry map) so the two can never
+disagree — a child cannot end up with the alias's model and the target's
+provider, or vice versa. The resolver is imported under its own
+`try/except` guard (degrading to "no aliases") so an older `hermes_cli`
+can never take the role maps down with it. The unresolvable-provider
+`ValueError` now names the **config key** (the alias target) and, when
+they differ, the dispatched role too, so the message points at the entry
+the user actually has to edit.
+
+**Deliberately an alias, not a second config entry.** Adding
+`sr-coder: claude-opus-5` alongside `coder: claude-opus-5` would fork the
+*value*: the moment `coder` is retargeted, `sr-coder` silently drifts. It
+would also have to be copied again into `reasoning_effort_by_role`, and
+again as a persona `.md` file, to be a true synonym. One alias covers
+every role-keyed surface and cannot drift by construction.
+
+**Three invariants worth naming**, all deliberate:
+- *An alias is a FALLBACK, never an override.* An explicitly configured
+  `sr-coder` entry always beats the aliased `coder` one, so a user who
+  later wants the tiers to genuinely diverge just configures it. The
+  fallback only fires when the dispatched name has no entry of its own.
+- *The config-reader maps stay a faithful view of config.yaml.* Alias keys
+  are resolved at lookup time and are NOT injected into
+  `get_role_entry_map()`/`get_role_model_map()`. Injecting them would show
+  the CLI role picker (`cli.py`) a role the user never configured and risk
+  persisting a duplicate entry on save — and would break the existing
+  exact-set assertion in `test_personas.py`, which is a legitimate
+  map-purity contract rather than a snapshot.
+- *Aliases do not chain.* Only one hop is resolved, guarded by a test that
+  walks every entry and asserts no target is itself an alias.
+
+**Verification:** `ruff check` clean on all 6 touched files. Targeted
+suites (`test_personas.py`, `test_ruflo_agents.py`, `test_set_config_value.py`,
+`test_role_aliases.py`, `test_delegate_role_provider.py`, `test_delegate.py`,
+`test_delegate_toolset_scope.py`): **304 passed, 9 skipped, 0 failed.**
+Broader delegation sweep (`tests/tools/ -k delegat` + the persona/alias
+suites): **356 passed, 3 skipped, 1 failed** — that one failure is
+`test_async_delegation.py::test_delegate_task_background_batch_runs_as_one_unit`,
+re-confirmed **pre-existing** by running it in a clean detached
+`git worktree` at `ae5c1b73e2` (fails identically there with zero working-tree
+edits; a worktree was used rather than `git stash` because concurrent
+subagents held uncommitted edits in this tree). Beyond the suites, verified
+end-to-end against a throwaway `HERMES_HOME` with a real YAML config:
+`sr-coder` and `coder` both resolve to `claude-opus-5` with no provider
+override and effort `high`, `jr-coder` keeps its own Ollama Cloud pin, and
+`sr-coder` appears in **neither** raw config map. Anti-vacuity checked
+twice: emptying `ROLE_ALIASES` fails 11 of the new tests, and reverting
+only the two dispatch-site lookups in `delegate_tool.py` (leaving
+`personas.py` intact) fails the 3 dispatch tests specifically — so the
+unit and E2E layers each catch their own regression.
+
+**Behavior change for existing configs: none.** `coder` is untouched at
+every layer — same entry, same model, same provider, same effort, same
+persona, same dispatch path — and is covered by a dedicated regression
+class (`TestCoderDispatchUnaffected`). The alias path only activates for a
+dispatched role name that is in `ROLE_ALIASES` *and* has no entry of its
+own.
+
+**Note:** this adds the *name* only. The jr-vs-mid-vs-sr task
+*classification rubric* (when to route work to which tier) remains
+deliberately out of scope, exactly as recorded in the entry below.
+
+**Merge note:** fork-local, and additive on top of the fork-local
+`model_by_role` entry-map indirection documented below — upstream has
+neither. Contained in the same delegation path; an upstream sync that
+touches role lookup should keep alias resolution at the *lookup* sites and
+must not "simplify" it by injecting alias keys into the config-reader maps
+(see the map-purity invariant above).
+
 ### Feature — 2026-08-23 (provider-aware per-role delegation pins — `delegation.model_by_role` dict entry form)
 
 **Problem:** `delegation.model_by_role` was a flat `role -> model-string`
