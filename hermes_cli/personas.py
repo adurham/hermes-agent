@@ -15,6 +15,18 @@ hermes-agent depended on). This module is a thin wrapper that:
     one-shot :func:`sync_from_ruflo` bootstrap. These belong here because
     they're tied to hermes-agent's config plumbing, not to the library.
 
+``delegation.model_by_role`` accepts two entry forms.  A bare string is
+just a model name (the historical shape).  A dict entry additionally
+carries the provider (and optional endpoint credentials) that model must
+run on, mirroring the ``delegation.by_provider`` block shape::
+
+    delegation:
+      model_by_role:
+        coder: claude-opus-5             # bare string — no provider override
+        jr-coder:
+          model: qwen3-coder:480b-cloud
+          provider: ollama-cloud
+
 Public surface:
 
   * :class:`Persona` (alias :class:`RufloAgent` for back-compat) — discovered
@@ -25,9 +37,10 @@ Public surface:
   * :func:`group_by_category` — bucket by subdir.
   * :data:`SUGGESTED_ROLE_MODELS` and :func:`apply_suggested_defaults` —
     curated per-role model defaults.
-  * :func:`get_role_model_map`, :func:`set_role_model`,
-    :func:`lookup_model_for_role` — read/write ``delegation.model_by_role``
-    in ~/.hermes/config.yaml.
+  * :func:`get_role_model_map`, :func:`get_role_entry_map`,
+    :func:`get_role_provider_map`, :func:`set_role_model`,
+    :func:`lookup_model_for_role`, :func:`lookup_provider_for_role` —
+    read/write ``delegation.model_by_role`` in ~/.hermes/config.yaml.
   * :func:`sync_from_ruflo` — one-shot rsync from a ruflo checkout.
 """
 from __future__ import annotations
@@ -262,15 +275,24 @@ def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
         ``(applied, skipped)`` — counts of roles updated and roles whose
         existing assignment was kept (or that weren't in the suggested map).
     """
-    current = get_role_model_map()
-    merged = dict(current)
+    current = get_role_entry_map()
+    merged: dict[str, object] = {}
+    for role, entry in current.items():
+        # Preserve the raw shape: a provider-bearing entry round-trips as a
+        # dict, a plain one collapses back to the bare-string form it came in
+        # as.  Flattening everything to a string here would silently drop the
+        # user's provider pins on save.
+        if set(entry) == {"model"}:
+            merged[role] = entry["model"]
+        else:
+            merged[role] = dict(entry)
     applied = 0
     skipped = 0
     for role, model in SUGGESTED_ROLE_MODELS.items():
         if not overwrite and role in current:
             skipped += 1
             continue
-        if current.get(role) == model:
+        if current.get(role, {}).get("model") == model:
             skipped += 1
             continue
         merged[role] = model
@@ -282,8 +304,26 @@ def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
     return (applied, skipped)
 
 
-def get_role_model_map() -> dict[str, str]:
-    """Read ``delegation.model_by_role`` from ~/.hermes/config.yaml.
+# Keys a dict-form ``model_by_role`` entry may carry.  Mirrors the shape of a
+# ``delegation.by_provider`` block (see ``_resolve_delegation_credentials`` in
+# tools/delegate_tool.py) so a per-role entry and a per-provider block are
+# consumed by the same downstream credential resolution.
+_ENTRY_KEYS = ("model", "provider", "base_url", "api_key", "api_mode")
+
+
+def get_role_entry_map() -> dict[str, dict[str, str]]:
+    """Read ``delegation.model_by_role`` as normalized per-role entries.
+
+    Every entry is normalized to a dict.  A bare-string value ``"foo"``
+    (the historical shape) becomes ``{"model": "foo"}``; a dict value
+    carries through whichever of ``model``, ``provider``, ``base_url``,
+    ``api_key``, ``api_mode`` are present as non-empty strings.  Unknown
+    keys are ignored and all values are whitespace-stripped.
+
+    An entry with no usable ``model`` is dropped entirely — including a
+    dict that declares only a ``provider``.  A provider without its own
+    model would redirect the batch-resolved model to an endpoint that
+    doesn't serve it, so provider is never applied on its own.
 
     Returns an empty dict when the section is missing or unparseable.
     """
@@ -301,17 +341,61 @@ def get_role_model_map() -> dict[str, str]:
     raw = delegation.get("model_by_role")
     if not isinstance(raw, dict):
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, dict[str, str]] = {}
     for k, v in raw.items():
-        if isinstance(k, str) and isinstance(v, str) and v.strip():
-            out[k] = v.strip()
+        if not isinstance(k, str):
+            continue
+        entry: dict[str, str] = {}
+        if isinstance(v, str):
+            entry["model"] = v.strip()
+        elif isinstance(v, dict):
+            for field in _ENTRY_KEYS:
+                val = v.get(field)
+                if isinstance(val, str) and val.strip():
+                    entry[field] = val.strip()
+        if entry.get("model"):
+            out[k] = entry
     return out
 
 
-def set_role_model(role: str, model: Optional[str]) -> bool:
+def get_role_model_map() -> dict[str, str]:
+    """Read ``delegation.model_by_role`` from ~/.hermes/config.yaml.
+
+    Returns role -> model string.  A dict-form entry is flattened to its
+    ``model``, so callers that only care about the model keep working
+    unchanged against either config shape.  Returns an empty dict when the
+    section is missing or unparseable.
+    """
+    return {role: entry["model"] for role, entry in get_role_entry_map().items()}
+
+
+def get_role_provider_map() -> dict[str, str]:
+    """Return role -> provider for the roles that pin one.
+
+    Only roles whose entry declares a non-empty ``provider`` appear; roles
+    configured with a bare model string are absent.
+    """
+    return {
+        role: entry["provider"]
+        for role, entry in get_role_entry_map().items()
+        if entry.get("provider")
+    }
+
+
+def set_role_model(
+    role: str,
+    model: Optional[str],
+    provider: Optional[str] = None,
+) -> bool:
     """Persist a per-role model assignment to ~/.hermes/config.yaml.
 
-    Pass ``model=None`` or empty string to remove the assignment.
+    With no ``provider`` the entry is written as a bare model string (the
+    historical shape).  When ``provider`` is given the dict form
+    ``{"model": ..., "provider": ...}`` is written instead, pinning the
+    role to that model on that provider.
+
+    Pass ``model=None`` or empty string to remove the assignment entirely,
+    with or without a provider.
     """
     try:
         from hermes_cli.config import load_config
@@ -331,7 +415,13 @@ def set_role_model(role: str, model: Optional[str]) -> bool:
     if not role:
         return False
     if model and model.strip():
-        by_role[role] = model.strip()
+        if provider and provider.strip():
+            by_role[role] = {
+                "model": model.strip(),
+                "provider": provider.strip(),
+            }
+        else:
+            by_role[role] = model.strip()
     else:
         by_role.pop(role, None)
     return _save_to_config_yaml("delegation.model_by_role", by_role)
@@ -349,6 +439,19 @@ def lookup_model_for_role(role: Optional[str]) -> Optional[str]:
     if not role:
         return None
     return get_role_model_map().get(role.strip())
+
+
+def lookup_provider_for_role(role: Optional[str]) -> Optional[str]:
+    """Return the configured provider for ``role``, or ``None`` if unset.
+
+    Mirrors :func:`lookup_model_for_role`.  A non-None result always comes
+    with a model from :func:`lookup_model_for_role` for the same role — the
+    entry map drops provider-only entries — so the caller can switch the
+    child's provider knowing the matching model travels with it.
+    """
+    if not role:
+        return None
+    return get_role_provider_map().get(role.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -442,12 +545,15 @@ __all__ = [
     "discover_personas",
     "discover_ruflo_agents",
     "get_personas_path",
+    "get_role_entry_map",
     "get_role_model_map",
+    "get_role_provider_map",
     "get_role_reasoning_map",
     "get_ruflo_path",
     "group_by_category",
     "lookup_agent",
     "lookup_model_for_role",
+    "lookup_provider_for_role",
     "lookup_reasoning_for_role",
     "set_role_model",
     "set_role_reasoning",

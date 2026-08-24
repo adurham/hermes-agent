@@ -136,7 +136,23 @@ Respond with ONLY a JSON array, no prose, one entry per task:
 _PERSONA_CATALOG_CACHE: Optional[List[Tuple[str, str, str]]] = None
 
 
-def _persona_catalog(role_model_map: Dict[str, str]) -> List[Tuple[str, str, str]]:
+def _entry_model(value: Any) -> str:
+    """Return the model string from a ``model_by_role`` value.
+
+    Entries are normally bare model strings, but a ``delegation.model_by_role``
+    entry may also be a dict (``{model: ..., provider: ...}``). Callers of
+    :func:`route_task_models` (plugins, tests) may hand either form in, and
+    ``route["model"]`` must always end up a string. Anything else yields "".
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        model = value.get("model")
+        return model if isinstance(model, str) else ""
+    return ""
+
+
+def _persona_catalog(role_model_map: Dict[str, Any]) -> List[Tuple[str, str, str]]:
     """Return ``(name, category, description)`` tuples for classifiable personas.
 
     Discovered once per process (filesystem walk) and cached at module scope.
@@ -144,6 +160,9 @@ def _persona_catalog(role_model_map: Dict[str, str]) -> List[Tuple[str, str, str
     ``delegation.model_by_role`` — a persona pick that can't resolve to a
     model would be a confusing partial routing decision, so it's excluded
     from the catalog offered to the classifier entirely.
+
+    ``role_model_map`` values may be bare model strings or dict-form entries;
+    only roles that actually carry a model are considered routable.
     """
     global _PERSONA_CATALOG_CACHE
     if _PERSONA_CATALOG_CACHE is None:
@@ -159,7 +178,7 @@ def _persona_catalog(role_model_map: Dict[str, str]) -> List[Tuple[str, str, str
         ]
     if not role_model_map:
         return []
-    routable = set(role_model_map.keys())
+    routable = {r for r, v in role_model_map.items() if _entry_model(v)}
     return [entry for entry in _PERSONA_CATALOG_CACHE if entry[0] in routable]
 
 
@@ -205,7 +224,7 @@ def _parse_classifier_json(text: str) -> Optional[List[dict]]:
 
 def route_task_models(
     task_list: List[Dict[str, Any]],
-    role_model_map: Dict[str, str],
+    role_model_map: Dict[str, Any],
     delegation_cfg: dict,
     active_provider: Optional[str],
 ) -> Dict[int, Dict[str, str]]:
@@ -215,7 +234,10 @@ def route_task_models(
         task_list: the normalized delegate_task task dicts (goal/context/
             model/agent_type/...). Read-only — never mutated here.
         role_model_map: ``delegation.model_by_role`` (already loaded by the
-            caller; passed in so config is read once per delegation).
+            caller; passed in so config is read once per delegation). Values
+            are normally bare model strings; dict-form entries
+            (``{model: ..., provider: ...}``) are tolerated and read via
+            their ``model`` key.
         delegation_cfg: the ``delegation`` config block (for ``auto_route``).
         active_provider: the provider the children will actually run on
             (delegation override if set, else the parent's provider).
@@ -262,7 +284,7 @@ def route_task_models(
                     tier_roles[k] = v.strip()
 
         # If no tier's role resolves to a model, classification is pointless.
-        if not any(role_model_map.get(r) for r in tier_roles.values()):
+        if not any(_entry_model(role_model_map.get(r)) for r in tier_roles.values()):
             logger.debug(
                 "delegation auto-route: no tier role has a model_by_role entry; skipping"
             )
@@ -304,7 +326,7 @@ def route_task_models(
             if idx not in pending:  # classifier hallucinated an index
                 continue
             role = tier_roles.get(tier, "")
-            model = role_model_map.get(role, "") if role else ""
+            model = _entry_model(role_model_map.get(role)) if role else ""
             if not model:
                 # Unmapped role — fail open for this task, but say so.
                 logger.debug(
