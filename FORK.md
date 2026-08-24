@@ -3,6 +3,137 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-08-23 (provider-aware per-role delegation pins — `delegation.model_by_role` dict entry form)
+
+**Problem:** `delegation.model_by_role` was a flat `role -> model-string`
+map, so a per-role pin could only ever change the *model*, never the
+*provider* it runs on. `delegate_task()` resolves ONE credential bundle for
+an entire batch — `creds = _resolve_delegation_credentials(cfg,
+parent_agent)`, keyed off the **parent's** active provider via
+`delegation.by_provider` — and then built every child in that batch with
+that same `override_provider`/`override_base_url`/`override_api_key`/
+`override_api_mode`, regardless of each child's role or model. The per-task
+loop only ever pulled a model string out of the map
+(`_role_model_map.get(task_agent_type)`). Net effect: setting
+`model_by_role: {jr-coder: "qwen3-coder:480b-cloud"}` while the main agent
+ran on Anthropic did NOT route that child to Ollama Cloud — it sent the
+Ollama model slug to the Anthropic API and 404'd. This blocked the user's
+intended Jr/Mid/Sr coder tiering (cheap Ollama Cloud workers for routine
+work, Opus reserved for fragile work) since the tiers must live on
+different providers, not just different model strings.
+
+**Fix:** a `model_by_role` entry may now be **either** a bare model string
+(unchanged historical shape — no provider override, child inherits the
+batch provider exactly as before) **or** a dict carrying its own provider,
+deliberately mirroring the existing `delegation.by_provider` block shape so
+both are consumed by the same credential resolution:
+
+```yaml
+delegation:
+  model_by_role:
+    coder: claude-opus-5                  # bare string — batch provider
+    jr-coder:
+      model: qwen3-coder:480b-cloud
+      provider: ollama-cloud              # own provider, resolved per-child
+```
+
+`hermes_cli/personas.py` gained `get_role_entry_map()` (normalizes every
+entry to a dict; a bare string becomes `{"model": s}`; carries through
+`model`/`provider`/`base_url`/`api_key`/`api_mode`), plus
+`get_role_provider_map()` and `lookup_provider_for_role()`.
+`get_role_model_map()` keeps its exact `dict[str, str]` signature and is
+re-implemented as a flattening view over the entry map, so every existing
+caller (`delegate_tool.py`, `delegation_router.py`, `cli.py`) works
+untouched against either config shape. `set_role_model()` took an optional
+keyword-only-by-convention `provider=None` third arg: absent → writes a
+bare string exactly as today; present → writes the dict form. All three new
+names re-exported through the `ruflo_agents.py` legacy shim.
+
+In `tools/delegate_tool.py`, the dispatch loop now computes `task_creds`
+per child: when that task's role entry declares a provider, a new
+`_resolve_role_credentials()` builds a synthetic delegation-cfg from the
+entry and hands it to the **existing** `_resolve_delegation_credentials()`
+(deliberate reuse — no duplicated credential logic; the synthetic cfg has
+no `by_provider` key so that branch is skipped), memoized per batch so N
+children on one role resolve the provider once. Otherwise `task_creds` is
+the same batch `creds` object as before. The **whole** bundle travels
+together through all eight `override_*` kwargs — the role's provider is
+never mixed with the batch provider's `base_url`/`api_key`/`api_mode`/ACP
+command/`request_overrides` — and the final model fallback reads
+`task_creds["model"]` so a role-provider child can never inherit the other
+provider's default model.
+
+**Two invariants worth naming**, both deliberate:
+- *A provider is never applied without its own model.* An entry declaring
+  `provider` but no `model` is dropped from all three maps, so it degrades
+  to "inherit the batch bundle" rather than redirecting the batch-resolved
+  model to an endpoint that doesn't serve it. This also makes the
+  `hermes config set delegation.model_by_role.<role>.provider <p>` footgun
+  safe: `_set_nested` replaces a bare-string leaf with a fresh dict, which
+  drops the model, and the entry is then correctly ignored instead of
+  404-ing at dispatch.
+- *Failure is loud.* An unresolvable role provider raises a `ValueError`
+  naming the role and the provider, resolved INSIDE the pre-existing
+  `try/except ValueError → tool_error` block around child construction, so
+  it reuses the #80450 explicit-pin-preflight precedent with no new
+  plumbing. Silently falling back to the batch provider is precisely the
+  wrong-model-on-wrong-provider bug this feature exists to prevent.
+
+`tools/delegation_router.py`'s auto-route classifier reads the same map. It
+is called with the flattened string map so it was already correct, but
+`route["model"]` is assigned straight from `role_model_map.get(role, "")`
+and would have propagated a dict if a plugin/test ever passed the raw map
+in. Added one small `_entry_model()` normalizer used at the three
+consumption points (`route["model"]`, the tier-role `any()` guard, and
+`_persona_catalog()`'s routability filter) and corrected the now-inaccurate
+`Dict[str, str]` hints. Documented both entry forms in
+`config_defaults.py`'s `DEFAULT_CONFIG["delegation"]` comment block (no
+default value added — `model_by_role` is intentionally written only when
+used), and recorded in `config.py` that `_OPEN_DICT_NESTED_PATHS` validates
+at *every* depth below the container, which is what makes the dict form
+settable straight from `hermes config set`.
+
+**Verification:** `ruff check` clean on all 9 touched files. Targeted
+suites (`test_personas.py`, `test_ruflo_agents.py`, `test_set_config_value.py`,
+`test_delegate_role_provider.py`, `test_delegate.py`,
+`test_delegate_toolset_scope.py`, `test_delegation_router.py`): **289
+passed, 9 skipped, 0 failed**. Broader delegation sweep (`tests/tools/ -k
+delegat` + the config/persona suites): **367 passed, 3 skipped, 1 failed** —
+that one failure is `test_async_delegation.py::test_delegate_task_background_batch_runs_as_one_unit`,
+confirmed **pre-existing** by running it in a clean detached
+`git worktree` at `15c140b0a0` (fails identically there with zero working-tree
+edits; a worktree was used rather than `git stash` because concurrent
+subagents held uncommitted edits in this tree). Beyond the suites, verified
+independently end-to-end against a throwaway `HERMES_HOME`: a real YAML
+config with a mixed bare/dict `model_by_role` parses correctly, `jr-coder`
+resolves to `ollama-cloud` with its own base_url/api_key while a sibling
+`coder` task keeps the batch Anthropic bundle, resolution memoizes per role
+but not across distinct models, an unresolvable provider raises rather than
+falling back, and two-level `hermes config set
+delegation.model_by_role.jr-coder.model|provider` round-trips through the
+runtime readers. Anti-vacuity checked: reverting the per-child
+`override_provider` wiring makes 2 of the new tests fail, and reverting the
+`apply_suggested_defaults` fix makes both of its regression guards fail —
+so the tests assert real behavior, not tautologies.
+
+**Behavior change for existing configs: none.** An all-bare-string
+`model_by_role` produces byte-identical dispatch (same `creds` object,
+same eight kwargs) — the new path only activates on an entry that
+explicitly declares a provider.
+
+**Note:** this lands only the plumbing plus the ability to dispatch a
+provider-pinned role with an explicit `agent_type=`. The jr-vs-sr task
+*classification rubric* (when to route work to which tier) is deliberately
+out of scope and left to a separate design pass; no auto-routing tier logic
+was invented beyond what `delegation_router.py` already had.
+
+**Merge note:** fork-local. Upstream has `model_by_role` as a plain
+string map and a single batch-level credential bundle; this generalizes
+both. Contained entirely within the delegation path and backward compatible
+with the existing string form, so an upstream sync that touches
+`model_by_role` should keep the entry-map indirection rather than reverting
+`get_role_model_map()` to reading raw config.
+
 ### Feature — 2026-08-23 (swarm board: distinct status for a PM/orchestrator row blocked on its own dispatched children)
 
 **Motivation:** while live-supervising a nested delegation (Fable
