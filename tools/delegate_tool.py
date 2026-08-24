@@ -4791,6 +4791,14 @@ def delegate_task(
         _role_entry_map = get_role_entry_map()
     except Exception:
         _role_entry_map = {}
+    # Role-alias resolver (e.g. "sr-coder" -> "coder"). Its own guard so an
+    # older hermes_cli without the alias table degrades to "no aliases"
+    # rather than taking the role maps down with it.
+    try:
+        from hermes_cli.ruflo_agents import resolve_role_alias as _resolve_role_alias
+    except Exception:
+        def _resolve_role_alias(_role):  # type: ignore[misc]
+            return None
     # Memoizes role→credential-bundle resolution for this batch so N children
     # on the same role don't re-resolve the provider N times.
     _role_creds_cache: Dict[tuple, dict] = {}
@@ -4839,8 +4847,23 @@ def delegate_task(
             _auto_agent_type = (_route.get("agent_type") or "").strip() or None
             if _auto_agent_type:
                 task_agent_type = _auto_agent_type
+        # Role aliases (hermes_cli.personas.ROLE_ALIASES, e.g.
+        # "sr-coder" -> "coder"): a role that is a pure synonym carries no
+        # config of its own, so the config key its entry actually lives
+        # under may differ from the dispatched agent_type. Resolved ONCE
+        # here and used for both role-keyed lookups below (model and
+        # credential entry) so the two can never disagree. An explicitly
+        # configured alias always wins — the fallback only fires when the
+        # dispatched name has no entry of its own.
+        _role_cfg_key = task_agent_type
+        if task_agent_type and not (
+            task_agent_type in _role_model_map or task_agent_type in _role_entry_map
+        ):
+            _alias_target = _resolve_role_alias(task_agent_type)
+            if _alias_target:
+                _role_cfg_key = _alias_target
         role_map_model = (
-            _role_model_map.get(task_agent_type) if task_agent_type else None
+            _role_model_map.get(_role_cfg_key) if _role_cfg_key else None
         )
         _auto_route_model = _route.get("model") if _route else None
         # T1-24: schema'd tasks get the contract appended to their context
@@ -4861,7 +4884,7 @@ def delegate_task(
             # provider's acp command / request_overrides).
             task_creds = creds
             _role_entry = (
-                _role_entry_map.get(task_agent_type) if task_agent_type else None
+                _role_entry_map.get(_role_cfg_key) if _role_cfg_key else None
             )
             _role_provider = (
                 str(_role_entry.get("provider") or "").strip()
@@ -4876,9 +4899,17 @@ def delegate_task(
                 except ValueError as exc:
                     # Fail loud: falling back to the batch provider here is
                     # exactly the wrong-model-on-wrong-provider bug this
-                    # pin exists to prevent.
+                    # pin exists to prevent.  Name the CONFIG key (which is
+                    # the alias target when the dispatched role is a
+                    # synonym) so the user can find the entry to fix, and
+                    # name the dispatched role too when they differ.
+                    _via_alias = (
+                        f" (dispatched as {task_agent_type!r})"
+                        if _role_cfg_key != task_agent_type
+                        else ""
+                    )
                     raise ValueError(
-                        f"delegation.model_by_role[{task_agent_type!r}] pins "
+                        f"delegation.model_by_role[{_role_cfg_key!r}]{_via_alias} pins "
                         f"provider {_role_provider!r} but it could not be "
                         f"resolved: {exc}"
                     ) from exc
