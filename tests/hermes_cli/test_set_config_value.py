@@ -518,6 +518,122 @@ class TestSchemaValidation:
         assert saved["delegation"]["model_by_role"][role] == "claude-sonnet-5"
         assert "not a recognized config key" not in capsys.readouterr().out
 
+    def test_model_by_role_bare_string_entry_stays_a_string(
+        self, _isolated_hermes_home, capsys
+    ):
+        """The historical bare-string entry form is unchanged.
+
+        ``<role>: <model>`` must land as a plain STRING — the child then
+        inherits whatever provider the delegate_task batch resolved to.
+        Guards the backward-compat half of the two-form value contract.
+        """
+        set_config_value("delegation.model_by_role.coder", "claude-opus-5")
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        entry = saved["delegation"]["model_by_role"]["coder"]
+        assert isinstance(entry, str)
+        assert entry == "claude-opus-5"
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    def test_model_by_role_dict_entry_is_settable_two_levels_deep(
+        self, _isolated_hermes_home, capsys
+    ):
+        """The provider-pinning dict entry form is settable via dotted paths.
+
+        ``delegation.model_by_role.<role>.model`` / ``.provider`` sits TWO
+        levels below the open-ended map. Both must validate and merge into
+        a single nested dict (not two flattened scalars, not a stringified
+        blob) so the role's children can be pinned to their own provider.
+        """
+        set_config_value(
+            "delegation.model_by_role.jr-coder.model", "qwen3-coder:480b-cloud"
+        )
+        set_config_value(
+            "delegation.model_by_role.jr-coder.provider", "ollama-cloud"
+        )
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        entry = saved["delegation"]["model_by_role"]["jr-coder"]
+        assert entry == {
+            "model": "qwen3-coder:480b-cloud",
+            "provider": "ollama-cloud",
+        }
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    def test_model_by_role_dict_entry_replaces_bare_string(
+        self, _isolated_hermes_home, capsys
+    ):
+        """Upgrading a bare-string role to the dict form is not a crash.
+
+        A role pinned as a plain model string must become a nested dict
+        when a sub-key is written under it — the scalar leaf is replaced,
+        never merged into a nonsense hybrid.
+        """
+        set_config_value("delegation.model_by_role.mid-coder", "claude-opus-5")
+        set_config_value(
+            "delegation.model_by_role.mid-coder.model",
+            "deepseek-v4-flash:0731-cloud",
+        )
+        set_config_value(
+            "delegation.model_by_role.mid-coder.provider", "ollama-cloud"
+        )
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["delegation"]["model_by_role"]["mid-coder"] == {
+            "model": "deepseek-v4-flash:0731-cloud",
+            "provider": "ollama-cloud",
+        }
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    def test_mixed_model_by_role_validates_without_warnings(
+        self, _isolated_hermes_home, capsys
+    ):
+        """The real-world shape: bare-string roles alongside dict roles.
+
+        A config carrying both entry forms in the same map must write
+        cleanly, keep each role's own value type, and never emit the
+        unknown-key notice.
+        """
+        set_config_value("delegation.model_by_role.coder", "claude-opus-5")
+        set_config_value(
+            "delegation.model_by_role.jr-coder.model", "qwen3-coder:480b-cloud"
+        )
+        set_config_value(
+            "delegation.model_by_role.jr-coder.provider", "ollama-cloud"
+        )
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+        import yaml
+        by_role = yaml.safe_load(_read_config(_isolated_hermes_home))[
+            "delegation"
+        ]["model_by_role"]
+        assert by_role == {
+            "coder": "claude-opus-5",
+            "jr-coder": {
+                "model": "qwen3-coder:480b-cloud",
+                "provider": "ollama-cloud",
+            },
+        }
+
+    def test_model_by_role_dict_subkeys_validate(self):
+        """The validator accepts sub-keys below an open-ended nested map."""
+        from hermes_cli.config import _validate_config_key
+
+        for key in (
+            "delegation.model_by_role.jr-coder.model",
+            "delegation.model_by_role.jr-coder.provider",
+            "delegation.model_by_role.jr-coder.base_url",
+            "delegation.model_by_role.jr-coder.api_mode",
+        ):
+            is_known, _ = _validate_config_key(key)
+            assert is_known, f"Expected {key!r} to validate as known"
+
+        # Still scoped: a typo'd container is not rescued by the extra depth.
+        is_known, _ = _validate_config_key(
+            "delegation.model_by_rolez.jr-coder.model"
+        )
+        assert not is_known
+
     def test_bogus_delegation_subkey_still_warns(
         self, _isolated_hermes_home, capsys
     ):

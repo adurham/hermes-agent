@@ -5593,6 +5593,15 @@ _PLATFORM_CONTAINER_KEYS = frozenset({"platforms"})
 # only when used), so without this entry every single
 # ``hermes config set delegation.model_by_role.<role> <model>`` printed a
 # spurious "not a recognized config key" warning.
+#
+# The escape hatch covers EVERY depth below the container, not just the
+# first: ``_validate_config_key`` returns as soon as the walk reaches a
+# registered path, so ``delegation.model_by_role.<role>.model`` and
+# ``....provider`` validate too, and ``_set_nested`` creates/merges the
+# nested dict (replacing a previously-bare string at that role). That is
+# what makes the dict entry form —
+# ``{model: ..., provider: ...}``, mirroring ``delegation.by_provider`` —
+# settable straight from ``hermes config set``.
 _OPEN_DICT_NESTED_PATHS = frozenset({
     "delegation.model_by_role",
     "delegation.reasoning_effort_by_role",

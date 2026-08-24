@@ -1917,6 +1917,23 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
+        # Per-role model overrides — delegation.model_by_role, keyed first by
+        # agent_type persona (e.g. "coder", "reviewer") then by spawn role.
+        # Read/written by hermes_cli/personas.py; no default key here (it is
+        # written only when used). Two entry forms are accepted:
+        #   model_by_role:
+        #     coder: claude-opus-5              <- bare string
+        #     jr-coder:                         <- dict
+        #       model: qwen3-coder:480b-cloud
+        #       provider: ollama-cloud
+        # Bare string = model only: the child still runs on whatever provider
+        # the delegate_task batch resolved to (historical behavior, unchanged).
+        # Dict = pins that role's children to their OWN provider, resolved
+        # independently of the batch provider; mirrors the
+        # delegation.by_provider block shape, so an optional base_url /
+        # api_key / api_mode is accepted alongside model + provider. An entry
+        # carrying a provider but NO model is ignored — a provider is never
+        # applied without its own model.
         # Per-role reasoning-effort overrides, keyed first by agent_type
         # persona (e.g. "coder", "reviewer") then by spawn role
         # ("orchestrator", "leaf") — see delegation.model_by_role for the

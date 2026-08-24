@@ -4780,6 +4780,20 @@ def delegate_task(
         _role_model_map = get_role_model_map()
     except Exception:
         _role_model_map = {}
+    # Same map in un-flattened form: a model_by_role entry may be a dict
+    # ({model, provider, ...}) that pins the role onto a DIFFERENT provider
+    # than the batch-level delegation credentials.  Loaded once, in its own
+    # guard so a missing/failing entry-map API can never take the flattened
+    # model map (and therefore auto-route) down with it.
+    try:
+        from hermes_cli.ruflo_agents import get_role_entry_map
+
+        _role_entry_map = get_role_entry_map()
+    except Exception:
+        _role_entry_map = {}
+    # Memoizes role→credential-bundle resolution for this batch so N children
+    # on the same role don't re-resolve the provider N times.
+    _role_creds_cache: Dict[tuple, dict] = {}
 
     # Auto-route: for tasks that state NEITHER an explicit model NOR an
     # agent_type, a cheap classifier picks a capability tier → role → model
@@ -4829,12 +4843,6 @@ def delegate_task(
             _role_model_map.get(task_agent_type) if task_agent_type else None
         )
         _auto_route_model = _route.get("model") if _route else None
-        effective_task_model = (
-            task_model_explicit
-            or role_map_model
-            or _auto_route_model
-            or creds["model"]
-        )
         # T1-24: schema'd tasks get the contract appended to their context
         # so the child knows the expected output shape before it starts.
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -4844,6 +4852,45 @@ def delegate_task(
 
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
+            # Per-role provider pin: when this task's role declares its own
+            # provider in delegation.model_by_role, the child is built with
+            # ITS OWN full credential bundle instead of the batch one —
+            # otherwise the role's model string would be sent to the batch
+            # provider's endpoint and 404.  The WHOLE bundle travels
+            # together (never the role's provider mixed with the batch
+            # provider's acp command / request_overrides).
+            task_creds = creds
+            _role_entry = (
+                _role_entry_map.get(task_agent_type) if task_agent_type else None
+            )
+            _role_provider = (
+                str(_role_entry.get("provider") or "").strip()
+                if isinstance(_role_entry, dict)
+                else ""
+            )
+            if _role_provider and isinstance(_role_entry, dict):
+                try:
+                    task_creds = _resolve_role_credentials(
+                        _role_entry, parent_agent, _role_creds_cache
+                    )
+                except ValueError as exc:
+                    # Fail loud: falling back to the batch provider here is
+                    # exactly the wrong-model-on-wrong-provider bug this
+                    # pin exists to prevent.
+                    raise ValueError(
+                        f"delegation.model_by_role[{task_agent_type!r}] pins "
+                        f"provider {_role_provider!r} but it could not be "
+                        f"resolved: {exc}"
+                    ) from exc
+            # Final config fallback comes from the bundle actually used for
+            # THIS child, so a role-provider child can never inherit the
+            # other provider's default model.
+            effective_task_model = (
+                task_model_explicit
+                or role_map_model
+                or _auto_route_model
+                or task_creds["model"]
+            )
             child = _build_child_preserving_parent_tools(
                 task_index=i,
                 goal=t["goal"],
@@ -4857,21 +4904,22 @@ def delegate_task(
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_request_overrides=task_creds.get("request_overrides"),
+                override_max_tokens=task_creds.get("max_output_tokens"),
+                override_acp_command=task_creds.get("command"),
+                override_acp_args=task_creds.get("args"),
                 role=effective_role,
                 agent_type=task_agent_type,
                 background=background,
             )
         except ValueError as exc:
             # Explicit-pin preflight failures (e.g. pinned delegation.command
-            # missing from PATH) refuse the spawn loudly (#80450).
+            # missing from PATH, or an unresolvable per-role provider pin)
+            # refuse the spawn loudly (#80450).
             return tool_error(str(exc))
         # Stash the auto-route decision (if any) so _run_single_child can
         # surface it in the result metadata — makes silent misrouting
@@ -5828,6 +5876,51 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _resolve_role_credentials(entry: dict, parent_agent, cache: dict) -> dict:
+    """Resolve the credential bundle for a per-role ``model_by_role`` entry.
+
+    A ``delegation.model_by_role`` entry may be a dict declaring its own
+    ``provider`` (plus optional ``base_url``/``api_key``/``api_mode``),
+    mirroring the shape of ``delegation.by_provider``. Such a role must run
+    on ITS provider, not on the batch-level delegation provider — sending a
+    role's model slug to the batch provider's endpoint is a guaranteed 404.
+
+    Deliberate reuse: this builds a synthetic delegation-config dict and
+    hands it to :func:`_resolve_delegation_credentials`, so the real
+    credential resolution (``resolve_runtime_provider``, API-key checks,
+    pinned-ACP-command preflight) happens in exactly one place. The
+    synthetic cfg carries no ``by_provider`` key, so that branch is skipped.
+
+    Results are memoized on ``cache`` keyed by the credential-bearing
+    fields, so N children on the same role resolve the provider once.
+
+    Raises ValueError (never swallowed) when resolution fails — the caller
+    must refuse the spawn rather than silently fall back.
+    """
+    synthetic_cfg: Dict[str, Any] = {
+        "model": entry.get("model"),
+        "provider": entry.get("provider"),
+    }
+    for key in ("base_url", "api_key", "api_mode"):
+        value = entry.get(key)
+        if value:
+            synthetic_cfg[key] = value
+
+    cache_key = (
+        synthetic_cfg.get("provider"),
+        synthetic_cfg.get("model"),
+        synthetic_cfg.get("base_url"),
+        synthetic_cfg.get("api_key"),
+        synthetic_cfg.get("api_mode"),
+    )
+    if cache_key in cache:
+        return cache[cache_key]
+
+    resolved = _resolve_delegation_credentials(synthetic_cfg, parent_agent)
+    cache[cache_key] = resolved
+    return resolved
+
+
 def _load_config() -> dict:
     """Load delegation config from the active Hermes config.
 
@@ -6071,8 +6164,9 @@ DELEGATE_TASK_SCHEMA = {
                                 "ruflo agent prompt as a persona prefix on the "
                                 "child's system prompt, (2) consults "
                                 "delegation.model_by_role in config.yaml for a "
-                                "role-specific model (lets the user pin "
-                                "'researcher → Haiku' once via /delegation). "
+                                "role-specific model (and, when that entry "
+                                "pins one, its provider) — lets the user pin "
+                                "'researcher → Haiku' once via /delegation. "
                                 "Browse available agents with the /delegation "
                                 "slash command. Per-task 'model' still wins over "
                                 "the role-map model if both are set."
@@ -6123,7 +6217,8 @@ DELEGATE_TASK_SCHEMA = {
                     "(overridden per-task in tasks[].agent_type). Loads the "
                     "matching ruflo agent prompt as a persona prefix and "
                     "consults delegation.model_by_role for a role-pinned "
-                    "model. Common values: 'researcher', 'coder', 'tester', "
+                    "model (and provider, when that entry pins one). "
+                    "Common values: 'researcher', 'coder', 'tester', "
                     "'reviewer', 'system-architect', 'security-architect', "
                     "'code-analyzer', 'performance-benchmarker'. Run "
                     "/delegation in the CLI to browse all ~90 available "
