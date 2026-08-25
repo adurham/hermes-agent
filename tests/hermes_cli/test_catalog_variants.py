@@ -24,22 +24,21 @@ def budget(vram_gib: float, ram_gib: float = 64) -> HardwareBudget:
                           ram_available_bytes=int(ram_gib * GIB))
 
 
-def test_variants_ordered_best_first_and_floor_is_q4():
+def test_every_entry_ships_exactly_one_q4_build():
+    """No quant ladder: one Q4-class build per entry (NVIDIA guidance —
+    their llama.cpp optimizations target Q4-class quants; K_M where the
+    repo ships it, XL elsewhere). No Q3/Q2 ever ships (product decision,
+    2026-08-09). Validation status is explicit per variant in
+    catalog.json; unvalidated builds are permitted (day-0 entries) and
+    surface as unbadged rows in the pane."""
     for entry in CATALOG:
-        sizes = [v.size_bytes for v in entry.variants]
-        assert sizes == sorted(sizes, reverse=True), f"{entry.id}: variants not best-first"
-        for v in entry.variants:
-            for asset in entry.download_files(v):
-                assert asset.size_bytes > 0, f"{entry.id}/{v.quant}: no size on {asset.path}"
-        # The quality floor: the ladder ends at Q4 — no Q3/Q2 builds ship
-        # (product decision, 2026-08-09). The exact Q4 build follows
-        # NVIDIA's recommended catalog (Q4_K_M where their llama.cpp
-        # optimizations land; XL elsewhere). Validation status is explicit
-        # per variant in catalog.json; unvalidated floors are permitted
-        # (day-0 entries) and surface as unbadged rows in the pane.
-        floor = entry.variants[-1]
-        assert floor.quant.startswith(("UD-Q4", "Q4")), (
-            f"{entry.id}: ladder floor is {floor.quant}, not a Q4 build")
+        assert len(entry.variants) == 1, (
+            f"{entry.id}: {len(entry.variants)} variants — the ladder is gone")
+        build = entry.variants[0]
+        assert build.quant.startswith(("UD-Q4", "Q4")), (
+            f"{entry.id}: ships {build.quant}, not a Q4-class build")
+        for asset in entry.download_files(build):
+            assert asset.size_bytes > 0, f"{entry.id}: no size on {asset.path}"
 
 
 def test_split_variants_have_coherent_parts():
@@ -53,27 +52,33 @@ def test_split_variants_have_coherent_parts():
     assert entry.draft is not None, "DSpark draft rides along"
 
 
-def test_big_card_gets_best_quality():
-    """A card with real headroom takes the top rung — quality is free when
-    it fits AT THE TARGET WINDOW. Muse is dense (target KV ~18 GiB), so
-    'real headroom' for its Q8 means ~56+ GiB usable."""
+def test_selection_is_the_q4_build_even_with_headroom():
+    """NVIDIA guidance (2026-08): llama.cpp optimizations target Q4-class
+    builds, so the selector picks the Q4 rung even when bigger quants fit
+    with room to spare — headroom buys window, not quant. Larger builds
+    stay one tile click away in the pane."""
     entry = catalog_by_id()["muse-glimmer-30b"]
     choice = select_variant(entry, budget(60))
     assert choice is not None
     assert choice.zero_spill
-    assert choice.variant.quant == entry.variants[0].quant  # UD-Q8_K_XL
+    assert choice.variant.quant == entry.variants[-1].quant  # the Q4 rung
     assert choice.reason_key == "best-large-window"
 
 
-def test_quality_monotone_in_vram():
-    """More VRAM never selects a smaller build."""
+def test_selected_build_constant_and_fit_shape_monotone_in_vram():
+    """More VRAM never changes the selected build (always the Q4 rung);
+    what improves is the fit shape: spilled -> floor -> target window."""
     entry = catalog_by_id()["qwen3.8-27b"]
-    sizes = []
+    quants = set()
+    shapes = []
+    rank = {"smallest-fits-spilled": 0, "best-fits": 1, "best-large-window": 2}
     for vram in (8, 12, 16, 24, 32, 48):
         choice = select_variant(entry, budget(vram))
         assert choice is not None
-        sizes.append(choice.variant.size_bytes)
-    assert sizes == sorted(sizes), f"quality not monotone in VRAM: {sizes}"
+        quants.add(choice.variant.quant)
+        shapes.append(rank[choice.reason_key])
+    assert quants == {entry.variants[-1].quant}, f"selection not constant: {quants}"
+    assert shapes == sorted(shapes), f"fit shape not monotone in VRAM: {shapes}"
 
 
 def test_small_card_gets_q4_spilled_never_below():
@@ -99,34 +104,20 @@ def test_frontier_model_refused_on_consumer_card_offered_on_big_ram():
 
 def test_selection_accounts_for_kv_not_just_weights():
     """The zero-spill check prices weights + KV, not weights alone: give a
-    machine exactly enough VRAM for the Q8 weights of a dense model and it
-    must step down a rung."""
+    machine exactly enough VRAM for the build's weights and the fit must
+    come back spilled, not zero-spill."""
     entry = catalog_by_id()["muse-glimmer-30b"]
-    q8 = entry.variants[0]
+    build = entry.variants[0]
     exactly_weights = HardwareBudget(
-        usable_vram_bytes=q8.size_bytes + (100 << 20),
-        total_device_bytes=q8.size_bytes + (100 << 20),
+        usable_vram_bytes=build.size_bytes + (100 << 20),
+        total_device_bytes=build.size_bytes + (100 << 20),
         ram_available_bytes=64 * GIB)
     choice = select_variant(entry, exactly_weights)
     assert choice is not None
-    assert choice.variant.quant != q8.quant, "KV cost ignored — Q8 can't fit with floor KV"
+    assert not choice.zero_spill, "KV cost ignored — weights alone can't zero-spill"
 
 
-def test_target_window_beats_one_quality_step():
-    """The usability rule: a quant that only clears the 64K floor loses to
-    the next rung down when that rung clears the target window. A real
-    32 GiB card is ~29.6 GiB usable after margin: Qwen3.8-27B Q6 (needs
-    ~31.5 with target KV + overhead) misses, Q5 (~26.2) clears — the
-    selector must pick Q5 and say why."""
-    entry = catalog_by_id()["qwen3.8-27b"]
-    choice = select_variant(entry, budget(29.6))
-    assert choice is not None and choice.zero_spill
-    assert choice.variant.quant == "UD-Q5_K_XL", (
-        f"expected the target-window pick, got {choice.variant.quant}")
-    assert choice.reason_key == "best-large-window"
-
-
-def test_floor_fallback_when_no_variant_reaches_target():
+def test_floor_fallback_when_target_window_does_not_fit():
     """Cards where nothing clears the target keep the old rule: highest
     quality that zero-spills at the 64K floor (reason 'best-fits'), never
     a needless step down."""

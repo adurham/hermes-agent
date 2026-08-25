@@ -7,18 +7,19 @@ and the catalog numbers are only used for the download decision. Entries
 whose base config is gated upstream carry a same-family conservative
 prior (commented) — the GGUF header corrects it at load time.
 
-Each model ships a QUANT LADDER (variants, best quality first). The ladder
-floors at UD-Q4_K_XL — below Q4 the quality loss is too severe to ship as
-someone's first local-AI experience. Selection is hardware-aware: pick the
-highest-quality variant that zero-spills at the 64K floor on this machine;
-else Q4 spilled (priced honestly by the fit policy); refuse only when even
-Q4 fails the physics check.
+Each model ships ONE build, Q4-class (UD-Q4_K_M where the repo has it,
+per NVIDIA's recommended catalog — their llama.cpp optimizations target
+Q4-class quants; UD-Q4_K_XL elsewhere). No quant ladder: headroom buys a
+bigger context window, never a bigger quant, so every machine runs the
+same build the vendor recipes were measured on. Below Q4 the quality
+loss is too severe to ship as someone's first local-AI experience; the
+fit policy prices the build honestly (zero-spill, spilled, or refused by
+the physics check).
 
-Validation lifecycle: rungs proven end-to-end on real hardware are marked
-validated. Day-0 entries ship before that proof under the "day-0" tag —
-ensure_model_ready's touch generation still gates every first load at
-runtime. The contract test requires every ladder floor to be Q4 AND
-(validated OR day-0).
+Validation lifecycle: builds proven end-to-end on real hardware are
+marked validated. Day-0 entries ship before that proof under the
+"day-0" tag — ensure_model_ready's touch generation still gates every
+first load at runtime.
 
 Multi-file models: variants may carry split-GGUF parts (llama-server loads
 from the first part; all parts download together, each sha-verified).
@@ -187,50 +188,36 @@ class VariantChoice:
 
 
 def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice | None:
-    """Best build for this hardware, per the ladder policy.
+    """Fit the entry's one build (Q4-class) to this machine.
 
-    Ranked rules (each a guarantee the ones below may not break):
-    1. Never below Q4 — the ladder's quality floor.
-    2. Never below a 64K window — every session must be viable.
-    3. Prefer reaching TARGET_WINDOW — compression should be the
-       exception, not the routine.
-    4. Then maximize quality — free once the above hold.
+    The quant ladder is gone (NVIDIA guidance, 2026-08: their llama.cpp
+    optimizations target Q4-class builds, so Q4 is the best
+    speed-per-quality everywhere and the build the vendor recipes were
+    measured on). Every entry ships exactly one variant; headroom buys a
+    bigger window, never a bigger quant. Spill logic is unchanged:
 
-    Concretely: highest-quality variant that zero-spills at the target
-    window; else highest-quality at the 64K floor (small cards keep the
-    old behavior); else the smallest build spilled; else refusal. One
-    quality step is worth multiple context rungs (dynamic-quant deltas
-    between adjacent rungs are small; 64K vs 216K changes what a session
-    can do), but nothing outranks full residency.
+    - "best-large-window": zero-spills at TARGET_WINDOW
+    - "best-fits": zero-spills at the 64K floor
+    - "smallest-fits-spilled": weights spill to host RAM, priced honestly
+    - None: even spilled, physics refuses (the machine can't run it)
     """
     overhead = (RUNTIME_OVERHEAD_BYTES
                 + (entry.mmproj.size_bytes if entry.mmproj else 0)
                 + ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
     native = entry.n_ctx_train or FLOOR
-    floor_kv = None
-    target_kv = None
-    floor_pick: QuantVariant | None = None
-    for variant in entry.variants:
-        profile = entry.profile(variant)
-        if floor_kv is None:
-            floor_kv = ctx_bytes(profile, min(FLOOR, native))
-            target_kv = ctx_bytes(profile, min(TARGET_WINDOW, native))
-        if (variant.weights_bytes + target_kv + overhead
-                <= budget.usable_vram_bytes):
-            return VariantChoice(variant=variant, zero_spill=True,
-                                 reason_key="best-large-window")
-        if floor_pick is None and (variant.weights_bytes + floor_kv + overhead
-                                   <= budget.usable_vram_bytes):
-            floor_pick = variant
-
-    if floor_pick is not None:
-        return VariantChoice(variant=floor_pick, zero_spill=True,
+    variant = entry.variants[-1]
+    profile = entry.profile(variant)
+    need = variant.weights_bytes + overhead
+    if (need + ctx_bytes(profile, min(TARGET_WINDOW, native))
+            <= budget.usable_vram_bytes):
+        return VariantChoice(variant=variant, zero_spill=True,
+                             reason_key="best-large-window")
+    floor_kv = ctx_bytes(profile, min(FLOOR, native))
+    if need + floor_kv <= budget.usable_vram_bytes:
+        return VariantChoice(variant=variant, zero_spill=True,
                              reason_key="best-fits")
-
-    smallest = min(entry.variants, key=lambda v: v.size_bytes)
-    needed = smallest.weights_bytes + (floor_kv or 0) + overhead
-    if needed <= budget.usable_vram_bytes + budget.ram_available_bytes:
-        return VariantChoice(variant=smallest, zero_spill=False,
+    if need + floor_kv <= budget.usable_vram_bytes + budget.ram_available_bytes:
+        return VariantChoice(variant=variant, zero_spill=False,
                              reason_key="smallest-fits-spilled")
     return None
 

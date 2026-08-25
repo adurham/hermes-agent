@@ -8,33 +8,6 @@
       "repo": "unsloth/Qwen3.8-27B-GGUF",
       "variants": [
         {
-          "quant": "UD-Q8_K_XL",
-          "files": [
-            {
-              "path": "Qwen3.8-27B-UD-Q8_K_XL.gguf",
-              "size_bytes": 31457991680
-            }
-          ]
-        },
-        {
-          "quant": "UD-Q6_K_XL",
-          "files": [
-            {
-              "path": "Qwen3.8-27B-UD-Q6_K_XL.gguf",
-              "size_bytes": 25299061664
-            }
-          ]
-        },
-        {
-          "quant": "UD-Q5_K_XL",
-          "files": [
-            {
-              "path": "Qwen3.8-27B-UD-Q5_K_XL.gguf",
-              "size_bytes": 20876938144
-            }
-          ]
-        },
-        {
           "quant": "UD-Q4_K_M",
           "files": [
             {
@@ -68,33 +41,6 @@
       "description": "Bigger mixture-of-experts with multi-token prediction; sees images",
       "repo": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
       "variants": [
-        {
-          "quant": "UD-Q8_K_XL",
-          "files": [
-            {
-              "path": "Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf",
-              "size_bytes": 39099447584
-            }
-          ]
-        },
-        {
-          "quant": "UD-Q6_K_XL",
-          "files": [
-            {
-              "path": "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf",
-              "size_bytes": 32611711264
-            }
-          ]
-        },
-        {
-          "quant": "UD-Q5_K_XL",
-          "files": [
-            {
-              "path": "Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
-              "size_bytes": 27159116064
-            }
-          ]
-        },
         {
           "quant": "UD-Q4_K_M",
           "files": [
@@ -133,33 +79,6 @@
       "repo": "unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
       "variants": [
         {
-          "quant": "UD-Q8_K_XL",
-          "files": [
-            {
-              "path": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q8_K_XL.gguf",
-              "size_bytes": 38615380032
-            }
-          ]
-        },
-        {
-          "quant": "UD-Q6_K_XL",
-          "files": [
-            {
-              "path": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q6_K_XL.gguf",
-              "size_bytes": 35004643392
-            }
-          ]
-        },
-        {
-          "quant": "UD-Q5_K_XL",
-          "files": [
-            {
-              "path": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q5_K_XL.gguf",
-              "size_bytes": 30414829632
-            }
-          ]
-        },
-        {
           "quant": "UD-Q4_K_M",
           "files": [
             {
@@ -188,33 +107,6 @@
       "description": "Meta's open vision model for coding and agent work",
       "repo": "unsloth/Muse-Glimmer-30B-GGUF",
       "variants": [
-        {
-          "quant": "UD-Q8_K_XL",
-          "files": [
-            {
-              "path": "Muse-Glimmer-30B-UD-Q8_K_XL.gguf",
-              "size_bytes": 32300651040
-            }
-          ]
-        },
-        {
-          "quant": "UD-Q6_K_XL",
-          "files": [
-            {
-              "path": "Muse-Glimmer-30B-UD-Q6_K_XL.gguf",
-              "size_bytes": 26265362976
-            }
-          ]
-        },
-        {
-          "quant": "UD-Q5_K_XL",
-          "files": [
-            {
-              "path": "Muse-Glimmer-30B-UD-Q5_K_XL.gguf",
-              "size_bytes": 21789618976
-            }
-          ]
-        },
         {
           "quant": "UD-Q4_K_XL",
           "files": [
@@ -246,31 +138,6 @@
       "description": "Frontier-class model for machines with 128GB+ memory",
       "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
       "variants": [
-        {
-          "quant": "UD-Q8_K_XL",
-          "files": [
-            {
-              "path": "UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00001-of-00005.gguf",
-              "size_bytes": 5257408
-            },
-            {
-              "path": "UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00002-of-00005.gguf",
-              "size_bytes": 49215492960
-            },
-            {
-              "path": "UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00003-of-00005.gguf",
-              "size_bytes": 49700372160
-            },
-            {
-              "path": "UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00004-of-00005.gguf",
-              "size_bytes": 49466495968
-            },
-            {
-              "path": "UD-Q8_K_XL/DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00005-of-00005.gguf",
-              "size_bytes": 13481997024
-            }
-          ]
-        },
         {
           "quant": "UD-Q4_K_XL",
           "files": [
