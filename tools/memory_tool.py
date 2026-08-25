@@ -1882,20 +1882,28 @@ def _build_memory_schema_overrides() -> Dict[str, Any]:
     target_schema["enum"] = targets
 
     description = MEMORY_SCHEMA["description"]
+    # Fork note: upstream narrowed the advertised target by str.replace()-ing a
+    # verbatim "TARGETS: 'user' = ... 'memory' = ..." sentence out of its own
+    # tool description.  The fork rewrote that description wholesale for the
+    # hot/warm two-tier surface, so upstream's anchor sentence does not exist
+    # here and both replace() calls silently no-op'd — the model was still told
+    # both stores were available while the enum advertised only one.  Append an
+    # explicit restriction notice instead: it carries the same information and
+    # does not depend on the exact prose of either side's description, so it
+    # survives future edits on either side of the fork boundary.
     if targets == ["memory"]:
         target_schema["description"] = "The enabled built-in store: 'memory' for personal notes."
-        description = description.replace(
-            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-            "notes (environment, conventions, tool quirks, lessons).",
-            "TARGET: only 'memory' is enabled for personal notes (environment, conventions, "
-            "tool quirks, lessons).",
+        description += (
+            "\n\nSTORE AVAILABILITY: only 'memory' is enabled for personal notes "
+            "(environment, conventions, tool quirks, lessons). The 'user' profile "
+            "store is disabled — do not pass target='user'."
         )
     elif targets == ["user"]:
         target_schema["description"] = "The enabled built-in store: 'user' for user profile."
-        description = description.replace(
-            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-            "notes (environment, conventions, tool quirks, lessons).",
-            "TARGET: only 'user' is enabled for user profile facts (name, role, preferences, style).",
+        description += (
+            "\n\nSTORE AVAILABILITY: only 'user' is enabled for user profile facts "
+            "(name, role, preferences, style). The 'memory' notes store is "
+            "disabled — do not pass target='memory'."
         )
 
     return {"description": description, "parameters": parameters}
