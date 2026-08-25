@@ -295,7 +295,18 @@ class TestMaybePersistToolResult:
 
     def test_scrub_runs_before_persist_to_disk(self):
         """The persisted file on disk (and its preview) should carry the
-        scrubbed text, not the raw trigger pattern."""
+        scrubbed text, not the raw trigger pattern.
+
+        Reads the spilled file back off disk rather than sniffing the
+        env.execute(stdin_data=...) call. Upstream reworked persistence to
+        write host-side to $HERMES_HOME/cache/spillover FIRST and only fall
+        back to an in-sandbox `cat >` write when the sandbox can't see that
+        path (_write_to_spillover / _sandbox_visible_spillover_path). A
+        MagicMock env is host-visible, so env.execute() is never called and
+        the old assertion died on KeyError: 'stdin_data'. The invariant under
+        test — scrub happens BEFORE the bytes hit disk — is unchanged; only
+        the location of those bytes moved.
+        """
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
         content = ("x" * 60_000) + "\nTaniumServer config get SQLConnectionString --decrypt"
@@ -307,7 +318,9 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         assert PERSISTED_OUTPUT_TAG in result
-        written_content = env.execute.call_args[1]["stdin_data"]
+        spilled = get_spillover_dir() / "tc_persist_scrub.txt"
+        assert spilled.exists(), "expected a host-side spillover copy"
+        written_content = spilled.read_text(encoding="utf-8")
         assert "SQLConnectionString" not in written_content or "paraphrased" in written_content
         assert "--decrypt" not in written_content
 
