@@ -14,6 +14,7 @@ import { Navigate, Route, Routes, useParams } from 'react-router'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { $activeConnectionId } from '@/store/connections'
 import { $gateway } from '@/store/gateway'
 import { $petZoneEnabled } from '@/store/pet'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -101,9 +102,12 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   chatOpen: boolean
   commandCenterOpen: boolean
 }) {
+  const activeConnectionId = useStore($activeConnectionId)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayState = useStore($gatewayState)
   const freshDraftReady = useStore($freshDraftReady)
-  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, actions.requestGateway)
+  const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
+  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, actions.requestGateway, gatewayScope)
   const extraLeftItems = useStatusbarContributions('left')
   const extraRightItems = useStatusbarContributions('right')
 

@@ -2,12 +2,11 @@ import * as React from 'react'
 
 import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { isMetaClose, middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
-
-import { Codicon } from './codicon'
 
 /** Inset bottom stroke for a horizontal tab strip — titlebar color, cut by the active tab. */
 export const PANE_TAB_STRIP_LINE = 'shadow-[inset_0_-1px_0_var(--ui-stroke-tertiary)]'
@@ -17,8 +16,12 @@ export const PANE_TAB_STRIP_LINE = 'shadow-[inset_0_-1px_0_var(--ui-stroke-terti
 export const PANE_TAB_STRIP_LINE_LEFT = 'shadow-[inset_1px_0_0_var(--ui-stroke-tertiary)]'
 export const PANE_TAB_STRIP_LINE_RIGHT = 'shadow-[inset_-1px_0_0_var(--ui-stroke-tertiary)]'
 
+// `--tab-face` is the tab's EFFECTIVE surface color — what actually sits under
+// the label after every wash lands. The hover close-button gradient fades into
+// it, so the fade is seamless on any theme. Idle hover repaints it below with
+// the same color-mix the darkening wash applies.
 const TAB =
-  'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag]'
+  'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag] [--tab-face:var(--tab-bg)]'
 
 // Full height: with the strip's rule removed there is no last-pixel row to
 // leave uncovered, so tabs fill the bar and no sliver of gutter shows through.
@@ -37,23 +40,24 @@ const TAB_ACTIVE_UNDERLINE = 'shadow-[inset_0_-2px_0_var(--pane-tab-active-accen
 // Inactive = gutter, defaulting to the shared chrome surface so a strip that
 // sets no vars still matches the sidebar/titlebar instead of falling through to
 // the raw (unmixed) card seed. Hover DARKENS: surfaces this close in value need
-// a darkening wash to register at all.
+// a darkening wash to register at all. `--tab-face` tracks the wash — the same
+// mix flattened onto `--tab-bg` — so the close gradient matches what shows.
 const TAB_IDLE =
-  'text-(--ui-text-tertiary) [--tab-bg:var(--pane-tab-strip-bg,var(--ui-sidebar-surface-background))] hover:shadow-[inset_0_0_0_100vmax_color-mix(in_srgb,#000_var(--ui-tab-hover-darken),transparent)] hover:text-(--ui-text-secondary)'
+  'text-(--ui-text-tertiary) [--tab-bg:var(--pane-tab-strip-bg,var(--ui-sidebar-surface-background))] hover:shadow-[inset_0_0_0_100vmax_color-mix(in_srgb,#000_var(--ui-tab-hover-darken),transparent)] hover:[--tab-face:color-mix(in_srgb,#000_var(--ui-tab-hover-darken),var(--tab-bg))] hover:text-(--ui-text-secondary)'
 
 // A tab riding a multi-tab selection: an accent wash over whatever surface the
 // tab sits on. A background-image gradient (not a shadow) so it stacks cleanly
 // over `--tab-bg` without fighting the active underline / hover shadows.
+// `--tab-face` gets the same wash flattened in, keeping the close fade honest.
 const TAB_SELECTED =
-  '[background-image:linear-gradient(color-mix(in_srgb,var(--ui-accent)_14%,transparent),color-mix(in_srgb,var(--ui-accent)_14%,transparent))] text-foreground'
+  '[background-image:linear-gradient(color-mix(in_srgb,var(--ui-accent)_14%,transparent),color-mix(in_srgb,var(--ui-accent)_14%,transparent))] [--tab-face:color-mix(in_srgb,var(--ui-accent)_14%,var(--tab-bg))] text-foreground'
 
 interface PaneTabProps extends React.ComponentProps<'div'> {
   active?: boolean
   dirty?: boolean
-  /** Close gesture: a small × button (hover-reveal on an inactive tab, always
-   *  shown on the active one — so the active tab's affordance never depends
-   *  on a hover state that isn't currently true), PLUS middle-click and
-   *  ⌘-click (the trackpad-friendly Mac equivalent) as faster alternatives. */
+  /** Close verb. Horizontal tabs reveal a hover ✕ on the right (a `--tab-face`
+   *  gradient fades it over the label); middle-click and ⌘-click always work,
+   *  and stay the only gestures on vertical rails (no room for a chip ✕). */
   onClose?: () => void
   /** Accessible label for the close button (e.g. "Close My Session"). Falls
    *  back to a generic "Close" when the caller doesn't have a per-tab title
@@ -62,6 +66,8 @@ interface PaneTabProps extends React.ComponentProps<'div'> {
   /** Part of a multi-tab selection (⌥/Ctrl-click, Shift-click) — an accent
    *  wash marks every tab that a drag would carry, Chrome-style. */
   selected?: boolean
+  /** Whether a closeable horizontal tab reveals the hover ✕. */
+  showCloseButton?: boolean
   /** Vertical rail form (collapsed sidebar zones). */
   vertical?: boolean
   /** Content-facing edge of a vertical rail — the strip line the active tab cuts. */
@@ -86,6 +92,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
     onPointerUp,
     onClickCapture,
     selected = false,
+    showCloseButton = true,
     vertical = false,
     side = 'left',
     children,
@@ -154,50 +161,53 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
       {...props}
     >
       {children}
-      {(dirty || onClose) && (
-        // A single reserved slot at the trailing edge — a REAL flex child
-        // (shrink-0), so the label truncates around it instead of the two
-        // indicators floating over live text. Dirty dot and close button
-        // stack inside it (absolute, same footprint) and cross-fade: the dot
-        // is the resting state, the × takes over on hover/focus/active —
-        // exactly one shows at a time, VS Code's dirty-dot/close swap.
-        // [writing-mode:horizontal-tb] keeps the × glyph upright inside a
-        // vertical (rotated-text) rail tab.
+      {dirty && (
         <span
+          aria-hidden
           className={cn(
-            'relative grid shrink-0 place-items-center [writing-mode:horizontal-tb]',
-            vertical ? 'h-4 w-full' : 'ml-1 h-4 w-4'
+            'pointer-events-none absolute grid size-4 place-items-center',
+            vertical ? 'bottom-1.5 left-1/2 -translate-x-1/2' : 'right-1.5 top-1/2 -translate-y-1/2'
           )}
         >
-          {dirty && (
-            <span
-              aria-hidden
-              className={cn(
-                'pointer-events-none absolute inset-0 grid place-items-center transition-opacity',
-                onClose && (active ? 'opacity-0' : 'opacity-100 group-hover/tab:opacity-0')
-              )}
-            >
-              <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_2px_var(--tab-bg),0_1px_2px_rgba(0,0,0,0.45)] dark:bg-amber-400" />
-            </span>
-          )}
-          {onClose && (
-            <button
-              aria-label={closeLabel ?? t.common.close}
-              className={cn(
-                'absolute inset-0 grid place-items-center rounded-sm text-(--ui-text-tertiary) transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground',
-                active ? 'opacity-100' : 'opacity-0 group-hover/tab:opacity-100 focus-visible:opacity-100'
-              )}
-              onClick={event => {
-                event.preventDefault()
+          <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_2px_var(--tab-bg),0_1px_2px_rgba(0,0,0,0.45)] dark:bg-amber-400" />
+        </span>
+      )}
+      {onClose && showCloseButton && !vertical && (
+        // Hover ✕, painted OVER the label's right edge as an overlay (no
+        // layout shift, tab width never jumps on hover). The runway is a tiny
+        // transparent→`--tab-face` gradient, so the button melts into the
+        // tab's effective surface instead of hard-clipping the text under it.
+        // Rendered after the dirty dot: on hover the ✕ takes the dot's spot,
+        // VS Code-style.
+        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity group-hover/tab:pointer-events-auto group-hover/tab:opacity-100">
+          {/* Both pieces re-draw the active underline: they paint over the
+              tab's own last-pixel row, so without it the ✕ would bite a
+              notch out of the accent line on the active tab. */}
+          <span
+            aria-hidden
+            className="w-4 bg-linear-to-r from-transparent to-(--tab-face) group-data-[active=true]/tab:shadow-[inset_0_-2px_0_var(--pane-tab-active-accent,var(--theme-primary))]"
+          />
+          <button
+            aria-label={closeLabel ?? t.common.close}
+            className="grid cursor-pointer place-items-center bg-(--tab-face) pr-1.5 pl-0.5 text-(--ui-text-tertiary) outline-none hover:text-foreground group-data-[active=true]/tab:shadow-[inset_0_-2px_0_var(--pane-tab-active-accent,var(--theme-primary))]"
+            onClick={event => {
+              event.preventDefault()
+              event.stopPropagation()
+              onClose()
+            }}
+            onPointerDown={event => {
+              // Claim a plain left press so the shell can't also activate or
+              // drag the tab. Middle/⌘ presses bubble on purpose — the tab's
+              // own close gestures already route them.
+              if (event.button === 0 && !isMetaClose(event)) {
                 event.stopPropagation()
-                onClose()
-              }}
-              onPointerDown={event => event.stopPropagation()}
-              type="button"
-            >
-              <Codicon name="close" size="0.65rem" />
-            </button>
-          )}
+              }
+            }}
+            tabIndex={-1}
+            type="button"
+          >
+            <Codicon name="close" size="0.6875rem" />
+          </button>
         </span>
       )}
     </div>

@@ -85,6 +85,7 @@ function useSyncHarness({
   refreshActiveTranscript: () => Promise<void>
 }) {
   useBackgroundSync({
+    activeConnectionId: 'local',
     activeGatewayProfile: 'default',
     activeIsMessaging,
     activeSessionId,

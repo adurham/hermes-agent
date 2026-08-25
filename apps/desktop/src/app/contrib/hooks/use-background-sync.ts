@@ -285,6 +285,7 @@ export function resetLiveRuntimeTracking(): void {
 }
 
 interface BackgroundSyncParams {
+  activeConnectionId: null | string
   activeGatewayProfile: string
   activeIsMessaging: boolean
   activeSessionId: null | string
@@ -352,6 +353,7 @@ function visiblePoll(intervalMs: number, tick: () => void): () => void {
  * All the "the desktop websocket won't tell us, so poll" logic in one place.
  */
 export function useBackgroundSync({
+  activeConnectionId,
   activeGatewayProfile,
   activeIsMessaging,
   activeSessionId,
@@ -442,7 +444,7 @@ export function useBackgroundSync({
         })
         .catch(() => undefined)
     }
-  }, [activeGatewayProfile, gatewayState, refreshCurrentModel, refreshSessions, requestGateway])
+  }, [activeConnectionId, activeGatewayProfile, gatewayState, refreshCurrentModel, refreshSessions, requestGateway])
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session

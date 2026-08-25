@@ -27,17 +27,9 @@ from hermes_cli.service_manager import (
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # detect_service_manager
 # ---------------------------------------------------------------------------
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -75,10 +67,6 @@ def _patch_s6_paths(
     monkeypatch.setattr(_Path, "is_dir", fake_is_dir)
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # Backend wrappers — kind + registration unsupported on hosts
 # ---------------------------------------------------------------------------
@@ -100,8 +88,6 @@ def test_systemd_manager_kind_and_registration_unsupported() -> None:
 # ---------------------------------------------------------------------------
 # Lifecycle delegation — wrappers must call through to module-level fns
 # ---------------------------------------------------------------------------
-
-
 
 
 def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -134,13 +120,9 @@ def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) ->
     assert mgr.is_running("ignored") is True
 
 
-
-
 # ---------------------------------------------------------------------------
 # get_service_manager factory
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +205,6 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # Top-level event/ — s6-svlisten1 event subscription dir.
     event = svc_dir / "event"
     assert event.is_dir(), "missing top-level event/"
-    assert stat.S_IMODE(event.stat().st_mode) == 0o3730, (
-        f"event/ mode = {oct(event.stat().st_mode)}, want 03730"
-    )
 
     # supervise/ dir.
     supervise = svc_dir / "supervise"
@@ -235,7 +214,6 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # supervise/event/.
     supervise_event = supervise / "event"
     assert supervise_event.is_dir(), "missing supervise/event/"
-    assert stat.S_IMODE(supervise_event.stat().st_mode) == 0o3730
 
     # supervise/control FIFO.
     control = supervise / "control"
@@ -281,10 +259,29 @@ def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
     assert log_control.exists() and stat.S_ISFIFO(log_control.stat().st_mode)
 
 
+@pytest.mark.linux_only
+def test_seed_supervise_skeleton_sets_setgid_on_event_dirs(tmp_path) -> None:
+    """The event dirs carry setgid so s6-supervise's EEXIST path leaves them alone.
 
+    Linux-only because the assertion is about what ``chmod`` does, and that
+    differs by kernel: BSD (macOS) silently drops ``S_ISGID`` from a directory
+    unless the caller is root or a member of the directory's group, so the same
+    correct helper produces 01730 there. s6 only ever runs on Linux — inside
+    s6-overlay's stage2 as root with umask 0 — so Linux is the host whose
+    answer matters.
+    """
+    import stat
 
+    from hermes_cli.service_manager import _seed_supervise_skeleton
 
+    svc_dir = tmp_path / "gateway-foo"
+    svc_dir.mkdir()
 
+    _seed_supervise_skeleton(svc_dir)
+
+    for rel in ("event", "supervise/event"):
+        mode = stat.S_IMODE((svc_dir / rel).stat().st_mode)
+        assert mode == 0o3730, f"{rel}/ mode = {oct(mode)}, want 0o3730"
 
 
 def test_render_run_script_uses_replace_to_take_over_stale_holder() -> None:
@@ -358,21 +355,9 @@ def test_render_finish_script_does_not_restart_on_clean_exit(tmp_path) -> None:
     assert finish_exit(137) == 0   # SIGKILL crash — s6 restarts
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # Lifecycle errors — friendly messages, not raw CalledProcessError
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
