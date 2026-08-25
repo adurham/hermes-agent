@@ -557,12 +557,6 @@ export function LocalModelsSettings() {
                     {model.display_name}
 
                     {model.recommended && <Pill tone="primary">{copy.recommended}</Pill>}
-
-                    <span className="text-[0.68rem] font-normal text-muted-foreground">
-                      {model.downloaded_quant ?? model.quant ?? ''}
-                      {(model.downloaded_quant ?? model.quant) ? ' · ' : ''}
-                      {model.size_label}
-                    </span>
                   </span>
                 }
               />
