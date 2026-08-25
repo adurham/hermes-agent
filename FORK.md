@@ -12751,3 +12751,94 @@ change's 2 new tests) — zero new failures.
 `agent/fork/anthropic_native_web_search.py` (the trigger) and no
 `last_server_tool_requests`/`display_prompt_tokens()` display-baseline
 machinery for this to apply to.
+
+### Fork-only fix — 2026-08-25 (async batch completion header reported the batch-default model, silently misattributing every per-task model pin)
+
+**Symptom:** user-reported, and load-bearing on a real decision. Three
+consecutive `delegate_task` fan-outs were dispatched with an explicit
+per-task `model="claude-opus-5"` on every task object; all three
+batch-complete headers reported `Model: claude-sonnet-5`. The operator was
+told — three times, by me — that the requested model had not been honoured
+and that expensive review work had silently downgraded to the cheap
+default. That conclusion was wrong, and the header was the only evidence
+for it.
+
+**Root cause:** reporting only; routing was correct throughout. Model
+precedence in `delegate_task` resolves *per child*, late
+(`tools/delegate_tool.py` ~4919: `task_model_explicit or role_map_model or
+_auto_route_model or task_creds["model"]`). The async batch dispatch, by
+contrast, passes a single batch-level default —
+`model=creds["model"]` at `tools/delegate_tool.py:5549`, resolved from
+`delegation.by_provider.<p>.model` / `delegation.model` — into
+`dispatch_async_delegation_batch()`, which stores it on the record and
+hands it to the completion formatter. So any per-task divergence (explicit
+per-task `model`, an `agent_type` role-map hit, or an auto-route decision)
+was invisible in the header, which confidently printed the default instead.
+`manifest.json` had the same defect via `_write_manifest`, which runs at
+dispatch time *before any child exists* and therefore only ever had the
+default to record.
+
+This failure mode is worse than a routing bug: it is unfalsifiable from the
+output alone. The reported model and the real model are both plausible
+strings, and nothing in the completion block, the manifest, or the live
+transcripts contradicted the wrong one. Verified empirically against the
+real dispatch path (patching `_build_child_preserving_parent_tools` and
+reading the model each child was actually built with): explicit per-task
+`model` → `claude-opus-5` ✅; explicit per-task `model` + `agent_type` →
+`claude-opus-5` ✅; `agent_type` alone → role-map model; neither → the
+`by_provider` default. Per-task pinning has been working the whole time.
+
+**Fix:** each result entry *already* carries the model its child was built
+with — `tools/delegate_tool.py:3689` reads `getattr(child, "model", None)`
+off the live child — so both fixes derive from `results` rather than
+threading a parallel `task_models` list through the dispatch and SQLite
+persistence layers. (That plumbing was written first, then deliberately
+reverted once the existing field was found: it touched
+`dispatch_async_delegation_batch`'s signature, the durable record, the
+`_persist_dispatch` allowlist and the completion event for data already
+present one layer down.)
+
+* `tools/process_registry.py` (`_format_async_delegation`) — builds a
+  `{task_index: model}` map from `results`. When the set of real models
+  differs from the batch default: a homogeneous batch reports the real
+  model outright; a heterogeneous one keeps the default as context,
+  annotates it `(batch default; per-task varies)`, and appends
+  `model=<slug>` to each per-task header line so a mixed fan-out is
+  auditable at a glance. Falls back to the batch default when a result
+  carries no model, so partial/older result shapes still render.
+* `tools/delegation_live_log.py` (`update_manifest_statuses`) — backfills
+  each task's real model into `manifest.json` at aggregation time, when
+  children exist and their models are known.
+
+**Files:** `tools/process_registry.py`, `tools/delegation_live_log.py`,
+`tests/tools/test_batch_completion_per_task_model.py` (new).
+
+**Verification:** 5 new regression tests asserting the *invariant* (the
+reported model reflects what children actually ran on) rather than exact
+header wording. Confirmed failing against the prior code — 3 fail, 2 pass
+as controls, and the failures reproduce the exact reported symptom
+(`Model: claude-sonnet-5` while children ran opus) — then passing after.
+`tests/tools/test_async_delegation.py` + `test_delegate.py` +
+`test_delegation_live_log.py`: 167 passed. The single failure there
+(`test_delegate_task_background_batch_runs_as_one_unit`, `KeyError:
+'status'`) reproduces identically on unmodified `main` via `git stash` —
+pre-existing, untouched here. Also exercised end-to-end through the real
+`delegate_task` path with a mixed opus/sonnet batch: header renders
+`claude-sonnet-5 (batch default; per-task varies)` with each task line
+naming its own model.
+
+**Known gap (not fixed here):** `delegate_task(action='list')`
+(`tools/delegate_tool.py:510`) reads `r.get("model")` from the separate
+`_active_subagents` registry rather than from `results`, and has not been
+traced. Warm-memory fact 1809 (2026-08-21) records `action='list'` also
+reporting `claude-sonnet-5` for children that were pinned otherwise, so it
+plausibly shares this defect via a different path. Worth checking before
+trusting that surface as the verification channel for a model pin.
+
+**Merge note:** the trigger is fork-local — `delegation.by_provider` is a
+fork feature (see "Provider-scoped delegation"), and it supplies the
+batch-level default that diverges from per-task resolution. The underlying
+reporting asymmetry (batch-level `model` on the completion event vs.
+per-child late resolution) is not fork-specific, so the
+`_format_async_delegation` half is a plausible upstream candidate; surfaced
+here for Adam to decide rather than filed upstream.
