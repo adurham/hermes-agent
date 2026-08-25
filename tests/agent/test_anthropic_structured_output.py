@@ -113,8 +113,13 @@ def test_response_format_merges_with_adaptive_thinking_effort():
     }
     assert api_kwargs["thinking"] == {
         "type": "adaptive",
-        "display": "summarized",
     }
+    # Fork divergence: upstream also sends ``display="summarized"`` here. The
+    # fork omits ``display`` for CC wire-shape parity (opt in with
+    # HERMES_THINKING_DISPLAY=summarized). See the note in
+    # tests/agent/test_anthropic_thinking_disable.py. Asserted positively so a
+    # regression in either direction still fails.
+    assert "display" not in api_kwargs["thinking"]
     _assert_no_raw_response_format(api_kwargs)
 
 
