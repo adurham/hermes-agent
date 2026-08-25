@@ -338,6 +338,28 @@ def test_launch_args_contract():
     assert "q8_0" not in d                        # f16 on non-FA fallback
 
 
+def test_launch_args_uma_never_pins_tensors():
+    """On unified memory, -ot pinning is off even for spilled decisions:
+    "CPU" and "GPU" are the same silicon, and forcing FFN weights down
+    the host compute path measured 2.3x SLOWER than letting the
+    allocator place everything (RTX Spark, 27B Q4: 5.5 vs 12.9 tok/s).
+    The discrete ~1.75x -ot win does not transfer. Everything else
+    about the launch shape is identical to discrete."""
+    p = moe()
+    spilled = WindowDecision(window=FLOOR, spill_bytes=4 * GIB, kv_on_gpu=True)
+
+    u = launch_args(p, spilled, mtp_capable=False, uma=True)
+    assert "-ot" not in u, "UMA must never pin tensors to the host path"
+    assert u[:2] == ["-c", str(FLOOR)]            # window contract unchanged
+    assert "q8_0" in u                            # KV policy unchanged
+
+    # Same call on discrete keeps the pinning — the flag is the ONLY delta.
+    disc = launch_args(p, spilled, mtp_capable=False, uma=False)
+    assert "-ot" in disc
+    assert [x for x in disc if x != "-ot" and not x.startswith("blk")] == \
+        [x for x in u if x != "-ot" and not x.startswith("blk")]
+
+
 def test_ub_logits_bytes_prices_the_flag_choice():
     """The logits-buffer price must match the microbatch launch_args
     chooses: 2048 x vocab x 4 for non-MTP, 512 x vocab x 4 x 2 for MTP

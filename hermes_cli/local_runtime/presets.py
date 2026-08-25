@@ -142,7 +142,8 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
         # the launch flags below MUST match that pricing.)
         args = launch_args(profile, decision, mtp_capable=is_mtp,
                            mtp_draft_depth=(entry.mtp_draft_depth
-                                            if entry is not None else 3))
+                                            if entry is not None else 3),
+                           uma=budget.uma)
         keys = _args_to_keys(args)
 
         if entry is not None and is_mtp:

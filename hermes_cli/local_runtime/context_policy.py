@@ -225,10 +225,18 @@ def spill_overrides(profile: ModelProfile) -> list[str]:
 def launch_args(profile: ModelProfile, decision: WindowDecision, *,
                 flash_attention: bool = True,
                 mtp_capable: bool = False,
-                mtp_draft_depth: int = 3) -> list[str]:
+                mtp_draft_depth: int = 3,
+                uma: bool = False) -> list[str]:
     """Per-model launch flags from a window decision. Explicit -c puts fit
     into spill-weights-and-hold-ctx; q8 KV cache wherever flash attention
-    exists; -ot placement on spilled configs.
+    exists; -ot placement on spilled configs — DISCRETE cards only.
+
+    ``uma``: on unified memory there is no bus to protect tensors from —
+    "CPU" and "GPU" are the same silicon, and pinning FFN weights to the
+    host path just forces CPU compute (measured 2.3x slower than letting
+    the allocator place everything, RTX Spark, 27B Q4). The discrete
+    ~1.75x win the -ot pattern encodes does not transfer; a spilled UMA
+    config runs unpinned.
 
     MTP and the large prefill microbatch are BOTH wins but must not stack:
     backend sampling keeps a ubatch x vocab x fp32 logits buffer on the
@@ -246,7 +254,7 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *,
         args += ["-b", "2048", "-ub", "2048"]
     if flash_attention:
         args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
-    if decision.spilled:
+    if decision.spilled and not uma:
         args += spill_overrides(profile)
     return args
 
