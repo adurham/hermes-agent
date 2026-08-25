@@ -286,13 +286,29 @@ class DDGSWebSearchProvider(WebSearchProvider):
         Probes the import once; cheap because Python caches the import. Must
         NOT perform network I/O — runs at tool-registration time and on every
         ``hermes tools`` paint.
+
+        Delegates to ``tools.web_tools._ddgs_package_importable()`` rather than
+        importing ``ddgs`` directly. That helper is documented as the single
+        authority for this probe ("so auto-detect and ``_is_backend_available``
+        share the same check (and tests can monkeypatch a single symbol)"), and
+        a bare ``import ddgs`` here silently forked it into a second, unhookable
+        source of truth. That mattered once ``check_web_api_key()`` began
+        calling ``_ensure_web_plugins_loaded()``: this provider is now
+        registered and probed at check time, so a caller that suppressed the
+        helper still saw ddgs report itself available. Falls back to the direct
+        import if web_tools is unimportable (plugin loaded standalone).
         """
         try:
-            import ddgs  # noqa: F401
+            from tools.web_tools import _ddgs_package_importable
 
-            return True
-        except ImportError:
-            return False
+            return _ddgs_package_importable()
+        except Exception:  # noqa: BLE001 — standalone plugin load; probe directly
+            try:
+                import ddgs  # noqa: F401
+
+                return True
+            except ImportError:
+                return False
 
     def supports_search(self) -> bool:
         return True
