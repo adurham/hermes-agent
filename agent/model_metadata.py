@@ -2310,6 +2310,27 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                                     return int(ctx)
                             break
 
+            # llama.cpp: /props reports default_generation_settings.n_ctx —
+            # the RUNTIME window the server grants. Critically, the router
+            # answers this (from its preset) even for a model that is not
+            # currently loaded, while /v1/models reports meta=null until
+            # load. Without this probe, resolving a lazily-loaded model at
+            # session start finds no metadata and falls through to the
+            # name-pattern defaults, where a family catch-all (e.g. "qwen"
+            # = 131072) misreports a server launched at 262144.
+            if server_type == "llamacpp":
+                for props_path in (f"/props?model={model}", "/props"):
+                    try:
+                        resp = client.get(f"{server_url}{props_path}")
+                    except httpx.HTTPError:
+                        break
+                    if resp.status_code != 200:
+                        continue
+                    n_ctx = (resp.json().get("default_generation_settings")
+                             or {}).get("n_ctx")
+                    if isinstance(n_ctx, (int, float)) and n_ctx:
+                        return int(n_ctx)
+
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
             if resp.status_code == 200:
