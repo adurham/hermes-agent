@@ -3,6 +3,147 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Upstream sync — 2026-08-25 (v2026.8.18 → v2026.8.19, 804 commits, 40 conflict files)
+
+Merged tag `v2026.8.19` into `main` via `sync/v2026.8.19` (merge commit
+`5323a7db08`, 2-parent lineage verified). 40 conflicted files across
+`hermes_cli/*`, `agent/*`, `tools/*`, `cli.py`, `apps/desktop/` (TS/TSX),
+`tests/`, and the contributor/website docs. `git describe` moved from
+`v2026.8.18-300-g86c97df666` to `v2026.8.19-308`.
+
+**Resolution approach.** Conflicts were split into five bounded, independent
+chunks (hermes_cli + its tests / agent + tools / `cli.py` alone / desktop TS /
+markdown docs) and resolved in parallel, each against a mandatory 3-way
+base↔ours↔theirs dump rather than by reading conflict markers. Standing rule
+applied throughout: adopt upstream's refactor as the new base and re-home the
+fork's additive feature on top; never keep a fork wrapper whose helper upstream
+deleted. Every chunk was gated on `ast.parse` + a zero-marker grep before its
+files were accepted — a prior aborted attempt had left
+`tests/hermes_cli/test_service_manager.py` half-resolved, which this pass
+repaired (the orphaned fork `test_..._handles_log_subservice` was rebuilt and
+kept alongside upstream's new setgid test).
+
+Notable resolutions, by shape:
+
+* **Upstream converged, take upstream.** `hermes_cli/config.py`'s
+  `warn_deprecated_cwd_env_vars` (upstream reimplemented the fork's own
+  ".env not os.environ" fix on top of the existing `load_env()` helper — the
+  fork's bespoke `dotenv_values` + `config=` param was dropped as redundant);
+  `agent/background_review.py` (upstream absorbed the fork's
+  parent-registration/cancellation into `cancel_background_review_for_live_turn`,
+  so the fork's inline cancel block in `conversation_loop.py` was **deleted** —
+  keeping it would have double-cancelled); `tools/memory_tool.py`'s
+  `_memory_target_error()`; `agent/system_prompt.py`'s `EXECUTION_GUIDANCE_MODELS`.
+* **Keep both, they're different functions.** `agent/web_search_registry.py` — the
+  fork's `_read_web_config_key()` and upstream's new `_keyless_tier_enabled()`
+  merely collided textually. Same for `hermes_cli/inventory.py`
+  (`_has_valid_external_anthropic_credentials` vs `_provider_is_keyless`, whose
+  shared `except` tail git had collapsed) and `hermes_cli/doctor.py`.
+* **Re-home upstream's logic inside the fork's seam.** `tools/web_tools.py` —
+  upstream's provider-selection/rescue logic was placed *inside*
+  `_run_search_single()` rather than inlined, so the fork's `web.search_chain`
+  failover and Anthropic-native swap still fire. `hermes_cli/tools_config.py` —
+  upstream's tier-`variants` flattening was adopted but each row is still built
+  via the fork's `_plugin_provider_row()`, otherwise the auth-gate signals
+  (`requires_nous_auth`, `_is_available`) would have been silently dropped and
+  every web row would have falsely read "configured".
+* **`cli.py` (10 regions, the most of any file).** All ten were the same
+  collision: the fork's `/reasoning` picker vs upstream's new Ctrl+P command
+  palette — two parallel modal widgets on an identical dict-state pattern. Kept
+  both throughout, per FORK.md's standing "keep BOTH keybinding blocks" rule,
+  merging the `_normal_input` guard to negate *both* picker states. Adopted
+  upstream's fuzzy model filter and its `min(..., len(labels))` scroll bound
+  (which fixes a latent IndexError) in both display functions.
+* **Two desktop god-file splits arriving as modify/delete.** Upstream deleted
+  `use-message-stream/gateway-event.ts` (`0553a06728`) and
+  `lib/chat-messages.ts` (`149ef3ed2b`), splitting both into per-concern
+  modules. The fork's `triggerPetTurnCompleted(finalText)` call was re-homed into
+  `gateway-event/message-stream.ts` and `pendingToolCallPart()` into
+  `lib/chat-messages/parts.ts` (re-exported from the index so old import paths
+  still resolve). A **third** split (`hermes.ts` → `src/api/*`, `aa20dbe73e`)
+  arrived disguised as an ordinary `UU` conflict, not a `UD`; the fork's
+  `speakText`/`fetchPetDialogue` were re-homed into `src/api/system.ts`.
+* **Docs: default to upstream.** The four copies of CONTRIBUTING (root, `.es`,
+  website, zh-Hans) were resolved consistently onto upstream's corrected
+  `hermes --version` invocation (upstream removed the `version` subcommand in
+  `e69b8e561d`), keeping only the fork's issue URLs. `tools-reference.md` and
+  `configuration.md` were unioned rather than replaced, so fork-only keys
+  (`web.search_chain`, `delegation.by_provider`, `tools.tool_search.defer_*`) and
+  fork-only tools (`consult`, warm-tier `memory` actions) survive alongside
+  upstream's new `keyless_fallback`/`keyless_rescue`/`provider_tier`.
+
+**Beyond mechanical resolution, the post-merge blast radius caught 3 real
+defects that produced no conflict marker and no syntax error:**
+
+1. **`tools/memory_tool.py` — a textbook Frankenstein auto-merge.** Upstream's
+   `2cf7b36e11` narrows the advertised memory store by `str.replace()`-ing a
+   *verbatim* `"TARGETS: 'user' = ... 'memory' = ..."` sentence out of the tool
+   description. The fork had rewritten that description wholesale for its
+   hot/warm two-tier surface, so the anchor sentence no longer existed and both
+   `.replace()` calls **silently no-op'd**. Not cosmetic: the `enum` advertised
+   one store while the prose still told the model both were available, so the
+   model would keep selecting a disabled target. Replaced the prose-anchored
+   substitution with an appended `"STORE AVAILABILITY:"` notice that does not
+   depend on either side's wording.
+2. **`plugins/web/ddgs/provider.py` — a credential false positive.** Upstream
+   added `_ensure_web_plugins_loaded()` inside `check_web_api_key()`, creating a
+   new path that registers and probes the DDGS plugin at check time. That
+   provider did a bare `import ddgs` instead of delegating to
+   `_ddgs_package_importable()` — the helper whose own docstring designates it
+   the single monkeypatchable authority. Neither side was wrong alone; the
+   *interaction* made `check_web_api_key()` return `True` with zero credentials,
+   i.e. Hermes would advertise and attempt a web-search backend that cannot work.
+3. **`apps/desktop` — the 4th-call-site trap, again.** `tsc --noEmit` caught
+   `app/chat/sidebar/projects/workspace-groups.test.ts`, which was **not** in the
+   conflict set: upstream renamed a local `makeSession` helper to a shared
+   `makeCwdSession` import, auto-merge took the new import and deleted the local
+   helper, and nine fork-added call sites silently kept calling the old name.
+   Also dropped a duplicate `Codicon` import auto-merge left in `pane-tab.tsx`.
+
+**Upstream added new desktop dependencies this sync** (`blobatar`, `driver.js`,
+`nanostores`, `@babel/core`, `@rolldown/plugin-babel`,
+`babel-plugin-react-compiler`). `tsc --noEmit` reports ~20 spurious
+`TS2307 Cannot find module` errors until `npm install` is re-run in
+`apps/desktop/` — run it before concluding the typecheck is broken.
+
+**Four upstream tests were reconciled to documented fork divergences** rather
+than made to pass by weakening them. Each keeps its protective intent, inverts
+rather than deletes its assertion, and carries a comment naming the divergence:
+`test_prompt_caching.py`'s relocated `TestApplyIdempotency` (the fork reserves
+the 4th Anthropic cache breakpoint for `tools[]`, so with an empty tools list it
+places 3 message-side markers — passed `reserve_tools_breakpoint=False` so
+upstream's `== 4` guard stays literally intact, plus a new fork test pinning the
+real messages/tools distribution); `test_anthropic_thinking_disable.py` and
+`test_anthropic_structured_output.py` (the fork omits `thinking.display` for CC
+wire-shape parity and defaults `reasoning_config=None` to adaptive/medium —
+upstream's *primary* thinking-off invariant passes untouched); and
+`test_startup_fast_guards.py` (the fork's `fork_banner.py` rebrands
+`hermes --version`, so the literal `"Hermes Agent v"` substring was replaced with
+a version-line-shaped regex, verified to still fail if the line goes missing).
+
+**Verification.** `tests/agent/` + `tests/run_agent/`: **7411 passed, 13 failed**
+— 12 confirmed pre-existing by re-running them in a detached `git worktree` at
+the `pre-upstream-sync-v2026.8.19` tag (a worktree, not `git stash`, which
+silently clears `.git/MERGE_HEAD`), and 1 (`test_plugin_prompt_sections.py`)
+green in isolation, i.e. ordering pollution. `tests/tools/`: **7961 passed, 17
+failed**, all 10 files pre-existing/environmental (the host's real Anthropic
+credentials in `~/.hermes/.env` and `~/.claude/.credentials.json` leak into
+availability probes). `tests/hermes_cli/`: **6800 passed, 6 failed**, all
+pre-existing or host-dependent. `tsc --noEmit` on `apps/desktop` **clean**
+(post-`npm install`), plus 193 desktop tests passing. Boot smoke: `import cli,
+run_agent, hermes_state, hermes_cli.banner, toolsets` clean; `hermes --version`
+and `hermes doctor` both exit 0 with the fork banner correctly reporting the new
+base. All 477 staged `.py` files `ast.parse` clean.
+
+**Merge note:** the pre-merge fork state is tagged `pre-upstream-sync-v2026.8.19`
+— keep it until the next sync, it is what makes the pre-existing-vs-regression
+call cheap. Two process notes for next time: (a) bare `python`/`pytest` resolve
+through a broken pyenv shim in this repo — use `.venv/bin/python`, and note
+`pytest-timeout` is NOT installed so `--timeout=N` errors out; (b)
+`scripts/run_tests.sh` ends in `exec env -i ...` which swallows stdout under some
+agent tool harnesses — calling `scripts/run_tests_parallel.py` directly with
+`TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0` is equivalent and reliable.
+
 ### Cleanup — 2026-08-25 (drop retired/superseded Anthropic model IDs from the curated `/model` picker)
 
 **Problem:** `hermes_cli/models.py`'s `_PROVIDER_MODELS["anthropic"]` static
@@ -8641,6 +8782,37 @@ just take either side and run `uv lock`.
 * `.gitignore` / docstrings / comments — incidental collisions from edits near fork
   changes. Keep both / take either. Keep fork edits surgical (don't reformat upstream
   lines near your changes) to avoid these.
+
+Refreshed 2026-08-25 (v2026.8.19 sync) — new entries:
+
+* `cli.py` — the fork's `/reasoning` picker and upstream's Ctrl+P command palette are
+  two parallel modal widgets built on the SAME dict-state pattern, so they collide in
+  ~10 places (state init, layout-children signature and list, keybindings, the
+  `_normal_input` guard, both display functions, the construction call site). Keep
+  both everywhere; the `_normal_input` condition must negate BOTH picker states or
+  one of them swallows history navigation.
+* `tools/web_tools.py` — do NOT inline upstream's provider-selection/rescue logic;
+  place it inside the fork's `_run_search_single()` seam and keep upstream's readiness
+  predicate as a fall-THROUGH, or the fork's `web.search_chain` failover and
+  Anthropic-native swap stop firing.
+* `hermes_cli/tools_config.py` — when adopting upstream's web-provider row changes,
+  keep building rows via the fork's `_plugin_provider_row()`. Upstream's inline dict
+  drops `requires_nous_auth` / `managed_nous_feature` / `_is_available`, which makes
+  every web row falsely report "configured".
+* `tools/memory_tool.py` — upstream narrows the advertised store by `str.replace()`-ing
+  a VERBATIM sentence out of the tool description. The fork rewrote that description,
+  so those replacements silently no-op. Never anchor behavior on upstream's exact prose
+  across the fork boundary; append a separate notice instead.
+* `apps/desktop/` — upstream splits god-files constantly, and the split does NOT always
+  arrive as a `UD` modify/delete. `hermes.ts` split into `src/api/*` while presenting as
+  an ordinary `UU`. After ANY desktop merge, run `npm install` first (upstream adds deps
+  most syncs; without it `tsc` emits ~20 bogus `TS2307`), then `npx tsc --noEmit` — it is
+  the only thing that catches the recurring "Nth call site outside the conflict set kept
+  the old signature" bug.
+* Upstream test files that assert its own branding/wire-shape will fail on the fork
+  (`"Hermes Agent v"` vs `fork_banner.py`'s rebrand; `thinking.display`; the 4th cache
+  breakpoint the fork reserves for `tools[]`). Reconcile by matching on shape or
+  inverting the assertion with a comment — never by deleting or skipping the test.
 
 ### After every merge — run the real blast radius, not just changed files
 
