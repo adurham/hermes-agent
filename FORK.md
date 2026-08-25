@@ -3,6 +3,36 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Cleanup — 2026-08-25 (drop retired/superseded Anthropic model IDs from the curated `/model` picker)
+
+**Problem:** `hermes_cli/models.py`'s `_PROVIDER_MODELS["anthropic"]` static
+catalog — the fallback list `hermes model` / `/model` shows when the live
+Anthropic `/v1/models` fetch is unavailable, and the list that gets merged
+against live results otherwise — still carried four stale entries:
+`claude-opus-4-20250514` and `claude-sonnet-4-20250514` retired on the
+Anthropic API on June 15, 2026 (selecting either now just 404s), and
+`claude-opus-4-5-20251101` / `claude-sonnet-4-5-20250929` are superseded by
+the 4.6/4.7/4.8 generation already in the list. None of the four are
+referenced by any `model_by_role` entry in `config.yaml`.
+
+**Fix:** removed all four from the curated list. Remaining Anthropic
+entries: `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`,
+`claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`,
+`claude-haiku-4-5-20251001` — matches what's actually wired into role maps
+today (`haiku-4-5-20251001` alone backs 10+ role slots: `monitor`,
+`web_extract`, `skills_hub`, `mcp`, `title_generation`, etc., so it stays).
+
+**Verification:** confirmed via Anthropic's published model-deprecations
+page that the two `-20250514` snapshots are retired (not just deprecated).
+Grepped `config.yaml` and `~/.hermes/cron` for all four IDs — zero hits
+outside of skill-doc examples and test fixtures, which this list does not
+feed. `python3 -c "import ast; ast.parse(...)"` clean; `git diff` scoped to
+exactly the 4-line removal.
+
+**Merge note:** fork-local static catalog; upstream's own copy of this list
+will drift independently on its own release cadence, so this is not
+upstream-relevant.
+
 ### Feature — 2026-08-23 (`sr-coder` role alias — role-name synonyms resolve to their target's model/provider/effort/persona)
 
 **Problem:** the Jr/Mid/Sr coder tiering the provider-aware
