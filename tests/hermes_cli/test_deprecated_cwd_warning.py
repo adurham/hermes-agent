@@ -1,86 +1,91 @@
-"""Tests for warn_deprecated_cwd_env_vars() migration warning.
+"""Tests for warn_deprecated_cwd_env_vars() migration warning."""
 
-Regression coverage: the warning must be driven by what is actually written
-in the .env FILE, not by os.environ. TERMINAL_CWD legitimately lands in the
-process environment on every local-backend run (cli.py force-exports
-config.yaml's terminal.cwd every startup) and survives in inherited shell/
-launchd/gateway environments — none of that means the user's .env mentions
-it. Checking os.environ alone false-positived on every such run.
-"""
 
-import os
-
-import pytest
+def _write_env(monkeypatch, tmp_path, content):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text(content, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    return hermes_home
 
 
 class TestDeprecatedCwdWarning:
-    """Warn only when MESSAGING_CWD or TERMINAL_CWD is set in the .env file."""
+    """Warn when MESSAGING_CWD or TERMINAL_CWD is set in .env."""
 
-    def test_messaging_cwd_in_env_file_triggers_warning(
-        self, monkeypatch, capsys, tmp_path
+    def test_process_environment_does_not_trigger_warning(
+        self, monkeypatch, tmp_path, capsys
     ):
-        env_file = tmp_path / ".env"
-        env_file.write_text("MESSAGING_CWD=/some/path\n")
-        monkeypatch.setattr(
-            "hermes_constants.get_hermes_home", lambda: tmp_path
+        _write_env(monkeypatch, tmp_path, "# TERMINAL_CWD=.\n")
+        monkeypatch.setenv("MESSAGING_CWD", "/process/message-path")
+        monkeypatch.setenv("TERMINAL_CWD", "/process/terminal-path")
+
+        from hermes_cli.config import warn_deprecated_cwd_env_vars
+
+        warn_deprecated_cwd_env_vars()
+
+        assert capsys.readouterr().err == ""
+
+    def test_both_deprecated_vars_in_dotenv_warn(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        _write_env(
+            monkeypatch,
+            tmp_path,
+            "MESSAGING_CWD=/msg/path\nTERMINAL_CWD=/term/path\n",
         )
+        monkeypatch.delenv("MESSAGING_CWD", raising=False)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
         from hermes_cli.config import warn_deprecated_cwd_env_vars
 
-        warn_deprecated_cwd_env_vars(config={})
-
-        captured = capsys.readouterr()
-        assert "MESSAGING_CWD" in captured.err
-        assert "deprecated" in captured.err.lower()
-        assert "config.yaml" in captured.err
-
-    def test_both_deprecated_vars_in_env_file_warn(self, monkeypatch, capsys, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("MESSAGING_CWD=/msg/path\nTERMINAL_CWD=/term/path\n")
-        monkeypatch.setattr(
-            "hermes_constants.get_hermes_home", lambda: tmp_path
-        )
-
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
-
-        warn_deprecated_cwd_env_vars(config={})
+        warn_deprecated_cwd_env_vars()
 
         captured = capsys.readouterr()
         assert "MESSAGING_CWD" in captured.err
         assert "TERMINAL_CWD" in captured.err
+        assert "deprecated" in captured.err.lower()
+        assert "config.yaml" in captured.err
 
-    def test_terminal_cwd_only_in_process_env_does_not_warn(
-        self, monkeypatch, capsys, tmp_path
+    def test_dotenv_terminal_cwd_warns_with_explicit_config(
+        self, monkeypatch, tmp_path, capsys
     ):
-        """Regression: TERMINAL_CWD set by cli.py's own config bridge (or
-        inherited from a parent shell/launchd/gateway process) must NOT
-        trigger the warning when the .env file itself is silent on it.
-        """
-        env_file = tmp_path / ".env"
-        env_file.write_text("SOME_OTHER_KEY=value\n")
-        monkeypatch.setattr(
-            "hermes_constants.get_hermes_home", lambda: tmp_path
+        hermes_home = _write_env(
+            monkeypatch, tmp_path, "TERMINAL_CWD=/legacy/path\n"
         )
-        # Simulate cli.py's force-export / an inherited ancestor env var.
-        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone")
+        (hermes_home / "config.yaml").write_text(
+            "terminal:\n  cwd: /current/path\n", encoding="utf-8"
+        )
 
         from hermes_cli.config import warn_deprecated_cwd_env_vars
 
-        warn_deprecated_cwd_env_vars(config={})
+        warn_deprecated_cwd_env_vars()
 
-        captured = capsys.readouterr()
-        assert captured.err == ""
+        assert "TERMINAL_CWD=/legacy/path" in capsys.readouterr().err
 
-    def test_no_env_file_does_not_warn(self, monkeypatch, capsys, tmp_path):
-        monkeypatch.setattr(
-            "hermes_constants.get_hermes_home", lambda: tmp_path
+    def test_commented_and_empty_dotenv_values_do_not_warn(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        _write_env(
+            monkeypatch,
+            tmp_path,
+            "# MESSAGING_CWD=/commented\nTERMINAL_CWD=\n",
         )
-        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone")
+        monkeypatch.setenv("TERMINAL_CWD", "/process/bridge")
 
         from hermes_cli.config import warn_deprecated_cwd_env_vars
 
-        warn_deprecated_cwd_env_vars(config={})
+        warn_deprecated_cwd_env_vars()
 
-        captured = capsys.readouterr()
-        assert captured.err == ""
+        assert capsys.readouterr().err == ""
+
+    def test_dotenv_read_failure_is_silent(self, monkeypatch, capsys):
+        import hermes_cli.config as config_module
+
+        def raise_read_error():
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(config_module, "load_env", raise_read_error)
+
+        config_module.warn_deprecated_cwd_env_vars()
+
+        assert capsys.readouterr().err == ""
