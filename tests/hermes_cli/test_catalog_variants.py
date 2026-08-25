@@ -32,11 +32,14 @@ def test_variants_ordered_best_first_and_floor_is_q4():
             for asset in entry.download_files(v):
                 assert asset.size_bytes > 0, f"{entry.id}/{v.quant}: no size on {asset.path}"
         # The quality floor: the ladder ends at Q4 — no Q3/Q2 builds ship
-        # (product decision, 2026-08-09). Validation status is explicit
+        # (product decision, 2026-08-09). The exact Q4 build follows
+        # NVIDIA's recommended catalog (Q4_K_M where their llama.cpp
+        # optimizations land; XL elsewhere). Validation status is explicit
         # per variant in catalog.json; unvalidated floors are permitted
         # (day-0 entries) and surface as unbadged rows in the pane.
         floor = entry.variants[-1]
-        assert floor.quant == "UD-Q4_K_XL", f"{entry.id}: ladder floor is {floor.quant}, not Q4"
+        assert floor.quant.startswith(("UD-Q4", "Q4")), (
+            f"{entry.id}: ladder floor is {floor.quant}, not a Q4 build")
 
 
 def test_split_variants_have_coherent_parts():
@@ -81,7 +84,7 @@ def test_small_card_gets_q4_spilled_never_below():
     assert choice is not None
     assert not choice.zero_spill
     assert choice.reason_key == "smallest-fits-spilled"
-    assert choice.variant.quant == "UD-Q4_K_XL"
+    assert choice.variant.quant == "UD-Q4_K_M"
 
 
 def test_frontier_model_refused_on_consumer_card_offered_on_big_ram():
@@ -134,7 +137,7 @@ def test_floor_fallback_when_no_variant_reaches_target():
     choice = select_variant(entry, budget(24.5))
     assert choice is not None and choice.zero_spill
     assert choice.reason_key == "best-fits"
-    assert choice.variant.quant == "UD-Q4_K_XL"
+    assert choice.variant.quant == "UD-Q4_K_M"
 
 
 def test_target_never_degrades_below_floor_choice():
