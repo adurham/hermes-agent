@@ -1007,7 +1007,7 @@ def resolve_provider_full(
         if endpoint:
             return ProviderDef(
                 id="llamacpp",
-                name="Local (llama.cpp)",
+                name="Local",
                 transport="openai_chat",
                 api_key_env_vars=(),
                 base_url=endpoint["base_url"],

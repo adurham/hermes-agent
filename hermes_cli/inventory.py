@@ -979,7 +979,9 @@ def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
                 current = False
         return {
             "slug": "llamacpp",
-            "name": "Local (llama.cpp)",
+            # Bare "Local" everywhere user-facing: the engine name is an
+            # implementation detail (the pane brands this "Local models").
+            "name": "Local",
             "is_current": current,
             "is_user_defined": False,
             "models": staged,
