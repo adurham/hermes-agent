@@ -356,12 +356,57 @@ class TestResolutionOrder:
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         assert web_tools.check_web_api_key() is True
 
-    def test_check_web_api_key_false_when_disabled(self, fresh_registry, monkeypatch):
+    def test_check_web_api_key_false_when_disabled(self, fresh_registry, monkeypatch, tmp_path):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
         monkeypatch.setattr(registry, "_keyless_tier_enabled", lambda: False)
         monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        # FORK DIVERGENCE: upstream's check_web_api_key() ends at the registry
+        # readiness return. This fork continues on to an Anthropic-native
+        # stage — native server-side web_search_20250305 is a real backend
+        # needing no third-party key, so ANTHROPIC_API_KEY /
+        # CLAUDE_CODE_OAUTH_TOKEN / ~/.claude/.credentials.json each count as
+        # "web search works". Scrub all three so a developer's Claude Code
+        # login can't mask the keyless-tier gate this test exists to protect.
+        # (The fork's sibling test in test_web_providers_searxng.py scrubs the
+        # same three for the same reason.) See
+        # test_check_web_api_key_true_on_anthropic_native_when_keyless_disabled
+        # below, which pins the fork stage itself.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         assert web_tools.check_web_api_key() is False
+
+    def test_check_web_api_key_true_on_anthropic_native_when_keyless_disabled(
+        self, fresh_registry, monkeypatch, tmp_path
+    ):
+        """FORK-ONLY: with the keyless tier off and no registry provider ready,
+        Anthropic credentials alone must still light up web_search.
+
+        The adapter swaps the client tool for Anthropic's native
+        web_search_20250305 server tool at request-build time
+        (agent/fork/anthropic_native_web_search.apply_native_web_search), so
+        this is a genuinely working backend, not a false positive. Pins the
+        fork stage so a future upstream sync can't silently delete it and
+        still stay green.
+        """
+        monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
+        monkeypatch.setattr(registry, "_keyless_tier_enabled", lambda: False)
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        # Patch the resolver rather than os.environ: _has_env goes through
+        # _env_value -> hermes_cli.config.get_env_value, which returns "" (not
+        # None) when the key is absent from the config/.env layer and so
+        # shadows a plain monkeypatch.setenv.
+        monkeypatch.setattr(
+            web_tools, "_env_value",
+            lambda name: "sk-ant-test" if name == "ANTHROPIC_API_KEY" else "",
+        )
+        assert web_tools.check_web_api_key() is True
 
 
 # ---------------------------------------------------------------------------
