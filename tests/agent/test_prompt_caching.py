@@ -8,6 +8,7 @@ from agent.prompt_caching import (
     _can_carry_marker,
     _count_cache_markers,
     apply_anthropic_cache_control,
+    apply_anthropic_tools_cache_control,
     build_prompt_cache_plan,
     effective_cache_ttl,
     strip_anthropic_cache_control,
@@ -571,12 +572,74 @@ class TestApplyIdempotency:
         """
         messages = self._fixture_messages()
 
-        round1 = apply_anthropic_cache_control(messages, static_system_prefix="STATIC_PREFIX")
-        round2 = apply_anthropic_cache_control(round1, static_system_prefix="STATIC_PREFIX")
-        round3 = apply_anthropic_cache_control(round2, static_system_prefix="STATIC_PREFIX")
+        # reserve_tools_breakpoint=False: this test arrived from upstream
+        # c26357ad6a, which MOVED it here from
+        # tests/run_agent/test_prompt_caching_idempotency.py. Because the
+        # destination was new text with no fork counterpart, git auto-merged
+        # it verbatim, without the adaptation its three sibling tests in this
+        # file already carry. Upstream has no tools[] breakpoint, so its
+        # message-side layout is 4; the fork reserves the 4th breakpoint for
+        # the last entry of tools[] (apply_anthropic_tools_cache_control) and
+        # therefore places only 3 message-side markers by default. Passing
+        # False pins upstream's layout so the == 4 guard below keeps its exact
+        # original meaning. The fork's default layout is pinned separately by
+        # test_fork_default_layout_reserves_the_fourth_breakpoint_for_tools.
+        round1 = apply_anthropic_cache_control(
+            messages, static_system_prefix="STATIC_PREFIX", reserve_tools_breakpoint=False
+        )
+        round2 = apply_anthropic_cache_control(
+            round1, static_system_prefix="STATIC_PREFIX", reserve_tools_breakpoint=False
+        )
+        round3 = apply_anthropic_cache_control(
+            round2, static_system_prefix="STATIC_PREFIX", reserve_tools_breakpoint=False
+        )
 
         assert round1 == round2 == round3
         assert _count_cache_markers(round1, []) == 4
+
+    def test_fork_default_layout_reserves_the_fourth_breakpoint_for_tools(self):
+        """The fork's DEFAULT layout still spends exactly four breakpoints —
+        they are just distributed across messages and tools[] rather than all
+        living on messages.
+
+        This is the fork-side counterpart to the upstream idempotency guard
+        above, and it carries the same protective intent (marker loss must not
+        masquerade as safety) for the layout the fork actually ships. It
+        asserts the DISTRIBUTION, not merely the total, so a budget-accounting
+        change that shifts a breakpoint between messages and tools[] cannot
+        slip through on a still-correct sum of 4.
+        """
+        tools = [{"name": "a", "input_schema": {}}, {"name": "b", "input_schema": {}}]
+
+        # With a static prefix: 2 system (stable prefix + volatile suffix)
+        # + 1 trailing message + 1 tools[] = 4 on the wire.
+        msgs = apply_anthropic_cache_control(
+            self._fixture_messages(), static_system_prefix="STATIC_PREFIX"
+        )
+        marked_tools = apply_anthropic_tools_cache_control(tools)
+        assert _count_cache_markers(msgs, []) == 3
+        assert _count_cache_markers([], marked_tools) == 1
+        assert _count_cache_markers(msgs, marked_tools) == 4
+
+        # Without a static prefix: 1 system + 2 trailing messages
+        # + 1 tools[] = 4 on the wire.
+        msgs_no_prefix = apply_anthropic_cache_control(self._fixture_messages())
+        assert _count_cache_markers(msgs_no_prefix, []) == 3
+        assert _count_cache_markers(msgs_no_prefix, marked_tools) == 4
+
+        # Idempotency must hold at the wire level, including the fork-only
+        # tools[] path (upstream's #90971 strip-first fix covers messages
+        # only, so the tools side needs its own guard).
+        assert apply_anthropic_tools_cache_control(marked_tools) == marked_tools
+        assert (
+            _count_cache_markers(
+                apply_anthropic_cache_control(msgs, static_system_prefix="STATIC_PREFIX"),
+                apply_anthropic_tools_cache_control(marked_tools),
+            )
+            == 4
+        )
+        # The caller's canonical tools list must never be mutated.
+        assert tools == [{"name": "a", "input_schema": {}}, {"name": "b", "input_schema": {}}]
 
     def test_does_not_mutate_caller_messages_with_stale_top_level_markers(self):
         """A caller's live message list must never be mutated in place, even
