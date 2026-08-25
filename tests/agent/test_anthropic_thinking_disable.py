@@ -90,14 +90,44 @@ class TestThinkingOffIsSentExplicitly:
 class TestEnablePathIsUnchanged:
     """The disable branch must not disturb the thinking-ON contract."""
 
+    # FORK DIVERGENCE (upstream→fork reconciliation, sync v2026.8.19).
+    #
+    # Two deliberate fork behaviors differ from upstream on the ENABLE path.
+    # Both are documented in agent/anthropic_adapter.py and predate this sync;
+    # neither is a merge defect (verified with `git log -S` against the merge
+    # base — they exist in the fork's pre-merge tree and not upstream):
+    #
+    # 1. ``thinking.display``: upstream sends ``display="summarized"``. The
+    #    fork omits it (CC wire-shape parity — Claude Code does not set it, and
+    #    forcing a summary makes the model emit extra tokens after thinking
+    #    before visible output streams, which correlated with multi-minute
+    #    prefill stalls). Opt back in via ``HERMES_THINKING_DISPLAY=summarized``.
+    #    The fork already made this same call on the sibling file
+    #    tests/agent/test_kimi_coding_anthropic_thinking.py in commit d394e56ec6.
+    #
+    # 2. ``reasoning_config=None``: upstream omits ``thinking`` entirely. The
+    #    fork defaults adaptive-capable models to adaptive/medium, mirroring
+    #    CC 2.1.119's captured wire shape; without it the whole
+    #    thinking/output_config block was a no-op for the many callers that
+    #    pass no reasoning_config, leaving the effort betas dormant.
+    #    "Thinking off" is still a distinct signal (``{"enabled": False}``),
+    #    so the tri-state this file's disable tests protect is intact —
+    #    see agent/auxiliary_client.py, which opts out explicitly.
+    #
+    # Assertions below are INVERTED rather than deleted, so they still fail
+    # loudly if the fork's divergence itself regresses.
+
     def test_adaptive_enable_still_sends_adaptive_plus_effort(self) -> None:
         kwargs = _kwargs("anthropic/claude-opus-5", {"enabled": True, "effort": "high"})
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        # Fork: adaptive, with display left to the API default (see note above).
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert "display" not in kwargs["thinking"]
         assert kwargs["output_config"] == {"effort": "high"}
 
     def test_mandatory_model_still_thinks_when_asked_to(self) -> None:
         kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": True, "effort": "max"})
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert "display" not in kwargs["thinking"]
         assert kwargs["output_config"] == {"effort": "max"}
 
     def test_legacy_enable_still_sends_budget_tokens(self) -> None:
@@ -108,8 +138,17 @@ class TestEnablePathIsUnchanged:
         kwargs = _kwargs("anthropic/claude-haiku-4.5", {"enabled": True, "effort": "high"})
         assert "thinking" not in kwargs
 
-    def test_no_reasoning_config_sends_no_thinking_field(self) -> None:
-        assert "thinking" not in _kwargs("anthropic/claude-opus-5", None)
+    def test_no_reasoning_config_defaults_to_adaptive_medium(self) -> None:
+        """Fork: an unset reasoning_config means "use the default wire shape",
+        NOT "no thinking" — see note above. Upstream omits ``thinking`` here.
+        Turning thinking OFF remains a separate, explicit signal, which the
+        TestThinkingOffIsSentExplicitly cases above pin."""
+        kwargs = _kwargs("anthropic/claude-opus-5", None)
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "medium"}
+        # A legacy manual-thinking model has no adaptive default to fall back
+        # on, so absence still means absence there.
+        assert "thinking" not in _kwargs("claude-sonnet-4-5", None)
 
 
 class TestDisableVerdictHelper:
