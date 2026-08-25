@@ -4669,6 +4669,28 @@ def delegate_task(
 
     if tasks and isinstance(tasks, list):
         task_list = tasks
+        # Top-level `model`/`agent_type` are documented (and in the
+        # single-`goal` branch below, implemented) as batch-wide defaults that
+        # a per-task value overrides. The batch branch used to take the
+        # caller's task dicts verbatim, so both were silently DROPPED for
+        # every fan-out: a caller who set model="claude-opus-5" once at the
+        # top level got children on delegation.by_provider.<p>.model instead,
+        # with nothing in the result indicating the request was ignored.
+        # Seeded (not forced) via setdefault so an explicit per-task value
+        # still wins — matching the precedence comment below.
+        if model or agent_type:
+            _seeded = []
+            for _t in task_list:
+                if not isinstance(_t, dict):
+                    _seeded.append(_t)
+                    continue
+                _t = dict(_t)
+                if model:
+                    _t.setdefault("model", model)
+                if agent_type:
+                    _t.setdefault("agent_type", agent_type)
+                _seeded.append(_t)
+            task_list = _seeded
     elif goal and isinstance(goal, str) and goal.strip():
         single_task: Dict[str, Any] = {
             "goal": goal,
