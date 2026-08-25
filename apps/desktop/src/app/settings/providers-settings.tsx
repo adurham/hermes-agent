@@ -119,11 +119,13 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
 
 // Deliberately a near-1:1 replica of the first-run onboarding picker
 // (`Picker` in desktop-onboarding-overlay): same recommended card, same
-// Fireworks #2 quick-key row, same provider rows, same "Other providers"
-// disclosure, same OpenRouter quick-key row, and the same bottom-right
-// "I have an API key" affordance. The leaf cards are the exact shared
-// components, so the two surfaces stay visually identical. Selecting a
-// provider hands off to the shared onboarding overlay, which runs that
+// provider rows, same "Other providers" disclosure, and the same
+// bottom-right "I have an API key" affordance. The leaf cards are the
+// exact shared components, so the two surfaces stay visually identical.
+// One deliberate divergence: the Fireworks quick-key row sits at slot #2
+// in onboarding but folds into the disclosure here, beside OpenRouter —
+// settings leads with what's connected, not with acquisition. Selecting
+// a provider hands off to the shared onboarding overlay, which runs that
 // provider's real sign-in flow; the key affordances open the API-key
 // catalog below.
 function OAuthPicker({
@@ -180,9 +182,7 @@ function OAuthPicker({
         {p.intro}
       </p>
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
-      {/* Slot #2 — always visible, matching onboarding / CANONICAL_PROVIDERS. */}
-      <FireworksProviderRow onClick={onWantApiKey} />
-      {/* Slot #3 — the no-account path, matching onboarding. */}
+      {/* Slot #2 — the no-account path, matching onboarding. */}
       <LocalModelsProviderRow onClick={onWantLocalModels} />
       {connected.length > 0 && (
         <>
@@ -205,6 +205,7 @@ function OAuthPicker({
           {others.map(p => (
             <ProviderRow key={p.id} onSelect={select} provider={p} />
           ))}
+          <FireworksProviderRow onClick={onWantApiKey} />
           <OpenRouterProviderRow onClick={onWantApiKey} />
         </>
       )}
