@@ -144,8 +144,8 @@ def resolve_assets(tag: str, backend: str, os_name: str | None = None,
     """Compose the asset list for (tag, backend, platform).
 
     Raises BinaryResolutionError for combinations the release does not ship
-    (e.g. win-cuda-arm64 — a known gap, in the NVIDIA asks). Callers fall
-    back down the backend ladder: cuda -> vulkan -> cpu.
+    (a platform/backend pair upstream publishes no artifact for). Callers
+    fall back down the backend ladder: cuda -> vulkan -> cpu.
     """
     host_os, host_arch = _host_os_arch()
     os_name = os_name or host_os

@@ -8,10 +8,10 @@ whose base config is gated upstream carry a same-family conservative
 prior (commented) — the GGUF header corrects it at load time.
 
 Each model ships ONE build, Q4-class (UD-Q4_K_M where the repo has it,
-per NVIDIA's recommended catalog — their llama.cpp optimizations target
-Q4-class quants; UD-Q4_K_XL elsewhere). No quant ladder: headroom buys a
-bigger context window, never a bigger quant, so every machine runs the
-same build the vendor recipes were measured on. Below Q4 the quality
+UD-Q4_K_XL elsewhere). Q4 is the quant class current engines optimize
+for and the sweet spot of the size/quality curve, so there is no quant
+ladder: headroom buys a bigger context window, never a bigger quant,
+and every machine runs the same well-tested build. Below Q4 the quality
 loss is too severe to ship as someone's first local-AI experience; the
 fit policy prices the build honestly (zero-spill, spilled, or refused by
 the physics check).
@@ -29,7 +29,7 @@ only when the launch decision spills, where its speedup is largest.
 
 File sizes come from HF LFS metadata and feed the estimator, the fit
 pills, and download progress. There is no download-time integrity check
-(product decision): a corrupt or truncated file surfaces as a llama.cpp
+by design: a corrupt or truncated file surfaces as a llama.cpp
 load error at first use, and the reachability test catches upstream
 re-uploads by size drift before users do.
 
@@ -97,11 +97,10 @@ class AssetFile:
 
 @dataclass(frozen=True)
 class QuantVariant:
-    """One downloadable build of a model. Ordered best-quality-first in
-    CatalogEntry.variants. Split GGUFs list every part in files; the model
-    loads from the first part."""
+    """One downloadable build of a model. Split GGUFs list every part in
+    files; the model loads from the first part."""
 
-    quant: str                  # e.g. "UD-Q8_K_XL"
+    quant: str                  # e.g. "UD-Q4_K_M"
     files: tuple                # AssetFile, first = the load target
     validated: bool = False     # proven end-to-end on real hardware
 
@@ -128,7 +127,7 @@ class CatalogEntry:
     display_name: str
     description: str            # one line, plain language
     repo: str                   # HF repo
-    variants: tuple             # QuantVariant, best first
+    variants: tuple             # QuantVariant (exactly one, Q4-class)
     # Estimator inputs (measured or config-derived; quant changes weights,
     # never KV). Entries with gated upstream configs carry a conservative
     # same-family prior — the GGUF header is the authority after download.
@@ -140,14 +139,13 @@ class CatalogEntry:
     swa_window: int = 0
     moe: bool = False
     mtp: bool = False           # ships MTP heads (spec decode when loaded)
-    # Speculative draft depth for MTP models. Per-model, measured: deeper
-    # drafting only pays while acceptance holds (Qwen3.6-35B: 76% at 2 ->
-    # 243.8 tok/s, 59% at 3 -> 221.6; Nemotron holds at 3). NVIDIA's
-    # per-SKU recipes seeded these; our receipts confirmed them.
+    # Speculative draft depth for MTP models. Per-model and measured:
+    # deeper drafting pays only while draft acceptance holds, and the
+    # break-even depth differs by model.
     mtp_draft_depth: int = 3
     # Vocab size prices the GPU logits buffers (ubatch x vocab x fp32,
-    # doubled under MTP backend sampling) — a 248K-vocab model once packed
-    # a card 3.9 GiB past a fit that ignored this.
+    # doubled under MTP backend sampling) — a multi-GiB term at large
+    # vocab sizes that a weights-only fit would miss.
     n_vocab: int = 0
     mmproj: "AssetFile | None" = None    # vision projector, downloads with model
     draft: "AssetFile | None" = None     # spec-decode draft model (e.g. DSpark)
@@ -190,11 +188,9 @@ class VariantChoice:
 def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice | None:
     """Fit the entry's one build (Q4-class) to this machine.
 
-    The quant ladder is gone (NVIDIA guidance, 2026-08: their llama.cpp
-    optimizations target Q4-class builds, so Q4 is the best
-    speed-per-quality everywhere and the build the vendor recipes were
-    measured on). Every entry ships exactly one variant; headroom buys a
-    bigger window, never a bigger quant. Spill logic is unchanged:
+    Every entry ships exactly one variant (see the module docstring for
+    why there is no quant ladder); headroom buys a bigger window, never
+    a bigger quant. The fit shapes:
 
     - "best-large-window": zero-spills at TARGET_WINDOW
     - "best-fits": zero-spills at the 64K floor

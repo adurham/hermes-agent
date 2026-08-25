@@ -125,10 +125,10 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
         data-slot="system-resources-panel"
       >
         {/* min-w-0 everywhere a flex/grid child must shrink: grid items
-            default min-width:auto, so the long GPU name's nowrap min-content
-            (263px on the RTX Spark prototype) props the track open past the
-            w-64 box and overflow-x:hidden shears off every right-aligned
-            value. With the track clamped, `truncate` can finally act. */}
+            default min-width:auto, so a long GPU name's nowrap min-content
+            props the track open past the w-64 box and overflow-x:hidden
+            shears off every right-aligned value. With the track clamped,
+            `truncate` can finally act. */}
         <div className="flex min-w-0 items-baseline justify-between gap-2">
           <p className="shrink-0 font-medium text-foreground">{copy.title}</p>
 

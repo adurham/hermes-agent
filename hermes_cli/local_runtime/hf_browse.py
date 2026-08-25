@@ -1,7 +1,7 @@
 """Browse Hugging Face for GGUF models the user can run.
 
 The curated catalog is the front page; this module is the firehose behind
-it — day-0 models NVIDIA or we haven't blessed yet, community quants,
+it — day-0 models not yet in the catalog, community quants,
 anything. Three rules keep it safe and honest:
 
 1. Acquisition only. Nothing here serves a model: a browsed download
@@ -13,7 +13,7 @@ anything. Three rules keep it safe and honest:
    After download the GGUF header is the authority, as everywhere.
 3. HF is queried directly with short timeouts and a small in-process
    cache. No third-party proxy service; if HF rate limits ever bite at
-   fleet scale, a proxy is a product decision to make then.
+   fleet scale, revisit with a caching proxy then.
 """
 
 from __future__ import annotations

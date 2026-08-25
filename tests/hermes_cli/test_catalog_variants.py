@@ -1,7 +1,6 @@
-"""Variant-selection contracts: the quant ladder picks the best build for
-the hardware, per the design's 'offer a smaller quant' remedy run
-proactively, bounded by the Q4 quality floor. Pure decision-table tests
-over synthetic budgets."""
+"""Variant-selection contracts: fit the catalog's single Q4-class build
+to a machine and price it honestly. Pure decision-table tests over
+synthetic budgets."""
 
 from __future__ import annotations
 
@@ -25,15 +24,14 @@ def budget(vram_gib: float, ram_gib: float = 64) -> HardwareBudget:
 
 
 def test_every_entry_ships_exactly_one_q4_build():
-    """No quant ladder: one Q4-class build per entry (NVIDIA guidance —
-    their llama.cpp optimizations target Q4-class quants; K_M where the
-    repo ships it, XL elsewhere). No Q3/Q2 ever ships (product decision,
-    2026-08-09). Validation status is explicit per variant in
-    catalog.json; unvalidated builds are permitted (day-0 entries) and
-    surface as unbadged rows in the pane."""
+    """No quant ladder: one Q4-class build per entry (K_M where the repo
+    ships it, XL elsewhere) — the quant class current engines optimize
+    for. Nothing below Q4 ever ships. Validation status is explicit per
+    variant in catalog.json; unvalidated builds are permitted (day-0
+    entries) and surface as unbadged rows in the pane."""
     for entry in CATALOG:
         assert len(entry.variants) == 1, (
-            f"{entry.id}: {len(entry.variants)} variants — the ladder is gone")
+            f"{entry.id}: {len(entry.variants)} variants — expected exactly one")
         build = entry.variants[0]
         assert build.quant.startswith(("UD-Q4", "Q4")), (
             f"{entry.id}: ships {build.quant}, not a Q4-class build")
@@ -53,8 +51,7 @@ def test_split_variants_have_coherent_parts():
 
 
 def test_selection_is_the_q4_build_even_with_headroom():
-    """NVIDIA guidance (2026-08): llama.cpp optimizations target Q4-class
-    builds, so the selector picks the Q4 rung even when bigger quants fit
+    """The selector picks the Q4 build even when bigger quants would fit
     with room to spare — headroom buys window, not quant. Larger builds
     stay one tile click away in the pane."""
     entry = catalog_by_id()["muse-glimmer-30b"]

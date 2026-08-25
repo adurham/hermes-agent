@@ -127,8 +127,8 @@ def download_file(url: str, dest: Path, job: Dict[str, Any],
     """Download url -> dest with byte progress on ``job``.
 
     Ranged-parallel when the server supports it, single-stream fallback
-    otherwise. There is no integrity check against the CATALOG by design
-    (product decision): catalog sizes may lag an upstream re-upload, and a
+    otherwise. There is no integrity check against the CATALOG by
+    design: catalog sizes may lag an upstream re-upload, and a
     newer file than we know about must download fine. Completeness is
     checked only against what the SERVER declared for this transfer
     (range-probe total / Content-Length) — self-consistent and always

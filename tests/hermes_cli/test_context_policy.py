@@ -341,10 +341,10 @@ def test_launch_args_contract():
 def test_launch_args_uma_never_pins_tensors():
     """On unified memory, -ot pinning is off even for spilled decisions:
     "CPU" and "GPU" are the same silicon, and forcing FFN weights down
-    the host compute path measured 2.3x SLOWER than letting the
-    allocator place everything (RTX Spark, 27B Q4: 5.5 vs 12.9 tok/s).
-    The discrete ~1.75x -ot win does not transfer. Everything else
-    about the launch shape is identical to discrete."""
+    the host compute path measures far slower than letting the
+    allocator place everything. The discrete ~1.75x -ot win does not
+    transfer. Everything else about the launch shape is identical to
+    discrete."""
     p = moe()
     spilled = WindowDecision(window=FLOOR, spill_bytes=4 * GIB, kv_on_gpu=True)
 

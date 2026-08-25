@@ -233,18 +233,18 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *,
 
     ``uma``: on unified memory there is no bus to protect tensors from —
     "CPU" and "GPU" are the same silicon, and pinning FFN weights to the
-    host path just forces CPU compute (measured 2.3x slower than letting
-    the allocator place everything, RTX Spark, 27B Q4). The discrete
+    host path just forces CPU compute (measured well over 2x slower than
+    letting the allocator place everything). The discrete
     ~1.75x win the -ot pattern encodes does not transfer; a spilled UMA
     config runs unpinned.
 
     MTP and the large prefill microbatch are BOTH wins but must not stack:
     backend sampling keeps a ubatch x vocab x fp32 logits buffer on the
-    GPU, and MTP's draft context doubles it — measured 5.8 GiB of overhead
-    on a 248K-vocab model at -ub 2048 vs 1.9 priced, which silently packed
-    a 32 GiB card. So MTP models run decode-optimized (-ub 512, measured
-    247 tok/s) and non-MTP models run prefill-optimized (-ub 2048,
-    measured +27%); ub_logits_bytes() prices whichever was chosen."""
+    GPU, and MTP's draft context doubles it — at large vocab sizes and
+    -ub 2048 that buffer runs multiple GiB past what a fit that ignores
+    it would price. So MTP models run decode-optimized (-ub 512) and
+    non-MTP models run prefill-optimized (-ub 2048, measured ~+27%
+    prefill); ub_logits_bytes() prices whichever was chosen."""
     args = ["-c", str(decision.window)]
     if mtp_capable:
         args += ["--spec-type", "draft-mtp",

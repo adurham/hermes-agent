@@ -6,10 +6,10 @@ physical memory minus headroom — their device queries have been observed
 off by 3x in both directions. The probe classifies the device and
 constructs the right HardwareBudget for the estimator.
 
-Vendor probe quirk (RTX-Spark-class WDDM carve-out): on unified-memory
-NVIDIA devices under Windows, nvidia-smi answers from the legacy
-dedicated-VRAM carve-out (measured 16 GiB reported vs a 45.4 GiB pool the
-allocator addresses uniformly at full bandwidth). The CUDA driver API is
+Vendor probe quirk (WDDM carve-out): on unified-memory NVIDIA devices
+under Windows, nvidia-smi answers from the legacy dedicated-VRAM
+carve-out — a fraction of the pool the CUDA allocator actually
+addresses uniformly at full bandwidth. The CUDA driver API is
 the tiebreaker: cuDeviceGetAttribute(INTEGRATED) is the vendor's own
 declaration and always wins — 1 budgets unified, 0 stays discrete no
 matter what any other number says. Only when the driver API is
@@ -43,7 +43,7 @@ _GIB = 1 << 30
 # 1 GiB is regressive on 8 GB cards and generous on 24 GB ones.
 _MARGIN_FLOOR = 512 << 20
 _MARGIN_FRACTION = 0.07
-# UMA headroom: on unified-memory machines (Apple Silicon, Spark-class
+# UMA headroom: on unified-memory machines (Apple Silicon, unified-memory
 # NVIDIA) the model shares physical memory with the OS and every app, so
 # budget from RAM minus this fraction.
 _UMA_HEADROOM_FRACTION = 0.20
@@ -51,7 +51,7 @@ _UMA_HEADROOM_FRACTION = 0.20
 # Engine-fallback gates for the unified-pool quirk — BOTH must hold, and
 # no discrete card can meet either: (1) the allocator's pool exceeds the
 # smi report by well past rounding/ECC slack (discrete cards agree within
-# ~2%; measured Spark disagreement is 2.85x), and (2) the pool is
+# ~2%; carve-out disagreement runs to whole multiples), and (2) the pool is
 # system-RAM-sized — a workstation card in a RAM-matched box fails (1)
 # because its smi and allocator AGREE, and a big discrete card in a
 # bigger box fails (2). The driver's INTEGRATED attribute, when
@@ -68,7 +68,7 @@ _CU_DEVICE_ATTRIBUTE_INTEGRATED = 18
 _POOL_NEGATIVE_TTL_S = 60.0
 _pool_probe_cache: tuple[float, "tuple[int, bool | None] | None"] | None = None
 
-# '  CUDA0: NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU) (46464 MiB, 46284 MiB free)'
+# '  CUDA0: NVIDIA Example Device (1234-core Example GPU) (46464 MiB, 46284 MiB free)'
 # — greedy .* pins the LAST parenthesized group, so device names carrying
 # their own parentheses parse correctly.
 _DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
@@ -168,8 +168,8 @@ def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
     API, or None when unreachable. ctypes against the driver's own DLL/SO
     — no toolkit, no subprocess, ~ms. INTEGRATED is the vendor's own
     unified-memory declaration; total is the pool the allocator will
-    actually hand out (observed 45.4 GiB where nvidia-smi says 16 on
-    Spark-class firmware)."""
+    actually hand out (on carve-out devices, several times what
+    nvidia-smi reports)."""
     import ctypes
 
     for name in ("nvcuda.dll", "libcuda.so.1", "libcuda.so"):
@@ -290,17 +290,16 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     ram_total, ram_avail = _ram_bytes()
     vram = _nvidia_vram()
 
-    # Unified-memory NVIDIA (Spark-class): the CUDA allocator pool is the
-    # real capacity. Classification comes from the driver API/engine — it
+    # Unified-memory NVIDIA: the CUDA allocator pool is the real
+    # capacity. Classification comes from the driver API/engine — it
     # must not require nvidia-smi (stripped-PATH sessions lose smi but
-    # nvcuda loads via the system loader regardless). Measured with the
-    # carve-out at both 16 and 32 GiB: crossing it costs nothing (effective
-    # bandwidth flat ~210-240 GB/s through the boundary), smi's used/total
-    # merely saturate at it, and the pool stays ~46 GiB regardless — the
-    # carve-out is an OS accounting knob, not a GPU limit. Deliberately NOT
+    # nvcuda loads via the system loader regardless). Crossing the
+    # carve-out costs nothing (effective bandwidth is flat through the
+    # boundary; smi's used/total merely saturate at it) — the carve-out
+    # is an OS accounting knob, not a GPU limit. Deliberately NOT
     # clamped to OS RAM: carved-out memory is invisible to
-    # GlobalMemoryStatusEx (32/32 mode reports 16 GiB less RAM), so a RAM
-    # clamp threw away exactly the carved capacity.
+    # GlobalMemoryStatusEx (the OS reports correspondingly less total
+    # RAM), so a RAM clamp would throw away exactly the carved capacity.
     unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
     if unified is not None:
         logger.info(
