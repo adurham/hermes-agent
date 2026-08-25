@@ -101,8 +101,11 @@ def test_status_reports_loaded_models_from_live_router(client, monkeypatch):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         port = server.server_address[1]
+        # Patch the ROUTE's binding: local_models binds _state_endpoint via
+        # from-import at module load, so patching the endpoint module's
+        # attribute never reaches the name the route actually calls.
         monkeypatch.setattr(
-            "hermes_cli.local_runtime.endpoint._state_endpoint",
+            "hermes_cli.web_routers.local_models._state_endpoint",
             lambda: {"base_url": f"http://127.0.0.1:{port}/v1", "api_key": "k"})
         payload = client.get("/api/local-models/status").json()
         assert payload["server_running"] is True

@@ -251,6 +251,7 @@ class LlamaServerSupervisor:
             time.sleep(backoff)
             self._restarts += 1
             try:
+                self._reap_orphaned_children()
                 self._spawn()
                 self._wait_health(120)
                 if self.primary_model:
@@ -262,14 +263,77 @@ class LlamaServerSupervisor:
         self._stopping = True
         state_path().unlink(missing_ok=True)
         if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+            self._terminate_tree(self.proc)
         if self._log_handle:
             self._log_handle.close()
             self._log_handle = None
+
+    @staticmethod
+    def _terminate_tree(proc: subprocess.Popen) -> None:
+        """Terminate the router AND its model children.
+
+        The router spawns one child llama-server per loaded model, each
+        holding gigabytes of VRAM. Terminating only the router (on
+        Windows, TerminateProcess — no signal handlers, no cleanup pass)
+        orphans those children: the port goes quiet but the weights stay
+        resident, and the next spawn re-loads models alongside a ghost
+        still holding the memory. Enumerate children FIRST (the parent
+        must be alive to walk them), then terminate parent and children
+        together, escalating to kill for stragglers.
+        """
+        children: list = []
+        try:
+            import psutil
+
+            children = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:  # noqa: BLE001 — no psutil view; still stop the router
+            children = []
+        proc.terminate()
+        for child in children:
+            try:
+                child.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        for child in children:
+            try:
+                if child.is_running():
+                    child.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _reap_orphaned_children(self) -> None:
+        """Kill model children orphaned by a router crash, before respawn.
+
+        A crashed router can't clean up its children, and a dead parent
+        can't be walked — so match by identity instead: any process
+        running OUR llama-server binary whose parent is gone is an
+        orphan of a previous router. Their VRAM must come back before
+        the new router loads models next to the ghosts. External
+        llama-servers (different binary path) never match.
+        """
+        try:
+            import psutil
+
+            exe = str(server_binary(self.install_dir))
+        except Exception:  # noqa: BLE001
+            return
+        for p in psutil.process_iter(["exe", "ppid"]):
+            try:
+                if p.info.get("exe") != exe:
+                    continue
+                if self.proc is not None and p.pid == self.proc.pid:
+                    continue
+                ppid = p.info.get("ppid") or 0
+                if ppid and psutil.pid_exists(ppid):
+                    continue
+                logger.warning("reaping orphaned llama-server child pid=%s", p.pid)
+                p.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
 
     # ── model management (router endpoints) ──────────────────
 
