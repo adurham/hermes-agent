@@ -12827,13 +12827,19 @@ pre-existing, untouched here. Also exercised end-to-end through the real
 `claude-sonnet-5 (batch default; per-task varies)` with each task line
 naming its own model.
 
-**Known gap (not fixed here):** `delegate_task(action='list')`
-(`tools/delegate_tool.py:510`) reads `r.get("model")` from the separate
-`_active_subagents` registry rather than from `results`, and has not been
-traced. Warm-memory fact 1809 (2026-08-21) records `action='list'` also
-reporting `claude-sonnet-5` for children that were pinned otherwise, so it
-plausibly shares this defect via a different path. Worth checking before
-trusting that surface as the verification channel for a model pin.
+**`action='list'` — audited, CLEAN (resolved 2026-08-25).** Flagged here
+as an untraced gap on first write-up, then checked: `delegate_task(action=
+'list')` (`tools/delegate_tool.py:510`) reads from `_active_subagents`,
+whose `model` field is populated at registration from the *live child*
+(`getattr(child, "model", None)`, line 3104) — not from the batch default.
+Verified by registering two children on different models and asserting the
+`list` payload reports both distinctly. No fix needed.
+
+The 2026-08-21 observation (fact 1809) that `list` showed
+`claude-sonnet-5` for a batch pinned to another model was therefore
+`list` reporting **accurately** — those children really were sonnet,
+because top-level `model` was being dropped before they were built. That
+is the separate, more serious bug documented in the next entry.
 
 **Merge note:** the trigger is fork-local — `delegation.by_provider` is a
 fork feature (see "Provider-scoped delegation"), and it supplies the
@@ -12841,4 +12847,81 @@ batch-level default that diverges from per-task resolution. The underlying
 reporting asymmetry (batch-level `model` on the completion event vs.
 per-child late resolution) is not fork-specific, so the
 `_format_async_delegation` half is a plausible upstream candidate; surfaced
+here for Adam to decide rather than filed upstream.
+
+### Fork-only fix — 2026-08-25 (top-level `model`/`agent_type` silently dropped for every `delegate_task` BATCH fan-out)
+
+**Symptom:** found while auditing the sibling reporting bug above, not
+reported separately — which is the point: this one had been silently
+losing real work with no visible signal. A `delegate_task` batch
+dispatched with a top-level `model="claude-opus-5"` built every child on
+`claude-sonnet-5`. Nothing in the dispatch return, the completion block,
+or the live transcripts indicated the request had been ignored.
+
+**Root cause:** the batch branch at `tools/delegate_tool.py:4671` assigned
+`task_list = tasks` — the caller's dicts, verbatim. The single-`goal`
+branch immediately below it (4673-4679) constructs a synthetic task that
+*does* carry `"model": model` and `"agent_type": agent_type`, and the
+per-child precedence comment at ~4835 documents the chain as "per-task
+model → per-task role-map → auto-route → **top-level model** →
+delegation.model config → parent's model". But the batch path never seeded
+those values onto the tasks, so `task_model_explicit` (4837) was always
+`None` for a top-level-only caller, and resolution fell straight through
+to `task_creds["model"]` — i.e. `delegation.by_provider.<p>.model`. The
+documented step existed in the comment and in the single-goal branch, and
+nowhere in the batch path.
+
+Verified against the real dispatch path (patching
+`_build_child_preserving_parent_tools` and reading the model each child
+was actually built with) across four shapes:
+
+| dispatch shape | before | after |
+|---|---|---|
+| BATCH + top-level `model` | `claude-sonnet-5` ❌ | `claude-opus-5` ✅ |
+| BATCH + per-task `model` | `claude-opus-5` ✅ | `claude-opus-5` ✅ |
+| SINGLE goal + top-level `model` | `claude-opus-5` ✅ | `claude-opus-5` ✅ |
+| BATCH + top-level `model` **and** `agent_type` | sonnet, `agent_type=None` ❌ | opus, `reviewer` ✅ |
+
+`agent_type` was dropped by the same line, which compounds it: a dropped
+`agent_type` loses both the ruflo persona-prompt injection and the
+per-role model resolution (`delegation.model_by_role`), so a batch pinned
+by role silently ran unspecialised on the config default.
+
+This also resolves warm-memory fact 1809 (2026-08-21), which recorded a
+top-level-`model` batch running on `claude-sonnet-5` and noted
+`action='list'` reporting the same — and speculated the role map was
+taking precedence over the top-level param. The real explanation is
+simpler: the top-level param never reached the children at all, and
+`list` was reporting the truth.
+
+**Fix:** seed `model`/`agent_type` onto each task dict at the batch
+normalization point, via `setdefault` so an explicit per-task value still
+wins (matching the documented precedence). Each task is copied rather than
+mutated, so the caller's own list is never rewritten. When neither
+top-level value is set the batch path is byte-for-byte unchanged.
+
+**Files:** `tools/delegate_tool.py`,
+`tests/tools/test_batch_top_level_model_seeding.py` (new).
+
+**Verification:** 6 regression tests covering both halves of the contract
+— the top-level default reaches batch children (`model` and `agent_type`),
+AND it never clobbers a per-task value — plus a no-top-level-defaults case
+asserting the untouched path, and a non-mutation check on the caller's
+list. Confirmed failing against the prior code (4 fail, 2 pass as
+controls), passing after. Delegation/swarm/subagent sweep
+(`-k "delegat or swarm or subagent"`): **483 passed, 1 failed** both with
+and without this change — the failure
+(`test_delegate_task_background_batch_runs_as_one_unit`) reproduces
+identically on unmodified `main` via `git stash`. Zero new failures.
+
+**`action='list'` audited as part of this work — clean.** It reads the
+model off the live child at registration (`tools/delegate_tool.py:3104`),
+so it reports genuine per-child models including for heterogeneous
+batches; verified by registering two children on different models and
+asserting `list` distinguishes them. No change needed.
+
+**Merge note:** likely NOT fork-specific. The batch/single-goal asymmetry
+is in generic delegation code, and `delegation.by_provider` only
+determines *which* wrong model the children land on, not whether the
+top-level param is dropped. Upstream is probably affected too — surfaced
 here for Adam to decide rather than filed upstream.
