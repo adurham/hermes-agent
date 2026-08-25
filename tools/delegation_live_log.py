@@ -386,7 +386,14 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
 
 def update_manifest_statuses(delegation_id: Optional[str],
                              results: List[Dict[str, Any]]) -> None:
-    """Best-effort per-task status update once the batch has aggregated."""
+    """Best-effort per-task status update once the batch has aggregated.
+
+    Also backfills the model each child was ACTUALLY built with (carried on
+    each result entry). The manifest is written at dispatch time, before any
+    child exists, so its top-level ``model`` is only the batch-level default
+    — without this backfill a per-task pin (explicit ``model``, ``agent_type``
+    role map, or auto-route) would never be visible in the manifest.
+    """
     if not delegation_id:
         return
     try:
@@ -399,6 +406,8 @@ def update_manifest_statuses(delegation_id: Optional[str],
                 task["status"] = r.get("status", task.get("status"))
                 if r.get("exit_reason"):
                     task["exit_reason"] = r["exit_reason"]
+                if r.get("model"):
+                    task["model"] = r["model"]
         manifest["completed"] = time.strftime("%Y-%m-%d %H:%M:%S")
         mp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False),
                       encoding="utf-8")

@@ -2839,7 +2839,29 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append(f"Context you provided: {context}")
         if toolsets:
             lines.append(f"Toolsets: {', '.join(toolsets)}")
-        lines.append(f"Role: {role}   Model: {model}   Total duration: {total_dur}s")
+        # Per-task models: each result entry carries the model its child was
+        # actually built with. The batch-level `model` is only the dispatch
+        # default (delegation.by_provider.<p>.model / delegation.model), so a
+        # per-task pin — explicit `model`, `agent_type` role map, or
+        # auto-route — used to be invisible here and the header would
+        # confidently misreport what every child ran on.
+        _task_models = {
+            r.get("task_index"): r.get("model")
+            for r in results
+            if isinstance(r, dict) and r.get("model")
+        }
+        _distinct = set(_task_models.values())
+        if _distinct and _distinct != {model}:
+            _model_label = (
+                next(iter(_distinct))
+                if len(_distinct) == 1
+                else f"{model} (batch default; per-task varies)"
+            )
+        else:
+            _model_label = model
+        lines.append(
+            f"Role: {role}   Model: {_model_label}   Total duration: {total_dur}s"
+        )
         if error and not results:
             lines.append("--- ERROR ---")
             lines.append(f"The batch did not complete successfully: {error}")
@@ -2861,6 +2883,10 @@ def _format_async_delegation(evt: dict) -> str:
                 header += f", api_calls={r['api_calls']}"
             if r.get("duration_seconds") is not None:
                 header += f", {r['duration_seconds']}s"
+            # Name the model per task when the batch was heterogeneous, so a
+            # mixed-model fan-out is auditable at a glance.
+            if len(_distinct) > 1 and _task_models.get(idx):
+                header += f", model={_task_models[idx]}"
             if r_truncated:
                 header += ", TRUNCATED: hit max_iterations — work may be incomplete"
             header += ") ---"
