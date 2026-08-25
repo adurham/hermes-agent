@@ -15,14 +15,24 @@ declaration and always wins — 1 budgets unified, 0 stays discrete no
 matter what any other number says. Only when the driver API is
 unreachable does the engine's --list-devices view apply, and then only
 behind two independent conditions no discrete card can meet.
+
+Every probe here must work under a stripped PATH — gateway and service
+sessions don't inherit the interactive environment. nvcuda/libcuda load
+through the system loader (PATH plays no part), so classification never
+depends on PATH; nvidia-smi resolves through an explicit candidate
+ladder (PATH first, then the driver's known install locations) and its
+absence only softens the live number, never the verdict.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
 import subprocess
 import time
+from pathlib import Path
 
 from hermes_cli.local_runtime.estimator import HardwareBudget
 
@@ -104,11 +114,45 @@ def _ram_bytes() -> tuple[int, int]:
         return 0, 0
 
 
+# nvidia-smi lives at a fixed path under the driver install; PATH presence
+# varies by session type (services and gateways often run with a minimal
+# environment) and by driver generation (legacy NVSMI dir was never on
+# PATH). Resolution result is cached: the driver doesn't move mid-process.
+_smi_path_cache: "tuple[str | None] | None" = None
+
+
+def _nvidia_smi_path() -> str | None:
+    """Absolute path to nvidia-smi, or None. PATH first (respects user
+    overrides), then the driver's known install locations on Windows;
+    on Linux/WSL the PATH lookup is the whole ladder."""
+    global _smi_path_cache
+    if _smi_path_cache is not None:
+        return _smi_path_cache[0]
+    found = shutil.which("nvidia-smi")
+    if found is None and os.name == "nt":
+        windir = os.environ.get("SystemRoot", r"C:\Windows")
+        for candidate in (
+            # DCH drivers (every modern install) place it in System32.
+            Path(windir) / "System32" / "nvidia-smi.exe",
+            # Legacy standalone drivers used NVSMI, never on PATH.
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+            / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe",
+        ):
+            if candidate.exists():
+                found = str(candidate)
+                break
+    _smi_path_cache = (found,)
+    return found
+
+
 def _nvidia_vram() -> tuple[int, int] | None:
     """(total, free) MiB->bytes from nvidia-smi, or None."""
+    exe = _nvidia_smi_path()
+    if exe is None:
+        return None
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total,memory.free",
+            [exe, "--query-gpu=memory.total,memory.free",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=10)
         if out.returncode != 0 or not out.stdout.strip():
@@ -246,9 +290,42 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     ram_total, ram_avail = _ram_bytes()
     vram = _nvidia_vram()
 
+    # Unified-memory NVIDIA (Spark-class): the CUDA allocator pool is the
+    # real capacity. Classification comes from the driver API/engine — it
+    # must not require nvidia-smi (stripped-PATH sessions lose smi but
+    # nvcuda loads via the system loader regardless). Measured with the
+    # carve-out at both 16 and 32 GiB: crossing it costs nothing (effective
+    # bandwidth flat ~210-240 GB/s through the boundary), smi's used/total
+    # merely saturate at it, and the pool stays ~46 GiB regardless — the
+    # carve-out is an OS accounting knob, not a GPU limit. Deliberately NOT
+    # clamped to OS RAM: carved-out memory is invisible to
+    # GlobalMemoryStatusEx (32/32 mode reports 16 GiB less RAM), so a RAM
+    # clamp threw away exactly the carved capacity.
+    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
+    if unified is not None:
+        logger.info(
+            "unified-memory NVIDIA device: allocator pool %.1f GiB "
+            "(nvidia-smi carve-out: %s); budgeting from the pool",
+            unified / _GIB,
+            f"{vram[0] / _GIB:.1f} GiB" if vram else "unavailable")
+        if planning:
+            base = unified
+        else:
+            # Live: dedicated-free plus what the OS can still give. smi's
+            # free saturates at the carve-out so this under-counts a bit —
+            # the safe direction (the pool edge is a measured soft cliff:
+            # decode collapses ~3.5x when concurrent demand hits it).
+            # Without smi, OS-available alone is the honest floor.
+            live = (vram[1] + ram_avail) if vram else ram_avail
+            base = min(unified, live)
+        usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
+        return HardwareBudget(usable_vram_bytes=usable,
+                              total_device_bytes=unified,
+                              ram_available_bytes=0, uma=True)
+
     if vram is None:
-        # No NVIDIA GPU visible: Metal/Vulkan/CPU paths budget from RAM as
-        # UMA (Apple Silicon) — conservative for discrete AMD until a
+        # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM
+        # as UMA (Apple Silicon) — conservative for discrete AMD until a
         # vendor probe lands (E3 hardware).
         base = ram_total if planning else ram_avail
         usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
@@ -257,28 +334,6 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
                               ram_available_bytes=0, uma=True)
 
     total, free = vram
-
-    # Spark-class quirk: nvidia-smi answers from the WDDM carve-out while
-    # the allocator addresses the whole unified pool at full bandwidth
-    # (measured flat ~200 GB/s effective 8 GiB past the carve-out).
-    # Budget like Apple Silicon: the pool minus headroom IS the budget,
-    # ram_available=0 so host memory never double-counts as spill room.
-    unified = _unified_pool_bytes(total, ram_total)
-    if unified is not None:
-        logger.info(
-            "unified-memory NVIDIA device: allocator pool %.1f GiB "
-            "(nvidia-smi carve-out %.1f GiB); budgeting from the pool",
-            unified / _GIB, total / _GIB)
-        # The allocator's pool can slightly exceed what the OS will really
-        # give it (firmware reserve); budget from the smaller of the two
-        # views, live-clamped by OS availability outside planning.
-        pool_total = min(unified, ram_total) if ram_total else unified
-        base = pool_total if planning else min(pool_total, ram_avail)
-        usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
-        return HardwareBudget(usable_vram_bytes=usable,
-                              total_device_bytes=pool_total,
-                              ram_available_bytes=0, uma=True)
-
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
     base = total if planning else free
     return HardwareBudget(usable_vram_bytes=max(0, base - margin),

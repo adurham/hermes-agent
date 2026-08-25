@@ -443,11 +443,14 @@ async def local_models_hardware():
     try:
         import subprocess
 
+        from hermes_cli.local_runtime.hardware import _nvidia_smi_path
+
+        smi_exe = _nvidia_smi_path()
         smi = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used",
+            [smi_exe, "--query-gpu=name,utilization.gpu,memory.used",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5)
-        if smi.returncode == 0 and smi.stdout.strip():
+            capture_output=True, text=True, timeout=5) if smi_exe else None
+        if smi and smi.returncode == 0 and smi.stdout.strip():
             name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))
             out["gpu_name"] = name
             out["gpu_util_percent"] = int(util)

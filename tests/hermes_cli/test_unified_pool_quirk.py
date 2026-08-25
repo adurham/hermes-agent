@@ -97,26 +97,48 @@ def _spark_machine(monkeypatch, *, view):
 
 
 def test_budget_unified_pool_planning(monkeypatch):
-    """Planning budget on Spark: pool (clamped to OS RAM) minus headroom,
+    """Planning budget on Spark: the allocator pool itself minus headroom,
     uma=True, ram_available=0 — host memory must not double-count as
-    spill room on top of a pool that already IS host memory."""
+    spill room. NO OS-RAM clamp: in 32/32 carve mode the carved half
+    vanishes from GlobalMemoryStatusEx, so clamping to OS RAM threw away
+    exactly the carved capacity (measured: pool ~46.3 GiB constant across
+    carve settings while OS RAM read 46.2 then 30.2)."""
     _spark_machine(monkeypatch, view=(SPARK_POOL, True))
     b = hw.probe_budget(planning=True)
     assert b.uma is True
     assert b.ram_available_bytes == 0
-    pool_total = min(SPARK_POOL, SPARK_RAM)
-    assert b.total_device_bytes == pool_total
-    assert b.usable_vram_bytes == int(pool_total * (1 - hw._UMA_HEADROOM_FRACTION))
-    # The whole point: the budget must dwarf the 16 GiB carve-out.
+    assert b.total_device_bytes == SPARK_POOL
+    assert b.usable_vram_bytes == int(SPARK_POOL * (1 - hw._UMA_HEADROOM_FRACTION))
+    # The whole point: the budget must dwarf the carve-out.
     assert b.usable_vram_bytes > 2 * SPARK_SMI_TOTAL
 
 
-def test_budget_unified_pool_live_clamps_to_available(monkeypatch):
-    """Live budget budgets from what the OS can actually still give."""
+def test_budget_unified_pool_live_counts_dedicated_free_plus_os_available(monkeypatch):
+    """Live budget = smi-free + OS-available (each side alone under-counts:
+    smi free saturates at the carve-out, OS-available can't see it)."""
     _spark_machine(monkeypatch, view=(SPARK_POOL, True))
     b = hw.probe_budget(planning=False)
     assert b.uma is True
-    assert b.usable_vram_bytes == int(32 * GIB * (1 - hw._UMA_HEADROOM_FRACTION))
+    live = (14848 << 20) + 32 * GIB
+    assert b.usable_vram_bytes == int(min(SPARK_POOL, live)
+                                      * (1 - hw._UMA_HEADROOM_FRACTION))
+
+
+def test_budget_unified_no_smi_still_classifies(monkeypatch):
+    """nvidia-smi off PATH must not change the verdict: the driver API
+    (system loader, PATH-independent) still classifies unified, planning
+    still budgets the full pool, and live falls back to OS-available."""
+    _no_cache(monkeypatch)
+    monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (SPARK_RAM, 32 * GIB))
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: (SPARK_POOL, True))
+    planning = hw.probe_budget(planning=True)
+    assert planning.uma is True
+    assert planning.total_device_bytes == SPARK_POOL
+    assert planning.usable_vram_bytes == int(
+        SPARK_POOL * (1 - hw._UMA_HEADROOM_FRACTION))
+    live = hw.probe_budget(planning=False)
+    assert live.usable_vram_bytes == int(32 * GIB * (1 - hw._UMA_HEADROOM_FRACTION))
 
 
 def test_budget_discrete_unchanged_when_probe_says_discrete(monkeypatch):
@@ -135,6 +157,32 @@ def test_budget_discrete_unchanged_when_probe_unavailable(monkeypatch):
     b = hw.probe_budget(planning=True)
     assert b.uma is False
     assert b.ram_available_bytes == SPARK_RAM
+
+
+def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
+    """Engine-fallback view (no INTEGRATED verdict) + no smi numbers: the
+    disagreement gate has nothing to compare against, so the quirk stays
+    off and budgeting falls to the conservative RAM-as-UMA path — an
+    attribute-less pool claim alone must never flip the verdict."""
+    _no_cache(monkeypatch)
+    monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (SPARK_RAM, 32 * GIB))
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: (SPARK_POOL, None))
+    b = hw.probe_budget(planning=True)
+    assert b.uma is True
+    assert b.total_device_bytes == SPARK_RAM  # RAM path, not the pool
+
+
+def test_smi_resolver_caches_and_survives_empty_path(monkeypatch):
+    """The resolver consults PATH first, and a resolution (hit or miss) is
+    cached for the process."""
+    calls = []
+    monkeypatch.setattr(hw, "_smi_path_cache", None)
+    monkeypatch.setattr(hw.shutil, "which",
+                        lambda name: calls.append(name) or "/usr/bin/nvidia-smi")
+    assert hw._nvidia_smi_path() == "/usr/bin/nvidia-smi"
+    assert hw._nvidia_smi_path() == "/usr/bin/nvidia-smi"
+    assert len(calls) == 1
 
 
 # ── probe cache ──────────────────────────────────────────────
