@@ -251,6 +251,15 @@ export function LocalModelsSettings() {
         ? 1
         : 0
     const stages = [copy.quickstartStageEngine, copy.quickstartStageModel, copy.quickstartStageFinish]
+    // The model-download leg blanks job.detail on purpose (pane rows
+    // render their own byte counter) — compose one here instead of
+    // falling back to runtime copy that would misname the stage.
+    const liveDetail =
+      qJob &&
+      (qJob.detail ||
+        (qJob.total_bytes
+          ? copy.downloadProgress(gbLabel(qJob.done_bytes), gbLabel(qJob.total_bytes))
+          : copy.installing))
 
     return (
       <SettingsContent>
@@ -271,7 +280,7 @@ export function LocalModelsSettings() {
             {qJob ? (
               <>
                 <p className="mt-2 min-h-10 text-[0.8rem] leading-5 text-muted-foreground">
-                  {qJob.detail || copy.installing}
+                  {liveDetail}
                 </p>
 
                 <div className="mt-5">
