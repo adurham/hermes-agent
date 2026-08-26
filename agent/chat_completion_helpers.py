@@ -5190,16 +5190,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     _last_load_poll = 0.0
     _load_notice_shown = False
     _is_local_base = bool(agent.base_url) and is_local_endpoint(agent.base_url)
-    _wait_loop_started = time.time()
     while t.is_alive():
         t.join(timeout=0.3)
 
         _hb_now = time.time()
-        # last_chunk_time only moves past loop start when a real chunk lands,
-        # so this gate is exactly "first token hasn't arrived yet".
+        # Cold-load window: last_chunk_time is touched at request-client
+        # creation and then only by REAL chunks, so "no chunk for 2s+" is
+        # true through a model load (nothing can stream while the child is
+        # still mapping weights) and false during healthy token flow —
+        # which is what keeps this poll off the streaming hot path. The
+        # probe itself is an in-memory snapshot read.
         if (
             _is_local_base
-            and last_chunk_time["t"] <= _wait_loop_started
+            and _hb_now - last_chunk_time["t"] >= 2.0
             and _hb_now - _last_load_poll >= 1.0
         ):
             _last_load_poll = _hb_now

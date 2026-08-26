@@ -210,6 +210,20 @@ def build_models_payload(
     if local_row is not None:
         rows = [r for r in rows if str(r.get("slug", "")).lower() != "llamacpp"]
         rows.append(local_row)
+        # A live session on the managed server reports provider "custom"
+        # (the resolution seam's generic label for a raw base_url), which
+        # would otherwise materialize a duplicate "Custom endpoint" row
+        # carrying the same staged models and stealing the checkmark. The
+        # Local row owns the managed server's identity — drop custom rows
+        # that point at the managed endpoint.
+        if local_row.get("is_current"):
+            def _is_managed_custom(row: dict) -> bool:
+                if str(row.get("slug", "")).lower() != "custom":
+                    return False
+                models = {str(m) for m in (row.get("models") or [])}
+                return bool(models) and models <= set(local_row["models"])
+
+            rows = [r for r in rows if not _is_managed_custom(r)]
 
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
@@ -222,9 +236,15 @@ def build_models_payload(
         # has lost its credential, list_authenticated_providers() omits it;
         # keep that one row visible so the UI can show the saved selection and
         # a re-auth affordance instead of appearing to jump to another provider.
-        rows = list(rows) + _append_unconfigured_rows(
-            rows, ctx, current_only=True
-        )
+        # Exception: a "custom" current whose endpoint is the managed local
+        # server is already represented (with the checkmark) by the Local row
+        # — the skeleton would resurrect the duplicate the dedup above removed.
+        _local_owns_current = bool(local_row and local_row.get("is_current")
+                                   and (ctx.current_provider or "").lower() == "custom")
+        if not _local_owns_current:
+            rows = list(rows) + _append_unconfigured_rows(
+                rows, ctx, current_only=True
+            )
 
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
