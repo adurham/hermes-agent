@@ -1095,11 +1095,10 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
             total = estimate_request_context_tokens(api_kwargs)
             if total and total >= processed:
                 pct = max(0, min(100, round(processed / total * 100)))
-                return (
-                    f"⚙ processing prompt — {processed:,} of ~{total:,} "
-                    f"tokens ({pct}%)"
-                )
-            return f"⚙ processing prompt — {processed:,} tokens"
+                return f"⚙ processing prompt — {pct}%"
+            # Counter past the estimate (estimator undercounted): no honest
+            # denominator, so no percent — the UI shows label-only.
+            return "⚙ processing prompt"
         return None
     except Exception:  # noqa: BLE001 — a status nicety must never break a call
         return None
@@ -5206,6 +5205,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # arrived; the probe is an in-memory snapshot read, not a network call.
     _last_load_poll = 0.0
     _load_notice_shown = False
+    _load_notice_misses = 0
     _is_local_base = bool(agent.base_url) and is_local_endpoint(agent.base_url)
     while t.is_alive():
         t.join(timeout=0.3)
@@ -5228,15 +5228,22 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 agent._emit_wait_notice(_load_notice)
                 agent._touch_activity("local model loading")
                 _load_notice_shown = True
+                _load_notice_misses = 0
                 # Loading IS liveness for the heartbeat; the stale detector
                 # needs no help — the local floor (900s) dwarfs any load.
                 _last_heartbeat = _hb_now
                 continue
             if _load_notice_shown:
-                # Load finished (entry left the snapshot): clear the line so
-                # the UI returns to the normal spinner while prefill runs.
-                _load_notice_shown = False
-                agent._emit_wait_notice("")
+                # One missed sample is routine (a /slots read straddling a
+                # batch boundary, a 2s probe timeout under load) — clearing
+                # on it made the status line strobe blank once every few
+                # seconds mid-prefill. Only a SUSTAINED absence means the
+                # phase really ended.
+                _load_notice_misses += 1
+                if _load_notice_misses >= 3:
+                    _load_notice_shown = False
+                    _load_notice_misses = 0
+                    agent._emit_wait_notice("")
 
         # Periodic heartbeat: touch the agent's activity tracker so the
         # gateway's inactivity monitor knows we're alive while waiting
