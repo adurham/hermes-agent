@@ -23,6 +23,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from hermes_constants import get_hermes_home
 
@@ -200,22 +201,52 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _download(url: str, dest: Path) -> None:
+def _download(url: str, dest: Path,
+              progress: "Callable[[int, int], None] | None" = None) -> None:
+    """Stream url -> dest. ``progress(done_bytes, total_bytes)`` ticks per
+    chunk (total 0 when the server sends no Content-Length) — a several-
+    hundred-MB archive on a slow line must never look hung."""
     logger.info("downloading %s", url)
     tmp = dest.with_suffix(dest.suffix + ".part")
     with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-        shutil.copyfileobj(r, f, length=1 << 22)
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            if progress is not None:
+                progress(done, total)
     tmp.replace(dest)
 
 
-def _extract(archive: Path, dest: Path) -> None:
+def _extract(archive: Path, dest: Path,
+             progress: "Callable[[int, int], None] | None" = None) -> None:
+    """Extract member by member so ``progress(done, total)`` can tick in
+    uncompressed bytes — big archives take real time on laptop disks."""
     if archive.name.endswith(".zip"):
         with zipfile.ZipFile(archive) as z:
-            z.extractall(dest)
+            members = z.infolist()
+            total = sum(m.file_size for m in members)
+            done = 0
+            for m in members:
+                z.extract(m, dest)
+                done += m.file_size
+                if progress is not None:
+                    progress(done, total)
     else:
         import tarfile
         with tarfile.open(archive) as t:
-            t.extractall(dest, filter="data")
+            members = t.getmembers()
+            total = sum(m.size for m in members)
+            done = 0
+            for m in members:
+                t.extract(m, dest, filter="data")
+                done += m.size
+                if progress is not None:
+                    progress(done, total)
 
 
 def server_binary(install_dir: Path) -> Path:
@@ -260,12 +291,16 @@ def prune_old_tags(keep: list[str]) -> None:
 
 
 def ensure_runtime_installed(tag: str, backend: str,
-                             expected_sha256: dict[str, str] | None = None) -> Path:
+                             expected_sha256: dict[str, str] | None = None,
+                             progress: "Callable[[str, int, int, str], None] | None" = None) -> Path:
     """Idempotent: resolve, download, verify, extract, version-check.
 
     ``expected_sha256`` maps asset name -> hash when the catalog pins them;
     without pins the computed hash is recorded in the manifest (trust on
     first download, verified on every reinstall).
+    ``progress(stage, done_bytes, total_bytes, label)`` ticks through the
+    slow parts — stage is "download" | "extract" | "verify", label is the
+    asset counter ("1/2") when the plan has several archives.
     Returns the install directory containing llama-server.
     """
     plan = resolve_assets(tag, backend)
@@ -284,10 +319,16 @@ def ensure_runtime_installed(tag: str, backend: str,
     downloads.mkdir(parents=True, exist_ok=True)
 
     recorded: dict[str, str] = {}
-    for asset in plan.assets:
+    n_assets = len(plan.assets)
+    for i, asset in enumerate(plan.assets, 1):
+        label = f"{i}/{n_assets}" if n_assets > 1 else ""
         archive = downloads / asset
         if not archive.exists():
-            _download(RELEASE_URL.format(tag=tag, asset=asset), archive)
+            _download(RELEASE_URL.format(tag=tag, asset=asset), archive,
+                      progress=(lambda d, t, _l=label: progress("download", d, t, _l))
+                      if progress is not None else None)
+        if progress is not None:
+            progress("verify", 0, 0, label)
         digest = _sha256(archive)
         expected = (expected_sha256 or {}).get(asset)
         if expected and digest != expected:
@@ -295,8 +336,12 @@ def ensure_runtime_installed(tag: str, backend: str,
             raise BinaryResolutionError(
                 f"sha256 mismatch for {asset}: expected {expected}, got {digest}")
         recorded[asset] = digest
-        _extract(archive, install_dir)
+        _extract(archive, install_dir,
+                 progress=(lambda d, t, _l=label: progress("extract", d, t, _l))
+                 if progress is not None else None)
 
+    if progress is not None:
+        progress("verify", 0, 0, "")
     version = verify_install(install_dir, tag)
     manifest_path.write_text(json.dumps({
         "tag": tag, "backend": plan.backend, "assets": recorded,

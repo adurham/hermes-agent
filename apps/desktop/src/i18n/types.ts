@@ -961,6 +961,9 @@ export interface Translations {
       quickstartConfigure: string
       quickstartDoneToast: (model: string) => string
       quickstartFailed: string
+      quickstartStageEngine: string
+      quickstartStageModel: string
+      quickstartStageFinish: string
       useAction: string
       activePill: string
       updateTitle: string

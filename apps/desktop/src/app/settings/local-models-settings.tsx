@@ -235,54 +235,98 @@ export function LocalModelsSettings() {
 
   // ── Quickstart: the dummy-proof front door ──
   // Until something is servable (runtime + at least one model), the pane
-  // leads with one button that does everything; the full pane stays one
-  // 'Configure…' click away. A running quickstart pins this view so its
-  // progress has a home even after a remount.
+  // leads with a hero that does everything in one click; the full pane
+  // stays one 'Configure…' click away. A running quickstart pins this
+  // view so its progress has a home even after a remount.
   const qJob = jobs.find(j => j.kind === 'quickstart' && j.status === 'running') ?? null
   const needsSetup = !status.runtime_installed || status.models.length === 0
   const heroModel = catalog.find(c => c.recommended && c.fits) ?? catalog.find(c => c.fits) ?? null
 
   if (qJob || (needsSetup && !configure && heroModel)) {
+    // Stage rail derived from the job phase: engine -> model -> finish.
+    const phase = qJob?.phase ?? ''
+    const stageIndex = ['starting-server', 'setting-default'].includes(phase)
+      ? 2
+      : phase === 'downloading'
+        ? 1
+        : 0
+    const stages = [copy.quickstartStageEngine, copy.quickstartStageModel, copy.quickstartStageFinish]
+
     return (
       <SettingsContent>
-        <SettingsSection icon={Zap} title={copy.quickstartTitle}>
-          {qJob ? (
-            <ListRow
-              below={<ProgressBar percent={qJob.percent} />}
-              description={qJob.detail || copy.installing}
-              title={
-                <span className="inline-flex items-center gap-2">
-                  <Loader2 className="size-3.5 animate-spin" />
-                  {qJob.target}
-                </span>
-              }
-            />
-          ) : heroModel ? (
-            <ListRow
-              action={
-                <div className="flex items-center gap-2">
+        <div className="flex min-h-[60dvh] items-center justify-center">
+          <div className="w-full max-w-md text-center">
+            <div className="mx-auto mb-5 flex size-14 items-center justify-center rounded-2xl bg-primary/10">
+              {qJob ? (
+                <Loader2 className="size-7 animate-spin text-primary" />
+              ) : (
+                <Cpu className="size-7 text-primary" />
+              )}
+            </div>
+
+            <h2 className="text-lg font-semibold text-foreground">
+              {qJob ? qJob.target : (heroModel?.display_name ?? '')}
+            </h2>
+
+            {qJob ? (
+              <>
+                <p className="mt-2 min-h-10 text-[0.8rem] leading-5 text-muted-foreground">
+                  {qJob.detail || copy.installing}
+                </p>
+
+                <div className="mt-5">
+                  <ProgressBar percent={qJob.percent} />
+                </div>
+
+                {/* Stage rail: engine -> model -> finish. */}
+                <div className="mt-5 flex items-center justify-center gap-5">
+                  {stages.map((label, i) => (
+                    <span
+                      className={cn(
+                        'inline-flex items-center gap-1.5 text-[0.72rem]',
+                        i < stageIndex && 'text-(--ui-text-tertiary)',
+                        i === stageIndex && 'font-medium text-foreground',
+                        i > stageIndex && 'text-(--ui-text-tertiary) opacity-60'
+                      )}
+                      key={label}
+                    >
+                      {i < stageIndex ? (
+                        <CheckCircle2 className="size-3.5 text-primary" />
+                      ) : i === stageIndex ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <span className="size-1.5 rounded-full bg-current" />
+                      )}
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : heroModel ? (
+              <>
+                <p className="mt-2 text-[0.8rem] leading-5 text-muted-foreground">
+                  {heroModel.downloaded
+                    ? copy.quickstartDetailReady(heroModel.display_name)
+                    : copy.quickstartDetail(heroModel.display_name, heroModel.size_label)}
+                </p>
+
+                <div className="mt-6 flex items-center justify-center gap-3">
                   <Button onClick={() => setConfigure(true)} size="sm" variant="outline">
                     {copy.quickstartConfigure}
                   </Button>
-                  <Button onClick={() => void handleQuickstart()} size="sm">
+                  <Button onClick={() => void handleQuickstart()} size="default">
                     <Zap />
                     {copy.quickstartAction}
                   </Button>
                 </div>
-              }
-              description={
-                heroModel.downloaded
-                  ? copy.quickstartDetailReady(heroModel.display_name)
-                  : copy.quickstartDetail(heroModel.display_name, heroModel.size_label)
-              }
-              title={heroModel.display_name}
-            />
-          ) : null}
+              </>
+            ) : null}
 
-          {lastError?.kind === 'quickstart' && (
-            <p className="text-[0.75rem] text-destructive">{lastError.error}</p>
-          )}
-        </SettingsSection>
+            {lastError?.kind === 'quickstart' && !qJob && (
+              <p className="mt-4 text-[0.75rem] text-destructive">{lastError.error}</p>
+            )}
+          </div>
+        </div>
       </SettingsContent>
     )
   }

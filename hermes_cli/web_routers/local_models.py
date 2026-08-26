@@ -593,6 +593,41 @@ class RuntimeInstallBody(BaseModel):
     backend: Optional[str] = None   # None/auto -> detect
 
 
+def _runtime_progress_hook(job: Dict[str, Any]):
+    """Adapter: ensure_runtime_installed's progress stream -> job fields.
+
+    Throttled to ~4 updates/s; each stage restarts the byte counters so
+    the bar reflects the CURRENT stage (download then unpack per asset).
+    Slow lines sit in the download stage for minutes — the counters are
+    what proves liveness, so they must move on every tick."""
+    state = {"last": 0.0}
+
+    def hook(stage: str, done: int, total: int, label: str) -> None:
+        now = time.monotonic()
+        if now - state["last"] < 0.25 and done < total:
+            return
+        state["last"] = now
+        suffix = f" ({label})" if label else ""
+        if stage == "download":
+            job["phase"] = "downloading-runtime"
+            if total:
+                job["detail"] = (f"Downloading the local engine{suffix} — "
+                                 f"{_human_gb(done)} of {_human_gb(total)}")
+            else:
+                job["detail"] = (f"Downloading the local engine{suffix} — "
+                                 f"{_human_gb(done)}")
+        elif stage == "extract":
+            job["phase"] = "unpacking-runtime"
+            job["detail"] = f"Unpacking the engine{suffix}"
+        else:  # verify
+            job["phase"] = "verifying-runtime"
+            job["detail"] = "Verifying the engine"
+        job["done_bytes"] = done
+        job["total_bytes"] = total or None
+
+    return hook
+
+
 @router.post("/api/local-models/runtime/install")
 async def local_models_runtime_install(body: RuntimeInstallBody):
     from hermes_cli.local_runtime.binaries import (
@@ -626,7 +661,8 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
             previous = installed_tags()
             job["phase"] = "downloading"
             job["detail"] = f"Fetching {len(plan.assets)} package(s) for {backend}"
-            ensure_runtime_installed(tag, backend)
+            ensure_runtime_installed(tag, backend,
+                                     progress=_runtime_progress_hook(job))
 
             # Engine update path: a server already running on an older tag
             # moves to the new one now — the click was the consent. Fresh
@@ -906,11 +942,16 @@ async def local_models_quickstart(body: QuickstartBody):
 
                 job["phase"] = "installing-runtime"
                 job["detail"] = "Installing the local engine"
-                ensure_runtime_installed(tag, backend)
+                ensure_runtime_installed(tag, backend,
+                                         progress=_runtime_progress_hook(job))
 
             if need_download:
                 job["phase"] = "downloading"
                 total = sum(p[2] for p in download_plan)
+                # The runtime leg repurposed the byte counters for its own
+                # stages — reset them to the model plan before download.
+                job["done_bytes"] = 0
+                job["total_bytes"] = total
                 job["detail"] = f"{entry.display_name} — {_human_gb(total)}"
                 done_before = 0
                 for url, dest, size in download_plan:
