@@ -3,6 +3,34 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### TODO — no opt-out for the adaptive/medium reasoning-effort default (flagged 2026-08-25, pre-existing since d394e56ec6)
+
+**Problem.** `agent/anthropic_adapter.py`'s `build_anthropic_kwargs` (~line
+4864) defaults `reasoning_config=None` to `{"enabled": True, "effort":
+"medium"}` on every adaptive-capable Anthropic model, for every caller that
+doesn't explicitly pass a `reasoning_config` — i.e. nearly every default
+session. This is deliberate (fork commit `d394e56ec6`, mirrors Claude Code
+2.1.119's captured wire shape) and is NOT a bug. But its sibling divergence
+two lines up — omitting `thinking.display` for CC wire-shape parity — ships
+with an env-var escape hatch (`HERMES_THINKING_DISPLAY=summarized`), while
+this one has none. There is currently no config knob to turn the
+adaptive-effort default off short of a caller explicitly passing
+`reasoning_config={"enabled": False}` in code.
+
+**Why it matters.** Real token-spend consequence: every default-session
+Anthropic call on an adaptive-capable model now pays for medium-effort
+thinking that upstream would have skipped entirely (upstream omits
+`thinking` when `reasoning_config` is unset). A user who wants upstream's
+"no thinking unless asked" behavior back has no way to get it without a
+code change.
+
+**Not yet decided:** whether the right fix is a `HERMES_DEFAULT_REASONING_EFFORT`
+env var / `config.yaml` key (e.g. `agent.default_reasoning_effort: medium|none`),
+or something narrower. Surfaced during the v2026.8.19 upstream-sync test
+reconciliation (see the sync entry below, `test_anthropic_thinking_disable.py`);
+tracked here as its own item since it predates that sync and isn't a merge
+defect. No code changed yet — this is a flag for a future pass, not a fix.
+
 ### Upstream sync — 2026-08-25 (v2026.8.18 → v2026.8.19, 804 commits, 40 conflict files)
 
 Merged tag `v2026.8.19` into `main` via `sync/v2026.8.19` (merge commit
