@@ -3266,6 +3266,7 @@ export const en: Translations = {
       showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
       loadingLocalModel: model => `Loading ${model} into memory`,
+      processingPrompt: detail => (detail ? `Processing prompt (${detail} tokens)` : 'Processing prompt'),
       resumeWhenBackgroundDone: count =>
         count === 1
           ? 'Will resume when the background task finishes'

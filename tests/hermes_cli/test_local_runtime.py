@@ -10,6 +10,7 @@ exercise detection fingerprinting and supervisor logic without a GPU.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -359,7 +360,10 @@ def test_llamacpp_endpoint_resolution_prefers_managed(tmp_path, monkeypatch, stu
 
     state_path().parent.mkdir(parents=True, exist_ok=True)
     state_path().write_text(json.dumps({
-        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": 1,
+        # A LIVE pid: the ownership guard treats health-200 + dead recorded
+        # pid as a foreign server on our stable port (scratch-profile
+        # collision), so claiming this test process models "our server".
+        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": os.getpid(),
     }), encoding="utf-8")
     resolved = ep.resolve_llamacpp_endpoint()
     assert resolved == {"base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed"}
@@ -599,7 +603,9 @@ def test_switch_model_explicit_llamacpp_provider(tmp_path, monkeypatch, stub_ser
     state_path().parent.mkdir(parents=True, exist_ok=True)
     state_path().write_text(json.dumps({
         "base_url": f"http://127.0.0.1:{port}/v1",
-        "api_key": "sk-managed", "pid": 4242,
+        # Live pid: ownership guard rejects health-200 + dead recorded pid
+        # (foreign server on our stable port).
+        "api_key": "sk-managed", "pid": os.getpid(),
     }), encoding="utf-8")
 
     from hermes_cli.model_switch import switch_model
@@ -625,7 +631,10 @@ def test_runtime_provider_seam_llamacpp_alias(tmp_path, monkeypatch, stub_server
 
     state_path().parent.mkdir(parents=True, exist_ok=True)
     state_path().write_text(json.dumps({
-        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": 1,
+        # A LIVE pid: the ownership guard treats health-200 + dead recorded
+        # pid as a foreign server on our stable port (scratch-profile
+        # collision), so claiming this test process models "our server".
+        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": os.getpid(),
     }), encoding="utf-8")
 
     from hermes_cli.runtime_provider import _resolve_named_custom_runtime
@@ -695,7 +704,7 @@ def test_bootstrap_reuses_running_server(tmp_path, monkeypatch, stub_server):
     monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
     state_path().parent.mkdir(parents=True, exist_ok=True)
     state_path().write_text(json.dumps({
-        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "k", "pid": 1,
+        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "k", "pid": os.getpid(),
     }), encoding="utf-8")
 
     called = []

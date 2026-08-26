@@ -149,3 +149,42 @@ def get_loading_progress() -> dict[str, dict]:
                     "percent": e["percent"]}
                 for m, e in _snapshot.items()
                 if now - e["ts"] < _STALE_ENTRY_TTL_S}
+
+
+def get_prefill_progress(model: str) -> "dict | None":
+    """{"processed": tokens} while the managed server is prompt-processing
+    for ``model``, or None (idle, decoding, unreachable, or foreign server).
+
+    llama-server's /slots reports ``n_prompt_tokens_processed`` climbing in
+    real time during prefill, but exposes no total — callers supply their
+    own denominator (the request's estimated token count). Busiest
+    processing slot wins when several are active: a parallel small request
+    (title generation) freezes its counter during decode while a live
+    prefill keeps climbing past it. One authenticated HTTP call per poll;
+    every failure reads as "no prefill" — this is garnish, never load-
+    bearing.
+    """
+    ep = _endpoint()
+    if ep is None:
+        return None
+    base, key = ep
+    try:
+        from urllib.parse import quote
+
+        req = urllib.request.Request(
+            f"{base}/slots?model={quote(model)}",
+            headers={"Authorization": f"Bearer {key}"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            slots = json.loads(r.read())
+    except Exception:  # noqa: BLE001
+        return None
+    best = 0
+    for slot in slots if isinstance(slots, list) else []:
+        if not slot.get("is_processing"):
+            continue
+        try:
+            processed = int(slot.get("n_prompt_tokens_processed") or 0)
+        except (TypeError, ValueError):
+            continue
+        best = max(best, processed)
+    return {"processed": best} if best > 0 else None

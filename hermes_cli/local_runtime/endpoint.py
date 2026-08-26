@@ -52,12 +52,21 @@ def _state_endpoint() -> dict | None:
     if not base_url:
         return None
     endpoint = {"base_url": base_url, "api_key": state.get("api_key", "")}
-    # Healthy server: done.
+    # Ownership proof: the stable port means a SECOND install (different
+    # HERMES_HOME — a scratch profile, say) can own 127.0.0.1:18434 with a
+    # different api key while this install's state file still points there.
+    # /health is a public route, so it answers 200 for ANYONE's server —
+    # trusting it alone sent every chat request and the load-progress
+    # watcher at a server that 401s our key, silently. The recorded
+    # supervisor pid is the tiebreaker: health-200 from a server whose
+    # recorded child is DEAD is someone else's server, never a starting one.
+    pid_ok = _pid_alive(int(state.get("pid") or 0))
+    # Healthy server: done (when it's ours).
     try:
         health = base_url.rsplit("/v1", 1)[0] + "/health"
         with urllib.request.urlopen(health, timeout=3) as r:
             if r.status == 200:
-                return endpoint
+                return endpoint if pid_ok else None
     except (urllib.error.URLError, OSError, TimeoutError):
         pass
     # Not healthy YET: a live supervisor child is a STARTING server (state
@@ -65,7 +74,7 @@ def _state_endpoint() -> dict | None:
     # optimistically so readiness probes racing the boot see a configured
     # provider, not missing credentials. A dead pid is a crashed-without-
     # cleanup leftover — ignore it so requests don't blackhole.
-    if _pid_alive(int(state.get("pid") or 0)):
+    if pid_ok:
         return endpoint
     return None
 

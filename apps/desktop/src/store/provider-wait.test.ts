@@ -23,7 +23,25 @@ describe('parseModelLoadWait', () => {
   it('extracts model and percent from a load frame', () => {
     expect(
       parseModelLoadWait('⏳ loading Qwen3.6-35B-A3B-UD-Q4_K_M into memory — 42% (responses start once the model is loaded)')
-    ).toEqual({ model: 'Qwen3.6-35B-A3B-UD-Q4_K_M', percent: 42 })
+    ).toEqual({ detail: '', kind: 'load', model: 'Qwen3.6-35B-A3B-UD-Q4_K_M', percent: 42 })
+  })
+
+  it('extracts counts and percent from a prefill frame', () => {
+    expect(parseModelLoadWait('⚙ processing prompt — 12,288 of ~39,551 tokens (31%)')).toEqual({
+      detail: '12,288 / ~39,551',
+      kind: 'prefill',
+      model: '',
+      percent: 31
+    })
+  })
+
+  it('parses a totalless prefill frame with a null percent (no fake bar)', () => {
+    expect(parseModelLoadWait('⚙ processing prompt — 12,288 tokens')).toEqual({
+      detail: '12,288',
+      kind: 'prefill',
+      model: '',
+      percent: null
+    })
   })
 
   it('returns null for every other wait frame', () => {
@@ -34,5 +52,13 @@ describe('parseModelLoadWait', () => {
 
   it('clamps out-of-range percents', () => {
     expect(parseModelLoadWait('⏳ loading m into memory — 999%')?.percent).toBe(100)
+  })
+})
+
+describe('providerWaitText accepts prefill frames', () => {
+  it('passes the ⚙ processing-prompt frame through', () => {
+    const frame = '⚙ processing prompt — 12,288 of ~39,551 tokens (31%)'
+
+    expect(providerWaitText(frame)).toBe(frame)
   })
 })

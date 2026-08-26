@@ -51,10 +51,11 @@ const HintText: FC<{ children: ReactNode }> = ({ children }) => (
   <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 flex-1 truncate')}>{children}</span>
 )
 
-/** Wait hint with a real progress bar for managed-local model loads. The
- * percent comes from llama-server's per-tensor load callback (via the
- * gateway's wait frames), so a determinate bar is honest — and a 40s cold
- * load reads as visible progress instead of an alarming stall. */
+/** Wait hint with a real progress bar for managed-local model loads and
+ * prompt processing. The percents come from llama-server itself (per-tensor
+ * load callback / live prefill counter, via the gateway's wait frames), so a
+ * determinate bar is honest — a 40s cold load or a long prefill reads as
+ * visible progress instead of an alarming stall. */
 const WaitHint: FC<{ hint: string }> = ({ hint }) => {
   const { t } = useI18n()
   const load = parseModelLoadWait(hint)
@@ -63,18 +64,25 @@ const WaitHint: FC<{ hint: string }> = ({ hint }) => {
     return <HintText>{hint}</HintText>
   }
 
+  const label =
+    load.kind === 'load'
+      ? t.assistant.thread.loadingLocalModel(load.model)
+      : t.assistant.thread.processingPrompt(load.detail)
+
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
-      <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 shrink truncate')}>
-        {t.assistant.thread.loadingLocalModel(load.model)}
-      </span>
-      <span className="h-1 w-24 shrink-0 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
-        <span
-          className="block h-full rounded-full bg-primary transition-[width] duration-500"
-          style={{ width: `${Math.max(2, load.percent)}%` }}
-        />
-      </span>
-      <span className={cn(SCAFFOLD_LABEL_CLASS, 'shrink-0 tabular-nums')}>{load.percent}%</span>
+      <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 shrink truncate')}>{label}</span>
+      {load.percent !== null && (
+        <>
+          <span className="h-1 w-24 shrink-0 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+            <span
+              className="block h-full rounded-full bg-primary transition-[width] duration-500"
+              style={{ width: `${Math.max(2, load.percent)}%` }}
+            />
+          </span>
+          <span className={cn(SCAFFOLD_LABEL_CLASS, 'shrink-0 tabular-nums')}>{load.percent}%</span>
+        </>
+      )}
     </span>
   )
 }

@@ -1052,15 +1052,18 @@ _DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS = 15.0
 
 
 def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
-    """'⏳ loading <model> into memory — N%' when the managed local server is
-    loading this request's model right now; None otherwise.
+    """A live phase notice while the managed local server works before the
+    first token, or None when neither phase (nor the managed server) applies:
 
-    A cold local model spends ~tens of seconds streaming weights off disk
-    before the first token can exist. Without this, that window renders as
+    - "⏳ loading <model> into memory — N%"  (weights streaming off disk;
+      real per-tensor percent from the router's SSE stream)
+    - "⚙ processing prompt — N of ~M tokens (P%)"  (prefill; live counter
+      from /slots, denominator estimated from the request body)
+
+    A cold local model spends ~tens of seconds loading and a long-context
+    turn spends tens more in prefill; without this, both windows render as
     the generic "no output yet (provider may be slow or overloaded)" stall
-    warning — alarming copy for a healthy, expected phase. The progress
-    snapshot is fed by the router's SSE stream (per-tensor load callback),
-    so the percent is real, not inferred.
+    warning — alarming copy for healthy, expected phases.
     """
     try:
         base = str(getattr(agent, "base_url", "") or "")
@@ -1069,7 +1072,10 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
         import json as _json
         from urllib.parse import urlparse
 
-        from hermes_cli.local_runtime.load_progress import get_loading_progress
+        from hermes_cli.local_runtime.load_progress import (
+            get_loading_progress,
+            get_prefill_progress,
+        )
         from hermes_cli.local_runtime.supervisor import state_path
 
         state = _json.loads(state_path().read_text(encoding="utf-8"))
@@ -1078,12 +1084,23 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
             return None
         model = str(api_kwargs.get("model", ""))
         progress = get_loading_progress().get(model)
-        if progress is None:
-            return None
-        return (
-            f"⏳ loading {model} into memory — {progress['percent']}% "
-            "(responses start once the model is loaded)"
-        )
+        if progress is not None:
+            return (
+                f"⏳ loading {model} into memory — {progress['percent']}% "
+                "(responses start once the model is loaded)"
+            )
+        prefill = get_prefill_progress(model)
+        if prefill is not None:
+            processed = int(prefill["processed"])
+            total = estimate_request_context_tokens(api_kwargs)
+            if total and total >= processed:
+                pct = max(0, min(100, round(processed / total * 100)))
+                return (
+                    f"⚙ processing prompt — {processed:,} of ~{total:,} "
+                    f"tokens ({pct}%)"
+                )
+            return f"⚙ processing prompt — {processed:,} tokens"
+        return None
     except Exception:  # noqa: BLE001 — a status nicety must never break a call
         return None
 

@@ -124,14 +124,119 @@ def test_load_notice_for_managed_model(tmp_path, monkeypatch):
 
 
 def test_load_notice_matches_desktop_wait_filter():
-    """The notice must pass the desktop's providerWaitText regex (anchored
-    '⏳ loading') and parse under parseModelLoadWait's shape — pinned here
-    as a plain string contract so the two sides can't drift silently."""
+    """The notices must pass the desktop's providerWaitText regex and parse
+    under parseModelLoadWait's shapes — pinned here as plain string
+    contracts so the two sides can't drift silently."""
     import re
 
-    sample = "⏳ loading Qwen3.6-35B-A3B-UD-Q4_K_M into memory — 43% (responses start once the model is loaded)"
-    # providerWaitText's accept set (mirrored from provider-wait.ts):
-    assert re.match(r"^(?:⏳|⚠|↻)\s*(?:waiting on|loading|no (?:output|response)|model returned)", sample)
-    # parseModelLoadWait's shape (mirrored):
-    m = re.match(r"^⏳\s*loading\s+(.+?)\s+into memory\s+—\s+(\d{1,3})%", sample)
+    accept = r"^(?:⏳|⚠|↻|⚙)\s*(?:waiting on|loading|processing prompt|no (?:output|response)|model returned)"
+
+    load = "⏳ loading Qwen3.6-35B-A3B-UD-Q4_K_M into memory — 43% (responses start once the model is loaded)"
+    assert re.match(accept, load)
+    m = re.match(r"^⏳\s*loading\s+(.+?)\s+into memory\s+—\s+(\d{1,3})%", load)
     assert m and m.group(1) == "Qwen3.6-35B-A3B-UD-Q4_K_M" and m.group(2) == "43"
+
+    prefill = "⚙ processing prompt — 12,288 of ~39,551 tokens (31%)"
+    assert re.match(accept, prefill)
+    p = re.match(r"^⚙\s*processing prompt\s+—\s+([\d,]+)(?:\s+of\s+~([\d,]+))?\s+tokens(?:\s+\((\d{1,3})%\))?", prefill)
+    assert p and p.group(1) == "12,288" and p.group(2) == "39,551" and p.group(3) == "31"
+
+    bare = "⚙ processing prompt — 12,288 tokens"
+    assert re.match(accept, bare)
+    b = re.match(r"^⚙\s*processing prompt\s+—\s+([\d,]+)(?:\s+of\s+~([\d,]+))?\s+tokens(?:\s+\((\d{1,3})%\))?", bare)
+    assert b and b.group(1) == "12,288" and b.group(2) is None and b.group(3) is None
+
+
+# ── prefill progress ─────────────────────────────────────────
+
+
+def test_prefill_notice_for_managed_model(tmp_path, monkeypatch):
+    from agent.chat_completion_helpers import _managed_local_load_notice
+
+    state = tmp_path / "server.json"
+    state.write_text(json.dumps({"base_url": "http://127.0.0.1:18434/v1",
+                                 "api_key": "k"}), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
+                        lambda: state)
+    monkeypatch.setattr(lp, "_ensure_watcher", lambda: None)
+    # No load in flight; a prefill counter is live.
+    monkeypatch.setattr(lp, "get_prefill_progress",
+                        lambda model: {"processed": 12288})
+    import agent.chat_completion_helpers as cch
+
+    monkeypatch.setattr(cch, "estimate_request_context_tokens",
+                        lambda kw: 39551)
+
+    class _Agent:
+        base_url = "http://127.0.0.1:18434/v1"
+
+    notice = _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"})
+    assert notice == "⚙ processing prompt — 12,288 of ~39,551 tokens (31%)"
+
+    # Counter past the estimate (estimator undercounted): drop the bogus
+    # denominator rather than showing >100%.
+    monkeypatch.setattr(cch, "estimate_request_context_tokens", lambda kw: 100)
+    notice = _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"})
+    assert notice == "⚙ processing prompt — 12,288 tokens"
+
+
+def test_load_notice_outranks_prefill(tmp_path, monkeypatch):
+    """While a load entry exists the load notice wins — prefill can't start
+    before the model is resident, so a simultaneous claim means the load
+    snapshot is authoritative."""
+    from agent.chat_completion_helpers import _managed_local_load_notice
+
+    state = tmp_path / "server.json"
+    state.write_text(json.dumps({"base_url": "http://127.0.0.1:18434/v1",
+                                 "api_key": "k"}), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
+                        lambda: state)
+    monkeypatch.setattr(lp, "_ensure_watcher", lambda: None)
+    lp._apply_event("Qwen-Test", "status_change", _loading_event(0.5))
+    monkeypatch.setattr(lp, "get_prefill_progress",
+                        lambda model: {"processed": 999})
+
+    class _Agent:
+        base_url = "http://127.0.0.1:18434/v1"
+
+    notice = _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"})
+    assert notice is not None and notice.startswith("⏳ loading")
+
+
+def test_prefill_progress_reads_busiest_processing_slot(monkeypatch):
+    monkeypatch.setattr(lp, "_endpoint", lambda: ("http://127.0.0.1:1", "k"))
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    slots = [
+        {"id": 0, "is_processing": False, "n_prompt_tokens_processed": 500},
+        {"id": 1, "is_processing": True, "n_prompt_tokens_processed": 42},
+        {"id": 2, "is_processing": True, "n_prompt_tokens_processed": 32768},
+    ]
+    monkeypatch.setattr(lp.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp(slots))
+    assert lp.get_prefill_progress("m") == {"processed": 32768}
+
+    # Nothing processing -> None (idle slots' counters are leftovers).
+    idle = [{"id": 0, "is_processing": False, "n_prompt_tokens_processed": 500}]
+    monkeypatch.setattr(lp.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp(idle))
+    assert lp.get_prefill_progress("m") is None
+
+    # Unreachable server -> None, never an exception.
+    def _boom(req, timeout=0):
+        raise OSError("refused")
+
+    monkeypatch.setattr(lp.urllib.request, "urlopen", _boom)
+    assert lp.get_prefill_progress("m") is None
