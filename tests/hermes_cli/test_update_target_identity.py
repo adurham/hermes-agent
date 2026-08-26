@@ -88,7 +88,8 @@ def update_tree(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('case', ['main', 'explicit', 'missing', 'no-move', 'wrong-branch',
-                                'fork-no-upstream', 'fork-upstream', 'check-main',
+                                'fork-no-upstream', 'fork-upstream', 'fork-upstream-push-ok',
+                                'fork-upstream-wrong-branch', 'fork-upstream-reverted', 'check-main',
                                 'check-explicit', 'check-missing', 'check-upstream'])
 def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkeypatch, case, capsys):
     t = update_tree
@@ -105,11 +106,13 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
     if case.startswith('fork-') or case == 'check-upstream':
         # Origin is current; only upstream has the next commit.
         git(t.origin, 'reset', '--hard', t.base)
-        if case in {'fork-upstream', 'check-upstream'}:
+        if case.startswith('fork-upstream') or case == 'check-upstream':
             upstream = t.origin.parent / 'upstream'
             git(t.origin.parent, 'clone', '-q', str(t.origin), str(upstream))
             git(upstream, 'reset', '--hard', t.newer)
             git(t.clone, 'remote', 'add', 'upstream', str(upstream))
+            if case == 'fork-upstream-push-ok':
+                git(t.origin, 'config', 'receive.denyCurrentBranch', 'updateInstead')
     run = subprocess.run
 
     def fault(command, *args, **kwargs):
@@ -117,21 +120,16 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
             if case == 'no-move':
                 return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
             result = run(command, *args, **kwargs)
-            if case == 'wrong-branch':
+            if case in {'wrong-branch', 'fork-upstream-wrong-branch'}:
                 run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
+            if case == 'fork-upstream-reverted':
+                run(['git', 'reset', '--hard', t.base], cwd=t.clone, check=True, capture_output=True)
             return result
         return run(command, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, 'run', fault)
-    if case == 'fork-upstream':
-        # The checkout policy must consult upstream even when origin is current.
-        plan = update_cmd._prepare_checkout_for_update(
-            ['git'], 'main', 'main', is_fork=True, assume_yes=True, gateway_mode=False,
-            gw_input_fn=None, switch_branch=False, _windows_gateway_resume=None)
-        assert plan.commit_count > 0 and plan.upstream_checked
-        assert git(t.clone, 'rev-parse', 'HEAD') == t.newer
-        return
-    fails = case in {'missing', 'check-missing', 'no-move', 'wrong-branch'}
+    fails = case in {'missing', 'check-missing', 'no-move', 'wrong-branch',
+                     'fork-upstream-wrong-branch', 'fork-upstream-reverted'}
     if fails:
         with pytest.raises(SystemExit) as error:
             cli_main.cmd_update(t.args)
@@ -153,6 +151,12 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
             expected = t.base if case == 'fork-no-upstream' else t.wanted if case == 'explicit' else t.newer
             assert git(t.clone, 'rev-parse', 'HEAD') == expected
             assert request['source'] == str(t.clone)
+            if case.startswith('fork-upstream'):
+                assert request['expected_sha'] == expected
+                output = capsys.readouterr().out
+                assert 'Code did not move' not in output
+                assert 'Already up to date' not in output
+                assert git(t.origin, 'rev-parse', 'HEAD') == (t.newer if case.endswith('push-ok') else t.base)
             if case == 'fork-no-upstream':
                 assert 'official repo not checked' in request['completion_message']
                 assert git(t.clone, 'remote') == 'origin'
@@ -351,3 +355,32 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+@pytest.mark.parametrize('sync_first', [False, True])
+def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch, capsys, sync_first):
+    t = update_tree
+    git(t.clone, 'checkout', '-q', 'main')
+    t.args.channel = 'main'
+    monkeypatch.setattr(cli_main, '_sync_with_upstream_if_needed', _sync_with_upstream_if_needed)
+    if sync_first:
+        upstream = t.origin.parent / 'upstream'
+        git(t.origin.parent, 'clone', '-q', str(t.origin), str(upstream))
+        git(t.clone, 'remote', 'add', 'upstream', str(upstream))
+        git(t.origin, 'reset', '--hard', t.base)
+        remote = upstream
+    else:
+        remote = t.origin
+    bad = remote / 'hermes_cli' / 'config.py'
+    bad.parent.mkdir()
+    bad.write_text('def broken(:\n', encoding='utf-8')
+    git(remote, 'add', 'hermes_cli/config.py')
+    git(remote, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        '-c', 'commit.gpgsign=false', 'commit', '-qm', 'invalid syntax')
+    with pytest.raises(SystemExit) as error:
+        cli_main.cmd_update(t.args)
+    assert error.value.code == 1
+    assert not t.requests
+    assert 'Pulled code has a syntax error' in capsys.readouterr().out
+    assert git(t.clone, 'rev-parse', 'HEAD') == t.base
+    assert not (t.clone / 'hermes_cli' / 'config.py').exists()

@@ -69,8 +69,9 @@ def test_every_route_hands_off_once(route, tmp_path, monkeypatch):
     monkeypatch.setattr(update_cmd_zip, "_abort_zip_update_if_dirty_tree", lambda: None)
     swap = Mock()
     monkeypatch.setattr(update_cmd_zip, "_download_and_swap_zip", swap)
-    plan = SimpleNamespace(in_place_update=False, auto_stash_ref=None, parked_branch_switched=False,
-                           upstream_checked=True)
+    plan = update_cmd._CheckoutPlan(
+        in_place_update=False, auto_stash_ref=None, parked_branch_switched=False,
+        upstream_checked=True, commit_count=1, prompt_for_restore=False, switch_block_reason=None)
     opts = SimpleNamespace(assume_yes=True, gw_input_fn=None, pre_update_version="old")
     if route == "pulled":
         update_cmd._apply_pulled_update(

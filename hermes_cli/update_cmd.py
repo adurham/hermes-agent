@@ -916,7 +916,7 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha) -> None:
 
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
-    keep_stash, target_ref=None):
+    keep_stash, target_ref=None, pre_sync_sha=None):
     """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
     custom branch -> merge, same branch -> reset, orphan history -> rescue ref first; a
     post-pull syntax error in a critical file rolls back. Exits on failure; returns pre-pull SHA."""
@@ -938,7 +938,7 @@ def _pull_updates(
             _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
         elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
             _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
-        _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha)
+        _rollback_if_pulled_syntax_error(git_cmd, pre_sync_sha or pre_pull_sha)
         update_succeeded = True
     finally:
         if auto_stash_ref is not None:
@@ -970,6 +970,7 @@ class _CheckoutPlan:
     prompt_for_restore: bool
     switch_block_reason: "str | None"
     upstream_checked: bool
+    pre_sync_sha: str | None = None
 
 
 def _apply_parked_branch_guard(
@@ -1087,6 +1088,7 @@ def _prepare_checkout_for_update(
     # "Already up to date!" and verified nothing). Non-fork checkouts have no upstream question: origin IS
     # the official repo, so "Already up to date!" is fully verified there.
     upstream_checked = True
+    moved_from_sha = None
     if commit_count == 0 and is_fork and branch == "main" and not release_tag:
         pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         upstream_checked = _m()._sync_with_upstream_if_needed(
@@ -1097,11 +1099,13 @@ def _prepare_checkout_for_update(
                 git_cmd, _m().PROJECT_ROOT, pre_sync_sha, post_sync_sha)
             # HEAD moving is proof of an update even if the count can't be read.
             commit_count = max(1, synced_count)
+            moved_from_sha = pre_sync_sha
 
     return _CheckoutPlan(
         auto_stash_ref=auto_stash_ref, commit_count=commit_count, in_place_update=in_place_update,
         parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
-        switch_block_reason=switch_block_reason, upstream_checked=upstream_checked)
+        switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
+        pre_sync_sha=moved_from_sha)
 
 
 @dataclass
@@ -1328,7 +1332,7 @@ def _apply_pulled_update(
     _windows_gateway_resume, completion_request: dict) -> None:
     """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
     post_pull_sha = _verify_head_after_pull(
-        git_cmd, branch, pre_pull_sha, in_place_update=_plan.in_place_update,
+        git_cmd, branch, _plan.pre_sync_sha or pre_pull_sha, in_place_update=_plan.in_place_update,
         _windows_gateway_resume=_windows_gateway_resume)
 
     if is_fork and branch == "main":
@@ -1483,7 +1487,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _pull_updates(
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash, target_ref=target_ref)
+            keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, is_fork=is_fork and not release_tag,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
