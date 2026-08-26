@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
 import { sessionCompacting } from '@/store/compaction'
 import { sessionAwaitingInput } from '@/store/prompts'
-import { sessionProviderWait } from '@/store/provider-wait'
+import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 
 // A status line is scaffolding like any other — "Editing" while the model
@@ -50,6 +50,34 @@ const COMPACTION_LABEL = 'Summarizing thread'
 const HintText: FC<{ children: ReactNode }> = ({ children }) => (
   <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 flex-1 truncate')}>{children}</span>
 )
+
+/** Wait hint with a real progress bar for managed-local model loads. The
+ * percent comes from llama-server's per-tensor load callback (via the
+ * gateway's wait frames), so a determinate bar is honest — and a 40s cold
+ * load reads as visible progress instead of an alarming stall. */
+const WaitHint: FC<{ hint: string }> = ({ hint }) => {
+  const { t } = useI18n()
+  const load = parseModelLoadWait(hint)
+
+  if (!load) {
+    return <HintText>{hint}</HintText>
+  }
+
+  return (
+    <span className="flex min-w-0 flex-1 items-center gap-2">
+      <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 shrink truncate')}>
+        {t.assistant.thread.loadingLocalModel(load.model)}
+      </span>
+      <span className="h-1 w-24 shrink-0 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+        <span
+          className="block h-full rounded-full bg-primary transition-[width] duration-500"
+          style={{ width: `${Math.max(2, load.percent)}%` }}
+        />
+      </span>
+      <span className={cn(SCAFFOLD_LABEL_CLASS, 'shrink-0 tabular-nums')}>{load.percent}%</span>
+    </span>
+  )
+}
 
 /** These indicators render inside whichever transcript mounted them, so every
  *  session-scoped signal comes from that surface's view — a tile must never
@@ -155,7 +183,7 @@ export const ResponseLoadingIndicator: FC = () => {
         className="dither inline-block size-3 rounded-[2px] text-midground/80"
         kind="opacity"
       />
-      {hint && <HintText>{hint}</HintText>}
+      {hint && <WaitHint hint={hint} />}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
   )
@@ -263,7 +291,7 @@ export const TurnActivityIndicator: FC = () => {
         className="dither inline-block size-3 rounded-[2px] text-midground/80"
         kind="opacity"
       />
-      {hint && <HintText>{hint}</HintText>}
+      {hint && <WaitHint hint={hint} />}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
   )

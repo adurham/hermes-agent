@@ -1051,6 +1051,43 @@ def should_use_direct_api_call(agent) -> bool:
 _DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS = 15.0
 
 
+def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
+    """'⏳ loading <model> into memory — N%' when the managed local server is
+    loading this request's model right now; None otherwise.
+
+    A cold local model spends ~tens of seconds streaming weights off disk
+    before the first token can exist. Without this, that window renders as
+    the generic "no output yet (provider may be slow or overloaded)" stall
+    warning — alarming copy for a healthy, expected phase. The progress
+    snapshot is fed by the router's SSE stream (per-tensor load callback),
+    so the percent is real, not inferred.
+    """
+    try:
+        base = str(getattr(agent, "base_url", "") or "")
+        if not base:
+            return None
+        import json as _json
+        from urllib.parse import urlparse
+
+        from hermes_cli.local_runtime.load_progress import get_loading_progress
+        from hermes_cli.local_runtime.supervisor import state_path
+
+        state = _json.loads(state_path().read_text(encoding="utf-8"))
+        managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
+        if not managed or urlparse(base).netloc.lower() != managed:
+            return None
+        model = str(api_kwargs.get("model", ""))
+        progress = get_loading_progress().get(model)
+        if progress is None:
+            return None
+        return (
+            f"⏳ loading {model} into memory — {progress['percent']}% "
+            "(responses start once the model is loaded)"
+        )
+    except Exception:  # noqa: BLE001 — a status nicety must never break a call
+        return None
+
+
 def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
     """Stale budget for the inline non-streaming call.
 
@@ -5144,8 +5181,42 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     t.start()
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # Managed local server: a cold model streams weights off disk for tens
+    # of seconds before the first token can exist. Surface THAT immediately
+    # (real per-tensor percent from the router's SSE stream) instead of
+    # letting the wait fall through to the 30s "provider may be slow or
+    # overloaded" copy. Checked on a ~1s cadence only while no chunks have
+    # arrived; the probe is an in-memory snapshot read, not a network call.
+    _last_load_poll = 0.0
+    _load_notice_shown = False
+    _is_local_base = bool(agent.base_url) and is_local_endpoint(agent.base_url)
+    _wait_loop_started = time.time()
     while t.is_alive():
         t.join(timeout=0.3)
+
+        _hb_now = time.time()
+        # last_chunk_time only moves past loop start when a real chunk lands,
+        # so this gate is exactly "first token hasn't arrived yet".
+        if (
+            _is_local_base
+            and last_chunk_time["t"] <= _wait_loop_started
+            and _hb_now - _last_load_poll >= 1.0
+        ):
+            _last_load_poll = _hb_now
+            _load_notice = _managed_local_load_notice(agent, api_kwargs)
+            if _load_notice is not None:
+                agent._emit_wait_notice(_load_notice)
+                agent._touch_activity("local model loading")
+                _load_notice_shown = True
+                # Loading IS liveness for the heartbeat; the stale detector
+                # needs no help — the local floor (900s) dwarfs any load.
+                _last_heartbeat = _hb_now
+                continue
+            if _load_notice_shown:
+                # Load finished (entry left the snapshot): clear the line so
+                # the UI returns to the normal spinner while prefill runs.
+                _load_notice_shown = False
+                agent._emit_wait_notice("")
 
         # Periodic heartbeat: touch the agent's activity tracker so the
         # gateway's inactivity monitor knows we're alive while waiting
@@ -5155,7 +5226,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # activity on each chunk, but the gap between API call start
         # and first chunk can exceed the gateway timeout — especially
         # when the stale-stream timeout is disabled (local providers).
-        _hb_now = time.time()
         if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
             _last_heartbeat = _hb_now
             _waiting_secs = int(_hb_now - last_chunk_time["t"])

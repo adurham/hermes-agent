@@ -45,5 +45,19 @@ export function clearAllProviderWaits(): void {
 export function providerWaitText(text: string): string {
   const value = text.trim()
 
-  return /^(?:⏳|⚠|↻)\s*(?:waiting on|no (?:output|response)|model returned)/i.test(value) ? value : ''
+  return /^(?:⏳|⚠|↻)\s*(?:waiting on|loading|no (?:output|response)|model returned)/i.test(value) ? value : ''
+}
+
+/** Parse a managed-local model-load frame ("⏳ loading <model> into memory —
+ * 43% …") into its parts, or null for every other wait frame. The percent is
+ * real (per-tensor load callback relayed by the server), so surfaces can
+ * render an honest determinate bar instead of prose. */
+export function parseModelLoadWait(text: string): null | { model: string; percent: number } {
+  const m = /^⏳\s*loading\s+(.+?)\s+into memory\s+—\s+(\d{1,3})%/i.exec(text.trim())
+
+  if (!m) {
+    return null
+  }
+
+  return { model: m[1], percent: Math.max(0, Math.min(100, Number(m[2]))) }
 }

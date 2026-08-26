@@ -2444,6 +2444,7 @@ export interface Translations {
     noModels: string
     addProvider: string
     loadFailed: string
+    loadingIntoMemory: string
     noAuthenticatedProviders: string
     pro: string
     proNeedsSubscription: string
@@ -2820,6 +2821,7 @@ export interface Translations {
       loadingSession: string
       showEarlier: string
       loadingResponse: string
+      loadingLocalModel: (model: string) => string
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
       thought: string

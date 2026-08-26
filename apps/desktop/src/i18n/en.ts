@@ -2883,6 +2883,7 @@ export const en: Translations = {
     noModels: 'No models found.',
     addProvider: 'Add provider',
     loadFailed: 'Could not load models',
+    loadingIntoMemory: 'Loading into memory',
     noAuthenticatedProviders: 'No authenticated providers.',
     pro: 'Pro',
     proNeedsSubscription: 'Pro models need a paid Nous subscription.',
@@ -3264,6 +3265,7 @@ export const en: Translations = {
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
+      loadingLocalModel: model => `Loading ${model} into memory`,
       resumeWhenBackgroundDone: count =>
         count === 1
           ? 'Will resume when the background task finishes'

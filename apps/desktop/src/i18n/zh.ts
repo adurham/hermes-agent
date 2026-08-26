@@ -3044,6 +3044,7 @@ export const zh: Translations = {
     noModels: '未找到模型。',
     addProvider: '添加提供方',
     loadFailed: '无法加载模型',
+    loadingIntoMemory: '正在载入内存',
     noAuthenticatedProviders: '没有已认证的提供方。',
     pro: 'Pro',
     proNeedsSubscription: 'Pro 模型需要付费 Nous 订阅。',
@@ -3422,6 +3423,7 @@ export const zh: Translations = {
       loadingSession: '正在加载会话',
       showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
+      loadingLocalModel: model => `正在将 ${model} 载入内存`,
       resumeWhenBackgroundDone: count =>
         count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,
       thinking: '思考中',

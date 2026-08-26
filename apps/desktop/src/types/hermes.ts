@@ -1230,6 +1230,12 @@ export interface LocalModelPlacement {
   granted_window_label?: string
 }
 
+export interface LocalModelLoadProgress {
+  stage: string
+  value: number
+  percent: number
+}
+
 export interface LocalModelsStatus {
   enabled: boolean
   tag: string
@@ -1241,6 +1247,8 @@ export interface LocalModelsStatus {
   server_base_url: string | null
   active_model_id: string | null
   loaded_models: Record<string, string>
+  /** Models loading into memory right now: real per-tensor load percent. */
+  loading?: Record<string, LocalModelLoadProgress>
   placement?: Record<string, LocalModelPlacement>
   models: { id: string; size_bytes: number; size_label: string }[]
   models_dir: string

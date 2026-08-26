@@ -410,10 +410,22 @@ async def local_models_status():
         "server_base_url": (running or {}).get("base_url"),
         "active_model_id": active_model_id,
         "loaded_models": loaded,
+        # Live load progress per model (SSE-fed): {model_id: {stage, value,
+        # percent}}. The chat's loading bar and the picker rows poll this.
+        "loading": _loading_progress(),
         "placement": placement,
         "models": staged,
         "models_dir": str(mdir),
     }
+
+
+def _loading_progress() -> Dict[str, Any]:
+    try:
+        from hermes_cli.local_runtime.load_progress import get_loading_progress
+
+        return get_loading_progress()
+    except Exception:  # noqa: BLE001 — progress is garnish, never a 500
+        return {}
 
 
 # ── hardware: what this machine can do ───────────────────────
