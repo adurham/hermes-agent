@@ -22,6 +22,7 @@ vi.mock('@/hermes', () => ({
   getLocalRuntimeJob: vi.fn(),
   installLocalRuntime: vi.fn(),
   listHFRepoFiles: vi.fn(),
+  quickstartLocalModels: vi.fn(),
   searchHFModels: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
@@ -107,6 +108,18 @@ function renderPane() {
   )
 }
 
+// The fresh-machine states these tests exercise now lead with the
+// quickstart card; the full pane (runtime rows, model list, browser)
+// is one 'Configure…' click away. Render and click through.
+async function renderFullPane() {
+  const result = renderPane()
+  const configure = await screen.findByRole('button', { name: /configure/i })
+
+  fireEvent.click(configure)
+
+  return result
+}
+
 beforeEach(() => {
   mocked.getLocalModelsStatus.mockResolvedValue(BASE_STATUS)
   mocked.getLocalHardware.mockResolvedValue(BASE_HARDWARE)
@@ -122,7 +135,7 @@ afterEach(() => {
 
 describe('LocalModelsSettings', () => {
   it('offers the runtime install with a plain-language explanation', async () => {
-    renderPane()
+    await renderFullPane()
 
     expect(await screen.findByText('Install the local runtime')).toBeTruthy()
     expect(screen.getByText(/runs? entirely on this machine/i)).toBeTruthy()
@@ -130,7 +143,7 @@ describe('LocalModelsSettings', () => {
   })
 
   it('shows every catalog model with fit pills; unaffordable ones stay visible with the reason', async () => {
-    renderPane()
+    await renderFullPane()
 
     expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
     // The fitting model reads as pills, not prose: green memory pill +
@@ -162,7 +175,7 @@ describe('LocalModelsSettings', () => {
       runtime_installed: true,
       runtime_backend: 'cuda'
     })
-    renderPane()
+    await renderFullPane()
 
     await screen.findByText('Qwen3.6 27B')
     const [fittingButton] = screen.getAllByRole('button', { name: /download · 17\.6 GB/i })
@@ -170,7 +183,7 @@ describe('LocalModelsSettings', () => {
   })
 
   it('shows hardware facts after backfill', async () => {
-    renderPane()
+    await renderFullPane()
 
     expect(await screen.findByText('NVIDIA GeForce RTX 5090')).toBeTruthy()
     expect(screen.getByText(/32\.0 GB GPU memory/)).toBeTruthy()
@@ -203,7 +216,7 @@ describe('LocalModelsSettings', () => {
       .mockResolvedValueOnce({ jobs: [running] })
       .mockResolvedValue({ jobs: [{ ...running, status: 'done', phase: 'done', done_bytes: 100, percent: 100 }] })
 
-    renderPane()
+    await renderFullPane()
     await screen.findByText('Qwen3.6 27B')
 
     const [download] = screen.getAllByRole('button', { name: /download · 17\.6 GB/i })
@@ -241,7 +254,7 @@ describe('LocalModelsSettings', () => {
       }
     ])
 
-    renderPane()
+    await renderFullPane()
     await screen.findByText('Qwen3.6 27B')
 
     // The fitting row shows byte progress; the remaining download
@@ -273,10 +286,71 @@ describe('LocalModelsSettings', () => {
       }
     ])
 
-    renderPane()
+    await renderFullPane()
     await screen.findByText('Qwen3.6 27B')
 
     expect(await screen.findByText(/integrity check/)).toBeTruthy()
+  })
+})
+
+describe('quickstart', () => {
+  it('leads with one button on a fresh machine and fires the quickstart job', async () => {
+    mocked.quickstartLocalModels.mockResolvedValue({
+      display_name: 'Qwen3.6 27B',
+      download_bytes: FITTING_MODEL.size_bytes,
+      job_id: 'q1',
+      model_id: 'qwen3.6-27b',
+      needs_download: true,
+      needs_runtime: true
+    })
+    renderPane()
+
+    // The card names the recommended model and the one-click action; the
+    // runtime/model machinery is NOT on screen.
+    expect(await screen.findByRole('button', { name: /set up for me/i })).toBeTruthy()
+    expect(screen.queryByText('Install the local runtime')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /set up for me/i }))
+    await waitFor(() => {
+      expect(mocked.quickstartLocalModels).toHaveBeenCalled()
+    })
+  })
+
+  it('pins the quickstart progress view while the job runs', async () => {
+    $localRuntimeJobs.set([
+      {
+        job_id: 'q1',
+        kind: 'quickstart',
+        target: 'Qwen3.6 27B',
+        model_id: 'qwen3.6-27b',
+        status: 'running',
+        phase: 'downloading',
+        detail: 'Qwen3.6 27B — 17.6 GB',
+        total_bytes: 100,
+        done_bytes: 30,
+        percent: 30,
+        error: null
+      }
+    ])
+    renderPane()
+
+    expect(await screen.findByText('Qwen3.6 27B — 17.6 GB')).toBeTruthy()
+    // One job, one view: no Set up / Configure buttons while it runs.
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+  })
+
+  it('skips the card entirely once a model is staged', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cuda',
+      models: [{ id: 'Qwen3.6-27B-UD-Q4_K_XL', size_bytes: 17 * 2 ** 30, size_label: '17.6 GB' }]
+    })
+    renderPane()
+
+    // Straight to the full pane — no quickstart hero for a working setup.
+    expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
   })
 })
 
@@ -302,6 +376,8 @@ describe('BrowseSection', () => {
       await act(async () => {
         await vi.runOnlyPendingTimersAsync()
       })
+      // Fresh machine leads with the quickstart card — enter the full pane.
+      fireEvent.click(screen.getByRole('button', { name: /configure/i }))
 
       const box = screen.getByPlaceholderText(/search models/i)
       fireEvent.change(box, { target: { value: 'qwen' } })

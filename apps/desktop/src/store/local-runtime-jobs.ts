@@ -57,7 +57,9 @@ function notifySettled(previous: readonly LocalRuntimeJob[], next: readonly Loca
             ? translateNow('settings.localModels.downloadDoneToast', job.target)
             : job.kind === 'model-activate'
               ? translateNow('settings.localModels.activateDoneToast', job.target)
-              : translateNow('settings.localModels.installDoneToast')
+              : job.kind === 'quickstart'
+                ? translateNow('settings.localModels.quickstartDoneToast', job.target)
+                : translateNow('settings.localModels.installDoneToast')
       })
     } else {
       notifyError(
@@ -66,7 +68,9 @@ function notifySettled(previous: readonly LocalRuntimeJob[], next: readonly Loca
           ? translateNow('settings.localModels.downloadFailed', job.target)
           : job.kind === 'model-activate'
             ? translateNow('settings.localModels.activateFailed', job.target)
-            : translateNow('settings.localModels.installFailed')
+            : job.kind === 'quickstart'
+              ? translateNow('settings.localModels.quickstartFailed')
+              : translateNow('settings.localModels.installFailed')
       )
     }
   }

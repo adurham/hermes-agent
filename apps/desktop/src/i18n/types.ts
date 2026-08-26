@@ -954,6 +954,13 @@ export interface Translations {
       downloadProgress: (done: string, total: string) => string
       downloadDoneToast: (model: string) => string
       installDoneToast: string
+      quickstartTitle: string
+      quickstartDetail: (model: string, size: string) => string
+      quickstartDetailReady: (model: string) => string
+      quickstartAction: string
+      quickstartConfigure: string
+      quickstartDoneToast: (model: string) => string
+      quickstartFailed: string
       useAction: string
       activePill: string
       updateTitle: string

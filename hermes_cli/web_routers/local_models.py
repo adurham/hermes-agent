@@ -811,6 +811,169 @@ class ServerActionBody(BaseModel):
     action: str                 # "stop" | "start"
 
 
+# ── quickstart: one click from nothing to a working default ──
+
+
+class QuickstartBody(BaseModel):
+    model_id: str | None = None   # default: the catalog's recommended entry
+
+
+@router.post("/api/local-models/quickstart")
+async def local_models_quickstart(body: QuickstartBody):
+    """The dummy-proof path: one job that installs the runtime (if
+    missing), downloads this machine's build of the recommended model
+    (if missing), and makes it the default for new chats. Each leg is
+    the same code the individual routes run — this route only sequences
+    them, so 'Configure' (the existing pane) and quickstart can never
+    disagree about what gets installed.
+
+    Preflight rejects (no servable entry, engine too old) fail the POST
+    synchronously so the button can explain itself; everything slow runs
+    in the job with the usual phase/byte progress.
+    """
+    from hermes_cli.local_runtime.binaries import (
+        default_tag,
+        installed_tags,
+        resolve_assets,
+        select_backend,
+    )
+    from hermes_cli.local_runtime.bootstrap import (
+        _detect_gpu_vendor,
+        assets_dir,
+        staged_model_ids,
+    )
+    from hermes_cli.local_runtime.catalog import CATALOG, catalog_by_id, select_variant
+    from hermes_cli.local_runtime.hardware import probe_budget
+
+    # Resolve the target entry: explicit id, else recommended, else the
+    # first catalog entry this machine can serve.
+    budget = probe_budget(planning=True)
+    entry = None
+    if body.model_id:
+        entry = catalog_by_id().get(body.model_id)
+        if entry is None:
+            raise HTTPException(status_code=404,
+                                detail=f"unknown model {body.model_id}")
+        candidates = [entry]
+    else:
+        candidates = sorted(CATALOG, key=lambda e: not e.recommended)
+    chosen = None
+    for candidate in candidates:
+        choice = select_variant(candidate, budget)
+        if choice is not None and not _engine_too_old(candidate.min_engine):
+            chosen = (candidate, choice.variant)
+            break
+    if chosen is None:
+        raise HTTPException(
+            status_code=409,
+            detail="no catalog model fits this machine — open Local Models "
+                   "to browse for a smaller build")
+    entry, variant = chosen
+
+    section = _runtime_section()
+    tag = section.get("tag") or default_tag()
+    backend = section.get("backend", "auto")
+    if backend == "auto":
+        backend = select_backend(_detect_gpu_vendor())
+    need_runtime = not installed_tags()
+    if need_runtime:
+        # Same preflight as /runtime/install: impossible combos fail the POST.
+        try:
+            resolve_assets(tag, backend)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    need_download = variant.model_id not in staged_model_ids()
+    download_plan = []  # (url, dest, bytes)
+    if need_download:
+        for asset in variant.files:
+            download_plan.append(
+                (f"https://huggingface.co/{entry.repo}/resolve/main/{asset.path}",
+                 _models_dir() / asset.local_name, asset.size_bytes))
+        for asset in (entry.mmproj, entry.draft):
+            if asset is not None:
+                download_plan.append(
+                    (f"https://huggingface.co/{entry.repo}/resolve/main/{asset.path}",
+                     assets_dir() / asset.local_name, asset.size_bytes))
+
+    job = _job("quickstart", entry.display_name, model_id=entry.id)
+    job["total_bytes"] = sum(p[2] for p in download_plan) or None
+
+    def _run():
+        try:
+            if need_runtime:
+                from hermes_cli.local_runtime.binaries import ensure_runtime_installed
+
+                job["phase"] = "installing-runtime"
+                job["detail"] = "Installing the local engine"
+                ensure_runtime_installed(tag, backend)
+
+            if need_download:
+                job["phase"] = "downloading"
+                total = sum(p[2] for p in download_plan)
+                job["detail"] = f"{entry.display_name} — {_human_gb(total)}"
+                done_before = 0
+                for url, dest, size in download_plan:
+                    if dest.exists():
+                        done_before += size
+                        job["done_bytes"] = done_before
+                        continue
+                    download_file(url, dest, job,
+                                  base_done=done_before, keep_totals=True)
+                    job["phase"] = "downloading"
+                    done_before += size
+                    job["done_bytes"] = done_before
+
+            # Activate: same sequence as /activate's job body.
+            from hermes_cli.config import load_config, save_config
+            from hermes_cli.local_runtime.bootstrap import (
+                ensure_local_runtime,
+                refresh_local_runtime,
+            )
+
+            job["phase"] = "starting-server"
+            job["detail"] = "Starting the local server"
+            config = load_config()
+            config.setdefault("local_runtime", {})["enabled"] = True
+            save_config(config)
+            sup = ensure_local_runtime(config, force=True)
+            if sup is None and _state_endpoint() is None:
+                raise RuntimeError(
+                    "The local server could not start — open Local Models for details")
+            if sup is not None:
+                try:
+                    if variant.model_id not in sup.models():
+                        job["detail"] = "Refreshing the local server"
+                        refresh_local_runtime()
+                except Exception:  # noqa: BLE001
+                    logger.debug("quickstart rescan check skipped", exc_info=True)
+
+            job["phase"] = "setting-default"
+            job["detail"] = "Making it your default"
+            from hermes_cli.web_deps import late
+
+            late("_apply_model_assignment_sync")(
+                "main", "llamacpp", variant.model_id, "", "", "")
+
+            job["phase"] = "done"
+            job["status"] = "done"
+            job["detail"] = f"{entry.display_name} is ready — new chats use it"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("quickstart failed: %s", exc)
+            job["status"] = "error"
+            job["error"] = str(exc)
+
+    threading.Thread(target=_run, daemon=True, name="lr-quickstart").start()
+    return {
+        "job_id": job["job_id"],
+        "model_id": entry.id,
+        "display_name": entry.display_name,
+        "needs_runtime": need_runtime,
+        "needs_download": need_download,
+        "download_bytes": sum(p[2] for p in download_plan),
+    }
+
+
 @router.post("/api/local-models/server")
 async def local_models_server(body: ServerActionBody):
     """Turn the local engine off (stop the server, free ALL GPU memory,

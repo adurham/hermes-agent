@@ -40,6 +40,24 @@ export function installLocalRuntime(backend?: string): Promise<{ backend: string
   })
 }
 
+export interface QuickstartResponse {
+  display_name: string
+  download_bytes: number
+  job_id: string
+  model_id: string
+  needs_download: boolean
+  needs_runtime: boolean
+}
+
+export function quickstartLocalModels(modelId?: string): Promise<QuickstartResponse> {
+  return hermesApi<QuickstartResponse>({
+    ...profileScoped(),
+    body: { model_id: modelId ?? null },
+    method: 'POST',
+    path: '/api/local-models/quickstart'
+  })
+}
+
 export function downloadLocalModel(modelId: string): Promise<{ already_downloaded?: boolean; job_id: null | string }> {
   return hermesApi<{ already_downloaded?: boolean; job_id: null | string }>({
     ...profileScoped(),

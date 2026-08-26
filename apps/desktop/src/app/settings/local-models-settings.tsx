@@ -16,6 +16,7 @@ import {
   type HFSearchHit,
   installLocalRuntime,
   listHFRepoFiles,
+  quickstartLocalModels,
   searchHFModels,
   setLocalServer,
   sideloadLocalModel
@@ -59,8 +60,11 @@ export function LocalModelsSettings() {
   const [status, setStatus] = useState<LocalModelsStatus | null>(null)
   const [hardware, setHardware] = useState<LocalHardware | null>(null)
   const [catalog, setCatalog] = useState<LocalCatalogModel[] | null>(null)
-  const [deleting, setDeleting] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<null | string>(null)
   const [serverBusy, setServerBusy] = useState(false)
+  // Quickstart escape hatch: true once the user asks for the full pane
+  // (model list, HF browser) instead of the one-button setup card.
+  const [configure, setConfigure] = useState(false)
   // Jobs live in the app-level store (they must survive this pane
   // unmounting); the pane just renders the slice it cares about.
   const jobs = useStore($localRuntimeJobs)
@@ -134,6 +138,15 @@ export function LocalModelsSettings() {
       watchLocalRuntimeJobs()
     } catch (err) {
       notifyError(err, copy.installFailed)
+    }
+  }
+
+  async function handleQuickstart() {
+    try {
+      await quickstartLocalModels()
+      watchLocalRuntimeJobs()
+    } catch (err) {
+      notifyError(err, copy.quickstartFailed)
     }
   }
 
@@ -219,6 +232,60 @@ export function LocalModelsSettings() {
 
   const rJob = runningRuntimeInstall(jobs)
   const lastError = jobs.find(j => j.status === 'error')
+
+  // ── Quickstart: the dummy-proof front door ──
+  // Until something is servable (runtime + at least one model), the pane
+  // leads with one button that does everything; the full pane stays one
+  // 'Configure…' click away. A running quickstart pins this view so its
+  // progress has a home even after a remount.
+  const qJob = jobs.find(j => j.kind === 'quickstart' && j.status === 'running') ?? null
+  const needsSetup = !status.runtime_installed || status.models.length === 0
+  const heroModel = catalog.find(c => c.recommended && c.fits) ?? catalog.find(c => c.fits) ?? null
+
+  if (qJob || (needsSetup && !configure && heroModel)) {
+    return (
+      <SettingsContent>
+        <SettingsSection icon={Zap} title={copy.quickstartTitle}>
+          {qJob ? (
+            <ListRow
+              below={<ProgressBar percent={qJob.percent} />}
+              description={qJob.detail || copy.installing}
+              title={
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 className="size-3.5 animate-spin" />
+                  {qJob.target}
+                </span>
+              }
+            />
+          ) : heroModel ? (
+            <ListRow
+              action={
+                <div className="flex items-center gap-2">
+                  <Button onClick={() => setConfigure(true)} size="sm" variant="outline">
+                    {copy.quickstartConfigure}
+                  </Button>
+                  <Button onClick={() => void handleQuickstart()} size="sm">
+                    <Zap />
+                    {copy.quickstartAction}
+                  </Button>
+                </div>
+              }
+              description={
+                heroModel.downloaded
+                  ? copy.quickstartDetailReady(heroModel.display_name)
+                  : copy.quickstartDetail(heroModel.display_name, heroModel.size_label)
+              }
+              title={heroModel.display_name}
+            />
+          ) : null}
+
+          {lastError?.kind === 'quickstart' && (
+            <p className="text-[0.75rem] text-destructive">{lastError.error}</p>
+          )}
+        </SettingsSection>
+      </SettingsContent>
+    )
+  }
 
   // Up to date = the authority (status) says the configured tag is what's
   // serving. Shown whenever true — not only right after an update.
