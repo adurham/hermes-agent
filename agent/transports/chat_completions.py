@@ -681,7 +681,8 @@ class ChatCompletionsTransport(ProviderTransport):
                     extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 
         if is_nous:
-            extra_body["tags"] = ["product=hermes-agent"]
+            from agent.portal_tags import nous_portal_tags as _portal_tags
+            extra_body["tags"] = _portal_tags()
 
         # Ollama num_ctx
         ollama_ctx = params.get("ollama_num_ctx")
