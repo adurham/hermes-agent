@@ -119,15 +119,13 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
 
 // Deliberately a near-1:1 replica of the first-run onboarding picker
 // (`Picker` in desktop-onboarding-overlay): same recommended card, same
-// provider rows, same "Other providers" disclosure, and the same
-// bottom-right "I have an API key" affordance. The leaf cards are the
-// exact shared components, so the two surfaces stay visually identical.
-// One deliberate divergence: the Fireworks quick-key row sits at slot #2
-// in onboarding but folds into the disclosure here, beside OpenRouter —
-// settings leads with what's connected, not with acquisition. Selecting
-// a provider hands off to the shared onboarding overlay, which runs that
-// provider's real sign-in flow; the key affordances open the API-key
-// catalog below.
+// always-visible Local models row, same provider rows, same "Other
+// providers" disclosure (Fireworks and OpenRouter quick-key rows live
+// inside it on both surfaces), and the same bottom-right "I have an API
+// key" affordance. The leaf cards are the exact shared components, so
+// the two surfaces stay visually identical. Selecting a provider hands
+// off to the shared onboarding overlay, which runs that provider's real
+// sign-in flow; the key affordances open the API-key catalog below.
 function OAuthPicker({
   disconnecting,
   onDisconnect,
