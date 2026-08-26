@@ -31,6 +31,232 @@ reconciliation (see the sync entry below, `test_anthropic_thinking_disable.py`);
 tracked here as its own item since it predates that sync and isn't a merge
 defect. No code changed yet — this is a flag for a future pass, not a fix.
 
+### De-fork audit — 2026-08-26 (post-v2026.8.19: re-scrubbed every hard-fork and soft-fork item against this tag's upstream delta)
+
+Phase 2 follow-up to the sync below, on branch `de-fork-audit/v2026.8.19`.
+Scoped — per the 2026-08-18 precedent — to whether the `v2026.8.18..v2026.8.19`
+delta (804 commits, 1253 files, +111505/-20706) supersedes any of the fork's
+~35 hard-fork-only files or ~45 soft-fork edits. Not a re-litigation of the
+whole inventory: the 08-18 audit already cleared everything against
+`v2026.8.13..v2026.8.18`. Five parallel `coder` subagents each took a bounded
+slice (reasoning-effort / web+providers / memory+skills+delegation / core agent
+plumbing / CLI surface + never-audited new files); every notable claim was
+re-verified by the PM directly rather than taken on trust.
+
+**One real retirement, and it was also a live defect:**
+`hermes_cli/keyboard_protocol.py` (241 lines, fork-only) — see the dedicated
+entry below for the full write-up. Upstream now ships both halves of it
+(`hermes_cli/pt_input_extras.py`'s installer family, and `cli.py`'s
+allowlist-gated `_enable_extended_enter_keys()`), and the fork's unconditional
+`enable()` was pre-empting upstream's deliberate Ghostty exception. Retired in
+`1a37f832e9`.
+
+**Method note worth carrying forward.** The retirement was *not* decided by
+reading docstrings. Both the fork and upstream mutate the same global
+`ANSI_SEQUENCES` dict, and the fork's installer runs second (`cli.py:21106`,
+after upstream's import-time calls at `cli.py:84-92`) and uses bare assignment
+while upstream's uses `.get(seq) != …` guards — so the fork was *winning* every
+contested sequence, and a docstring-level "upstream covers this" claim would
+have been unfalsifiable. The decisive evidence was an empirical snapshot diff of
+`ANSI_SEQUENCES` with and without the fork's `register_prompt_toolkit_keys()`
+applied on top of upstream's installers: **0 sequences added, 2 overwritten**,
+both Shift+Enter forms rerouted from `(Escape, ControlM)` to a synthetic
+`Keys.ShiftEnter` whose handler was byte-identical to the `escape,enter` one
+already bound. Where two divergences write to a shared mutable global, diff the
+resulting state, not the source.
+
+**Everything else checked: no redundancy found.** Notable non-convergences,
+each a case of upstream shipping something adjacent that solves a different
+problem:
+
+* **`agent/reasoning_effort.py` (new upstream module) vs the fork's
+  reasoning-effort stack.** Upstream's module is *wire-vocabulary clamping*
+  ("this endpoint accepts these effort strings, translate onto them"); the
+  fork's `agent.reasoning_effort_by_model`, `/reasoning` picker, and
+  `reasoning_effort_by_role` are *policy/resolution* ("which effort should we
+  ask for"). Different layers of one pipeline; they compose. The fork carries
+  upstream's module byte-identical (`git diff v2026.8.19 --` empty) with an
+  importer set identical to upstream's.
+* **`plugins/web/keenable/` + `plugins/web/keyless_mcp.py` vs
+  `plugins/web/trafilatura/`.** Flagged for Adam below — this one is close
+  enough to matter.
+* **`hermes_cli/worktree_cmd.py` / `worktree_gc.py` / `update_receipt.py` /
+  `update_inventory.py` / `process_identity.py` / `relay_plugin_cutover.py`
+  and the 5 new preview/tour tools (all new upstream this delta).** Checked
+  specifically for fork duplication: the fork never had a home-grown worktree
+  helper, update-receipt mechanism, or process-identity handling. All 11 files
+  landed with zero fork diff. `cli.py`'s `_prune_orphaned_branches` is
+  upstream's own code, not a fork asset, and upstream's `audit_branches()`
+  explicitly generalizes it — designed to coexist.
+* **Memory / skills / consult / delegation: zero upstream movement.** Upstream's
+  entire memory delta is *gating the built-in MEMORY.md/USER.md stores on and
+  off* (`get_builtin_memory_store_flags`, `target_enabled`). No native memory
+  tiering, recall nudge, skill recall, second-opinion review, or delegation
+  auto-routing shipped. `-S` searches for `memory_recall`, `skill_recall`,
+  `hot_tier`, `memory_warm`, `delegation_router`, `consult_nudge`,
+  `swarm_board`, `auto_route` across the delta all return empty.
+* **`tools/memory_tool.py` merged clean, no repeat of the Frankenstein.** All 5
+  upstream delta symbols are present and live, zero upstream `def`/`class`
+  dropped, and upstream's new 315-line `test_builtin_memory_disabled_surface.py`
+  passes on the fork — independent proof the merge is genuine and not a partial
+  graft. The fork correctly re-expressed upstream's prose-anchored store
+  substitution as its own `STORE AVAILABILITY:` branch.
+* **`agent/chat_completion_helpers.py`'s `cache_tools` threading still stands.**
+  Occurrence count: fork 2, `v2026.8.19` 0. Upstream still has no `tools[]`
+  cache-breakpoint emitter for third-party anthropic-wire gateways; the
+  2026-08-04 KEEP holds unchanged.
+* **`agent/conversation_loop.py` absorbed upstream cleanly.** `stall_guards`,
+  `run_budget`, and uncompressed-overflow occurrence counts are *identical* to
+  upstream's own file — the fork's +640 is entirely its bare-XML/orphan-tail
+  recovery net plus cache-control stripping, with no drift on upstream's new
+  work. Same shape for upstream's GUI-surface `tool_search` fix and the
+  identical-call guardrail machinery.
+
+**Inventory correction:** `agent/gemini_native_adapter.py` has now been
+byte-identical to upstream across two consecutive tags (`git diff v2026.8.19 --`
+empty, zero delta commits). Its convergence *narrative* stays in the 2026-08-18
+entry as history, but it should be struck from the hard-fork inventory table —
+it is not fork code and re-checking it every cycle is pure audit tax.
+
+#### Flagged for Adam — needs a decision, not auto-resolved
+
+None of these are technical determinations. Per the standing rule (2026-08-18,
+`tools/swarm_board.py`), keep-or-cut product judgment is surfaced, never
+resolved here. Nothing below was removed or changed.
+
+1. **`plugins/web/trafilatura/` — its original justification is now dead, but a
+   different one survives.** The stated reason it exists is that non-Anthropic
+   providers had a free *search* backend but no free *extract* backend. Upstream
+   closed exactly that gap: `plugins/web/keyless_mcp.py` ships a 5-vendor
+   keyless ring (`exa`, `parallel`, `tavily`, `firecrawl`, `keenable`) with
+   `_KEYLESS_EXTRACTORS` for all five, and `keenable/provider.py` reports
+   `supports_extract() → True`. So the gap is closed — *but not with the same
+   properties*. Trafilatura is a local `httpx` fetch + open-source parse:
+   no third party sees the URLs, no API quota, works offline. Every upstream
+   keyless extractor is a rate-limited third-party round-trip. **Question: do
+   you still want a local, no-third-party, unmetered extract path?** If yes,
+   keep and I'll rewrite its FORK.md rationale to the privacy/offline framing.
+   If no: delete `plugins/web/trafilatura/`, the `post_setup_key ==
+   "trafilatura"` pip-install block in `hermes_cli/tools_config.py`, and the
+   `is_available()` package comment.
+2. **`tools/swarm_board.py` — status unchanged, still yours to call.** Re-checked
+   against `v2026.8.19`: still zero upstream equivalent. The nearest thing,
+   `hermes_cli/kanban_swarm.py`, is a Kanban *task-graph* DB (planner/worker/
+   verifier rows + a JSON blackboard), explicitly "no second scheduler" — not a
+   live multi-row subagent status widget, and untouched this delta. So this
+   remains purely "do you still want this UI," exactly as flagged on 08-18.
+3. **`agent/repetition_tuner.py` is dead code.** Adaptive
+   `frequency_penalty`/`presence_penalty` derived from reasoning-content
+   repetition, aimed at thinking-heavy local models. `grep` across the tree
+   returns *only the module's own log string* — it is imported by nothing and
+   has no tests. Upstream's new `agent/repetition_guard.py` is a different
+   thing (a content-sanity abort on the `finish_reason=length` continuation
+   path, #86581), so this is not a redundancy. **Wire it up or drop it** — it
+   should not sit in the tree unreferenced either way.
+4. **`agent/transports/chat_completions.py` sends an ungated attribution tag.**
+   Line 684 puts `extra_body["tags"] = ["product=hermes-agent"]` on the wire
+   (and `agent/portal_tags.py` — which *is* upstream code — does the same).
+   AGENTS.md's own rubric rejects "outbound telemetry / usage attribution
+   without opt-in gating." The fork-only line is the `chat_completions.py` one
+   (not present in upstream's copy of that file). **Keep, gate behind a config
+   opt-in, or drop?**
+5. **`agent/tool_guardrails.py`'s `hard_stop_enabled: False → True`.** The fork
+   flips upstream's default so tool-call loop guardrails block/halt rather than
+   warn. Still a deliberate divergence with no upstream movement against it.
+   Pure preference: **do you still want hard stops on by default?**
+6. **Three fork-only scripts look finished or unused.** Flagged, not removed:
+   `scripts/migrate_memory_to_warm.py` (textbook one-shot hot→warm migration,
+   untouched since 2026-07-18, referenced only by `agent/hot_tier_audit.py` and
+   a July plan doc — job is long done); `scripts/api_calls_analyze.py` (ad-hoc
+   `state.db` latency forensics, zero references, untouched since 2026-07-18);
+   `scripts/fork-merge-plan.py` (pre-merge conflict analyzer, last touched
+   2026-08-04 — the last two syncs were driven by this audit workflow instead,
+   so: still used?). The other fork-only scripts are demonstrably live
+   (`hermes_token_check.py`/`hermes_usage_tracker.py` run as gateway systemd
+   timers, `refresh_cc_canonical.sh` is the only refresh path for
+   `agent/cc_canonical/tools_eager.json`, `corporate-rip.py` is idempotent by
+   design, `check-unspecced-sdk-mocks.py` is an active CI guardrail).
+7. **Possible merge-time regression, not a de-fork question.**
+   `agent/system_prompt.py` reverted upstream's init-time
+   `_kanban_worker_guidance` resolution to a per-build `valid_tool_names` check
+   (`git diff v2026.8.19 -- agent/system_prompt.py`). Upstream caches it once at
+   `__init__`; the fork now does the lookup on every prompt build. Looks like
+   merge fallout rather than intent — worth re-adopting upstream's shape, but
+   it's a behavior change so I did not make it unasked.
+
+**Verification for this audit's one code change:** `tests/cli` **1392 passed,
+0 failed, 40 skipped** (134 files). `tests/hermes_cli/` 4 failures across 3
+files, all confirmed **pre-existing** by re-running them with the changes
+`git stash`ed. `ast.parse` clean on `cli.py`; `import cli, run_agent,
+hermes_state, hermes_cli.banner, toolsets` clean; `hermes --version` and
+`hermes doctor` both **exit 0**. Zero dangling references to
+`keyboard_protocol` / `shift-enter` / `ShiftEnter` outside explanatory
+comments.
+
+### Fork-only retirement — 2026-08-26 (`hermes_cli/keyboard_protocol.py`: upstream shipped both halves, and the fork's copy was re-breaking upstream's Ghostty fix)
+
+**What it was.** A 241-line fork-only module doing two unrelated jobs:
+(1) `enable()`/`disable()` wrote the kitty keyboard-protocol push `\x1b[>1u`
+(pop `\x1b[<u`) straight to `/dev/tty`, with its own atexit + SIGINT/SIGTERM
+handlers; (2) `register_prompt_toolkit_keys()` added a synthetic
+`<shift-enter>` member to prompt_toolkit's `Keys` enum and hand-rolled a CSI-u
+table into `ANSI_SEQUENCES` (Shift+Enter, Ctrl+letter, Alt+letter, bare Esc,
+Shift/Alt+Backspace). It predates upstream having any of this.
+
+**Why the mapping table went.** Upstream's `hermes_cli/pt_input_extras.py`
+(`install_shift_enter_alias`, `install_ctrl_enter_alias`,
+`install_cmd_backspace_alias`, `install_modify_other_keys_aliases`,
+`install_ignored_terminal_sequences`) is already called unconditionally at
+import time from `cli.py:84-92`. An empirical `ANSI_SEQUENCES` snapshot diff —
+upstream installers applied, then the fork's installer on top — returned
+**0 added sequences and 2 overwrites**: `\x1b[13;2u` and `\x1b[27;2;13~`
+rerouted from `(Escape, ControlM)` to `Keys.ShiftEnter`. Since the fork's
+`@kb.add("<shift-enter>")` body was `insert_text('\n')` and the pre-existing
+`@kb.add('escape', 'enter')` body is the identical `insert_text('\n')` — and
+`kb.add('escape','enter')` was confirmed to resolve to exactly
+`(Keys.Escape, Keys.ControlM)`, upstream's alias target — the reroute was a
+no-op with extra steps. Upstream's table is a strict superset: it also covers
+CapsLock/NumLock lock-bit twins, the kitty quirk where Ctrl+C arrives as
+`ESC[99;133u` rather than `ESC[99;5u` (#89651), and it calls
+`_clear_vt100_prefix_cache()` after mutating the dict — which the fork's
+version never did, meaning some fork-added sequences could win the dict and
+still lose the parser.
+
+**Why the pusher went — this was a live defect.** `_kbp.enable()` ran at
+`cli.py:24238` with no terminal allowlist and no Ghostty guard: it pushed
+`\x1b[>1u` on *any* tty. Ten lines later, upstream's
+`_enable_extended_enter_keys(app.output)` runs its careful gate — an allowlist
+plus the Ghostty exception from `1a8fea3ce2` ("skip Kitty keyboard protocol
+push for Ghostty", #87630: Alt/Option+Delete breaks under Ghostty's kitty
+implementation, so Ghostty gets modifyOtherKeys only). Because the fork pushed
+first and unconditionally, that exception was **already moot by the time it
+ran** — the fork was reintroducing precisely the bug upstream had fixed.
+Teardown needed no replacement: `_run_cleanup`'s `_reset_tui_input_modes()`
+already pops `\x1b[<u` and resets `\x1b[>4m` under the
+`_tui_input_modes_active` gate, and is atexit-registered plus driven from the
+SIGTERM/SIGHUP handler.
+
+**Two deliberate behavior narrowings, accepted with eyes open.** Upstream's
+pusher is gated where the fork's was not, so after this change: (1) terminals
+that speak the kitty protocol but are outside upstream's allowlist — `foot`,
+`Alacritty` — no longer get the push and lose Shift+Enter disambiguation;
+(2) `display.cli_multiline_shortcuts: false` now suppresses the push, where the
+fork pushed regardless. Both are zero-impact on this host (`TERM=xterm-kitty`
+with `KITTY_WINDOW_ID` set — allowlisted; and multiline shortcuts default on
+with no override in `config.yaml`). Narrowing (2) is arguably a *bugfix*: the
+fork was ignoring an explicitly declared user setting. Narrowing (1) is a real
+gap and plausibly an upstream oversight rather than an intentional exclusion,
+since foot and Alacritty 0.13+ do implement the protocol — **an allowlist
+widening is a good upstream PR candidate** if it ever bites.
+
+**Files:** deleted `hermes_cli/keyboard_protocol.py` and
+`tests/hermes_cli/test_keyboard_protocol_mappings.py` (3 tests that only ever
+exercised the fork's mappings in isolation, never the Ghostty interaction);
+`cli.py` lost three call sites and the duplicate `<shift-enter>` binding, each
+replaced with a comment pointing at the upstream mechanism that took over.
+Commit `1a37f832e9`.
+
+
 ### Upstream sync — 2026-08-25 (v2026.8.18 → v2026.8.19, 804 commits, 40 conflict files)
 
 Merged tag `v2026.8.19` into `main` via `sync/v2026.8.19` (merge commit
@@ -6585,7 +6811,7 @@ will never touch them.
 || `agent/google_oauth.py` | Google OAuth credential handling for Gemini provider. |
 || `hermes_cli/fork_banner.py` | The fork's banner branding + git-state subsystem (carried/upstream-behind line, fork-aware agent name, HEAD-date label, fork-tree release URLs) (T2.5). Moved out of `banner.py`. |
 || `hermes_cli/delegation_stats.py` | Fork-only delegation statistics display (`/delegation` stats readout). |
-|| `hermes_cli/keyboard_protocol.py` | Fork keyboard protocol for CLI interaction patterns. |
+|| `hermes_cli/keyboard_protocol.py` | Fork keyboard protocol for CLI interaction patterns. **RETIRED 2026-08-26** (see the de-fork audit at the top of this file, commit `1a37f832e9`): upstream's `hermes_cli/pt_input_extras.py` installer family supersedes the mapping table (fork added 0 sequences upstream didn't already cover), and the fork's unconditional `enable()` push was defeating upstream's allowlist-gated `_enable_extended_enter_keys()` Ghostty exception (`1a8fea3ce2`, #87630). |
 || `hermes_cli/memory_confirm.py` | Memory confirmation dialogs (warm-tier memory verify-before-save). |
 || `hermes_cli/personas.py` | Fork-only persona management (`/persona` slash command). |
 || `hermes_cli/ruflo_agents.py` | Fork-only ruflo agent type catalog. |
