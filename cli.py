@@ -21095,20 +21095,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 """
                 event.current_buffer.insert_text('\n')
 
-        # Shift+Enter — works in any terminal that supports the kitty
-        # keyboard protocol (kitty, WezTerm, Ghostty, foot, Alacritty 0.13+,
-        # iTerm2 3.5+). Hermes pushes the protocol's "disambiguate" flag at
-        # startup via hermes_cli.keyboard_protocol.enable(), which makes the
-        # terminal emit \x1b[13;2u for Shift+Enter instead of plain \r.
-        # On unsupported terminals (Terminal.app, VS Code terminal, etc.)
-        # the push is silently ignored and Shift+Enter still acts as Enter.
-        from hermes_cli import keyboard_protocol as _kbp
-        _kbp.register_prompt_toolkit_keys()
-
-        @kb.add("<shift-enter>")
-        def handle_shift_enter(event):
-            """Shift+Enter inserts a newline (kitty keyboard protocol)."""
-            event.current_buffer.insert_text('\n')
+        # Shift+Enter needs no binding of its own: upstream's
+        # ``install_shift_enter_alias()`` (run at import time, see the
+        # hermes_cli.pt_input_extras block near the top of this module) maps
+        # every Shift+Enter wire form — \x1b[13;2u (kitty CSI-u),
+        # \x1b[27;2;13~ / \x1b[27;2;13u (modifyOtherKeys), plus the
+        # CapsLock/NumLock lock-bit twins — onto (Escape, ControlM), i.e.
+        # exactly the key tuple ``@kb.add('escape', 'enter')`` above already
+        # handles by inserting a newline. The fork used to reroute those two
+        # sequences to a synthetic ``Keys.ShiftEnter`` member with a duplicate
+        # handler; retired 2026-08-26 (see FORK.md's de-fork audit) after an
+        # ANSI_SEQUENCES diff proved the fork's table added zero sequences
+        # upstream's installers don't already cover.
 
         # VSCode/Cursor bind Ctrl+G to "Find Next" at the editor level, so
         # the keystroke never reaches the embedded terminal. Alt+G is unbound
@@ -24231,13 +24229,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     pass  # No running loop -- nothing to patch
                 except Exception:
                     pass
-                # Enable kitty keyboard protocol so Shift+Enter (and friends)
-                # produce distinct sequences. No-op on unsupported terminals.
-                try:
-                    from hermes_cli import keyboard_protocol as _kbp
-                    _kbp.enable()
-                except Exception:
-                    pass
+                # Extended key reporting (kitty keyboard protocol +
+                # modifyOtherKeys) is pushed below by
+                # _enable_extended_enter_keys(), which is allowlist-gated and
+                # carries the Ghostty exception (#87630). The fork's own
+                # unconditional hermes_cli.keyboard_protocol.enable() used to
+                # run here and pushed CSI >1u on ANY tty, which defeated that
+                # exception; retired 2026-08-26 (see FORK.md de-fork audit).
                 # The app enables focus reporting + mouse tracking; record that
                 # so _run_cleanup resets them on exit (#36823). When multiline
                 # shortcuts are on, also ask supported terminals (e.g. iTerm2)
@@ -24249,14 +24247,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 try:
                     app.run()
                 finally:
-                    # Always restore the terminal's keyboard mode, even on
-                    # exception paths. atexit + SIGTERM handlers are belt-
-                    # and-suspenders for the cases this finally won't cover.
-                    try:
-                        from hermes_cli import keyboard_protocol as _kbp
-                        _kbp.disable()
-                    except Exception:
-                        pass
+                    # Terminal keyboard modes are restored by _run_cleanup's
+                    # _reset_tui_input_modes() (atexit-registered + driven from
+                    # the SIGTERM/SIGHUP handler), which pops CSI <u and resets
+                    # modifyOtherKeys under the _tui_input_modes_active gate.
+                    # The fork's hermes_cli.keyboard_protocol.disable() used to
+                    # run here; retired 2026-08-26 with its enable() counterpart
+                    # (see FORK.md de-fork audit).
+                    pass
                 # Drive the petdex mascot animation (no-op when no pet enabled).
                 self._pet_start_anim()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
