@@ -4637,6 +4637,18 @@ def delegate_task(
             max_iterations, default_max_iter,
         )
     effective_max_iter = default_max_iter
+    # Per-role iteration budgets: delegation.max_iterations_by_role[role]
+    # (orchestrator=500, leaf=100, ...) overrides the global default per child.
+    # Precedence mirrors reasoning_effort_by_role: per-task agent_type beats
+    # the spawn role, which beats the global delegation.max_iterations.
+    try:
+        from hermes_cli.personas import lookup_max_iterations_for_role
+    except Exception:
+        lookup_max_iterations_for_role = None
+    if lookup_max_iterations_for_role is not None:
+        _role_cap = lookup_max_iterations_for_role(top_role)
+        if _role_cap is not None:
+            effective_max_iter = _role_cap
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -4944,6 +4956,17 @@ def delegate_task(
                 or _auto_route_model
                 or task_creds["model"]
             )
+            # Per-task iteration budget: agent_type entry beats the spawn
+            # role entry beats the global effective_max_iter (which already
+            # folded in the top-level role cap). Mirrors the
+            # reasoning_effort_by_role precedence exactly.
+            task_max_iter = effective_max_iter
+            if lookup_max_iterations_for_role is not None:
+                _task_cap = lookup_max_iterations_for_role(task_agent_type)
+                if _task_cap is None:
+                    _task_cap = lookup_max_iterations_for_role(effective_role)
+                if _task_cap is not None:
+                    task_max_iter = _task_cap
             child = _build_child_preserving_parent_tools(
                 task_index=i,
                 goal=t["goal"],
@@ -4954,7 +4977,7 @@ def delegate_task(
                 # pure parent inheritance when toolsets=None.
                 toolsets=None,
                 model=effective_task_model,
-                max_iterations=effective_max_iter,
+                max_iterations=task_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
                 override_provider=task_creds["provider"],
