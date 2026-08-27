@@ -14,11 +14,15 @@ custom-provider path and its own error reporting.
 from __future__ import annotations
 
 import json
+import logging
+import threading
 import time
 import urllib.error
 import urllib.request
 
 LLAMACPP_ALIASES = frozenset({"llamacpp", "llama.cpp", "llama-cpp"})
+
+logger = logging.getLogger(__name__)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -109,6 +113,7 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
         return {"base_url": hit.base_url, "api_key": ""}
 
     if wait_for_boot_s > 0 and _boot_in_flight(config):
+        _kick_managed_boot(config)
         deadline = time.monotonic() + wait_for_boot_s
         while time.monotonic() < deadline:
             time.sleep(0.25)
@@ -116,6 +121,45 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
             if managed:
                 return managed
     return None
+
+
+_KICK_LOCK = threading.Lock()
+
+
+def _kick_managed_boot(config: dict | None) -> None:
+    """Actively start the managed server when resolution finds it missing.
+
+    The wait loop above assumes some OTHER thread is bringing the server
+    up — true only at backend start (the lifespan boot thread). A router
+    that dies LATER leaves no boot in flight: the backend process was
+    killed with the router as part of its tree, or another install took
+    the stable port and the ownership guard rightly refused it. In those
+    states the wait just expired and agent init failed with 'no provider
+    configured', even though the fix is the same idempotent ensure call
+    the lifespan makes. Kick it here, off-thread (the resolver's wait
+    stays bounded; ensure's own state checks make a concurrent lifespan
+    boot harmless) and non-reentrant (racing resolutions kick once).
+    """
+    if not _KICK_LOCK.acquire(blocking=False):
+        return  # a kick is already in flight
+
+    def _boot() -> None:
+        try:
+            cfg = config
+            if cfg is None:
+                from hermes_cli.config import load_config
+
+                cfg = load_config()
+            from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
+
+            ensure_local_runtime(cfg)
+        except Exception:  # noqa: BLE001 — best-effort; resolution falls back
+            logger.warning("on-demand managed-server boot failed", exc_info=True)
+        finally:
+            _KICK_LOCK.release()
+
+    threading.Thread(target=_boot, daemon=True,
+                     name="lr-on-demand-boot").start()
 
 
 def _boot_in_flight(config: dict | None) -> bool:

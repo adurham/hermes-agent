@@ -456,11 +456,45 @@ def test_llamacpp_endpoint_waits_for_boot_in_flight(tmp_path, monkeypatch):
     assert resolved["api_key"] == "sk-boot"
 
 
+def test_resolution_kicks_boot_when_no_thread_is_booting(tmp_path, monkeypatch):
+    """The dead-router-mid-flight case: runtime enabled+installed, but no
+    state file and NO lifespan boot thread running (the router died after
+    backend start — tree-killed with a stale backend, or the stable port
+    was owned by another install and the ownership guard refused it).
+    Resolution must not just wait for a boot that nobody is doing — it
+    kicks ensure_local_runtime itself and picks up the state file that
+    boot writes."""
+    import time as _time
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap as bs
+    from hermes_cli.local_runtime import endpoint as ep
+    from hermes_cli.local_runtime.supervisor import state_path
+
+    monkeypatch.setattr(ep, "_boot_in_flight", lambda config: True)
+    monkeypatch.setattr(ep, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
+
+    def _fake_ensure(config, force=False):
+        _time.sleep(0.3)  # a real spawn takes a moment
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps({
+            "base_url": "http://127.0.0.1:59998/v1",
+            "api_key": "sk-kicked", "pid": 778,
+        }), encoding="utf-8")
+
+    monkeypatch.setattr(bs, "ensure_local_runtime", _fake_ensure)
+
+    resolved = ep.resolve_llamacpp_endpoint(config={}, wait_for_boot_s=5.0)
+    assert resolved is not None
+    assert resolved["api_key"] == "sk-kicked"
+
+
 def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
     """_boot_in_flight exercised FOR REAL (the previous regression test
     monkeypatched it — and the real one threw TypeError on every call,
-    silently disabling the boot wait; Jeff's third onboarding bounce).
-    Enabled + verified manifest on disk -> True; either missing -> False."""
+    silently disabling the boot wait). Enabled + verified manifest on
+    disk -> True; either missing -> False."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime import endpoint as ep
     from hermes_cli.local_runtime.binaries import runtimes_root
