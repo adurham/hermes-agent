@@ -169,9 +169,8 @@ def register_source(
 
 def get_source(name: str, *, scope: Optional[str] = None) -> Optional[SecretSource]:
     _ensure_builtin_sources()
-    scope = hermes_home_key(scope) if scope is not None else None
     with _REGISTRY_LOCK:
-        return _SCOPED_SOURCES.get(scope or hermes_home_key(), {}).get(
+        return _SCOPED_SOURCES.get(hermes_home_key(scope), {}).get(
             name
         ) or _SOURCES.get(name)
 
@@ -212,10 +211,9 @@ def restore_registration(
 
 def list_sources(*, scope: Optional[str] = None) -> List[SecretSource]:
     _ensure_builtin_sources()
-    scope = hermes_home_key(scope) if scope is not None else None
     with _REGISTRY_LOCK:
         merged = dict(_SOURCES)
-        merged.update(_SCOPED_SOURCES.get(scope or hermes_home_key(), {}))
+        merged.update(_SCOPED_SOURCES.get(hermes_home_key(scope), {}))
         return list(merged.values())
 
 

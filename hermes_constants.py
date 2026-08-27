@@ -142,11 +142,12 @@ def get_hermes_home() -> Path:
 def hermes_home_key(path: str | Path | None = None) -> str:
     """Return a stable key for a Hermes home/profile directory.
 
+    A falsy path (``None`` or empty) resolves to the active default home.
     Runtime registries use this key to isolate plugin-owned entries while
     keeping built-in registrations process-global.  ``strict=False`` preserves
     useful behavior for profiles whose directories have not been created yet.
     """
-    candidate = Path(path) if path is not None else get_hermes_home()
+    candidate = Path(path) if path else get_hermes_home()
     resolved = candidate.expanduser().resolve(strict=False)
     return os.path.normcase(str(resolved))
 

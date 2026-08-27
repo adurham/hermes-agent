@@ -69,7 +69,7 @@ def list_providers(*, scope: Optional[str] = None) -> List[VideoGenProvider]:
     """Return all registered providers, sorted by name."""
     with _lock:
         merged = dict(_providers)
-        merged.update(_scoped_providers.get(scope or hermes_home_key(), {}))
+        merged.update(_scoped_providers.get(hermes_home_key(scope), {}))
         items = list(merged.values())
     return sorted(items, key=lambda p: p.name)
 
@@ -80,7 +80,7 @@ def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[VideoGen
         return None
     with _lock:
         key = name.strip()
-        return _scoped_providers.get(scope or hermes_home_key(), {}).get(key) or _providers.get(key)
+        return _scoped_providers.get(hermes_home_key(scope), {}).get(key) or _providers.get(key)
 
 
 def snapshot_registration(

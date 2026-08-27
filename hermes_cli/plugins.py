@@ -3743,7 +3743,7 @@ class PluginManager:
         # profile context, but every inverse must target the registration's
         # original scope.  Normalize through hermes_home_key so the scope
         # matches the key the registries store under (normcase on Windows).
-        self.scope_key = hermes_home_key(scope_key) if scope_key else hermes_home_key()
+        self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._plugins: Dict[str, LoadedPlugin] = {}
