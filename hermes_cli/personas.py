@@ -634,6 +634,101 @@ def lookup_reasoning_for_role(role: Optional[str]) -> Optional[str]:
     return effort
 
 
+# ---------------------------------------------------------------------------
+# Per-role max-iterations config (hermes ~/.hermes/config.yaml)
+#
+# Mirrors reasoning_effort_by_role above. ``delegation.max_iterations_by_role``
+# lets an orchestrator-role child (e.g. a PM persona dispatched with
+# role="orchestrator") run with a much larger iteration budget than its leaf
+# workers (e.g. agent_type="coder"/"reviewer"), instead of the single global
+# delegation.max_iterations knob applying uniformly to every delegated child.
+# Precedence: [agent_type] beats [role] beats global delegation.max_iterations.
+# ---------------------------------------------------------------------------
+
+
+def get_role_max_iterations_map() -> dict[str, int]:
+    """Read ``delegation.max_iterations_by_role`` from ~/.hermes/config.yaml.
+
+    Returns an empty dict when the section is missing or unparseable.
+    """
+    try:
+        from hermes_cli.config import load_config
+    except Exception:
+        return {}
+    try:
+        cfg = load_config()
+    except Exception:
+        return {}
+    delegation = cfg.get("delegation") if isinstance(cfg, dict) else None
+    if not isinstance(delegation, dict):
+        return {}
+    raw = delegation.get("max_iterations_by_role")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and isinstance(v, (int, str)):
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                out[k.strip()] = n
+    return out
+
+
+def set_role_max_iterations(role: str, n: Optional[int]) -> bool:
+    """Persist a per-role max-iterations assignment to ~/.hermes/config.yaml.
+
+    Pass ``n=None`` to remove the assignment.
+    """
+    try:
+        from hermes_cli.config import load_config
+    except Exception:
+        return False
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    delegation = cfg.get("delegation") if isinstance(cfg, dict) else None
+    if not isinstance(delegation, dict):
+        delegation = {}
+    by_role = delegation.get("max_iterations_by_role")
+    if not isinstance(by_role, dict):
+        by_role = {}
+    role = role.strip()
+    if not role:
+        return False
+    if n is not None and n > 0:
+        by_role[role] = int(n)
+    else:
+        by_role.pop(role, None)
+    return _save_to_config_yaml("delegation.max_iterations_by_role", by_role)
+
+
+def lookup_max_iterations_for_role(role: Optional[str]) -> Optional[int]:
+    """Return the configured max-iterations for ``role``, or ``None`` if unset.
+
+    Used by ``tools/delegate_tool.py`` to resolve per-child iteration budgets.
+    Callers should try the ``agent_type`` (persona, e.g. "coder"/"reviewer")
+    first, then fall back to the spawn ``role`` ("orchestrator"/"leaf") when
+    no persona-specific entry exists, before falling through to the global
+    ``delegation.max_iterations`` value.
+
+    A role in :data:`ROLE_ALIASES` with no entry of its own resolves to its
+    canonical role's budget, so an alias inherits the same cap.
+    """
+    if not role:
+        return None
+    caps = get_role_max_iterations_map()
+    n = caps.get(role.strip())
+    if n is None:
+        target = resolve_role_alias(role)
+        if target is not None:
+            n = caps.get(target)
+    return n
+
+
 __all__ = [
     "DEFAULT_PERSONAS_PATH",
     "Persona",

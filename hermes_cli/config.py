@@ -5701,6 +5701,7 @@ _PLATFORM_CONTAINER_KEYS = frozenset({"platforms"})
 _OPEN_DICT_NESTED_PATHS = frozenset({
     "delegation.model_by_role",
     "delegation.reasoning_effort_by_role",
+    "delegation.max_iterations_by_role",
 })
 
 

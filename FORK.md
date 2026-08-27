@@ -13381,3 +13381,28 @@ is in generic delegation code, and `delegation.by_provider` only
 determines *which* wrong model the children land on, not whether the
 top-level param is dropped. Upstream is probably affected too — surfaced
 here for Adam to decide rather than filed upstream.
+
+---
+
+## 2026-08-27 — per-role subagent max_iterations (max_iterations_by_role)
+
+Added `delegation.max_iterations_by_role` to config.yaml (mirrors the existing
+`reasoning_effort_by_role` pattern exactly):
+
+- `orchestrator: 500`, `leaf: 100` (user request: PM subagents kept hitting the
+  global 100 cap mid-campaign; workers should stay at 100).
+- New helpers in `hermes_cli/personas.py`: `get_role_max_iterations_map`,
+  `set_role_max_iterations`, `lookup_max_iterations_for_role` (agent_type beats
+  spawn role beats global, alias-aware via resolve_role_alias).
+- `tools/delegate_tool.py`: global default folds in the top-level role cap
+  (`effective_max_iter`), then per-task: agent_type entry beats the per-task
+  role entry beats `effective_max_iter` — passed as `max_iterations=task_max_iter`
+  into `_build_child_preserving_parent_tools` (both sync and async batch paths
+  flow through this loop).
+- `hermes_cli/config.py`: registered `delegation.max_iterations_by_role` in
+  `_OPEN_DICT_NESTED_PATHS` so `hermes config set` validates it.
+- Config values written via `set_role_max_iterations` (the CLI-safe path, since
+  direct config.yaml writes are agent-blocked).
+
+Tests: `test_make_agent_reads_nested_max_turns` passes; AST parses clean on all
+three touched files; config map round-trip verified.
