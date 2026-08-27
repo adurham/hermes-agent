@@ -125,6 +125,7 @@ class TestPosixNoOp:
     stdio.  The goal is that Linux/macOS behave identically before and
     after this module is imported."""
 
+    @pytest.mark.linux_only
     def test_noop_on_posix_host(self, monkeypatch):
         """Even when imported, the bootstrap function must return False
         and leave env untouched on a POSIX host (``_IS_WINDOWS`` is
@@ -336,6 +337,7 @@ class TestHardenImportPath:
 class TestSuppressPlatformVerConsole:
     """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
 
+    @pytest.mark.linux_only
     def test_noop_on_posix(self):
         import platform
         hb = _fresh_import()

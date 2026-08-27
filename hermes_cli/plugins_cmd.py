@@ -33,6 +33,25 @@ from utils import atomic_write_text
 logger = logging.getLogger(__name__)
 
 
+def _rmtree_force(path: Path) -> None:
+    """``shutil.rmtree`` that clears read-only bits before deleting.
+
+    Windows refuses to delete a tree containing read-only files — git clones
+    store objects read-only — raising ``PermissionError`` where POSIX unlinks
+    them fine.  The ``onerror`` hook chmods the file writable and retries.
+    """
+    import stat
+
+    def _onerror(func, p, _exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+        except OSError:
+            pass
+        func(p)
+
+    shutil.rmtree(path, onerror=_onerror)
+
+
 @functools.lru_cache(maxsize=1)
 def _resolve_git_executable() -> Optional[str]:
     """Resolve a git binary for subprocess use when ``PATH`` may be minimal.
@@ -867,7 +886,7 @@ def _install_plugin_core(
             _write_install_metadata(new_metadata)
         except Exception:
             if target.exists():
-                shutil.rmtree(target)
+                _rmtree_force(target)
             if replaced_existing and backup.exists():
                 os.replace(backup, target)
             if old_metadata:
@@ -1208,7 +1227,7 @@ def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
     metadata = _read_install_metadata()
     if target.name not in metadata:
-        shutil.rmtree(target)
+        _rmtree_force(target)
         return
 
     updated = dict(metadata)
@@ -1230,7 +1249,7 @@ def _remove_plugin_core(target: Path) -> None:
             ) from restore_exc
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    shutil.rmtree(staging)
+    _rmtree_force(staging)
 
 
 def cmd_remove(name: str) -> None:

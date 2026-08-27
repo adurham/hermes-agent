@@ -154,6 +154,7 @@ class TestBusyInputMode:
 
 
 class TestPromptToolkitTerminalCompatibility:
+    @pytest.mark.linux_only
     def test_lf_enter_binding_respects_multiline_shortcuts(self):
         """Ctrl+J is reserved by default, with legacy LF-submit available as an opt-out.
 
@@ -251,6 +252,7 @@ class TestPromptToolkitTerminalCompatibility:
 
 
 
+    @pytest.mark.linux_only
     def test_cpr_gating_posix_suppresses_without_ssh(self, monkeypatch):
         """POSIX suppresses CPR without SSH.
 

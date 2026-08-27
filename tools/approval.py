@@ -2168,6 +2168,9 @@ def _replace_simple_shell_expansions(word: str) -> str:
     return _PARAM_DEFAULT_RE.sub(lambda match: match.group("default"), word)
 
 
+_IS_WINDOWS = sys.platform == "win32"
+
+
 def _strip_shell_word_syntax(word: str) -> str:
     chars: list[str] = []
     quote: str | None = None
@@ -2175,7 +2178,7 @@ def _strip_shell_word_syntax(word: str) -> str:
     while i < len(word):
         ch = word[i]
         if quote:
-            if ch == "\\" and quote == '"' and i + 1 < len(word):
+            if ch == "\\" and quote == '"' and not _IS_WINDOWS and i + 1 < len(word):
                 chars.append(word[i + 1])
                 i += 2
                 continue
@@ -2190,7 +2193,7 @@ def _strip_shell_word_syntax(word: str) -> str:
             quote = ch
             i += 1
             continue
-        if ch == "\\" and i + 1 < len(word):
+        if ch == "\\" and not _IS_WINDOWS and i + 1 < len(word):
             chars.append(word[i + 1])
             i += 2
             continue

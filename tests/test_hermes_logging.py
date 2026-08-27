@@ -382,6 +382,7 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    @pytest.mark.linux_only
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         logger = logging.getLogger("_test_rotating_managed_open")

@@ -69,6 +69,7 @@ def register_provider(provider: BrowserProvider, *, scope: Optional[str] = None)
     if not isinstance(raw_name, str) or not raw_name.strip():
         raise ValueError("Browser provider .name must be a non-empty string")
     name = raw_name.strip()
+    scope = hermes_home_key(scope) if scope is not None else None
     global _generation
     with _lock:
         target = _providers if scope is None else _scoped_providers.setdefault(scope, {})
@@ -92,6 +93,7 @@ def register_provider(provider: BrowserProvider, *, scope: Optional[str] = None)
 
 def list_providers(*, scope: Optional[str] = None) -> List[BrowserProvider]:
     """Return all registered providers, sorted by name."""
+    scope = hermes_home_key(scope) if scope is not None else None
     with _lock:
         merged = dict(_providers)
         merged.update(_scoped_providers.get(scope or hermes_home_key(), {}))
@@ -103,6 +105,7 @@ def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[BrowserP
     """Return the provider registered under *name*, or None."""
     if not isinstance(name, str):
         return None
+    scope = hermes_home_key(scope) if scope is not None else None
     with _lock:
         key = name.strip()
         return _scoped_providers.get(scope or hermes_home_key(), {}).get(key) or _providers.get(key)
@@ -111,6 +114,7 @@ def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[BrowserP
 def snapshot_registration(
     name: str, *, scope: Optional[str] = None
 ) -> Optional[BrowserProvider]:
+    scope = hermes_home_key(scope) if scope is not None else None
     with _lock:
         target = _providers if scope is None else _scoped_providers.get(scope, {})
         return target.get(name.strip())
@@ -118,7 +122,7 @@ def snapshot_registration(
 
 def registry_generation(*, scope: Optional[str] = None) -> tuple[int, int]:
     """Return a cache fingerprint for the global base and one profile."""
-    active_scope = scope or hermes_home_key()
+    active_scope = hermes_home_key(scope) if scope is not None else hermes_home_key()
     with _lock:
         return _generation, _scoped_generations.get(active_scope, 0)
 
@@ -132,6 +136,7 @@ def restore_registration(
 ) -> bool:
     """Restore a plugin registration only when *current* is still installed."""
     key = name.strip()
+    scope = hermes_home_key(scope) if scope is not None else None
     global _generation
     with _lock:
         target = _providers if scope is None else _scoped_providers.setdefault(scope, {})
