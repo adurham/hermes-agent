@@ -56,11 +56,19 @@ def _composite_percent(stages: list[str], current: str, value: float) -> int:
 
 
 def _endpoint() -> "tuple[str, str] | None":
-    """(base_root, api_key) of the managed router, or None."""
-    try:
-        from hermes_cli.local_runtime.supervisor import state_path
+    """(base_root, api_key) of the managed router, or None.
 
-        state = json.loads(state_path().read_text(encoding="utf-8"))
+    Resolved through the endpoint module's ownership-guarded reader, not
+    a raw state-file read: on the shared stable port, a foreign install's
+    server answers /health for anyone, and a raw read would attach this
+    watcher to someone else's SSE stream (or spin on 401s against it).
+    The guard's dead-pid check is the ownership proof."""
+    try:
+        from hermes_cli.local_runtime.endpoint import _state_endpoint
+
+        state = _state_endpoint()
+        if state is None:
+            return None
         base = str(state.get("base_url", "")).rsplit("/v1", 1)[0]
         return (base, str(state.get("api_key", ""))) if base else None
     except Exception:  # noqa: BLE001

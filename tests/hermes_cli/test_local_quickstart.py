@@ -150,3 +150,18 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
     assert job["status"] == "done", job["error"]
     assert "install" not in calls and "download" not in calls
     assert calls == ["assign"] or calls[-1] == "assign"
+
+
+def test_quickstart_is_single_flight(client, quickstart_ready, monkeypatch):
+    """A second quickstart while one runs must 409, not start a twin job
+    (the job sequences installs, downloads, a server bounce, and a config
+    write — two interleaved runs corrupt all four)."""
+    import hermes_cli.web_routers.local_models as lm
+
+    lm._QUICKSTART_LOCK.acquire()
+    try:
+        r = client.post("/api/local-models/quickstart", json={})
+        assert r.status_code == 409
+        assert "already running" in r.json()["detail"].lower()
+    finally:
+        lm._QUICKSTART_LOCK.release()

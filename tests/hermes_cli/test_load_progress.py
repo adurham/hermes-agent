@@ -240,3 +240,21 @@ def test_prefill_progress_reads_busiest_processing_slot(monkeypatch):
 
     monkeypatch.setattr(lp.urllib.request, "urlopen", _boom)
     assert lp.get_prefill_progress("m") is None
+
+
+def test_endpoint_respects_ownership_guard(monkeypatch):
+    """The watcher's endpoint MUST come from the ownership-guarded reader.
+    Regression: a raw state-file read attached the SSE watcher to a
+    foreign install's server on the shared stable port (health answers
+    for anyone; only the dead-pid check proves ownership)."""
+    import hermes_cli.local_runtime.load_progress as lp
+
+    # Guard says "not ours": no endpoint, regardless of state on disk.
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint",
+                        lambda: None)
+    assert lp._endpoint() is None
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint._state_endpoint",
+        lambda: {"base_url": "http://127.0.0.1:18434/v1", "api_key": "k"})
+    assert lp._endpoint() == ("http://127.0.0.1:18434", "k")

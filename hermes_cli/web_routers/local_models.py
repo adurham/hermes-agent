@@ -866,6 +866,12 @@ class QuickstartBody(BaseModel):
     model_id: str | None = None   # default: the catalog's recommended entry
 
 
+# One quickstart at a time: the job sequences installs, downloads, a
+# server bounce, and a config write — two racing runs would interleave
+# all four. Held for the job's lifetime, released in the worker.
+_QUICKSTART_LOCK = threading.Lock()
+
+
 @router.post("/api/local-models/quickstart")
 async def local_models_quickstart(body: QuickstartBody):
     """The dummy-proof path: one job that installs the runtime (if
@@ -944,6 +950,10 @@ async def local_models_quickstart(body: QuickstartBody):
                     (f"https://huggingface.co/{entry.repo}/resolve/main/{asset.path}",
                      assets_dir() / asset.local_name, asset.size_bytes))
 
+    if not _QUICKSTART_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409,
+                            detail="Setup is already running")
+
     job = _job("quickstart", entry.display_name, model_id=entry.id)
     job["total_bytes"] = sum(p[2] for p in download_plan) or None
 
@@ -1015,6 +1025,8 @@ async def local_models_quickstart(body: QuickstartBody):
             logger.warning("quickstart failed: %s", exc)
             job["status"] = "error"
             job["error"] = str(exc)
+        finally:
+            _QUICKSTART_LOCK.release()
 
     threading.Thread(target=_run, daemon=True, name="lr-quickstart").start()
     return {

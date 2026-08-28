@@ -17,15 +17,16 @@ fit policy prices the build honestly (zero-spill, spilled, or refused by
 the physics check).
 
 Validation lifecycle: builds proven end-to-end on real hardware are
-marked validated. Day-0 entries ship before that proof under the
-"day-0" tag — ensure_model_ready's touch generation still gates every
-first load at runtime.
+marked validated. Day-0 entries ship before that proof (they simply lack
+the validated flag) — ensure_model_ready's touch generation still gates
+every first load at runtime.
 
 Multi-file models: variants may carry split-GGUF parts (llama-server loads
-from the first part; all parts download together, each sha-verified).
-Entries may carry an mmproj (vision projector) and a speculative-decode
-draft model — both download alongside the weights. Spec decode is enabled
-only when the launch decision spills, where its speedup is largest.
+from the first part; all parts download together). Entries may carry an
+mmproj (vision projector) and a speculative-decode draft model — both
+download alongside the weights. MTP-integrated models run spec decode
+wherever they load; a separate draft model attaches only when the launch
+decision spills, where its speedup is largest.
 
 File sizes come from HF LFS metadata and feed the estimator, the fit
 pills, and download progress. There is no download-time integrity check
