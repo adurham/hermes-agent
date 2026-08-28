@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
 
+import { NEW_CHAT_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import {
@@ -226,6 +228,38 @@ export function LocalModelsSettings() {
     }
   }
 
+  // Setup flows end at the action, not the settings pane: when quickstart
+  // finishes while the user is still HERE watching it, land them on a new
+  // chat with the model ready to try. Unmount cancels the intent — a user
+  // who navigated away mid-download keeps their place (no focus theft).
+  // (Lives above the loading return: hooks run unconditionally.)
+  const navigate = useNavigate()
+  const seenQuickstarts = useRef(new Set<string>())
+
+  const runningQuickstart = jobs.find(
+    j => j.kind === 'quickstart' && j.status === 'running'
+  )
+
+  useEffect(() => {
+    // Event detection, not value mirroring: the ref only remembers which
+    // job ids THIS mount saw running, so a 'done' already in the list on
+    // mount (stale history) never triggers a navigation.
+    const seen = seenQuickstarts.current
+
+    for (const j of jobs) {
+      if (j.kind !== 'quickstart') {
+        continue
+      }
+
+      if (j.status === 'running') {
+        seen.add(j.job_id)
+      } else if (j.status === 'done' && seen.has(j.job_id)) {
+        seen.delete(j.job_id)
+        navigate(NEW_CHAT_ROUTE)
+      }
+    }
+  }, [jobs, navigate])
+
   if (!status || catalog === null) {
     return <SettingsSkeleton sections={[{ rows: 2 }, { rows: 4 }]} />
   }
@@ -238,19 +272,23 @@ export function LocalModelsSettings() {
   // leads with a hero that does everything in one click; the full pane
   // stays one 'Configure…' click away. A running quickstart pins this
   // view so its progress has a home even after a remount.
-  const qJob = jobs.find(j => j.kind === 'quickstart' && j.status === 'running') ?? null
+  const qJob = runningQuickstart ?? null
+
   const needsSetup = !status.runtime_installed || status.models.length === 0
   const heroModel = catalog.find(c => c.recommended && c.fits) ?? catalog.find(c => c.fits) ?? null
 
   if (qJob || (needsSetup && !configure && heroModel)) {
     // Stage rail derived from the job phase: engine -> model -> finish.
     const phase = qJob?.phase ?? ''
+
     const stageIndex = ['starting-server', 'setting-default'].includes(phase)
       ? 2
       : phase === 'downloading'
         ? 1
         : 0
+
     const stages = [copy.quickstartStageEngine, copy.quickstartStageModel, copy.quickstartStageFinish]
+
     // The model-download leg blanks job.detail on purpose (pane rows
     // render their own byte counter) — compose one here instead of
     // falling back to runtime copy that would misname the stage.
@@ -691,9 +729,11 @@ export function LocalModelsSettings() {
               const isLoaded = residency === 'loaded' || residency === 'ready'
               const isLoadingNow = residency === 'loading'
               const livePlacement = status.placement?.[m.id]
+
               const aJob = jobs.find(
                 j => j.kind === 'model-activate' && j.status === 'running' && j.model_id === m.id
               )
+
               const anyActivateRunning = jobs.some(j => j.kind === 'model-activate' && j.status === 'running')
 
               return (

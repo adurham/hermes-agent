@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
@@ -102,9 +103,11 @@ const REFUSED_MODEL: LocalCatalogModel = {
 
 function renderPane() {
   return render(
-    <I18nProvider>
-      <LocalModelsSettings />
-    </I18nProvider>
+    <MemoryRouter>
+      <I18nProvider>
+        <LocalModelsSettings />
+      </I18nProvider>
+    </MemoryRouter>
   )
 }
 
@@ -357,6 +360,7 @@ describe('quickstart', () => {
 describe('BrowseSection', () => {
   it('searches HF after a pause and shows fit-priced files on demand', async () => {
     vi.useFakeTimers()
+
     try {
       vi.mocked(hermes.searchHFModels).mockResolvedValue({
         hits: [{ downloads: 872724, gated: false, likes: 47, repo: 'unsloth/Qwen3.8-27B-GGUF', updated: '2026-08-18' }]
@@ -369,9 +373,11 @@ describe('BrowseSection', () => {
       })
 
       render(
-        <I18nProvider>
-          <LocalModelsSettings />
-        </I18nProvider>
+        <MemoryRouter>
+          <I18nProvider>
+            <LocalModelsSettings />
+          </I18nProvider>
+        </MemoryRouter>
       )
       await act(async () => {
         await vi.runOnlyPendingTimersAsync()
@@ -440,5 +446,56 @@ describe('added-by-you rows', () => {
     expect(screen.getByText(/96K/)).toBeTruthy()
     const buttons = screen.getAllByRole('button')
     expect(buttons.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('quickstart completion navigation', () => {
+  it('lands on a new chat when a quickstart it watched finishes; stale done jobs on mount never navigate', async () => {
+    const routeProbe = vi.fn()
+
+    function Probe() {
+      const loc = useLocation()
+      routeProbe(loc.pathname)
+
+      return null
+    }
+
+    const doneJob: LocalRuntimeJob = {
+      done_bytes: 0,
+      detail: '',
+      error: null,
+      job_id: 'stale-done',
+      kind: 'quickstart',
+      model_id: 'qwen3.8-27b',
+      phase: 'done',
+      status: 'done',
+      target: 'Qwen3.8 27B',
+      total_bytes: null
+    }
+
+    // A finished quickstart already in history when the pane mounts —
+    // must NOT trigger navigation.
+    $localRuntimeJobs.set([doneJob])
+
+    render(
+      <MemoryRouter initialEntries={['/settings']}>
+        <I18nProvider>
+          <LocalModelsSettings />
+        </I18nProvider>
+        <Probe />
+      </MemoryRouter>
+    )
+    await act(async () => {})
+    expect(routeProbe).not.toHaveBeenCalledWith('/')
+
+    // A quickstart the pane SAW running that then completes -> navigate.
+    const running: LocalRuntimeJob = { ...doneJob, job_id: 'live-run', phase: 'downloading', status: 'running' }
+    await act(async () => {
+      $localRuntimeJobs.set([doneJob, running])
+    })
+    await act(async () => {
+      $localRuntimeJobs.set([doneJob, { ...running, phase: 'done', status: 'done' }])
+    })
+    expect(routeProbe).toHaveBeenCalledWith('/')
   })
 })
