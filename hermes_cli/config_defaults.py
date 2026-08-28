@@ -3894,7 +3894,7 @@ DEFAULT_CONFIG = {
         "enabled": False,
         # Pinned llama.cpp release tag (rolling bNNNN). Bumped by Hermes
         # releases after the validation suite re-runs, not tracked live.
-        "tag": "b10362",
+        "tag": "b10679",
         # Inference backend: auto = CUDA on NVIDIA, Metal on macOS, Vulkan on
         # other GPUs, else CPU. Explicit values: cuda|metal|vulkan|hip|cpu.
         "backend": "auto",

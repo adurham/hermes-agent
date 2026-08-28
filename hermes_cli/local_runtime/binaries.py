@@ -36,9 +36,9 @@ RELEASE_URL = "https://github.com/ggml-org/llama.cpp/releases/download/{tag}/{as
 # 13.2 drivers.
 _WIN_CUDA_VERSION = "13.3"
 # arm64 Windows CUDA prebuilts landed upstream (~b1036x) on CUDA 13.4 —
-# verified against the live b10362 asset list. Tags at or before b10290
-# don't have them; resolution succeeds and the download 404s honestly on
-# such tags, which only arises if a user pins backward.
+# verified against live asset lists (b10362, b10630, b10679). Tags at or before
+# b10290 don't have them; resolution succeeds and the download 404s
+# honestly on such tags, which only arises if a user pins backward.
 _WIN_CUDA_VERSION_ARM64 = "13.4"
 
 
