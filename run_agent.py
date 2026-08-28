@@ -1886,6 +1886,7 @@ class AIAgent:
         review_memory: bool = False,
         review_skills: bool = False,
         focus: Optional[str] = None,
+        explicit: bool = False,
     ) -> None:
         """Post-turn review entry point: decide WHEN, then spawn.
 
@@ -1896,9 +1897,16 @@ class AIAgent:
         (auxiliary.background_review.defer: auto|never). Everything else —
         cloud runtimes, external local servers, explicit /refine — spawns
         immediately, exactly as before.
+
+        ``explicit`` marks a user-initiated review (/refine, with or
+        without focus text): never deferred. It does NOT touch the
+        delegate/enabled gates below — those stay keyed on ``focus`` so a
+        bare /refine keeps its historical gating behavior.
         """
-        # Delegation-subagent and enabled gates live here so a DEFERRED
-        # dispatch cannot resurrect a review the config has since disabled.
+        # Delegation-subagent and enabled gates run here at enqueue/spawn
+        # time; the idle dispatcher re-checks the enabled gate again at
+        # dispatch time so a review queued for minutes cannot be
+        # resurrected after the user disables reviews.
         if focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return
         task_cfg = None
@@ -1915,7 +1923,7 @@ class AIAgent:
             focus=focus,
             task_cfg=task_cfg,
         )
-        if focus is None:
+        if focus is None and not explicit:
             from agent.review_idle_queue import (
                 QUEUE,
                 defer_mode,

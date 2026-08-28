@@ -231,6 +231,56 @@ def test_wrapper_refine_bypasses_queue(monkeypatch):
     assert calls["spawned"][0]["focus"] == "save the deploy workflow"
 
 
+def test_wrapper_bare_refine_bypasses_queue(monkeypatch):
+    """/refine with no focus text is still explicit: never deferred."""
+    spawn, calls = _wrapper_agent(monkeypatch, defer="auto", managed=True)
+    spawn([{"role": "user", "content": "hi"}], review_memory=True,
+          focus=None, explicit=True)
+    assert calls["enqueued"] == []
+    assert len(calls["spawned"]) == 1
+
+
+def test_wrapper_cloud_fast_path_skips_runtime_resolution(monkeypatch):
+    """No managed server on the machine -> the classifier answers from the
+    TTL-cached netloc probe alone, without resolving the review runtime.
+    Guards the cloud-only turn tail from growing new work."""
+    from agent import review_idle_queue as riq
+
+    resolved = {"count": 0}
+
+    def _explode(agent, cfg):
+        resolved["count"] += 1
+        raise AssertionError("runtime resolution must not run")
+
+    monkeypatch.setattr(
+        "agent.auxiliary_client._managed_local_netloc", lambda: "")
+    monkeypatch.setattr(
+        "agent.background_review._resolve_review_runtime", _explode)
+    assert riq.review_targets_managed_local(object(), {}) is False
+    assert resolved["count"] == 0
+
+
+def test_dispatcher_rechecks_enabled_gate(monkeypatch):
+    """A review disabled while queued must not be resurrected at dispatch."""
+    from agent import review_idle_queue as riq
+
+    q, clock = _make_queue()
+    agent = _FakeAgent()
+    q.enqueue(agent, "s1", {"task_cfg": {}})
+    monkeypatch.setattr(
+        "agent.background_review.load_background_review_settings",
+        lambda: (False, {}),
+    )
+    item = None
+    clock["t"] += _IDLE_SETTLE_S + 1
+    q.note_turn_started()
+    q.note_turn_finished()
+    clock["t"] += _IDLE_SETTLE_S + 1
+    item = q._pop_dispatchable()
+    assert item is not None
+    assert q._still_enabled(item) is False
+
+
 # ── requeue on preemption ────────────────────────────────────────
 
 

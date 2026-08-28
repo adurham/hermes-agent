@@ -82,9 +82,21 @@ def review_targets_managed_local(agent: Any,
     exact-matches its netloc against the supervisor state file — the
     matcher that cannot false-positive on external local servers. Any
     failure reads False: immediate spawn is always the safe default.
+
+    Order matters: the netloc probe (one TTL-cached state-file read)
+    runs FIRST, so machines with no managed server — every cloud-only
+    install — return False without resolving the review runtime at all.
+    This wrapper runs on the turn's tail; runtime resolution belongs on
+    that path only when a managed server actually exists.
     """
     try:
-        from agent.auxiliary_client import _is_managed_local_endpoint
+        from agent.auxiliary_client import (
+            _is_managed_local_endpoint,
+            _managed_local_netloc,
+        )
+
+        if not _managed_local_netloc():
+            return False
         from agent.background_review import _resolve_review_runtime
 
         runtime = _resolve_review_runtime(agent, task_cfg)
@@ -205,6 +217,12 @@ class ReviewIdleQueue:
             try:
                 item = self._pop_dispatchable()
                 if item is not None:
+                    if not self._still_enabled(item):
+                        logger.info(
+                            "Deferred background review dropped: reviews "
+                            "were disabled while it was queued (session=%s)",
+                            item.session_key[-12:])
+                        continue
                     logger.info(
                         "Dispatching deferred background review "
                         "(session=%s, waited=%.0fs, queued=%d)",
@@ -217,6 +235,23 @@ class ReviewIdleQueue:
                                exc_info=True)
             if item is None:
                 time.sleep(_POLL_INTERVAL_S)
+
+    @staticmethod
+    def _still_enabled(item: _PendingReview) -> bool:
+        """Re-check the enabled gate at DISPATCH time.
+
+        The entry wrapper gates at enqueue time, but minutes may pass in
+        the queue — a user who sets background_review.enabled: false while
+        a review waits means it, and the dispatch must not resurrect it.
+        Fail-open like the gate itself (a broken config never silently
+        disables reviews)."""
+        try:
+            from agent.background_review import load_background_review_settings
+
+            enabled, _ = load_background_review_settings()
+            return enabled
+        except Exception:  # noqa: BLE001
+            return True
 
 
 def _managed_server_idle() -> bool:
