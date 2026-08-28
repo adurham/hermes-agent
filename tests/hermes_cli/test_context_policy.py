@@ -323,12 +323,25 @@ def test_launch_args_contract():
     assert "--spec-type" in b, "MTP must run on resident configs too"
     assert b[b.index("--spec-draft-n-max") + 1] == "2"
     assert "--backend-sampling" in b
+    assert "--spec-draft-backend-sampling" in b
 
-    # MTP and the large microbatch are mutually exclusive: backend
-    # sampling keeps ubatch x vocab fp32 logits on the GPU and MTP
-    # doubles it — stacked, they packed a 32 GiB card 3.9 GiB past the
-    # priced overhead. MTP configs stay at the default ubatch.
-    assert "-ub" not in b, "MTP configs must not carry the large microbatch"
+    # Stacking MTP with the large microbatch is a FIT question, decided
+    # by the caller (presets' posture ladder) and passed as mtp_prefill.
+    # Default (no headroom proven): decode posture, small ubatch — the
+    # stacked logits buffers once packed a 32 GiB card 3.9 GiB past a
+    # fit that ignored them.
+    assert "-ub" not in b, "default MTP posture stays at the small ubatch"
+
+    # Headroom proven: the stacked posture carries the large microbatch
+    # (measured best on both axes where it fits: 93.3 vs 89.5 tok/s
+    # decode on Qwen3.8 Q4). ub_logits_bytes must price the same choice.
+    s = launch_args(p, resident, mtp_capable=True, mtp_draft_depth=2,
+                    mtp_prefill=True)
+    assert "-ub" in s and s[s.index("-ub") + 1] == "2048"
+    assert "--spec-type" in s
+    v = 248320
+    assert ub_logits_bytes(v, mtp_capable=True) == 512 * v * 4 * 2
+    assert ub_logits_bytes(v, mtp_capable=True, mtp_prefill=True) == 2048 * v * 4 * 2
 
     c = launch_args(p, resident, mtp_capable=False)
     assert "-ub" in c and c[c.index("-ub") + 1] == "2048"  # prefill hint

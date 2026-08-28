@@ -105,7 +105,22 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
             mmproj_path = assets_dir() / entry.mmproj.local_name
             if mmproj_path.exists():
                 mmproj_bytes = entry.mmproj.size_bytes
+        # MTP posture ladder: try the stacked posture first (MTP + large
+        # prefill microbatch — best on both axes where it fits), fall back
+        # to the decode-only posture (ub512), whose smaller logits buffer
+        # may fit where the stack doesn't. Whichever survives is priced
+        # into the window decision — flag and cost from the same call.
+        mtp_prefill = False
         logits_bytes = ub_logits_bytes(profile.n_vocab, mtp_capable=is_mtp)
+        if is_mtp:
+            stacked = ub_logits_bytes(profile.n_vocab, mtp_capable=True,
+                                      mtp_prefill=True)
+            probe = initial_window(
+                profile, budget,
+                overhead_bytes=RUNTIME_OVERHEAD_BYTES + mmproj_bytes + stacked)
+            if (not isinstance(probe, PhysicsRefusal) and not probe.spilled):
+                mtp_prefill = True
+                logits_bytes = stacked
         decision = initial_window(
             profile, budget,
             overhead_bytes=RUNTIME_OVERHEAD_BYTES + mmproj_bytes + logits_bytes)
@@ -143,13 +158,15 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
         args = launch_args(profile, decision, mtp_capable=is_mtp,
                            mtp_draft_depth=(entry.mtp_draft_depth
                                             if entry is not None else 3),
-                           uma=budget.uma)
+                           uma=budget.uma, mtp_prefill=mtp_prefill)
         keys = _args_to_keys(args)
 
         if entry is not None and is_mtp:
-            # Integrated-MTP targets sample on the backend (their
-            # measured pairing; draft sampling stays default).
+            # Integrated-MTP targets sample on the backend, and so does
+            # the draft (vendor-measured pairing; the draft flag shipped
+            # in their September recipe drop).
             keys["backend-sampling"] = "on"
+            keys["spec-draft-backend-sampling"] = "on"
 
         # Sampling deference ladder, under the policy keys (policy wins
         # on clash). The GGUF's own general.sampling.* metadata is the

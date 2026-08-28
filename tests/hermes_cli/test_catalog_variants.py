@@ -119,10 +119,10 @@ def test_floor_fallback_when_target_window_does_not_fit():
     quality that zero-spills at the 64K floor (reason 'best-fits'), never
     a needless step down."""
     entry = catalog_by_id()["qwen3.8-27b"]
-    # ~24.5 GiB usable: Q4 weights (16.7 GiB in-memory) + floor KV (2.2)
-    # + overhead (1.5 + 0.9 mmproj + 1.9 vocab logits) fits, but no
-    # variant reaches 144K-target KV (+2.7 more for Q4, more for Q5+).
-    choice = select_variant(entry, budget(24.5))
+    # ~23.5 GiB usable: Q4 weights (16.7 GiB in-memory) + floor KV (2.2)
+    # + overhead (1.5 + 0.9 mmproj + ~1.0 MTP-posture logits) fits, but
+    # the 144K-target KV (+2.7 more) does not.
+    choice = select_variant(entry, budget(23.5))
     assert choice is not None and choice.zero_spill
     assert choice.reason_key == "best-fits"
     assert choice.variant.quant == "UD-Q4_K_M"

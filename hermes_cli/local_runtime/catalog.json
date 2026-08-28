@@ -27,6 +27,8 @@
         "size_bytes": 931146432,
         "local": "mmproj-Qwen3.8-27B-BF16.gguf"
       },
+      "mtp": true,
+      "mtp_draft_depth": 2,
       "sampling": {
         "temp": "1.0",
         "top-p": "0.95",

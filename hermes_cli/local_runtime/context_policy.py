@@ -226,7 +226,8 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *,
                 flash_attention: bool = True,
                 mtp_capable: bool = False,
                 mtp_draft_depth: int = 3,
-                uma: bool = False) -> list[str]:
+                uma: bool = False,
+                mtp_prefill: bool = False) -> list[str]:
     """Per-model launch flags from a window decision. Explicit -c puts fit
     into spill-weights-and-hold-ctx; q8 KV cache wherever flash attention
     exists; -ot placement on spilled configs — DISCRETE cards only.
@@ -238,18 +239,23 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *,
     ~1.75x win the -ot pattern encodes does not transfer; a spilled UMA
     config runs unpinned.
 
-    MTP and the large prefill microbatch are BOTH wins but must not stack:
-    backend sampling keeps a ubatch x vocab x fp32 logits buffer on the
-    GPU, and MTP's draft context doubles it — at large vocab sizes and
-    -ub 2048 that buffer runs multiple GiB past what a fit that ignores
-    it would price. So MTP models run decode-optimized (-ub 512) and
-    non-MTP models run prefill-optimized (-ub 2048, measured ~+27%
-    prefill); ub_logits_bytes() prices whichever was chosen."""
+    MTP and the large prefill microbatch both win, and whether they may
+    STACK is a fit question, not a rule: backend sampling keeps a
+    ubatch x vocab x fp32 logits buffer on the GPU and MTP's draft
+    context doubles it, so the stacked posture costs a few GiB extra at
+    large vocab. Where it fits, it measures best on both axes (Qwen3.8
+    Q4 on a 32 GiB card: 93.3 tok/s decode vs 89.5 at ub512, prefill
+    slightly better too); where it doesn't, ub512 keeps the decode win
+    without packing the card. ``mtp_prefill`` is that fit verdict —
+    presets decide it against the priced margin, and ub_logits_bytes()
+    prices the same choice so the flag and its cost travel together."""
     args = ["-c", str(decision.window)]
     if mtp_capable:
         args += ["--spec-type", "draft-mtp",
                  "--spec-draft-n-max", str(mtp_draft_depth),
-                 "--backend-sampling"]
+                 "--backend-sampling", "--spec-draft-backend-sampling"]
+        if mtp_prefill:
+            args += ["-b", "4096", "-ub", "2048"]
     else:
         args += ["-b", "2048", "-ub", "2048"]
     if flash_attention:
@@ -259,10 +265,11 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *,
     return args
 
 
-def ub_logits_bytes(n_vocab: int, *, mtp_capable: bool) -> int:
+def ub_logits_bytes(n_vocab: int, *, mtp_capable: bool,
+                    mtp_prefill: bool = False) -> int:
     """GPU logits-buffer cost of the microbatch choice made by
     launch_args, priced from the model's own vocab: ubatch x vocab x fp32,
     doubled by MTP's draft context. Callers add this to RUNTIME_OVERHEAD
     per model — the flag and its price travel together or the fit lies."""
-    ubatch = 512 if mtp_capable else 2048
+    ubatch = 2048 if (not mtp_capable or mtp_prefill) else 512
     return ubatch * max(0, int(n_vocab)) * 4 * (2 if mtp_capable else 1)
