@@ -165,7 +165,8 @@ class CatalogEntry:
             name=variant.model_id, weights_bytes=variant.weights_bytes,
             embd_table_bytes=0, n_ctx_train=self.n_ctx_train,
             layers=layers, swa_window=self.swa_window, moe=self.moe,
-            n_vocab=self.n_vocab)
+            n_vocab=self.n_vocab,
+            kv_scale=1.2 if self.mtp else 1.0)
 
     def download_files(self, variant: QuantVariant) -> tuple:
         """Everything a download job fetches for this variant, in order."""

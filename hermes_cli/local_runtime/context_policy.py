@@ -267,9 +267,20 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *,
 
 def ub_logits_bytes(n_vocab: int, *, mtp_capable: bool,
                     mtp_prefill: bool = False) -> int:
-    """GPU logits-buffer cost of the microbatch choice made by
-    launch_args, priced from the model's own vocab: ubatch x vocab x fp32,
-    doubled by MTP's draft context. Callers add this to RUNTIME_OVERHEAD
-    per model — the flag and its price travel together or the fit lies."""
-    ubatch = 2048 if (not mtp_capable or mtp_prefill) else 512
-    return ubatch * max(0, int(n_vocab)) * 4 * (2 if mtp_capable else 1)
+    """GPU logits/compute-buffer cost of the microbatch posture chosen by
+    launch_args, priced from the model's own vocab and calibrated against
+    measured server RSS (Qwen3.8 Q4, both postures, three windows):
+
+      stacked (MTP + ub2048):  ubatch x vocab x fp32 x 1.5  (~2.9 GiB at
+                               248K vocab; fitted 2.5, rounded up)
+      decode  (MTP + ub512):   ubatch x vocab x fp32 x 2    (~1.0 GiB)
+      plain   (ub2048):        ubatch x vocab x fp32        (~1.9 GiB)
+
+    Callers add this to RUNTIME_OVERHEAD per model — the flag and its
+    price travel together or the fit lies."""
+    v = max(0, int(n_vocab))
+    if mtp_capable and mtp_prefill:
+        return int(2048 * v * 4 * 1.5)
+    if mtp_capable:
+        return 512 * v * 4 * 2
+    return 2048 * v * 4

@@ -100,27 +100,44 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
         entry = hit[0] if hit is not None else None
         is_mtp = (entry.mtp if entry is not None
                   else model_id in (mtp_capable or set()))
+        if is_mtp and profile.kv_scale == 1.0:
+            # Header-derived profiles don't know about MTP's draft
+            # context; apply the calibrated KV multiplier here so the
+            # launch fit prices what the server will actually allocate.
+            import dataclasses
+
+            profile = dataclasses.replace(profile, kv_scale=1.2)
         mmproj_bytes = 0
         if entry is not None and entry.mmproj is not None:
             mmproj_path = assets_dir() / entry.mmproj.local_name
             if mmproj_path.exists():
                 mmproj_bytes = entry.mmproj.size_bytes
-        # MTP posture ladder: try the stacked posture first (MTP + large
-        # prefill microbatch — best on both axes where it fits), fall back
-        # to the decode-only posture (ub512), whose smaller logits buffer
-        # may fit where the stack doesn't. Whichever survives is priced
-        # into the window decision — flag and cost from the same call.
+        # MTP posture ladder — window first, prefill second: price the
+        # launch under both postures and keep whichever grants the larger
+        # window (the stacked posture's bigger compute buffer buys ~3x
+        # short-prompt prefill but costs ~2 GiB that would otherwise be
+        # window; measured at 256K the ub512 posture still prefills at
+        # 2.7K tok/s, so window wins ties only one way: never trade
+        # context away for prefill). Same window -> stacked.
         mtp_prefill = False
         logits_bytes = ub_logits_bytes(profile.n_vocab, mtp_capable=is_mtp)
         if is_mtp:
-            stacked = ub_logits_bytes(profile.n_vocab, mtp_capable=True,
-                                      mtp_prefill=True)
-            probe = initial_window(
+            stacked_logits = ub_logits_bytes(profile.n_vocab, mtp_capable=True,
+                                             mtp_prefill=True)
+            stacked_probe = initial_window(
                 profile, budget,
-                overhead_bytes=RUNTIME_OVERHEAD_BYTES + mmproj_bytes + stacked)
-            if (not isinstance(probe, PhysicsRefusal) and not probe.spilled):
+                overhead_bytes=(RUNTIME_OVERHEAD_BYTES + mmproj_bytes
+                                + stacked_logits))
+            plain_probe = initial_window(
+                profile, budget,
+                overhead_bytes=(RUNTIME_OVERHEAD_BYTES + mmproj_bytes
+                                + logits_bytes))
+            if (not isinstance(stacked_probe, PhysicsRefusal)
+                    and not stacked_probe.spilled
+                    and (isinstance(plain_probe, PhysicsRefusal)
+                         or stacked_probe.window >= plain_probe.window)):
                 mtp_prefill = True
-                logits_bytes = stacked
+                logits_bytes = stacked_logits
         decision = initial_window(
             profile, budget,
             overhead_bytes=RUNTIME_OVERHEAD_BYTES + mmproj_bytes + logits_bytes)

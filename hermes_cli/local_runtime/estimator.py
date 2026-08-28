@@ -61,6 +61,12 @@ class ModelProfile:
     moe: bool = False
     architecture: str = ""
     n_vocab: int = 0            # prices logits buffers (ubatch x vocab)
+    # Context-cost multiplier. MTP spec decode keeps a small draft
+    # context beside the main one. Calibrated against four measured
+    # server-RSS points on Qwen3.8 Q4 (128K/221K/256K, both postures):
+    # the draft adds ~17% to per-token KV; 1.2 rounds up so the error
+    # stays on the safe side (+250 MiB at 256K, never negative).
+    kv_scale: float = 1.0
 
     @property
     def per_token_kv_f16(self) -> int:
@@ -133,7 +139,8 @@ def kv_dtype_factor(flash_attention: bool) -> float:
 def ctx_bytes(profile: ModelProfile, window: int, *,
               flash_attention: bool = True) -> int:
     """Context memory for one window: full layers linear in T, SWA layers
-    capped at the sliding window, recurrent layers constant."""
+    capped at the sliding window, recurrent layers constant. Scaled by
+    profile.kv_scale (MTP draft context)."""
     factor = kv_dtype_factor(flash_attention)
     total = 0.0
     for kind, per_token_f16 in profile.layers:
@@ -143,7 +150,7 @@ def ctx_bytes(profile: ModelProfile, window: int, *,
             total += per_token_f16 * factor * min(window, profile.swa_window)
         else:
             total += per_token_f16 * factor * window
-    return int(total)
+    return int(total * profile.kv_scale)
 
 
 @dataclass

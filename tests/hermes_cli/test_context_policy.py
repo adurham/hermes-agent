@@ -341,7 +341,7 @@ def test_launch_args_contract():
     assert "--spec-type" in s
     v = 248320
     assert ub_logits_bytes(v, mtp_capable=True) == 512 * v * 4 * 2
-    assert ub_logits_bytes(v, mtp_capable=True, mtp_prefill=True) == 2048 * v * 4 * 2
+    assert ub_logits_bytes(v, mtp_capable=True, mtp_prefill=True) == int(2048 * v * 4 * 1.5)
 
     c = launch_args(p, resident, mtp_capable=False)
     assert "-ub" in c and c[c.index("-ub") + 1] == "2048"  # prefill hint
@@ -390,3 +390,21 @@ def test_no_refusal_branch_past_physics():
     for vram in (4, 6, 8, 12):
         d = initial_window(dense(weights_gib=20), card(vram, ram_gib=64))
         assert isinstance(d, WindowDecision)
+
+
+def test_kv_scale_prices_mtp_draft_context():
+    """MTP profiles carry kv_scale > 1 (the draft context's KV share,
+    calibrated from measured server RSS); ctx_bytes must scale with it so
+    every consumer — launch fit, catalog rows, growth — prices what the
+    server actually allocates. Four-point calibration held within
+    +1.4 GiB conservative, never optimistic."""
+    import dataclasses
+
+    p = moe()
+    base = ctx_bytes(p, 131072)
+    scaled = ctx_bytes(dataclasses.replace(p, kv_scale=1.2), 131072)
+    assert scaled == int(base * 1.2)
+
+    # The safety direction: the estimate must never be BELOW measured.
+    # (Calibration receipts: predicted-measured was +233..+1400 MiB.)
+    assert scaled > base

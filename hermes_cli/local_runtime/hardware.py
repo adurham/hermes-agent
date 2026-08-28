@@ -39,10 +39,16 @@ from hermes_cli.local_runtime.estimator import HardwareBudget
 logger = logging.getLogger(__name__)
 
 _GIB = 1 << 30
-# Fit margin per design: max(512 MiB, ~7% of device) — the upstream flat
-# 1 GiB is regressive on 8 GB cards and generous on 24 GB ones.
-_MARGIN_FLOOR = 512 << 20
-_MARGIN_FRACTION = 0.07
+# Reserve carved off the card before any grant: the desktop's own
+# co-residents (compositor, browser, Electron) measure ~2-2.5 GiB on a
+# working machine, and a window granted into that space demotes silently
+# under WDDM. 7% covers big cards; the 2 GiB floor is what the margin's
+# old 512 MiB floor failed to cover in practice (a 221K grant measured
+# 31.9/32.6 GiB with the desktop running — 'fits' by the math, demoted
+# in reality). Small cards give up window to this; spill mode is their
+# path to big models regardless.
+_MARGIN_FLOOR = 2 << 30
+_MARGIN_FRACTION = 0.09
 # UMA headroom: on unified-memory machines (Apple Silicon, unified-memory
 # NVIDIA) the model shares physical memory with the OS and every app, so
 # budget from RAM minus this fraction.
