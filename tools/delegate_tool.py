@@ -1837,6 +1837,17 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-role fallback (delegation.model_by_role.<role>.fallback): a
+    # ONE-ENTRY runtime fallback chain (same {provider, model, ...} shape
+    # AIAgent.fallback_model already accepts) resolved for THIS role's own
+    # fallback bundle. When given (even as an empty list), it REPLACES the
+    # standard parent-chain-inheritance precedence below rather than
+    # combining with it — a role's fallback is independent of whatever the
+    # parent session happens to be using. ``None`` (the default) leaves the
+    # existing precedence (inherit unless override_provider pins a
+    # provider) completely unchanged; this is what every pre-existing
+    # caller passes, so this parameter is purely additive.
+    override_fallback_chain: Optional[List[Dict[str, Any]]] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -2207,11 +2218,23 @@ def _build_child_agent(
     # same class of silent-drag the override_provider filter-clearing below
     # already prevents for OpenRouter routing preferences.  Predictability >
     # liveness for explicit pins: the pinned child fails loudly instead.
-    parent_fallback = (
-        None
-        if override_provider
-        else (getattr(parent_agent, "_fallback_chain", None) or None)
-    )
+    #
+    # override_fallback_chain (delegation.model_by_role.<role>.fallback)
+    # takes priority over ALL of the above when given — including an empty
+    # list, which deliberately means "no runtime fallback for this hop"
+    # (used when the primary credential resolution itself already failed
+    # and the caller dispatched straight onto the fallback bundle; see
+    # tools/delegate_tool.py's per-task loop). A role's own fallback is
+    # independent of the parent session's chain either way.
+    if override_fallback_chain is not None:
+        parent_fallback = override_fallback_chain
+    else:
+        parent_fallback = (
+            None
+            if override_provider
+            else (getattr(parent_agent, "_fallback_chain", None) or None)
+        )
+
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -4925,28 +4948,128 @@ def delegate_task(
                 if isinstance(_role_entry, dict)
                 else ""
             )
+            # Per-role fallback (delegation.model_by_role.<role>.fallback):
+            # a second full {model, provider, ...} bundle consulted in two
+            # situations below — construction-time (primary credential
+            # resolution fails) and runtime (the dispatched API call itself
+            # fails with a retryable-class error, handled entirely by the
+            # existing AIAgent fallback-chain machinery via
+            # override_fallback_chain). Only meaningful alongside a
+            # provider pin — a fallback identity with no primary provider
+            # has nothing to be a fallback FOR.
+            _role_fallback_entry = (
+                _role_entry.get("fallback")
+                if _role_provider and isinstance(_role_entry, dict)
+                else None
+            )
+            if not isinstance(_role_fallback_entry, dict):
+                _role_fallback_entry = None
+            _task_fallback_chain: Optional[List[Dict[str, Any]]] = None
             if _role_provider and isinstance(_role_entry, dict):
                 try:
                     task_creds = _resolve_role_credentials(
                         _role_entry, parent_agent, _role_creds_cache
                     )
-                except ValueError as exc:
-                    # Fail loud: falling back to the batch provider here is
-                    # exactly the wrong-model-on-wrong-provider bug this
-                    # pin exists to prevent.  Name the CONFIG key (which is
-                    # the alias target when the dispatched role is a
-                    # synonym) so the user can find the entry to fix, and
-                    # name the dispatched role too when they differ.
-                    _via_alias = (
-                        f" (dispatched as {task_agent_type!r})"
-                        if _role_cfg_key != task_agent_type
-                        else ""
-                    )
-                    raise ValueError(
-                        f"delegation.model_by_role[{_role_cfg_key!r}]{_via_alias} pins "
-                        f"provider {_role_provider!r} but it could not be "
-                        f"resolved: {exc}"
-                    ) from exc
+                except ValueError as _primary_exc:
+                    # Construction-time degrade: the primary provider pin
+                    # couldn't be resolved (bad config, missing key, PATH
+                    # miss, ...). Before refusing the spawn, try the role's
+                    # OWN fallback bundle if it declared one — resolved as
+                    # a completely separate credential bundle (never mixed
+                    # with the primary's fields, same isolation the primary
+                    # resolution itself already guarantees).
+                    if _role_fallback_entry is not None:
+                        try:
+                            task_creds = _resolve_role_credentials(
+                                _role_fallback_entry, parent_agent, _role_creds_cache
+                            )
+                        except ValueError as _fallback_exc:
+                            _via_alias = (
+                                f" (dispatched as {task_agent_type!r})"
+                                if _role_cfg_key != task_agent_type
+                                else ""
+                            )
+                            raise ValueError(
+                                f"delegation.model_by_role[{_role_cfg_key!r}]"
+                                f"{_via_alias} pins provider {_role_provider!r} "
+                                f"but it could not be resolved: {_primary_exc}. "
+                                f"Its configured fallback also could not be "
+                                f"resolved: {_fallback_exc}"
+                            ) from _fallback_exc
+                        # Fallback resolved — dispatch proceeds on ITS
+                        # bundle. The primary's role-map model (still the
+                        # PRIMARY's model string) must not leak into the
+                        # precedence chain below now that the provider
+                        # underneath it changed; pin role_map_model to the
+                        # fallback's own model so the two can never mix.
+                        role_map_model = task_creds["model"]
+                        # No further runtime fallback for this hop — the
+                        # one hop was already spent getting here. Leaving
+                        # _task_fallback_chain unset (None) means
+                        # _build_child_agent's existing override_provider
+                        # gate (below) blocks chain inheritance exactly as
+                        # it already does for any provider-pinned child.
+                        _emit = getattr(parent_agent, "_emit_status", None)
+                        _fb_provider = str(task_creds.get("provider") or "")
+                        _fb_model = str(task_creds.get("model") or "")
+                        _fb_msg = (
+                            f"🔄 Fallback engaged for role "
+                            f"{_role_cfg_key!r}: primary provider "
+                            f"{_role_provider!r} unresolvable "
+                            f"({_primary_exc}) — using {_fb_model} via "
+                            f"{_fb_provider} instead"
+                        )
+                        if callable(_emit):
+                            try:
+                                _emit(_fb_msg)
+                            except Exception:
+                                logger.debug(
+                                    "delegate_task: fallback notice emit failed",
+                                    exc_info=True,
+                                )
+                        logger.info(
+                            "delegate_task: role %r primary provider %r "
+                            "unresolvable (%s) — engaged configured "
+                            "fallback %s/%s",
+                            _role_cfg_key, _role_provider, _primary_exc,
+                            _fb_provider, _fb_model,
+                        )
+                    else:
+                        # Fail loud: falling back to the batch provider here
+                        # is exactly the wrong-model-on-wrong-provider bug
+                        # this pin exists to prevent.  Name the CONFIG key
+                        # (which is the alias target when the dispatched
+                        # role is a synonym) so the user can find the entry
+                        # to fix, and name the dispatched role too when
+                        # they differ.
+                        _via_alias = (
+                            f" (dispatched as {task_agent_type!r})"
+                            if _role_cfg_key != task_agent_type
+                            else ""
+                        )
+                        raise ValueError(
+                            f"delegation.model_by_role[{_role_cfg_key!r}]{_via_alias} pins "
+                            f"provider {_role_provider!r} but it could not be "
+                            f"resolved: {_primary_exc}"
+                        ) from _primary_exc
+                else:
+                    # Primary resolved fine. If the role declared its own
+                    # fallback, attach it as a ONE-ENTRY runtime chain in
+                    # the SAME raw {model, provider, base_url?, api_key?,
+                    # api_mode?} shape the top-level ``fallback_providers``
+                    # config already uses — no eager resolution here.
+                    # AIAgent's existing try_activate_fallback() /
+                    # classify_api_error() machinery resolves it lazily
+                    # (via resolve_provider_client) exactly like any other
+                    # fallback-chain entry, the moment (and only if) the
+                    # ACTUAL model call fails with a retryable-class error
+                    # (rate limit, quota exhaustion, timeout, connection
+                    # error). This is deliberately the same lazy-resolve
+                    # contract the global chain already has — no new
+                    # retry/resolution logic is introduced here.
+                    if _role_fallback_entry is not None:
+                        _task_fallback_chain = [dict(_role_fallback_entry)]
+
             # Final config fallback comes from the bundle actually used for
             # THIS child, so a role-provider child can never inherit the
             # other provider's default model.
@@ -4988,15 +5111,18 @@ def delegate_task(
                 override_max_tokens=task_creds.get("max_output_tokens"),
                 override_acp_command=task_creds.get("command"),
                 override_acp_args=task_creds.get("args"),
+                override_fallback_chain=_task_fallback_chain,
                 role=effective_role,
                 agent_type=task_agent_type,
                 background=background,
             )
         except ValueError as exc:
             # Explicit-pin preflight failures (e.g. pinned delegation.command
-            # missing from PATH, or an unresolvable per-role provider pin)
-            # refuse the spawn loudly (#80450).
+            # missing from PATH, or an unresolvable per-role provider pin
+            # whose fallback — if any — was also unresolvable) refuse the
+            # spawn loudly (#80450).
             return tool_error(str(exc))
+
         # Stash the auto-route decision (if any) so _run_single_child can
         # surface it in the result metadata — makes silent misrouting
         # impossible to hide (a routing choice is always visible/auditable).
