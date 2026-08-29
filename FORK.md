@@ -3,6 +3,36 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-28 (dashboard `_AUX_TASK_SLOTS` was stale: 11/23 built-in aux tasks, not all of them)
+
+**Problem:** `hermes_cli/web_server.py`'s `_AUX_TASK_SLOTS` tuple — the
+canonical list the Models-page dashboard picker iterates over to render/edit
+per-task auxiliary routing — only had 11 entries (vision, web_extract,
+compression, skills_hub, approval, mcp, title_generation, triage_specifier,
+kanban_decomposer, profile_describer, curator). The actual authoritative
+task-key set, `_BUILTIN_AUX_TASK_KEYS` in `agent/auxiliary_client.py`
+(mirrored in `hermes_cli/config.py` as `_AUX_TASK_FIRST_KEYS`), has grown to
+23 keys over time as new aux tasks landed (monitor, session_search,
+memory_extraction, delegation_router, background_review, consult,
+goal_judge, memory_query_rewrite, moa_aggregator, moa_reference,
+pet_dialogue, tts_audio_tags) without a matching update to the dashboard's
+list. Net effect: `hermes config set` on the CLI correctly routes all 23
+tasks, but the dashboard UI's Models page couldn't show or let a user edit
+12 of them — a UI-only blind spot, not a config/routing bug (surfaced while
+auditing `auxiliary.anthropic.*` routing coverage against the ollama-cloud
+push and finding `delegation_router` itself unpinned as a live instance of
+this exact gap).
+
+**Fix:** `_AUX_TASK_SLOTS` now lists all 23 canonical keys, matching
+`_BUILTIN_AUX_TASK_KEYS` exactly (verified programmatically — set-equality
+check, not eyeballed). Purely additive, single file, 12 insertions, no
+other logic touched. Confirmed no other stale/hardcoded aux-task-name lists
+exist elsewhere in `web_server.py`.
+
+Tests: `tests/hermes_cli/test_web_server.py` (158 passed, 32 skipped) and
+`tests/test_model_picker_scroll.py` (8 passed) re-run and verified directly
+by the supervisor, not just taken on a subagent's self-report.
+
 ### Feature — 2026-08-28 (3-tier fallback for `auxiliary.<provider>.<task>` pins — a pinned ollama-cloud primary degrades through a pinned Anthropic secondary before finally tracking the live main model)
 
 **Problem:** the same quota/rate-limit exposure the `delegation.model_by_role`
