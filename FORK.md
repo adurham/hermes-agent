@@ -3,6 +3,134 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-08-28 (3-tier fallback for `auxiliary.<provider>.<task>` pins — a pinned ollama-cloud primary degrades through a pinned Anthropic secondary before finally tracking the live main model)
+
+**Problem:** the same quota/rate-limit exposure the `delegation.model_by_role`
+fallback feature (above) fixes for subagent dispatch also applies to
+**auxiliary side tasks** (vision, compression, title generation, session
+search, curator, ...) — a different code path entirely
+(`agent/auxiliary_client.py`, not `tools/delegate_tool.py`). An explicit
+`auxiliary.<provider>.<task>` dict pin (e.g.
+`auxiliary.anthropic.vision: {model: gemma4:31b, provider: ollama-cloud}`)
+was used DIRECTLY with no fallback: if `ollama-cloud` hit its weekly quota
+mid-session, that one auxiliary task failed hard with no recovery, even
+though the module already has a rich fallback ladder (`_try_configured_
+fallback_chain`, `_try_main_fallback_chain`, `_try_payment_fallback`,
+`_try_main_agent_model_fallback`) for tasks left on `auto`. Motivating case:
+17 auxiliary tasks pinned to `ollama-cloud` models to keep cheap/glue work
+off the (paid, rate-limited) main Anthropic session, but with no protection
+against `ollama-cloud`'s own quota running out.
+
+**Fix:** a 3-tier resolution, additive to the existing pin:
+
+```yaml
+auxiliary:
+  anthropic:
+    vision:
+      model: gemma4:31b          # tier 1: pinned primary (unchanged)
+      provider: ollama-cloud
+      fallback:
+        model: claude-haiku-4-5-20251001   # tier 2: explicit secondary
+        provider: anthropic
+      # tier 3 is implicit: if BOTH tier 1 and tier 2 fail retryably,
+      # fall through to the pre-existing auto-resolution chain (for an
+      # explicit-provider pin, that means the user's live main model) —
+      # no config needed.
+```
+
+- **Tier 1** is the pin exactly as it works today — zero behavior change
+  when it succeeds.
+- **Tier 2** is a new singular `fallback: {model, provider, ...}` sub-key,
+  mirroring `delegation.model_by_role.<role>.fallback`'s shape. Rather than
+  inventing a second fallback mechanism, `_apply_singular_aux_fallback_
+  shorthand()` normalizes it to a **one-entry `fallback_chain` list** at
+  the single choke point every `auxiliary.<task>` config shape (provider-
+  first or task-first) already funnels through
+  (`_get_auxiliary_task_config()`) — so it reuses the PRE-EXISTING
+  multi-entry `fallback_chain` feature's chain-walk, isolated-credential
+  resolution (`_resolve_fallback_entry`), context-window screening,
+  per-entry timeout, and stale-credential quarantine-and-continue
+  verbatim. A task with an explicit `fallback_chain` already configured is
+  left alone (the more expressive list form wins); a `fallback` sub-key
+  with no usable `model` is dropped. Zero new fallback code for tier 2
+  itself — only a config-shape normalizer.
+- **Tier 3** is the module's PRE-EXISTING `_try_main_agent_model_fallback`
+  (Step 1 of `_resolve_auto()`: the user's live main provider + model) —
+  unchanged, but now reachable one hop further than before. This required
+  genuinely new code, because the existing multi-entry `fallback_chain`
+  feature's candidate dispatch (`_call_fallback_candidate_sync/async`) has
+  an intentional one-hop-then-raise contract for hand-authored chains (see
+  `test_non_auth_fallback_error_still_raises` — a chain candidate's runtime
+  failure propagates, it does not cascade to the main-model safety net).
+  Making tier 2 fall through to tier 3 without weakening that existing
+  contract needed a narrowly-scoped mechanism: every fallback-chain entry
+  minted by the singular shorthand carries a private `_aux_fallback_
+  shorthand` marker (never sent over the wire), and a new
+  `_fallback_label_is_aux_shorthand()` predicate checks it before letting
+  a retryable failure (`_is_retryable_aux_shorthand_failure` — composes
+  the SAME `_is_rate_limit_error`/`_is_payment_error`/`_is_connection_error`
+  classifiers this module already uses everywhere, zero new classification
+  logic) fall through to `_try_main_agent_model_fallback` instead of
+  raising. A hand-authored `fallback_chain` entry never carries the marker,
+  so its one-hop-then-raise behavior is completely untouched. Only ONE hop
+  past tier 2 (mirrors the `model_by_role` "aliases don't chain"
+  precedent) — if tier 3 also fails, its own exception propagates as a
+  normal terminal failure, not a synthesized error.
+- **Visibility:** tier 2 engaging logs a distinct
+  `🔄 Auxiliary fallback engaged for task '<task>': ...` WARNING (same
+  intent as the sibling feature's `🔄 Fallback engaged for role ...`
+  notice), gated on the same private marker so the pre-existing
+  `fallback_chain` feature's log format is unaffected.
+
+**Backward compatibility:** an `auxiliary.<provider>.<task>` pin with no
+`fallback` sub-key produces byte-identical behavior to before this
+feature — `_apply_singular_aux_fallback_shorthand` is a no-op when the key
+is absent. A bare `"auto"` string entry (or an absent one) is entirely
+unaffected — the normalizer only fires on dict-shaped task configs.
+
+**Verification:** new behavior-contract suite
+`tests/agent/test_auxiliary_task_pin_fallback.py` (17 tests) proves: tier 1
+success never touches tier 2/tier 3; a retryable tier-1 failure engages
+tier 2 with its OWN isolated credentials (verified the resolved entry never
+contains the primary's provider/model strings); a non-retryable tier-1
+failure does NOT engage tier 2 (loud fail, matches today); tier 1 AND tier
+2 both retryable-failing falls through to tier 3; tier 3 itself failing —
+both the "no client available" and "client resolves but its own call
+raises" shapes — is a normal terminal failure (no new raise mechanism, and
+tier 3's own exception is what surfaces, not a synthesized one); a pin with
+no `fallback` key is byte-identical to pre-feature behavior; a bare
+`"auto"` entry is unaffected; the shorthand normalizes correctly against a
+real temp-`HERMES_HOME` `config.yaml` through `_get_auxiliary_task_config()`
+end-to-end; and the new visibility notice fires only for shorthand
+candidates, never for hand-authored `fallback_chain` entries. Full
+regression sweep: `test_auxiliary_client.py` (188 tests) +
+`test_auxiliary_provider_first.py` + `test_auxiliary_config_bridge.py` +
+`test_compression_fallback_budget.py` + `test_auxiliary_main_first.py` +
+`test_auxiliary_transient_retry.py` + `test_auxiliary_named_custom_
+providers.py` + `test_auxiliary_anthropic_pool_fallback_regression.py` +
+the new suite — **290 passed, 0 failed, 4 skipped**. Full repo suite run
+for regression parity: **37,912 passed, 107 failed, 474 skipped** — every
+one of the 107 failures (and the 11 ACP collection errors) reproduces
+identically on `main` before this change (independently confirmed via
+`git stash` on the specific pre-existing failures adjacent to this area:
+`test_auxiliary_explicit_base_anthropic.py`, `test_title_generator.py`,
+`test_cron_inline_api_call_62151.py`, `test_prompt_cache_ttl_
+propagation.py`), so this change introduces zero regressions.
+
+**Source-only change — config is user-applied.** This ships the
+resolution logic; the 17 `auxiliary.anthropic.<task>.fallback` entries in
+the live `~/.hermes/config.yaml` are applied separately by the user, not
+by this commit.
+
+**Merge note:** fork-local, scoped entirely to `agent/auxiliary_client.py`
+(the auxiliary side-task resolver — a different module from
+`tools/delegate_tool.py`/`hermes_cli/personas.py`, which the sibling
+`model_by_role` fallback feature touches). Design intentionally mirrors
+that sibling feature's shape (nested `fallback: {model, provider}`,
+one-hop, isolated credentials, `🔄` visibility notice) for consistency
+across the codebase's two fallback surfaces, even though the underlying
+retry/classification machinery is completely separate per module.
+
 ### Feature — 2026-08-28 (per-role fallback for `delegation.model_by_role` — a role-pinned dispatch degrades to a backup model+provider instead of failing loud)
 
 **Problem:** the 2026-08-23 provider-aware per-role pin feature (see the

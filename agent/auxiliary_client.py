@@ -42,6 +42,49 @@ Payment / credit exhaustion fallback:
   call_llm() automatically retries with the next available provider in the
   auto-detection chain.  This handles the common case where a user depletes
   their OpenRouter balance but has Codex OAuth or another provider available.
+
+Per-task pinned fallback (3-tier resolution):
+  An explicit ``auxiliary.<provider>.<task>`` dict pin (a concrete
+  provider + model, no ``auto``) may additionally carry a ``fallback``
+  sub-key — a second ``{model, provider, ...}`` bundle, same shape as the
+  primary pin, tried when the primary fails with a retryable error (rate
+  limit, quota exhaustion, timeout, connection error — see
+  ``_is_rate_limit_error`` / ``_is_payment_error`` / ``_is_connection_error``
+  below; a non-retryable error, e.g. a 400 bad request, is NOT retried
+  against the fallback and raises loud exactly as an unconfigured pin
+  already does)::
+
+      auxiliary:
+        anthropic:
+          vision:
+            model: gemma4:31b
+            provider: ollama-cloud
+            fallback:
+              model: claude-haiku-4-5-20251001
+              provider: anthropic
+
+  This is TIER 2 of a 3-tier chain: (1) the pinned primary — unchanged
+  behavior when it works; (2) the ``fallback`` bundle above, engaged only
+  on a retryable failure, with its OWN isolated credentials (never merged
+  with the primary's); (3) if BOTH fail, the request falls through to
+  this module's PRE-EXISTING resolution chain — for an explicit-provider
+  pin that means ``_try_main_agent_model_fallback`` (the user's live main
+  provider + model), the same "safety net" every explicit aux pin already
+  had before this feature existed. No config is needed for tier 3 — it is
+  the existing behavior, unchanged.
+
+  Implementation: the ``fallback`` sub-key is normalized to a one-entry
+  ``fallback_chain`` list by :func:`_apply_singular_aux_fallback_shorthand`
+  at the single place every ``auxiliary.<task>`` config shape (provider-
+  first or task-first) already funnels through
+  (:func:`_get_auxiliary_task_config`) — so it reuses the pre-existing
+  ``auxiliary.<task>.fallback_chain`` machinery (chain-walk, isolated
+  credential resolution, context-window screening, per-entry timeout,
+  stale-credential quarantine-and-continue) verbatim; there is no second
+  fallback code path. A task with an explicit ``fallback_chain`` already
+  configured is left alone — the more expressive list form wins. Purely
+  additive: a pin with no ``fallback`` sub-key, or a bare ``"auto"``
+  entry, behaves byte-identically to before this feature existed.
 """
 
 import contextlib
@@ -4393,6 +4436,29 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_retryable_aux_shorthand_failure(exc: Exception) -> bool:
+    """Retryable-class check for the singular ``fallback:`` shorthand's tier-3
+    fallthrough (see ``_apply_singular_aux_fallback_shorthand``).
+
+    Composes the SAME classifiers this module already uses everywhere else
+    to decide whether an error is capacity/transport-shaped (rate limit,
+    payment/quota exhaustion, connection failure) rather than a request
+    defect (400 bad request, content-policy block, etc.) — no new
+    classification logic. Used ONLY to decide whether a tier-2 shorthand
+    candidate's failure should fall through to tier 3
+    (``_try_main_agent_model_fallback``); the pre-existing multi-entry
+    ``fallback_chain`` feature's one-hop-then-raise contract (see
+    ``test_non_auth_fallback_error_still_raises``) is untouched by this
+    predicate — it is never consulted for a fallback_chain candidate that
+    did not originate from the shorthand.
+    """
+    return (
+        _is_rate_limit_error(exc)
+        or _is_payment_error(exc)
+        or _is_connection_error(exc)
+    )
+
+
 def _is_transient_transport_error(exc: Exception) -> bool:
     """Return True for a one-off transport blip worth retrying ON the
     same provider before any provider/model fallback.
@@ -5137,6 +5203,21 @@ def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[Dict[s
     return entry if isinstance(entry, dict) else None
 
 
+def _fallback_label_is_aux_shorthand(task: Optional[str], fb_label: str) -> bool:
+    """True when ``fb_label`` resolves to a candidate minted from the
+    singular ``auxiliary.<task>.fallback`` shorthand (tier 2 of the 3-tier
+    pinned-fallback feature), never a hand-authored ``fallback_chain`` entry.
+
+    Used ONLY to scope the tier-3 (``_try_main_agent_model_fallback``)
+    fallthrough-on-retryable-failure behavior to shorthand-originated
+    candidates — see :func:`_is_retryable_aux_shorthand_failure`. The
+    pre-existing multi-entry ``fallback_chain`` feature's one-hop-then-raise
+    contract must never see this predicate return True for its own entries.
+    """
+    entry = _fallback_chain_entry(task, fb_label)
+    return bool(entry and entry.get("_aux_fallback_shorthand"))
+
+
 def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[float]:
     """Resolve a per-entry ``timeout`` for a configured fallback candidate.
 
@@ -5818,6 +5899,19 @@ def _try_configured_fallback_chain(
                     )
                     tried.append(f"{label} (context too small: {fb_ctx}<{min_ctx})")
                     continue
+            if entry.get("_aux_fallback_shorthand"):
+                # Distinct, visible notice for the singular auxiliary.<task>.
+                # fallback shorthand — same intent as the sibling
+                # delegation.model_by_role.<role>.fallback "engaged" notice
+                # (see hermes_cli/personas.py / tools/delegate_tool.py), so a
+                # transcript makes it obvious which tier actually served an
+                # auxiliary call without grepping DEBUG-level chain logs.
+                logger.warning(
+                    "\U0001F504 Auxiliary fallback engaged for task %r: "
+                    "primary provider %r failed (%s) — using %s via %s instead",
+                    task, failed_provider, reason,
+                    resolved_model or fb_model or "default", fb_provider,
+                )
             logger.info(
                 "Auxiliary %s: %s on %s — configured fallback to %s (%s)",
                 task, reason, failed_provider, label, resolved_model or fb_model or "default",
@@ -8920,6 +9014,46 @@ def _aux_task_pin_is_explicit(pin: Dict[str, Any]) -> bool:
     return bool(base_url or model or (provider and provider != "auto"))
 
 
+def _apply_singular_aux_fallback_shorthand(task_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a singular ``fallback: {model, provider, ...}`` shorthand
+    into ``fallback_chain: [<entry>]`` when no explicit chain is configured.
+
+    Mirrors ``delegation.model_by_role.<role>.fallback`` (see
+    ``hermes_cli/personas.py``) — the common case is ONE pinned primary and
+    ONE pinned secondary. Normalizing to a one-entry list here, at the single
+    place every ``auxiliary.<task>`` config shape funnels through, means
+    every existing ``fallback_chain`` consumer (``_try_configured_fallback_chain``,
+    ``_fallback_chain_entry``, ``_fallback_entry_timeout``,
+    ``_fallback_provider_from_label``, the context-window screening in
+    ``_candidate_context_window``, ...) already knows how to walk it — no
+    second fallback shape to teach any of them, and the resulting
+    ``fallback_chain[0](<provider>)`` label is fully compatible with those
+    helpers' existing regex/index parsing.
+
+    A task with BOTH keys configured is left alone — ``fallback_chain`` (the
+    more expressive list form) wins, matching how a more specific config
+    always wins over a shorthand elsewhere in this module. A ``fallback``
+    entry with no usable ``model`` is dropped (matches
+    ``hermes_cli.personas._normalize_entry_fields``'s same requirement).
+    """
+    if task_config.get("fallback_chain"):
+        return task_config
+    single = task_config.get("fallback")
+    if isinstance(single, dict) and str(single.get("model", "")).strip():
+        task_config = dict(task_config)
+        entry = dict(single)
+        # Private marker (never sent over the wire — _resolve_fallback_entry
+        # and _build_call_kwargs only read the known routing/timeout keys)
+        # so _try_configured_fallback_chain can tell "this candidate came
+        # from the singular fallback: shorthand" apart from a real
+        # multi-entry fallback_chain, and emit the distinct visibility
+        # notice the shorthand's docs promise without changing the log
+        # format of the pre-existing fallback_chain feature.
+        entry["_aux_fallback_shorthand"] = True
+        task_config["fallback_chain"] = [entry]
+    return task_config
+
+
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     """Return the flat config dict for an auxiliary *task*, or {} when unavailable.
 
@@ -8932,6 +9066,12 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
         :func:`_aux_flatten_provider_first`.
       * **task-first** (legacy / upstream): top-level keys are task names whose
         values are the flat routing dict directly.
+
+    A task entry (in either schema) may additionally carry a ``fallback``
+    sub-key — a second ``{model, provider, ...}`` bundle used as a one-hop
+    runtime fallback when the primary pin fails with a retryable error. See
+    :func:`_apply_singular_aux_fallback_shorthand`, applied to every return
+    path below.
 
     For plugin-registered auxiliary tasks (see
     :meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`) the
@@ -8992,13 +9132,13 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
                 if isinstance(_defaults, dict):
                     merged = dict(_defaults)
                     merged.update(task_config)
-                    return merged
+                    return _apply_singular_aux_fallback_shorthand(merged)
                 break
     except Exception:
         # Plugin discovery failure must not break aux task config reads.
         pass
 
-    return task_config
+    return _apply_singular_aux_fallback_shorthand(task_config)
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
@@ -10802,15 +10942,72 @@ def _call_llm_impl(
                 _record_route_info(
                     route_info, _fallback_provider_from_label(fb_label), fb_model
                 )
-                fb_resp = _call_fallback_candidate_sync(
-                    fb_client, fb_model, fb_label,
-                    task=task, messages=messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config)
+                # Tier-2-of-3 (auxiliary.<task>.fallback shorthand): a
+                # retryable-class failure on THIS specific candidate falls
+                # through to tier 3 (_try_main_agent_model_fallback) below
+                # instead of propagating, so the pinned primary -> pinned
+                # secondary -> live main model chain is complete. Scoped
+                # strictly to shorthand-originated candidates via the
+                # private _aux_fallback_shorthand marker
+                # (_fallback_label_is_aux_shorthand) — the pre-existing
+                # multi-entry fallback_chain feature's one-hop-then-raise
+                # contract (test_non_auth_fallback_error_still_raises) is
+                # completely untouched for hand-authored chain entries.
+                _is_shorthand_candidate = _fallback_label_is_aux_shorthand(task, fb_label)
+                try:
+                    fb_resp = _call_fallback_candidate_sync(
+                        fb_client, fb_model, fb_label,
+                        task=task, messages=messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config)
+                except Exception as _shorthand_err:
+                    if not (
+                        _is_shorthand_candidate
+                        and _is_retryable_aux_shorthand_failure(_shorthand_err)
+                    ):
+                        raise
+                    logger.info(
+                        "Auxiliary %s: fallback shorthand candidate %s failed "
+                        "retryably (%s) — falling through to tier 3 (main "
+                        "agent model)",
+                        task or "call", fb_label, _shorthand_err,
+                    )
+                    fb_resp = None
                 if fb_resp is not None:
                     return fb_resp
+                if _is_shorthand_candidate:
+                    # One hop already spent on tier 2 (mirrors the
+                    # model_by_role.<role>.fallback precedent) — tier 3 is
+                    # the live main-agent-model safety net, not another
+                    # discovery-chain walk. failed_model=None: the failure
+                    # was on the FALLBACK's own model/provider, not the
+                    # original primary's, so the main-model skip-check
+                    # (which compares against the primary's identity) does
+                    # not apply here.
+                    fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
+                        resolved_provider, task, reason="fallback shorthand exhausted")
+                    if fb_client is not None:
+                        _record_route_info(
+                            route_info, _fallback_provider_from_label(fb_label), fb_model
+                        )
+                        fb_resp = _call_fallback_candidate_sync(
+                            fb_client, fb_model, fb_label,
+                            task=task, messages=messages,
+                            temperature=temperature, max_tokens=max_tokens,
+                            tools=tools, effective_timeout=effective_timeout,
+                            effective_extra_body=effective_extra_body,
+                            reasoning_config=reasoning_config)
+                        if fb_resp is not None:
+                            return fb_resp
+                    # No tier-3 client available, OR tier 3 also failed and
+                    # propagated (a non-retryable tier-3 error, or a second
+                    # candidate call raising) — surface a terminal failure.
+                    # A retryable tier-3 failure re-raises here (it is not
+                    # wrapped) rather than looping further: only ONE hop
+                    # past tier 2, matching the model_by_role precedent.
+                    raise
                 # The candidate had a stale/unrefreshable credential and was
                 # quarantined — walk the discovery chain once more; unhealthy
                 # entries are skipped so the next viable candidate serves.
@@ -11506,15 +11703,57 @@ async def _async_call_llm_impl(
                     _fallback_provider_from_label(fb_label),
                     async_fb_model or fb_model,
                 )
-                fb_resp = await _call_fallback_candidate_async(
-                    async_fb, async_fb_model or fb_model, fb_label,
-                    task=task, messages=messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config)
+                # Tier-2-of-3 fallthrough (mirrors the sync call_llm() path —
+                # see its comment block for the full rationale): a
+                # retryable-class failure on a shorthand-originated
+                # candidate falls through to tier 3 instead of propagating.
+                _is_shorthand_candidate = _fallback_label_is_aux_shorthand(task, fb_label)
+                try:
+                    fb_resp = await _call_fallback_candidate_async(
+                        async_fb, async_fb_model or fb_model, fb_label,
+                        task=task, messages=messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config)
+                except Exception as _shorthand_err:
+                    if not (
+                        _is_shorthand_candidate
+                        and _is_retryable_aux_shorthand_failure(_shorthand_err)
+                    ):
+                        raise
+                    logger.info(
+                        "Auxiliary %s (async): fallback shorthand candidate %s "
+                        "failed retryably (%s) — falling through to tier 3 "
+                        "(main agent model)",
+                        task or "call", fb_label, _shorthand_err,
+                    )
+                    fb_resp = None
                 if fb_resp is not None:
                     return fb_resp
+                if _is_shorthand_candidate:
+                    fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
+                        resolved_provider, task, reason="fallback shorthand exhausted")
+                    if fb_client is not None:
+                        async_fb, async_fb_model = _to_async_client(
+                            fb_client, fb_model or "", is_vision=(task == "vision")
+                        )
+                        _record_route_info(
+                            route_info,
+                            _fallback_provider_from_label(fb_label),
+                            async_fb_model or fb_model,
+                        )
+                        fb_resp = await _call_fallback_candidate_async(
+                            async_fb, async_fb_model or fb_model, fb_label,
+                            task=task, messages=messages,
+                            temperature=temperature, max_tokens=max_tokens,
+                            tools=tools, effective_timeout=effective_timeout,
+                            effective_extra_body=effective_extra_body,
+                            reasoning_config=reasoning_config)
+                        if fb_resp is not None:
+                            return fb_resp
+                    # No tier-3 client, or tier 3 itself raised — terminal.
+                    raise
                 # Stale/unrefreshable candidate credential — quarantined; walk
                 # the discovery chain once more (unhealthy entries skipped).
                 fb_client, fb_model, fb_label = _try_payment_fallback(
