@@ -2551,8 +2551,29 @@ class ContextCompressor(ContextEngine):
         purpose — a skipped-summary drop that fails to clear the threshold is
         exactly the incompressible-transcript case the ineffective-strike
         breaker exists for, and its recovery probe bounds the block.
+
+        Every call here — regardless of ``used_fallback``/``feasibility_skip``
+        — is a real completed compaction boundary, so it also increments the
+        durable ``compression_attempts_total`` session counter. Unlike the
+        anti-thrash counters below (which are FAILURE signals that read 0
+        both when compression never fired and when it fired perfectly every
+        time), this is a monotonic POSITIVE signal answering "did compression
+        ever run for this session" — see FORK.md for the false-alarm this
+        column exists to prevent from recurring.
         """
         self._verify_compaction_cleared_threshold = True
+        _session_db = getattr(self, "_session_db", None)
+        _session_id = getattr(self, "_session_id", "")
+        _incrementer = getattr(_session_db, "increment_compression_attempts_total", None)
+        if _session_id and callable(_incrementer):
+            try:
+                _incrementer(_session_id)
+            except sqlite3.Error as exc:
+                logger.debug("compression attempts_total increment failed: %s", exc)
+            except Exception as exc:
+                logger.debug(
+                    "compression attempts_total increment failed (non-sqlite): %s", exc,
+                )
         if feasibility_skip:
             # A deliberate pre-LLM feasibility skip (#60451) is not a
             # summary-quality verdict: it must neither extend a fallback

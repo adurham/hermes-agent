@@ -121,6 +121,102 @@ purely additive to the fork's own `model_by_role` extension and does not
 touch upstream's `fallback_providers`/`fallback_model` mechanism beyond
 reusing its existing, unmodified activation code.
 
+### Investigation — 2026-08-28 (reported "compression never fires for subagent sessions" was a false alarm from misread telemetry; added the missing positive-signal counter)
+
+**Reported symptom.** 5 subagent sessions from one day ranged 50-445
+messages / 20-231 tool calls, `compression.threshold` was configured at 0.8
+globally, and every one of the 5 sessions showed
+`compression_fallback_streak=0` **AND** `compression_ineffective_count=0`
+in the `sessions` table of `state.db`. Read as "compression never even
+attempted for subagent-sourced sessions."
+
+**Root cause: the evidence was the wrong metric, not a code bug.**
+`compression_fallback_streak` and `compression_ineffective_count`
+(`agent/context_compressor.py`) are anti-thrash **failure** counters — they
+increment only when a completed compaction used a deterministic fallback
+summary, or when two consecutive real compactions each reclaimed <10% of
+tokens. Both are **structurally 0** in two completely different
+situations: compression never had reason to fire, OR compression fired and
+succeeded cleanly on every single boundary. A 0/0 reading cannot
+distinguish those cases, and no other column in `state.db` recorded a
+positive "compression ran N times" signal. Reading 0/0 as "never fired" is
+an unfounded inference the schema itself did not support.
+
+**No subagent-specific gating exists.** Traced the full path:
+`tools/delegate_tool.py::delegate_task()` constructs a real
+`AIAgent(platform="subagent", parent_session_id=<parent>, ...)`, which runs
+through the identical `agent/agent_init.py` compression wiring as any
+top-level session (same `ContextCompressor(threshold_percent=...)`
+construction, same `agent.compression_enabled` flag), then calls
+`child.run_conversation(...)` — `agent.conversation_loop.run_conversation`,
+byte-identical to the CLI/gateway turn loop. Grepped every compression
+trigger site (`should_compress`/`should_compress_info` in
+`context_compressor.py`, the preflight gate in `turn_context.py`, the
+pre-API and post-response gates in `conversation_loop.py`): zero branches
+gated on `platform == "subagent"`, and the only read of
+`agent._parent_session_id` anywhere near compression is an unrelated
+`pre_llm_call` plugin-hook payload field.
+
+**Empirical confirmation against the actual cited sessions.**
+`~/.hermes/logs/agent.log` for all 5 sessions shows real per-request
+prompt-token counts (the `agent.conversation_loop: API call #N: ... in=`
+line) topping out around 240K-310K tokens on 1M-context models — roughly
+25-31% of the window, nowhere near the configured 800K (0.8 × 1M)
+threshold, despite hundreds of tool calls each (many small tool results,
+not large context growth). None of the 5 sessions' logs contain a
+"Preflight compression" line, which is exactly the expected/correct
+behavior for a session that never crossed the threshold — not evidence of
+a broken trigger. A 768-message/320-tool-call top-level **CLI** session
+from the same day shows the identical pattern (peaked ~302K tokens,
+no `platform` involvement at all), ruling out any subagent-specific effect.
+
+**E2E proof (temp `HERMES_HOME`, real code, no source-logic mocks).** Built
+real `AIAgent` instances via `run_agent.AIAgent(...)` — one
+`platform="cli"`, one `platform="subagent"` with `parent_session_id` set,
+exactly as `delegate_task()` constructs it — against a temp `HERMES_HOME`
+whose `config.yaml` sets `compression.threshold: 0.8`. Confirmed both
+agents resolve an identical `threshold_tokens` (800,000 on a 1M-context
+model) and an identical `should_compress()` boundary. Then drove the real,
+unmocked `run_conversation()` turn loop (only the network client and
+`_compress_context` itself mocked) with a conversation history sized to
+exceed the threshold: **both platforms invoke `_compress_context()`
+exactly once**, with the identical `"📦 Preflight compression: ~1,000,xxx
+tokens >= 800,000 threshold"` log line firing for both. See
+`tests/run_agent/test_subagent_compression_parity.py`.
+
+**The one legitimate gap, and the actual fix shipped here.** The
+false-alarm's real root cause is observability, not triggering: `state.db`
+had no monotonic *positive* signal for "how many times has compression
+actually completed a boundary for this session" — only the two failure
+counters above. Added `sessions.compression_attempts_total` (self-healing
+column via the fork's existing `FORK_TABLE_COLUMNS` reconciliation
+mechanism in `hermes_state.py` — no manual migration needed), incremented
+once per real completed boundary inside
+`ContextCompressor.record_completed_compaction()` (fires for the
+deterministic-fallback path, the feasibility-skip path, and the full-LLM-
+summary path — all three are genuine completed boundaries). Read via the
+new `SessionDB.get_compression_attempts_total(session_id)` /
+`increment_compression_attempts_total(session_id)` pair, mirroring the
+existing `get/set_compression_fallback_streak` and
+`get/set_compression_ineffective_count` pattern exactly. This directly
+answers "did compression ever run here" without grepping logs, and
+disambiguates "never fired" from "fired and always succeeded" — the two
+states the original 0/0 reading conflated.
+
+Config: no new keys — `compression.threshold` (and the rest of the
+`compression:` section) already applies identically to subagent and
+top-level sessions; nothing needed to change there. This is a pure
+observability addition, not a behavioral change to when compression fires.
+
+Tests: `tests/agent/test_compression_attempts_total_counter.py` (behavior
+contract for the new counter — increments on every completed-boundary
+variant, stays at 0 when compression never fires, and the disambiguating
+case of 3 successful boundaries vs. 0 boundaries both leaving the two old
+anti-thrash counters at 0) and
+`tests/run_agent/test_subagent_compression_parity.py` (the E2E parity
+proof above, against a real temp `HERMES_HOME`). All 179 pre-existing
+`compression`-tagged tests in `tests/agent/` pass unchanged.
+
 ### TODO — no opt-out for the adaptive/medium reasoning-effort default (flagged 2026-08-25, pre-existing since d394e56ec6)
 
 **Problem.** `agent/anthropic_adapter.py`'s `build_anthropic_kwargs` (~line

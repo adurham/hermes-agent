@@ -2659,6 +2659,20 @@ FORK_TABLE_COLUMNS = {
         # under context_management.clear_thinking_20251015). JSON list of blocks.
         "anthropic_content_blocks": "TEXT",
     },
+    "sessions": {
+        # Positive compaction-attempt counter — how many times ContextCompressor
+        # actually ran compress() for this session, incremented alongside
+        # compression_count in-memory (context_compressor.py). Added because the
+        # only other compression-related session columns
+        # (compression_fallback_streak, compression_ineffective_count) are
+        # anti-thrash FAILURE counters that read as 0 both when compression
+        # never had reason to fire AND when it fired and worked perfectly every
+        # time — an operator auditing "did compression ever run here?" from
+        # state.db alone cannot distinguish the two from those columns, which
+        # produced a false "compression never fires" bug report (see FORK.md).
+        # This column is the missing positive signal.
+        "compression_attempts_total": "INTEGER NOT NULL DEFAULT 0",
+    },
 }
 
 def fts5_cjk_so_path() -> Path:
@@ -6449,6 +6463,56 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             conn.execute(
                 "UPDATE sessions SET compression_ineffective_count = ? WHERE id = ?",
                 (normalized, session_id),
+            )
+
+        self._execute_write(_do)
+
+    def get_compression_attempts_total(self, session_id: str) -> int:
+        """Return the persisted count of completed compaction boundaries.
+
+        Unlike ``compression_fallback_streak`` / ``compression_ineffective_count``
+        (anti-thrash FAILURE counters that read 0 both when compression never
+        had reason to fire and when it fired and succeeded every time), this is
+        a monotonically-increasing POSITIVE signal: it only increments when
+        :meth:`ContextCompressor.record_completed_compaction` runs a real
+        boundary. Auditing "did compression ever fire for this session" from
+        the other two columns alone is provably ambiguous — that ambiguity
+        produced a false "compression never fires for subagents" bug report
+        (see FORK.md); this column exists so that question has a direct
+        answer without grepping logs.
+        """
+        if not session_id:
+            return 0
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return 0
+            row = conn.execute(
+                "SELECT compression_attempts_total FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return 0
+        value = (
+            row["compression_attempts_total"]
+            if isinstance(row, sqlite3.Row)
+            else row[0]
+        )
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def increment_compression_attempts_total(self, session_id: str) -> None:
+        """Atomically increment the completed-compaction counter by one."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_attempts_total = "
+                "COALESCE(compression_attempts_total, 0) + 1 WHERE id = ?",
+                (session_id,),
             )
 
         self._execute_write(_do)
