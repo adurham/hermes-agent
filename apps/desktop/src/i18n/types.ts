@@ -1051,8 +1051,6 @@ export interface Translations {
       sideloadAlreadyPresent: string
       pillFullContext: (max: string) => string
       pillFullContextTip: string
-      pillStarts: (start: string) => string
-      pillStartsTip: string
       pillUpTo: (max: string) => string
       pillGrowsTip: string
       pillVision: string
@@ -2473,6 +2471,8 @@ export interface Translations {
     addProvider: string
     loadFailed: string
     loadingIntoMemory: string
+    downloading: string
+    localDownloadsHeading: string
     noAuthenticatedProviders: string
     pro: string
     proNeedsSubscription: string

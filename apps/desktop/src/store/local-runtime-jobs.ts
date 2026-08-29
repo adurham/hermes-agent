@@ -121,6 +121,20 @@ export function runningDownloadFor(jobs: readonly LocalRuntimeJob[], modelId: st
   return jobs.find(j => j.kind === 'model-download' && j.status === 'running' && j.model_id === modelId) ?? null
 }
 
+// Selector: every model on its way to the library right now — plain
+// downloads plus quickstart runs while they are still fetching bytes
+// (later quickstart phases mean the model is staged and activating).
+// The model picker renders these as disabled progress rows.
+const DOWNLOAD_PHASES = new Set(['starting', 'installing-runtime', 'downloading'])
+
+export function runningModelDownloads(jobs: readonly LocalRuntimeJob[]): LocalRuntimeJob[] {
+  return jobs.filter(
+    j =>
+      j.status === 'running' &&
+      (j.kind === 'model-download' || (j.kind === 'quickstart' && DOWNLOAD_PHASES.has(j.phase)))
+  )
+}
+
 export function runningRuntimeInstall(jobs: readonly LocalRuntimeJob[]): LocalRuntimeJob | null {
   return jobs.find(j => j.kind === 'runtime-install' && j.status === 'running') ?? null
 }

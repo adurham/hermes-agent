@@ -25,7 +25,9 @@ import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { normalize } from '@/lib/text'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -163,7 +165,56 @@ export function ModelCatalogMenu({
     refetchInterval: 2_000,
     retry: false
   })
+
   const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
+
+  // Models on their way into the local library (downloads + quickstart runs
+  // still fetching bytes) — rendered as disabled progress rows so the user
+  // sees the model coming instead of wondering where it went. The jobs store
+  // republishes every ~700ms with fresh byte counts while anything runs; a
+  // whole-store subscription here would re-render the entire menu per tick
+  // (breaking open submenus and focus — the #72163 class). Subscribe to a
+  // STABLE identity projection instead: it changes only when a download
+  // starts or ends. Each row selects its own percent scalar.
+  const downloadsKey = useStoreSelector($localRuntimeJobs, jobs =>
+    runningModelDownloads(jobs)
+      .map(job => `${job.job_id}\u0000${job.target}`)
+      .join('\u0001')
+  )
+
+  const downloads = useMemo(
+    () =>
+      downloadsKey === ''
+        ? []
+        : downloadsKey.split('\u0001').map(pair => {
+            const [jobId, target] = pair.split('\u0000')
+
+            return { jobId, target }
+          }),
+    [downloadsKey]
+  )
+
+  useEffect(() => {
+    watchLocalRuntimeJobs()
+  }, [])
+
+  // A finished download turns into a real selectable model: refetch the
+  // catalog so the placeholder row is replaced while the menu is open.
+  const refetchOptions = modelOptions.refetch
+
+  useEffect(() => {
+    let prevActive = runningModelDownloads($localRuntimeJobs.get()).length > 0
+
+    return $localRuntimeJobs.listen(next => {
+      const active = runningModelDownloads(next).length > 0
+
+      if (prevActive && !active) {
+        void refetchOptions()
+      }
+
+      prevActive = active
+    })
+  }, [refetchOptions])
 
   const error = modelOptions.error
     ? modelOptions.error instanceof Error
@@ -187,6 +238,14 @@ export function ModelCatalogMenu({
 
   const current = controller.current
 
+  const q = normalize(search)
+
+  // In-flight downloads render inside the Local provider group when it
+  // exists, else as their own trailing 'Local' group (first download —
+  // nothing staged yet, so the catalog has no local provider row).
+  const shownDownloads = q ? downloads.filter(job => (job.target || '').toLowerCase().includes(q)) : downloads
+  const hasLocalGroup = pickerProviders.some(provider => provider.slug === LOCAL_PROVIDER_SLUG)
+
   // Resolve visibility HERE, against the catalog we actually fetched: an empty
   // provider list would otherwise resolve to an empty key set that reads as
   // "user hid everything" and blanks the menu on first open.
@@ -199,8 +258,6 @@ export function ModelCatalogMenu({
     () => groupModels(pickerProviders, search, { model: current.model, provider: current.provider }, shownKeys),
     [pickerProviders, search, current.model, current.provider, shownKeys]
   )
-
-  const q = normalize(search)
 
   // Presets are searchable rows like everything else — an unfiltered preset
   // sitting under zero model matches would otherwise become the "first match"
@@ -378,7 +435,7 @@ export function ModelCatalogMenu({
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && moaPresets.length === 0 ? (
+      ) : groups.length === 0 && moaPresets.length === 0 && shownDownloads.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
@@ -521,9 +578,22 @@ export function ModelCatalogMenu({
                       </DropdownMenuSub>
                     )
                   })}
+                {!collapsed &&
+                  slug === LOCAL_PROVIDER_SLUG &&
+                  shownDownloads.map(job => <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />)}
               </DropdownMenuGroup>
             )
           })}
+          {!hasLocalGroup && shownDownloads.length > 0 && (
+            <DropdownMenuGroup className="py-0.5" key="local-downloads">
+              <DropdownMenuLabel className="px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
+                {copyPicker.localDownloadsHeading}
+              </DropdownMenuLabel>
+              {shownDownloads.map(job => (
+                <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+              ))}
+            </DropdownMenuGroup>
+          )}
         </div>
       )}
 
@@ -574,6 +644,47 @@ export function ModelCatalogMenu({
 
 /** Re-exported so callers building a footer row match the catalog's rows. */
 export { dropdownMenuRow }
+
+// The backend's provider row for staged local models (inventory.py's
+// _local_runtime_row). Downloads-in-flight attach to this group.
+const LOCAL_PROVIDER_SLUG = 'llamacpp'
+
+// A model still downloading: visible so the user knows it's coming (and
+// where it will land), disabled so it can't be selected early, with the
+// same byte progress the Local Models pane shows. Percent is selected HERE,
+// per row, so the 700ms byte ticks repaint this leaf only — the menu tree
+// above subscribes to download identity, not progress.
+function DownloadingModelRow({ jobId, target }: { jobId: string; target: string }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
+  const percent = useStoreSelector(
+    $localRuntimeJobs,
+    jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null
+  )
+
+  return (
+    <DropdownMenuItem
+      className={cn(dropdownMenuRow, 'opacity-60')}
+      disabled
+      onSelect={event => event.preventDefault()}
+      textValue=""
+    >
+      <span className="min-w-0 flex-1 truncate">{target}</span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5" title={copy.downloading}>
+        <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+          <span
+            className="block h-full rounded-full bg-primary transition-[width] duration-500"
+            style={{ width: `${Math.max(2, percent ?? 0)}%` }}
+          />
+        </span>
+        <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
+          {typeof percent === 'number' ? `${percent}%` : copy.downloading}
+        </span>
+      </span>
+    </DropdownMenuItem>
+  )
+}
 
 // Collapsed we show the user's chosen models (or the curated default); typing
 // spans every available model so anything is reachable past the cut. A search
