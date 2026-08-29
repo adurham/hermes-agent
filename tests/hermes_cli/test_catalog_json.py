@@ -54,7 +54,7 @@ def test_packaged_json_round_trips_the_catalog():
     every entry carries estimator inputs and at least one variant, and the
     known invariants (best-first ordering, Q4 floor) hold — the same
     contract the literals obeyed."""
-    assert len(cat.CATALOG) >= 5
+    assert len(cat.CATALOG) >= 4
     for e in cat.CATALOG:
         assert e.variants and e.n_ctx_train > 0 and e.per_layer_f16 >= 0
         sizes = [v.size_bytes for v in e.variants]

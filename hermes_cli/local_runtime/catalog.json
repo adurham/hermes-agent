@@ -116,66 +116,6 @@
       }
     },
     {
-      "id": "nemotron-3.5-lightning-30b",
-      "display_name": "Nemotron 3.5 Lightning 30B",
-      "description": "NVIDIA's fast tool-calling model; 1M-token context",
-      "repo": "unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
-      "variants": [
-        {
-          "quant": "UD-Q4_K_M",
-          "files": [
-            {
-              "path": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q4_K_M.gguf",
-              "size_bytes": 25266255936
-            }
-          ]
-        }
-      ],
-      "n_ctx_train": 1048576,
-      "full_layers": 6,
-      "recurrent_layers": 46,
-      "per_layer_f16": 1024,
-      "moe": true,
-      "mtp": true,
-      "n_vocab": 131072,
-      "sampling": {
-        "temp": "0.6",
-        "top-p": "0.95",
-        "min-p": "0.01"
-      }
-    },
-    {
-      "id": "muse-glimmer-30b",
-      "display_name": "Muse Glimmer 30B",
-      "description": "Meta's open vision model for coding and agent work",
-      "repo": "unsloth/Muse-Glimmer-30B-GGUF",
-      "variants": [
-        {
-          "quant": "UD-Q4_K_XL",
-          "files": [
-            {
-              "path": "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
-              "size_bytes": 15878222368
-            }
-          ]
-        }
-      ],
-      "n_ctx_train": 262144,
-      "full_layers": 60,
-      "recurrent_layers": 0,
-      "per_layer_f16": 4096,
-      "n_vocab": 202048,
-      "mmproj": {
-        "path": "mmproj-Muse-Glimmer-30B-BF16.gguf",
-        "size_bytes": 3849173728
-      },
-      "sampling": {
-        "temp": "1.0",
-        "top-p": "0.95",
-        "top-k": "64"
-      }
-    },
-    {
       "id": "deepseek-v4-flash",
       "display_name": "DeepSeek V4 Flash",
       "description": "Frontier-class model for machines with 128GB+ memory",

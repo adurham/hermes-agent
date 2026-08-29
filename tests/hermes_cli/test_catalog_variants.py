@@ -54,7 +54,7 @@ def test_selection_is_the_q4_build_even_with_headroom():
     """The selector picks the Q4 build even when bigger quants would fit
     with room to spare — headroom buys window, not quant. Larger builds
     stay one tile click away in the pane."""
-    entry = catalog_by_id()["muse-glimmer-30b"]
+    entry = catalog_by_id()["qwen3.8-27b"]
     choice = select_variant(entry, budget(60))
     assert choice is not None
     assert choice.zero_spill
@@ -103,7 +103,7 @@ def test_selection_accounts_for_kv_not_just_weights():
     """The zero-spill check prices weights + KV, not weights alone: give a
     machine exactly enough VRAM for the build's weights and the fit must
     come back spilled, not zero-spill."""
-    entry = catalog_by_id()["muse-glimmer-30b"]
+    entry = catalog_by_id()["qwen3.8-27b"]
     build = entry.variants[0]
     exactly_weights = HardwareBudget(
         usable_vram_bytes=build.size_bytes + (100 << 20),
@@ -157,9 +157,26 @@ def test_hybrid_long_context_stays_cheap():
     from hermes_cli.local_runtime.catalog import FLOOR
     from hermes_cli.local_runtime.estimator import ctx_bytes
 
-    dense = catalog_by_id()["muse-glimmer-30b"]
-    hybrid = catalog_by_id()["nemotron-3.5-lightning-30b"]
-    dense_kv = ctx_bytes(dense.profile(dense.variants[-1]), FLOOR)
-    hybrid_kv = ctx_bytes(hybrid.profile(hybrid.variants[-1]), FLOOR)
-    assert hybrid_kv * 5 < dense_kv, (
-        f"hybrid KV ({hybrid_kv:,}) should be >5x cheaper than dense ({dense_kv:,})")
+    from hermes_cli.local_runtime.estimator import LayerKind, ModelProfile
+
+    hybrid = catalog_by_id()["qwen3.6-35b-a3b"]
+    hybrid_profile = hybrid.profile(hybrid.variants[-1])
+    # A fully-dense profile of the same layer count and per-layer cost:
+    # the contract is about LAYER ECONOMICS (recurrent layers pay no
+    # per-token KV), not about any particular catalog entry.
+    n_layers = len(hybrid_profile.layers)
+    dense_profile = ModelProfile(
+        name="synthetic-dense", weights_bytes=hybrid_profile.weights_bytes,
+        embd_table_bytes=0, n_ctx_train=hybrid.n_ctx_train,
+        layers=[(LayerKind.FULL, hybrid.per_layer_f16)] * n_layers)
+    dense_kv = ctx_bytes(dense_profile, FLOOR)
+    hybrid_kv = ctx_bytes(hybrid_profile, FLOOR)
+    # The contract is structural: recurrent layers pay no per-token KV,
+    # so the hybrid's KV must track its full-attention share (x kv_scale
+    # for MTP's draft context), not its total layer count.
+    full = sum(1 for kind, _ in hybrid_profile.layers if kind == LayerKind.FULL)
+    expected = dense_kv * full / n_layers * hybrid_profile.kv_scale
+    assert hybrid_kv < dense_kv, "hybrid must be cheaper than dense"
+    assert abs(hybrid_kv - expected) / expected < 0.25, (
+        f"hybrid KV ({hybrid_kv:,}) should track its full-attention share "
+        f"(expected ~{expected:,.0f})")
