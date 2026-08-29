@@ -65,17 +65,29 @@ def assets_dir() -> Path:
 
 
 def staged_models() -> "list[Path]":
-    """Servable staged models: first-parts of split GGUFs count once,
-    continuation parts and assets/ don't count at all."""
+    """Servable staged models: single-file GGUFs count when present; a
+    split GGUF counts once, by its first part, and only when EVERY part
+    is on disk — a mid-download split is not servable and must not
+    surface anywhere as a model. Continuation parts and assets/ never
+    count."""
     import re
 
-    part = re.compile(r"-(\d{5})-of-\d{5}\.gguf$")
+    part = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
+    files = sorted(models_dir().glob("*.gguf"))
+    names = {p.name for p in files}
     out = []
-    for p in sorted(models_dir().glob("*.gguf")):
+    for p in files:
         m = part.search(p.name)
-        if m and m.group(1) != "00001":
+        if m is None:
+            out.append(p)
             continue
-        out.append(p)
+        if m.group(1) != "00001":
+            continue
+        stem = p.name[: m.start()]
+        total = int(m.group(2))
+        if all(f"{stem}-{i:05d}-of-{m.group(2)}.gguf" in names
+               for i in range(2, total + 1)):
+            out.append(p)
     return out
 
 

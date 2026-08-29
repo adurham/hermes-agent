@@ -562,6 +562,28 @@ def test_idle_sweep_busy_model_resets_clock(tmp_path, monkeypatch, stub_server):
     assert handler.unloaded == []
 
 
+def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
+    """A split GGUF mid-download must NOT count as staged: the picker, the
+    catalog's 'downloaded' flag, and the router's model list all read
+    staged_models(), and a first part with missing continuations is not
+    servable. Single files and complete splits count; continuation parts
+    never count as their own model."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    import hermes_cli.local_runtime.bootstrap as bs
+
+    mdir = bs.models_dir()
+    mdir.mkdir(parents=True, exist_ok=True)
+
+    (mdir / "Single-Q4_K_M.gguf").touch()
+    # Complete split: both parts present.
+    (mdir / "Whole-Q4-00001-of-00002.gguf").touch()
+    (mdir / "Whole-Q4-00002-of-00002.gguf").touch()
+    # Mid-download split: first part only, of three.
+    (mdir / "Partial-Q4-00001-of-00003.gguf").touch()
+
+    assert bs.staged_model_ids() == ["Single-Q4_K_M", "Whole-Q4"]
+
+
 def test_bootstrap_skips_boot_with_no_staged_models(tmp_path, monkeypatch):
     """Residency: enabled + installed but zero staged models -> no server
     boot (nothing to serve; the walked-away story)."""

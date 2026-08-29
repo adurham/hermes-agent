@@ -505,13 +505,17 @@ async def local_models_catalog():
     # Planning budget: price against machine capacity, not live-free VRAM.
     # A loaded model must not make the catalog call every row unaffordable.
     budget = probe_budget(planning=True)
-    mdir = _models_dir()
+    # Completeness-checked staging (split parts all present) — the same
+    # answer the picker and the router see, so a mid-download model never
+    # reads as downloaded here.
+    from hermes_cli.local_runtime.bootstrap import staged_model_ids
+
+    staged_ids = set(staged_model_ids())
     entries = []
     for entry in CATALOG:
         choice = select_variant(entry, budget)
         # Any variant of this family already on disk counts as downloaded
         # (split variants stage under their first part).
-        staged_ids = {_model_id_for(p) for p in mdir.glob("*.gguf")} if mdir.exists() else set()
         downloaded_variant = next(
             (v for v in entry.variants if v.model_id in staged_ids), None)
         row: Dict[str, Any] = {
