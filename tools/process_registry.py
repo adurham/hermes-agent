@@ -419,6 +419,14 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    # Last output tail (same 1000-char window `wait()` returns) observed by
+    # a PREVIOUS wait() timeout on this session. `None` until the first
+    # wait() timeout occurs. Lets a subsequent wait() detect "nothing new
+    # happened" and skip re-appending an identical output blob to the
+    # conversation -- the second cost lever alongside the configurable
+    # `wait_max_timeout` ceiling: a caller re-polling a still-running,
+    # still-silent process shouldn't pay to resend the same bytes twice.
+    _last_wait_output_tail: Optional[str] = field(default=None, repr=False)
 
 
 class ProcessRegistry:
@@ -2009,6 +2017,8 @@ class ProcessRegistry:
         Args:
             session_id: The process to wait for.
             timeout: Max seconds to block. Falls back to TERMINAL_TIMEOUT config.
+                Clamped to ``terminal.wait_max_timeout`` (TERMINAL_WAIT_MAX_TIMEOUT,
+                default 3600s) if it exceeds that ceiling.
 
         Returns:
             dict with status ("exited", "timeout", "interrupted", "not_found")
@@ -2021,7 +2031,19 @@ class ProcessRegistry:
             default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
         except (ValueError, TypeError):
             default_timeout = 180
-        max_timeout = default_timeout
+        # `terminal.wait_max_timeout` is a DISTINCT config key from
+        # `terminal.timeout` (bridged to TERMINAL_WAIT_MAX_TIMEOUT). Before
+        # this existed, wait() reused TERMINAL_TIMEOUT (default 180s) as
+        # both the no-argument default AND the hard ceiling any explicit
+        # `timeout=N` got clamped to -- so a caller who genuinely knew a
+        # background job (e.g. a 20min-2hr benchmark stage) would run long
+        # had no way to block for its real duration and was forced into a
+        # poll loop of repeated wait(timeout=300) calls, each of which
+        # resends the full cached conversation prefix in an LLM tool loop.
+        try:
+            max_timeout = int(os.getenv("TERMINAL_WAIT_MAX_TIMEOUT", "3600"))
+        except (ValueError, TypeError):
+            max_timeout = 3600
         requested_timeout = timeout
         timeout_note = None
 
@@ -2043,7 +2065,7 @@ class ProcessRegistry:
                 f"to configured limit of {max_timeout}s"
             )
         else:
-            effective_timeout = requested_timeout or max_timeout
+            effective_timeout = requested_timeout or default_timeout
 
         session = self.get(session_id)
         if session is None:
@@ -2099,20 +2121,45 @@ class ProcessRegistry:
                 break
             session._completion_event.wait(timeout=min(1.0, remaining))
 
+        output_tail = strip_ansi(session.output_buffer[-1000:])
+        # Cheap "nothing new happened" path: if this exact output tail was
+        # already returned by a PREVIOUS wait() timeout on this session,
+        # there's zero new information to report -- skip re-appending the
+        # same (possibly large) blob to the conversation. This is the
+        # second cost lever alongside the configurable `wait_max_timeout`
+        # ceiling above: a caller re-polling a still-running, still-silent
+        # process pays for one short marker instead of the full tail again.
+        with session._lock:
+            output_unchanged = (
+                session._last_wait_output_tail is not None
+                and session._last_wait_output_tail == output_tail
+            )
+            session._last_wait_output_tail = output_tail
+
         result = {
             "status": "timeout",
             "command": session.command,
-            "output": strip_ansi(session.output_buffer[-1000:]),
             # A wait window elapsing is NOT a failure — 511 exact-duplicate
             # process calls in a production window show models re-issuing
             # identical waits after misreading this result as an error.
             "process_running": True,
         }
+        if output_unchanged:
+            result["output_unchanged"] = True
+            result["output"] = ""
+        else:
+            result["output"] = output_tail
         uptime = time.time() - session.started_at if session.started_at else None
         base_note = (
             f"Wait window of {effective_timeout}s elapsed — the process is "
             "still running. This is not an error."
         )
+        if output_unchanged:
+            base_note += (
+                " Output is unchanged since your last wait() on this "
+                "session (omitted here to save tokens) -- the process is "
+                "quietly still working, not stuck."
+            )
         if uptime is not None:
             base_note += f" Uptime: {int(uptime)}s."
         if session.notify_on_complete:
@@ -3120,7 +3167,7 @@ PROCESS_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": "Max seconds to block for 'wait' action. Returns partial output on timeout.",
+                "description": "Max seconds to block for 'wait' action. Returns partial output on timeout. Pass the actual expected duration of a known long-running job (e.g. 5400 for a 90min benchmark stage) instead of polling repeatedly -- clamped to the configured terminal.wait_max_timeout ceiling (default 3600s).",
                 "minimum": 1
             },
             "offset": {
