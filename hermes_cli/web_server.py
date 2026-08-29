@@ -7096,8 +7096,11 @@ def get_model_info(profile: Optional[str] = None):
 # Models page (which has no chat PTY open) can drive it.
 # ---------------------------------------------------------------------------
 
-# Canonical auxiliary task slots. Keep in sync with DEFAULT_CONFIG["auxiliary"]
-# in hermes_cli/config.py — listed here for deterministic ordering in the UI.
+# Canonical auxiliary task slots. Keep in sync with the true source of truth,
+# _BUILTIN_AUX_TASK_KEYS in agent/auxiliary_client.py (mirrored as
+# _AUX_TASK_FIRST_KEYS in hermes_cli/config.py) — listed here as an ordered
+# tuple for deterministic ordering in the UI (the source is an unordered
+# frozenset).
 _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "vision",
     "web_extract",
