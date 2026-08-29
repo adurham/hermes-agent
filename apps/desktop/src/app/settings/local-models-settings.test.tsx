@@ -150,26 +150,62 @@ describe('LocalModelsSettings', () => {
 
     expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
     // The fitting model reads as pills, not prose: green memory pill +
-    // full-context pill (start_window == native here).
+    // green full-context pill (start_window == native, resident on GPU).
     expect(screen.getByText('Fits your GPU')).toBeTruthy()
-    expect(screen.getByText('Full 256K context')).toBeTruthy()
+    expect(screen.getByText('Full 256K context').className).toContain('emerald')
 
     // The refused model is NOT hidden (discoverability rule): red memory
-    // pill, and the ceiling it would have had (spilled model shows one too).
+    // pill, plus the ceiling it would have had.
     expect(screen.getByText('Huge Model')).toBeTruthy()
     expect(screen.getByText('Too big for this machine')).toBeTruthy()
-    expect(screen.getAllByText('Up to 256K').length).toBeGreaterThanOrEqual(1)
 
-    // The spilled model reads amber + a start/ceiling pair.
+    // The spilled model reads amber + ONE quiet ceiling pill — the same
+    // 'Up to' shape the refused row wears; no start/grow pair.
     expect(screen.getByText('Spilled Model')).toBeTruthy()
     expect(screen.getByText('Uses system RAM')).toBeTruthy()
-    expect(screen.getByText('Starts at 64K')).toBeTruthy()
+    expect(screen.getAllByText('Up to 256K context').length).toBe(2)
+    expect(screen.queryByText(/Starts at/)).toBeNull()
 
     // Its download button is disabled; the fitting model's is enabled once
     // the runtime exists (here runtime_installed=false, so both disabled —
     // asserted separately below).
     const buttons = screen.getAllByRole('button', { name: /download · 17\.6 GB/i })
     expect(buttons.every(b => (b as HTMLButtonElement).disabled)).toBe(true)
+  })
+
+  it('orders the catalog by fit: resident first, then spilled, then too-big', async () => {
+    // Scrambled input — the pane, not the backend, owns display order.
+    mocked.getLocalCatalog.mockResolvedValue({ models: [REFUSED_MODEL, SPILLED_MODEL, FITTING_MODEL] })
+    await renderFullPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    // The matched element is the row-title span; the recommended row's
+    // includes its nested pill copy — strip it before comparing order.
+    const names = screen
+      .getAllByText(/^(Qwen3\.6 27B|Spilled Model|Huge Model)$/)
+      .map(el => el.textContent?.replace('Recommended', ''))
+
+    expect(names).toEqual(['Qwen3.6 27B', 'Spilled Model', 'Huge Model'])
+  })
+
+  it('never greens the full-context pill on a system-RAM model', async () => {
+    // Full native window, but earned by spilling into system RAM: the
+    // pill must not wear the green that would recommend exactly the
+    // wrong model.
+    const spilledFull: LocalCatalogModel = {
+      ...FITTING_MODEL,
+      id: 'Spilled-Full',
+      display_name: 'Spilled Full',
+      recommended: false,
+      spilled: true,
+      fit_summary: 'runs its full 256K context, partly from system RAM'
+    }
+
+    mocked.getLocalCatalog.mockResolvedValue({ models: [spilledFull] })
+    await renderFullPane()
+    await screen.findByText('Spilled Full')
+
+    expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
   })
 
   it('enables downloads only once the runtime is installed', async () => {

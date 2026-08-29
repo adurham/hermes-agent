@@ -56,6 +56,21 @@ function gbLabel(bytes: number | null | undefined): string {
   return `${(bytes / (1 << 30)).toFixed(1)} GB`
 }
 
+// Catalog display order: what runs well leads. Resident (all on GPU)
+// first, then spilled (works, slower), then doesn't-fit; catalog order
+// (recommended first) holds within each band.
+function fitRank(model: LocalCatalogModel): number {
+  if (model.fits && !model.spilled) {
+    return 0
+  }
+
+  if (model.fits) {
+    return 1
+  }
+
+  return 2
+}
+
 export function LocalModelsSettings() {
   const { t } = useI18n()
   const copy = t.settings.localModels
@@ -266,6 +281,8 @@ export function LocalModelsSettings() {
 
   const rJob = runningRuntimeInstall(jobs)
   const lastError = jobs.find(j => j.status === 'error')
+
+  const sortedCatalog = [...catalog].sort((a, b) => fitRank(a) - fitRank(b))
 
   // ── Quickstart: the dummy-proof front door ──
   // Until something is servable (runtime + at least one model), the pane
@@ -532,7 +549,7 @@ export function LocalModelsSettings() {
       {/* ── Models ── */}
       <SettingsSection icon={Download} meta={`${catalog.length}`} title={copy.modelsTitle}>
         <div className="grid gap-1">
-          {catalog.map(model => {
+          {sortedCatalog.map(model => {
             const dJob = runningDownloadFor(jobs, model.id)
             const anyDownloadRunning = jobs.some(j => j.kind === 'model-download' && j.status === 'running')
             const activateTarget = model.downloaded_model_id ?? model.model_id
@@ -677,23 +694,24 @@ export function LocalModelsSettings() {
                         </Tip>
                       )}
 
-                      {/* Context: where it starts, and how far it can grow.
-                          A model granted its full native window collapses
-                          both into one green pill. */}
+                      {/* Context: one pill. Green 'Full X context' only when
+                          the model earned its complete window resident on the
+                          GPU — a big context served from system RAM is slow,
+                          and a green badge there would sell exactly the wrong
+                          model, so a spilled full window goes gray. Anything
+                          starting below its native window gets one quiet
+                          'Up to' pill instead of a start/grow pair. */}
                       {model.fits && model.start_window_label && (
                         model.start_window && model.start_window >= model.native_context ? (
                           <Tip label={copy.pillFullContextTip}>
-                            <Pill tone="success">{copy.pillFullContext(model.native_context_label)}</Pill>
+                            <Pill tone={model.spilled ? 'muted' : 'success'}>
+                              {copy.pillFullContext(model.native_context_label)}
+                            </Pill>
                           </Tip>
                         ) : (
-                          <>
-                            <Tip label={copy.pillStartsTip}>
-                              <Pill>{copy.pillStarts(model.start_window_label)}</Pill>
-                            </Tip>
-                            <Tip label={copy.pillGrowsTip}>
-                              <Pill>{copy.pillUpTo(model.native_context_label)}</Pill>
-                            </Tip>
-                          </>
+                          <Tip label={copy.pillGrowsTip}>
+                            <Pill>{copy.pillUpTo(model.native_context_label)}</Pill>
+                          </Tip>
                         )
                       )}
 
