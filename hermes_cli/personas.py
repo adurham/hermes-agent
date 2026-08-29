@@ -27,6 +27,39 @@ run on, mirroring the ``delegation.by_provider`` block shape::
           model: qwen3-coder:480b-cloud
           provider: ollama-cloud
 
+A dict entry that pins a provider may additionally carry a ``fallback``
+sub-key — a second ``{model, provider, ...}`` bundle (same shape as the
+primary entry) used when the primary is unreachable, so a role pinned to
+a quota-limited/rate-limited backend can degrade gracefully instead of
+refusing the dispatch::
+
+    delegation:
+      model_by_role:
+        fable:
+          model: glm-5.3
+          provider: ollama-cloud
+          fallback:
+            model: claude-fable-5
+            provider: anthropic
+
+The fallback bundle is resolved and used in two situations, both handled
+by ``tools/delegate_tool.py``: (1) the primary's credential resolution
+fails at dispatch time (missing/invalid provider config) — the child is
+built directly on the fallback's full bundle instead of refusing the
+spawn; (2) the primary resolves fine but the ACTUAL model call fails at
+runtime with a retryable-class error (rate limit, quota exhaustion,
+timeout, connection error) — the child retries once against the
+fallback, reusing the exact same retry/classification machinery
+(``agent._fallback_chain`` / ``_try_activate_fallback`` /
+``agent/error_classifier.py``) the top-level session's own
+``fallback_providers`` chain already uses. Only ONE hop: the fallback
+bundle itself has no ``fallback`` of its own (mirrors the one-hop
+:data:`ROLE_ALIASES` precedent below). A ``fallback`` sub-key on a role
+entry with no ``provider`` of its own is ignored — a fallback identity
+only makes sense once the primary already declares its own credential
+bundle. Requires no ``fallback`` sub-key to work exactly as before —
+this is purely additive.
+
 Public surface:
 
   * :class:`Persona` (alias :class:`RufloAgent` for back-compat) — discovered
@@ -369,7 +402,21 @@ def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
 _ENTRY_KEYS = ("model", "provider", "base_url", "api_key", "api_mode")
 
 
-def get_role_entry_map() -> dict[str, dict[str, str]]:
+def _normalize_entry_fields(v: dict) -> dict[str, str]:
+    """Extract the credential-bearing string fields from one raw entry dict.
+
+    Shared by the primary ``model_by_role`` entry and its optional nested
+    ``fallback`` bundle — both carry the same ``_ENTRY_KEYS`` shape.
+    """
+    entry: dict[str, str] = {}
+    for field in _ENTRY_KEYS:
+        val = v.get(field)
+        if isinstance(val, str) and val.strip():
+            entry[field] = val.strip()
+    return entry
+
+
+def get_role_entry_map() -> dict[str, dict[str, "str | dict[str, str]"]]:
     """Read ``delegation.model_by_role`` as normalized per-role entries.
 
     Every entry is normalized to a dict.  A bare-string value ``"foo"``
@@ -382,6 +429,15 @@ def get_role_entry_map() -> dict[str, dict[str, str]]:
     dict that declares only a ``provider``.  A provider without its own
     model would redirect the batch-resolved model to an endpoint that
     doesn't serve it, so provider is never applied on its own.
+
+    A dict entry that pins a ``provider`` may additionally carry a nested
+    ``fallback`` dict (same ``_ENTRY_KEYS`` shape) — a second full
+    credential bundle used when the primary is unreachable (see the
+    module docstring).  It survives normalization under the ``"fallback"``
+    key as its own nested dict, dropped when it has no usable ``model`` of
+    its own or when the primary entry has no ``provider`` of its own (a
+    fallback identity only makes sense once the primary already declares
+    one).  Bare-string entries can never carry a fallback.
 
     Returns an empty dict when the section is missing or unparseable.
     """
@@ -407,10 +463,13 @@ def get_role_entry_map() -> dict[str, dict[str, str]]:
         if isinstance(v, str):
             entry["model"] = v.strip()
         elif isinstance(v, dict):
-            for field in _ENTRY_KEYS:
-                val = v.get(field)
-                if isinstance(val, str) and val.strip():
-                    entry[field] = val.strip()
+            entry = _normalize_entry_fields(v)
+            if entry.get("provider"):
+                raw_fallback = v.get("fallback")
+                if isinstance(raw_fallback, dict):
+                    fallback_entry = _normalize_entry_fields(raw_fallback)
+                    if fallback_entry.get("model"):
+                        entry["fallback"] = fallback_entry
         if entry.get("model"):
             out[k] = entry
     return out
@@ -424,7 +483,10 @@ def get_role_model_map() -> dict[str, str]:
     unchanged against either config shape.  Returns an empty dict when the
     section is missing or unparseable.
     """
-    return {role: entry["model"] for role, entry in get_role_entry_map().items()}
+    return {
+        role: str(entry["model"])
+        for role, entry in get_role_entry_map().items()
+    }
 
 
 def get_role_provider_map() -> dict[str, str]:
@@ -434,7 +496,7 @@ def get_role_provider_map() -> dict[str, str]:
     configured with a bare model string are absent.
     """
     return {
-        role: entry["provider"]
+        role: str(entry["provider"])
         for role, entry in get_role_entry_map().items()
         if entry.get("provider")
     }
@@ -485,7 +547,7 @@ def set_role_model(
     return _save_to_config_yaml("delegation.model_by_role", by_role)
 
 
-def lookup_role_entry(role: Optional[str]) -> dict[str, str]:
+def lookup_role_entry(role: Optional[str]) -> dict[str, "str | dict[str, str]"]:
     """Return the normalized ``model_by_role`` entry for ``role``.
 
     The single alias-aware read of :func:`get_role_entry_map`.  A role
@@ -524,7 +586,8 @@ def lookup_model_for_role(role: Optional[str]) -> Optional[str]:
     """
     if not role:
         return None
-    return lookup_role_entry(role).get("model")
+    val = lookup_role_entry(role).get("model")
+    return val if isinstance(val, str) else None
 
 
 def lookup_provider_for_role(role: Optional[str]) -> Optional[str]:
@@ -540,7 +603,8 @@ def lookup_provider_for_role(role: Optional[str]) -> Optional[str]:
     """
     if not role:
         return None
-    return lookup_role_entry(role).get("provider")
+    val = lookup_role_entry(role).get("provider")
+    return val if isinstance(val, str) else None
 
 
 # ---------------------------------------------------------------------------

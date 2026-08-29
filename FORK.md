@@ -3,6 +3,124 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-08-28 (per-role fallback for `delegation.model_by_role` — a role-pinned dispatch degrades to a backup model+provider instead of failing loud)
+
+**Problem:** the 2026-08-23 provider-aware per-role pin feature (see the
+entry below) lets `delegation.model_by_role.<role>` pin a dict entry
+`{model, provider, ...}` so a role runs on its own credential bundle. But
+there was no way to say "if THIS role's primary pin fails — rate limit,
+quota exhaustion, connection error, or the provider being simply
+unresolvable — fall back to a specific backup model+provider for THIS
+role", independent of the parent session's own model. Two existing
+mechanisms looked adjacent but didn't cover it: (1) the per-role
+provider-pin failure path in `tools/delegate_tool.py` refuses the spawn
+with a loud `ValueError` by design (`_resolve_role_credentials` raising is
+supposed to prevent silently redirecting a role's model to the wrong
+provider's endpoint) — correct for an UNCONFIGURED fallback, but gave no
+opt-in escape hatch for a user who wants one; (2) the top-level
+`fallback_providers` / `agent._fallback_chain` mechanism
+(`agent/chat_completion_helpers.py::try_activate_fallback`,
+`agent/agent_init.py`) is a SEPARATE, GLOBAL, whole-session chain — a
+role-pinned child either inherits the parent's chain (when no provider is
+pinned) or gets none at all (when a provider IS pinned, per the #80450
+predictability-over-liveness precedent), with no way for the role itself
+to declare its own dedicated backup. Motivating case: pinning the `fable`
+orchestrator role to `glm-5.3` on `ollama-cloud` for a long-running PM
+role, where `ollama-cloud` carries a WEEKLY quota that can run out
+mid-session (confirmed via a live API call returning `{"error": "you
+(amdnative) have reached your weekly usage limit..."}`)  — the role should
+retry once against `claude-fable-5`/`anthropic` instead of erroring the
+whole delegation out.
+
+**Fix:** a `model_by_role` dict entry that pins a `provider` may now
+additionally carry a `fallback` sub-key — a second full `{model, provider,
+...}` bundle, same shape as the primary entry:
+
+```yaml
+delegation:
+  model_by_role:
+    fable:
+      model: glm-5.3
+      provider: ollama-cloud
+      fallback:
+        model: claude-fable-5
+        provider: anthropic
+```
+
+`hermes_cli/personas.py::get_role_entry_map()` normalizes the nested
+`fallback` dict through the same `_ENTRY_KEYS` extraction as the primary
+entry (factored into a shared `_normalize_entry_fields()` helper), dropped
+entirely when it has no usable `model` of its own or when the primary
+entry has no `provider` of its own — a fallback identity only makes sense
+once the primary already declares one; a bare-string role can never carry
+a `fallback`.
+
+`tools/delegate_tool.py`'s per-task dispatch loop handles two situations,
+reusing existing machinery in both rather than inventing new retry logic:
+
+- **Construction-time** (primary `_resolve_role_credentials()` raises
+  `ValueError`): if the role declared a `fallback`, resolve IT as a
+  completely separate credential bundle via the same
+  `_resolve_role_credentials()` call (never mixed with the primary's
+  fields — the existing isolation invariant from the 08-23 feature holds
+  unchanged) and dispatch the child directly on it. `role_map_model` is
+  repinned to the fallback's own model so the precedence chain can't leak
+  the primary's model string onto the fallback's provider. A visible
+  `🔄 Fallback engaged for role ...` notice fires via
+  `parent_agent._emit_status` (same visibility pattern
+  `agent/agent_init.py` already uses for the global chain's `🔄 Fallback
+  chain...` banner), and `logger.info` records it. No further runtime
+  fallback is attached for this hop — one hop only, matching the existing
+  `ROLE_ALIASES` "aliases don't chain" precedent in `personas.py`. If the
+  fallback ALSO fails to resolve, the loud `ValueError` names BOTH
+  failures and the whole batch refuses exactly like today's
+  no-fallback-configured case — no silent third attempt.
+- **Runtime** (primary resolves fine, but the ACTUAL model call fails
+  later with a retryable-class error): the role's `fallback` sub-key is
+  attached to the child as a ONE-ENTRY **raw, unresolved** list via a new
+  `override_fallback_chain` kwarg threaded through
+  `_build_child_agent()` → `AIAgent(fallback_model=...)` — the exact same
+  shape and lazy-resolve contract the top-level `fallback_providers`
+  config already uses. `override_fallback_chain` REPLACES (never merges
+  with) the existing parent-chain-inheritance precedence: `None` (every
+  pre-existing caller) leaves that precedence untouched; a chain — even an
+  explicit empty one — takes priority. This is what makes a role's
+  fallback independent of whatever the parent session happens to be
+  running on. The retryable-vs-non-retryable distinction is made entirely
+  by the PRE-EXISTING `agent/error_classifier.py::classify_api_error()` /
+  `agent/chat_completion_helpers.py::try_activate_fallback()` pair — zero
+  new classification code. Exhaustion of this one-entry chain (fallback
+  also fails at runtime) surfaces as a normal failed turn result, matching
+  how the global chain already behaves on exhaustion — not a second raise.
+
+**Verification:** `ruff`/syntax-clean on both touched files. New behavior-
+contract suites: `tests/tools/test_delegate_role_fallback.py` (15 tests —
+primary-success-never-touches-fallback, construction-time credential
+failure engaging the fallback with isolated credentials, both-fail loud
+raise naming both, fallback-requires-a-primary-provider, and two **real
+temp-`HERMES_HOME`** E2E tests parsing an actual `config.yaml` with a
+`fallback` sub-key through `get_role_entry_map()` into dispatch) and
+`tests/run_agent/test_role_fallback_runtime_activation.py` (4 tests — a
+real `AIAgent.run_conversation()` loop proving a 429/quota-exhaustion
+error activates the attached role fallback, a non-retryable `NameError`
+does NOT, and a fallback that itself fails to resolve exhausts loud with
+no third attempt). Full regression sweep: `test_delegate_role_provider.py`
++ the new fallback suites + `test_provider_fallback.py` +
+`test_32646_fallback_429_after_timeout.py` + `test_personas.py` +
+`test_ruflo_agents.py` — **337 passed, 9 skipped, 0 failed**.
+
+**Behavior change for existing configs: none.** A role entry with no
+`fallback` sub-key produces `override_fallback_chain=None`, which is the
+exact byte-identical precedence path every pre-existing caller already
+takes — dispatch for every currently-configured role is unchanged.
+
+**Merge note:** fork-local, layered directly on top of the 2026-08-23
+provider-aware per-role pin feature (same files, same isolation
+invariant). Upstream has no per-role fallback concept at all — this is
+purely additive to the fork's own `model_by_role` extension and does not
+touch upstream's `fallback_providers`/`fallback_model` mechanism beyond
+reusing its existing, unmodified activation code.
+
 ### TODO — no opt-out for the adaptive/medium reasoning-effort default (flagged 2026-08-25, pre-existing since d394e56ec6)
 
 **Problem.** `agent/anthropic_adapter.py`'s `build_anthropic_kwargs` (~line
