@@ -404,6 +404,22 @@ DEFAULT_CONFIG = {
         # it here without patching the built desktop app.
         "font_family": "",
         "timeout": 180,
+        # Ceiling (seconds) for process(action="wait", timeout=N) -- the
+        # background-process waiter used alongside terminal(background=true).
+        # A caller requesting more than this is clamped down to it (with a
+        # `timeout_note` explaining the clamp). This is a DISTINCT knob from
+        # `timeout` above (which only sets the *default* wait when no
+        # timeout is given). Before this setting existed, wait() silently
+        # reused `timeout` (default 180s) as both the default AND the max
+        # clampable value, forcing any caller waiting on a genuinely long
+        # background job (a 20min-2hr benchmark stage, a long build, ...)
+        # into a poll loop of repeated wait(timeout=300)-style calls every
+        # few minutes. In an LLM tool-loop each such call resends the full
+        # cached conversation prefix, so that loop silently multiplied cost
+        # with zero new information across each wake. Raise this to the
+        # length of your longest known background job (up to 3600s) to let
+        # a single wait() block for the whole thing instead of polling.
+        "wait_max_timeout": 3600,
         # Bounded grace period (seconds) between SIGTERM and an escalated
         # SIGKILL when terminating a host process tree (browser daemons, etc.).
         # A daemon that stalls in its SIGTERM handler is force-killed after this
