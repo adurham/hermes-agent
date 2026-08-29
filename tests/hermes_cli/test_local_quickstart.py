@@ -152,6 +152,25 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
     assert calls == ["assign"] or calls[-1] == "assign"
 
 
+@pytest.fixture
+def quickstart_ready(monkeypatch):
+    """Preflight passes without hardware or network: the runtime reads as
+    installed and every entry's first variant is servable, so the POST
+    reaches the single-flight lock instead of 409ing at fit/engine
+    preflight on machines where nothing fits."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.catalog.select_variant",
+        lambda entry, budget: SimpleNamespace(variant=entry.variants[0],
+                                              reason_key="best-fits"))
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.local_models._engine_too_old",
+        lambda min_engine: False)
+
+
 def test_quickstart_is_single_flight(client, quickstart_ready, monkeypatch):
     """A second quickstart while one runs must 409, not start a twin job
     (the job sequences installs, downloads, a server bounce, and a config
