@@ -4813,6 +4813,48 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # Nested-dispatch guardrail (2026-08-30): a subagent (depth >= 1) must
+    # route its OWN children through agent_type= role resolution. A bare
+    # model= string is a bypass — it lets a nested child name an arbitrary
+    # model directly, skipping the delegation.model_by_role role map that
+    # governs what a given role is allowed to run on. Reject a bare model=
+    # (no agent_type=) loudly, and drop model= when agent_type= is also
+    # present so role resolution always wins. Top-level dispatches (depth 0)
+    # and the config-driven model_by_role fallback chains are unaffected.
+    if depth >= 1:
+        # Build a fresh list so the model-drop below never rewrites the
+        # caller's own task list (the batch branch takes caller dicts
+        # verbatim when there is no top-level model/agent_type to seed).
+        _guarded = []
+        for i, task in enumerate(task_list):
+            if not isinstance(task, dict):
+                _guarded.append(task)
+                continue
+            _has_model = bool((task.get("model") or "").strip())
+            _has_agent_type = bool((task.get("agent_type") or "").strip())
+            if _has_model and not _has_agent_type:
+                return tool_error(
+                    f"Task {i}: nested delegation from a subagent requires "
+                    f"agent_type= (role resolution); a bare model= is not "
+                    f"allowed. Set agent_type= to route this child through "
+                    f"delegation.model_by_role, or drop model= to let the "
+                    f"role map pick the model."
+                )
+            if _has_model and _has_agent_type:
+                # model= alongside agent_type= is ignored in favor of role
+                # resolution — the role map is authoritative for nested
+                # children. Drop it so it can't leak into the precedence
+                # chain below.
+                logger.warning(
+                    "delegate_task: nested delegation task %d supplied both "
+                    "model=%r and agent_type=%r; ignoring model in favor of "
+                    "role resolution",
+                    i, task.get("model"), task.get("agent_type"),
+                )
+                task = {**task, "model": None}
+            _guarded.append(task)
+        task_list = _guarded
+
     # Batch-only quality gate: catch malformed fan-outs (placeholder goals,
     # unexpanded multi-word template markers, 1-task batches) before any
     # child is spawned.  The single-`goal` form is deliberately exempt —
