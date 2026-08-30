@@ -35,7 +35,8 @@
         "top-k": "20",
         "min-p": "0.0"
       },
-      "recommended": true
+      "quality": 90,
+      "decode_fraction": 1.0
     },
     {
       "id": "qwen3.8-flash-next",
@@ -76,7 +77,9 @@
         "size_bytes": 907542944,
         "local": "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
       },
-      "min_engine": "b10678"
+      "min_engine": "b10678",
+      "quality": 95,
+      "decode_fraction": 0.08
     },
     {
       "id": "qwen3.6-35b-a3b",
@@ -113,7 +116,9 @@
         "top-p": "0.95",
         "top-k": "20",
         "min-p": "0.0"
-      }
+      },
+      "quality": 80,
+      "decode_fraction": 0.15
     },
     {
       "id": "deepseek-v4-flash",
@@ -161,7 +166,9 @@
         "temp": "1.0",
         "top-p": "0.95",
         "min-p": "0.01"
-      }
+      },
+      "quality": 85,
+      "decode_fraction": 0.1
     }
   ]
 }

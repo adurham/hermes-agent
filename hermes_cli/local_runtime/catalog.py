@@ -155,7 +155,19 @@ class CatalogEntry:
     # architectures need the release where their support landed). Empty
     # means any installed engine. The pane gates download/activate on it.
     min_engine: str = ""
-    recommended: bool = False   # the catalog's default pick, one entry
+    # Editorial quality ordering (higher = smarter), authored once,
+    # globally, at catalog-authoring time — Artificial Analysis-informed
+    # where they cover the model (scripts/aa_quality_sync.py proposes,
+    # the commit decides), editorial elsewhere. Ranks entries for the
+    # per-machine recommendation; never displayed as a score (it grades
+    # the full-precision model, not our Q4 build).
+    quality: int = 0
+    # Fraction of the build's bytes read per decoded token: 1.0 for dense
+    # models (every weight streams every token), the active slice for MoE
+    # (attention + shared + routed experts over total). With memory
+    # bandwidth this predicts decode speed — the physics half of the
+    # recommendation.
+    decode_fraction: float = 1.0
 
     def profile(self, variant: QuantVariant) -> ModelProfile:
         layers = ([(LayerKind.FULL, self.per_layer_f16)] * self.full_layers
@@ -220,6 +232,88 @@ def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice
     return None
 
 
+# ── recommendation: best quality that fits and isn't miserably slow ──
+#
+# Two axes, each living where it belongs. QUALITY is a judgment made once,
+# globally, at authoring time (entry.quality — AA-informed, editorially
+# owned). SPEED is physics computed per machine: decode is memory-bound,
+# so predicted tok/s ≈ bandwidth / bytes-read-per-token, and the bytes per
+# token are the build's size scaled by its decode fraction (dense reads
+# everything; MoE reads the active slice). The pick: highest quality among
+# entries that run resident and clear a pleasant speed floor; else the
+# fastest resident entry; else the least-painful spilled one.
+#
+# The bandwidth axis is the `uma` flag for now: every discrete card that
+# matters is 900+ GB/s GDDR while the unified-memory class measures ~1/5th
+# of that, so the flag IS the high/low split. A measured per-machine
+# bandwidth (one cached memcpy probe) can replace these class constants
+# without touching the rule; predictions order candidates and gate the
+# floor — they are not display values.
+
+_DISCRETE_BANDWIDTH_GB_S = 1000.0   # representative GDDR6X/GDDR7 class
+_UMA_BANDWIDTH_GB_S = 210.0         # measured on unified-memory NVIDIA
+_HOST_BANDWIDTH_GB_S = 80.0         # spilled weights stream over host DRAM
+
+# The one editorial constant in the tree: below this predicted decode
+# speed a model stops feeling pleasant for agentic use (roughly reading
+# speed with headroom for tool-call bursts). Distinct from the growth
+# policy's 6 tok/s compress floor, which marks unusable, not unpleasant.
+PLEASANT_FLOOR_TOK_S = 20.0
+
+
+def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant,
+                           budget: HardwareBudget, *,
+                           spilled: bool = False) -> float:
+    """Memory-bound decode prediction for ordering and floor-gating."""
+    bandwidth = (_HOST_BANDWIDTH_GB_S if spilled
+                 else _UMA_BANDWIDTH_GB_S if budget.uma
+                 else _DISCRETE_BANDWIDTH_GB_S)
+    bytes_per_token = max(1.0, variant.size_bytes * entry.decode_fraction)
+    return bandwidth * 1e9 / bytes_per_token
+
+
+def recommended_entry(budget: HardwareBudget,
+                      entries: "tuple[CatalogEntry, ...] | None" = None
+                      ) -> CatalogEntry | None:
+    """The catalog's default pick for THIS machine.
+
+    Callers pass pre-filtered entries when some are ineligible for
+    reasons the catalog can't know (engine too old); default is the full
+    catalog. Returns None only when nothing fits at all.
+    """
+    pool = CATALOG if entries is None else entries
+    fitting: list[tuple[CatalogEntry, VariantChoice]] = []
+    for entry in pool:
+        choice = select_variant(entry, budget)
+        if choice is not None:
+            fitting.append((entry, choice))
+    if not fitting:
+        return None
+
+    resident = [(e, c) for e, c in fitting if c.zero_spill]
+    pleasant = [
+        (e, c) for e, c in resident
+        if predicted_decode_tok_s(e, c.variant, budget) >= PLEASANT_FLOOR_TOK_S
+    ]
+    if pleasant:
+        return max(pleasant, key=lambda t: (t[0].quality, -t[1].variant.size_bytes))[0]
+    if resident:
+        return max(resident,
+                   key=lambda t: predicted_decode_tok_s(t[0], t[1].variant, budget))[0]
+    # Everything spills: take the least painful — fastest predicted decode
+    # from host memory (MoE wins here by construction; a dense spill
+    # streams every weight over the host bus).
+    return max(fitting,
+               key=lambda t: predicted_decode_tok_s(t[0], t[1].variant, budget,
+                                                    spilled=True))[0]
+
+
+def recommended_id(budget: HardwareBudget,
+                   entries: "tuple[CatalogEntry, ...] | None" = None) -> str | None:
+    entry = recommended_entry(budget, entries)
+    return entry.id if entry is not None else None
+
+
 # ── catalog data: packaged JSON, refreshed from GitHub in memory ─
 #
 # The catalog DATA lives in catalog.json (checked in beside this module
@@ -276,7 +370,8 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
             draft=_asset_from(m.get("draft")),
             sampling=dict(m.get("sampling", {})),
             min_engine=str(m.get("min_engine", "")),
-            recommended=bool(m.get("recommended")),
+            quality=int(m.get("quality", 0)),
+            decode_fraction=float(m.get("decode_fraction", 1.0)),
         ))
     return tuple(entries)
 

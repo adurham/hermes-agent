@@ -158,14 +158,15 @@ def quickstart_ready(monkeypatch):
     installed and every entry's first variant is servable, so the POST
     reaches the single-flight lock instead of 409ing at fit/engine
     preflight on machines where nothing fits."""
-    from types import SimpleNamespace
+    from hermes_cli.local_runtime.catalog import VariantChoice
 
     monkeypatch.setattr(
         "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
     monkeypatch.setattr(
         "hermes_cli.local_runtime.catalog.select_variant",
-        lambda entry, budget: SimpleNamespace(variant=entry.variants[0],
-                                              reason_key="best-fits"))
+        lambda entry, budget: VariantChoice(variant=entry.variants[0],
+                                            zero_spill=True,
+                                            reason_key="best-fits"))
     monkeypatch.setattr(
         "hermes_cli.web_routers.local_models._engine_too_old",
         lambda min_engine: False)

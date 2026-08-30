@@ -486,6 +486,7 @@ async def local_models_catalog():
     entry is hidden; unaffordable models show WHY."""
     from hermes_cli.local_runtime.catalog import (
         CATALOG,
+        recommended_id,
         refresh_catalog_soon,
         select_variant,
     )
@@ -505,6 +506,11 @@ async def local_models_catalog():
     # Planning budget: price against machine capacity, not live-free VRAM.
     # A loaded model must not make the catalog call every row unaffordable.
     budget = probe_budget(planning=True)
+    # The default pick for THIS machine: quality-ranked, fit- and
+    # speed-gated (recommended_entry). Engine-gated entries can't be
+    # activated today, so they can't be the recommendation either.
+    eligible = tuple(e for e in CATALOG if not _engine_too_old(e.min_engine))
+    recommended = recommended_id(budget, eligible)
     # Completeness-checked staging (split parts all present) — the same
     # answer the picker and the router see, so a mid-download model never
     # reads as downloaded here.
@@ -524,7 +530,7 @@ async def local_models_catalog():
             "description": entry.description,
             "native_context": entry.n_ctx_train,
             "native_context_label": f"{entry.n_ctx_train // 1024}K",
-            "recommended": entry.recommended,
+            "recommended": entry.id == recommended,
             "downloaded": downloaded_variant is not None,
             "downloaded_model_id": downloaded_variant.model_id if downloaded_variant else None,
             "downloaded_quant": downloaded_variant.quant if downloaded_variant else None,
@@ -900,10 +906,16 @@ async def local_models_quickstart(body: QuickstartBody):
         assets_dir,
         staged_model_ids,
     )
-    from hermes_cli.local_runtime.catalog import CATALOG, catalog_by_id, select_variant
+    from hermes_cli.local_runtime.catalog import (
+        CATALOG,
+        catalog_by_id,
+        recommended_entry,
+        select_variant,
+    )
     from hermes_cli.local_runtime.hardware import probe_budget
 
-    # Resolve the target entry: explicit id, else recommended, else the
+    # Resolve the target entry: explicit id, else this machine's
+    # recommendation (quality-ranked, fit- and speed-gated), else the
     # first catalog entry this machine can serve.
     budget = probe_budget(planning=True)
     entry = None
@@ -914,7 +926,10 @@ async def local_models_quickstart(body: QuickstartBody):
                                 detail=f"unknown model {body.model_id}")
         candidates = [entry]
     else:
-        candidates = sorted(CATALOG, key=lambda e: not e.recommended)
+        eligible = tuple(e for e in CATALOG if not _engine_too_old(e.min_engine))
+        best = recommended_entry(budget, eligible)
+        candidates = ([best] if best is not None else []) + [
+            e for e in CATALOG if best is None or e.id != best.id]
     chosen = None
     for candidate in candidates:
         choice = select_variant(candidate, budget)
