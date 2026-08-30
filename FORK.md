@@ -3,6 +3,45 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-30 (role='orchestrator' with no agent_type= silently inherited the dispatching session's own model, no warning)
+
+**Problem:** a supervisor session dispatched a PM-tier subagent with
+`role='orchestrator'` intending it to run on `delegation.model_by_role.pm`
+(claude-opus-5), but omitted `agent_type='pm'`. `role` and `agent_type` are
+independent knobs — `role` grants CAPABILITY (can this child spawn its own
+children), `agent_type` is what actually routes the child through
+`delegation.model_by_role.<agent_type>` to pick its model. With no
+`agent_type`, no per-task `model=`, and no auto-route classifier hit, the
+child silently fell through to inheriting the PARENT's own model/provider
+(claude-sonnet-5, the expensive Anthropic session model) instead of the
+intended cheaper/role-pinned model. No error, no warning — the subagent ran
+~110s on the wrong model before the mistake was caught by manual
+`delegate_task(action='list')` inspection. This exact failure shape was
+already documented as a skill pitfall the day before (2026-08-29) and
+recurred verbatim, because a skill/memory note is advisory context the
+dispatching model can simply fail to consult — not an enforced guardrail.
+
+**Fix (`tools/delegate_tool.py`):** the per-task loop now checks, for every
+task, whether `effective_role == "orchestrator"` with both `agent_type` and
+`model` unset (after auto-route resolution). When true, a warning is
+appended to the existing `_roster_warnings` list — the SAME channel the
+depth-independent model-roster guardrail (see the entry below) already uses
+to surface `model_roster_warnings` in both the immediate tool-call response
+and the async completion event. No new response field, no new plumbing:
+this reuses a channel already proven to reach the dispatching model in
+front of real work happening. The check only fires on the true gap shape —
+`role='orchestrator'` + explicit `agent_type=` (correct usage),
+`role='orchestrator'` + explicit `model=` (deliberate pin), and ordinary
+`role='leaf'` dispatches with no `agent_type` (the common case) are all
+unaffected, verified by dedicated positive-control tests. Regression tests:
+`tests/tools/test_delegate_orchestrator_agent_type_gap.py` (4 new tests: the
+gap fires and warns, agent_type set suppresses it, explicit model= suppresses
+it, plain leaf dispatches are unaffected). Full existing delegate suite
+re-run clean: 397 passed, 3 skipped, one pre-existing unrelated failure in
+`test_async_delegation.py::test_delegate_task_background_batch_runs_as_one_unit`
+confirmed present on a clean `main` stash-check before this change (not a
+regression introduced here).
+
 ### Feature — 2026-08-30 (delegation personas moved from ~/.hermes-only runtime files into tracked fork source, with manifest-based bundled-vs-customized sync)
 
 **Problem:** the delegation personas (`pm` / `sr-coder` / `mid-coder` /
