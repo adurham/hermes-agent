@@ -3,6 +3,172 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-08-30 (delegation personas moved from ~/.hermes-only runtime files into tracked fork source, with manifest-based bundled-vs-customized sync)
+
+**Problem:** the delegation personas (`pm` / `sr-coder` / `mid-coder` /
+`jr-coder` / `reviewer`) that back `delegate_task`'s `agent_type` lived
+ONLY as runtime files under `~/.hermes/personas/delegation/` — tracked in
+no git repo. A `~/.hermes` wipe (or a fresh machine) destroyed them
+irrecoverably, with no way to restore the exact persona content that
+dispatch had been running on.
+
+**Fix:** moved the five delegation personas out of `~/.hermes`-only
+runtime files into tracked fork source at `personas/delegation/`, and added
+a manifest-based sync that mirrors `tools/skills_sync.py` exactly:
+- New `tools/personas_sync.py` provides `sync_personas()` (plus
+  `reset_bundled_persona()`, `diff_bundled_persona()`,
+  `list_user_modified_bundled_personas()`, and the opt-out
+  `set_bundled_personas_opt_out()` / `is_bundled_personas_opt_out()`),
+  seeding bundled personas into `~/.hermes/personas/` with a manifest at
+  `~/.hermes/personas/.bundled_manifest` (entries `delegation/pm.md:<md5>`).
+- Customization is preserved: a persona the user edited is never
+  overwritten by a bundled update (it's skipped and surfaced as
+  `user_modified`); a persona the user deleted is not re-added.
+- New `hermes_constants.get_bundled_personas_dir()` (mirroring
+  `get_bundled_skills_dir()`); seeding is wired into `hermes_cli/setup.py`
+  alongside the existing skills seeding in `_blank_slate_walkthrough`.
+
+**Tests:** new `tests/tools/test_personas_sync.py` (9 tests, all passing);
+all 34 pre-existing `skills_sync` tests still pass. The live first-ever
+sync against the real `~/.hermes/personas/` was verified behind a backup +
+md5 gate: all 5 personas were already present locally with content
+byte-identical to the bundled source, so they were adopted into the
+manifest without a write (no copy, no rewrite), and a second sync run was a
+clean no-op — idempotent on the real dir.
+
+**Not included, flagged as a follow-up if wanted:** `skills_hub.py` CLI
+subcommand wiring for personas was intentionally SKIPPED this pass. The
+sync/reset/diff functions exist and are unit-tested; the CLI surface was
+deferred as large/low-value.
+
+### Fix — 2026-08-30 (stale model strings silently accepted at top-level dispatch + hardcoded tier literals that drift stale every generation)
+
+**Problem:** earlier today the TOP-LEVEL session (depth 0 — the main
+supervisor conversation, not a subagent) dispatched `delegate_task` with
+`model="claude-opus-4-7"` — a stale/deprecated string typed from the
+assistant's memory. The harness silently accepted it and ran a real
+subagent on it: no warning, no rejection, no cross-check against the
+current model roster. This was the second bad dispatch of its class in
+one session — the first (a nested subagent passing a bare `model=`
+string) was already fixed by the depth-gated guardrail in
+`9d3311cfca`, but that guardrail's `if depth >= 1:` gate left the
+top-level session, the most common dispatch site, completely exposed to
+the exact same mistake. Root cause on the constants side: the same three
+stale gen-4 literals (`claude-haiku-4-5` / `claude-sonnet-4-6` /
+`claude-opus-4-7`) were hardcoded in TWO files —
+`hermes_cli/persona_library.py` (`_HAIKU`/`_SONNET`/`_OPUS`, feeding
+`SUGGESTED_ROLE_MODELS`, which `/delegation defaults` writes into the
+user's `delegation.model_by_role` config) and
+`hermes_cli/delegation_stats.py` (`_TIER_RANK`/`_RANK_TIER`, built at
+import time) — while the live config roster had already moved to gen-5.
+The suggestion engine additionally only ranked the Anthropic
+haiku/sonnet/opus ladder, so it silently produced ZERO suggestions for
+the ollama-cloud models actually running the fleet (`pm@glm-5.3` at 57%
+success over n=7 in the real stats file — never surfaced).
+
+**Fix, part 1 — depth-independent roster validation
+(`tools/delegate_tool.py`):** the depth-gated guardrail was unified into
+ONE code path that validates caller-supplied `model=` at every depth
+against a "known current models" roster built once per call
+(`_build_model_roster`): all `delegation.by_provider.*.model`, top-level
+`delegation.model`, `delegation.model_by_role` entries + nested
+`fallback.model` (via `get_role_entry_map()`), the resolved batch default
+(`creds["model"]`), and the parent's live model. Matching is
+case-insensitive and provider-prefix-tolerant (`anthropic/claude-opus-5`
+≡ `claude-opus-5`). Per task:
+- bare `model=` at depth ≥ 1 → rejected (unchanged nested rule — role
+  governance fires regardless of roster validity);
+- bare `model=` at depth 0 NOT in the roster → REJECTED with an
+  actionable error naming the task index, the offending string, and
+  where to find roster models;
+- `model=` + `agent_type=` where the model is NOT in the roster → the
+  model is DROPPED in favor of role resolution and a warning is
+  surfaced in the tool result JSON (`model_roster_warnings`, attached to
+  both the immediate background-dispatch payload and the consolidated
+  completion result) — the drop is visible at every depth, not just
+  logged;
+- roster-valid models at depth 0 pass through unchanged (explicit pin
+  wins), and the nested drop of roster-valid `model=` alongside
+  `agent_type=` keeps its exact prior semantics.
+FAIL-OPEN on an empty config roster (fresh install, sandboxed test
+home, broken config): depth-0 roster validation is skipped (debug-logged)
+— with no roster there is nothing to be stale AGAINST, and fail-closed
+would break every legitimate dispatch in unconfigured environments.
+Every roster lookup is individually exception-guarded so a broken config
+can never take delegation down. The caller's task dicts are never
+mutated (fresh list built, as before).
+
+**Fix, part 2 — single source of truth for tier anchors (new
+`hermes_cli/model_tiers.py`):** the three tier literals now live in
+exactly ONE place (`LAST_KNOWN_GOOD_TIERS`), explicitly labeled
+last-known-good. `persona_library.py`'s `_HAIKU`/`_SONNET`/`_OPUS`
+derive from it, and `apply_suggested_defaults()` re-resolves each
+table value's tier family against the LIVE config roster at write time
+(`resolve_tier_model()`, deterministic first-match precedence:
+`by_provider` → `model_by_role` primary → nested fallback → top-level
+`delegation.model`), so `/delegation defaults` can never write a stale
+generation into the user's config when the roster has moved.
+`delegation_stats.py`'s rank maps are now built at CALL time from the
+same resolver, so suggestions fire for roster-current models instead
+of silently skipping them. `models.py` / `setup.py` / `hooks.py`
+hardcoded literals were audited and confirmed a different class (UI
+picker catalogs and sample hook payloads) — untouched.
+
+**Fix, part 3 — suggestions for non-Anthropic models
+(`hermes_cli/delegation_stats.py` + `hermes_cli/model_tiers.py`):**
+`suggest_retunes()` now recognizes a second, LOCAL ladder derived from
+explicit role anchors (`ROLE_TIER_GROUPS`: jr-coder=0, mid-coder=1,
+sr-coder=2, pm=2) resolved live from `model_by_role`, with a
+suffix-variant heuristic (`-flash`/`-mini`/`-fast` → base_rank−1) for
+unanchored variants like `glm-5.3-flash`. Promote/demote move within
+the SAME ladder (no cross-ladder jumps; an Anthropic primary pinned to
+an anchor role can never join the local ladder — `family_of()` guard).
+Top-of-local-ladder escalation uses the role's CONFIGURED fallback as
+the target, with three guards from a design review: only when the
+aggregate's model equals that role's actual primary, only when a nested
+fallback exists, and labeled `direction="escalate"` with the reason
+naming it as the configured fallback — keeping availability-failover
+semantics distinct from in-ladder capability promotes.
+
+**Tests:** new `tests/tools/test_delegate_model_roster_guardrail.py`
+(13 tests: depth-0 stale rejection in batch + single-goal form,
+stale+agent_type drop-with-warning, roster-valid pass-through positive
+controls, fail-open on empty roster, fallback-only and other-provider
+roster sources, prefix/case normalization, nested-behavior
+preservation). New `tests/hermes_cli/test_model_tiers.py` (28 tests:
+resolver precedence, last-known-good fallback, the gen-6 drift
+tripwire — seeds a NEXT-generation roster and asserts the resolver,
+`apply_suggested_defaults`, and `suggest_retunes` all return gen-6
+models, failing loudly if hardcoded drift is ever reintroduced — plus
+local-ladder ranking, escalation guards, and ladder purity). All 9
+pre-existing nested-guardrail tests pass unmodified; full delegate
+regression suite (223 tests) and personas/ruflo/stats suites green;
+ruff clean; basedpyright: 0 new errors (3 pre-existing in
+`personas.py`, 1 trivial type-arg in the new test file).
+
+Verified against the live config by direct replay: the exact incident
+dispatch (`model="claude-opus-4-7"`, depth 0) is now rejected
+(`Task 0: model='claude-opus-4-7' is not in the current model roster…`),
+the same string alongside `agent_type="mid-coder"` is dropped with a
+visible `model_roster_warnings` entry, and roster-valid
+`claude-opus-5` passes through untouched.
+
+**Untagged-stats finding (flagged, not fixed this pass):** 170/386
+records in `~/.hermes/delegation_stats.json` have `role=""`. Root cause:
+`record()` (delegate_tool.py, `_run_single_child` completion path)
+reads `child._delegate_agent_type`, which `_build_child_agent` stashes
+only from the `agent_type=` parameter — any dispatch that names no
+`agent_type` (bare goal dispatches, top-level `model=`-only dispatches)
+lands in the "(untagged)" bucket by design. These records are NOT purely
+historical — they span the file's full date range interleaved with
+tagged records, so this is an ongoing behavior, not legacy data. Two
+records additionally have `role="<MagicMock name='mock._delegate_agent_type'>"` —
+test pollution from a test-run that wasn't sandboxed into a temp
+`HERMES_HOME` before `record()`'s env guard existed or was bypassed;
+worth a follow-up to thread `effective_role` (leaf/orchestrator) into
+the stat when `agent_type` is absent, and to strip the MagicMock entries
+from the real stats file.
+
 ### Fix — 2026-08-30 (a subagent could bypass role resolution entirely via a bare model= on its own nested dispatch)
 
 **Problem:** `delegate_task`'s per-task model precedence chain let a bare

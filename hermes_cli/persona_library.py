@@ -236,18 +236,30 @@ def group_by_category(
 # ---------------------------------------------------------------------------
 #
 # Mapping rules:
-#   Haiku 4.5  — cheap retrieval / triage / monitors / scanners / glue.
-#                Anything that mostly reads state, routes work, emits status.
-#   Sonnet 4.6 — balanced default for code work: coders, testers, reviewers,
-#                research roles that fan out across multiple sources (the
-#                1M-context tier prevents mid-task compaction).
-#   Opus 4.7   — deep reasoning: architecture, security, novel algorithm
-#                design, complex consensus, multi-step planning under
-#                uncertainty.
+#   Haiku  — cheap retrieval / triage / monitors / scanners / glue.
+#            Anything that mostly reads state, routes work, emits status.
+#   Sonnet — balanced default for code work: coders, testers, reviewers,
+#            research roles that fan out across multiple sources (the
+#            1M-context tier prevents mid-task compaction).
+#   Opus   — deep reasoning: architecture, security, novel algorithm
+#            design, complex consensus, multi-step planning under
+#            uncertainty.
+#
+# The concrete model strings are NOT hardcoded here. Each role maps to a
+# last-known-good literal that also encodes its tier family
+# (``claude-haiku-*`` / ``claude-sonnet-*`` / ``claude-opus-*``); the actual
+# model string written/displayed is re-resolved at call time from the live
+# delegation config roster by :mod:`hermes_cli.model_tiers` (see
+# ``resolve_tier_model``), falling back to these literals when the roster has
+# nothing for a family. This is the single source of truth shared with
+# :mod:`hermes_cli.delegation_stats`, so a generation bump can never leave
+# one surface writing stale models while the other silently stops firing.
 
-_HAIKU = "claude-haiku-4-5"
-_SONNET = "claude-sonnet-4-6"
-_OPUS = "claude-opus-4-7"
+from hermes_cli.model_tiers import LAST_KNOWN_GOOD_TIERS
+
+_HAIKU = LAST_KNOWN_GOOD_TIERS["haiku"]
+_SONNET = LAST_KNOWN_GOOD_TIERS["sonnet"]
+_OPUS = LAST_KNOWN_GOOD_TIERS["opus"]
 
 SUGGESTED_ROLE_MODELS: Dict[str, str] = {
     # ── Haiku — pure retrieval / triage / monitors / scanners / glue ──────
