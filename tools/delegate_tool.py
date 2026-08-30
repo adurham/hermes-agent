@@ -5202,6 +5202,31 @@ def delegate_task(
             _auto_agent_type = (_route.get("agent_type") or "").strip() or None
             if _auto_agent_type:
                 task_agent_type = _auto_agent_type
+        # Orchestrator-without-agent_type gap (2026-08-30 incident): role=
+        # grants CAPABILITY (can this child spawn its own children) and is
+        # entirely independent of agent_type=, which is what actually routes
+        # the child through delegation.model_by_role.<agent_type> to pick its
+        # MODEL. Dispatching role='orchestrator' with no agent_type (and no
+        # explicit model, and auto-route didn't fill one in either) silently
+        # falls through to inheriting the PARENT's own model/provider — no
+        # error, no warning previously, just the wrong model running. Surface
+        # it through the same _roster_warnings channel so it lands in BOTH
+        # the immediate tool-call response (model_roster_warnings) and the
+        # completion event, in front of the dispatching model before the
+        # child has done any real work.
+        if (
+            effective_role == "orchestrator"
+            and task_agent_type is None
+            and task_model_explicit is None
+        ):
+            _roster_warnings.append(
+                f"Task {i}: role='orchestrator' with no agent_type= (and no "
+                f"explicit model=) — this child will silently INHERIT the "
+                f"parent's own model/provider instead of routing through "
+                f"delegation.model_by_role. If you intended a specific "
+                f"configured role's model (e.g. the 'pm' persona), pass "
+                f"agent_type=<role> alongside role='orchestrator'."
+            )
         # Role aliases (hermes_cli.personas.ROLE_ALIASES, e.g.
         # "sr-coder" -> "coder"): a role that is a pure synonym carries no
         # config of its own, so the config key its entry actually lives
