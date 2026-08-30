@@ -25894,6 +25894,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         last_output_len = 0
+        # Persists the first-held monotonic timestamp across poll iterations so
+        # the max-hold bound accumulates even though completion_evt is rebuilt
+        # every loop and the shared helper's stamp would otherwise be discarded.
+        _held_at = None
         while True:
             await asyncio.sleep(interval)
 
@@ -25948,6 +25952,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "completion_reason": getattr(session, "completion_reason", "exited"),
                         "termination_source": getattr(session, "termination_source", ""),
                         "output": _out,
+                        # The child's REAL subagent identity ("sa-N-...").
+                        # Without it the liveness gate below (and the
+                        # format_process_notification delegation-attribution
+                        # line) would have nothing to resolve. Matches the
+                        # task_id that drain_notifications / the TUI poller
+                        # use, so all three consumers gate on the same key.
+                        "task_id": getattr(session, "task_id", "") or "",
                         # Spawning conversation's session-db id (stamped at
                         # spawn time in terminal_tool). Lets the delivery
                         # pre-flight drop this completion when the user closed
@@ -25958,6 +25969,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             or ""
                         ),
                     }
+                    # Liveness gate (mirrors drain_notifications / the TUI
+                    # poller): a subagent-owned completion whose owning subagent
+                    # is STILL running must not bubble into the top-level chat
+                    # mid-task. The child's real identity lives in task_id
+                    # ("sa-N-...") while session_key carries the parent's key;
+                    # completion_evt now carries both, so owner liveness is
+                    # resolvable here. Hold — `continue` retries on the next
+                    # interval instead of delivering or breaking; the event is
+                    # never dropped, and once the owner exits the next poll
+                    # delivers it exactly as today (mirrors the existing
+                    # `if delivered is False: continue` retry pattern below).
+                    # Bounded by the SAME max-hold as drain_notifications so a
+                    # wedged-but-alive child cannot pin the notification forever.
+                    from tools.process_registry import (
+                        _EVENT_HELD_AT_KEY,
+                        should_hold_completion_event,
+                    )
+
+                    # completion_evt is rebuilt every poll, so the shared
+                    # helper's internal hold stamp would be lost on continue.
+                    # Restore the persisted first-held timestamp so the TTL
+                    # bound accumulates across iterations.
+                    if _held_at is not None:
+                        completion_evt[_EVENT_HELD_AT_KEY] = _held_at
+                    if should_hold_completion_event(completion_evt):
+                        if _held_at is None:
+                            _held_at = completion_evt.get(_EVENT_HELD_AT_KEY)
+                        continue
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
                         break

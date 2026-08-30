@@ -64,6 +64,22 @@ FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
 MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
 
+# Liveness-gate max-hold for subagent-owned completion events. A completion
+# event whose owning subagent is still running is held (requeued) in
+# drain_notifications so it doesn't bubble into the top-level chat mid-task.
+# A wedged-but-alive child must not pin the event forever, so once the hold
+# exceeds this bound the event is released to the parent regardless of
+# liveness. Matches the FINISHED_TTL_SECONDS convention (30 minutes).
+_EVENT_MAX_HOLD_SECONDS = 1800
+# Key stamped on a held event dict the first time it is gated, so the hold
+# duration is measured from first-hold rather than from enqueue time.
+_EVENT_HELD_AT_KEY = "_event_held_at_monotonic"
+
+
+def _monotonic() -> float:
+    """Monotonic clock used for the liveness-gate max-hold bound."""
+    return time.monotonic()
+
 # Watch pattern rate limiting — PER SESSION.
 # Hard rule: at most ONE watch-match notification every WATCH_MIN_INTERVAL_SECONDS.
 # Any match arriving inside that cooldown window is dropped and counted as a strike.
@@ -1699,6 +1715,20 @@ class ProcessRegistry:
                 evt = self.completion_queue.get_nowait()
             except Exception:
                 break
+            # Liveness gate: a completion event whose owning subagent is
+            # still running must NOT bubble into the top-level chat mid-task.
+            # The child's real identity lives in task_id ("sa-N-xxxxxxxx")
+            # while session_key carries the parent's key (contextvar
+            # inheritance), so every downstream consumer would otherwise
+            # positively match ownership and consume it immediately. Hold
+            # (requeue) it while the owner is alive; release once the owner
+            # exits (orphan path, attribution intact). Bounded by a max-hold
+            # so a wedged-but-alive child cannot pin the event forever.
+            # Scoped to "completion" ONLY — watch_match and other types are
+            # deliberately not gated (separate product question).
+            if should_hold_completion_event(evt):
+                requeue.append(evt)
+                continue
             # Positive-proof ownership beats bare key equality. Delegation
             # payloads always require proof; ordinary events require it once
             # they carry routing metadata. Ownerless ordinary events preserve
@@ -3013,6 +3043,64 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append("Partial output:")
             lines.append(summary)
     return "\n".join(lines)
+
+
+def event_owner_still_running(evt: dict) -> bool:
+    """True when a completion event's owning subagent is still live.
+
+    A subagent's background-process completion event carries the PARENT's
+    session_key (contextvar inheritance) while the child's real identity sits
+    in ``task_id`` (``sa-N-xxxxxxxx``). drain_notifications routes only on
+    session_key and never reads task_id, so a still-running subagent's
+    completion notification would otherwise bubble straight into the
+    top-level chat. This predicate resolves liveness against the live
+    subagent registry so the drain can hold the event until the owner exits.
+
+    Returns True only when ``task_id`` is a string starting with ``sa-`` AND
+    that id is currently present among the live subagents. Fails open
+    (returns False) on any exception so that if delegate_tool is unavailable
+    the behavior is byte-identical to today.
+    """
+    task_id = evt.get("task_id")
+    if not isinstance(task_id, str) or not task_id.startswith("sa-"):
+        return False
+    try:
+        from tools.delegate_tool import list_active_subagents
+
+        for record in list_active_subagents():
+            if record.get("subagent_id") == task_id:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def should_hold_completion_event(evt: dict) -> bool:
+    """True when a completion event must be held because its owning subagent
+    is still running.
+
+    Shared liveness-gate helper used by every completion consumer —
+    ``drain_notifications`` (CLI), the raw TUI gateway poller
+    (``tui_gateway/server.py``), and the gateway ``_run_process_watcher``
+    agent-notify path — so all three agree on hold semantics.
+
+    Returns False unless the event is a ``completion`` whose owner is still
+    live (``event_owner_still_running``). On first hold it stamps the
+    ``_event_held_at_monotonic`` key on the event so the hold duration is
+    measured from first-hold rather than from enqueue time. Returns True
+    only while the hold remains under the max-hold bound; once the bound is
+    exceeded (a wedged-but-alive child must not pin the event forever) it
+    returns False, releasing the event to the parent regardless of liveness.
+    """
+    if evt.get("type") != "completion":
+        return False
+    if not event_owner_still_running(evt):
+        return False
+    held_at = evt.get(_EVENT_HELD_AT_KEY)
+    if held_at is None:
+        held_at = _monotonic()
+        evt[_EVENT_HELD_AT_KEY] = held_at
+    return _monotonic() - held_at < _EVENT_MAX_HOLD_SECONDS
 
 
 def _delegation_attribution_line(evt: dict) -> "str | None":

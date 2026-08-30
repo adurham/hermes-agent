@@ -10171,6 +10171,27 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _notification_event_should_hold_for_liveness(evt: dict) -> bool:
+    """True when a completion event must be held (requeued) because its owning
+    subagent is still running.
+
+    Mirrors the drain_notifications liveness gate in tools/process_registry.py
+    so the raw TUI poller and the drain agree on hold semantics. A completion
+    event whose owning subagent is STILL running must not bubble into the
+    top-level chat mid-task. The child's real identity lives in task_id
+    ("sa-N-...") while session_key carries the parent's key, so the ownership
+    checks would otherwise positively match and consume it immediately.
+
+    Bounded by the SAME max-hold as drain_notifications (a wedged-but-alive
+    child cannot pin the event forever) and stamps the SAME hold key, so the
+    two consumers agree on hold duration. Scoped to "completion" ONLY —
+    watch_match and other types are deliberately not gated.
+    """
+    from tools.process_registry import should_hold_completion_event
+
+    return should_hold_completion_event(evt)
+
+
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds too so
 # the cursor advances past them and they can't wedge a later completed/blocked
 # event behind an unclaimed row.
@@ -10512,6 +10533,23 @@ def _notification_poller_loop(
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
+            continue
+
+        # Liveness gate (mirrors drain_notifications): a completion event whose
+        # owning subagent is STILL running must not bubble into the top-level
+        # chat mid-task. The child's real identity lives in task_id ("sa-N-...")
+        # while session_key carries the parent's key, so the ownership checks
+        # below would otherwise positively match and consume it immediately.
+        # Hold (requeue) it while the owner is alive; release once the owner
+        # exits. Bounded by the SAME max-hold as drain_notifications so a
+        # wedged-but-alive child cannot pin the event forever and both
+        # consumers agree on hold semantics. Scoped to "completion" ONLY.
+        if _notification_event_should_hold_for_liveness(evt):
+            process_registry.completion_queue.put(evt)
+            # Back off before re-polling: the re-queued event keeps the
+            # queue non-empty, so without a sleep this loop would spin at
+            # full speed (100% CPU, GIL churn) re-fetching the same event.
+            time.sleep(0.1)
             continue
 
         # Multiple desktop sessions share this one process-wide queue. Only
