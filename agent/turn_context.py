@@ -646,10 +646,26 @@ def build_turn_context(
     _preview_text = summarize_user_message_for_log(user_message)
     _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
     _msg_preview = _msg_preview.replace("\n", " ")
+    # Delegation identity (role / ruflo persona), stashed on the child by
+    # tools/delegate_tool._build_child_agent (``_delegate_role`` /
+    # ``_delegate_agent_type``). Only subagents carry these — the TOP-LEVEL
+    # main session has no delegation role or persona, so getattr defaults
+    # keep this line safe for every non-subagent agent (CLI, gateway, cron,
+    # test fakes) without touching their construction paths. This is the
+    # only per-turn log site where "which role was this session dispatched
+    # as" is answerable from agent.log alone — model= alone is ambiguous
+    # when several roles share one default model (e.g. pm and coder both
+    # defaulting to glm-5.3 on ollama-cloud).
+    _agent_type = getattr(agent, "_delegate_agent_type", None)
+    _delegate_role = getattr(agent, "_delegate_role", None)
     logger.info(
-        "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
+        "conversation turn: session=%s model=%s provider=%s platform=%s "
+        "agent_type=%s role=%s history=%d msg=%r",
         agent.session_id or "none", agent.model, agent.provider or "unknown",
-        agent.platform or "unknown", len(conversation_history or []),
+        agent.platform or "unknown",
+        _agent_type if isinstance(_agent_type, str) and _agent_type else "none",
+        _delegate_role if isinstance(_delegate_role, str) and _delegate_role else "none",
+        len(conversation_history or []),
         _msg_preview,
     )
 
