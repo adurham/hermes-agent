@@ -357,6 +357,15 @@ def sync_from_ruflo(
 def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
     """Bulk-apply :data:`SUGGESTED_ROLE_MODELS` to ``delegation.model_by_role``.
 
+    Each suggested value is a last-known-good literal that also encodes its
+    tier family (``claude-haiku-*`` / ``claude-sonnet-*`` / ``claude-opus-*``).
+    Before writing, the family is parsed from the literal and re-resolved
+    against the LIVE delegation config roster via
+    :func:`hermes_cli.model_tiers.resolve_tier_model`, so the value written
+    is the roster-current model for that tier when one exists — never a
+    silently stale generation. When the roster has nothing for a family, the
+    last-known-good literal itself is written (unchanged behavior).
+
     Args:
         overwrite: When True, replace existing assignments.  When False
             (default), only fill in roles that have no current assignment —
@@ -366,6 +375,8 @@ def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
         ``(applied, skipped)`` — counts of roles updated and roles whose
         existing assignment was kept (or that weren't in the suggested map).
     """
+    from hermes_cli.model_tiers import family_of, resolve_tier_model
+
     current = get_role_entry_map()
     merged: dict[str, object] = {}
     for role, entry in current.items():
@@ -380,6 +391,11 @@ def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
     applied = 0
     skipped = 0
     for role, model in SUGGESTED_ROLE_MODELS.items():
+        # Derive the tier family from the literal and refresh it against the
+        # live roster so we never write a stale generation into the config.
+        family = family_of(model)
+        if family is not None:
+            model = resolve_tier_model(family)
         if not overwrite and role in current:
             skipped += 1
             continue

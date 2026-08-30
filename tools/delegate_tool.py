@@ -31,7 +31,7 @@ import weakref
 from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlsplit, urlunsplit
 
 from toolsets import TOOLSETS
@@ -4568,6 +4568,115 @@ def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def _normalize_roster_model(model: Any) -> Optional[str]:
+    """Normalize a model string for roster matching.
+
+    Strips surrounding whitespace and any leading provider-prefix segment
+    (``"something/"``), then lowercases, so ``"anthropic/claude-opus-5"``
+    matches a roster entry ``"claude-opus-5"``. Returns None for
+    empty/whitespace values (treated as absent).
+    """
+    if not isinstance(model, str):
+        return None
+    s = model.strip()
+    if not s:
+        return None
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1]
+    return s.lower()
+
+
+def _build_model_roster(
+    cfg: Dict[str, Any], creds: Dict[str, Any], parent_agent
+) -> tuple[Set[str], bool]:
+    """Build the 'known current models' roster for one delegate_task call.
+
+    Returns ``(known_models, has_config_roster)`` where ``known_models`` is
+    the normalized set of models the current config knows about, plus the
+    resolved batch default and the parent's live model; and
+    ``has_config_roster`` is True only when at least one CONFIG-DERIVED
+    model (``delegation.by_provider`` / top-level ``delegation.model`` /
+    ``delegation.model_by_role``) was found.
+
+    ``has_config_roster`` drives fail-open: when False there is no config
+    to be stale AGAINST, so the depth-0 roster-validity check is skipped
+    and delegation behaves exactly as before. ``parent_agent.model`` and
+    ``creds["model"]`` are permissive matchers (a task model matching the
+    parent's own running model is clearly not stale) but never the sole
+    basis for activating validation — the parent is always running on
+    something, so counting it would make the roster never empty and defeat
+    fail-open.
+
+    Every lookup is individually exception-guarded so a broken config can
+    never take delegation down.
+    """
+    known: Set[str] = set()
+    has_config_roster = False
+
+    # (a) delegation.by_provider.<p>.model for every provider block.
+    try:
+        by_provider = cfg.get("by_provider") or {}
+        if isinstance(by_provider, dict):
+            for _block in by_provider.values():
+                if isinstance(_block, dict):
+                    _m = _normalize_roster_model(_block.get("model"))
+                    if _m:
+                        known.add(_m)
+                        has_config_roster = True
+    except Exception:
+        logger.debug("delegate_task: by_provider roster scan failed", exc_info=True)
+
+    # (b) top-level delegation.model (legacy).
+    try:
+        _m = _normalize_roster_model(cfg.get("model"))
+        if _m:
+            known.add(_m)
+            has_config_roster = True
+    except Exception:
+        logger.debug("delegate_task: top-level model roster scan failed", exc_info=True)
+
+    # (c) delegation.model_by_role entries (get_role_entry_map) — each
+    # entry's model plus its nested fallback dict's model.
+    try:
+        from hermes_cli.ruflo_agents import get_role_entry_map
+
+        _entry_map = get_role_entry_map()
+        if isinstance(_entry_map, dict):
+            for _entry in _entry_map.values():
+                if not isinstance(_entry, dict):
+                    continue
+                _m = _normalize_roster_model(_entry.get("model"))
+                if _m:
+                    known.add(_m)
+                    has_config_roster = True
+                _fb = _entry.get("fallback")
+                if isinstance(_fb, dict):
+                    _fm = _normalize_roster_model(_fb.get("model"))
+                    if _fm:
+                        known.add(_fm)
+                        has_config_roster = True
+    except Exception:
+        logger.debug("delegate_task: model_by_role roster scan failed", exc_info=True)
+
+    # (d) creds["model"] (the resolved batch default) — permissive matcher.
+    try:
+        _m = _normalize_roster_model(creds.get("model"))
+        if _m:
+            known.add(_m)
+    except Exception:
+        logger.debug("delegate_task: creds model roster scan failed", exc_info=True)
+
+    # (e) parent_agent.model (the live running model) — permissive matcher.
+    try:
+        _m = _normalize_roster_model(getattr(parent_agent, "model", None))
+        if _m:
+            known.add(_m)
+    except Exception:
+        logger.debug("delegate_task: parent model roster scan failed", exc_info=True)
+
+    return known, has_config_roster
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -4813,26 +4922,61 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
-    # Nested-dispatch guardrail (2026-08-30): a subagent (depth >= 1) must
-    # route its OWN children through agent_type= role resolution. A bare
-    # model= string is a bypass — it lets a nested child name an arbitrary
-    # model directly, skipping the delegation.model_by_role role map that
-    # governs what a given role is allowed to run on. Reject a bare model=
-    # (no agent_type=) loudly, and drop model= when agent_type= is also
-    # present so role resolution always wins. Top-level dispatches (depth 0)
-    # and the config-driven model_by_role fallback chains are unaffected.
-    if depth >= 1:
-        # Build a fresh list so the model-drop below never rewrites the
-        # caller's own task list (the batch branch takes caller dicts
-        # verbatim when there is no top-level model/agent_type to seed).
-        _guarded = []
-        for i, task in enumerate(task_list):
-            if not isinstance(task, dict):
-                _guarded.append(task)
-                continue
-            _has_model = bool((task.get("model") or "").strip())
-            _has_agent_type = bool((task.get("agent_type") or "").strip())
-            if _has_model and not _has_agent_type:
+    # Model-roster guardrail (2026-08-30): validate caller-supplied model=
+    # strings against the live config model roster at EVERY delegation depth,
+    # closing the depth-0 gap where a stale model string (e.g. a deprecated
+    # "claude-opus-4-7" typed from assistant memory) was silently accepted
+    # and a real subagent ran on it. The roster is the set of models the
+    # current config knows about (delegation.by_provider, top-level
+    # delegation.model, delegation.model_by_role incl. nested fallbacks) plus
+    # the resolved batch default and the parent's live model. A model
+    # matching ANY of these is "known current".
+    #
+    # Nested semantics (depth >= 1) are preserved exactly: a bare model= with
+    # no agent_type= is REJECTED (role governance — a nested child must route
+    # through agent_type= role resolution), and model= alongside agent_type=
+    # is DROPPED in favor of role resolution. At depth 0, a bare model= that
+    # is NOT in the roster is now REJECTED with an actionable error, and a
+    # model= alongside agent_type= that is NOT in the roster is DROPPED with a
+    # visible warning (role resolution wins). Roster-valid depth-0 models pass
+    # through unchanged (explicit pin wins).
+    #
+    # FAIL-OPEN: when the config roster is empty (no config, fresh install,
+    # sandboxed test home, or all lookups fail) the depth-0 roster-validity
+    # check is skipped entirely and delegation behaves exactly as before —
+    # with no roster there is nothing to be stale AGAINST, and fail-closed
+    # would break every legitimate dispatch in unconfigured/test
+    # environments. The nested (depth>=1) role-governance rules are NOT gated
+    # on the roster: they fire unconditionally.
+    _known_models, _has_config_roster = _build_model_roster(cfg, creds, parent_agent)
+    _roster_warnings: List[str] = []
+    if not _has_config_roster:
+        logger.debug(
+            "delegate_task: no config model roster found; depth-0 model "
+            "roster validation skipped (fail-open)"
+        )
+    # Build a fresh list so the model-drop below never rewrites the caller's
+    # own task list (the batch branch takes caller dicts verbatim when there
+    # is no top-level model/agent_type to seed).
+    _guarded = []
+    for i, task in enumerate(task_list):
+        if not isinstance(task, dict):
+            _guarded.append(task)
+            continue
+        _has_model = bool((task.get("model") or "").strip())
+        _has_agent_type = bool((task.get("agent_type") or "").strip())
+        if not _has_model:
+            _guarded.append(task)
+            continue
+        _model_str = str(task.get("model") or "").strip()
+        _stale = _has_config_roster and (
+            _normalize_roster_model(_model_str) not in _known_models
+        )
+        if not _has_agent_type:
+            # Bare model= (no agent_type=).
+            if depth >= 1:
+                # Role governance: a nested child must route through
+                # agent_type= role resolution, regardless of roster validity.
                 return tool_error(
                     f"Task {i}: nested delegation from a subagent requires "
                     f"agent_type= (role resolution); a bare model= is not "
@@ -4840,20 +4984,71 @@ def delegate_task(
                     f"delegation.model_by_role, or drop model= to let the "
                     f"role map pick the model."
                 )
-            if _has_model and _has_agent_type:
-                # model= alongside agent_type= is ignored in favor of role
-                # resolution — the role map is authoritative for nested
-                # children. Drop it so it can't leak into the precedence
-                # chain below.
+            if _stale:
+                return tool_error(
+                    f"Task {i}: model={_model_str!r} is not in the current "
+                    f"model roster. Use a model from delegation.by_provider "
+                    f"or delegation.model_by_role in config.yaml, or pass "
+                    f"agent_type= to route this child through role "
+                    f"resolution."
+                )
+            # Roster-valid (or no config roster) depth-0 bare model: allow
+            # (existing pass-through, unchanged).
+            _guarded.append(task)
+            continue
+        # model= alongside agent_type=.
+        if depth >= 1:
+            # Role governance: drop in favor of role resolution (regardless
+            # of roster validity). Surface a warning when the model is stale
+            # so the caller sees it was ignored as unrecognized.
+            if _stale:
+                _roster_warnings.append(
+                    f"Task {i}: model={_model_str!r} is not in the current "
+                    f"model roster and was IGNORED; role resolution "
+                    f"(agent_type={task.get('agent_type')!r}) was used "
+                    f"instead. Use a model from delegation.by_provider or "
+                    f"delegation.model_by_role in config.yaml, or drop "
+                    f"model= to let the role map pick the model."
+                )
+                logger.warning(
+                    "delegate_task: task %d supplied model=%r which is not "
+                    "in the current model roster; ignoring it in favor of "
+                    "role resolution (agent_type=%r)",
+                    i, _model_str, task.get("agent_type"),
+                )
+            else:
                 logger.warning(
                     "delegate_task: nested delegation task %d supplied both "
                     "model=%r and agent_type=%r; ignoring model in favor of "
                     "role resolution",
                     i, task.get("model"), task.get("agent_type"),
                 )
-                task = {**task, "model": None}
-            _guarded.append(task)
-        task_list = _guarded
+            task = {**task, "model": None}
+        elif _stale:
+            # depth 0 + stale: drop + surface a warning (role resolution
+            # wins; the caller must see their model string was ignored as
+            # unrecognized).
+            _roster_warnings.append(
+                f"Task {i}: model={_model_str!r} is not in the current "
+                f"model roster and was IGNORED; role resolution "
+                f"(agent_type={task.get('agent_type')!r}) was used instead. "
+                f"Use a model from delegation.by_provider or "
+                f"delegation.model_by_role in config.yaml, or drop model= "
+                f"to let the role map pick the model."
+            )
+            logger.warning(
+                "delegate_task: task %d supplied model=%r which is not in "
+                "the current model roster; ignoring it in favor of role "
+                "resolution (agent_type=%r)",
+                i, _model_str, task.get("agent_type"),
+            )
+            task = {**task, "model": None}
+        else:
+            # depth 0 + roster-valid (or no config roster): keep the model
+            # (explicit pin wins — existing precedence, unchanged).
+            pass
+        _guarded.append(task)
+    task_list = _guarded
 
     # Batch-only quality gate: catch malformed fan-outs (placeholder goals,
     # unexpanded multi-word template markers, 1-task batches) before any
@@ -5682,6 +5877,12 @@ def delegate_task(
         }
         if live_paths:
             combined["live_transcripts"] = list(live_paths)
+        # Surface any model-roster drop warnings (a caller-supplied model=
+        # that was not in the current config roster and was ignored in favor
+        # of role resolution) so the dispatching model sees them in the
+        # result JSON and corrects itself next call.
+        if _roster_warnings:
+            combined["model_roster_warnings"] = list(_roster_warnings)
         return combined
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
@@ -5934,6 +6135,11 @@ def delegate_task(
                 "goals": _goals,
                 "note": note,
             }
+            # Surface any model-roster drop warnings in the immediate
+            # background-dispatch result too, so the dispatching model sees
+            # them right away (not only in the consolidated completion).
+            if _roster_warnings:
+                payload["model_roster_warnings"] = list(_roster_warnings)
             _sids = [
                 getattr(_c, "_subagent_id", None) for _c in _child_agents
             ]

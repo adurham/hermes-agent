@@ -243,14 +243,22 @@ def aggregate(
 #
 # Lightweight heuristics for "this role's metrics suggest a different model".
 # Surfaces at /delegation stats --suggest. Never auto-applies.
-
-
-_HAIKU = "claude-haiku-4-5"
-_SONNET = "claude-sonnet-4-6"
-_OPUS = "claude-opus-4-7"
-
-_TIER_RANK = {_HAIKU: 0, _SONNET: 1, _OPUS: 2}
-_RANK_TIER = {0: _HAIKU, 1: _SONNET, 2: _OPUS}
+#
+# The tier anchors (haiku/sonnet/opus) are NOT hardcoded here. They come
+# from :mod:`hermes_cli.model_tiers`, the single source of truth shared with
+# :mod:`hermes_cli.persona_library`. The rank maps are built at CALL TIME
+# inside :func:`suggest_retunes` from the live delegation config roster, so
+# suggestions fire for roster-current models instead of silently skipping
+# them the moment the roster moves to a new generation.
+#
+# Two independent ladders feed the engine:
+#   * the Anthropic ladder (haiku < sonnet < opus) — :func:`tier_rank_map`;
+#   * the local ladder (non-Anthropic models, e.g. the ollama-cloud roster)
+#     — :func:`local_ladder`, ranked from explicit role anchors.
+# A model belongs to at most one ladder. Promote/demote move within the
+# SAME ladder; a top-of-local-ladder model that still fails escalates to the
+# role's configured fallback (availability-failover, distinct from an
+# in-ladder capability promote).
 
 
 @dataclass
@@ -258,8 +266,32 @@ class Suggestion:
     role: str
     current_model: str
     suggested_model: str
-    direction: str  # "promote" | "demote"
+    direction: str  # "promote" | "demote" | "escalate"
     reason: str
+
+
+def _next_rank(ranks: list[int], rank: int) -> Optional[int]:
+    """Return the next rank strictly greater than ``rank``, or ``None``.
+
+    ``ranks`` must be sorted ascending. ``None`` means ``rank`` is the top
+    of its ladder (no in-ladder promote target).
+    """
+    for r in ranks:
+        if r > rank:
+            return r
+    return None
+
+
+def _prev_rank(ranks: list[int], rank: int) -> Optional[int]:
+    """Return the previous rank strictly less than ``rank``, or ``None``.
+
+    ``ranks`` must be sorted ascending. ``None`` means ``rank`` is the
+    bottom of its ladder (no in-ladder demote target).
+    """
+    for r in reversed(ranks):
+        if r < rank:
+            return r
+    return None
 
 
 def suggest_retunes(
@@ -270,37 +302,81 @@ def suggest_retunes(
     """Heuristic re-tune suggestions based on observed metrics.
 
     Rules (only fire with at least ``min_samples`` runs):
-      - Promote (Haiku→Sonnet, Sonnet→Opus) when:
+      - Promote (Haiku→Sonnet, Sonnet→Opus; and within the local ladder)
+        when:
         * hit_max_rate >= 0.30 — frequently running out of iterations
         * success_rate < 0.80 — failing too often
-      - Demote (Opus→Sonnet, Sonnet→Haiku) when:
+      - Demote (Opus→Sonnet, Sonnet→Haiku; and within the local ladder)
+        when:
         * success_rate >= 0.95 AND avg_output < 1500 tok AND
           hit_max_rate == 0 — boring fast work that doesn't need the
           extra capability
         * total_cost > $1.00 cumulative AND avg_output < 800 — high spend
           on what looks like trivial output
+      - Escalate (top of the LOCAL ladder only) when a promote condition
+        fires but there is no in-ladder promote target: suggest the role's
+        CONFIGURED fallback model. Three guards: (a) the aggregate's model
+        must equal that role's ``model_by_role`` PRIMARY model (never a
+        coincidental same-model different-role); (b) the role's entry must
+        carry a nested ``fallback`` dict with a model; (c) the suggestion is
+        labeled ``direction="escalate"`` (not "promote") and the reason
+        names the role's configured fallback. This keeps availability-
+        failover semantics distinct from in-ladder capability promotes.
 
     These thresholds are intentionally conservative. Users see the
     suggestion and decide; nothing changes automatically.
+
+    The rank maps are resolved fresh on every call from the live
+    delegation config roster (see :mod:`hermes_cli.model_tiers`), so a
+    role whose model is the roster-current haiku/sonnet/opus — or a
+    roster-current local-ladder model — is always recognized, never
+    silently skipped because a hardcoded tier map went stale.
     """
+    from hermes_cli.model_tiers import (
+        local_ladder,
+        local_ladder_models,
+        rank_tier_map,
+        role_fallback_model,
+        role_primary_model,
+        tier_rank_map,
+    )
+
+    tier_rank = tier_rank_map()
+    rank_tier = rank_tier_map()
+    local_rank = local_ladder()
+    local_rank_models = local_ladder_models()
+    local_ranks = sorted(local_rank_models)
     out: list[Suggestion] = []
     for agg in aggs:
         if agg.n < min_samples:
             continue
         if agg.role == "(untagged)":
             continue
-        rank = _TIER_RANK.get(agg.model)
-        if rank is None:
+
+        # Resolve which ladder this model belongs to and its rank. A model
+        # in neither ladder is unranked and silently skipped (unchanged).
+        if agg.model in tier_rank:
+            ladder = "anthropic"
+            rank = tier_rank[agg.model]
+            rank_models = rank_tier
+            ranks = list(range(len(rank_tier)))
+        elif agg.model in local_rank:
+            ladder = "local"
+            rank = local_rank[agg.model]
+            rank_models = local_rank_models
+            ranks = local_ranks
+        else:
             continue
 
-        # Promotion rules
-        if rank < 2:
+        # Promotion rules — move to the next entry in the SAME ladder.
+        promote_target = _next_rank(ranks, rank)
+        if promote_target is not None:
             if agg.hit_max_rate >= 0.30:
                 out.append(
                     Suggestion(
                         role=agg.role,
                         current_model=agg.model,
-                        suggested_model=_RANK_TIER[rank + 1],
+                        suggested_model=rank_models[promote_target],
                         direction="promote",
                         reason=(
                             f"hit max_iterations on {agg.n_hit_max}/{agg.n} "
@@ -315,7 +391,7 @@ def suggest_retunes(
                     Suggestion(
                         role=agg.role,
                         current_model=agg.model,
-                        suggested_model=_RANK_TIER[rank + 1],
+                        suggested_model=rank_models[promote_target],
                         direction="promote",
                         reason=(
                             f"only {agg.n_completed}/{agg.n} completed "
@@ -326,8 +402,43 @@ def suggest_retunes(
                 )
                 continue
 
-        # Demotion rules
-        if rank > 0:
+        # Top-of-local-ladder escalation: a promote condition fired but
+        # there is no in-ladder target. Escalate to the role's configured
+        # fallback (availability-failover), subject to the three guards.
+        elif ladder == "local":
+            if agg.hit_max_rate >= 0.30 or agg.success_rate < 0.80:
+                if role_primary_model(agg.role) == agg.model:
+                    fb = role_fallback_model(agg.role)
+                    if fb is not None:
+                        if agg.hit_max_rate >= 0.30:
+                            reason = (
+                                f"hit max_iterations on {agg.n_hit_max}/"
+                                f"{agg.n} runs ({agg.hit_max_rate:.0%}) — "
+                                f"{agg.model} is the top of the local "
+                                f"ladder; configured fallback for role "
+                                f"'{agg.role}' is {fb}"
+                            )
+                        else:
+                            reason = (
+                                f"only {agg.n_completed}/{agg.n} completed "
+                                f"({agg.success_rate:.0%}) — {agg.model} is "
+                                f"the top of the local ladder; configured "
+                                f"fallback for role '{agg.role}' is {fb}"
+                            )
+                        out.append(
+                            Suggestion(
+                                role=agg.role,
+                                current_model=agg.model,
+                                suggested_model=fb,
+                                direction="escalate",
+                                reason=reason,
+                            )
+                        )
+                        continue
+
+        # Demotion rules — move to the previous entry in the SAME ladder.
+        demote_target = _prev_rank(ranks, rank)
+        if demote_target is not None:
             cheap_and_clean = (
                 agg.success_rate >= 0.95
                 and agg.avg_output < 1500
@@ -341,7 +452,7 @@ def suggest_retunes(
                     Suggestion(
                         role=agg.role,
                         current_model=agg.model,
-                        suggested_model=_RANK_TIER[rank - 1],
+                        suggested_model=rank_models[demote_target],
                         direction="demote",
                         reason=(
                             f"{agg.success_rate:.0%} success, avg "
