@@ -95,7 +95,7 @@ def list_providers(*, scope: Optional[str] = None) -> List[BrowserProvider]:
     """Return all registered providers, sorted by name."""
     with _lock:
         merged = dict(_providers)
-        merged.update(_scoped_providers.get(normalize_scope(scope), {}))
+        merged.update(_scoped_providers.get(hermes_home_key(scope), {}))
         items = list(merged.values())
     return sorted(items, key=lambda p: p.name)
 
@@ -106,7 +106,7 @@ def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[BrowserP
         return None
     with _lock:
         key = name.strip()
-        return _scoped_providers.get(normalize_scope(scope), {}).get(key) or _providers.get(key)
+        return _scoped_providers.get(hermes_home_key(scope), {}).get(key) or _providers.get(key)
 
 
 def snapshot_registration(
@@ -120,7 +120,7 @@ def snapshot_registration(
 
 def registry_generation(*, scope: Optional[str] = None) -> tuple[int, int]:
     """Return a cache fingerprint for the global base and one profile."""
-    active_scope = normalize_scope(scope)
+    active_scope = hermes_home_key(scope)
     with _lock:
         return _generation, _scoped_generations.get(active_scope, 0)
 

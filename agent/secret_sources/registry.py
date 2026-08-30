@@ -170,7 +170,7 @@ def register_source(
 def get_source(name: str, *, scope: Optional[str] = None) -> Optional[SecretSource]:
     _ensure_builtin_sources()
     with _REGISTRY_LOCK:
-        return _SCOPED_SOURCES.get(normalize_scope(scope), {}).get(
+        return _SCOPED_SOURCES.get(hermes_home_key(scope), {}).get(
             name
         ) or _SOURCES.get(name)
 
@@ -213,7 +213,7 @@ def list_sources(*, scope: Optional[str] = None) -> List[SecretSource]:
     _ensure_builtin_sources()
     with _REGISTRY_LOCK:
         merged = dict(_SOURCES)
-        merged.update(_SCOPED_SOURCES.get(normalize_scope(scope), {}))
+        merged.update(_SCOPED_SOURCES.get(hermes_home_key(scope), {}))
         return list(merged.values())
 
 
