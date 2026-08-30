@@ -20001,3 +20001,294 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+# ── Liveness-gate coverage for the TUI notification poller ────────────────
+# Mirrors the drain_notifications liveness gate (tools/process_registry.py):
+# a completion event whose owning subagent is STILL running must be held
+# (requeued) by the raw poller, not bubbled into the top-level chat mid-task.
+
+def _register_test_subagent(sid: str, **extra) -> str:
+    """Register a synthetic subagent against the REAL _active_subagents dict."""
+    from tools import delegate_tool as _dt
+
+    record = {
+        "subagent_id": sid,
+        "parent_id": "root",
+        "depth": 1,
+        "goal": "test",
+        "model": "test",
+        "started_at": time.time(),
+        "tool_count": 0,
+        "status": "running",
+        **extra,
+    }
+    _dt._register_subagent(record)
+    return sid
+
+
+@pytest.fixture()
+def _isolate_active_subagents():
+    """Snapshot/restore the process-global ``_active_subagents`` dict.
+
+    Only removes the synthetic ``sa-...`` ids this test registered — NEVER
+    clears the dict wholesale, since other live subagents on this machine
+    share this process-global dict. Mirrors the fixture style used in
+    tests/tools/test_process_registry.py.
+    """
+    from tools import delegate_tool as _dt
+
+    added: list = []
+
+    def _register(sid: str, **extra) -> str:
+        _register_test_subagent(sid, **extra)
+        added.append(sid)
+        return sid
+
+    yield _register
+
+    with _dt._active_subagents_lock:
+        for sid in added:
+            _dt._active_subagents.pop(sid, None)
+
+
+def _poller_harness(monkeypatch, sid, running=False):
+    """Build an isolated poller harness: fresh queue, immediate-thread agent."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    emitted = []
+    turns = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            turns.append(prompt)
+            return {"final_response": "ok", "messages": []}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    sess = _session(agent=_Agent(), running=running)
+    server._sessions[sid] = sess
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    return sess, isolated_queue, emitted, turns
+
+
+def test_notification_poller_holds_completion_while_owner_live(_isolate_active_subagents):
+    """A completion event whose owning subagent is STILL running is held
+    (requeued) by the TUI poller — not emitted, not consumed.
+
+    Tests the extracted decision helper ``_notification_event_should_hold_for_liveness``
+    (the poller loop's liveness gate) directly, since the loop's shutdown-drain
+    path is what a single-iteration invocation exercises.
+    """
+    subagent_id = _isolate_active_subagents("sa-0-holdtest")
+    evt = {
+        "type": "completion",
+        "session_id": "proc_hold_test",
+        "session_key": "session-key",
+        "task_id": subagent_id,
+        "command": "echo hello",
+        "exit_code": 0,
+        "output": "hello",
+    }
+
+    # Owner is live → the gate says HOLD (requeue), not consume.
+    assert server._notification_event_should_hold_for_liveness(evt) is True
+    # The hold stamp is applied so the max-hold bound is measured from first-hold.
+    assert evt.get("_event_held_at_monotonic") is not None
+
+
+def test_notification_poller_releases_completion_once_owner_gone(monkeypatch, _isolate_active_subagents):
+    """Once the owning subagent is unregistered, the SAME event is emitted
+    and consumed normally by the TUI poller."""
+    from tools import delegate_tool as _dt
+    from tools.process_registry import process_registry
+
+    sess, isolated_queue, emitted, turns = _poller_harness(monkeypatch, "sid_rel")
+    process_registry._completion_consumed.discard("proc_release_test")
+
+    subagent_id = _isolate_active_subagents("sa-0-releasetest")
+    evt = {
+        "type": "completion",
+        "session_id": "proc_release_test",
+        "session_key": "session-key",
+        "task_id": subagent_id,
+        "command": "echo hello",
+        "exit_code": 0,
+        "output": "hello",
+    }
+
+    # Owner is live → gate holds.
+    assert server._notification_event_should_hold_for_liveness(evt) is True
+
+    # Owner exits before the poller runs → gate releases.
+    _dt._unregister_subagent(subagent_id)
+    assert server._notification_event_should_hold_for_liveness(evt) is False
+
+    isolated_queue.put(evt)
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_rel", sess)
+
+        # Emitted and dispatched normally.
+        assert len(turns) == 1
+        assert "proc_release_test" in turns[0]
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid_rel", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_ignores_non_sa_completion(monkeypatch, _isolate_active_subagents):
+    """A completion event with a non-``sa-`` task_id is emitted immediately
+    and is completely unaffected by the liveness gate."""
+    from tools.process_registry import process_registry
+
+    sess, isolated_queue, emitted, turns = _poller_harness(monkeypatch, "sid_nonsa")
+    process_registry._completion_consumed.discard("proc_nonsa_test")
+
+    evt = {
+        "type": "completion",
+        "session_id": "proc_nonsa_test",
+        "session_key": "session-key",
+        "task_id": "t1",  # no "sa-" prefix → top-level session, never gated
+        "command": "echo hello",
+        "exit_code": 0,
+        "output": "hello",
+    }
+
+    # Non-"sa-" task_id → gate never holds.
+    assert server._notification_event_should_hold_for_liveness(evt) is False
+
+    isolated_queue.put(evt)
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_nonsa", sess)
+
+        # Emitted and dispatched immediately, unaffected.
+        assert len(turns) == 1
+        assert "proc_nonsa_test" in turns[0]
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid_nonsa", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_live_loop_requeues_held_event(monkeypatch, _isolate_active_subagents):
+    """The LIVE ``_notification_poller_loop`` (not just the extracted gate
+    helper) must hold (requeue) a completion event whose owner is still
+    running: while the loop is live it is NOT emitted and is still on the
+    queue. This exercises the real loop path (requeue + backoff sleep), which
+    the existing release/non-sa tests never reach because they pre-set
+    ``stop`` before the loop spins once.
+
+    Bounded and deterministic: ``time.sleep`` is stubbed to (a) snapshot the
+    emitted/queue state WHILE the live loop is holding (the event must still
+    be queued and un-emitted) and (b) flip the stop flag after a few backoff
+    cycles so the loop exits — no long sleeps, no timers.
+
+    Note: after the live loop exits, ``_notification_poller_loop``'s terminal
+    shutdown drain processes any remaining events. That drain is deliberately
+    UNGATED (gating it would permanently lose a still-live-owner completion at
+    app close), so a held event may be emitted once at shutdown — that is
+    expected and out of scope for this test's assertion about the LIVE loop.
+    """
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    emitted = []
+    snapshots = {}
+
+    class _Agent:
+        # run_conversation must never be reached during the LIVE loop (the
+        # gate holds the event before dispatch). The loop's TERMINAL shutdown
+        # drain (out of scope, deliberately ungated) runs after stop and will
+        # dispatch the leftover event — return normally so that drain is quiet.
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            return {"final_response": "ok", "messages": []}
+
+    class _RealThread(threading.Thread):
+        pass
+
+    sess = _session(agent=_Agent(), running=False)
+    server._sessions["sid_live"] = sess
+    monkeypatch.setattr(server.threading, "Thread", _RealThread)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+
+    subagent_id = _isolate_active_subagents("sa-0-livelooppoll")
+    evt = {
+        "type": "completion",
+        "session_id": "proc_live_loop_held",
+        "session_key": "session-key",
+        "task_id": subagent_id,
+        "command": "echo hello",
+        "exit_code": 0,
+        "output": "hello",
+    }
+    isolated_queue.put(evt)
+
+    stop = threading.Event()
+    sleep_calls = {"n": 0}
+    snapshot_taken = {"done": False}
+
+    def _snapshot_live_loop():
+        # Runs while the LIVE loop is holding (a still-live owner), BEFORE the
+        # loop's terminal shutdown drain. Capture queue contents without
+        # disturbing them (copy, then restore).
+        items = []
+        while not isolated_queue.empty():
+            items.append(isolated_queue.get_nowait())
+        for it in items:
+            isolated_queue.put(it)
+        snapshots["emitted"] = list(emitted)
+        snapshots["queued"] = items
+
+    def _bounded_sleep(_delay):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 2 and not snapshot_taken["done"]:
+            snapshot_taken["done"] = True
+            # Snapshot exactly once, mid-loop, while owner is still live and
+            # the event has been held (requeued on the prior iterations).
+            _snapshot_live_loop()
+            stop.set()
+        if sleep_calls["n"] >= 4:
+            stop.set()  # hard bound even if the snapshot path is missed
+
+    monkeypatch.setattr(server.time, "sleep", _bounded_sleep)
+
+    try:
+        server._notification_poller_loop(stop, "sid_live", sess)
+
+        # While the live loop was holding, the event was NOT emitted and was
+        # STILL on the queue (requeued, never dropped, never dispatched).
+        assert snapshot_taken["done"], "mid-loop snapshot never captured"
+        assert snapshots["emitted"] == []
+        assert snapshots["queued"] == [evt]
+    finally:
+        server._sessions.pop("sid_live", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()

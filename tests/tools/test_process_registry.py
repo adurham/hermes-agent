@@ -2413,3 +2413,208 @@ class TestGetByPrefix:
         result = registry.poll("4dae56ca")
         assert result["session_id"] == "proc_4dae56ca81f6"
         assert result["status"] == "running"
+
+
+# =========================================================================
+# event_owner_still_running + drain_notifications liveness gate
+# =========================================================================
+# A subagent's background-process completion event carries the PARENT's
+# session_key (contextvar inheritance) while the child's real identity sits
+# in task_id ("sa-N-xxxxxxxx"). Every drain consumer routes only on
+# session_key and never reads task_id, so a still-running subagent's
+# completion notification bubbles straight into the top-level chat. The
+# fix gates completion events in drain_notifications on owner liveness:
+# hold (requeue) while the owning subagent is still registered, release to
+# the parent once it exits. These tests exercise the REAL
+# tools.delegate_tool._active_subagents dict under its real lock so the
+# lazy-import wiring inside process_registry is actually exercised.
+
+import tools.delegate_tool as _delegate_tool
+from tools.process_registry import event_owner_still_running
+
+
+@pytest.fixture()
+def _subagent_registry_guard():
+    """Restore ``_active_subagents`` to its prior state after each test.
+
+    Other live subagents on this machine share the process-global dict, so
+    we only ever add/remove our own synthetic ``sa-...`` test ids and never
+    clear the dict wholesale.
+    """
+    lock = _delegate_tool._active_subagents_lock
+    with lock:
+        prior = dict(_delegate_tool._active_subagents)
+    yield
+    with lock:
+        _delegate_tool._active_subagents.clear()
+        _delegate_tool._active_subagents.update(prior)
+
+
+def _register_test_subagent(sid: str, goal: str = "test goal") -> None:
+    with _delegate_tool._active_subagents_lock:
+        _delegate_tool._active_subagents[sid] = {
+            "subagent_id": sid,
+            "goal": goal,
+            "delegation_id": "deleg_test",
+            "status": "running",
+        }
+
+
+def _unregister_test_subagent(sid: str) -> None:
+    with _delegate_tool._active_subagents_lock:
+        _delegate_tool._active_subagents.pop(sid, None)
+
+
+def _drain(registry, session_key="parent-key"):
+    return registry.drain_notifications(session_key=session_key)
+
+
+def test_event_owner_still_running_true_while_registered(_subagent_registry_guard):
+    """A1: True while the sa- id is registered, False once removed."""
+    _register_test_subagent("sa-0-abc123")
+    assert event_owner_still_running(
+        {"type": "completion", "task_id": "sa-0-abc123"}
+    ) is True
+    _unregister_test_subagent("sa-0-abc123")
+    assert event_owner_still_running(
+        {"type": "completion", "task_id": "sa-0-abc123"}
+    ) is False
+
+
+def test_event_owner_still_running_false_for_non_sa_id(_subagent_registry_guard):
+    """A2: False ALWAYS for ids without the 'sa-' prefix, even while
+    subagents are registered."""
+    _register_test_subagent("sa-0-abc123")
+    for task_id in ("proc_123", "task_456", "sa", "sa-", "", None, 12345):
+        assert event_owner_still_running(
+            {"type": "completion", "task_id": task_id}
+        ) is False, f"expected False for task_id={task_id!r}"
+
+
+def test_drain_suppresses_live_subagent_completion(_subagent_registry_guard, registry):
+    """A3: a completion event whose owner is still registered is requeued,
+    not delivered — drain returns ZERO events and the event stays queued."""
+    _register_test_subagent("sa-0-abc123")
+    event = {
+        "type": "completion",
+        "task_id": "sa-0-abc123",
+        "session_key": "parent-key",
+        "session_id": "proc_sa_owned",
+        "command": "echo hi",
+        "exit_code": 0,
+        "output": "done",
+    }
+    registry.completion_queue.put(event)
+
+    results = _drain(registry)
+    assert results == []
+    # Requeued, not lost.
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
+
+
+def test_drain_holds_event_while_owner_alive(_subagent_registry_guard, registry):
+    """A4: repeated drains while the owner stays alive return 0 events every
+    time and the event is STILL on the queue after the third drain."""
+    _register_test_subagent("sa-0-abc123")
+    event = {
+        "type": "completion",
+        "task_id": "sa-0-abc123",
+        "session_key": "parent-key",
+        "session_id": "proc_sa_held",
+        "command": "echo hi",
+        "exit_code": 0,
+        "output": "done",
+    }
+    registry.completion_queue.put(event)
+
+    for _ in range(3):
+        assert _drain(registry) == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
+
+
+def test_drain_releases_orphaned_completion_with_attribution(
+    _subagent_registry_guard, registry
+):
+    """A5: once the owner is unregistered, the next drain delivers EXACTLY
+    ONE event and format_process_notification still carries the delegation
+    attribution line (resolved via _recent_subagents for finished children)."""
+    _register_test_subagent("sa-0-abc123")
+    event = {
+        "type": "completion",
+        "task_id": "sa-0-abc123",
+        "session_key": "parent-key",
+        "session_id": "proc_sa_orphan",
+        "command": "echo hi",
+        "exit_code": 0,
+        "output": "done",
+    }
+    registry.completion_queue.put(event)
+
+    # Owner still alive -> held.
+    assert _drain(registry) == []
+
+    # Owner exits -> orphan path preserved.
+    _unregister_test_subagent("sa-0-abc123")
+    results = _drain(registry)
+    assert len(results) == 1
+    raw, text = results[0]
+    assert raw == event
+    assert "Started by subagent sa-0-abc123" in text
+    assert registry.completion_queue.empty()
+
+
+def test_drain_top_level_completion_unaffected(_subagent_registry_guard, registry):
+    """A6: a completion event with NO 'sa-' task_id is delivered immediately,
+    both when other subagents are registered and when none are."""
+    event = {
+        "type": "completion",
+        "task_id": "proc_top_level",
+        "session_key": "parent-key",
+        "session_id": "proc_top",
+        "command": "echo hi",
+        "exit_code": 0,
+        "output": "done",
+    }
+
+    # No subagents registered.
+    registry.completion_queue.put(event)
+    results = _drain(registry)
+    assert len(results) == 1
+    assert results[0][0] == event
+    assert registry.completion_queue.empty()
+
+    # Other subagents registered — still delivered immediately.
+    _register_test_subagent("sa-0-other")
+    registry.completion_queue.put(event)
+    results = _drain(registry)
+    assert len(results) == 1
+    assert results[0][0] == event
+    assert registry.completion_queue.empty()
+
+
+def test_drain_ttl_releases_wedged_child(_subagent_registry_guard, registry):
+    """2d: a held event is released to the parent once the max-hold TTL
+    elapses even if the owner is still alive (wedged-child safety). Uses an
+    injected first-held timestamp — no real sleeping."""
+    import tools.process_registry as _pr
+
+    _register_test_subagent("sa-0-wedged")
+    event = {
+        "type": "completion",
+        "task_id": "sa-0-wedged",
+        "session_key": "parent-key",
+        "session_id": "proc_sa_wedged",
+        "command": "echo hi",
+        "exit_code": 0,
+        "output": "done",
+    }
+    # Stamp a first-held time far enough in the past that the TTL is exceeded.
+    event[_pr._EVENT_HELD_AT_KEY] = _pr._monotonic() - _pr._EVENT_MAX_HOLD_SECONDS - 1
+    registry.completion_queue.put(event)
+
+    results = _drain(registry)
+    assert len(results) == 1
+    assert results[0][0] == event
+    assert registry.completion_queue.empty()

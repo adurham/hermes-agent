@@ -884,3 +884,175 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     assert "Result for deleg_owned_1" not in delivered.text
     row = async_delegation.get_durable_delegation(events[1]["delegation_id"])
     assert row["delivery_state"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# _run_process_watcher liveness gate (third consumer)
+# ---------------------------------------------------------------------------
+# The gateway's _run_process_watcher delivers the agent-notify completion
+# DIRECTLY to the messaging adapter (bypassing completion_queue entirely), so
+# neither the drain_notifications nor the TUI-poller gate applies there. These
+# tests exercise the gateway path's own gate against the REAL delegate_tool
+# _active_subagents registry (by-id, snapshot/restore in teardown).
+
+import tools.delegate_tool as _dt_gateway
+import tools.process_registry as pr_module
+
+
+@pytest.fixture()
+def _gateway_isolate_active_subagents():
+    added: list = []
+
+    def _register(sid: str, **extra) -> str:
+        record = {
+            "subagent_id": sid,
+            "parent_id": "root",
+            "depth": 1,
+            "goal": "test",
+            "model": "test",
+            "started_at": 1000.0,
+            "tool_count": 0,
+            "status": "running",
+            **extra,
+        }
+        _dt_gateway._register_subagent(record)
+        added.append(sid)
+        return sid
+
+    yield _register
+
+    with _dt_gateway._active_subagents_lock:
+        for sid in added:
+            _dt_gateway._active_subagents.pop(sid, None)
+
+
+class _ScriptedWatcherRegistry:
+    """Returns an exited session for ``n_gets`` calls, then None (breaks the
+    watcher loop) or the same session forever. Optionally unregisters the
+    owning subagent when ``get`` is called a set number of times, so a held
+    event can be released mid-run."""
+
+    def __init__(self, session, *, n_gets=None, unregister_at=None):
+        self._session = session
+        self._n_gets = n_gets
+        self._unregister_at = unregister_at
+        self._calls = 0
+
+    def get(self, session_id):
+        self._calls += 1
+        if self._unregister_at is not None and self._calls == self._unregister_at:
+            _dt_gateway._unregister_subagent(self._session.task_id)
+        if self._n_gets is not None and self._calls > self._n_gets:
+            return None
+        return self._session
+
+    def is_completion_consumed(self, session_id):
+        return False
+
+
+def _gateway_watcher(session_id):
+    return {
+        "session_id": session_id,
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:dm:123",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+        "notify_on_complete": True,
+    }
+
+
+def test_gateway_holds_live_subagent_completion(monkeypatch, isolated_registry, _gateway_isolate_active_subagents):
+    """A completion whose owning subagent is STILL live is NOT delivered to
+    the adapter: the watcher loops/retries and never drops or emits it."""
+    sid = _gateway_isolate_active_subagents("sa-0-gwhy")
+    session = ProcessSession(
+        id=f"proc_gw_{sid}", command="echo hi", task_id=sid,
+        started_at=1.0, exited=True, exit_code=0, output_buffer="done\n",
+        notify_on_complete=True,
+    )
+
+    class _Bounded:
+        def __init__(self, session_ref):
+            self._session = session_ref
+            self._calls = 0
+
+        def get(self, _sid):
+            self._calls += 1
+            # Stay alive across several polls: owner remains live, watcher
+            # keeps retrying. Return None after a few (bounded, deterministic)
+            # iterations so the test terminates without a real sleep.
+            if self._calls > 3:
+                return None
+            return self._session
+
+        def is_completion_consumed(self, _sid):
+            return False
+
+    bounded = _Bounded(session)
+    monkeypatch.setattr(pr_module, "process_registry", bounded)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    asyncio.run(runner._run_process_watcher(_gateway_watcher(session.id)))
+
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_gateway_delivers_once_owner_gone(monkeypatch, isolated_registry, _gateway_isolate_active_subagents):
+    """Once the owning subagent is unregistered, the SAME held completion IS
+    delivered to the adapter on a later poll."""
+    sid = _gateway_isolate_active_subagents("sa-0-gwrelease")
+    session = ProcessSession(
+        id=f"proc_gw_{sid}", command="echo hi", task_id=sid,
+        started_at=1.0, exited=True, exit_code=0, output_buffer="done\n",
+        notify_on_complete=True,
+    )
+    monkeypatch.setattr(pr_module, "process_registry", isolated_registry)
+
+    # Poll 1 holds (owner live); poll 2 unregisters the owner and delivers.
+    scripted = _ScriptedWatcherRegistry(session, unregister_at=2)
+    monkeypatch.setattr(pr_module, "process_registry", scripted)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+
+    # _refresh_detached_session thread: session is exited so it returns
+    # immediately (no detached probe). No hang.
+    asyncio.run(runner._run_process_watcher(_gateway_watcher(session.id)))
+
+    adapter.handle_message.assert_awaited_once()
+    delivered = adapter.handle_message.await_args.args[0]
+    assert sid in delivered.text  # attribution line present on the gateway path
+    assert "Started by subagent" in delivered.text
+
+
+def test_gateway_delivers_non_sa_completion_immediately(monkeypatch, isolated_registry, _gateway_isolate_active_subagents):
+    """A completion with a non-'sa-' task_id is delivered immediately,
+    completely unaffected by the liveness gate."""
+    _gateway_isolate_active_subagents("sa-0-other")
+    session = ProcessSession(
+        id="proc_gw_top", command="echo hi", task_id="t1",
+        started_at=1.0, exited=True, exit_code=0, output_buffer="done\n",
+        notify_on_complete=True,
+    )
+    scripted = _ScriptedWatcherRegistry(session)
+    monkeypatch.setattr(pr_module, "process_registry", scripted)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    asyncio.run(runner._run_process_watcher(_gateway_watcher(session.id)))
+
+    adapter.handle_message.assert_awaited_once()
