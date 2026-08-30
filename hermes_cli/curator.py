@@ -311,6 +311,54 @@ def _cmd_run(args) -> int:
                 "dry-run: no changes applied. When the report lands, read it with "
                 "`hermes curator status` and run `hermes curator run` (no flag) to apply."
             )
+
+    # Hot-tier audit (MEMORY.md/USER.md stale-path + optional LLM
+    # keep/demote/stale/dead classification). Previously this pass only ran
+    # from the session-start auto-trigger (maybe_run_curator), never from
+    # this manual CLI command — `hermes curator run` silently skipped it
+    # entirely, so users enabling `curator.hot_tier_audit: true` had no way
+    # to trigger or preview it on demand and had to wait up to
+    # interval_hours for the next session-start pass. Wire it in here too,
+    # gated the same way maybe_run_curator gates it (curator.hot_tier_audit),
+    # but force dry_run=True whenever the CLI's own --dry-run flag is set —
+    # a user asking for a preview of the whole curator pass must never see
+    # the hot-tier half silently mutate MEMORY.md/USER.md just because
+    # `curator.hot_tier_audit_dry_run` happens to be false in config.
+    if curator.get_hot_tier_audit():
+        try:
+            from agent import hot_tier_audit
+            effective_consolidate = consolidate if consolidate is not None else curator.get_consolidate()
+            hot_tier_dry = dry or curator.get_hot_tier_audit_dry_run()
+            if dry:
+                print("curator: running hot-tier audit DRY-RUN (report only, no mutations)...")
+            else:
+                print("curator: running hot-tier audit...")
+            audit_summary = hot_tier_audit.run_hot_tier_audit(
+                dry_run=hot_tier_dry,
+                consolidate=effective_consolidate,
+            )
+            n_checked = audit_summary.get("entries_checked", 0)
+            n_stale = len(audit_summary.get("stale_path_candidates", []) or [])
+            llm_info = audit_summary.get("llm_classification") or {}
+            llm_bit = ""
+            if llm_info.get("ran"):
+                llm_bit = (
+                    "; llm classification ok" if llm_info.get("succeeded")
+                    else "; llm classification failed (no mutation)"
+                )
+            report_path = audit_summary.get("written_report_path")
+            print(
+                f"hot-tier audit: checked={n_checked} stale-path-candidates={n_stale}{llm_bit}"
+            )
+            if report_path:
+                print(f"hot-tier audit report: {report_path}")
+            if hot_tier_dry:
+                print(
+                    "hot-tier audit dry-run: no MEMORY.md/USER.md changes applied. "
+                    "Set `curator.hot_tier_audit_dry_run: false` (and drop --dry-run) to go live."
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort, mirrors maybe_run_curator's own guard
+            print(f"hot-tier audit: failed ({e}) — skill curation above is unaffected")
     return 0
 
 
