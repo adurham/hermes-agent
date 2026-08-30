@@ -3110,6 +3110,11 @@ export const zhHant = defineLocale({
         title: '對話中隨時換模型',
         text: '模型名稱就是按鈕。工作性質變了就換一個。'
       },
+      'local-setup': {
+        title: '這台電腦可以本地執行模型',
+        text: '你的硬體可以執行本地模型。對話不離開你的電腦，而且完全免費。',
+        action: '立即設定'
+      },
       'right-pane': {
         title: '工作面板',
         text: '檔案、終端機、審閱與內建瀏覽器都在側邊面板裡。'

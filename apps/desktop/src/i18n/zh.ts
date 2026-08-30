@@ -3763,6 +3763,11 @@ export const zh: Translations = {
         title: '对话中随时换模型',
         text: '模型名称就是按钮。工作性质变了就换一个。'
       },
+      'local-setup': {
+        title: '这台电脑可以本地运行模型',
+        text: '你的硬件可以运行本地模型。对话不离开你的电脑，而且完全免费。',
+        action: '立即设置'
+      },
       'right-pane': {
         title: '工作面板',
         text: '文件、终端、审阅和内置浏览器都在侧边面板里。'

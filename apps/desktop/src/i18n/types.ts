@@ -3101,8 +3101,12 @@ export interface Translations {
 
   tips: {
     close: string
-    /** Keyed by `TipId`, so a new tip without copy is a type error. */
-    items: Record<TipId, { title: string; text: string }>
+    /** Keyed by `TipId`, so a new tip without copy is a type error. Plus the
+     *  campaign tips, which live outside the rotation's catalog: they carry
+     *  a button, and `action` is its label. */
+    items: Record<TipId, { title: string; text: string }> & {
+      'local-setup': { title: string; text: string; action: string }
+    }
   }
 
   errors: {

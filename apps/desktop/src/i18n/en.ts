@@ -3623,6 +3623,11 @@ export const en: Translations = {
         title: 'Switch models mid-thread',
         text: 'The model name is a button. Change it whenever the work changes shape.'
       },
+      'local-setup': {
+        title: 'This machine can run models locally',
+        text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',
+        action: 'Set it up'
+      },
       'right-pane': {
         title: 'The working pane',
         text: 'Files, terminal, review and the in-app browser share the right side.'
