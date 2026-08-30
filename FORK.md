@@ -14066,3 +14066,79 @@ Added `delegation.max_iterations_by_role` to config.yaml (mirrors the existing
 
 Tests: `test_make_agent_reads_nested_max_turns` passes; AST parses clean on all
 three touched files; config map round-trip verified.
+
+### Fix — 2026-08-30 (still-running subagent's background-process completion notifications bubbling into the top-level user-facing chat)
+
+**Problem:** a subagent's background-process completion event carries the
+PARENT's `session_key` (contextvar inheritance via `copy_context()` — the
+child's tool thread inherits the parent's contextvars, so
+`terminal_tool`'s `get_current_session_key()` resolves to the top-level
+session's key) while the child's real identity sits unused in `task_id`
+(`sa-N-xxxxxxxx`). Every `drain_notifications` consumer routes ONLY on
+`session_key` / `origin_ui_session_id` and never reads `task_id`, so the
+parent's drain positively matches ownership and consumes the event
+immediately. Nothing anywhere asked "is the owning subagent still alive?",
+so the documented precondition for parent-routing — "anything that outlives
+the child" (see `_delegation_attribution_line`'s docstring) — was never
+actually evaluated.
+
+Concrete incident that surfaced it: a REVIEWER SUBAGENT ran
+`basedpyright --outputjson ...` and `basedpyright tests/... | tail -8` via
+backgrounded terminal calls as part of its own verification work, and BOTH
+raw `[IMPORTANT: Background process ... completed normally...]`
+notifications landed in the top-level human's chat mid-task while that
+subagent was still `status=running`. A live repro confirmed it: a subagent
+ran `sleep 20 && echo MARKER` with `background=true`, never called
+`process(wait)`, stayed alive 75s across 5 tool calls, and NEVER received
+its own completion notification — the parent had already taken it.
+
+**Fix:** a single shared liveness hold — `tools.process_registry.should_hold_completion_event(evt)` — applied at ALL THREE completion-delivery surfaces, because no single choke point exists. The consumers are:
+- `cli.py` via `drain_notifications` (completion_queue);
+- `tui_gateway/server.py` via its RAW `_notification_poller_loop`, which pulls the same process-global completion_queue directly (its gate is a thin wrapper `_notification_event_should_hold_for_liveness`);
+- `gateway/run.py` via `_run_process_watcher`, which BYPASSES the queue entirely: when a `notify_on_complete` background process exits it hand-builds a `completion_evt` and delivers it straight to the messaging adapter (Telegram/Discord/Slack chat).
+
+Shared infrastructure: new module-level predicate `event_owner_still_running(evt)` resolves the event's `task_id` against the live subagent registry via the existing public `tools.delegate_tool.list_active_subagents()` accessor (imported lazily inside the function body, mirroring the existing lazy-import pattern in `_delegation_attribution_line`; fails open to `False` on any exception so behavior is byte-identical to today if delegate_tool is unavailable). `should_hold_completion_event(evt)` wraps it: returns False unless the event is a `completion` whose owner is still live; on first hold it stamps the `_event_held_at_monotonic` key; returns True only while the hold stays under a bounded max-hold (1800s, matching the `FINISHED_TTL_SECONDS` convention), so a wedged-but-alive child cannot pin the event forever. The three consumers were previously duplicated/importing underscore-private internals; all now delegate to the one public helper.
+
+On the CLI drain and TUI poller, a held event is REQUEUED (never dropped, never lost); when the owner leaves `_active_subagents`, the next drain/poll delivers the event normally WITH the existing delegation attribution line intact (attribution resolves for finished children via `_recent_subagents`), preserving the documented orphan path. The gateway watcher path required TWO fixes to be gateable at all: (1) the hand-built `completion_evt` lacked `task_id` entirely (calling the gate on it would have been a silent no-op — `should_hold_completion_event` returns False for anything without an `sa-` id), so the watcher now stamps `"task_id": getattr(session, "task_id", "") or ""` onto the event — which ALSO makes `format_process_notification`'s delegation-attribution line resolve on this path where it previously could not; (2) the watcher now `continue`s (retries next interval, same as its `delivered is False` retry) instead of delivering/breaking when the gate holds, persisting the first-held timestamp across rebuilds so the TTL bound still accumulates. On all three surfaces the owner must have EXITED for the completion to reach the parent. Scoped to `completion` ONLY — `watch_match` and other event types are deliberately not gated (whether a mid-run watch signal should reach the parent is a separate product question).
+
+**Tests:** all tests drive the REAL `tools.delegate_tool._active_subagents` dict under its real lock with a fixture that snapshots and restores by-id in teardown (only adds/removes synthetic `sa-...` test ids, never clears the dict wholesale — other live subagents on the machine share it). In `tests/tools/test_process_registry.py`: A1 `event_owner_still_running` True while registered / False once removed; A2 False ALWAYS for non-`sa-` ids even while subagents are registered; A3 live subagent's completion is requeued (drain returns ZERO events, event still on queue); A4 repeated drains while owner alive return 0 events every time and the event is still queued after the third; A5 orphan path preserved — unregister owner, drain returns EXACTLY ONE event with the attribution line intact; A6 top-level (non-`sa-`) completion delivered immediately both with and without other subagents registered; plus a TTL-release test that injects the first-held timestamp directly (no real sleeping). In `tests/test_tui_gateway_server.py`: `_notification_event_should_hold_for_liveness` returns True (and stamps the hold key) while the owner is live / False once gone; a raw-poller single-pass releases and emits a completion after the owner unregisters; a non-`sa-` completion is emitted immediately; and a LIVE-loop test runs the real `_notification_poller_loop` (requeue + backoff sleep, which the pre-set-stop tests never reach) and snapshots mid-loop that a live-owned completion is neither emitted nor consumed. In `tests/gateway/test_completion_delivery.py` (the `_run_process_watcher` path): a completion whose owner is LIVE is never delivered to the adapter; once the owner is unregistered the same held completion IS delivered by a later poll WITH the attribution line; and a non-`sa-` completion is delivered immediately, unaffected.
+
+## 2026-08-30: `hermes curator run` silently skipped the hot-tier audit pass
+
+`agent/hot_tier_audit.py` (MEMORY.md/USER.md stale-path detection + optional
+LLM keep/demote/stale/dead classification, gated by `curator.hot_tier_audit`)
+was only ever invoked from `maybe_run_curator()` — the session-start
+auto-trigger, itself gated by `interval_hours`/`min_idle_hours`. The manual
+CLI entrypoint `hermes curator run` / `hermes curator run --dry-run` called
+`run_curator_review()` directly and never touched `hot_tier_audit` at all, so
+a user who set `curator.hot_tier_audit: true` had no way to trigger or
+preview a hot-tier pass on demand — only the next natural session-start
+trigger (up to `interval_hours`, default 7 days) would ever run it. Found
+while enabling hot-tier auto-management for a user this session: `hermes
+curator run --sync --dry-run` reported only the skill-curation pass; a direct
+call to `hot_tier_audit.run_hot_tier_audit()` was needed to preview it.
+
+**Fix:** `hermes_cli/curator.py::_cmd_run()` now also invokes
+`hot_tier_audit.run_hot_tier_audit()` when `curator.get_hot_tier_audit()` is
+true, mirroring the gating `maybe_run_curator()` already used
+(`consolidate` falls back to config when the CLI's `--consolidate` flag is
+absent). Critically, `--dry-run` on the CLI now ALSO forces the hot-tier
+pass into dry-run (`hot_tier_dry = dry or curator.get_hot_tier_audit_dry_run()`)
+regardless of `curator.hot_tier_audit_dry_run`'s config value — a user asking
+the whole curator command for a preview must never have the hot-tier half
+silently go live because the config flag was already flipped off. Prints a
+one-line summary (`checked=N stale-path-candidates=M[; llm classification
+ok|failed]`) plus the written report path, matching the style of the
+existing skill-curation summary line. Failure is caught and reported without
+aborting the command — a hot-tier audit exception must not make the
+already-completed skill-curation pass above look like it failed too.
+
+Verified: called `hot_tier_audit.run_hot_tier_audit(dry_run=True,
+consolidate=True)` directly against this session's own live MEMORY.md/USER.md
+(33 hot-tier entries) — 0 stale-path candidates, LLM classification returned
+30 keep / 3 demote / 0 stale-dead, all with per-entry reasoning. No file
+mutation (dry-run). Syntax-checked the CLI change with `ast.parse` under the
+live install's venv (`~/.hermes/hermes-agent/.venv`); did not run the fork's
+test suite this session — `tests/hermes_cli/test_curator*.py` is the
+relevant target for a follow-up regression test asserting `_cmd_run` calls
+`hot_tier_audit.run_hot_tier_audit` when the config flag is set.
