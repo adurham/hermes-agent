@@ -44,7 +44,7 @@ from agent.secret_sources.base import (
     reset_source_environment,
     set_source_environment,
 )
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ def register_source(
             name, getattr(source, "shape", None),
         )
         return False
-    scope = hermes_home_key(scope) if scope is not None else None
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         effective = dict(_SOURCES)
         if scope is not None:
@@ -170,7 +170,7 @@ def register_source(
 def get_source(name: str, *, scope: Optional[str] = None) -> Optional[SecretSource]:
     _ensure_builtin_sources()
     with _REGISTRY_LOCK:
-        return _SCOPED_SOURCES.get(hermes_home_key(scope), {}).get(
+        return _SCOPED_SOURCES.get(normalize_scope(scope), {}).get(
             name
         ) or _SOURCES.get(name)
 
@@ -180,7 +180,7 @@ def snapshot_registration(
 ) -> Optional[SecretSource]:
     """Return the registration owned by exactly one registry layer."""
     _ensure_builtin_sources()
-    scope = hermes_home_key(scope) if scope is not None else None
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         target = _SOURCES if scope is None else _SCOPED_SOURCES.get(scope, {})
         return target.get(name)
@@ -195,7 +195,7 @@ def restore_registration(
 ) -> bool:
     """Restore a host-owned source registration if it is still current."""
     _ensure_builtin_sources()
-    scope = hermes_home_key(scope) if scope is not None else None
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         target = _SOURCES if scope is None else _SCOPED_SOURCES.setdefault(scope, {})
         if target.get(name) is not current:
@@ -213,7 +213,7 @@ def list_sources(*, scope: Optional[str] = None) -> List[SecretSource]:
     _ensure_builtin_sources()
     with _REGISTRY_LOCK:
         merged = dict(_SOURCES)
-        merged.update(_SCOPED_SOURCES.get(hermes_home_key(scope), {}))
+        merged.update(_SCOPED_SOURCES.get(normalize_scope(scope), {}))
         return list(merged.values())
 
 

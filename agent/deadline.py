@@ -100,7 +100,10 @@ __all__ = [
 #   * Windows — ``WaitForSingleObject`` takes a DWORD of milliseconds
 #     (2**32 - 1 ms ≈ 49.7 days), so 365 days would overflow it.
 if sys.platform == "win32":
-    MAX_SAFE_TIMEOUT_S = 4_294_967.0  # just under DWORD-millisecond ceiling
+    # Leave headroom for consumers that add a small margin on top (e.g. the
+    # 60s human-wait margin): MAX + margin must stay under the DWORD-millisecond
+    # ceiling (4294967.295s), so 4_294_907 + 60 rounds to exactly 4_294_967s.
+    MAX_SAFE_TIMEOUT_S = 4_294_907.0
 else:
     MAX_SAFE_TIMEOUT_S = 31_536_000.0  # 365 days
 

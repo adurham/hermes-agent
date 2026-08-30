@@ -152,6 +152,16 @@ def hermes_home_key(path: str | Path | None = None) -> str:
     return os.path.normcase(str(resolved))
 
 
+def normalize_scope(scope: str | Path | None) -> str | None:
+    """Normalize a registry scope key, preserving ``None``.
+
+    ``None`` means the process-global layer and must stay ``None``; any other
+    value is normalized through :func:`hermes_home_key` so writes and reads
+    agree on the key (normcase on Windows, resolved absolute path).
+    """
+    return hermes_home_key(scope) if scope is not None else None
+
+
 def get_process_hermes_home() -> Path:
     """Return the Hermes home for the running process, ignoring task overrides.
 

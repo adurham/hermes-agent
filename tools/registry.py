@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -550,7 +550,7 @@ class ToolRegistry:
         scope: Optional[str] = None,
     ) -> Optional[ToolEntry]:
         """Return the local slot state without following global fallback."""
-        scope = hermes_home_key(scope) if scope is not None else None
+        scope = normalize_scope(scope)
         with self._lock:
             target = self._tools if scope is None else self._scoped_tools.get(scope, {})
             return target.get(name)
@@ -608,7 +608,7 @@ class ToolRegistry:
         The identity-bearing result lets plugin unload/reload revoke a stale
         authorization without losing durable module-to-profile attribution.
         """
-        scope = hermes_home_key(scope) if scope is not None else None
+        scope = normalize_scope(scope)
         with self._lock:
             policy = _PluginOverridePolicy(allowed)
             self._plugin_override_policy[(scope, module_namespace)] = policy
@@ -622,7 +622,7 @@ class ToolRegistry:
         scope: Optional[str] = None,
     ) -> Optional[_PluginOverridePolicy]:
         """Return one local authorization generation without fallback."""
-        scope = hermes_home_key(scope) if scope is not None else None
+        scope = normalize_scope(scope)
         with self._lock:
             return self._plugin_override_policy.get((scope, module_namespace))
 
@@ -635,7 +635,7 @@ class ToolRegistry:
         scope: Optional[str] = None,
     ) -> bool:
         """CAS-restore policy state while retaining durable scope attribution."""
-        scope = hermes_home_key(scope) if scope is not None else None
+        scope = normalize_scope(scope)
         with self._lock:
             key = (scope, module_namespace)
             if self._plugin_override_policy.get(key) is not current:
@@ -793,7 +793,7 @@ class ToolRegistry:
         owner = caller_owner or handler_owner
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
-        scope = hermes_home_key(scope) if scope is not None else None
+        scope = normalize_scope(scope)
         with self._lock:
             target = (
                 self._tools
@@ -991,7 +991,7 @@ class ToolRegistry:
         newer entry under the same name, in which case unloading this entry
         must leave the newer entry untouched.
         """
-        scope = hermes_home_key(scope) if scope is not None else None
+        scope = normalize_scope(scope)
         with self._lock:
             target = (
                 self._tools

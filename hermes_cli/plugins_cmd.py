@@ -28,28 +28,10 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.config import cfg_get
 from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.fs_utils import rmtree_force as _rmtree_force
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
-
-
-def _rmtree_force(path: Path) -> None:
-    """``shutil.rmtree`` that clears read-only bits before deleting.
-
-    Windows refuses to delete a tree containing read-only files — git clones
-    store objects read-only — raising ``PermissionError`` where POSIX unlinks
-    them fine.  The ``onerror`` hook chmods the file writable and retries.
-    """
-    import stat
-
-    def _onerror(func, p, _exc_info):
-        try:
-            os.chmod(p, stat.S_IWRITE)
-        except OSError:
-            pass
-        func(p)
-
-    shutil.rmtree(path, onerror=_onerror)
 
 
 @functools.lru_cache(maxsize=1)
