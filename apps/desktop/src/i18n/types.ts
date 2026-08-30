@@ -1191,6 +1191,15 @@ export interface Translations {
         failedSelect: (backend: string) => string
         needsSetupHint: string
       }
+      browserRealProfile: {
+        label: string
+        description: string
+        enabledTitle: string
+        enabledMessage: string
+        disabledTitle: string
+        disabledMessage: string
+        failedSave: string
+      }
     }
   }
 
@@ -1652,8 +1661,11 @@ export interface Translations {
     search: string
     loading: string
     newProfile: string
+    /** Verb + noun: the profiles-list button and the native file-dialog titles,
+     *  which stand alone. Per-profile menus use the bare `exportMenu`. */
     importProfile: string
     exportProfile: string
+    exportMenu: string
     imported: string
     exported: string
     failedImport: string
