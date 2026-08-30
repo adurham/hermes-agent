@@ -3,6 +3,65 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-30 (a subagent could bypass role resolution entirely via a bare model= on its own nested dispatch)
+
+**Problem:** `delegate_task`'s per-task model precedence chain let a bare
+`model=` string win outright, with zero validation, even when the CALLER
+was itself a subagent (delegation depth >= 1) dispatching its own nested
+child. This completely bypassed `delegation.model_by_role` — the config
+that's supposed to govern which model a given role is allowed to run on.
+Surfaced today alongside the role-logging fix above: once role/agent_type
+became visible in the logs, it showed a PM subagent's own nested dispatch
+had used `model="claude-sonnet-4-6"` — a stale, invalid Anthropic slug the
+PM had typed directly into the task dict, not anything derived from
+config or role resolution. It only failed loudly because that model name
+happened to 404 against the provider it got routed to; a valid-but-wrong
+model string would have silently succeeded with no guardrail catching it.
+
+**Fix** (`tools/delegate_tool.py`): at dispatch time, when the calling
+agent's own `_delegate_depth >= 1` (i.e. it is itself a subagent, not the
+top-level session):
+- A bare `model=` with no `agent_type=` is rejected outright with a clear
+  `tool_error` naming the offending task index.
+- `model=` alongside `agent_type=` is silently dropped (logged as a
+  warning) so role resolution always wins — a fresh task list is built
+  so the caller's own task dicts are never mutated in place.
+- Top-level (depth 0) dispatches are completely unaffected — the main
+  session can still pass any `model=` it wants, exactly as before.
+- The config-driven `delegation.model_by_role.<role>.fallback` chains
+  (e.g. `pm`'s fallback to `claude-fable-5`) are unaffected — the
+  guardrail only strips the caller-supplied `model=` field before role
+  resolution runs; it never touches the role map's own fallback entries.
+
+Design got a second-opinion review before implementation (require
+`agent_type=` for nested dispatch, rather than allowlist specific model
+strings — an allowlist becomes a second source of truth that drifts and
+still leaves the bypass open for anything not on the list). That review
+flagged two likely failure modes to watch for: checking an
+already-incremented depth value instead of the dispatching agent's own
+depth, and validating the resolved/fallback model instead of only the
+raw caller-supplied `model=` field (which would have broken the
+legitimate `model_by_role` fallback chains). Verified directly before
+shipping: `depth = getattr(parent_agent, "_delegate_depth", 0)` reads
+the DISPATCHING agent's own depth (0 for the top-level session, which
+never has the attribute set) — not a pre-incremented child value, so the
+flagged off-by-one does not apply here.
+
+**Tests:** new `tests/tools/test_delegate_nested_model_guardrail.py` (9
+tests: nested bare-model rejection in both batch and single-goal form,
+model-drop when `agent_type=` is present, `agent_type=`-alone allowed,
+mixed-batch rejection, per-task model-drop, caller-dict non-mutation,
+top-level-unaffected in both bare-model and model+agent_type forms).
+Independently re-verified by the supervisor: 9/9 new tests pass, plus
+150 tests total across the surrounding delegate regression suite
+(`test_delegate.py`, `test_delegate_role_fallback.py`,
+`test_batch_top_level_model_seeding.py`, `test_delegate_role_provider.py`)
+— 0 failures. One pre-existing, unrelated failure in
+`test_async_delegation.py` (a `ContextVar[str | object]` syntax
+TypeError, an environment/Python-version issue) was independently
+reproduced on clean main via `git stash` to confirm it predates this
+change.
+
 ### Fix — 2026-08-30 (dispatched role/persona was never stored on the child agent or logged anywhere — unanswerable after the fact)
 
 **Problem:** `delegate_task`'s `agent_type` (ruflo persona, e.g. `"coder"`,
