@@ -273,6 +273,28 @@ def get_bundled_skills_dir(default: Path | None = None) -> Path:
     return get_hermes_home() / "skills"
 
 
+def get_bundled_personas_dir(default: Path | None = None) -> Path:
+    """Return the bundled personas directory for source and packaged installs.
+
+    Mirrors :func:`get_bundled_skills_dir` for the delegation personas that
+    back ``delegate_task``'s ``agent_type`` (pm / sr-coder / mid-coder /
+    jr-coder / reviewer). These live as tracked source in the repo's
+    ``personas/`` dir (sibling to ``skills/``) and are seeded into
+    ``~/.hermes/personas/`` by ``tools.personas_sync``.
+
+    Resolution order:
+        1. ``HERMES_BUNDLED_PERSONAS`` env var (Nix wrapper / explicit override)
+        2. Caller-supplied ``default`` (typically the source-checkout path)
+        3. ``<HERMES_HOME>/personas`` last-resort
+    """
+    override = os.getenv("HERMES_BUNDLED_PERSONAS", "").strip()
+    if override:
+        return Path(override)
+    if default is not None:
+        return default
+    return get_hermes_home() / "personas"
+
+
 def get_hermes_dir(
     new_subpath: str,
     old_name: str,
