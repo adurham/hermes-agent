@@ -2397,7 +2397,27 @@ def _build_child_agent(
     # delegation_stats records with the right role identifier. Empty
     # string means the caller didn't pass one — stats land in the
     # "(untagged)" bucket.
-    child._delegate_agent_type = (agent_type or "").strip()
+    _dispatch_agent_type = (agent_type or "").strip()
+    child._delegate_agent_type = _dispatch_agent_type
+    # Dispatch-time observability: log WHICH role/persona this child was
+    # dispatched as, at spawn time. model=/provider= alone are ambiguous
+    # when several roles share one default model (e.g. pm and coder both
+    # defaulting to glm-5.3 on ollama-cloud); without this line the
+    # dispatched role was only recoverable from the delegation-stats
+    # record AFTER completion (and not at all for abandoned/errored
+    # children). Pairs with the per-turn "conversation turn:" line in
+    # agent/turn_context.py, which reads these same attributes back.
+    logger.info(
+        "delegate_task: spawned subagent id=%s role=%s agent_type=%s model=%s "
+        "provider=%s depth=%d task=%r",
+        subagent_id,
+        effective_role,
+        _dispatch_agent_type or "none",
+        effective_model,
+        effective_provider or "unknown",
+        child_depth,
+        goal,
+    )
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -3528,6 +3548,17 @@ def _run_single_child(
                     else "after_llm_calls" if is_timeout
                     else None
                 ),
+                # Same model-visible delegation identity as the success entry.
+                "role": (
+                    _r if isinstance((_r := getattr(child, "_delegate_role", None)), str) and _r
+                    else None
+                ),
+                "agent_type": (
+                    _at
+                    if isinstance((_at := getattr(child, "_delegate_agent_type", None)), str)
+                    and _at
+                    else None
+                ),
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
@@ -3710,6 +3741,25 @@ def _run_single_child(
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
+            # Delegation identity the parent model can correlate with its own
+            # dispatch request: role is the delegation role ("leaf"/
+            # "orchestrator") AFTER kill-switch/depth degradation, agent_type
+            # is the requested ruflo persona ("" → None when unset). Stashed on
+            # the child by _build_child_agent. isinstance-guarded like "model"
+            # above so a MagicMock test double can't auto-vivify a Mock into
+            # the JSON payload. This is the parent-facing answer to "which role
+            # did this child actually run as" — model= alone is ambiguous when
+            # several roles share one default model.
+            "role": (
+                _r if isinstance((_r := getattr(child, "_delegate_role", None)), str) and _r
+                else None
+            ),
+            "agent_type": (
+                _at
+                if isinstance((_at := getattr(child, "_delegate_agent_type", None)), str)
+                and _at
+                else None
+            ),
             "exit_reason": exit_reason,
             # Explicit, parent-visible truncation flag. A subagent that
             # exhausts its per-child iteration budget still returns a summary,
@@ -4035,6 +4085,17 @@ def _run_single_child(
             "error": str(exc),
             "api_calls": 0,
             "duration_seconds": duration,
+            # Same model-visible delegation identity as the success entry.
+            "role": (
+                _r if isinstance((_r := getattr(child, "_delegate_role", None)), str) and _r
+                else None
+            ),
+            "agent_type": (
+                _at
+                if isinstance((_at := getattr(child, "_delegate_agent_type", None)), str)
+                and _at
+                else None
+            ),
             "_child_role": getattr(child, "_delegate_role", None),
         }
         if _late_pending_steer:
@@ -5399,6 +5460,24 @@ def delegate_task(
                                             "error": str(exc),
                                             "api_calls": 0,
                                             "duration_seconds": 0,
+                                            "role": (
+                                                _r
+                                                if isinstance(
+                                                    (_r := getattr(
+                                                        _child_by_index.get(idx), "_delegate_role", None
+                                                    )), str
+                                                ) and _r
+                                                else None
+                                            ),
+                                            "agent_type": (
+                                                _at
+                                                if isinstance(
+                                                    (_at := getattr(
+                                                        _child_by_index.get(idx), "_delegate_agent_type", None
+                                                    )), str
+                                                ) and _at
+                                                else None
+                                            ),
                                             "_child_role": getattr(
                                                 _child_by_index.get(idx), "_delegate_role", None
                                             ),
@@ -5411,6 +5490,42 @@ def delegate_task(
                                         "error": "Parent agent interrupted — child did not finish in time",
                                         "api_calls": 0,
                                         "duration_seconds": 0,
+                                        "role": (
+                                            _r
+                                            if isinstance(
+                                                (_r := getattr(
+                                                    _child_by_index.get(idx), "_delegate_role", None
+                                                )), str
+                                            ) and _r
+                                            else None
+                                        ),
+                                        "agent_type": (
+                                            _at
+                                            if isinstance(
+                                                (_at := getattr(
+                                                    _child_by_index.get(idx), "_delegate_agent_type", None
+                                                )), str
+                                            ) and _at
+                                            else None
+                                        ),
+                                        "role": (
+                                            _r
+                                            if isinstance(
+                                                (_r := getattr(
+                                                    _child_by_index.get(idx), "_delegate_role", None
+                                                )), str
+                                            ) and _r
+                                            else None
+                                        ),
+                                        "agent_type": (
+                                            _at
+                                            if isinstance(
+                                                (_at := getattr(
+                                                    _child_by_index.get(idx), "_delegate_agent_type", None
+                                                )), str
+                                            ) and _at
+                                            else None
+                                        ),
                                         "_child_role": getattr(
                                             _child_by_index.get(idx), "_delegate_role", None
                                         ),
@@ -5436,6 +5551,24 @@ def delegate_task(
                                     "error": str(exc),
                                     "api_calls": 0,
                                     "duration_seconds": 0,
+                                    "role": (
+                                        _r
+                                        if isinstance(
+                                            (_r := getattr(
+                                                _child_by_index.get(idx), "_delegate_role", None
+                                            )), str
+                                        ) and _r
+                                        else None
+                                    ),
+                                    "agent_type": (
+                                        _at
+                                        if isinstance(
+                                            (_at := getattr(
+                                                _child_by_index.get(idx), "_delegate_agent_type", None
+                                            )), str
+                                        ) and _at
+                                        else None
+                                    ),
                                     "_child_role": getattr(
                                         _child_by_index.get(idx), "_delegate_role", None
                                     ),

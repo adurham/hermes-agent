@@ -452,3 +452,77 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+# ── Fork: delegation-identity fields on the per-turn log line (2026-08-30) ──
+#
+# The "conversation turn:" line is the main per-turn observability log.
+# Before this fix it carried only model=/provider=, which is ambiguous when
+# several roles share one default model (e.g. pm and coder both defaulting to
+# glm-5.3 on ollama-cloud) — after a dispatch there was NO way to answer
+# "which role was this subagent actually run as" from agent.log. The stash
+# (child._delegate_role / child._delegate_agent_type, set by
+# tools/delegate_tool._build_child_agent) already existed; the log line just
+# never read it back. These tests drive the REAL build_turn_context with the
+# standard _FakeAgent harness and assert on the emitted log record.
+
+
+def test_turn_log_line_carries_delegation_identity(caplog):
+    """A subagent (stash present) logs agent_type=<persona> role=<role>."""
+    import logging as _logging
+
+    agent = _FakeAgent()
+    agent._delegate_agent_type = "coder"
+    agent._delegate_role = "leaf"
+
+    with caplog.at_level(_logging.INFO, logger="agent.turn_context"):
+        _build(agent)
+
+    turn_lines = [r for r in caplog.records if "conversation turn:" in r.message]
+    assert turn_lines, "no conversation-turn log line emitted"
+    msg = turn_lines[0].getMessage()
+    assert "agent_type=coder" in msg
+    assert "role=leaf" in msg
+    # Old fields survive — existing log tooling keeps parsing.
+    assert "session=sess-1" in msg
+    assert "model=test/model" in msg
+    assert "platform=cli" in msg
+
+
+def test_turn_log_line_defaults_none_for_main_session(caplog):
+    """The TOP-LEVEL main session (no stash at all) logs agent_type=none
+    role=none — the getattr defaults must keep this line safe for every
+    non-subagent agent (CLI, gateway, cron, fakes)."""
+    import logging as _logging
+
+    agent = _FakeAgent()
+    # No _delegate_agent_type / _delegate_role attributes set.
+
+    with caplog.at_level(_logging.INFO, logger="agent.turn_context"):
+        _build(agent)
+
+    turn_lines = [r for r in caplog.records if "conversation turn:" in r.message]
+    assert turn_lines, "no conversation-turn log line emitted"
+    msg = turn_lines[0].getMessage()
+    assert "agent_type=none" in msg
+    assert "role=none" in msg
+
+
+def test_turn_log_line_handles_empty_and_orchestrator_values(caplog):
+    """Empty-string agent_type (dispatched without a persona) logs 'none',
+    and role=orchestrator logs verbatim — the guard is on truthiness, not
+    on a hardcoded 'leaf'."""
+    import logging as _logging
+
+    agent = _FakeAgent()
+    agent._delegate_agent_type = ""  # _build_child_agent stashes "" when unset
+    agent._delegate_role = "orchestrator"
+
+    with caplog.at_level(_logging.INFO, logger="agent.turn_context"):
+        _build(agent)
+
+    turn_lines = [r for r in caplog.records if "conversation turn:" in r.message]
+    assert turn_lines, "no conversation-turn log line emitted"
+    msg = turn_lines[0].getMessage()
+    assert "agent_type=none" in msg
+    assert "role=orchestrator" in msg

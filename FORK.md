@@ -3,6 +3,69 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-30 (dispatched role/persona was never stored on the child agent or logged anywhere — unanswerable after the fact)
+
+**Problem:** `delegate_task`'s `agent_type` (ruflo persona, e.g. `"coder"`,
+`"pm"`) and `role` (`"leaf"`/`"orchestrator"`) parameters were used only
+transiently at dispatch time to resolve a model/persona choice, then
+discarded — never stored as an attribute on the built `AIAgent` child, never
+logged, and never returned in `delegate_task`'s own result payload. This made
+it impossible, from any log source (`agent.log`, delegation transcript
+files, or the tool's own return value), to determine after the fact which
+role a subagent had actually been dispatched as. Concretely surfaced today: a
+PM subagent dispatched a nested child, and only `model=glm-5.3
+provider=ollama-cloud` was ever visible in the logs — but `glm-5.3` is the
+shared primary model for both the `pm` role and the `coder` role in this
+user's `delegation.model_by_role` config, so the model name alone couldn't
+disambiguate which role had actually been requested (or whether one PM had,
+incorrectly, spawned another PM).
+
+**Fix** (`tools/delegate_tool.py`, `agent/turn_context.py`):
+- `_build_child_agent` already stashed `child._delegate_agent_type` on the
+  built child (an existing attribute, previously write-only — nothing ever
+  read it back for logging/reporting). Added a `logger.info(...)` line at
+  spawn time (`delegate_task: spawned subagent id=... role=... agent_type=...
+  model=... provider=... depth=... task=...`) so the dispatch decision is
+  visible in `agent.log` immediately, not just recoverable after the child
+  finishes.
+- `agent/turn_context.py`'s per-turn `"conversation turn: ..."` log line
+  (the main per-turn observability log, previously `session=%s model=%s
+  provider=%s platform=%s history=%d msg=%r`) now also logs `agent_type=%s
+  role=%s`, read back via `getattr(agent, "_delegate_agent_type"/"_delegate_role",
+  None)` with a safe `"none"` default — the top-level main session (CLI,
+  gateway, cron, test fakes) has no delegation role at all, so this stays
+  inert for every non-subagent caller.
+- `_run_single_child`'s three result-payload sites (success, error, timeout)
+  now include `"role"` and `"agent_type"` keys alongside the existing
+  `"model"` key, so a parent PM can programmatically verify which role its
+  own dispatch actually landed on, not just infer it from the model name.
+  `isinstance`-guarded the same way `"model"` already was, so a `MagicMock`
+  test double can't silently auto-vivify a `Mock` object into the JSON
+  payload.
+
+**Tests:** new `tests/tools/test_delegate_dispatch_identity.py` (dispatch
+stash + spawn-log assertions for: an `agent_type` dispatch, a bare/untagged
+leaf dispatch, and an `orchestrator`-role dispatch) plus new coverage in
+`tests/agent/test_turn_context.py` for the per-turn log line's identity
+fields. Verified with the repo's canonical `scripts/run_tests.sh` runner
+across the full delegate/turn-context regression surface: 211 tests passed
+in the core delegate/dispatch-identity/turn-context files, 70 more passed in
+the broader delegate-adjacent suite (apiserver background, control actions,
+cron sync fallback, kanban isolation, etc.) — 281 tests total, 0 failures,
+0 regressions. Also grepped for any other consumer of `entry["role"]`/
+`entry["agent_type"]` outside `delegate_tool.py`/tests to confirm no
+existing caller assumed those keys' absence — none found (the handful of
+`entry.get("role")` hits elsewhere in the codebase are unrelated message-role
+fields in gateway/platform code, not delegation results).
+
+**Not included, flagged as a follow-up if wanted:** propagating this same
+identity into `delegation_stats`'s aggregation/suggestion-engine output (the
+`/delegation stats --suggest` feature) so per-role cost/success-rate
+breakdowns are keyed off the same verified `agent_type`/`role` fields rather
+than whatever string the caller happened to pass to `--role` on that CLI
+command. Scoped out of this fix to avoid scope creep into a separate
+subsystem.
+
 ### Fix — 2026-08-28 (dashboard `_AUX_TASK_SLOTS` was stale: 11/23 built-in aux tasks, not all of them)
 
 **Problem:** `hermes_cli/web_server.py`'s `_AUX_TASK_SLOTS` tuple — the
