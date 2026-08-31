@@ -1631,10 +1631,23 @@ genuinely differs per host. Those differences are tested by running on the
 host, not by patching `sys.platform`.
 
 ```python
-@pytest.mark.linux_only
-@pytest.mark.macos_only
-@pytest.mark.windows_only
+@pytest.mark.platforms("linux")
+@pytest.mark.platforms("macos")
+@pytest.mark.platforms("windows")
 ```
+
+The `platforms` marker takes any number of spec strings (any-of semantics)
+plus optional arch filters, so it can express more than the legacy trio:
+
+```python
+@pytest.mark.platforms("not macos")              # anywhere except macOS
+@pytest.mark.platforms("windows", arch="arm64")  # native Windows on arm64
+@pytest.mark.platforms("posix")                  # linux or macOS
+```
+
+Specs: `linux`, `macos`, `windows`, `posix`, `any`, and `not <spec>`.
+The legacy `linux_only` / `macos_only` / `windows_only` markers remain
+accepted as aliases; prefer `platforms` in new tests.
 
 Things that are host-independent can stay unmarked:
 
@@ -1673,7 +1686,10 @@ decides which files the macOS/Windows lanes import by grepping for the marker
 never imported on the Windows lane — it runs on no host at all, silently. The
 same trap catches a file-local alias (`windows_only = pytest.mark.skipif(...)`):
 the grep matches the name, so the file *is* listed, but `-m windows_only`
-deselects every test in it and the lane reports green over zero coverage.
+deselects every test in it and the lane reports green over zero coverage. And
+don't stack a module-level `platforms`/`_only` gate on a file whose tests
+carry their own host marker — the conftest hard-rejects tests carrying two
+host-OS markers (a test skipped on every host, reported green everywhere).
 Equally, don't `pytest.skip()` the non-host rows of a `@parametrize` over
 platforms — split it into one marked test per OS, or only the host's row ever
 executes.
