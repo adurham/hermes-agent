@@ -384,7 +384,20 @@ class ProcessSession:
     """A tracked background process with output buffering."""
     id: str                                     # Unique session ID ("proc_xxxxxxxxxxxx")
     command: str                                 # Original command string
-    task_id: str = ""                           # Task/sandbox isolation key
+    task_id: str = ""                           # Task/sandbox isolation key -- on local
+                                                 # backend this collapses to "default" for
+                                                 # EVERY caller (terminal_tool._resolve_
+                                                 # container_task_id), since subagents share
+                                                 # the parent's container. has_active_processes/
+                                                 # kill_all/list_sessions correctness depends on
+                                                 # this shared value -- do not repurpose it.
+    owner_task_id: str = ""                     # RAW caller task_id before container collapse
+                                                 # (e.g. a subagent's "sa-N-xxxxxxxx"). Used ONLY
+                                                 # for notification-ownership routing and
+                                                 # delegation attribution -- see
+                                                 # event_owner_still_running / format_process_
+                                                 # notification. Falls back to task_id when empty
+                                                 # so older/recovered sessions behave unchanged.
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
@@ -653,7 +666,11 @@ class ProcessRegistry:
         notification = {
             "session_id": session.id,
             "session_key": session.session_key,
-            "task_id": session.task_id,
+            # owner_task_id (raw pre-collapse id) so delegation attribution
+            # and the liveness gate resolve for subagent-spawned watchers —
+            # session.task_id is the collapsed container-sharing key and is
+            # "default" for every subagent on local backend.
+            "task_id": session.owner_task_id or session.task_id,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
@@ -1003,6 +1020,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        owner_task_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -1013,6 +1031,9 @@ class ProcessRegistry:
             use_pty: If True, use a pseudo-terminal via ptyprocess for interactive
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
+            owner_task_id: RAW caller task_id (before terminal_tool collapses
+                     it to the shared container key). Falls back to task_id
+                     when not given, matching pre-existing behavior.
         """
         # Guard against the `A && B &` subshell-wait trap (issue #68915).
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds
@@ -1027,6 +1048,7 @@ class ProcessRegistry:
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            owner_task_id=owner_task_id or task_id,
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
@@ -1241,6 +1263,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        owner_task_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -1252,11 +1275,17 @@ class ProcessRegistry:
 
         This is less capable than local spawn (no live stdout pipe, no stdin),
         but it ensures the command runs in the correct sandbox context.
+
+        Args:
+            owner_task_id: RAW caller task_id (before terminal_tool collapses
+                     it to the shared container key). Falls back to task_id
+                     when not given, matching pre-existing behavior.
         """
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            owner_task_id=owner_task_id or task_id,
             session_key=session_key,
             cwd=cwd,
             started_at=time.time(),
@@ -1599,7 +1628,17 @@ class ProcessRegistry:
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
-                "task_id": session.task_id,
+                # owner_task_id (raw pre-collapse id, e.g. a subagent's
+                # "sa-N-xxxxxxxx") -- session.task_id is the container-sharing
+                # key and collapses to "default" for every subagent on local
+                # backend (terminal_tool._resolve_container_task_id). The
+                # liveness gate (event_owner_still_running) and delegation
+                # attribution (_delegation_attribution_line) both key off
+                # task_id starting with "sa-"; without this fallback every
+                # subagent-owned background process reports as "default" and
+                # its completion bubbles straight to the parent even while
+                # the owning subagent is still alive.
+                "task_id": session.owner_task_id or session.task_id,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
@@ -2709,6 +2748,7 @@ class ProcessRegistry:
                             "cwd": s.cwd,
                             "started_at": s.started_at,
                             "task_id": s.task_id,
+                            "owner_task_id": s.owner_task_id,
                             "session_key": s.session_key,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
@@ -2799,6 +2839,7 @@ class ProcessRegistry:
                 id=entry["session_id"],
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
+                owner_task_id=entry.get("owner_task_id", ""),
                 session_key=entry.get("session_key", ""),
                 pid=pid,
                 host_start_time=recorded_start,

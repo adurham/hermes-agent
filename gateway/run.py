@@ -25958,7 +25958,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # line) would have nothing to resolve. Matches the
                         # task_id that drain_notifications / the TUI poller
                         # use, so all three consumers gate on the same key.
-                        "task_id": getattr(session, "task_id", "") or "",
+                        # session.task_id is the CONTAINER-SHARING key
+                        # (collapses to "default" for every subagent on local
+                        # backend, per terminal_tool._resolve_container_task_id)
+                        # -- session.owner_task_id preserves the raw pre-collapse
+                        # id and is the one that actually starts with "sa-".
+                        "task_id": (
+                            getattr(session, "owner_task_id", "")
+                            or getattr(session, "task_id", "")
+                            or ""
+                        ),
                         # Spawning conversation's session-db id (stamped at
                         # spawn time in terminal_tool). Lets the delivery
                         # pre-flight drop this completion when the user closed

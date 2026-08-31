@@ -170,6 +170,10 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
         "session_key": task_id,
         "env_vars": {},
         "use_pty": False,
+        # RAW caller task_id (before terminal_tool's container-key collapse)
+        # is passed for notification-ownership routing — see the 2026-08-31
+        # owner_task_id fix in process_registry.py / terminal_tool.py.
+        "owner_task_id": task_id,
     }]
 
 

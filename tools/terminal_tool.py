@@ -3082,6 +3082,16 @@ def terminal_tool(
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
+                        # RAW caller task_id (e.g. a subagent's "sa-N-xxxxxxxx")
+                        # before _resolve_container_task_id collapses it to the
+                        # shared container key ("default" on local backend for
+                        # every subagent). Notification-ownership routing
+                        # (event_owner_still_running) keys off this, not the
+                        # collapsed task_id -- without it every subagent's
+                        # background process is misattributed to "default" and
+                        # its completion bubbles straight to the parent even
+                        # while the subagent is still alive.
+                        owner_task_id=task_id or "",
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -3090,6 +3100,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        owner_task_id=task_id or "",
                     )
 
                 result_data = {
