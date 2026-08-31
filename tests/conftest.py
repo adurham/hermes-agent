@@ -1103,12 +1103,12 @@ _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 # So: a test whose subject is genuinely OS-specific declares the OS it
 # belongs to and runs there for real —
 #
-#   @pytest.mark.windows_only   → only on native Windows (``sys.platform == "win32"``)
-#   @pytest.mark.macos_only     → only on macOS (``sys.platform == "darwin"``)
-#   @pytest.mark.linux_only     → only on Linux (``sys.platform.startswith("linux")``)
+#   @pytest.mark.platforms("windows")   → only on native Windows (``sys.platform == "win32"``)
+#   @pytest.mark.platforms("macos")     → only on macOS (``sys.platform == "darwin"``)
+#   @pytest.mark.platforms("linux")     → only on Linux (``sys.platform.startswith("linux")``)
 #
 # Elsewhere the test is skipped, not faked. CI runs a dedicated macOS job
-# (``-m macos_only``) and a dedicated Windows job (``-m windows_only``) so
+# (``-m platforms("macos")``) and a dedicated Windows job (``-m platforms("windows")``) so
 # those markers are actually exercised on their own host rather than
 # quietly skipped everywhere.
 #
@@ -1127,47 +1127,6 @@ _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 # The line is: if the test needs the interpreter to BELIEVE it is on
 # another OS in order to pass, it belongs on that OS.
 # ---------------------------------------------------------------------------
-
-_OS_MARKS = {
-    "linux_only": (
-        lambda: sys.platform.startswith("linux"),
-        "Linux",
-    ),
-    "macos_only": (
-        lambda: sys.platform == "darwin",
-        "macOS",
-    ),
-    "windows_only": (
-        lambda: sys.platform == "win32",
-        "native Windows",
-    ),
-}
-
-
-# ── Composable platform gating ──────────────────────────────────────────────
-# The fixed trio above can only say "one OS, no qualifiers". Real host-gating
-# needs more: "anything except macOS", "Windows but only arm64", "POSIX-family
-# behaviour". The ``platforms`` marker takes any number of spec strings plus
-# optional arch filters, and runs the test only where at least one spec
-# matches the host:
-#
-#   @pytest.mark.platforms("linux")                  only on Linux
-#   @pytest.mark.platforms("not macos")              anywhere except macOS
-#   @pytest.mark.platforms("windows", arch="arm64")  native Windows on arm64
-#   @pytest.mark.platforms("posix")                  linux or macOS
-#
-# Spec grammar (one per marker argument, case-insensitive):
-#   "linux" | "macos" | "windows"  — exact OS
-#   "posix"                         — linux or macOS
-#   "not <spec>"                    — negation of a single spec
-#   "any"                           — always true (documentation form)
-# ``arch`` narrows by machine architecture ("arm64", "x86_64", ...) matched
-# case-insensitively against platform.machine() aliases (amd64 → x86_64,
-# aarch64 → arm64). ``arch_negate=True`` inverts the arch filter.
-#
-# The old trio remains accepted as aliases routing through the same skip
-# machinery; new tests should prefer ``platforms``. A mechanical rewrite of
-# the ~500 legacy call sites is a separate sweep.
 
 _PLATFORM_ALIASES = {
     "linux": ("linux",),
@@ -1292,7 +1251,7 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "dispatcher's memory guard to 'no data' — only for tests that "
         "exercise the guard itself with their own patched samples.",
     )
-    # NOTE: linux_only / macos_only / windows_only are declared in
+    # NOTE: platforms("linux") / platforms("macos") / platforms("windows") are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the
     # project's public marker vocabulary (``pytest --markers``, and the CI
     # lanes select on them), whereas the marks above are conftest-internal
@@ -1338,58 +1297,51 @@ def pytest_runtest_setup(item):
             )
 
 
-def _reject_multiple_os_marks(items):
-    """Fail collection when one test carries two host-OS markers.
+def _reject_contradictory_platform_marks(items):
+    """Fail collection when one test carries two platforms() markers.
 
-    Every marker in ``_OS_MARKS`` skips on all but one host, so two of them
-    on the same item means it is skipped on *every* host — a test that never
-    runs anywhere, reported as green by both the Linux suite and the
-    tests-os lanes. That is the exact silent-coverage-loss the markers were
-    introduced to remove, so it is a hard collection error rather than a
-    warning nobody reads.
+    Two markers are ANDed by the gate, so a stacked pair is not always wrong
+    in principle — but the historic failure this guard exists for (a
+    module-level gate stacking with a per-test gate so the test is skipped
+    on every host while both lanes report green) is only diagnosable at
+    collection time. A test that needs a compound condition writes ONE
+    marker: platforms("linux", arch="arm64").
     """
     offenders = []
     for item in items:
-        marks = sorted({m.name for m in item.iter_markers() if m.name in _OS_MARKS})
+        marks = list(item.iter_markers("platforms"))
         if len(marks) > 1:
-            offenders.append(f"  {item.nodeid}: {', '.join(marks)}")
+            offenders.append(f"  {item.nodeid}: {len(marks)} platforms() marks")
     if offenders:
         raise pytest.UsageError(
-            "a test may carry at most one host-OS marker "
-            f"({', '.join(_OS_MARKS)}); these carry several and would be "
-            "skipped on every host:\n" + "\n".join(offenders)
+            "a test may carry at most one platforms() marker — combine the "
+            'specs into one call (platforms("linux", arch="arm64") instead '
+            "of stacking two markers); these carry several:\n"
+            + "\n".join(offenders)
         )
 
 
 def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
 
-    OS gating: a test marked ``linux_only`` / ``macos_only`` /
-    ``windows_only`` runs only on that host. See the ``_OS_MARKS`` block
-    comment above for why these tests are skipped rather than run against a
-    patched ``sys.platform``.
+    OS gating: a test marked ``platforms(...)`` runs only on hosts its
+    specs match. See the platform-gating block comment above for why these
+    tests are skipped rather than run against a patched ``sys.platform``.
 
     WAL gating is cheaper and more honest than each test hand-rolling a
     version check: the reason string names the actual linked version so the
     skip is diagnosable rather than mysterious.
     """
-    _reject_multiple_os_marks(items)
+    _reject_contradictory_platform_marks(items)
 
-    # Composable platforms() gating: skip items whose specs exclude this host.
+    # platforms() gating: skip items whose specs exclude this host. The skip
+    # markers (not -m expressions) are the authoritative host filter on
+    # every lane, so a lane selects with plain ``-m platforms`` and lets the
+    # specs decide per-test.
     for item in items:
         reason = _platforms_gate_reason(item)
         if reason is not None:
             item.add_marker(pytest.mark.skip(reason=reason))
-
-    for mark_name, (is_host, label) in _OS_MARKS.items():
-        if is_host():
-            continue
-        skip_os = pytest.mark.skip(
-            reason=f"{label}-only test (marked {mark_name}); host is {sys.platform}"
-        )
-        for item in items:
-            if item.get_closest_marker(mark_name) is not None:
-                item.add_marker(skip_os)
 
     if _wal_is_usable():
         return

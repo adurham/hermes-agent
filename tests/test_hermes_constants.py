@@ -33,7 +33,7 @@ from hermes_constants import (
 class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -55,7 +55,7 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
         local_appdata = tmp_path / "LocalAppData"
@@ -128,7 +128,7 @@ class TestGetDefaultHermesRoot:
 class TestGetHermesHome:
     """Tests for get_hermes_home() platform-aware fallback."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
         """When HERMES_HOME is unset on Windows, use %LOCALAPPDATA%\\hermes."""
         local_appdata = tmp_path / "LocalAppData"
@@ -157,7 +157,7 @@ class TestGetProcessHermesHome:
 
 
 class TestHermesManagedNode:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_node_dir_prefers_portable_root(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
         node_dir = home / "node"
@@ -168,7 +168,7 @@ class TestHermesManagedNode:
 
         assert iter_hermes_node_dirs() == [node_dir, bin_dir]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_finds_npm_cmd_before_path(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
         node_dir = home / "node"
@@ -182,7 +182,7 @@ class TestHermesManagedNode:
 
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_skips_broken_managed_npm_without_path_fallback(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
         managed_npm = home / "node" / "npm.cmd"

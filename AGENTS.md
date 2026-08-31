@@ -1646,8 +1646,8 @@ plus optional arch filters, so it can express more than the legacy trio:
 ```
 
 Specs: `linux`, `macos`, `windows`, `posix`, `any`, and `not <spec>`.
-The legacy `linux_only` / `macos_only` / `windows_only` markers remain
-accepted as aliases; prefer `platforms` in new tests.
+The historic `linux_only` / `macos_only` / `windows_only` markers have been
+fully replaced — `platforms` is the only host-gating marker in the tree.
 
 Things that are host-independent can stay unmarked:
 
@@ -1680,16 +1680,15 @@ argv, not the direct parent (the venv shim makes every spawn a
 launcher/worker chain).
 
 **Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
-decides which files the macOS/Windows lanes import by grepping for the marker
-*name*, and the lane then filters with `-m <marker>`. A test gated with
-`@pytest.mark.skipif(sys.platform != "win32")` therefore skips on Linux AND is
-never imported on the Windows lane — it runs on no host at all, silently. The
-same trap catches a file-local alias (`windows_only = pytest.mark.skipif(...)`):
-the grep matches the name, so the file *is* listed, but `-m windows_only`
-deselects every test in it and the lane reports green over zero coverage. And
-don't stack a module-level `platforms`/`_only` gate on a file whose tests
-carry their own host marker — the conftest hard-rejects tests carrying two
-host-OS markers (a test skipped on every host, reported green everywhere).
+decides which files the macOS lane imports by grepping for the quoted spec
+inside `platforms(...)`, and the lane then selects with `-m platforms` while
+the conftest's per-test host skips do the actual gating. A test gated with
+`@pytest.mark.skipif(sys.platform != "win32")` therefore runs on no host at
+all, silently — it is never imported by the lane that would run it, and the
+full-suite lanes skip it. Don't stack a module-level `pytestmark =
+platforms(...)` on a file whose tests carry their own host marker — the
+conftest hard-rejects tests carrying two `platforms()` markers (a test
+skipped on every host, reported green everywhere).
 Equally, don't `pytest.skip()` the non-host rows of a `@parametrize` over
 platforms — split it into one marked test per OS, or only the host's row ever
 executes.

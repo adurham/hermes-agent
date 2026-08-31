@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_cancel_event_terminates_script_process_tree(tmp_path, monkeypatch):
     """Losing a fire claim must stop both the script and its descendants."""
     import cron.scheduler as scheduler
