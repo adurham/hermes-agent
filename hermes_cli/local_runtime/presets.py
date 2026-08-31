@@ -180,8 +180,8 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
 
         if entry is not None and is_mtp:
             # Integrated-MTP targets sample on the backend, and so does
-            # the draft (vendor-measured pairing; the draft flag shipped
-            # in their September recipe drop).
+            # the draft (pairing validated against the vendor's published
+            # llama.cpp recipes for these models).
             keys["backend-sampling"] = "on"
             keys["spec-draft-backend-sampling"] = "on"
 
