@@ -144,6 +144,24 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
     return False
 
 
+def _wait_until_queue_item(q, timeout: float = 5.0, interval: float = 0.05):
+    """Poll a queue.Queue until an item is available, then pop and return it.
+
+    Returns None on timeout. Needed because _move_to_finished() (the call
+    that enqueues a completion notification) runs in the reader thread's
+    ``finally`` block AFTER ``session.exited`` flips True -- a caller polling
+    ``session.exited`` (e.g. via ``registry.wait()``) can observe completion
+    before the notification actually lands on the queue.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            return q.get_nowait()
+        except Exception:
+            time.sleep(interval)
+    return None
+
+
 @pytest.mark.windows_only
 def test_write_stdin_uses_str_for_windows_pty(registry):
     """pywinpty expects str input; bytes raises a PyString conversion error.
@@ -2618,3 +2636,121 @@ def test_drain_ttl_releases_wedged_child(_subagent_registry_guard, registry):
     assert len(results) == 1
     assert results[0][0] == event
     assert registry.completion_queue.empty()
+
+
+# =========================================================================
+# owner_task_id -- container-collapse regression (found live 2026-08-31)
+# =========================================================================
+# terminal_tool._resolve_container_task_id() collapses EVERY subagent's
+# task_id to "default" on local backend (subagents share the parent's
+# container). Before owner_task_id existed, that collapsed value was the
+# ONLY task_id ProcessSession ever saw, so event_owner_still_running()
+# (which requires task_id.startswith("sa-")) could never engage for a
+# subagent's background process -- its completion notification always
+# bubbled straight to the parent even while the subagent was still alive.
+# These tests spawn with task_id="default" (the collapsed value a real
+# terminal_tool(background=True) call from a subagent would pass) and a
+# distinct owner_task_id (the subagent's real "sa-N-..." id, as
+# terminal_tool now also passes) to prove the notification's task_id
+# resolves to the real subagent id, not the collapsed container key.
+
+class TestOwnerTaskIdContainerCollapse:
+    def test_spawn_local_stores_owner_task_id_separately_from_task_id(self, registry, tmp_path):
+        session = registry.spawn_local(
+            "echo hi",
+            cwd=str(tmp_path),
+            task_id="default",
+            owner_task_id="sa-0-abcd1234",
+        )
+        try:
+            assert session.task_id == "default"
+            assert session.owner_task_id == "sa-0-abcd1234"
+        finally:
+            registry.kill_process(session.id)
+
+    def test_spawn_local_owner_task_id_falls_back_to_task_id_when_omitted(self, registry, tmp_path):
+        """Non-subagent callers (top-level agent) don't pass owner_task_id;
+        falling back to task_id keeps their behavior byte-identical."""
+        session = registry.spawn_local(
+            "echo hi", cwd=str(tmp_path), task_id="top-level-session",
+        )
+        try:
+            assert session.owner_task_id == "top-level-session"
+        finally:
+            registry.kill_process(session.id)
+
+    def test_completion_notification_uses_owner_task_id_not_collapsed_task_id(
+        self, registry, tmp_path,
+    ):
+        """The bug: a subagent's background process spawned through the
+        container-collapse path used to enqueue a completion event whose
+        task_id was "default" -- never resolvable as a live subagent by
+        event_owner_still_running(). owner_task_id fixes this: the
+        notification's task_id must be the real subagent id."""
+        session = registry.spawn_local(
+            "sleep 0.2 && echo hi",
+            cwd=str(tmp_path),
+            task_id="default",  # collapsed container-sharing key
+            owner_task_id="sa-0-livebug",  # the subagent's real identity
+        )
+        session.notify_on_complete = True
+        try:
+            assert registry.wait(session.id, timeout=5)["exit_code"] == 0
+            # wait() can return the instant session.exited flips True, which
+            # the reader thread's finally block sets BEFORE it calls
+            # _move_to_finished() (the call that actually enqueues the
+            # notification) -- so the put can race past this check. Poll
+            # briefly instead of asserting the queue is populated immediately.
+            item = _wait_until_queue_item(registry.completion_queue, timeout=5.0)
+            assert item is not None, "completion notification was never enqueued"
+            assert item["type"] == "completion"
+            assert item["task_id"] == "sa-0-livebug", (
+                "completion notification must carry the subagent's real "
+                "task_id, not the collapsed container-sharing key"
+            )
+        finally:
+            registry.kill_process(session.id)
+
+    def test_event_owner_still_running_resolves_via_owner_task_id_notification(
+        self, _subagent_registry_guard,
+    ):
+        """End-to-end: with owner_task_id correctly populated, the liveness
+        gate now correctly HOLDS a live subagent's completion instead of
+        leaking it -- this is the exact live symptom this fix addresses."""
+        _register_test_subagent("sa-0-livebug2")
+        # Simulates the notification dict process_registry now builds: the
+        # collapsed container key would have been "default", but owner_task_id
+        # propagation means the notification's "task_id" is the real subagent id.
+        event = {"type": "completion", "task_id": "sa-0-livebug2"}
+        assert event_owner_still_running(event) is True
+        _unregister_test_subagent("sa-0-livebug2")
+        assert event_owner_still_running(event) is False
+
+    def test_checkpoint_round_trip_preserves_owner_task_id(self, registry, tmp_path, monkeypatch):
+        """owner_task_id must survive a gateway restart (checkpoint write +
+        recover_from_checkpoint) so the liveness gate still works for a
+        process that outlives a restart."""
+        import tools.process_registry as _pr
+
+        checkpoint_path = tmp_path / "processes.json"
+        monkeypatch.setattr(_pr, "CHECKPOINT_PATH", checkpoint_path)
+
+        session = _make_session(sid="proc_ckpt_owner", task_id="default")
+        session.owner_task_id = "sa-0-ckpt"
+        session.pid = os.getpid()  # a PID guaranteed to exist for this test
+        session.pid_scope = "host"
+        session.host_start_time = registry._safe_host_start_time(os.getpid())
+        registry._running[session.id] = session
+        registry._write_checkpoint()
+
+        entries = json.loads(checkpoint_path.read_text())
+        matching = [e for e in entries if e["session_id"] == "proc_ckpt_owner"]
+        assert len(matching) == 1
+        assert matching[0]["owner_task_id"] == "sa-0-ckpt"
+
+        fresh = ProcessRegistry()
+        monkeypatch.setattr(_pr, "process_registry", fresh, raising=False)
+        recovered = fresh.recover_from_checkpoint()
+        assert recovered == 1
+        recovered_session = fresh._running["proc_ckpt_owner"]
+        assert recovered_session.owner_task_id == "sa-0-ckpt"

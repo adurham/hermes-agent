@@ -3,6 +3,57 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-08-31 (subagent completion notifications still leaked to the parent after the 2026-08-30 liveness-gate fix — container-key collapse hid the real task_id)
+
+**Problem:** the previous day's fix (`should_hold_completion_event()`,
+below) added a liveness gate keyed on `task_id.startswith("sa-")`, but it
+assumed `ProcessSession.task_id` carried the spawning subagent's real id.
+It doesn't, on `terminal.backend: local` (the default): `terminal_tool.
+_resolve_container_task_id()` collapses EVERY caller's task_id to
+`"default"` before it reaches `process_registry.spawn_local()` /
+`spawn_via_env()`, because subagents share the parent's long-lived
+container (one bash, one `/workspace`). So `ProcessSession.task_id` was
+never `"sa-N-xxxxxxxx"` — always `"default"` — which meant
+`event_owner_still_running()`'s `task_id.startswith("sa-")` check could
+never engage, and the gate was a silent no-op for exactly the population it
+was built to protect. Confirmed live: a Polaris orchestrator session was
+still seeing raw `[IMPORTANT: Background process ... completed normally]`
+notifications for subagent-owned test/smoke-suite runs while sitting on the
+2026-08-30 fix commit.
+
+**Fix:** added a new `ProcessSession.owner_task_id` field carrying the RAW
+caller task_id (the subagent's real `sa-N-xxxxxxxx`) separately from
+`task_id` (the collapsed container-sharing key, left untouched so
+`has_active_processes`/`kill_all`/`list_sessions` container-scoping
+behavior is unaffected). `spawn_local()` and `spawn_via_env()` both gained
+an `owner_task_id` parameter (falls back to `task_id` when omitted, so
+non-subagent callers — the top-level agent — are byte-identical to before).
+`terminal_tool.py`'s two background-spawn call sites now pass the
+pre-collapse `task_id` as `owner_task_id`. Every notification-dict
+construction site in `process_registry.py` (`notify_on_complete`
+completion, `watch_match`) now reads `session.owner_task_id or
+session.task_id` instead of the bare collapsed value; same fallback added
+to `gateway/run.py`'s hand-built `completion_evt` (the third delivery
+surface, per yesterday's fix). The checkpoint write/recovery round-trip
+(`_write_checkpoint` / `recover_from_checkpoint`) also persists
+`owner_task_id` so it survives a gateway restart.
+
+**Files:** `tools/process_registry.py`, `tools/terminal_tool.py`,
+`gateway/run.py`, plus regression tests in
+`tests/tools/test_process_registry.py` (`TestOwnerTaskIdContainerCollapse`
+— 5 new tests covering the collapse itself, the fallback for non-subagent
+callers, the actual completion-notification content, the liveness-gate
+resolution end-to-end, and checkpoint round-trip) and one existing
+assertion updated in `tests/tools/test_terminal_task_cwd.py` for the new
+kwarg.
+
+**Verification:** new tests pass (5/5), full `test_process_registry.py` +
+`test_completion_delivery.py` + `test_terminal_task_cwd.py` +
+`test_terminal_error_redaction.py` + `test_terminal_tool_pty_fallback.py` +
+`test_notify_on_complete.py` suite green (159 passed, 5 pre-existing
+skips, 0 failures), `test_tui_gateway_server.py` liveness-gate subset green
+(19/19), ruff clean on all touched files.
+
 ### Fix — 2026-08-30 (role='orchestrator' with no agent_type= silently inherited the dispatching session's own model, no warning)
 
 **Problem:** a supervisor session dispatched a PM-tier subagent with
