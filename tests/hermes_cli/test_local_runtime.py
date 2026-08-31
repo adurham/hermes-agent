@@ -394,6 +394,42 @@ def test_llamacpp_endpoint_stale_state_falls_through(tmp_path, monkeypatch):
     assert DEFAULT_PROBE_PORTS  # (import kept honest)
 
 
+def test_llamacpp_dead_server_raises_friendly_error(tmp_path, monkeypatch):
+    """A llamacpp send with no server must say WHY in user terms, not fall
+    through to the generic custom path (which lands on a cloud provider
+    with a placeholder key and surfaces as a baffling '401 Invalid API
+    key'). Message tracks the off switch: enabled = probably starting;
+    disabled = the user turned it off."""
+    import pytest
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        lambda *a, **k: None)
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"local_runtime": {"enabled": False}})
+    with pytest.raises(ValueError, match="turned off"):
+        rp._resolve_named_custom_runtime(requested_provider="llamacpp")
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"local_runtime": {"enabled": True}})
+    with pytest.raises(ValueError, match="isn't running"):
+        rp._resolve_named_custom_runtime(requested_provider="llamacpp")
+
+    # An explicit base_url is the user pointing at a specific server —
+    # that path keeps its own error reporting, never this one.
+    result = rp._resolve_named_custom_runtime(
+        requested_provider="llamacpp",
+        explicit_base_url="http://127.0.0.1:9999/v1")
+    assert result is None or result.get("base_url", "").startswith("http://127.0.0.1:9999")
+
+
 def test_llamacpp_endpoint_starting_server_resolves(tmp_path, monkeypatch):
     """The restart race: state written at spawn, server not yet healthy,
     supervisor child alive — resolution must return the endpoint (a
@@ -649,8 +685,8 @@ def test_llamacpp_endpoint_no_wait_when_not_enabled(tmp_path, monkeypatch):
 
 def test_switch_model_explicit_llamacpp_provider(tmp_path, monkeypatch, stub_server):
     """The desktop dropdown path: switch_model(explicit_provider='llamacpp')
-    must resolve the managed provider — not 'Unknown provider' (Jeff's
-    round-5 symptom). E2E through the real pipeline against a stub server."""
+    must resolve the managed provider — not 'Unknown provider' (the
+    desktop-review symptom). E2E through the real pipeline against a stub server."""
     port, handler = stub_server
     handler.models = {"data": [{"id": "stub-model-a", "owned_by": "llamacpp"}]}
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

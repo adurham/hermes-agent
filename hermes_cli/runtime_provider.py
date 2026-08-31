@@ -1199,6 +1199,30 @@ def _resolve_named_custom_runtime(
                 "source": "local-runtime",
                 "requested_provider": requested_provider,
             }
+        # No server to serve this model. Say so and stop — falling through
+        # to the generic custom path sends the request to whatever provider
+        # picks it up (OpenRouter with a placeholder key), and the user's
+        # "local server is off" surfaces as that provider's baffling
+        # "401 Invalid API key". The switch's own state picks the message:
+        # the user who turned the server off gets pointed at the switch,
+        # anyone else at the setup pane.
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+
+            _lr_enabled = bool((_load_cfg().get("local_runtime") or {}).get("enabled"))
+        except Exception:  # noqa: BLE001
+            _lr_enabled = False
+        if _lr_enabled:
+            raise ValueError(
+                "The local model server isn't running. It may still be "
+                "starting — try again in a moment, or check Settings → "
+                "Providers → Local models."
+            )
+        raise ValueError(
+            "The local model server is turned off. Turn it back on in "
+            "Settings → Providers → Local models, or switch to another "
+            "model."
+        )
 
     if requested_norm and requested_norm != "custom":
         try:
