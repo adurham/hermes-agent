@@ -1579,30 +1579,29 @@ def profile_env(tmp_path, monkeypatch):
 ### Python
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-per-file subprocess isolation via `scripts/run_tests_parallel.py` — no xdist,
-worker count auto-scaled from CPU count). Direct `pytest`
+pytest-xdist with `--dist loadfile` so every test of a file runs on ONE worker —
+worker count defaults to the CPU count). Direct `pytest`
 on a 16+ core developer machine with API keys set diverges from CI in ways
 that have caused multiple "works locally, fails in CI" incidents (and the reverse).
 
 ```bash
 scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
-scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # one test (file + -k; the runner is file-granular)
+scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # one test (file + -k)
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
 ```
 
-**Flake policy:** the runner auto-retries a failing test FILE once in a fresh
-subprocess (`--file-retries`, default 1; `HERMES_TEST_FILE_RETRIES=0` to
-disable). Pass-on-retry counts as green but is printed in a `⚠ FLAKY` summary
-section with both attempts' output. A FLAKY report is a bug to fix, not noise
-to ignore — timing-sensitive tests must not assume a quiet runner (loose
+**Flake policy:** the runner is xdist, so a file may pass or fail depending
+on which siblings share its worker — any order-dependent failure is a bug to
+fix, not noise. Timing-sensitive tests must not assume a quiet runner (loose
 wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)`
 negative-timing races).
 
-#### Subprocess-per-test-file isolation
+#### File-pinned xdist workers
 
-Every test file runs in a freshly-spawned Python subprocess via `run_tests_parallel.py`. This means module-level dicts/sets and
-ContextVars from one test file cannot leak into the next.
+Every test file runs pinned to ONE xdist worker (`--dist loadfile` via `scripts/run_tests.sh`), so module-level
+state pollution is bounded to files co-scheduled on the same worker; files that need true isolation should reset
+state in fixtures.
 
 #### Why the wrapper
 
