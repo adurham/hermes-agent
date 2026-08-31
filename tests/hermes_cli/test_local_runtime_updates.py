@@ -1,4 +1,4 @@
-"""Engine-update contracts (Rollout 4 follow-up, Jeff's design):
+"""Engine-update contracts (Rollout 4 follow-up):
 
 - default tag flows from DEFAULT_CONFIG unless the user pinned;
 - boot serves what is INSTALLED, never downloads (the ladder);
