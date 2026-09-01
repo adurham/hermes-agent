@@ -37,7 +37,6 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { findGroup } from '@/components/pane-shell/tree/model'
 import {
-  type DoubleTapContext,
   rectContains,
   slotBefore,
   snapshotStrips,
@@ -108,7 +107,7 @@ function tileZoneHost(groupId: string): { chat: boolean; pane: string } | null {
  * split, or composer link) OR a tile's/the workspace's own TAB (`reorder`
  * set — reorder within its own strip only, never zone/split/link). Sub-
  * threshold releases stay ordinary clicks, so `opts.onTap` (activate the
- * tile) and `opts.double` (hide the tab bar) ride the tab's gestures; Esc
+ * tile) rides the tab's gesture; Esc
  * aborts instantly. A sidebar-row stack/split commits through
  * `openSessionTile`, which OPENS a new tile or MOVES an existing one; a
  * tab's reorder commits through `reorderTreePane` directly (its own strip
@@ -117,7 +116,7 @@ function tileZoneHost(groupId: string): { chat: boolean; pane: string } | null {
 export function startSessionDrag(
   payload: SessionDragPayload,
   e: ReactPointerEvent<HTMLElement>,
-  opts?: { double?: DoubleTapContext; onTap?: () => void; reorder?: { groupId: string; strip: HTMLElement } }
+  opts?: { onTap?: () => void; reorder?: { groupId: string; strip: HTMLElement } }
 ) {
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
@@ -152,7 +151,6 @@ export function startSessionDrag(
   const restoreOpacity = source?.style.opacity ?? ''
 
   startDragSession(e, {
-    double: opts?.double,
     ghost: { label: sessionLabel(payload) },
     onTap: opts?.onTap,
 

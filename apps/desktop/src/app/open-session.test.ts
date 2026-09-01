@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const focusOpenSession = vi.fn()
 const openSessionTile = vi.fn()
 const reuseBlankDraftTile = vi.fn()
+const setSessionTileWorkspaceScope = vi.fn()
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
@@ -17,7 +18,8 @@ vi.mock('@/store/session-states', () => ({
     !focused || (focused === 'main' && workspaceIsPage),
   focusOpenSession: (...args: unknown[]) => focusOpenSession(...args),
   openSessionTile: (...args: unknown[]) => openSessionTile(...args),
-  reuseBlankDraftTile: (...args: unknown[]) => reuseBlankDraftTile(...args)
+  reuseBlankDraftTile: (...args: unknown[]) => reuseBlankDraftTile(...args),
+  setSessionTileWorkspaceScope: (...args: unknown[]) => setSessionTileWorkspaceScope(...args)
 }))
 
 vi.mock('@/store/windows', () => ({
@@ -95,6 +97,7 @@ describe('openSession', () => {
     workspaceIsPageGet.mockReturnValue(false)
     reuseBlankDraftTile.mockReset()
     revealTreePane.mockReset()
+    setSessionTileWorkspaceScope.mockReset()
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
   })
@@ -102,7 +105,7 @@ describe('openSession', () => {
   it('in-place focuses an existing tile and does not navigate', () => {
     focusOpenSession.mockReturnValue('tile')
     openSession('s1', navigate)
-    expect(focusOpenSession).toHaveBeenCalledWith('s1')
+    expect(focusOpenSession).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
     expect(navigate).not.toHaveBeenCalled()
     expect(openSessionTile).not.toHaveBeenCalled()
   })
@@ -137,7 +140,7 @@ describe('openSession', () => {
   it('tab focuses an existing open session instead of stacking another', () => {
     focusOpenSession.mockReturnValue('tile')
     openSession('s1', navigate, 'tab')
-    expect(focusOpenSession).toHaveBeenCalledWith('s1')
+    expect(focusOpenSession).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
     expect(openSessionTile).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
   })
@@ -150,6 +153,17 @@ describe('openSession', () => {
     // just created — otherwise the gesture looks like a no-op.
     expect(revealTreePane).toHaveBeenCalledWith('session-tile:s1')
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('threads an exact Bot owner into a new session tile', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::default' }
+    focusOpenSession.mockReturnValue(null)
+
+    openSession('s1', navigate, 'tab', scope)
+
+    expect(setSessionTileWorkspaceScope).toHaveBeenCalledWith('s1', scope)
+    expect(focusOpenSession).toHaveBeenCalledWith('s1', scope)
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined, undefined, scope)
   })
 
   it('stack focuses a session that is already on screen', () => {
