@@ -228,3 +228,72 @@ class TestConsultToolRegistration:
             )
         assert result["unavailable"] is False
         assert result["answer"] == "dispatched ok"
+
+
+class TestConsultToolModelOverride:
+    """model/provider let the caller bypass a rate-limited or exhausted
+    auxiliary.consult config for a single call without touching config.yaml.
+    """
+
+    def test_no_override_passes_none_through(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            consult_tool("q")
+        assert mock_call.call_args.kwargs.get("model") is None
+        assert mock_call.call_args.kwargs.get("provider") is None
+
+    def test_model_override_forwarded_to_call_llm(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            consult_tool("q", model="claude-opus-4-7")
+        assert mock_call.call_args.kwargs.get("model") == "claude-opus-4-7"
+        assert mock_call.call_args.kwargs.get("task") == "consult"
+
+    def test_model_and_provider_override_forwarded_together(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            consult_tool("q", model="deepseek-v4-pro", provider="ollama-cloud")
+        assert mock_call.call_args.kwargs.get("model") == "deepseek-v4-pro"
+        assert mock_call.call_args.kwargs.get("provider") == "ollama-cloud"
+
+    def test_override_does_not_disturb_question_context_content(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            consult_tool("Is X safe?", context="ctx here", model="claude-fable-5")
+        messages = mock_call.call_args.kwargs.get("messages")
+        user_msg = next(m for m in messages if m["role"] == "user")
+        assert "Is X safe?" in user_msg["content"]
+        assert "ctx here" in user_msg["content"]
+
+    def test_dispatch_through_registry_with_model_override(self):
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+
+        resp = _fake_response("dispatched ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            result = json.loads(
+                registry.dispatch(
+                    "consult",
+                    {"question": "q", "model": "claude-opus-4-7"},
+                )
+            )
+        assert result["unavailable"] is False
+        assert mock_call.call_args.kwargs.get("model") == "claude-opus-4-7"
+
+    def test_schema_declares_model_and_provider_as_optional(self):
+        from tools.consult_tool import CONSULT_SCHEMA
+
+        props = CONSULT_SCHEMA["parameters"]["properties"]
+        assert "model" in props
+        assert "provider" in props
+        assert CONSULT_SCHEMA["parameters"]["required"] == ["question"]
