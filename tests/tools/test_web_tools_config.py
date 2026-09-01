@@ -505,6 +505,25 @@ class TestCheckWebApiKey:
     def setup_method(self):
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
+        # FORK-HERMETIC: check_web_api_key() ends with a fork-only filesystem
+        # probe for Claude Code OAuth credentials (~/.claude/.credentials.json)
+        # so a first-party-Anthropic install with zero env keys still gates the
+        # web tools available. Upstream's version of this suite never had that
+        # probe, so its mocks scrub env vars only. On a machine that actually
+        # has Claude Code credentials, the probe leaks the REAL home directory
+        # into these "zero-credential" tests and check_web_api_key() returns
+        # True, failing the two does_not_crash assertions below. Redirect
+        # Path.home() to an empty temp dir so the filesystem probe sees
+        # nothing, mirroring the env scrub above.
+        import pathlib as _pathlib
+        import shutil as _shutil
+        import tempfile as _tempfile
+
+        self._fake_home = _tempfile.mkdtemp(prefix="hermes-webcfg-test-")
+        self._home_patcher = patch.object(
+            _pathlib.Path, "home", staticmethod(lambda: _pathlib.Path(self._fake_home))
+        )
+        self._home_patcher.start()
         self._managed_patchers = [
             patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
             patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
@@ -523,6 +542,10 @@ class TestCheckWebApiKey:
     def teardown_method(self):
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
+        self._home_patcher.stop()
+        import shutil as _shutil
+
+        _shutil.rmtree(self._fake_home, ignore_errors=True)
         for p in self._managed_patchers:
             p.stop()
 

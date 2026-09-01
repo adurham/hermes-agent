@@ -1672,6 +1672,33 @@ def check_web_api_key() -> bool:
     # unlike _get_backend() the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
         return True
+    # Plugin-registered autodetect — parity with _get_backend()'s final walk.
+    # A plugin provider with credentials present must light the tools up even
+    # when no built-in backend has creds (issues #28651, #31873); before this
+    # walk, TAVILY_API_KEY alone fell through to the Anthropic-native probe
+    # and returned False on machines without Claude credentials even though
+    # _get_backend() would have autodetected tavily at dispatch time. Keyed
+    # availability only (is_available): keyless capability does NOT count
+    # here — the keyless tier is the zero-credential fallback, and counting
+    # it would make the gate always-True; it's already honored for
+    # explicitly-configured providers via _provider_is_ready below.
+    try:
+        _ensure_web_plugins_loaded()
+        for _provider in _list_registered_web_providers():
+            if _provider.name in _LEGACY_WEB_BACKENDS:
+                continue
+            try:
+                if _provider.is_available():
+                    return True
+            except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
+                logger.debug(
+                    "web provider %r.is_available() raised during "
+                    "check_web_api_key walk: %s",
+                    getattr(_provider, "name", _provider),
+                    exc,
+                )
+    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+        logger.debug("web provider registry availability check failed: %s", exc)
     # Plugin-registered path: the active-provider resolvers return an explicit
     # config hit even when credentials are missing (so the tool can print a
     # precise "set FOO_API_KEY" error). Readiness still requires a true

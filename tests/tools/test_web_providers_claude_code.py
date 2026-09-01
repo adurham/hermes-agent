@@ -481,16 +481,27 @@ class TestClaudeCodeBackendAvailability:
 
 class TestClaudeCodeSetupWizardEntry:
     def test_claude_code_is_listed_in_web_setup_options(self):
-        """``hermes_cli.tools_config.TOOL_CATEGORIES['web']`` must include a
-        claude-code option so users can pick it from the interactive picker."""
-        from hermes_cli.tools_config import TOOL_CATEGORIES
-        web_options = TOOL_CATEGORIES["web"]["providers"]
-        backends = [o.get("web_backend") for o in web_options]
+        """claude-code must be pickable in the interactive web-backend picker.
+
+        Post-PR #25182 the Web Search & Extract picker's provider rows come
+        from the plugin registry via
+        ``hermes_cli.tools_config._plugin_web_search_providers()`` — the
+        static ``TOOL_CATEGORIES['web']['providers']`` list only retains the
+        two non-provider firecrawl setup-flow rows (Nous Subscription,
+        Firecrawl Self-Hosted). Asserting the static table was the
+        pre-migration shape and silently passed until the migration landed.
+        """
+        from hermes_cli.tools_config import _plugin_web_search_providers
+
+        backends = [o.get("web_backend") for o in _plugin_web_search_providers()]
         assert "claude-code" in backends
 
     def test_claude_code_option_requires_no_env_vars(self):
         """No env-var prompts — Claude Code re-uses ``claude auth login``."""
-        from hermes_cli.tools_config import TOOL_CATEGORIES
-        web_options = TOOL_CATEGORIES["web"]["providers"]
-        cc_opt = next(o for o in web_options if o.get("web_backend") == "claude-code")
+        from hermes_cli.tools_config import _plugin_web_search_providers
+
+        cc_opt = next(
+            o for o in _plugin_web_search_providers()
+            if o.get("web_backend") == "claude-code"
+        )
         assert cc_opt.get("env_vars", []) == []
