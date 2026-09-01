@@ -78,6 +78,47 @@ alphabetical disorder unrelated to this change — `wheel` sits before
 `sherpa-onnx` (positions 85/86), inherited from upstream. Left as-is to
 avoid scope creep; flagged for triage.
 
+### Feature — 2026-09-01 (Tavily web-search provider plugin)
+
+**Problem:** the fork had no Tavily web-search/extract backend. Tavily
+offers a keyless public tier (rate-limited) plus a keyed tier, which slots
+naturally into the existing keyless ring alongside Exa/Parallel/Firecrawl/
+Keenable.
+
+**Fix:** added a bundled `plugins/web/tavily/` plugin (`__init__.py`,
+`plugin.yaml`, `provider.py`) subclassing
+`agent.web_search_provider.WebSearchProvider`, advertising both `search`
+and `extract` capabilities, and registering via
+`ctx.register_web_search_provider()` (auto-loaded as `kind: backend`).
+Keyed requests use `Authorization: Bearer <TAVILY_API_KEY>`; keyless
+requests send `X-Tavily-Access-Mode: keyless`; both send
+`X-Client-Name: hermes-agent`. `TAVILY_BASE_URL` overrides the default
+`https://api.tavily.com`. `is_available()` reflects `TAVILY_API_KEY`
+presence; `is_keyless_available()` reflects the keyless tier (enabled and
+not pinned `paid`).
+
+**Root-cause bug found in the WIP and fixed:** the WIP's keyless path
+called `search_with_failover("tavily", ...)` / `extract_with_failover(
+"tavily", ...)`, but `_KEYLESS_RING` / `_KEYLESS_SEARCHERS` /
+`_KEYLESS_EXTRACTORS` in `plugins/web/keyless_mcp.py` did NOT include
+`"tavily"` — so a keyless Tavily request silently routed to
+exa/parallel/firecrawl/keenable and never hit Tavily's own keyless
+endpoint, contradicting the provider's `is_keyless_available()` docstring
+("Default-on ring member of the keyless free tier"). Fixed at the root:
+added `tavily` to the ring + searcher/extractor dicts, added
+`tavily_search_keyless` / `tavily_extract_keyless` (which force the
+keyless header via a new `api_key=""` param on `_tavily_request` so the
+ring never sends credentials), and added `tavily` to the registry's
+`_KEYLESS_PREFERENCE` fallback tuple. The ring is now genuinely five
+vendors as its comment already claimed.
+
+**Tests:** new hermetic `tests/plugins/web/test_tavily_provider.py` (18
+tests, no live network / no real key) covering the ABC contract (all
+abstract methods concrete), availability, header shapes, mocked search +
+extract happy paths, per-URL failure shape, and keyless ring membership +
+routing. Full web-provider suite (124 tests incl. the pre-existing
+keyless fallback/rescue/registry suites) passes.
+
 ### De-fork audit — 2026-08-31 (post-v2026.8.31: checked fork-only work against this tag's upstream delta)
 
 Phase-2 follow-up to the sync below, on branch `sync/v2026.8.31`. Scoped —
