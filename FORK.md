@@ -3,6 +3,47 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-09-01 (per-call `model`/`provider` override on the `consult` tool to bypass a rate-limited or exhausted `auxiliary.consult`)
+
+**Problem:** the `consult` tool (second opinion from a reference model)
+always routed through the single `auxiliary.consult` config. When that
+model/provider was rate-limited or out of credits, the ONLY recovery was
+editing `config.yaml` (or waiting for the quota to reset) — there was no
+way to ask a different reference model for a single call without touching
+the shared config.
+
+**Fix:** `consult_tool()` now accepts optional `model` and `provider`
+kwargs, threaded through the registry handler and schema as optional
+`model`/`provider` properties, and forwarded to
+`agent.auxiliary_client.call_llm(task="consult", provider=..., model=...)`.
+`call_llm`'s `_resolve_task_provider_model` gives an explicit
+`provider`/`model` argument priority over the `auxiliary.consult` config
+(verified empirically: `_resolve_task_provider_model("consult",
+provider="anthropic", model="claude-opus-4-7")` returns the explicit
+provider+model, and passing `None` for either is byte-identical to omitting
+it — `resolved_model = model or cfg_model` and the `if provider:` /
+`if model:` truthiness guards mean `None` falls through to the config
+unchanged, so the default path is untouched). Config is never mutated; this
+is a one-call override only. The schema description now tells the model to
+retry ONCE with an explicit override when the reason string indicates a
+rate limit or exhausted credits (as opposed to a genuine refusal).
+
+**Docstring/schema accuracy fix:** the original WIP claimed a bare
+`provider` override with no `model` "falls through to that provider's
+default model for the consult task." That is NOT what the resolution code
+does: with `provider="anthropic"` and `model=None`, `resolved_model =
+model or cfg_model` picks up the configured `auxiliary.consult.model`
+(observed: resolves to `claude-fable-5`), only falling to the provider's
+default when no consult model is configured. Corrected both the
+`consult_tool` docstring and the `provider` schema description to state
+the real behavior rather than shipping a description that lies to the
+model.
+
+**Tests:** `tests/tools/test_consult_tool.py` grew a
+`TestConsultToolModelOverride` class (6 tests) covering None-through,
+model-only, model+provider, content preservation, registry dispatch with an
+override, and schema optionality. Full suite: 28 passed.
+
 ### De-fork audit — 2026-08-31 (post-v2026.8.31: checked fork-only work against this tag's upstream delta)
 
 Phase-2 follow-up to the sync below, on branch `sync/v2026.8.31`. Scoped —

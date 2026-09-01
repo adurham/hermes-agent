@@ -136,7 +136,12 @@ _CONSULT_SYSTEM_PROMPT = (
 )
 
 
-def consult_tool(question: str, context: Optional[str] = None) -> str:
+def consult_tool(
+    question: str,
+    context: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> str:
     """
     Ask a configured reference model (``auxiliary.consult``) for a second
     opinion on a specific question, optionally with supporting context.
@@ -145,6 +150,21 @@ def consult_tool(question: str, context: Optional[str] = None) -> str:
         question: The specific judgment call to get a second opinion on.
         context:  Optional supporting material (code, plan, diff, reasoning
                   trace) the reviewer needs to judge the question.
+        model:    Optional override for the reference model, e.g. when the
+                  configured ``auxiliary.consult`` model/provider is
+                  rate-limited or out of credits and a different model
+                  should be asked instead just for this call. Passed
+                  straight through to ``call_llm``, which always prefers an
+                  explicit ``model``/``provider`` argument over the
+                  ``auxiliary.consult`` config (see
+                  ``_resolve_task_provider_model``'s priority order) --
+                  config is untouched, this is a one-call override only.
+        provider: Optional provider override paired with ``model`` (e.g.
+                  ``"anthropic"``, ``"ollama-cloud"``). Only meaningful when
+                  ``model`` is also given; a bare provider override with no
+                  model still uses the configured ``auxiliary.consult.model``
+                  for that provider (or that provider's default consult model
+                  when no consult model is configured).
 
     Returns:
         JSON string. On success: ``{"unavailable": false, "answer": "..."}``.
@@ -205,6 +225,8 @@ def consult_tool(question: str, context: Optional[str] = None) -> str:
     try:
         response = call_llm(
             task="consult",
+            provider=provider,
+            model=model,
             messages=messages,
             max_tokens=2000,
         )
@@ -294,12 +316,16 @@ CONSULT_SCHEMA = {
         "work -- this costs one full call to a (usually more expensive, "
         "sometimes slower) model, so use it sparingly and only for genuinely "
         "uncertain judgment calls.\n\n"
-        "The reference model is configured via `auxiliary.consult` in "
+        "The reference model defaults to `auxiliary.consult` in "
         "config.yaml (e.g. Claude Fable 5) and may occasionally decline to "
         "answer -- safety refusal, empty response, or timeout are all "
         "expected outcomes, not errors. When that happens this tool returns "
         "unavailable=true with a reason; proceed using your own judgment "
-        "instead of retrying.\n\n"
+        "instead of retrying immediately with the same model -- if the "
+        "reason indicates a rate limit or exhausted credits (not a genuine "
+        "refusal), retry ONCE with an explicit `model`/`provider` override "
+        "naming a different model before giving up on getting a second "
+        "opinion.\n\n"
         "Available to both the main agent and delegated subagents."
     ),
     "parameters": {
@@ -333,6 +359,34 @@ CONSULT_SCHEMA = {
                     "called."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional: override the configured auxiliary.consult "
+                    "reference model for this ONE call, e.g. "
+                    "\"claude-opus-4-7\", \"deepseek-v4-pro\", "
+                    "\"gemini-3-pro\". Use this when the default consult "
+                    "model (usually Claude Fable 5) is rate-limited or its "
+                    "credits/quota are exhausted -- the reason string will "
+                    "say so explicitly. Config is untouched; this only "
+                    "affects the current call. Pair with `provider` when "
+                    "the model lives on a specific backend (e.g. "
+                    "provider=\"ollama-cloud\" for a locally-hosted frontier "
+                    "model)."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional: provider to use with `model` (e.g. "
+                    "\"anthropic\", \"ollama-cloud\", \"openrouter\"). Only "
+                    "meaningful together with `model` -- a bare provider "
+                    "override with no model still uses the configured "
+                    "auxiliary.consult model for that provider (or that "
+                    "provider's default consult model when no consult model "
+                    "is configured)."
+                ),
+            },
         },
         "required": ["question"],
     },
@@ -349,6 +403,8 @@ registry.register(
     handler=lambda args, **kw: consult_tool(
         question=args.get("question", ""),
         context=args.get("context"),
+        model=args.get("model"),
+        provider=args.get("provider"),
     ),
     check_fn=check_consult_requirements,
     emoji="🧭",
