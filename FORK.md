@@ -3,6 +3,45 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Tavily kept keyed-only; removed from the default-on keyless ring — 2026-09-01
+
+**What happened and what this commit does.** The Tavily web-search provider
+plugin landed earlier today (7ce185fe65) as a faithful port of a keyed-only
+WIP: it required `TAVILY_API_KEY`, set `payload["api_key"]`, raised a clear
+error when the key was unset, and had zero keyless references. But the commit
+that landed it went further than that scope on a mistaken premise — it
+"found" that a keyless Tavily request silently routed to sibling vendors
+because the ring dicts lacked a `"tavily"` entry, and on that fabricated bug
+report added a whole keyless tier: a `TAVILY_API_URL` constant plus
+`tavily_search_keyless`/`tavily_extract_keyless` helpers, a `"tavily"`
+member in `_KEYLESS_RING` / `_KEYLESS_SEARCHERS` / `_KEYLESS_EXTRACTORS`,
+a `"tavily"` entry in `_KEYLESS_PREFERENCE`, and provider-side
+`is_keyless_available()` + `search_with_failover` / `extract_with_failover`
+branches. That false bug never existed — the original WIP had no keyless
+path whatsoever (verified by reading the dangling stash blob at
+`4a079019c6`).
+
+Separately, upstream deliberately removed Tavily in `d6773cf26f`
+("refactor: remove the Tavily web backend; keyless ring is
+exa/parallel/firecrawl/keenable") within the v2026.8.19..v2026.8.31 sync
+range just merged. The keyless ring is default-on (`web.keyless_fallback`)
+and its cursor is randomly seeded per session, so this commit's re-added
+Tavily membership meant a zero-config user's web searches would round-robin
+onto Tavily servers — a default data-egress change to a vendor the user
+never chose, reversing a deliberate upstream decision on a false premise.
+
+**The decision.** Keep Tavily as a deliberate **keyed, opt-in** provider —
+the user wrote it and clearly wants it available when `TAVILY_API_KEY` is
+set; that is a legitimate fork-only divergence from upstream's removal. **Do
+NOT** re-add it to the default-on keyless ring, because that would change
+default data egress for zero-config users to a vendor they never picked. So
+this commit reverts exactly the keyless expansion (ring restored to
+`("exa", "parallel", "firecrawl", "keenable")` matching upstream v2026.8.31,
+`_KEYLESS_PREFERENCE` dropped the tavily entry, and the provider's
+`TAVILY_API_KEY`-required contract is restored with `is_keyless_available()`
+falling to the ABC default of `False`) while keeping the plugin itself and its
+provider-side normalization / error-surfacing improvements.
+
 ### De-fork audit — 2026-09-01 (completion pass: systematic sweep of the v2026.8.19..v2026.8.31 divergence surface)
 
 Completion pass over the 2026-08-31 first-pass audit (see that entry — it
