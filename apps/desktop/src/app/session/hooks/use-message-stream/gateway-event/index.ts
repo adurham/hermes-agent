@@ -12,6 +12,7 @@ import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { replayPendingApproval } from '@/store/prompts'
 import { setSessionProviderWait } from '@/store/provider-wait'
+import { isSessionGone } from '@/store/session-gone-latch'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import type { RpcEvent } from '@/types/hermes'
 
