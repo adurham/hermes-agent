@@ -3,6 +3,187 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### De-fork audit — 2026-09-01 (completion pass: systematic sweep of the v2026.8.19..v2026.8.31 divergence surface)
+
+Completion pass over the 2026-08-31 first-pass audit (see that entry — it
+covered only what surfaced incidentally during conflict resolution, and
+explicitly flagged `agent/image_routing.py` "FOR MONITORING" without a
+decision; both are resolved below, not re-derived). Method: the divergence
+surface was re-enumerated from scratch, the fork-only FEATURE inventory was
+rebuilt from FORK.md's own headers, and every fork-only module was tested
+against a full `git archive v2026.8.31` tree snapshot (`/tmp/upstream_check`)
+— absence claims below are tree-greps against that snapshot, not commit-log
+inferences (per the carried-forward stream_recovery warning).
+
+**Measured surface.** `git diff --name-status v2026.8.31 HEAD`: 924 differing
+paths — 219 Added, 3 Deleted, 702 Modified. After excluding noise (FORK.md,
+lockfiles, node_modules, build artifacts): **218 fork-only + 703 soft-fork**
+(the first pass reported 915/215/700; the delta is the 3 feature commits
+landed 2026-09-01 — consult-tool override, pyproject test-tooling
+exemptions, Tavily plugin — touching 10 paths: 6 fork-only, 3 soft-fork,
+1 deletion). Fork-only by area: 106 tests, 21 tools, 18 agent, 11 hermes_cli,
+10 apps/desktop, 8 scripts, 8 plugins, 7 `.upstream-candidates`, 5 personas,
+4 local-packages, 4 docs, plus scattered docs/website entries.
+
+**Coverage denominator.** All 40 non-test fork-only module/file paths were
+individually checked (module docstring purpose extracted, then 2-4 keyword
+greps against the upstream snapshot under alternate phrasings per the
+established method); the 4 items from the first pass were re-verified by
+spot-check; ~15 soft-fork files with convergence hypotheses were read
+fork-vs-upstream in full (image_routing, rate_limit_tracker, web_tools,
+web_search_registry, anthropic_adapter tool-search region, tools_config
+picker, keyless_mcp). Four keyword false-positives were resolved by READING
+the matched upstream code, not by keyword alone (details below). What was
+NOT exhaustively covered, honestly: the 703 soft-fork files were not
+hunk-by-hunk re-audited (the 87 conflict files were covered by the sync
+itself and the first pass; the residual soft-fork diff is dominated by
+website/i18n docs, desktop TS, and tests, which are not de-fork candidates);
+desktop fork-only TSX/TS modules were verified absent upstream by grep and
+test-existence, not by behavior-read; `.upstream-candidates/*` scratch
+diffs, `FORK_INVENTORY.md`, and local-packages shims were classified as
+non-features by inspection only.
+
+**DECIDED (was flagged for monitoring) — `agent/image_routing.py` exo-scoped
+vision delegation: RE-CHECKED-STILL-FORK-ONLY, and now a documented
+DELIBERATE DIVERGENCE, not an accident.** Read both implementations in full
+(fork 1089 lines vs upstream 929; 218 diff lines). Upstream's
+`decide_image_input_mode` auto-branch now does the OPPOSITE of the fork on
+one axis: an explicitly configured `auxiliary.vision` backend is the
+DE-FACTO route (maintainer decision 2026-08-28, deliberately reversing
+#29135's fallback-only posture) — checked BEFORE native capability. The
+fork keeps native-vision-first and treats explicit aux-vision config as a
+fallback, additionally gating that delegation to the local exo cluster
+(`_provider_is_exo`: active-provider name, `custom:exo`, or bare-`custom`
+runtime matched by live main base_url) plus a proactive 4 MB ingestion
+ceiling (`_NATIVE_IMAGE_CEILING_BYTES`, downscales via
+`_resize_image_for_vision` before encoding) that upstream has no equivalent
+of (upstream stays fully reactive). Neither side is a superset: upstream
+would route a vision-capable main model through a configured aux backend
+(fork: never), and the fork downscales at ingestion (upstream: first-fail
+retry). Decision: KEEP. The fork's precedence is the operator's documented
+choice (issue #29135 as we read it: a model that can see the pixels beats a
+lossy text summary; and exo vision delegation is deliberately scoped to exo
+sessions), it is what the fork's own test suite asserts
+(`test_native_capable_model_attaches_natively_even_with_exo_aux_vision` vs
+upstream's `test_auto_explicit_aux_backend_is_the_defacto_route` — the two
+suites disagree BY DESIGN, so a future sync conflict here is expected and
+should resolve keep-ours), and the 4 MB ceiling is a pure add-on upstream
+lacks. No de-fork; monitoring flag retired. The only genuine upstream-side
+product question — "should explicit aux-vision config preempt native
+vision?" — was already decided by upstream's maintainer on their side and by
+Adam on ours, differently and on the record; this is a deliberate fork
+posture, not a collision needing reconciliation.
+
+**VERIFIED-COHERENT — upstream's new `tools/web_result_cache.py` × fork's
+dispatch seam.** The cache module is carried byte-identical from upstream
+(0 diff) and is wired at the 3 intended sites inside
+`_run_search_single`/extract (`tools/web_tools.py` lines ~940/~1136/~1378),
+deliberately INSIDE the single-provider path so the fork's chain-vs-single
+seam (`tests/tools/test_web_search_chain.py`) stays monkeypatchable and
+backend-selection/rescue diagnostics still apply to cached calls; the
+bucketed-limit and success-only-caching semantics match upstream's
+`tests/tools/test_web_result_cache.py` (0 diff). The fork's failover-chain
+path (`_run_search_chain`) intentionally has its own per-provider
+dedupe/cache instead of the memo — chain semantics differ (one flight per
+provider in sequence), which is the documented fork feature. This was a
+compile-verified reconciliation at merge time; it is now verified
+behaviorally (all 286 web-stack tests in the blast radius pass; see the fix
+entry above for the one real gap the verification pass found in the
+adjacent `check_web_api_key` gate — a keyed-plugin-provider autodetect
+walk missing from the gate, fixed in `c01671c4c3`).
+
+**RE-CHECKED-STILL-FORK-ONLY — new this pass** (all absence-verified against
+the full v2026.8.31 tree, 0 hits; same-word traps resolved by reading):
+- `agent/fork/anthropic_native_web_search.py` — swaps the client web_search
+  tool for Anthropic's native `web_search_20250305` server tool on
+  first-party Anthropic endpoints. Upstream has NO native-tool definition
+  path (`web_search_20250305`/`server_tool_use` 0 hits) and no `_apply_tool_search`
+  in its anthropic_adapter (0 hits) — upstream's tool-search story is a
+  generic tiered-disclosure bridge in `tools/tool_search.py`, a different
+  layer (manifest + on-demand resolve, not schema stubbing).
+- `agent/fork/tool_search_lazy.py` (client_side stubs + `_promoted_tools`
+  session-lifetime promotion) vs upstream's tiered listing-budget disclosure
+  — same problem space, different mechanism and config surface; both
+  present, not redundant.
+- `tools/swarm_board.py` (CLI prompt_toolkit live subagent board) vs
+  upstream's `hermes_cli/kanban_swarm.py` — same "swarm" noun, zero shared
+  mechanism (kanban DB blackboard vs FormattedTextControl widget); NOT
+  redundant. Upstream has no per-dispatch live subagent status board.
+- `agent/rate_limit_tracker.py` (soft-fork) is a fork SUPERSET of upstream's:
+  adds the Anthropic-native `anthropic-ratelimit-*` header schema (ISO-8601
+  resets, input/output/priority buckets, `schema` field) and
+  `hottest_bucket()` for the streaming heartbeat on top of upstream's
+  x-ratelimit parser. Upstream's NEW `agent/nous_rate_guard.py` (shipped in
+  this range) explicitly documents accepting this dataclass — the fork's
+  superset is consumed by upstream's own new module; coherent by
+  construction. `agent/fork/rate_limit_tracker.py` (80%/90% hot-zone
+  observability events) remains fork-only.
+- web provider plugins `claude_code`, `trafilatura` — absent upstream
+  (its bundled set: brave_free, ddgs, exa, firecrawl, keenable, parallel,
+  searxng, xai + keyless_mcp). Notably upstream REMOVED its Tavily backend
+  in this range (`d6773cf26f` "remove the Tavily web backend; keyless ring
+  is exa/parallel/firecrawl/keenable") while the fork re-added a richer
+  Tavily plugin the next day (keyed + keyless + ring membership + registry
+  preference) — deliberate supersession-in-reverse; the fork's version
+  subsumes what upstream deleted, and the keyless ring is 5 vendors here
+  vs 4 upstream.
+- delegation stack (`tools/delegation_router.py` model-tier auto-routing,
+  `model_by_role`/`reasoning_effort_by_role`/`model_tiers`/personas +
+  `personas/*.md` + `persona_library.py`/`personas_sync.py`/`ruflo_agents.py`):
+  `model_by_role`/`persona`-in-delegation greps 0 upstream.
+- agent-messaging stack (`tools/agent_messaging_contract.py`,
+  `agent_messaging_tools.py`, `agent_messaging_transport_a.py`,
+  `gateway/agent_messaging_bridge.py`, `tools/bridges/cc_proxy_mcp.py`):
+  0 upstream hits.
+- memory stack (`tools/memory_warm.py`, `tools/memory_extraction/*`,
+  `tools/memory_auto_feedback/*`, `hermes_cli/memory_confirm.py`) and
+  hot-tier audit (`agent/hot_tier_audit.py`): 0 upstream.
+- cross-session visibility stack (`tools/cross_session_*.py`,
+  `tools/cross_session_integration.py`, `hermes_cli/subcommands/agents.py`,
+  `hermes_cli/submit.py`, `hermes_cli/agents_inbox.py`,
+  `hermes_cli/delegation_stats.py`, `hermes_cli/mcp_gateway.py`): 0 upstream
+  (upstream "cross-session"/"Transport A" hits are unrelated: approval-prompt
+  transports and session_search prompt text — read, not keyword-matched).
+- provider/auth layer: `agent/cc_aliases.py`, `agent/google_oauth.py`,
+  `agent/gemini_cloudcode_adapter.py`, `plugins/model-providers/exo/*`,
+  `agent/fork/anthropic_messages.py`/`anthropic_recovery.py`/
+  `diagnostics.py`/`_mixin.py`: 0 upstream.
+- nudges/recall: `skill_recall`/`memory_recall`/`memory_session_pin`/
+  `consult_nudge` re-confirmed (spot-check).
+- `tools/content_filter_scrub.py`, `tools/hermes_load_tools.py`:
+  upstream's `content_filter` hits are Anthropic stop_reason handling
+  (`finish_reason=content_filter`), a different mechanism — the fork's
+  scrub of *trigger patterns* from outbound context has no upstream
+  equivalent.
+- desktop fork-only modules (`session-row-state`, `pet-voice`,
+  `lone-header`, `workspace-closer`, `layout-lane-order` + tests): 0
+  upstream (grep-verified; behavior not re-read — these were exercised by
+  the vitest suite during the sync).
+- fork scripts with no upstream counterpart (`corporate-rip.py`,
+  `hermes_hard_eval.py`, `hermes_token_check.py`, `hermes_usage_tracker.py`,
+  `refresh_cc_canonical.sh`, `sync-fork-branding.py`,
+  `setup-merge-drivers.sh`, `check-unspecced-sdk-mocks.py`): upstream
+  `scripts/` enumerated, no name/purpose collisions.
+
+**First-pass items re-verified (spot-check only, per scope):** `owner_task_id`
+threading present in `tools/process_registry.py` (23 hits, upstream-shaped);
+the 3 pyproject `exclude-newer-package` test-tooling exemptions present;
+`first_event_seen`/`_stale_kill_count`/`_MAX_STALE_KILLS` still 0 hits
+upstream (upstream's `_derive_stream_stale_timeout` + `partial_stream_recovery`
+re-confirmed as the different-layer mechanisms documented on 2026-08-31);
+`tests/tools/test_web_result_cache.py` identical to upstream.
+
+**Audit yield.** No clean SUPERSEDED-TAKE-THEIRS de-fork candidates — every
+fork-only module checked remains fork-only with an upstream-absent purpose.
+The pass instead surfaced and landed one real production bug + four stale
+test failures (all documented with evidence in the fix entry above,
+committed as `c01671c4c3` immediately before this entry): the
+`check_web_api_key` keyed-plugin gap, the `TestCheckWebApiKey` home-probe
+leak (pre-existing at the pre-sync tag), and the two pre-#25182 claude-code
+picker assertions (also pre-existing at the pre-sync tag). The honest
+conclusion of the sweep: the v2026.8.19..v2026.8.31 sync converged nothing
+further; the fork's remaining surface is deliberate.
+
 ### Fix — 2026-09-01 (web tool gate missed keyed plugin providers; 4 stale test failures fixed — 2 pre-existing since pre-sync)
 
 Found by the systematic de-fork audit below while exercising the web-search
