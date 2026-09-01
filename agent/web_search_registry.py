@@ -178,6 +178,7 @@ _KEYLESS_PREFERENCE = (
     "parallel",
     "firecrawl",
     "keenable",
+    "tavily",
 )
 
 
