@@ -619,93 +619,16 @@ def keenable_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Tavily keyless (api.tavily.com public keyless endpoint)
-# ---------------------------------------------------------------------------
-
-TAVILY_API_URL = "https://api.tavily.com"
-
-
-def tavily_search_keyless(query: str, limit: int = 5) -> Dict[str, Any]:
-    """Keyless Tavily search → legacy search response shape.
-
-    POST /search with ``X-Tavily-Access-Mode: keyless`` (no credentials).
-    Response: {results: [{title, url, content}]}.
-    """
-    from plugins.web.tavily.provider import (
-        _normalize_tavily_search_results,
-        _tavily_request,
-    )
-
-    try:
-        raw = _tavily_request(
-            "search",
-            {
-                "query": query,
-                "max_results": min(int(limit), 20),
-                "include_raw_content": False,
-                "include_images": False,
-            },
-            api_key="",
-        )
-        return _normalize_tavily_search_results(raw)
-    except Exception as exc:  # noqa: BLE001 — normalized below
-        return {
-            "success": False,
-            "error": (
-                f"Keyless Tavily search failed: {exc}. "
-                "Set TAVILY_API_KEY (https://app.tavily.com/home) or another "
-                "web backend via `hermes tools` for reliable service."
-            ),
-        }
-
-
-def tavily_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
-    """Keyless Tavily page fetch → legacy extract result list.
-
-    POST /extract with ``X-Tavily-Access-Mode: keyless`` (no credentials).
-    Failures (``failed_results`` / ``failed_urls``) become per-URL error
-    entries.
-    """
-    from plugins.web.tavily.provider import (
-        _normalize_tavily_documents,
-        _tavily_request,
-    )
-
-    try:
-        raw = _tavily_request(
-            "extract",
-            {"urls": list(urls), "include_images": False},
-            api_key="",
-        )
-        return _normalize_tavily_documents(raw, fallback_url=urls[0] if urls else "")
-    except Exception as exc:  # noqa: BLE001 — per-batch error entry
-        return [
-            {
-                "url": u,
-                "title": "",
-                "content": "",
-                "error": (
-                    f"Keyless Tavily extract failed: {exc}. "
-                    "Set TAVILY_API_KEY (https://app.tavily.com/home) for "
-                    "reliable service."
-                ),
-            }
-            for u in urls
-        ]
-
-
-# ---------------------------------------------------------------------------
 # Round-robin ring + next-in-line failover (rate-limited free tiers)
 # ---------------------------------------------------------------------------
 
-_KEYLESS_RING = ("exa", "parallel", "firecrawl", "keenable", "tavily")
+_KEYLESS_RING = ("exa", "parallel", "firecrawl", "keenable")
 
 _KEYLESS_SEARCHERS = {
     "exa": lambda query, limit: exa_search_keyless(query, limit),
     "parallel": lambda query, limit: parallel_search_keyless(query, limit),
     "firecrawl": lambda query, limit: firecrawl_search_keyless(query, limit),
     "keenable": lambda query, limit: keenable_search_keyless(query, limit),
-    "tavily": lambda query, limit: tavily_search_keyless(query, limit),
 }
 
 _KEYLESS_EXTRACTORS = {
@@ -713,7 +636,6 @@ _KEYLESS_EXTRACTORS = {
     "parallel": lambda urls: parallel_extract_keyless(urls),
     "firecrawl": lambda urls: firecrawl_extract_keyless(urls),
     "keenable": lambda urls: keenable_extract_keyless(urls),
-    "tavily": lambda urls: tavily_extract_keyless(urls),
 }
 
 # Per-process round-robin cursor, seeded by the random session id so the

@@ -3,13 +3,14 @@
 Covers:
 - TavilyWebSearchProvider satisfies the WebSearchProvider ABC (all abstract
   methods concrete, correct name/display_name/capability flags).
-- is_available() reflects TAVILY_API_KEY presence; is_keyless_available()
-  reflects the keyless tier (enabled + not pinned paid).
+- Keyed contract: is_available() reflects TAVILY_API_KEY presence, and
+  is_keyless_available() is always False (Tavily never enters the default-on
+  keyless ring — it is a keyed, opt-in provider only).
+- A missing TAVILY_API_KEY yields the explicit "environment variable not
+  set" error rather than an anonymous request.
 - search() happy path against a MOCKED httpx response (no live network, no
-  real API key) — keyed and keyless header shapes.
+  real API key) — keyed header shape.
 - extract() happy path + per-URL failure shape against a mocked response.
-- The keyless ring actually includes tavily (search_with_failover /
-  extract_with_failover can route to Tavily's own keyless endpoint).
 
 Per the dev skill: these tests use *real* imports from the plugin module —
 no mocking of the provider class itself — so the test catches drift in the
@@ -80,17 +81,15 @@ class TestTavilyAvailability:
         monkeypatch.setenv("TAVILY_API_KEY", "sk-test")
         assert TavilyWebSearchProvider().is_available() is True
 
-    def test_is_keyless_available_when_enabled(self, monkeypatch):
-        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        with patch("plugins.web.keyless_mcp.keyless_enabled", return_value=True), \
-             patch("plugins.web.keyless_mcp.provider_tier", return_value="auto"):
-            assert TavilyWebSearchProvider().is_keyless_available() is True
+    def test_is_keyless_available_is_always_false(self):
+        """Tavily must NEVER be keyless-available.
 
-    def test_is_keyless_available_false_when_paid(self, monkeypatch):
-        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        with patch("plugins.web.keyless_mcp.keyless_enabled", return_value=True), \
-             patch("plugins.web.keyless_mcp.provider_tier", return_value="paid"):
-            assert TavilyWebSearchProvider().is_keyless_available() is False
+        It relies on the ABC default (``return False``): Tavily is a keyed,
+        opt-in provider and must not enter the default-on keyless ring —
+        keyless availability would change baseline data egress for zero-config
+        users to a vendor they never picked.
+        """
+        assert TavilyWebSearchProvider().is_keyless_available() is False
 
 
 # ---------------------------------------------------------------------------
@@ -103,12 +102,6 @@ class TestTavilyHeaders:
         h = _tavily_headers("sk-test")
         assert h["Authorization"] == "Bearer sk-test"
         assert "X-Tavily-Access-Mode" not in h
-        assert h["X-Client-Name"] == "hermes-agent"
-
-    def test_keyless_sets_access_mode(self):
-        h = _tavily_headers("")
-        assert "Authorization" not in h
-        assert h["X-Tavily-Access-Mode"] == "keyless"
         assert h["X-Client-Name"] == "hermes-agent"
 
 
@@ -141,18 +134,14 @@ class TestTavilySearch:
         sent_headers = post.call_args.kwargs["headers"]
         assert sent_headers["Authorization"] == "Bearer sk-test"
 
-    def test_search_happy_path_keyless(self, monkeypatch):
-        """Keyless request (api_key='') sends X-Tavily-Access-Mode: keyless."""
+    def test_search_missing_key_returns_explicit_error(self, monkeypatch):
+        """Without TAVILY_API_KEY, search fails loudly rather than anonymous."""
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        fake = MagicMock()
-        fake.status_code = 200
-        fake.json.return_value = {"results": []}
-        with patch("plugins.web.tavily.provider.httpx.post", return_value=fake) as post:
-            out = _tavily_request("search", {"query": "hello"}, api_key="")
-        assert out == {"results": []}
-        sent_headers = post.call_args.kwargs["headers"]
-        assert sent_headers["X-Tavily-Access-Mode"] == "keyless"
-        assert "Authorization" not in sent_headers
+        with patch("plugins.web.tavily.provider.httpx.post") as post:
+            out = TavilyWebSearchProvider().search("hello")
+        post.assert_not_called()
+        assert out["success"] is False
+        assert "TAVILY_API_KEY environment variable not set" in out["error"]
 
     def test_search_http_error_returns_failure(self, monkeypatch):
         monkeypatch.setenv("TAVILY_API_KEY", "sk-test")
@@ -187,6 +176,15 @@ class TestTavilyExtract:
         assert docs[0]["content"] == "body a"
         assert docs[0]["raw_content"] == "body a"
 
+    def test_extract_missing_key_returns_explicit_error(self, monkeypatch):
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        with patch("plugins.web.tavily.provider.httpx.post") as post:
+            docs = TavilyWebSearchProvider().extract(["https://a.example"])
+        post.assert_not_called()
+        assert len(docs) == 1
+        assert docs[0]["url"] == "https://a.example"
+        assert "TAVILY_API_KEY environment variable not set" in docs[0]["error"]
+
     def test_extract_failed_results_become_error_entries(self):
         """Tavily failed_results map to per-URL error entries, not raises."""
         docs = _normalize_tavily_documents(
@@ -196,35 +194,3 @@ class TestTavilyExtract:
         assert len(docs) == 1
         assert docs[0]["url"] == "https://x"
         assert docs[0]["error"] == "blocked"
-
-
-# ---------------------------------------------------------------------------
-# Keyless ring wiring
-# ---------------------------------------------------------------------------
-
-
-class TestTavilyKeylessRing:
-    def test_tavily_is_a_ring_member(self):
-        """The keyless ring must include tavily so a keyless Tavily request
-        routes to Tavily's own keyless endpoint (not silently to a sibling)."""
-        from plugins.web.keyless_mcp import (
-            _KEYLESS_RING,
-            _KEYLESS_SEARCHERS,
-            _KEYLESS_EXTRACTORS,
-        )
-        assert "tavily" in _KEYLESS_RING
-        assert "tavily" in _KEYLESS_SEARCHERS
-        assert "tavily" in _KEYLESS_EXTRACTORS
-
-    def test_keyless_search_routes_through_tavily(self, monkeypatch):
-        """A pinned keyless Tavily search calls the Tavily keyless searcher."""
-        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        from plugins.web import keyless_mcp
-        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == "tavily")
-        with patch.object(
-            keyless_mcp, "tavily_search_keyless",
-            return_value={"success": True, "data": {"web": []}},
-        ) as keyless:
-            out = TavilyWebSearchProvider().search("q")
-        keyless.assert_called_once()
-        assert out["success"] is True
