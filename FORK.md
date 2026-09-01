@@ -3,6 +3,68 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-09-01 (web tool gate missed keyed plugin providers; 4 stale test failures fixed — 2 pre-existing since pre-sync)
+
+Found by the systematic de-fork audit below while exercising the web-search
+stack's real test suites (the audit's verification step), not by inspection.
+
+**Bug 1 (real code defect) — `check_web_api_key()` never consulted keyed
+plugin-registered providers during autodetect.** The gate's walk order was:
+explicitly-configured backend → the 8 built-in `_LEGACY_WEB_BACKENDS` env
+probes → active-provider readiness → Anthropic-native credentials. The
+plugin-registry autodetect walk that `_get_backend()` (dispatch-time backend
+selection) has had since PR #25182 was missing from the gate — so
+`TAVILY_API_KEY` alone returned False from the gate even though dispatch
+would autodetect tavily, making the `web_search` tool invisible exactly when
+its only backend was a keyed *plugin* provider (any non-legacy plugin
+backend, not just Tavily). This contradicted the function's own docstring
+contract ("a plugin-registered provider that reports `is_available()` must
+light the tools up even when no built-in backend has credentials — issues
+#28651, #31873"). Root-cause fix: added the same final registry walk to
+`check_web_api_key()` (`tools/web_tools.py`), keyed availability
+(`is_available()`) only — keyless capability deliberately does NOT count in
+the autodetect walk, or the gate would be always-True via the always-on
+keyless ring; keyless readiness is still honored for explicitly-configured
+providers via `_provider_is_ready` (upstream's stricter predicate, kept as a
+fall-through). Skips legacy names so built-ins are probed exactly once.
+
+**Bug 2 (test hermeticity, pre-existing at `pre-upstream-sync-2026-08-31`) —
+`TestCheckWebApiKey` leaked the real `~/.claude/.credentials.json` into
+"zero-credential" tests.** The suite scrubbed env vars but never isolated the
+fork-only `Path.home()` filesystem probe, so on this machine (which has
+Claude Code credentials) `check_web_api_key()` returned True and the two
+`*_does_not_crash` assertions failed. Verified pre-existing: both fail
+identically at `pre-upstream-sync-2026-08-31` (c48b123a45) — NOT merge-caused,
+NOT caused by today's Tavily commit. Fix: `setup_method` now redirects
+`Path.home()` to an empty temp dir (mirroring the env scrub), `teardown_method`
+stops the patcher and cleans up. This also un-masked Bug 1: the suite's
+`test_tavily_key_only` had been passing via the credentials-file leak.
+
+**Bug 3 (stale test assertions, pre-existing at the pre-sync tag) —
+`TestClaudeCodeSetupWizardEntry` asserted the pre-#25182 static
+`TOOL_CATEGORIES['web']['providers']` shape.** After #25182 the picker's
+provider rows come from `_plugin_web_search_providers()` (plugin registry);
+the static list only retains the two firecrawl setup-flow rows, so the
+"claude-code listed" and "requires no env vars" tests failed against the
+static table. Both now assert the real contract via
+`_plugin_web_search_providers()` (claude-code IS listed there, `env_vars: []`
+— verified live).
+
+**Tests:** `tests/tools/test_web_tools_config.py` + `test_web_keyless_fallback.py`
++ `test_web_search_chain.py` + `tests/plugins/web/` +
+`tests/tools/test_web_providers_claude_code.py` + ddgs/searxng/brave-free
+provider suites + `tests/integration/test_web_tools.py` = 286 passed. (A
+broader `tests/tools/ tests/plugins/` sweep hung on an unrelated networked
+test and was killed; the selection above is the full caller/callee blast
+radius of the changed function.) The production fix is covered transitively
+by `test_tavily_key_only` (now asserting the real gate, not the
+credentials-file leak) plus the whole zero-credential class.
+
+**Audit context:** this fix emerged from the 2026-09-01 systematic de-fork
+audit's verification pass over the web-search stack (see the audit entry at
+the top of this file); it is a behavior fix in the fork's provider/registry
+seam, not a de-fork.
+
 ### Feature — 2026-09-01 (per-call `model`/`provider` override on the `consult` tool to bypass a rate-limited or exhausted `auxiliary.consult`)
 
 **Problem:** the `consult` tool (second opinion from a reference model)
