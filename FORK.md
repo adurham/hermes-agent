@@ -44,6 +44,40 @@ model.
 model-only, model+provider, content preservation, registry dispatch with an
 override, and schema optionality. Full suite: 28 passed.
 
+### Feature — 2026-09-01 (exempt pinned test tooling from the uv exclude-newer window)
+
+**Problem:** the `[tool.uv.exclude-newer-package]` whitelist (98 upstream
+entries, every exact pin `= false`) exempts exact-pinned deps from the
+relative `exclude-newer = "14 days"` cutoff so release-day updates don't
+brick. The fork's `dev` extra exact-pins three test-tooling packages —
+`coverage==7.15.2`, `pytest-cov==7.1.0`, `pytest-randomly==4.1.0` — that
+were NOT in the whitelist. Any of those three pinned versions younger than
+the cutoff would be filtered out on a fresh resolve, bricking the dev
+toolchain exactly like the release-day class the whitelist exists to
+prevent.
+
+**Fix:** added `coverage = false`, `pytest-cov = false`, and
+`pytest-randomly = false` to `[tool.uv.exclude-newer-package]`. All three
+are genuinely exact-pinned (`==`) in `[project.optional-dependencies].dev`
+(verified: `coverage==7.15.2`, `pytest-cov==7.1.0`, `pytest-randomly==4.1.0`),
+so the exemption is semantically correct — the pin bump IS the review, and
+the cutoff adds no float protection for them. Each key was placed in its
+correct alphabetical slot (`coverage` between `concurrent-log-handler` and
+`croniter`; `pytest-cov`/`pytest-randomly` between `pytest-asyncio` and
+`python-dotenv`), not the `asyncpg`/`azure-identity` gap the WIP had
+inserted them into.
+
+**Tests:** `pyproject.toml` parses cleanly under `tomllib` (101 entries,
+all 3 new keys present and `= false`); upstream's gating tests
+`test_exact_pinned_deps_exempt_from_exclude_newer` and
+`test_build_system_requires_exempt_from_exclude_newer` both pass, as does
+the full `tests/test_packaging_metadata.py` (9 passed).
+
+**Noted, not changed (pre-existing):** the table has one pre-existing
+alphabetical disorder unrelated to this change — `wheel` sits before
+`sherpa-onnx` (positions 85/86), inherited from upstream. Left as-is to
+avoid scope creep; flagged for triage.
+
 ### De-fork audit — 2026-08-31 (post-v2026.8.31: checked fork-only work against this tag's upstream delta)
 
 Phase-2 follow-up to the sync below, on branch `sync/v2026.8.31`. Scoped —
