@@ -3,6 +3,230 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### De-fork audit — 2026-08-31 (post-v2026.8.31: checked fork-only work against this tag's upstream delta)
+
+Phase-2 follow-up to the sync below, on branch `sync/v2026.8.31`. Scoped —
+per the 2026-08-14 / 2026-08-26 precedent — to whether the
+`v2026.8.19..v2026.8.31` delta (2287 commits) or the merged tree supersedes
+any fork-only work. Divergence surface enumerated: 915 paths differ from
+`v2026.8.31`; 215 fork-only (absent upstream), 700 soft-fork (present,
+differing). Every convergence claim below was re-verified by the PM against
+the tag directly, not taken on trust. Classification uses the established
+three-way.
+
+**FOUND-AND-RECONCILED — `owner_task_id` threading (item 1).** Upstream
+commit `5a4dbdec27` (2026-08-31, "fix(delegation): subagent process
+notifications stay suppressed when the container key collapses") and the
+fork's own `c48b123a45` ("fix(notifications): thread real subagent task_id
+through container-key collapse") independently implemented the SAME fix on
+the SAME DAY. Upstream's shape is the strict superset: it keeps `task_id` as
+the collapsed container key and carries the raw spawning id in a SEPARATE
+`owner_task_id` event field, driving both a drain-suppression gate and
+delegation attribution off it; the fork's version instead folded the owner
+id into `evt["task_id"]`. Took upstream's implementation and reconciled the
+fork-side consumers in 3 coordinated changes to `tools/process_registry.py`:
+(i) `event_owner_still_running` now reads `evt.get("owner_task_id") or
+evt.get("task_id")`; (ii) the completion-notification builder in
+`_move_to_finished` emits `"task_id": session.owner_task_id or
+session.task_id` while retaining `owner_task_id` as its own field; (iii) in
+`drain_notifications`, the liveness hold is bypassed when
+`surface_child_process_notifications` is true, and upstream's suppression
+gate no longer re-drops events released from the hold (keyed on the fork's
+pre-existing `_EVENT_HELD_AT_KEY` stamp) so orphaned/wedged child
+completions deliver with attribution while genuine never-gated leaks stay
+suppressed. This was also a live merge defect — before the reconciliation
+the fork's liveness gate had become a silent no-op and orphan-released
+completions were dropped entirely (4 test failures; all pass after).
+
+**SUPERSEDED-TAKE-THEIRS — pyproject `exclude-newer-package` (item 2).** The
+fork carried a narrow anthropic-only timestamp carve-out
+(`anthropic = "2026-05-07T00:00:00Z"` plus a hardcoded global `exclude-newer`
+cutoff) to keep its `anthropic==0.100.0` CC-OAuth floor resolvable. Upstream
+generalized this into a blanket exact-pin exemption: a 98-entry
+`[tool.uv.exclude-newer-package]` table where every exact pin is `= false`
+(including `anthropic = false`), with a relative `exclude-newer = "14 days"`
+window, guarded by upstream's own tests
+`test_exact_pinned_deps_exempt_from_exclude_newer` and
+`test_build_system_requires_exempt_from_exclude_newer`. Computed table
+extraction: 0 fork entries missing from upstream; all 12 fork `= false`
+entries present verbatim upstream. Took upstream's version wholesale. The
+`anthropic==0.100.0` pin itself remains a separate fork feature (CC OAuth
+floor) and stays.
+
+**INVENTORY CORRECTION — FTS trigram (item 3).** Documentation correction,
+not a code change. `FTS_TRIGRAM_SQL` already existed in UPSTREAM at
+v2026.8.19 (`hermes_state_common.py`) and still at v2026.8.31, and the
+fork's block is byte-identical to upstream's. Upstream additionally ships a
+complementary `messages_fts_cjk` table (tokenizer `cjk_unicode61`) that does
+NOT replace the trigram table. The FORK.md narrative that framed
+trigram-vs-CJK as fork divergence is stale and has been corrected; no fork
+code action needed.
+
+**RE-CHECKED-STILL-FORK-ONLY (item 4)** — absence confirmed by tree-wide
+negative greps against the full `v2026.8.31` tree (all 0 hits unless noted):
+`agent/fork/stream_recovery.py` cold-start grace (`first_event_seen`,
+`_stale_kill_count`, `_MAX_STALE_KILLS` — 0 hits upstream; upstream's
+`_derive_stream_stale_timeout` is a flat per-request patience with no
+pre/post-first-event distinction, and its `partial_stream_recovery` salvages
+already-streamed content, a different mechanism and layer); `skill_recall` /
+`memory_recall` / `memory_session_pin` / `consult_nudge`;
+`tool_search_lazy` (`defer_toolsets` / `keep_eager_tools` /
+`additional_deferred`); `fork_banner`; `cc_aliases`; refusal sanitization
+(`sanitize_messages_for_refusal_retry`, `is_anthropic_refusal`);
+`google_oauth` / `gemini_cloudcode_adapter` / the `exo` provider plugin /
+`claude_code` web plugin / `swarm_board` / `anthropic_native_web_search`;
+`personas` / `model_tiers` / `model_by_role` / `reasoning_effort_by_role`;
+`submit.py` / `agents_inbox` / `delegation_stats` / `memory_confirm` /
+`agent_messaging_bridge` / `mcp_gateway`; the fork's anthropic rate-limit
+header schema additions; and the bare-XML tool-call recovery net in
+`conversation_loop.py`.
+
+**Warning carried forward.** `stream_recovery.py` is the one that bit us
+before: a PRIOR audit (2026-08-26) wrongly declared it converged on
+upstream's `partial_stream_recovery`, and that finding had to be reverted
+when the naming-family match turned out to be a different layer. The
+same-naming-family / unrelated-layer trap is real; the negative greps above
+are against the tree, not against commit messages.
+
+### Upstream sync — 2026-08-31 (v2026.8.19 → v2026.8.31, 2287 commits, 87 conflict files)
+
+Merged tag `v2026.8.31` into `main` via `sync/v2026.8.31` (upstream tag
+commit `6e8f8418e6378eb2617e4de074e13dedd091b8af`; the tag's own release
+commit `29112bef09` "chore: release v0.21.0 (2026.8.31)"). Range
+`v2026.8.19..v2026.8.31`: 2287 upstream commits. The fork was 332 commits
+ahead of `upstream/main` at the pre-merge tip (measured
+`git rev-list --count upstream/main..HEAD` — read against the pre-merge tip
+`c48b123a45`, since the merge commit does not exist until the merge is
+concluded). 87 files initially conflicted, spanning `tools/*`, `agent/*`,
+`hermes_cli/*`, `tests/`, and `apps/desktop/` TS/TSX. ~2858 files sit in the
+merge's staged diff. Pre-merge fork state is tagged
+`pre-upstream-sync-2026-08-31` (commit `c48b123a45`) — this is the largest
+sync in the fork's history, so that tag is the only cheap basis for the
+pre-existing-vs-regression call.
+
+**Resolution approach.** Conflicted files were split into bounded groups
+(Python core+tools / agent plumbing / tests / docs / desktop TS) and each
+group was resolved in parallel by a delegated subagent against a 3-way
+base↔ours↔theirs dump rather than by reading conflict markers. Standing rule
+applied throughout: adopt upstream's refactor as the new base and re-home
+the fork's additive feature on top. Every chunk was gated on `ast.parse` +
+a zero-conflict-marker grep before its files were accepted; the desktop side
+additionally gated on `tsc --noEmit` and the vitest suite. Because the blast
+radius after a 2287-commit sync is larger than the conflict set, every
+conflicted file went under the "does it actually run" check — and that caught
+a cluster of defects that no marker and no compile error would have surfaced.
+
+**Notable resolutions and merge defects caught:**
+
+1. **`tools/terminal_tool.py` — duplicate `owner_task_id` kwarg.** The
+   union-merge left the fork's and upstream's `owner_task_id` parameters
+   duplicated back to back. Kept the fork's commented form. Verified at
+   runtime: the real terminal tool was spawned in-process through the real
+   `process_registry.spawn_local` across 3 shapes — explicit raw subagent
+   `task_id`, omitted `task_id` falling back through the registry, and a
+   collapsing container key. `owner_task_id` resolved correctly in all three
+   (raw id preserved, distinct from the collapsed `"default"` key); a
+   foreground run returned `hermes_smoke_ok` with exit 0.
+2. **`tools/delegate_tool.py` — completion block printed per batch, not per
+   task.** The merge pasted a duplicate completion-line-printing block whose
+   indentation error put the `print` outside its enclosing per-future `for`
+   loop — one completion line per batch instead of per completed task.
+   Rebuilt against upstream's source. An AST check confirmed every
+   completion-print call site's enclosing statement chain includes the
+   `for future in done:` loop, and a real run of the `delegate_task` entry
+   point with 4 completed tasks produced exactly 4 completion lines, not 1.
+3. **`tools/file_tools.py` — the dangerous class: silent auto-merge
+   deletion just outside the marker region.** The merge silently DROPPED
+   upstream's definition of `_read_file_schema_overrides` while KEEPING the
+   reference to it in the `registry.register(name="read_file", ...,
+   dynamic_schema_overrides=_read_file_schema_overrides)` call. No conflict
+   marker, no syntax error — a `NameError` at import only. Confirmed with an
+   AST script that the staged blob referenced the name at module level
+   without defining it; upstream's function body was restored verbatim.
+4. **`hermes_state.py` — column/placeholder mismatch, the same dangerous
+   class.** Upstream's new `_compressed_summary` column combined with the
+   fork's `anthropic_content_blocks` gave both `add_message` INSERT sites 23
+   columns but only 22 `?` placeholders — `sqlite3.OperationalError: 22
+   values for 23 columns` at runtime, invisible to markers and syntax checks.
+   A placeholder was added at each of the two sites (around lines 11949 and
+   12404); both verified 23/23 by a column-vs-placeholder counting script.
+5. **`tools/process_registry.py` — `owner_task_id` consumer reconciliation,
+   3 coordinated changes.** Taking upstream's implementation (see the
+   de-fork audit above) required rewiring the fork-side consumers. Before the
+   fix, 4 tests failed; all pass after.
+6. **`hermes_state.py` — two fork-only pure readers under the writer lock.**
+   `get_compression_attempts_total` and `get_lineage_cost_usd` acquired the
+   WRITER lock, violating a brand-new upstream invariant test shipping in
+   v2026.8.31
+   (`tests/state/test_no_locked_readers_gate.py::TestNoPureReadersUnderWriterLock::test_no_locked_pure_readers`).
+   Both routed to the read context; the gate now passes.
+7. **`apps/desktop` — dead `DoubleTapContext` parameter across 5 files.**
+   Upstream retired the `DoubleTapContext` type entirely (header-hide-via-
+   double-tap replaced by a `stripVisible` / `strip-visibility.ts` resolver
+   refactor); the fork had preserved the dead
+   `double: DoubleTapContext | undefined` parameter, producing TS2304
+   errors. Dropped from signatures and call sites in
+   `apps/desktop/src/components/pane-shell/tree/renderer/track-model.ts`,
+   `apps/desktop/src/app/chat/pane-mirror.ts`,
+   `apps/desktop/src/app/chat/session-drag.ts`,
+   `apps/desktop/src/app/contrib/controller.tsx`, and
+   `apps/desktop/src/app/chat/session-tile.tsx`; a stale 4-argument
+   `tabDrag?.()` call in
+   `apps/desktop/src/components/pane-shell/tree/renderer/tree-group.tsx` was
+   reduced to 3 args to match upstream's new signature. `grep -rn
+   DoubleTapContext apps/desktop/src/` now returns zero hits.
+8. **`apps/desktop` — 2 real vitest regressions.** (1)
+   `apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.test.ts` —
+   upstream changed tile resume routing from the ambient `requestGateway` to
+   the profile router (`requestForSessionProfile` /
+   `requestGatewayForProfile`), but two fork-authored tests stubbed only the
+   ambient socket, so the resume RPC returned `undefined`; they now stub
+   `requestGatewayForProfile`. (2) `use-session-actions/index.ts` — the merge
+   duplicated the fork's liveness fields (`busy`, `awaitingResponse`,
+   `turnLive`, `adoptedRunningTurn`, `turnStartedAt`) into upstream's
+   post-hydration reconcile block, which must NOT touch liveness so a
+   terminal transport event arriving mid-hydration stays authoritative;
+   liveness was stripped back out of the reconcile block and the fork's
+   `inflight.started_at` real-start-time preference moved into the
+   pre-hydration liveness block.
+
+**Verified test results.**
+
+- Desktop TypeScript: `npx tsc --noEmit --project tsconfig.json` in
+  `apps/desktop` exits 0 with zero errors.
+- Desktop vitest, first full run: `Test Files 4 failed | 826 passed | 2
+  skipped (832)` / `Tests 5 failed | 8840 passed | 6 skipped (8851)`.
+- Desktop vitest, after fixes: `Test Files 2 failed | 828 passed | 2
+  skipped (832)` / `Tests 2 failed | 8843 passed | 6 skipped (8851)`. The 2
+  remaining failures are not fork regressions: one is a pre-existing
+  `lone-header.test.ts` failure that reproduces identically in the pre-merge
+  baseline worktree; the other is an environment-only failure in upstream's
+  new `managed-ssh-update.test.ts` (the fixture hardcodes a Linux `/bin/true`
+  path; macOS has only `/usr/bin/true`).
+- Python targeted suites after fixes: `tests/tools/test_process_registry.py`
+  + `tests/tools/test_delegate_control_actions.py` = 146 passed, 5 skipped;
+  `tests/state/` = 112 passed; the broader process-registry collateral set =
+  238 passed, 5 skipped.
+- One known PRE-EXISTING Python failure, confirmed to fail identically in
+  the pre-merge baseline worktree (not merge-caused):
+  `tests/test_hermes_state.py::TestFTS5Search::test_search_projection_skips_context_enrichment_queries`.
+- All staged `.py` files `ast.parse` clean; zero conflict markers remain in
+  the staged tree.
+
+**tsc-baseline correction.** The "808 post-merge errors" reading and a
+remembered "707 pre-merge baseline" are BOTH stale-node_modules artifacts,
+not real regressions: 456 of the 808 were `Cannot find module` for
+newly-added deps that were simply not installed yet. After a proper
+dependency install, both the pre-merge baseline worktree AND the merged tree
+measure 0 tsc errors. Do not chase the 707 figure again next sync — it
+never existed.
+
+**Merge note.** The pre-merge fork state is tagged
+`pre-upstream-sync-2026-08-31` — keep it until the next sync. Per this
+repo's convention the sync branch is merged into `main` carrying a "Merge
+tag 'vX' into sync/vX" commit (as `5323a7db08` did for v2026.8.19); the
+merge commit itself has not yet been created at the time of writing.
+
 ### Fix — 2026-08-31 (subagent completion notifications still leaked to the parent after the 2026-08-30 liveness-gate fix — container-key collapse hid the real task_id)
 
 **Problem:** the previous day's fix (`should_hold_completion_event()`,
