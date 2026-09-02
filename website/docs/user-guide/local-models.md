@@ -127,7 +127,8 @@ main model uses the standard `model.provider: llamacpp` +
   Silicon (Metal). Vulkan builds serve AMD GPUs.
 - A GPU with 8 GB+ of memory runs the small catalog models comfortably;
   16 GB+ runs the 27–35B models at high quality.
-- Model downloads verify their integrity (SHA-256) before use; a failed
-  download is deleted and reported, never half-used.
+- Model downloads are byte-size checked against the catalog during the
+  transfer; an incomplete download is deleted and reported, never
+  half-used. (Only the runtime engine zips are SHA-256 verified.)
 - Deleting a model removes every file it staged, including vision
   adapters and speculative-decoding companions.

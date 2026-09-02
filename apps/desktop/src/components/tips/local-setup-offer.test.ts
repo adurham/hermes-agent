@@ -17,6 +17,7 @@ vi.mock('@/hermes', () => ({
 
 import { en } from '@/i18n/en'
 import { LOCAL_SETUP_TIP_ID } from '@/lib/tips/local-cta'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $connection } from '@/store/session'
 import { $activeTip, $lastTipId, $retiredTips, $tipShownAt } from '@/store/tips'
 
@@ -36,6 +37,8 @@ async function flushFetch() {
 describe('offerLocalSetupTip', () => {
   beforeEach(() => {
     resetLocalSetupOfferCache()
+    // The campaign ships behind --local like every local-models surface.
+    $localModelsEnabled.set(true)
     $activeTip.set(null)
     $retiredTips.set([])
     $tipShownAt.set({})
@@ -117,6 +120,15 @@ describe('offerLocalSetupTip', () => {
 
     expect(offerLocalSetupTip(en.tips, vi.fn())).toBe(false)
     expect(getLocalModelsStatus).not.toHaveBeenCalled()
+  })
+
+  it('never runs without the --local launch flag (strict), even on an eligible machine', () => {
+    $localModelsEnabled.set(false)
+
+    expect(offerLocalSetupTip(en.tips, vi.fn())).toBe(false)
+    // Declined before any read: no fetch, no held moment, no cooldown spent.
+    expect(getLocalModelsStatus).not.toHaveBeenCalled()
+    expect($activeTip.get()).toBeNull()
   })
 
   it('a failed read stands down for the session instead of retrying', async () => {

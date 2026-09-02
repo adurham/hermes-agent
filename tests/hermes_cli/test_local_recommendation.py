@@ -27,6 +27,7 @@ from hermes_cli.local_runtime.catalog import (
     CATALOG,
     PLEASANT_FLOOR_TOK_S,
     predicted_decode_tok_s,
+    recommended_entry,
     recommended_id,
     select_variant,
 )
@@ -83,34 +84,42 @@ def _unified(size_gb: int) -> HardwareBudget:
 #   the RAM). The pane's browse flow is the path for those machines
 #   until a small catalog entry lands (revisit when one does).
 DECISION_TABLE = [
-    (8, "discrete", "qwen3.6-35b-a3b"),
-    (8, "unified", None),
-    (16, "discrete", "qwen3.6-35b-a3b"),
-    (16, "unified", None),
-    (24, "discrete", "qwen3.8-27b"),
-    (24, "unified", None),
-    (32, "discrete", "qwen3.8-27b"),
-    (32, "unified", "qwen3.6-35b-a3b"),
-    (48, "discrete", "qwen3.8-27b"),
-    (48, "unified", "qwen3.6-35b-a3b"),
-    (96, "discrete", "qwen3.8-27b"),
-    (96, "unified", "qwen3.6-35b-a3b"),
-    (128, "discrete", "qwen3.8-flash-next"),
-    (128, "unified", "qwen3.6-35b-a3b"),
-    (256, "discrete", "qwen3.8-flash-next"),
-    (256, "unified", "qwen3.8-flash-next"),
-    (512, "discrete", "qwen3.8-flash-next"),
-    (512, "unified", "qwen3.8-flash-next"),
+    (8, "discrete", "qwen3.6-35b-a3b", "least-painful-spilled"),
+    (8, "unified", None, None),
+    (16, "discrete", "qwen3.6-35b-a3b", "least-painful-spilled"),
+    (16, "unified", None, None),
+    (24, "discrete", "qwen3.8-27b", "best-quality-resident"),
+    (24, "unified", None, None),
+    (32, "discrete", "qwen3.8-27b", "best-quality-resident"),
+    (32, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
+    (48, "discrete", "qwen3.8-27b", "best-quality-resident"),
+    (48, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
+    (96, "discrete", "qwen3.8-27b", "best-quality-resident"),
+    (96, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
+    (128, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
+    (128, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
+    (256, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
+    (256, "unified", "qwen3.8-flash-next", "best-quality-resident"),
+    (512, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
+    (512, "unified", "qwen3.8-flash-next", "best-quality-resident"),
 ]
 
 
 @pytest.mark.parametrize(
-    ("size_gb", "kind", "expected"),
+    ("size_gb", "kind", "expected", "expected_reason"),
     DECISION_TABLE,
-    ids=[f"{s}GB-{k}" for s, k, _ in DECISION_TABLE])
-def test_recommendation_decision_table(size_gb, kind, expected):
+    ids=[f"{s}GB-{k}" for s, k, _, _ in DECISION_TABLE])
+def test_recommendation_decision_table(size_gb, kind, expected, expected_reason):
+    """Pins the pick AND its reason per cell: the reason is user-facing
+    (the Recommended badge's tooltip), so a cell whose rationale flips
+    without the pick flipping is still a review-worthy change."""
     budget = _discrete(size_gb) if kind == "discrete" else _unified(size_gb)
-    assert recommended_id(budget) == expected
+    picked = recommended_entry(budget)
+    if expected is None:
+        assert picked is None
+    else:
+        assert picked is not None
+        assert (picked[0].id, picked[1]) == (expected, expected_reason)
 
 
 # ── invariants behind the table (survive catalog changes) ──

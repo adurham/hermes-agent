@@ -18,15 +18,13 @@ import {
   type HFSearchHit,
   installLocalRuntime,
   listHFRepoFiles,
-  pauseLocalModelDownload,
   quickstartLocalModels,
-  resumeLocalModelDownload,
   searchHFModels,
   setLocalServer,
   sideloadLocalModel
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Check, CheckCircle2, Cpu, Download, Eject, FolderOpen, Loader2, Monitor, Package, Pause, Play, Search, StopFilled, Trash2, Zap } from '@/lib/icons'
+import { Check, CheckCircle2, Cpu, Download, Eject, FolderOpen, Loader2, Monitor, Package, Search, StopFilled, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $localRuntimeJobs,
@@ -656,42 +654,11 @@ export function LocalModelsSettings() {
                     <div className="mt-2 grid gap-1">
                       <ProgressBar percent={dJob.percent} />
 
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[0.68rem] text-muted-foreground">
-                          {dJob.status === 'paused' ? (
-                            <>
-                              {copy.downloadPausedLabel} ·{' '}
-                              {copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
-                            </>
-                          ) : !dJob.done_bytes && dJob.detail ? (
-                            dJob.detail
-                          ) : (
-                            copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))
-                          )}
-                        </p>
-
-                        {dJob.kind === 'model-download' ? (
-                          dJob.status === 'paused' ? (
-                            <Button
-                              onClick={() => void resumeLocalModelDownload(dJob.job_id).catch(err => notifyError(err, copy.downloadResumeAction))}
-                              size="sm"
-                              variant="ghost"
-                            >
-                              <Play />
-                              {copy.downloadResumeAction}
-                            </Button>
-                          ) : (
-                            <Button
-                              onClick={() => void pauseLocalModelDownload(dJob.job_id).catch(err => notifyError(err, copy.downloadPauseAction))}
-                              size="sm"
-                              variant="ghost"
-                            >
-                              <Pause />
-                              {copy.downloadPauseAction}
-                            </Button>
-                          )
-                        ) : undefined}
-                      </div>
+                      <p className="text-[0.68rem] text-muted-foreground">
+                        {!dJob.done_bytes && dJob.detail
+                          ? dJob.detail
+                          : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
+                      </p>
                     </div>
                   ) : undefined
                 }
@@ -765,7 +732,17 @@ export function LocalModelsSettings() {
                   <span className="inline-flex items-center gap-2">
                     {model.display_name}
 
-                    {model.recommended && <Pill tone="primary">{copy.recommended}</Pill>}
+                    {model.recommended &&
+                      (model.recommended_reason ? (
+                        // The why, straight from the resolver: the tooltip is
+                        // the branch that picked this model, so the shown
+                        // rationale can never drift from the actual decision.
+                        <Tip label={copy.recommendedReason[model.recommended_reason]}>
+                          <Pill tone="primary">{copy.recommended}</Pill>
+                        </Tip>
+                      ) : (
+                        <Pill tone="primary">{copy.recommended}</Pill>
+                      ))}
                   </span>
                 }
               />

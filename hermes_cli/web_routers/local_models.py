@@ -8,12 +8,9 @@ the runtime doing right now), never raw internals the renderer would have to
 interpret.
 
 Long jobs (runtime install, model download) follow the repo's job pattern:
-start-POST -> {job_id} -> GET poll with byte progress. Model downloads run
-through the shared resumable downloader (pm.downloader): 8-way parallel,
-durable-partial resume, and no hash verification by design (catalog sizes
-may lag an upstream re-upload), so completeness is judged against the
-server's declared total, never the catalog. A running download can pause
-and resume via /api/local-models/download/pause and .../resume.
+start-POST -> {job_id} -> GET poll with byte progress. Downloads are
+byte-size checked against the catalog (no hash verification by design);
+a short download deletes the file and reports it plainly.
 """
 
 from __future__ import annotations
@@ -31,8 +28,6 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from pm.downloader import Download, DownloadPaused, Source
-
 from hermes_cli.local_runtime.endpoint import _state_endpoint
 
 logger = logging.getLogger(__name__)
@@ -42,9 +37,6 @@ router = APIRouter()
 _GIB = 1 << 30
 _JOBS: Dict[str, Dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
-# Live download handles + the resume callable per job_id. Kept OFF the job
-# dict so the JSON-serializable poll payload never carries a Download object.
-_RUNNING: Dict[str, Dict[str, Any]] = {}
 
 
 def _human_gb(n: int | float) -> str:
@@ -57,7 +49,7 @@ def _job(kind: str, target: str, model_id: str | None = None) -> Dict[str, Any]:
         "kind": kind,               # "runtime-install" | "model-download"
         "target": target,
         "model_id": model_id,       # catalog id for downloads; None otherwise
-        "status": "running",        # running | done | error | paused
+        "status": "running",        # running | done | error
         "phase": "starting",        # human-readable step name
         "detail": "",
         "total_bytes": None,
@@ -70,9 +62,37 @@ def _job(kind: str, target: str, model_id: str | None = None) -> Dict[str, Any]:
     return job
 
 
-# Model downloads run through the shared resumable downloader
-# (pm.downloader): 8-way parallel, durable partial bitmap, optional-hash
-# (models opt out of hashing — catalog sizes may lag upstream re-uploads).
+# ── fast download: ranged parallel streams ───────────────────
+
+# One TCP stream to a CDN rarely fills a fast line; 8 ranged connections
+# writing into a preallocated file saturate consumer gigabit.
+_DOWNLOAD_CONNECTIONS = 8
+_CHUNK = 4 << 20
+
+
+def _probe_range_support(url: str) -> int:
+    """Total size when the server honors Range requests, else 0.
+
+    Auth-shaped failures raise with a plain-language message — a 401/403
+    from the CDN means the repo is gated or the catalog entry names a
+    wrong repo, and the user deserves better than a bare status code.
+    """
+    req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            if r.status == 206:
+                content_range = r.headers.get("Content-Range", "")
+                if "/" in content_range:
+                    return int(content_range.rsplit("/", 1)[1])
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise RuntimeError(
+                "The model host refused the download (gated or moved). "
+                "This is a catalog problem, not yours — please report it.") from exc
+        raise
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
 
 
 def _model_id_for(gguf: Path) -> str:
@@ -101,33 +121,107 @@ def _variant_files_on_disk(model_id: str) -> "list[Path]":
     return files
 
 
-def _download_job(job: Dict[str, Any], plan) -> None:
-    """Run a plan of (url, dest, size) downloads as ONE resumable Download.
+def download_file(url: str, dest: Path, job: Dict[str, Any],
+                  *,
+                  base_done: int = 0, keep_totals: bool = False) -> None:
+    """Download url -> dest with byte progress on ``job``.
 
-    Completion and range progress feed the job dict (done_bytes /
-    total_bytes / ranges — the bar reads the aggregate, the detail view
-    reads the bitmap; both come from the same callback). Sources carry NO
-    hash by design: catalog sizes may lag an upstream re-upload, so
-    completeness is judged by the downloader against the server's declared
-    total, never the catalog. On pause the downloader raises
-    DownloadPaused; the job is marked 'paused' with its partials intact
-    for a later resume.
+    Ranged-parallel when the server supports it, single-stream fallback
+    otherwise. There is no integrity check against the CATALOG by
+    design: catalog sizes may lag an upstream re-upload, and a
+    newer file than we know about must download fine. Completeness is
+    checked only against what the SERVER declared for this transfer
+    (range-probe total / Content-Length) — self-consistent and always
+    current — so a dropped connection still errors instead of staging a
+    truncated file. Never leaves a .part behind.
+
+    Multi-file variants: ``base_done`` offsets the progress so this file's
+    bytes accumulate onto the files before it, and ``keep_totals=True``
+    stops the per-file size from overwriting the variant's total.
     """
-    dl = Download([Source(url, dest) for url, dest, _ in plan])
-    _RUNNING.setdefault(job["job_id"], {})["dl"] = dl
+    import shutil
+    import threading as _threading
 
-    def tick(done: int, total: int, ranges: dict) -> None:
-        job["done_bytes"] = done
-        job["total_bytes"] = total
-        job["ranges"] = ranges
+    tmp = dest.with_suffix(".part")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    file_done = [0]
+    progress_lock = _threading.Lock()
+
+    def bump(n: int) -> None:
+        with progress_lock:
+            file_done[0] += n
+            job["done_bytes"] = base_done + file_done[0]
 
     try:
-        dl.run(progress=tick)
-    except DownloadPaused:
-        job["status"] = "paused"
+        # The probe and the preallocation both take real seconds on a
+        # 20+ GB file — narrate them, or the pane shows a dead '— of X GB'
+        # until the first ranged byte lands.
+        job["detail"] = "Connecting"
+        total = _probe_range_support(url)
+        if total:
+            if not keep_totals:
+                job["total_bytes"] = total
+            # Preallocate so each worker writes at its own offset.
+            job["detail"] = f"Reserving {_human_gb(total)} of disk space"
+            with open(tmp, "wb") as f:
+                f.truncate(total)
+            job["detail"] = ""
+            errors: list[Exception] = []
+            bounds = [(i * total // _DOWNLOAD_CONNECTIONS,
+                       (i + 1) * total // _DOWNLOAD_CONNECTIONS - 1)
+                      for i in range(_DOWNLOAD_CONNECTIONS)]
+
+            def fetch_range(start: int, end: int) -> None:
+                try:
+                    req = urllib.request.Request(
+                        url, headers={"Range": f"bytes={start}-{end}"})
+                    with urllib.request.urlopen(req, timeout=120) as r, \
+                            open(tmp, "r+b") as f:
+                        f.seek(start)
+                        while True:
+                            chunk = r.read(_CHUNK)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            bump(len(chunk))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            threads = [_threading.Thread(target=fetch_range, args=b, daemon=True,
+                                         name=f"lm-dl-{i}")
+                       for i, b in enumerate(bounds)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            if errors:
+                raise errors[0]
+            if file_done[0] != total:
+                raise RuntimeError(
+                    f"download incomplete ({file_done[0]} of {total} bytes)")
+        else:
+            # No range support: single stream, large chunks. Completeness
+            # is judged by the server's own Content-Length when it sent
+            # one — never by the catalog, which may lag a re-upload.
+            with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+                length = int(r.headers.get("Content-Length") or 0)
+                if length and not keep_totals:
+                    job["total_bytes"] = length
+                while True:
+                    chunk = r.read(_CHUNK)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    bump(len(chunk))
+            if length and file_done[0] != length:
+                raise RuntimeError(
+                    f"Download ended at {file_done[0]:,} bytes but the server "
+                    f"said {length:,} — connection dropped? Removed; try again")
+
+        shutil.move(str(tmp), str(dest))
+    except Exception:
+        tmp.unlink(missing_ok=True)
         raise
-    finally:
-        _RUNNING.get(job["job_id"], {}).pop("dl", None)
 
 
 def _models_dir() -> Path:
@@ -137,18 +231,17 @@ def _models_dir() -> Path:
 
 
 def _engine_too_old(min_engine: str) -> bool:
-    """True when the pinned llama.cpp predates a model's requirement.
-    Tags are release numbers (b10362); the lockfile is the one version
-    authority, so this compares against the pin, not against config."""
+    """True when the installed llama.cpp predates a model's requirement.
+    Tags are release numbers (b10362); no engine installed compares as
+    too old only when the model states a requirement."""
     if not min_engine:
         return False
     try:
-        from hermes_cli.local_runtime.binaries import engine_version
+        from hermes_cli.local_runtime.binaries import default_tag, installed_tags
 
-        pinned = (engine_version() or "").lstrip("b")
-        if not pinned.isdigit():
-            return False
-        return int(pinned) < int(min_engine.lstrip("b"))
+        tags = installed_tags() or [default_tag()]
+        newest = max(int(t.lstrip("b")) for t in tags if t.lstrip("b").isdigit())
+        return newest < int(min_engine.lstrip("b"))
     except Exception:  # noqa: BLE001
         return False
 
@@ -170,33 +263,47 @@ def _runtime_section() -> dict:
 
 
 @router.get("/api/local-models/status")
-async def local_models_status():
+def local_models_status():
     """Cheap, immediate, never blocks on probes (responsiveness standard):
     config state + installed runtime + staged models + supervisor state.
-    GPU facts come from /api/local-models/hardware (slower, polled)."""
+    GPU facts come from /api/local-models/hardware (slower, polled).
+
+    Sync def on purpose: the body does blocking urlopen/scans, so it runs
+    in FastAPI's threadpool instead of stalling the event loop."""
     from hermes_cli.local_runtime.binaries import (
-        engine_update_pending,
-        engine_version,
-        installed_backends,
-        installed_engine_version,
+        default_tag,
+        installed_tags,
+        runtimes_root,
+        server_binary,
     )
 
     section = _runtime_section()
-    have = installed_backends()
+    configured_tag = section.get("tag") or default_tag()
+    have = installed_tags()
 
-    # The tag actually serving, else the pinned one. Present tense for the
-    # pane header.
-    runtime_backend = have[0] if have else None
-    tag = (installed_engine_version(runtime_backend) if runtime_backend
-           else None) or engine_version()
+    # The tag actually serving (boot ladder: configured if installed, else
+    # newest installed). Present tense for the pane header.
+    tag = configured_tag if configured_tag in have else (have[0] if have else configured_tag)
 
     # A pending engine update exists when the user runs the local engine
-    # (enabled + something installed) and the pin — refreshed by a Hermes
-    # release — is newer than what is on disk. Installing is a button
-    # click, never automatic.
-    update_available = bool(section.get("enabled") and engine_update_pending())
+    # (enabled + something installed) and the configured tag — pinned or
+    # the Hermes-release default — is newer than anything on disk. The
+    # download is a button click, never automatic.
+    update_available = bool(
+        section.get("enabled") and have and configured_tag not in have)
 
-    runtime_installed = bool(have)
+    runtime_installed = False
+    runtime_backend = None
+    root = runtimes_root() / tag
+    if root.exists():
+        for backend_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            try:
+                server_binary(backend_dir)
+                runtime_installed = True
+                runtime_backend = backend_dir.name
+                break
+            except Exception:  # noqa: BLE001
+                continue
 
     staged = []
     mdir = _models_dir()
@@ -298,9 +405,7 @@ async def local_models_status():
     return {
         "enabled": bool(section.get("enabled")),
         "tag": tag,
-        # The pinned build. Equal to "tag" unless an older engine is
-        # installed and its update has not been clicked yet.
-        "configured_tag": engine_version(),
+        "configured_tag": configured_tag,
         "update_available": update_available,
         "runtime_installed": runtime_installed,
         "runtime_backend": runtime_backend,
@@ -330,9 +435,10 @@ def _loading_progress() -> Dict[str, Any]:
 
 
 @router.get("/api/local-models/hardware")
-async def local_models_hardware():
+def local_models_hardware():
     """The budget as plain facts. Polled by the pane and the statusbar
-    resource item (throttled client-side)."""
+    resource item (throttled client-side). Sync def on purpose: the body
+    shells out to nvidia-smi and probes budgets — threadpool, not loop."""
     from hermes_cli.local_runtime.hardware import probe_budget, _nvidia_vram, _ram_bytes
 
     budget = probe_budget()
@@ -374,17 +480,18 @@ async def local_models_hardware():
 
 
 @router.get("/api/local-models/catalog")
-async def local_models_catalog():
+def local_models_catalog():
     """Every entry answers the user's three questions up front: how big is
     the download, will it fit, and what context/speed shape will I get —
     computed from the catalog's measured numbers + this machine's
     budget. Hardware-aware quant selection: the row advertises the BEST
     build for this machine (highest quality that runs fully on the GPU at
     the 64K floor; else the smallest that works, spilled and priced). No
-    entry is hidden; unaffordable models show WHY."""
+    entry is hidden; unaffordable models show WHY. Sync def on purpose:
+    probe_budget + catalog I/O block — threadpool, not loop."""
     from hermes_cli.local_runtime.catalog import (
         CATALOG,
-        recommended_id,
+        recommended_entry,
         refresh_catalog_soon,
         select_variant,
     )
@@ -406,9 +513,13 @@ async def local_models_catalog():
     budget = probe_budget(planning=True)
     # The default pick for THIS machine: quality-ranked, fit- and
     # speed-gated (recommended_entry). Engine-gated entries can't be
-    # activated today, so they can't be the recommendation either.
+    # activated today, so they can't be the recommendation either. The
+    # reason key ships with the row — the Recommended badge's tooltip is
+    # the branch that actually fired, not a re-derivation that can drift.
     eligible = tuple(e for e in CATALOG if not _engine_too_old(e.min_engine))
-    recommended = recommended_id(budget, eligible)
+    picked = recommended_entry(budget, eligible)
+    recommended = picked[0].id if picked is not None else None
+    recommended_reason = picked[1] if picked is not None else None
     # Completeness-checked staging (split parts all present) — the same
     # answer the picker and the router see, so a mid-download model never
     # reads as downloaded here.
@@ -429,6 +540,7 @@ async def local_models_catalog():
             "native_context": entry.n_ctx_train,
             "native_context_label": f"{entry.n_ctx_train // 1024}K",
             "recommended": entry.id == recommended,
+            "recommended_reason": recommended_reason if entry.id == recommended else None,
             "downloaded": downloaded_variant is not None,
             "downloaded_model_id": downloaded_variant.model_id if downloaded_variant else None,
             "downloaded_quant": downloaded_variant.quant if downloaded_variant else None,
@@ -514,13 +626,16 @@ class RuntimeInstallBody(BaseModel):
 
 
 def _runtime_progress_hook(job: Dict[str, Any]):
-    """Adapter: pm's install progress stream -> job fields.
+    """Adapter: ensure_runtime_installed's progress stream -> job fields.
 
-    Throttled to ~4 updates/s; each stage restarts the byte counters so
-    the bar reflects the CURRENT stage (download then unpack per archive).
-    Slow lines sit in the download stage for minutes — the counters are
-    what proves liveness, so they must move on every tick."""
-    state = {"last": 0.0}
+    Throttled to ~4 updates/s. The byte counters are CUMULATIVE across the
+    plan: a multi-asset engine (CUDA zip + cudart zip) reads as one growing
+    download, not a bar that restarts at zero per asset. The total grows as
+    each asset's size becomes known (sizes arrive with the response, not
+    the plan). Unpack/verify keep the download's counters in place — the
+    stage text says what's happening, and a bar that bounces back to zero
+    after the bytes finished reads as a failure."""
+    state = {"last": 0.0, "banked": 0, "asset": None, "asset_total": 0}
 
     def hook(stage: str, done: int, total: int, label: str) -> None:
         now = time.monotonic()
@@ -529,18 +644,30 @@ def _runtime_progress_hook(job: Dict[str, Any]):
         state["last"] = now
         suffix = f" ({label})" if label else ""
         if stage == "download":
+            if label != state["asset"]:
+                # Previous asset finished: bank its bytes so the counters
+                # keep climbing instead of restarting for the next asset.
+                state["banked"] += state["asset_total"]
+                state["asset"] = label
+            state["asset_total"] = total or done
+            plan_done = state["banked"] + done
+            plan_total = state["banked"] + (total or 0)
             job["phase"] = "downloading-runtime"
             if total:
                 job["detail"] = (f"Downloading the local engine{suffix} — "
-                                 f"{_human_gb(done)} of {_human_gb(total)}")
+                                 f"{_human_gb(plan_done)} of {_human_gb(plan_total)}")
             else:
                 job["detail"] = (f"Downloading the local engine{suffix} — "
-                                 f"{_human_gb(done)}")
-        else:
+                                 f"{_human_gb(plan_done)}")
+            job["done_bytes"] = plan_done
+            job["total_bytes"] = plan_total or None
+        elif stage == "extract":
             job["phase"] = "unpacking-runtime"
-            job["detail"] = f"Unpacking the engine{suffix}"
-        job["done_bytes"] = done
-        job["total_bytes"] = total or None
+            pct = f" — {min(100, round(done / total * 100))}%" if total else ""
+            job["detail"] = f"Unpacking the engine{suffix}{pct}"
+        else:  # verify
+            job["phase"] = "verifying-runtime"
+            job["detail"] = f"Verifying the engine{suffix}"
 
     return hook
 
@@ -548,28 +675,20 @@ def _runtime_progress_hook(job: Dict[str, Any]):
 @router.post("/api/local-models/runtime/install")
 async def local_models_runtime_install(body: RuntimeInstallBody):
     from hermes_cli.local_runtime.binaries import (
-        engine_version,
-        resolve_backend,
+        default_tag,
+        resolve_assets,
         select_backend,
-        unavailable_reason,
     )
     from hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
 
     section = _runtime_section()
-    tag = engine_version()
+    tag = section.get("tag") or default_tag()
     backend = body.backend or section.get("backend", "auto")
     if backend == "auto":
         backend = select_backend(_detect_gpu_vendor())
-    # An unpinned combination is knowable before any work starts, so an
-    # explicitly requested backend that this platform has no build for
-    # fails the POST with the pin table's own reason. "auto" instead walks
-    # down the ladder — the user asked for "whatever works here".
-    if body.backend:
-        reason = unavailable_reason(backend)
-        if reason is not None:
-            raise HTTPException(status_code=400, detail=reason)
+    # Resolve first so an impossible combination fails the POST, not the job.
     try:
-        backend = resolve_backend(backend)
+        plan = resolve_assets(tag, backend)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -578,18 +697,20 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
     def _run():
         try:
             from hermes_cli.local_runtime.binaries import (
-                ensure_engine,
-                installed_backends,
+                ensure_runtime_installed,
+                installed_tags,
+                prune_old_tags,
             )
 
-            was_installed = backend in installed_backends()
+            previous = installed_tags()
             job["phase"] = "downloading"
-            job["detail"] = f"Fetching the {backend} engine"
-            ensure_engine(backend, progress=_runtime_progress_hook(job))
+            job["detail"] = f"Fetching {len(plan.assets)} package(s) for {backend}"
+            ensure_runtime_installed(tag, backend,
+                                     progress=_runtime_progress_hook(job))
 
-            # Engine update path: a server already running on an older
-            # build moves to the new one now — the click was the consent.
-            # Fresh installs (no server) skip this; Use/boot starts them.
+            # Engine update path: a server already running on an older tag
+            # moves to the new one now — the click was the consent. Fresh
+            # installs (no server) skip this; Use/boot handles their start.
             restarted = False
             try:
                 from hermes_cli.local_runtime.bootstrap import (
@@ -599,7 +720,7 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
                 )
 
                 sup = get_supervisor()
-                if sup is not None and was_installed:
+                if sup is not None and previous and tag not in previous:
                     job["phase"] = "restarting"
                     job["detail"] = "Switching the running server to the new build"
                     shutdown_local_runtime()
@@ -610,10 +731,14 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
                 # it. Never fail the job on the restart nicety.
                 logger.warning("post-update restart skipped: %s", exc)
 
-            # No retention pass here. Store entries are keyed
-            # (package, version, target) and shared across profiles and
-            # installs, so deleting the superseded build is `hermes pm gc`'s
-            # call to make, not one install job's.
+            # N-1 retention, only after the new tag verified: keep it and the
+            # newest previous build as the rollback pin target.
+            try:
+                keep = [tag] + [t for t in previous if t != tag][:1]
+                prune_old_tags(keep)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("runtime prune skipped: %s", exc)
+
             job["phase"] = "done"
             job["status"] = "done"
             job["detail"] = (f"llama.cpp {tag} ready ({backend})"
@@ -695,7 +820,17 @@ async def local_models_download(body: ModelDownloadBody):
         try:
             job["phase"] = "downloading"
             job["detail"] = f"{entry.display_name} — {_human_gb(total)}"
-            _download_job(job, plan)
+            done_before = 0
+            for url, dest, size in plan:
+                if dest.exists():
+                    done_before += size
+                    job["done_bytes"] = done_before
+                    continue
+                download_file(url, dest, job,
+                              base_done=done_before, keep_totals=True)
+                job["phase"] = "downloading"
+                done_before += size
+                job["done_bytes"] = done_before
             job["phase"] = "done"
             job["status"] = "done"
             job["detail"] = f"{entry.display_name} ready"
@@ -708,55 +843,13 @@ async def local_models_download(body: ModelDownloadBody):
                 refresh_local_runtime()
             except Exception:  # noqa: BLE001
                 logger.debug("post-download runtime refresh skipped", exc_info=True)
-        except DownloadPaused:
-            pass  # status already "paused"; partials kept for resume
         except Exception as exc:  # noqa: BLE001
             logger.warning("model download failed: %s", exc)
             job["status"] = "error"
             job["error"] = str(exc)
-        finally:
-            if job["status"] != "paused":
-                _RUNNING.pop(job["job_id"], None)
 
-    _RUNNING[job["job_id"]] = {"resume": _run, "dl": None}
     threading.Thread(target=_run, daemon=True, name="lr-model-download").start()
     return {"job_id": job["job_id"], "model_id": variant.model_id}
-
-
-class JobIdBody(BaseModel):
-    job_id: str
-
-
-@router.post("/api/local-models/download/pause")
-async def local_models_download_pause(body: JobIdBody):
-    """Pause a running model download. The downloader's live handle is
-    checked off the job dict (which stays JSON-serializable for the poll
-    route); when none is active (already done/paused) this is a no-op."""
-    running = _RUNNING.get(body.job_id)
-    if running is None:
-        raise HTTPException(status_code=404, detail="unknown download job")
-    dl = running.get("dl")
-    if dl is None:
-        return {"ok": True, "paused": False}
-    dl.pause()
-    return {"ok": True, "paused": True}
-
-
-@router.post("/api/local-models/download/resume")
-async def local_models_download_resume(body: JobIdBody):
-    """Resume a paused model download. Completed files are skipped and
-    partials resume from their byte-range bitmap (the downloader owns that
-    — the route just re-runs the job body)."""
-    job = _JOBS.get(body.job_id)
-    running = _RUNNING.get(body.job_id)
-    if job is None or running is None or running.get("resume") is None:
-        raise HTTPException(status_code=404, detail="unknown or finished download job")
-    if job["status"] != "paused":
-        return {"ok": True, "resumed": False}
-    job["status"] = "running"
-    threading.Thread(target=running["resume"], daemon=True,
-                     name="lm-dl-resume").start()
-    return {"ok": True, "resumed": True}
 
 
 @router.delete("/api/local-models/models/{model_id}")
@@ -825,8 +918,9 @@ async def local_models_quickstart(body: QuickstartBody):
     in the job with the usual phase/byte progress.
     """
     from hermes_cli.local_runtime.binaries import (
-        installed_backends,
-        resolve_backend,
+        default_tag,
+        installed_tags,
+        resolve_assets,
         select_backend,
     )
     from hermes_cli.local_runtime.bootstrap import (
@@ -855,7 +949,8 @@ async def local_models_quickstart(body: QuickstartBody):
         candidates = [entry]
     else:
         eligible = tuple(e for e in CATALOG if not _engine_too_old(e.min_engine))
-        best = recommended_entry(budget, eligible)
+        picked = recommended_entry(budget, eligible)
+        best = picked[0] if picked is not None else None
         candidates = ([best] if best is not None else []) + [
             e for e in CATALOG if best is None or e.id != best.id]
     chosen = None
@@ -872,16 +967,17 @@ async def local_models_quickstart(body: QuickstartBody):
     entry, variant = chosen
 
     section = _runtime_section()
+    tag = section.get("tag") or default_tag()
     backend = section.get("backend", "auto")
     if backend == "auto":
         backend = select_backend(_detect_gpu_vendor())
-    need_runtime = not installed_backends()
-    # Same preflight as /runtime/install: a platform with no usable build
-    # fails the POST rather than the job.
-    try:
-        backend = resolve_backend(backend)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(exc))
+    need_runtime = not installed_tags()
+    if need_runtime:
+        # Same preflight as /runtime/install: impossible combos fail the POST.
+        try:
+            resolve_assets(tag, backend)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=str(exc))
 
     need_download = variant.model_id not in staged_model_ids()
     download_plan = []  # (url, dest, bytes)
@@ -906,11 +1002,12 @@ async def local_models_quickstart(body: QuickstartBody):
     def _run():
         try:
             if need_runtime:
-                from hermes_cli.local_runtime.binaries import ensure_engine
+                from hermes_cli.local_runtime.binaries import ensure_runtime_installed
 
                 job["phase"] = "installing-runtime"
                 job["detail"] = "Installing the local engine"
-                ensure_engine(backend, progress=_runtime_progress_hook(job))
+                ensure_runtime_installed(tag, backend,
+                                         progress=_runtime_progress_hook(job))
 
             if need_download:
                 job["phase"] = "downloading"
@@ -920,7 +1017,17 @@ async def local_models_quickstart(body: QuickstartBody):
                 job["done_bytes"] = 0
                 job["total_bytes"] = total
                 job["detail"] = f"{entry.display_name} — {_human_gb(total)}"
-                _download_job(job, download_plan)
+                done_before = 0
+                for url, dest, size in download_plan:
+                    if dest.exists():
+                        done_before += size
+                        job["done_bytes"] = done_before
+                        continue
+                    download_file(url, dest, job,
+                                  base_done=done_before, keep_totals=True)
+                    job["phase"] = "downloading"
+                    done_before += size
+                    job["done_bytes"] = done_before
 
             # Activate: same sequence as /activate's job body.
             from hermes_cli.config import load_config, save_config
@@ -956,18 +1063,13 @@ async def local_models_quickstart(body: QuickstartBody):
             job["phase"] = "done"
             job["status"] = "done"
             job["detail"] = f"{entry.display_name} is ready — new chats use it"
-        except DownloadPaused:
-            pass  # status already "paused"; partials kept for resume
         except Exception as exc:  # noqa: BLE001
             logger.warning("quickstart failed: %s", exc)
             job["status"] = "error"
             job["error"] = str(exc)
         finally:
-            if job["status"] != "paused":
-                _RUNNING.pop(job["job_id"], None)
             _QUICKSTART_LOCK.release()
 
-    _RUNNING[job["job_id"]] = {"resume": _run, "dl": None}
     threading.Thread(target=_run, daemon=True, name="lr-quickstart").start()
     return {
         "job_id": job["job_id"],
@@ -1012,7 +1114,7 @@ async def local_models_server(body: ServerActionBody):
 
                     from hermes_cli.local_runtime.supervisor import state_path
 
-                    state = json.loads(state_path().read_text(encoding="utf-8-sig"))
+                    state = json.loads(state_path().read_text(encoding="utf-8"))
                     pid = int(state.get("pid") or 0)
                     if pid > 0 and psutil.pid_exists(pid):
                         psutil.Process(pid).terminate()
@@ -1049,10 +1151,11 @@ class ModelEjectBody(BaseModel):
 
 
 @router.post("/api/local-models/eject")
-async def local_models_eject(body: ModelEjectBody):
+def local_models_eject(body: ModelEjectBody):
     """Free a loaded model's GPU memory now. Nothing reloads it except
     demand — the next message to it (residency v2: no automatic loading
-    exists anywhere)."""
+    exists anywhere). Sync def on purpose: the fallback path blocks on a
+    urlopen with a 120s timeout — threadpool, never the event loop."""
     from hermes_cli.local_runtime.bootstrap import get_supervisor
 
     sup = get_supervisor()
@@ -1258,13 +1361,16 @@ async def local_models_download_browsed(body: BrowsedDownloadBody):
     def _run():
         try:
             job["phase"] = "downloading"
-            plan = []
             for p in paths:
                 url = (f"https://huggingface.co/{body.repo}"
                        f"/resolve/main/{urllib.parse.quote(p)}")
                 dest = _models_dir() / p.rsplit("/", 1)[-1]
-                plan.append((url, dest, 0))
-            _download_job(job, plan)
+                if dest.exists():
+                    continue
+                download_file(url, dest, job,
+                              base_done=int(job.get("done_bytes") or 0),
+                              keep_totals=bool(job.get("total_bytes")))
+                job["phase"] = "downloading"
             job["phase"] = "done"
             job["status"] = "done"
             job["detail"] = f"{model_id} ready"
@@ -1274,16 +1380,10 @@ async def local_models_download_browsed(body: BrowsedDownloadBody):
                 refresh_local_runtime()
             except Exception:  # noqa: BLE001
                 logger.debug("post-download runtime refresh skipped", exc_info=True)
-        except DownloadPaused:
-            pass  # status already "paused"; partials kept for resume
         except Exception as exc:  # noqa: BLE001
             job["status"] = "error"
             job["error"] = str(exc)
-        finally:
-            if job["status"] != "paused":
-                _RUNNING.pop(job["job_id"], None)
 
-    _RUNNING[job["job_id"]] = {"resume": _run, "dl": None}
     threading.Thread(target=_run, daemon=True, name="lm-download-browsed").start()
     return {"job_id": job["job_id"], "model_id": model_id}
 

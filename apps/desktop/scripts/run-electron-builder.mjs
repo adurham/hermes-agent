@@ -27,6 +27,28 @@ function electronBuilderCli() {
   return path.join(dir, rel)
 }
 
+// Resolve electronDist at runtime (#38673, #47917): electron-builder 26.8.x can
+// re-unpack a broken Electron.app; reusing the installed dist dodges that.
+// npm workspace hoisting is non-deterministic — require.resolve finds electron
+// wherever it landed.
+function electronDistDir() {
+  try {
+    return path.join(path.dirname(require.resolve('electron/package.json')), 'dist')
+  } catch {
+    return null
+  }
+}
+
+function distBinary(dist) {
+  if (process.platform === 'darwin') {
+    return path.join(dist, 'Electron.app', 'Contents', 'MacOS', 'Electron')
+  }
+  if (process.platform === 'win32') {
+    return path.join(dist, 'electron.exe')
+  }
+  return path.join(dist, 'electron')
+}
+
 const args = [...process.argv.slice(2)]
 
 // package.json has no "build" field. Name the config file or electron-builder
@@ -37,9 +59,25 @@ if (!args.some(a => a === '--config' || a.startsWith('--config='))) {
 
 // Never let electron-builder publish. On a CI tag build it auto-detects
 // GitHub and demands GH_TOKEN after the artifacts are already built.
-// The release workflow uploads artifacts in its own step.
+// The release workflow uploads artifacts in its own step. (Also: the npm
+// lifecycle env sets CI=1, and electron-builder treats CI=1 as a signal to
+// implicitly resolve a publish target, which reads <projectDir>/.git/config —
+// apps/desktop has no .git of its own, so pin publish to "never".)
 if (!args.includes('--publish') && !args.some(a => a.startsWith('-p'))) {
   args.push('--publish', 'never')
+}
+
+// Reuse the installed Electron dist when present so a broken app is not
+// re-unpacked from a fresh download; otherwise electron-builder fetches via
+// @electron/get (electronVersion + ELECTRON_MIRROR).
+const dist = electronDistDir()
+if (dist && fs.existsSync(distBinary(dist))) {
+  args.push(`-c.electronDist=${dist}`)
+} else {
+  console.warn(
+    '[run-electron-builder] no local electron dist; electron-builder will fetch ' +
+      'via @electron/get (electronVersion + ELECTRON_MIRROR).'
+  )
 }
 
 if (args.includes('--win') && process.env.AZURE_SIGN_ENDPOINT && process.env.AZURE_CLIENT_ID) {

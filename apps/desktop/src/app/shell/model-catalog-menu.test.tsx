@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
 import {
   $modelVisibilityOpen,
@@ -41,6 +42,8 @@ vi.mock('@/hermes', () => ({
 beforeEach(() => {
   $visibleModels.set(null)
   $localRuntimeJobs.set([])
+  // These suites exercise the local-models rows, which ship behind --local.
+  $localModelsEnabled.set(true)
   setModelVisibilityOpen(false)
   getGlobalModelOptions.mockResolvedValue({
     providers: [{ models: ['gemini-3.1-pro', 'gemini-2.5-flash'], name: 'Google', slug: 'google' }]
@@ -172,5 +175,23 @@ describe('in-flight local downloads', () => {
     await waitFor(() => {
       expect(screen.queryByText('Qwen3.8 Flash Next (UD-Q4_K_XL)')).toBeNull()
     })
+  })
+
+  it('hides the local provider group and download rows without the --local flag (strict)', async () => {
+    $localModelsEnabled.set(false)
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['Qwen3.6-27B-UD-Q4_K_XL'], name: 'Local', slug: 'llamacpp' },
+        { models: ['gemini-3.1-pro'], name: 'Google', slug: 'google' }
+      ]
+    })
+    $localRuntimeJobs.set([DOWNLOAD_JOB])
+    renderMenu()
+
+    // Staged models exist and a download is running — none of it shows.
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(screen.queryByText(/Qwen3\.6 27B/i)).toBeNull()
+    expect(screen.queryByText('Qwen3.8 Flash Next (UD-Q4_K_XL)')).toBeNull()
+    expect(screen.queryByText('Local')).toBeNull()
   })
 })

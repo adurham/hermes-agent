@@ -27,6 +27,7 @@ import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import {
   $visibleModels,
@@ -102,6 +103,9 @@ interface ModelCatalogMenuProps {
   /** Render the virtual `moa` provider's presets as a selectable section.
    *  Off for override surfaces, where a MoA preset isn't a worker model. */
   includeMoa?: boolean
+  /** Registry source owning this catalog. Profile/session names are not unique
+   * across sources, so this participates in the React Query cache key. */
+  ownerConnectionId?: string
   profile?: string
   /** Session whose catalog to fetch. A live session's catalog can differ from
    *  the profile-global one, and the app invalidates the SESSION-scoped query
@@ -127,6 +131,7 @@ export function ModelCatalogMenu({
   footer,
   gateway,
   includeMoa = false,
+  ownerConnectionId,
   profile = 'default',
   request,
   sessionId = null
@@ -145,7 +150,7 @@ export function ModelCatalogMenu({
   const visibleModels = useStore($visibleModels)
 
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId),
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
@@ -153,6 +158,11 @@ export function ModelCatalogMenu({
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
+
+  // Every local-models read in this menu sits behind the --local launch
+  // flag: no status polling, no download rows, and the llamacpp provider
+  // group hides even when models are staged (the flag is strict).
+  const localModelsEnabled = $localModelsEnabled.get()
 
   // Live load state for the managed local server: which model is loading
   // into memory right now, with a REAL percent (per-tensor callback relayed
@@ -162,6 +172,7 @@ export function ModelCatalogMenu({
   const localStatus = useQuery({
     queryKey: ['local-models-loading', profile],
     queryFn: () => getLocalModelsStatus(),
+    enabled: localModelsEnabled,
     refetchInterval: 2_000,
     retry: false
   })
@@ -177,9 +188,11 @@ export function ModelCatalogMenu({
   // STABLE identity projection instead: it changes only when a download
   // starts or ends. Each row selects its own percent scalar.
   const downloadsKey = useStoreSelector($localRuntimeJobs, jobs =>
-    runningModelDownloads(jobs)
-      .map(job => `${job.job_id}\u0000${job.target}`)
-      .join('\u0001')
+    localModelsEnabled
+      ? runningModelDownloads(jobs)
+          .map(job => `${job.job_id}\u0000${job.target}`)
+          .join('\u0001')
+      : ''
   )
 
   const downloads = useMemo(
@@ -195,8 +208,10 @@ export function ModelCatalogMenu({
   )
 
   useEffect(() => {
-    watchLocalRuntimeJobs()
-  }, [])
+    if (localModelsEnabled) {
+      watchLocalRuntimeJobs()
+    }
+  }, [localModelsEnabled])
 
   // A finished download turns into a real selectable model: refetch the
   // catalog so the placeholder row is replaced while the menu is open.
@@ -232,8 +247,15 @@ export function ModelCatalogMenu({
   )
 
   const pickerProviders = useMemo(
-    () => providers?.filter(provider => provider.slug.toLowerCase() !== 'moa') ?? [],
-    [providers]
+    () =>
+      providers?.filter(
+        provider =>
+          provider.slug.toLowerCase() !== 'moa' &&
+          // Strict --local gate: staged local models exist on disk, but
+          // without the flag the GUI doesn't offer them.
+          (localModelsEnabled || provider.slug !== LOCAL_PROVIDER_SLUG)
+      ) ?? [],
+    [providers, localModelsEnabled]
   )
 
   const current = controller.current

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home  # noqa: F401 — config paths
 
-from hermes_cli.local_runtime.binaries import runtime_state_root
+from hermes_cli.local_runtime.binaries import runtimes_root
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +51,10 @@ def _detect_gpu_vendor() -> str | None:
 def models_dir() -> Path:
     """Machine-scoped, deliberately NOT profile-scoped: a 20 GB GGUF is a
     machine asset, and every profile shares the one managed server that
-    serves it. See runtime_state_root() for the same rule on the engine."""
-    from hermes_cli.local_runtime.binaries import models_root
+    serves it. See runtimes_root() for the same rule on the engine."""
+    from hermes_constants import get_default_hermes_root
 
-    return models_root()
+    return get_default_hermes_root() / "models"
 
 
 def assets_dir() -> Path:
@@ -113,23 +113,26 @@ def _stop_state_server(state: dict) -> None:
     """Best-effort stop of the server the state file points at (an
     incumbent this process doesn't supervise). The state pid is ours by
     contract — the file only ever describes the managed server."""
+    from hermes_cli.local_runtime.endpoint import _pid_alive
+
     pid = state.get("pid")
-    if not pid:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return
+    if pid <= 0:
         return
     try:
         import signal
 
-        os.kill(int(pid), signal.SIGTERM)
+        os.kill(pid, signal.SIGTERM)
     except (OSError, ValueError):
         return
-    # Liveness probe: do NOT use os.kill(pid, 0) here — on Windows that
-    # TERMINATES the process instead of probing (see endpoint.py). Use
-    # psutil.pid_exists, which is a safe existence check on all platforms.
-    import psutil  # type: ignore
-
-    # Give it a moment to release the port and the GPU.
+    # Give it a moment to release the port and the GPU. Liveness via
+    # psutil — on Windows os.kill(pid, 0) TERMINATES the process, it is
+    # not a probe (the endpoint.py pitfall note; #local-models review).
     for _ in range(50):
-        if not psutil.pid_exists(int(pid)):
+        if not _pid_alive(pid):
             return
         time.sleep(0.1)
 
@@ -213,10 +216,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
     try:
         from hermes_cli.local_runtime.binaries import (
-            installed_backends,
-            resolve_backend,
+            ensure_runtime_installed,
             select_backend,
-            server_binary,
         )
         from hermes_cli.local_runtime.hardware import probe_budget
         from hermes_cli.local_runtime.presets import generate_presets
@@ -225,20 +226,26 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         backend = section.get("backend", "auto")
         if backend == "auto":
             backend = select_backend(_detect_gpu_vendor())
-        backend = resolve_backend(backend)
-        # Boot ladder: serve what is INSTALLED, never download here. A
-        # multi-minute inline engine download at session start is exactly
-        # how the onboarding bounce returns — installing is a deliberate
-        # button click in the Local Models pane.
-        have = installed_backends()
-        if backend not in have:
+        # Boot ladder: serve what is INSTALLED, never download here. The
+        # configured tag (config root-of-trust; deep-merge supplies the
+        # Hermes-release default when unpinned) is preferred; when it isn't
+        # installed yet, the newest installed tag serves and the status
+        # endpoint reports the pending update — the download is a deliberate
+        # button click in the pane, not a boot-path surprise (a multi-minute
+        # inline download here is exactly how the onboarding bounce returns).
+        from hermes_cli.local_runtime.binaries import default_tag, installed_tags
+
+        tag = section.get("tag") or default_tag()
+        have = installed_tags()
+        if tag not in have:
             if not have:
-                logger.info("local runtime enabled but no engine installed; "
+                logger.info("local runtime enabled but no build installed; "
                             "install happens in the Local Models pane")
                 return None
-            logger.info("%s engine not installed; serving the %s build", backend, have[0])
-            backend = have[0]
-        server_exe = server_binary(backend)
+            logger.info("configured tag %s not installed; serving %s "
+                        "(update is a click in Local Models)", tag, have[0])
+            tag = have[0]
+        install_dir = ensure_runtime_installed(tag, backend)
 
         mdir = models_dir()
         mdir.mkdir(parents=True, exist_ok=True)
@@ -250,7 +257,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         # is freed before the new instance loads anything. Pricing against
         # live-free here once pinned a fitting model's weights to CPU
         # because the probe saw the predecessor's VRAM as gone.
-        preset_path = runtime_state_root() / "presets.ini"
+        preset_path = runtimes_root() / "presets.ini"
         try:
             entries = generate_presets(mdir, probe_budget(planning=True), preset_path)
             for entry in entries:
@@ -273,15 +280,25 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                 preset_path = None
 
         sup = LlamaServerSupervisor(
-            server_exe, mdir,
+            install_dir, mdir,
             models_max=int(section.get("models_max", 4)),
             port=int(section.get("port", 0)) or None,
             preset_path=preset_path,
         )
-        sup.start()
+        try:
+            sup.start()
+        except Exception:
+            # start() can fail after the router process exists (health
+            # timeout, spawn error): leaving it running unsupervised
+            # strands its VRAM behind a port nothing will clean up.
+            try:
+                sup.stop()
+            except Exception:  # noqa: BLE001 — cleanup is best-effort
+                pass
+            raise
         _SUPERVISOR = sup
-        logger.info("managed llama-server up at %s (backend=%s)",
-                    sup.base_url, backend)
+        logger.info("managed llama-server up at %s (backend=%s tag=%s)",
+                    sup.base_url, backend, tag)
         _start_idle_sweeper(sup)
         return sup
     except Exception as exc:  # noqa: BLE001 — never break session start

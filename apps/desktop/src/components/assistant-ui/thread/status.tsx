@@ -16,6 +16,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
 import { sessionCompacting } from '@/store/compaction'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { sessionAwaitingInput } from '@/store/prompts'
 import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
 import { $currentModel } from '@/store/session'
@@ -65,8 +66,12 @@ function useLocalModelLoad(active: boolean): LocalModelLoadProgress & { model: s
   const model = useStore($currentModel)
   const [progress, setProgress] = useState<(LocalModelLoadProgress & { model: string }) | null>(null)
 
+  // Behind the --local launch flag: without it, no status polling and no
+  // load bar (the local server can't be the current provider anyway).
+  const enabled = $localModelsEnabled.get()
+
   useEffect(() => {
-    if (!active || !model) {
+    if (!enabled || !active || !model) {
       setProgress(null)
 
       return
@@ -103,7 +108,7 @@ function useLocalModelLoad(active: boolean): LocalModelLoadProgress & { model: s
         window.clearTimeout(timer)
       }
     }
-  }, [active, model])
+  }, [enabled, active, model])
 
   return progress
 }

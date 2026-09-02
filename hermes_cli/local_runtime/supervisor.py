@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from hermes_cli.local_runtime.binaries import runtime_state_root
+from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ _RESTART_BACKOFF_S = (1, 5, 15, 60)
 def state_path() -> Path:
     """Endpoint state for other Hermes processes (provider resolution reads
     this to route llamacpp-alias requests at the managed server)."""
-    return runtime_state_root() / "server.json"
+    return runtimes_root() / "server.json"
 
 
 def _free_port() -> int:
@@ -84,9 +84,9 @@ def _stable_api_key() -> str:
     other loopback processes free-riding, and it lives on the same disk as
     the state file that would leak it. Delete the file to rotate manually.
     """
-    key_path = runtime_state_root() / ".api_key"
+    key_path = runtimes_root() / ".api_key"
     try:
-        existing = key_path.read_text(encoding="utf-8-sig").strip()
+        existing = key_path.read_text(encoding="utf-8").strip()
         if len(existing) >= 16:
             return existing
     except OSError:
@@ -106,19 +106,19 @@ class LlamaServerSupervisor:
 
     Usage::
 
-        sup = LlamaServerSupervisor(server_exe, models_dir)
+        sup = LlamaServerSupervisor(install_dir, models_dir)
         sup.start()                     # spawn + wait healthy
         sup.ensure_model_ready(name)    # load + touch-generate
         ... sup.base_url is the /v1 endpoint, sup.api_key its key ...
         sup.stop()
     """
 
-    def __init__(self, server_exe: Path, models_dir: Path, *,
+    def __init__(self, install_dir: Path, models_dir: Path, *,
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
                  preset_path: Path | None = None):
-        self.server_exe = Path(server_exe)
+        self.install_dir = Path(install_dir)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
         self.port = port or _stable_port()
@@ -157,7 +157,7 @@ class LlamaServerSupervisor:
     # ── lifecycle ────────────────────────────────────────────
 
     def _spawn(self) -> None:
-        exe = self.server_exe
+        exe = server_binary(self.install_dir)
         cmd = [
             str(exe),
             "--host", "127.0.0.1",
@@ -186,6 +186,13 @@ class LlamaServerSupervisor:
             *self.extra_args,
         ]
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._log_handle is not None:
+            # The crash-restart loop calls _spawn repeatedly; without
+            # closing the prior handle each restart leaks one fd.
+            try:
+                self._log_handle.close()
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace")
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
@@ -318,7 +325,7 @@ class LlamaServerSupervisor:
         try:
             import psutil
 
-            exe = str(self.server_exe)
+            exe = str(server_binary(self.install_dir))
         except Exception:  # noqa: BLE001
             return
         for p in psutil.process_iter(["exe", "ppid"]):

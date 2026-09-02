@@ -59,24 +59,19 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
 
     # Leg 1: no runtime installed yet; install is the stubbed binaries call.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_backends", lambda: [])
+        "hermes_cli.local_runtime.binaries.installed_tags", lambda: [])
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_engine",
-        lambda backend, progress=None: calls.append("install"))
+        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+        lambda tag, backend, progress=None: calls.append("install"))
 
     # Leg 2: nothing staged; the download writes the files the plan names.
-    # The store download runs a whole plan as one resumable Download
-    # (_download_job(job, plan)); fake it at that seam — walk the plan's
-    # (url, dest, size) triples and land each file.
-    def _fake_download_job(job, plan):
-        for url, dest, _size in plan:
-            Path(dest).parent.mkdir(parents=True, exist_ok=True)
-            Path(dest).write_bytes(b"GGUF\x00")
-        job["done_bytes"] = job.get("total_bytes", 0)
+    def _fake_download(url, dest, job, *, base_done=0, keep_totals=False):
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"GGUF\x00")
         calls.append("download")
 
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._download_job", _fake_download_job)
+        "hermes_cli.web_routers.local_models.download_file", _fake_download)
 
     # Leg 3: activation — stub the server start and the model assignment.
     monkeypatch.setattr(
@@ -118,10 +113,10 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_backends", lambda: ["cpu"])
+        "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_engine",
-        lambda backend, progress=None: calls.append("install"))
+        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+        lambda tag, backend, progress=None: calls.append("install"))
 
     # Every catalog variant reads as staged.
     from hermes_cli.local_runtime.catalog import CATALOG
@@ -130,8 +125,8 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.local_runtime.bootstrap.staged_model_ids", lambda: all_ids)
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._download_job",
-        lambda job, plan: calls.append("download"))
+        "hermes_cli.web_routers.local_models.download_file",
+        lambda *a, **k: calls.append("download"))
     monkeypatch.setattr(
         "hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
         lambda config, force=False: None)
@@ -166,7 +161,7 @@ def quickstart_ready(monkeypatch):
     from hermes_cli.local_runtime.catalog import VariantChoice
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.engine_version", lambda: "b10679")
+        "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
     monkeypatch.setattr(
         "hermes_cli.local_runtime.catalog.select_variant",
         lambda entry, budget: VariantChoice(variant=entry.variants[0],

@@ -81,3 +81,16 @@ test('notifyError posts the full error to desktop.log, not the summary', () => {
     }
   }
 })
+
+test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', () => {
+  notifyError(
+    new Error(
+      'Error invoking remote method \'hermes:api\': Error: 503: {"detail":"Restart required: This process is running code from 08b4875f4a but the checkout on disk is now 48d2528066."}'
+    ),
+    'Could not load models'
+  )
+
+  expect(lastMessage()).toMatch(/running old code after an update/i)
+  expect(lastMessage()).not.toMatch(/hermes:api/)
+  expect(lastMessage()).not.toMatch(/systemctl/)
+})

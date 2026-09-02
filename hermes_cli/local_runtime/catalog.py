@@ -274,12 +274,27 @@ def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant,
 
 def recommended_entry(budget: HardwareBudget,
                       entries: "tuple[CatalogEntry, ...] | None" = None
-                      ) -> CatalogEntry | None:
-    """The catalog's default pick for THIS machine.
+                      ) -> "tuple[CatalogEntry, str] | None":
+    """The catalog's default pick for THIS machine, with its reason.
 
     Callers pass pre-filtered entries when some are ineligible for
     reasons the catalog can't know (engine too old); default is the full
-    catalog. Returns None only when nothing fits at all.
+    catalog. Returns (entry, reason) — the reason is a key the UI turns
+    into the Recommended badge's tooltip, so the rationale shown to the
+    user is the branch that actually fired, never a parallel explanation
+    that can drift:
+
+      best-quality-resident   quality won among resident entries that
+                              clear the pleasant floor
+      speed-gated-quality     same, but the floor eliminated a HIGHER
+                              quality candidate — the exact 'why not the
+                              big model?' a unified-memory owner asks
+      fastest-resident        nothing resident clears the floor; the
+                              quickest resident entry wins
+      least-painful-spilled   nothing runs resident; fastest from host
+                              memory (MoE by construction)
+
+    Returns None only when nothing fits at all.
     """
     pool = CATALOG if entries is None else entries
     fitting: list[tuple[CatalogEntry, VariantChoice]] = []
@@ -296,22 +311,27 @@ def recommended_entry(budget: HardwareBudget,
         if predicted_decode_tok_s(e, c.variant, budget) >= PLEASANT_FLOOR_TOK_S
     ]
     if pleasant:
-        return max(pleasant, key=lambda t: (t[0].quality, -t[1].variant.size_bytes))[0]
+        pick = max(pleasant, key=lambda t: (t[0].quality, -t[1].variant.size_bytes))[0]
+        floor_gated = any(e.quality > pick.quality for e, _ in resident)
+        return (pick, "speed-gated-quality" if floor_gated
+                else "best-quality-resident")
     if resident:
-        return max(resident,
+        pick = max(resident,
                    key=lambda t: predicted_decode_tok_s(t[0], t[1].variant, budget))[0]
+        return (pick, "fastest-resident")
     # Everything spills: take the least painful — fastest predicted decode
     # from host memory (MoE wins here by construction; a dense spill
     # streams every weight over the host bus).
-    return max(fitting,
+    pick = max(fitting,
                key=lambda t: predicted_decode_tok_s(t[0], t[1].variant, budget,
                                                     spilled=True))[0]
+    return (pick, "least-painful-spilled")
 
 
 def recommended_id(budget: HardwareBudget,
                    entries: "tuple[CatalogEntry, ...] | None" = None) -> str | None:
-    entry = recommended_entry(budget, entries)
-    return entry.id if entry is not None else None
+    picked = recommended_entry(budget, entries)
+    return picked[0].id if picked is not None else None
 
 
 # ── catalog data: packaged JSON, refreshed from GitHub in memory ─

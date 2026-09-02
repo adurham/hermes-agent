@@ -261,7 +261,7 @@ def _managed_server_idle() -> bool:
     try:
         from hermes_cli.local_runtime.supervisor import state_path
 
-        state = json.loads(state_path().read_text(encoding="utf-8-sig"))
+        state = json.loads(state_path().read_text(encoding="utf-8"))
         base = str(state.get("base_url", "")).rsplit("/v1", 1)[0]
         key = str(state.get("api_key", ""))
         if not base:

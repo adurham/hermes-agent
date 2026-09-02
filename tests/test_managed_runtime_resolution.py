@@ -210,8 +210,8 @@ def test_managed_node_helpers_exist(helper):
 
 
 def test_managed_uv_helpers_exist():
-    from pm import ensure, run, uv
+    from pm import ensure, env_for, uv
 
     assert callable(uv)
     assert callable(ensure)
-    assert callable(run)
+    assert callable(env_for)

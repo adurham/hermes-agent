@@ -208,6 +208,25 @@ describe('LocalModelsSettings', () => {
     expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
   })
 
+  it('explains the Recommended pick on hover', async () => {
+    // The tooltip is the resolver's own reason, and it must actually OPEN:
+    // Tip works by asChild-cloning hover handlers onto the pill, so a Pill
+    // that swallows its rest props kills the tooltip silently (the pill
+    // still renders, nothing appears on hover).
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...FITTING_MODEL, recommended_reason: 'speed-gated-quality' }]
+    })
+    await renderFullPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    fireEvent.pointerMove(screen.getByText('Recommended'))
+    fireEvent.pointerEnter(screen.getByText('Recommended'))
+
+    await waitFor(() =>
+      expect(screen.getAllByText(/would respond too slowly on its memory bandwidth/).length).toBeGreaterThan(0)
+    )
+  })
+
   it('enables downloads only once the runtime is installed', async () => {
     mocked.getLocalModelsStatus.mockResolvedValue({
       ...BASE_STATUS,

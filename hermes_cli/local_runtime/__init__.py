@@ -4,9 +4,8 @@ Hermes downloads, verifies, supervises, and updates one llama-server, and
 decides per machine which model build and context window to run. Key
 modules:
 
-- ``binaries``  — which backend build this machine runs (the binaries
-                  themselves are pm packages, in pm's machine-wide store)
-                  and where the runtime's own state lives.
+- ``binaries``  — resolve/download/verify official llama.cpp release zips
+                  into ``$HERMES_HOME/runtimes/llamacpp/<tag>/``.
 - ``supervisor``— spawn and supervise one llama-server in router mode;
                   readiness is a touch generation, never health-200 alone.
 - ``detect``    — find an already-running llama-server (external or ours).
@@ -21,8 +20,8 @@ Everything is driven by the ``local_runtime`` section of config.yaml.
 
 from hermes_cli.local_runtime.binaries import (  # noqa: F401
     BinaryResolutionError,
-    ensure_engine,
-    installed_backends,
+    ensure_runtime_installed,
+    resolve_assets,
     select_backend,
 )
 from hermes_cli.local_runtime.bootstrap import (  # noqa: F401

@@ -82,9 +82,12 @@ def test_explicit_max_tokens_forwarded_to_managed_local(managed_state, monkeypat
 
 
 def test_no_default_cap_policy_unchanged_for_remote(monkeypatch):
+    # A generic remote provider still drops the cap (the forwarding gate
+    # is an allow-list). openrouter no longer qualifies as the example
+    # here: main forwards its caps deliberately (#41035, 402 affordability).
     monkeypatch.setattr(aux, "_managed_local_cache", (0.0, ""))
     kwargs = aux._build_call_kwargs(
-        "openrouter", "some/model", [{"role": "user", "content": "hi"}],
+        "openai", "some/model", [{"role": "user", "content": "hi"}],
         max_tokens=64, timeout=30.0)
     assert "max_tokens" not in kwargs and "max_completion_tokens" not in kwargs
 

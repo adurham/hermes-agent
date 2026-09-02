@@ -5,6 +5,7 @@ import type { StatusbarItem } from '@/app/shell/statusbar-controls'
 import { getLocalHardware } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Activity } from '@/lib/icons'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import type { LocalHardware } from '@/types/hermes'
 
@@ -51,7 +52,10 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
   const { t } = useI18n()
   const copy = t.shell.statusbar.systemResources
   const hiddenIds = useStore($statusbarHiddenIds)
-  const shown = !hiddenIds.includes('system-resources')
+  // Behind the --local launch flag: without it the item is absent from the
+  // bar AND from the customize menu (no toggleLabel), and never polls.
+  const enabled = $localModelsEnabled.get()
+  const shown = enabled && !hiddenIds.includes('system-resources')
   const [hardware, setHardware] = useState<LocalHardware | null>(null)
 
   useEffect(() => {
@@ -113,7 +117,7 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
 
   return {
     detail: undefined,
-    hidden: false,
+    hidden: !enabled,
     icon: <Activity className="size-3" />,
     id: 'system-resources',
     label,
@@ -162,7 +166,7 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
         {hardware?.uma && <p className="text-[0.6875rem] text-muted-foreground">{copy.unifiedNote}</p>}
       </div>
     ),
-    toggleLabel: copy.toggle,
+    toggleLabel: enabled ? copy.toggle : undefined,
     variant: 'menu'
   }
 }

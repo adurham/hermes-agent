@@ -22,6 +22,7 @@ import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 }
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
@@ -180,8 +181,9 @@ function OAuthPicker({
         {p.intro}
       </p>
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
-      {/* Slot #2 — the no-account path, matching onboarding. */}
-      <LocalModelsProviderRow onClick={onWantLocalModels} />
+      {/* Slot #2 — the no-account path, matching onboarding. Behind the
+          --local launch flag like every local-models surface. */}
+      {$localModelsEnabled.get() && <LocalModelsProviderRow onClick={onWantLocalModels} />}
       {connected.length > 0 && (
         <>
           <GroupLabel>{p.connected}</GroupLabel>
@@ -513,7 +515,10 @@ export function ProvidersSettings({
   }
 
   if (view === 'local') {
-    return <LocalModelsSettings />
+    // Strict --local gate: without the launch flag the pane doesn't render
+    // even when local models are configured — a stale ?pview=local deep link
+    // (or an old shortcut) lands on the accounts view instead.
+    return $localModelsEnabled.get() ? <LocalModelsSettings /> : null
   }
 
   return (

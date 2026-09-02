@@ -24,6 +24,7 @@
 import { getLocalCatalog, getLocalModelsStatus } from '@/hermes'
 import type { Translations } from '@/i18n/types'
 import { LOCAL_SETUP_TIP_ID, localSetupDue, localSetupEligible } from '@/lib/tips/local-cta'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $connection } from '@/store/session'
 import { $retiredTips, $tipShownAt, dismissTip, showTip } from '@/store/tips'
 
@@ -46,6 +47,13 @@ export function resetLocalSetupOfferCache(): void {
  * and the moment is spent; false = the rotation's walk may have it.
  */
 export function offerLocalSetupTip(copy: Translations['tips'], openLocalModels: () => void): boolean {
+  // Local models ship behind the --local launch flag; without it there is
+  // no Local Models pane for the button to open, so the campaign never runs
+  // (and never spends a status/catalog read).
+  if (!$localModelsEnabled.get()) {
+    return false
+  }
+
   if ($retiredTips.get().includes(LOCAL_SETUP_TIP_ID)) {
     return false
   }

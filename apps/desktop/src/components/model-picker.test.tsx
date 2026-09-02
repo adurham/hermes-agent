@@ -4,6 +4,7 @@ import type { ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import type { LocalRuntimeJob, ModelOptionsResponse } from '@/types/hermes'
@@ -81,6 +82,8 @@ function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
 beforeEach(() => {
   vi.mocked(requestModelOptions).mockResolvedValue(OPTIONS)
   $localRuntimeJobs.set([])
+  // These suites exercise the local-models rows, which ship behind --local.
+  $localModelsEnabled.set(true)
 })
 
 afterEach(() => {

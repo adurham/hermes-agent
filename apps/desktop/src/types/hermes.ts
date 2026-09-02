@@ -1026,6 +1026,17 @@ export interface SkillInfo {
   provenance?: 'agent' | 'bundled' | 'hub'
 }
 
+/** One entry of the built-in optional-skills catalog (optional-skills/ in the
+ *  repo) — official skills that ship with Hermes but install on demand. */
+export interface OfficialSkillInfo {
+  category: string
+  description: string
+  identifier: string
+  installed: boolean
+  name: string
+  tags: string[]
+}
+
 export interface ToolsetInfo {
   configured: boolean
   description: string
@@ -1281,6 +1292,10 @@ export interface LocalCatalogModel {
   native_context: number
   native_context_label: string
   recommended: boolean
+  /** Why the resolver picked this entry (recommended rows only):
+   *  best-quality-resident | speed-gated-quality | fastest-resident |
+   *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
+  recommended_reason?: string | null
   downloaded: boolean
   downloaded_model_id?: string | null
   downloaded_quant?: string | null
@@ -1304,7 +1319,7 @@ export interface LocalRuntimeJob {
   kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
   target: string
   model_id: string | null
-  status: 'paused' | 'running' | 'done' | 'error'
+  status: 'running' | 'done' | 'error'
   phase: string
   detail: string
   total_bytes: number | null

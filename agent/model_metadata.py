@@ -1708,6 +1708,7 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
       - "context_length_exceeded: 131072"
       - "Maximum context size 32768 exceeded"
       - "model's max context length is 65536"
+      - "input token count is 32825 but model only supports up to 32768"
     """
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
@@ -1719,6 +1720,12 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
         r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
         r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
+        # Google Gemini/Gemma: "Unable to submit request because the input
+        # token count is 32825 but model only supports up to 32768." The
+        # limit is the number AFTER "supports up to" — the input count that
+        # precedes it must not be captured, so this pattern anchors on the
+        # "supports up to" phrase itself.
+        r'supports?\s+(?:only\s+)?up\s+to\s+(\d{4,})',
     ]
     for pattern in patterns:
         match = re.search(pattern, error_lower)
@@ -3951,6 +3958,8 @@ def capture_usage_anchor(
 def anchored_context_tokens(
     messages: List[Dict[str, Any]],
     anchor: Optional[Dict[str, Any]],
+    *,
+    charge_stale_thinking: bool = True,
 ) -> Optional[int]:
     """Context size anchored on the last provider-reported usage.
 
@@ -3960,6 +3969,13 @@ def anchored_context_tokens(
     estimation). The assistant reply produced by the anchored response
     (first appended message after the base) is skipped: its cost is already
     counted exactly by ``completion_tokens``.
+
+    ``charge_stale_thinking`` is forwarded to the delta estimate — pass
+    ``False`` to exclude transient ``reasoning``/``reasoning_content`` text
+    on all but the newest assistant message in the delta (the durable-
+    transcript view used by display surfaces; see the turn-base anchor in
+    ``agent/conversation_loop.py``). Default ``True`` preserves the
+    conservative full charge for request-size callers.
     """
     if not isinstance(anchor, dict) or not isinstance(messages, list):
         return None
@@ -3981,7 +3997,9 @@ def anchored_context_tokens(
             # completion_tokens above.
             delta = delta[1:]
     if delta:
-        total += estimate_messages_tokens_rough(delta)
+        total += estimate_messages_tokens_rough(
+            delta, charge_stale_thinking=charge_stale_thinking
+        )
     return total
 
 
