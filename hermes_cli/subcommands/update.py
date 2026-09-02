@@ -114,14 +114,14 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     update_parser.add_argument(
         "--set-channel",
         default=None,
-        choices=("main", "stable", "nightly"),
+        choices=("main", "stable", "canary"),
         metavar="CHANNEL",
         help=(
             "Persist the update channel for THIS install (recorded per "
             "install in config.yaml under update.installs). 'stable' tracks "
-            "tagged releases, 'main' the git main branch, 'nightly' the "
-            "nightly prereleases (desktop bundles only; source installs "
-            "normalize nightly to main). Installs whose updates an external "
+            "tagged releases, 'main' the git main branch, 'canary' the "
+            "canary prereleases (desktop bundles only; source installs "
+            "normalize canary to main). Installs whose updates an external "
             "steward owns (nix, docker, app stores) have no channel."
         ),
     )
@@ -137,7 +137,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     update_parser.add_argument(
         "--channel",
         default=None,
-        choices=("stable", "main", "nightly"),
+        choices=("stable", "main", "canary"),
         metavar="CHANNEL",
         help=(
             "Track CHANNEL for this run only (transient override; "
