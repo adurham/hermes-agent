@@ -947,26 +947,26 @@ class TestWindowsRuntimeSelfLock:
         doomed rename (provisioning + cutover) whenever the updater itself
         maps the live venv; the park then fails with WinError 5 and the user
         gets the misleading 'next update will retry' message forever."""
-        from hermes_cli import managed_uv
-        from hermes_cli.managed_uv import repair_vulnerable_runtime
+        from hermes_cli import runtime_repair as repair_mod
+        from hermes_cli.runtime_repair import repair_vulnerable_runtime
 
         root, live, sentinel, scripts_python = self._checkout(tmp_path)
         current = _runtime_info(scripts_python, (3, 50, 4))
-        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(repair_mod.platform, "system", lambda: "Windows")
         monkeypatch.setattr(sys, "executable", str(scripts_python))
 
         with patch(
-                 "hermes_cli.managed_uv._windows_runtime_holders",
+                 "hermes_cli.runtime_repair._windows_runtime_holders",
                  return_value=(False, ""),
              ), \
              patch(
-                 "hermes_cli.managed_uv.probe_sqlite_runtime",
+                 "hermes_cli.runtime_repair.probe_sqlite_runtime",
                  return_value=current,
              ), \
              patch(
-                 "hermes_cli.managed_uv._install_safe_python_generation"
+                 "hermes_cli.runtime_repair._install_safe_python_generation"
              ) as mock_install:
-            result = repair_vulnerable_runtime("uv", project_root=root)
+            result = repair_vulnerable_runtime(project_root=root)
 
         assert result.status == "skipped"
         assert "live venv" in result.detail
@@ -988,29 +988,29 @@ class TestWindowsRuntimeSelfLock:
         """The guard must fail OPEN when the updater runs from outside the
         venv — an always-firing deferral would recreate the never-converging
         loop this fix removes (#86735 class)."""
-        from hermes_cli import managed_uv
-        from hermes_cli.managed_uv import repair_vulnerable_runtime
+        from hermes_cli import runtime_repair as repair_mod
+        from hermes_cli.runtime_repair import repair_vulnerable_runtime
 
         root, live, sentinel, scripts_python = self._checkout(tmp_path)
         current = _runtime_info(scripts_python, (3, 50, 4))
-        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(repair_mod.platform, "system", lambda: "Windows")
         monkeypatch.setattr(
             sys, "executable", str(tmp_path / "outside" / "python.exe")
         )
 
         with patch(
-                 "hermes_cli.managed_uv._windows_runtime_holders",
+                 "hermes_cli.runtime_repair._windows_runtime_holders",
                  return_value=(False, ""),
              ), \
              patch(
-                 "hermes_cli.managed_uv.probe_sqlite_runtime",
+                 "hermes_cli.runtime_repair.probe_sqlite_runtime",
                  return_value=current,
              ), \
              patch(
-                 "hermes_cli.managed_uv._install_safe_python_generation",
+                 "hermes_cli.runtime_repair._install_safe_python_generation",
                  return_value=None,
              ) as mock_install:
-            result = repair_vulnerable_runtime("uv", project_root=root)
+            result = repair_vulnerable_runtime(project_root=root)
 
         assert result.status == "failed"
         assert "provision" in result.detail
@@ -1020,22 +1020,22 @@ class TestWindowsRuntimeSelfLock:
     def test_self_lock_is_a_noop_off_windows(self, tmp_path, monkeypatch):
         """POSIX renames work while the updater maps the venv, so the guard
         must stay Windows-only."""
-        from hermes_cli import managed_uv
+        from hermes_cli import runtime_repair as repair_mod
 
         root, live, sentinel, scripts_python = self._checkout(tmp_path)
-        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(repair_mod.platform, "system", lambda: "Linux")
         monkeypatch.setattr(sys, "executable", str(scripts_python))
 
-        locked, detail = managed_uv._windows_runtime_self_lock(live)
+        locked, detail = repair_mod._windows_runtime_self_lock(live)
         assert (locked, detail) == (False, "")
 
     def test_venv_launcher_ancestor_is_a_self_lock(self, tmp_path, monkeypatch):
         r"""The venv\Scripts\hermes.exe shim stays mapped while it waits for
         this child — an ancestor running from the venv blocks the rename too."""
-        from hermes_cli import managed_uv
+        from hermes_cli import runtime_repair as repair_mod
 
         root, live, sentinel, scripts_python = self._checkout(tmp_path)
-        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(repair_mod.platform, "system", lambda: "Windows")
         monkeypatch.setattr(
             sys, "executable", str(tmp_path / "outside" / "python.exe")
         )
@@ -1054,7 +1054,7 @@ class TestWindowsRuntimeSelfLock:
             ),
         )
         with patch.dict(sys.modules, {"psutil": fake_psutil}):
-            locked, detail = managed_uv._windows_runtime_self_lock(live)
+            locked, detail = repair_mod._windows_runtime_self_lock(live)
 
         assert locked
         assert "999" in detail
