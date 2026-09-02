@@ -101,10 +101,10 @@ def _anydoc() -> Optional[Any]:
         ):
             return None
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure
+            from pm import ensure_import
 
-            # prompt=False: read_file must never block on an install prompt.
-            _lazy_ensure("tool.doc_extract", prompt=False)
+            # read_file must never block on an install prompt.
+            ensure_import("doc-extract")
         except Exception:
             _anydoc_failed_at = time.monotonic()
             return None

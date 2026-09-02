@@ -123,8 +123,8 @@ except ImportError:
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
     # them out of every other install path. After install, re-import.
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.dashboard", prompt=False)
+        from pm import ensure_import
+        ensure_import("web")
         from fastapi import (
             FastAPI, File, Form, HTTPException, Query, Request, UploadFile,
             WebSocket, WebSocketDisconnect,
@@ -6588,52 +6588,23 @@ def _install_memory_provider_pip_dependencies(dependencies: List[str]) -> List[D
             _command_result(kind="pip", name=", ".join(dependencies), status="already_installed")
         ]
 
-    # Route through the lazy-install pipeline (tools.lazy_deps.install_specs)
-    # instead of shelling out to pip against sys.executable directly. That
-    # pipeline is environment-aware: on hosted/immutable images the agent venv
-    # under /opt/hermes is sealed read-only, and installs must be redirected
-    # to the writable durable target on the data volume
-    # (HERMES_LAZY_INSTALL_TARGET, e.g. /opt/data/lazy-packages) — the same
-    # path every lazy backend already uses. A direct `pip install --python
-    # sys.executable` on those images fails with a permission error (NS-605).
-    # install_specs also activates the target on sys.path post-install so the
-    # availability recheck below sees the new packages without a restart.
-    try:
-        from tools.lazy_deps import install_specs
-
-        outcome = install_specs(missing, timeout=240)
-    except Exception as exc:
-        return [
-            _command_result(
-                kind="pip",
-                name=", ".join(missing),
-                status="failed",
-                error=str(exc),
-            )
-        ]
-
-    if outcome.blocked:
-        return [
-            _command_result(
-                kind="pip",
-                name=", ".join(missing),
-                status="failed",
-                command=outcome.command,
-                error=outcome.reason,
-            )
-        ]
-
+    # The old tools.lazy_deps.install_specs pipeline is gone (pm migration).
+    # Arbitrary pip specs from memory-provider manifests are the legacy
+    # `pip_dependencies` surface: the install path is the plugin-deps
+    # workspace union (pm builds the workspace root, uv lock, uv sync
+    # --frozen), which runs from `hermes plugins install` / the pm sync
+    # step. Until that bridge wires THIS dashboard surface, report the
+    # exact manual remedy instead of an opaque import failure.
+    manual = f"uv pip install {' '.join(repr(d) for d in missing)}"
     return [
         _command_result(
             kind="pip",
             name=", ".join(missing),
-            status="installed" if outcome.ok else "failed",
-            command=outcome.command,
-            completed=subprocess.CompletedProcess(
-                args=outcome.command,
-                returncode=0 if outcome.ok else 1,
-                stdout=outcome.stdout,
-                stderr=outcome.stderr,
+            status="failed",
+            error=(
+                "Legacy pip_dependencies are not auto-installed from the "
+                f"dashboard yet. Run this in the hermes venv, then re-check: "
+                f"{manual}"
             ),
         )
     ]
