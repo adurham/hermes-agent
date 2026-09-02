@@ -7386,42 +7386,57 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             snapshot["cache_hit_pct"] = None
             snapshot["cache_hit_label"] = ""
 
-        # -- Rolling avg latency / velocity (last 10 calls) --
-        # Reads the deque maintained in agent/conversation_loop.py (and
+        # -- Rolling avg latency / velocity / TTFT (last 10 calls) --
+        # Reads the deques maintained in agent/conversation_loop.py (and
         # agent_init). Codex app-server has no latency, so it stays hidden there.
+        # `_api_latency_history` is DECODE-ONLY (full duration minus TTFT), so
+        # avg_velocity here is true decode throughput; full-wall latency lives
+        # in `_api_full_latency_history` and drives avg_latency unchanged.
         try:
             agent_obj = getattr(self, "agent", None)
             lhist = list(getattr(agent_obj, "_api_latency_history", []) or []) if agent_obj else []
             ohist = list(getattr(agent_obj, "_api_output_history", []) or []) if agent_obj else []
-            # Keep the two histories aligned (they are appended together).
+            flhist = list(getattr(agent_obj, "_api_full_latency_history", []) or []) if agent_obj else []
+            thist = list(getattr(agent_obj, "_api_ttft_history", []) or []) if agent_obj else []
+            # Keep the velocity/output histories aligned (appended together).
             n = min(len(lhist), len(ohist))
             if n:
                 lhist = lhist[-n:]
                 ohist = ohist[-n:]
-                # Simple mean for latency; sum/sum for velocity (true throughput, not mean of ratios).
-                avg_lat = sum(lhist) / len(lhist) if lhist else None
+                # Simple mean for latency (full wall); sum/sum for velocity
+                # (true decode throughput, not mean of ratios).
+                avg_lat = sum(flhist) / len(flhist) if flhist else None
                 total_out = sum(ohist)
                 total_lat = sum(lhist)
                 avg_vel = (total_out / total_lat) if total_lat > 0 else None
+                avg_ttft = (sum(thist) / len(thist)) if thist else None
                 # Guard against NaN / inf from weird provider timings (e.g. -0.8s in logs).
                 if avg_lat is not None and (avg_lat != avg_lat or avg_lat < 0 or avg_lat > 1e6):
                     avg_lat = None
                 if avg_vel is not None and (avg_vel != avg_vel or avg_vel < 0 or avg_vel > 1e6):
                     avg_vel = None
+                if avg_ttft is not None and (avg_ttft != avg_ttft or avg_ttft < 0 or avg_ttft > 1e6):
+                    avg_ttft = None
                 snapshot["avg_latency"] = float(avg_lat) if avg_lat is not None else None
                 snapshot["avg_latency_label"] = f"{avg_lat:.1f}s" if avg_lat is not None else ""
                 snapshot["avg_velocity"] = float(avg_vel) if avg_vel is not None else None
                 snapshot["avg_velocity_label"] = f"{avg_vel:.0f} t/s" if avg_vel is not None else ""
+                snapshot["avg_ttft"] = float(avg_ttft) if avg_ttft is not None else None
+                snapshot["avg_ttft_label"] = f"{avg_ttft:.1f}s" if avg_ttft is not None else ""
             else:
                 snapshot["avg_latency"] = None
                 snapshot["avg_latency_label"] = ""
                 snapshot["avg_velocity"] = None
                 snapshot["avg_velocity_label"] = ""
+                snapshot["avg_ttft"] = None
+                snapshot["avg_ttft_label"] = ""
         except Exception:
             snapshot["avg_latency"] = None
             snapshot["avg_latency_label"] = ""
             snapshot["avg_velocity"] = None
             snapshot["avg_velocity_label"] = ""
+            snapshot["avg_ttft"] = None
+            snapshot["avg_ttft_label"] = ""
         return snapshot
 
     def _get_status_bar_session_title(self) -> str:
@@ -8276,7 +8291,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ``frozenset`` of field names when the list is non-empty.
 
         Available fields: model, context_detail, context_pct, cache_hit,
-        latency, tps, compressions, bg_tasks, bg_processes, bg_subagents,
+        latency, tps, ttft, compressions, bg_tasks, bg_processes, bg_subagents,
         goal, duration, prompt_elapsed, idle_since, focus, yolo, stash,
         battery, title, total_tokens.
         ``total_tokens`` is opt-in only (never shown by default).
@@ -8411,6 +8426,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _avg_vel = snapshot.get("avg_velocity_label") or ""
             if _avg_vel and _ok("tps"):
                 parts.append(f"↑ {_avg_vel}")
+            _avg_ttft = snapshot.get("avg_ttft_label") or ""
+            if _avg_ttft and _ok("ttft"):
+                parts.append(f"⚡ {_avg_ttft} TTFT")
             if compressions and _ok("compressions"):
                 parts.append(f"🗜️ {compressions}")
             delta_label = self._format_context_delta(snapshot)
@@ -8597,6 +8615,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _avg_vel = snapshot.get("avg_velocity_label") or ""
                     if _avg_vel and _ok("tps"):
                         _append(frags, " │ ", ("class:status-bar-dim", f"↑ {_avg_vel}"))
+                    _avg_ttft = snapshot.get("avg_ttft_label") or ""
+                    if _avg_ttft and _ok("ttft"):
+                        _append(frags, " │ ", ("class:status-bar-dim", f"⚡ {_avg_ttft} TTFT"))
                     if compressions and _ok("compressions"):
                         _append(frags, " │ ", (self._compression_count_style(compressions), f"🗜️ {compressions}"))
                     delta_label = self._format_context_delta(snapshot)

@@ -3220,6 +3220,14 @@ def init_agent(
     from collections import deque as _deque
     agent._api_latency_history = _deque(maxlen=10)
     agent._api_output_history = _deque(maxlen=10)
+    # Decode-only TTFT store (per streamed call, appended only when a first
+    # delta actually fired) and the full-wall latency store that avg_latency
+    # reads. `_api_latency_history` holds decode-only time (see the FORK.md
+    # entry) so the velocity readout is true decode throughput; `_api_full_
+    # latency_history` keeps the unmodified call wall-clock for the latency
+    # readout, which deliberately stays full-wall.
+    agent._api_ttft_history = _deque(maxlen=10)
+    agent._api_full_latency_history = _deque(maxlen=10)
 
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.

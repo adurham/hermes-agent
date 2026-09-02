@@ -19179,20 +19179,23 @@ class _BareAgent:
 
 
 def test_get_usage_perf_readouts_present():
-    """cache_hit_pct / avg_latency_s / avg_tps mirror the classic CLI bar."""
+    """cache_hit_pct / avg_latency_s / avg_tps / avg_ttft_s mirror the classic CLI bar."""
     from collections import deque
 
     class _PerfAgent:
         model = "x"
         session_prompt_tokens = 27_873
         session_cache_read_tokens = 24_369
-        _api_latency_history = deque([2.1, 4.3], maxlen=10)
+        _api_latency_history = deque([5.1, 7.3], maxlen=10)        # decode-only
+        _api_full_latency_history = deque([2.1, 4.3], maxlen=10)   # full wall
         _api_output_history = deque([130, 190], maxlen=10)
+        _api_ttft_history = deque([0.7], maxlen=10)
 
     usage = server._get_usage(_PerfAgent())
     assert usage["cache_hit_pct"] == 87
-    assert usage["avg_latency_s"] == 3.2
-    assert usage["avg_tps"] == 50.0  # true throughput sum(out)/sum(lat), not mean of ratios
+    assert usage["avg_latency_s"] == 3.2   # full-wall mean, unchanged
+    assert usage["avg_tps"] == 25.8  # decode-only throughput (130+190)/(5.1+7.3)
+    assert usage["avg_ttft_s"] == 0.7
 
 
 def test_get_usage_perf_readouts_omitted_without_data():

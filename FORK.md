@@ -3,6 +3,40 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Decode-only status-bar velocity + separate TTFT metric — 2026-09-02
+
+**What this changes.** The status bar's throughput readout was wrong.
+`↑ N t/s` was computed as `sum(output_tokens) / sum(full_api_duration)`, but
+`full_api_duration` includes time-to-first-token — so on a 150K-prompt session
+the bar showed ~20–26 t/s while the engine actually decodes at ~33–34 t/s
+(TTFT was ~31% of call wall). Now the velocity is **decode-only**: the rolling
+`_api_latency_history` stores `max(full_duration − TTFT, 0.0)` per call, so
+`↑ N t/s` is true decode throughput, and TTFT gets its own readout
+(`⚡ 12.4s TTFT`) fed by a new per-call `_api_ttft_history` deque.
+
+**Why.** Throughput and latency are different numbers that the old formula
+conflated. Decode velocity answers "how fast does the engine emit tokens once
+it starts"; TTFT answers "how long until the first token". Mixing them
+understated speed on long-prompt sessions and made the bar useless for telling
+prefill/queue stalls apart from slow generation. The separate metrics make
+both readable at a glance.
+
+**Implementation.** `_api_ttft_history` is appended only when a first streamed
+delta actually fired (the composed `on_first_delta` callback records
+`time.time() − api_start_time` once per call; the per-attempt closure box is
+reset to None before each API call, so a later non-streaming or no-delta call
+never reuses a stale value and falls back to the full duration). A
+clock-skew guard floors decode time at 0.0 so a `ttft > duration` timing can
+never produce a negative latency.
+
+**Keep `avg_latency` as full wall.** The latency readout legitimately means
+call wall-clock, so it is NOT derived from the decode-only store: a second
+rolling deque (`_api_full_latency_history`) keeps the unmodified full duration
+and `avg_latency` / `avg_latency_s` read from it. The tui_gateway usage payload
+mirrors the same split (`avg_tps` becomes decode-only, `avg_latency_s` stays
+full-wall) and gains `avg_ttft_s`. Output-token accounting
+(`_api_output_history`) is byte-for-byte unchanged.
+
 ### Tavily kept keyed-only; removed from the default-on keyless ring — 2026-09-01
 
 **What happened and what this commit does.** The Tavily web-search provider

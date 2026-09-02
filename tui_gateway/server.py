@@ -7326,20 +7326,28 @@ def _get_usage(agent) -> dict:
     except Exception:
         pass
     try:
+        # `_api_latency_history` is DECODE-ONLY (full duration minus TTFT), so
+        # avg_tps below is true decode throughput; full-wall latency lives in
+        # `_api_full_latency_history` and drives avg_latency_s unchanged.
         _lhist = list(getattr(agent, "_api_latency_history", []) or [])
         _ohist = list(getattr(agent, "_api_output_history", []) or [])
+        _flhist = list(getattr(agent, "_api_full_latency_history", []) or [])
+        _thist = list(getattr(agent, "_api_ttft_history", []) or [])
         _n = min(len(_lhist), len(_ohist))
         if _n:
             _lhist = _lhist[-_n:]
             _ohist = _ohist[-_n:]
-            _avg_lat = sum(_lhist) / _n
+            _avg_lat = (sum(_flhist) / len(_flhist)) if _flhist else None
             _total_lat = sum(_lhist)
             _avg_vel = (sum(_ohist) / _total_lat) if _total_lat > 0 else None
+            _avg_ttft = (sum(_thist) / len(_thist)) if _thist else None
             # Guard NaN/negative/absurd values from odd provider timings.
-            if _avg_lat == _avg_lat and 0 < _avg_lat < 1e6:
+            if _avg_lat is not None and _avg_lat == _avg_lat and 0 < _avg_lat < 1e6:
                 usage["avg_latency_s"] = round(float(_avg_lat), 1)
             if _avg_vel is not None and _avg_vel == _avg_vel and 0 < _avg_vel < 1e6:
                 usage["avg_tps"] = round(float(_avg_vel), 1)
+            if _avg_ttft is not None and _avg_ttft == _avg_ttft and 0 <= _avg_ttft < 1e6:
+                usage["avg_ttft_s"] = round(float(_avg_ttft), 1)
     except Exception:
         # A status-bar readout must never break usage reporting.
         pass
