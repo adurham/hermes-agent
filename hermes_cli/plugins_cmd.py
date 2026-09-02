@@ -399,30 +399,69 @@ def _missing_requires_env_names(manifest: dict) -> list[str]:
     return [s["name"] for s in env_specs if s.get("name") and not get_env_value(s["name"])]
 
 
-def _print_python_dependencies(manifest: dict, console) -> None:
-    """Surface declared python_dependencies at install time (#64165).
+def _install_plugin_python_deps(
+    manifest: dict, target: Path, console
+) -> tuple[bool, Optional[str]]:
+    """Consent + try-resolve for plugin python deps (settled 2026-09-02).
 
-    Declaration seam ONLY — Hermes never auto-installs plugin pip
-    dependencies (isolation design deferred; see #64165 / #15220). We print
-    the declared requirements with a copy-pasteable install hint.
+    y/n prompt (auto-NO when non-interactive) → materialize the legacy
+    bridge if needed → resolve through the pm workspace union. Returns
+    (installed, reason): installed=True when the deps resolve; on
+    conflict the resolver's message is the reason. Never raises — the
+    caller keeps the plugin installed-but-disabled on failure.
     """
     deps = manifest.get("python_dependencies") or []
     if not isinstance(deps, list):
-        return
+        return True, None
     deps = [d.strip() for d in deps if isinstance(d, str) and d.strip()]
-    if not deps:
-        return
+    has_pyproject = (target / "pyproject.toml").is_file()
+    if not deps and not has_pyproject:
+        return True, None  # no declared python deps at all
+
     plugin_name = manifest.get("name", "this plugin")
     console.print(
-        f"\n[bold]{plugin_name}[/bold] declares Python dependencies "
-        "(not installed automatically):"
+        f"\n[bold]{plugin_name}[/bold] declares Python dependencies:"
     )
-    for dep in deps:
-        console.print(f"  - {dep}")
-    console.print(
-        "[dim]Install them yourself if needed: "
-        f"pip install {' '.join(repr(d) for d in deps)}[/dim]\n"
-    )
+    if deps:
+        for dep in deps:
+            console.print(f"  - {dep}")
+    else:
+        console.print("  - (declared in its pyproject.toml)")
+
+    # Non-interactive (pipelines, cron) or a decline → skip the install;
+    # the plugin still works if the deps happen to be importable.
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        console.print(
+            "[dim]Non-interactive install — skipping dependency install. "
+            "Run `hermes pm install` after enabling if the plugin needs "
+            "them.[/dim]\n"
+        )
+        return False, "dependency install skipped (non-interactive)"
+    try:
+        answer = input(
+            "  Install these into the Hermes venv now? [y/N]: "
+        ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer not in {"y", "yes"}:
+        console.print(
+            "[dim]Skipped — run `hermes pm install` later to install "
+            "them.[/dim]\n"
+        )
+        return False, "dependency install declined"
+
+    from pm.workspace import enabled_member_dirs, lock_and_sync, materialize_legacy_pyproject
+
+    try:
+        # Legacy manifest-only plugins need their generated pyproject before
+        # the union can see their deps.
+        materialize_legacy_pyproject(target)
+        # The plugin's own dir is a member candidate already (dropped by
+        # _install_plugin_core); union with the other enabled plugins.
+        lock_and_sync(enabled_member_dirs() or [target])
+    except Exception as exc:
+        return False, str(exc)
+    return True, None
 
 
 def _prompt_plugin_env_vars(manifest: dict, console) -> None:
@@ -1031,13 +1070,28 @@ def cmd_install(
 
     _prompt_plugin_env_vars(installed_manifest, console)
 
-    _print_python_dependencies(installed_manifest, console)
+    deps_ok, deps_reason = _install_plugin_python_deps(
+        installed_manifest, target, console
+    )
 
     _display_after_install(target, identifier)
 
     should_enable = enable
+    if should_enable and not deps_ok:
+        # Explicitly requested enable, but the deps failed to resolve:
+        # enabling would break the venv union on the next sync. Refuse
+        # with the resolver's reason.
+        console.print(
+            f"[red]✗[/red] Cannot enable [bold]{installed_name}[/bold]: "
+            f"its Python dependencies did not resolve: {deps_reason}"
+        )
+        console.print(
+            "[dim]The plugin stays installed but disabled; re-enable "
+            "after resolving the conflict.[/dim]"
+        )
+        should_enable = False
     if should_enable is None:
-        if sys.stdin.isatty() and sys.stdout.isatty():
+        if deps_ok and sys.stdin.isatty() and sys.stdout.isatty():
             try:
                 answer = input(
                     f"  Enable '{installed_name}' now? [y/N]: ",
@@ -1047,6 +1101,16 @@ def cmd_install(
                 should_enable = False
         else:
             should_enable = False
+            if not deps_ok:
+                console.print(
+                    f"[yellow]Plugin [bold]{installed_name}[/bold] installed "
+                    f"but NOT enabled — Python dependencies did not resolve:[/yellow]"
+                )
+                console.print(f"  [dim]{deps_reason}[/dim]")
+                console.print(
+                    "[dim]Re-enable after resolving the conflict "
+                    f"(hermes plugins enable {installed_name}).[/dim]\n"
+                )
 
     if should_enable:
         enabled = _get_enabled_set()
