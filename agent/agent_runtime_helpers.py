@@ -4678,10 +4678,16 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     ``agent.message_sanitization.apply_reasoning_content_policy`` (audit F4);
     this only supplies the agent's cached provider-direction flag.
     """
-    from agent.message_sanitization import apply_reasoning_content_policy
+    from agent.message_sanitization import (
+        apply_reasoning_content_policy,
+        omits_reasoning_pad_for_provider,
+    )
 
     apply_reasoning_content_policy(
-        source_msg, api_msg, agent._needs_thinking_reasoning_pad()
+        source_msg,
+        api_msg,
+        agent._needs_thinking_reasoning_pad(),
+        omit_pad=omits_reasoning_pad_for_provider(getattr(agent, "provider", None)),
     )
 
 
@@ -4714,10 +4720,15 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     Returns the number of assistant turns whose reasoning_content was added or
     removed.
     """
-    from agent.message_sanitization import reapply_reasoning_echo
+    from agent.message_sanitization import (
+        omits_reasoning_pad_for_provider,
+        reapply_reasoning_echo,
+    )
 
     return reapply_reasoning_echo(
-        api_messages, agent._needs_thinking_reasoning_pad()
+        api_messages,
+        agent._needs_thinking_reasoning_pad(),
+        omit_pad=omits_reasoning_pad_for_provider(getattr(agent, "provider", None)),
     )
 
 

@@ -3,6 +3,55 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### exo provider scoped reasoning_content pad omission (prefix-cache LCP fix) — 2026-09-02
+
+**What this changes.** The one-character space pad in assistant
+`reasoning_content` is no longer emitted when the target backend is exo. When
+an assistant turn carried no reasoning, the client previously persisted/forwards
+a single-space placeholder (`" "`) as `reasoning_content`. For exo specifically,
+the space is now omitted (the `reasoning_content` key is dropped entirely on
+empty/absent reasoning) while any genuine (non-whitespace) reasoning is still
+echoed verbatim. No other provider's behavior changes.
+
+**Why.** The exo inference server runs a prefix-cache optimization ("Fix B")
+that is defeated by that single space. On the next turn the prior assistant
+message is re-fed as input, so the pad lands at the FIRST position of the
+re-fed region; the longest-common-prefix (LCP) becomes 0 even though every
+remaining byte is identical. One inserted token forfeits an entire turn's cache
+reuse (~13% of turns hit this because a reasoning model frequently emits a
+text-only turn with no thinking).
+
+**Provider-scoped and fail-safe.** The change is keyed strictly off the client's
+already-resolved backend identity (`agent.provider == "exo"` / `"custom:exo"`).
+It is NOT a global config flag and NOT a blocklist. Unknown or unrecognized
+provider identities fail SAFE — every non-exo provider keeps today's pad/strip
+behavior byte-for-byte (verified: anthropic and a generic `custom` provider still
+strip the key exactly as before; ollama-cloud, being a DeepSeek require-side
+thinking mode, still emits `" "`).
+
+**Live verification (real exo server, identical requests, only the prior
+assistant message's `reasoning_content` differing):**
+* key ABSENT -> HTTP 200, `prompt_tokens=353`
+* key = `""` -> HTTP 200, `prompt_tokens=353` (renders byte-identically to ABSENT;
+  token-id lists are equal)
+* key = `" "` -> HTTP 200, `prompt_tokens=354` — exactly one extra inserted token
+  (id 223, a space) at index 294; removing it reproduces ABSENT exactly.
+
+The server's own prefix-cache accounting: `cached_tokens=351` for `""` (a cache
+hit against the absent-key prefix) vs `cached_tokens=0` for `" "` — the pad
+demonstrably destroys reuse. Both omitting the key and sending `""` are safe and
+equivalent on exo; we prefer OMITTING. No None/null artifacts appear when the
+key is absent.
+
+**Implementation.** Message-serialization-time, additive. A single exo predicate
+(`omits_reasoning_pad_for_provider`) gates the pad at the three reasoning_content
+emission points that can inject the space: `_build_assistant_message`
+(chat_completion_helpers), `apply_reasoning_content_policy` (message_sanitization,
+the F4 single owner replay/rebuild policy), and `reapply_reasoning_echo`
+(fallback re-pad). A whitespace-only stored value (the synthetic pad) is dropped
+on exo; genuine non-whitespace reasoning is copied verbatim, never stripped or
+trimmed.
+
 ### Decode-only status-bar velocity + separate TTFT metric — 2026-09-02
 
 **What this changes.** The status bar's throughput readout was wrong.

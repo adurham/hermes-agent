@@ -627,6 +627,7 @@ __all__ = [
     "stale_thinking_reaches_wire",
     "apply_reasoning_content_policy",
     "reapply_reasoning_echo",
+    "omits_reasoning_pad_for_provider",
 ]
 
 
@@ -922,14 +923,59 @@ def stale_thinking_reaches_wire(
     return needs_reasoning_echo(provider, model, base_url)
 
 
+# ---------------------------------------------------------------------------
+# exo reasoning_content pad omission — provider-scoped, fail-safe (F4 owner)
+# ---------------------------------------------------------------------------
+#
+# The exo inference server runs a prefix-cache optimization ("Fix B") that is
+# defeated when the client injects a single-space pad into the
+# ``reasoning_content`` field of assistant messages that carried no reasoning.
+# When that message is re-fed on the next turn the pad lands at the FIRST
+# position of the re-fed region, so the longest-common-prefix is 0 even though
+# the entire remaining output is byte-identical — one byte forfeits an entire
+# turn's cache reuse.
+#
+# Live evidence against the real exo server (identical requests, only the
+# prior assistant message's ``reasoning_content`` differing):
+#   (a) key ABSENT -> prompt_tokens=353
+#   (b) key = ""   -> prompt_tokens=353 (renders byte-identically to (a))
+#   (c) key = " "  -> prompt_tokens=354 (exactly one extra space token)
+# The server's own prefix-cache accounting: cached_tokens=351 for (b) (a hit
+# against (a)'s identical prefix) vs cached_tokens=0 for (c). Both omitting the
+# key AND sending "" are safe and equivalent on exo; we prefer OMITTING.
+#
+# This is NOT a global config flag and NOT a blocklist. It is provider-scoped:
+# only the exo backend identity (provider key ``exo`` / ``custom:exo``)
+# omits the pad; every other provider keeps today's behavior byte-for-byte
+# (unknown/unrecognized providers fail SAFE — the pad or strip they do today
+# is untouched).
+_EXO_PAD_OMIT_PROVIDERS = frozenset({"exo", "custom:exo"})
+
+
+def omits_reasoning_pad_for_provider(provider: Any) -> bool:
+    """True when the active provider should omit the single-space pad.
+
+    Provider-scoped to the exo backend (matching the client's resolved
+    provider identity). Only the exact ``exo`` / ``custom:exo`` provider keys
+    match — every other identity (including unknown/unrecognized providers)
+    keeps today's pad/strip behavior untouched.
+    """
+    return (provider or "").strip().lower() in _EXO_PAD_OMIT_PROVIDERS
+
+
 def apply_reasoning_content_policy(
-    source_msg: dict, api_msg: dict, needs_thinking_pad: bool
+    source_msg: dict,
+    api_msg: dict,
+    needs_thinking_pad: bool,
+    omit_pad: bool = False,
 ) -> None:
     """Copy provider-facing reasoning fields onto an API replay message.
 
     ``needs_thinking_pad`` is the require-side flag (see
     ``needs_reasoning_echo`` / the agent's cached
-    ``_needs_thinking_reasoning_pad``). Mutates ``api_msg`` in place.
+    ``_needs_thinking_reasoning_pad``). ``omit_pad`` (exo-specific) suppresses
+    the single-space pad injection while still preserving genuine
+    (non-pad) reasoning verbatim. Mutates ``api_msg`` in place.
     """
     if source_msg.get("role") != "assistant":
         return
@@ -956,9 +1002,16 @@ def apply_reasoning_content_policy(
     if isinstance(existing, str):
         if not needs_thinking_pad:
             api_msg.pop("reasoning_content", None)
+        elif omit_pad and not existing.strip():
+            # exo: the stored value is the synthetic single-space pad (or an
+            # empty string) — omit the key entirely so it can't defeat the
+            # server's prefix-cache LCP on the next turn's replay.
+            api_msg.pop("reasoning_content", None)
         elif existing == "":
             api_msg["reasoning_content"] = " "
         else:
+            # Genuine (non-whitespace) reasoning is echoed verbatim, even on
+            # exo — never stripped or trimmed.
             api_msg["reasoning_content"] = existing
         return
 
@@ -980,7 +1033,10 @@ def apply_reasoning_content_policy(
         and isinstance(normalized_reasoning, str)
         and normalized_reasoning
     ):
-        api_msg["reasoning_content"] = " "
+        if omit_pad:
+            api_msg.pop("reasoning_content", None)
+        else:
+            api_msg["reasoning_content"] = " "
         return
 
     # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
@@ -1004,8 +1060,13 @@ def apply_reasoning_content_policy(
     # Pro tightened validation and rejects empty string with HTTP 400
     # ("The reasoning content in the thinking mode must be passed back
     # to the API"). Refs #17341.
+    #   exo (omit_pad): the single space destroys the exo prefix cache's
+    # longest-common-prefix (LCP defeat); omit the key entirely instead.
     if needs_thinking_pad:
-        api_msg["reasoning_content"] = " "
+        if omit_pad:
+            api_msg.pop("reasoning_content", None)
+        else:
+            api_msg["reasoning_content"] = " "
         return
 
     # 5. reasoning_content was present but not a string (e.g. None after
@@ -1013,8 +1074,13 @@ def apply_reasoning_content_policy(
     api_msg.pop("reasoning_content", None)
 
 
-def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
+def reapply_reasoning_echo(
+    api_messages: list, needs_thinking_pad: bool, omit_pad: bool = False
+) -> int:
     """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
+
+    ``omit_pad`` (exo-specific) suppresses the single-space pad while keeping
+    the require-side reconciliation intact.
 
     ``api_messages`` is built once, before the retry loop, while the *primary*
     provider is active.  A mid-conversation fallback can then switch providers,
@@ -1049,7 +1115,7 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
         if needs_thinking_pad:
             if api_msg.get("reasoning_content"):
                 continue
-            apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad)
+            apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad, omit_pad)
             if api_msg.get("reasoning_content"):
                 changed += 1
         else:
