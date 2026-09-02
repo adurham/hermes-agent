@@ -807,10 +807,18 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
             )
     out["requires_plugins"] = deps
 
-    # python_dependencies — declared pip requirement strings. Validated and
-    # surfaced ONLY; never auto-installed (isolation design deferred).
+    # python_dependencies — declared pip requirement strings, installed via
+    # the pm workspace union (plugins install / pm sync). pip_dependencies
+    # is the legacy key for the same thing: parsed identically, warned.
     pydeps: List[str] = []
-    raw_pydeps = data.get("python_dependencies")
+    legacy_pydeps = data.get("pip_dependencies")
+    if legacy_pydeps:
+        logger.warning(
+            "Plugin %s: 'pip_dependencies' is deprecated — declare a "
+            "pyproject.toml (or 'python_dependencies') instead; the pm "
+            "bridge materializes it either way", key,
+        )
+    raw_pydeps = data.get("python_dependencies") or legacy_pydeps
     if raw_pydeps is not None and not isinstance(raw_pydeps, list):
         logger.warning(
             "Plugin %s: python_dependencies must be a list of requirement "
@@ -5138,18 +5146,29 @@ class PluginManager:
             )
 
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
-        """Surface declared pip dependencies (#64165).
+        """Bridge declared plugin pip deps onto the pm workspace union
+        (#64165's install seam, settled 2026-09-02).
 
-        python_dependencies is a declaration seam ONLY: Hermes validates and
-        prints the requirements with an install hint but NEVER auto-installs
-        them. The isolation design (constraints installs vs. vendored dirs
-        vs. conflict-detection-and-refusal) is an explicitly deferred
-        follow-up — see the round-2 review on #64165 and #15220.
+        ``python_dependencies`` (and legacy ``pip_dependencies`` — parsed
+        identically) are materialized into a generated pyproject.toml in
+        the plugin dir and installed by the pm venv-sync step through the
+        generated workspace root: one lock, conflict = loud refusal. The
+        materialization is idempotent and never runs when lazy installs
+        are disabled — then this remains a presence-check with a manual
+        hint (the frozen-bundle posture).
         """
         deps = manifest.python_dependencies
         if not deps:
             return
         key = manifest.key or manifest.name
+        plugin_dir = manifest.path
+        if plugin_dir:
+            try:
+                from pm.workspace import materialize_legacy_pyproject
+
+                materialize_legacy_pyproject(Path(plugin_dir))
+            except Exception:
+                logger.debug("Plugin %s: legacy pyproject bridge failed", key, exc_info=True)
         missing: List[str] = []
         for req in deps:
             # Best-effort presence probe on the distribution name.
@@ -5163,12 +5182,12 @@ class PluginManager:
             except Exception:
                 continue
         if missing:
-            logger.warning(
+            logger.info(
                 "Plugin %s declares Python dependencies that are not "
-                "installed: %s. Hermes does not install plugin dependencies "
-                "automatically; install them yourself, e.g.: pip install %s",
+                "installed yet: %s. The pm venv sync installs them "
+                "through the workspace union; to install now, run: "
+                "hermes pm install",
                 key, ", ".join(missing),
-                " ".join(f"'{m}'" for m in missing),
             )
         else:
             logger.debug(
