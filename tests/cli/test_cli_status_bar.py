@@ -1,4 +1,5 @@
 import time
+from collections import deque
 from copy import deepcopy
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -847,12 +848,15 @@ class TestRollingLatencyVelocity:
             prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
             api_calls=5, context_tokens=12_000, context_length=200_000,
         )
+        # _api_latency_history is decode-only (velocity); full-wall latency
+        # drives avg_latency. Same underlying full-wall values feed both here.
         self._with_history(cli_obj, [2.0, 4.0], [120, 180])
+        cli_obj.agent._api_full_latency_history = deque([2.0, 4.0], maxlen=10)
 
         text = cli_obj._build_status_bar_text(width=140)
 
-        assert "\u25f7 3.0s" in text           # mean latency (2+4)/2
-        assert "\u2191 50 t/s" in text          # true throughput 300/6.0
+        assert "\u25f7 3.0s" in text           # mean full-wall latency (2+4)/2
+        assert "\u2191 50 t/s" in text          # decode throughput 300/6.0
 
     def test_latency_hidden_without_history(self):
         cli_obj = _attach_agent(
@@ -863,6 +867,7 @@ class TestRollingLatencyVelocity:
         text = cli_obj._build_status_bar_text(width=140)
         assert "\u25f7" not in text
         assert "t/s" not in text
+        assert "TTFT" not in text
 
     def test_latency_and_tps_respect_field_filter(self):
         cli_obj = _attach_agent(
@@ -875,6 +880,7 @@ class TestRollingLatencyVelocity:
             text = cli_obj._build_status_bar_text(width=140)
         assert "\u25f7" not in text
         assert "t/s" not in text
+        assert "TTFT" not in text
 
     def test_negative_latency_guard(self):
         cli_obj = _attach_agent(
@@ -883,9 +889,39 @@ class TestRollingLatencyVelocity:
             api_calls=5, context_tokens=12_000, context_length=200_000,
         )
         self._with_history(cli_obj, [-0.8], [100])
+        cli_obj.agent._api_full_latency_history = deque([-0.8], maxlen=10)
         snapshot = cli_obj._get_status_bar_snapshot()
         assert snapshot["avg_latency"] is None
         assert snapshot["avg_velocity"] is None
+
+    def test_ttft_shown_when_history_present(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        # Velocity/latency histories must be non-empty so the snapshot block
+        # runs; TTFT rides along in the same snapshot computation.
+        self._with_history(cli_obj, [2.0, 4.0], [120, 180])
+        cli_obj.agent._api_full_latency_history = deque([2.0, 4.0], maxlen=10)
+        cli_obj.agent._api_ttft_history = deque([12.4], maxlen=10)
+        text = cli_obj._build_status_bar_text(width=140)
+        assert "\u26a1 12.4s TTFT" in text
+
+    def test_ttft_omitted_when_empty_history(self):
+        """Empty TTFT history must not raise or emit NaN/None/0.0s."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        self._with_history(cli_obj, [2.0, 4.0], [120, 180])
+        cli_obj.agent._api_full_latency_history = deque([2.0, 4.0], maxlen=10)
+        text = cli_obj._build_status_bar_text(width=140)
+        assert "TTFT" not in text
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["avg_ttft"] is None
+        assert snapshot["avg_ttft_label"] == ""
 
 
 class TestCacheHitBaselineReset:

@@ -1447,6 +1447,41 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
+def _append_status_history(
+    agent, api_duration, ttft_value, output_tokens
+):
+    """Record one API call into the status-bar rolling histories (last 10).
+
+    ``_api_latency_history`` holds DECODE-ONLY wall time (full duration minus
+    TTFT, floored at 0) so the velocity readout is true decode throughput; the
+    unmodified full-wall duration is kept in ``_api_full_latency_history`` for
+    the (still full-wall) avg_latency readout. TTFT is tracked separately in
+    ``_api_ttft_history`` — appended only when a ``ttft_value`` is not None
+    (i.e. a first delta actually fired), so non-streaming / no-delta calls
+    never pollute it. Output-token accounting is unchanged.
+    """
+    try:
+        full_dur = float(api_duration)
+        hist = getattr(agent, "_api_latency_history", None)
+        if hist is not None:
+            # Clock-skew guard: never negative, never > full call.
+            if ttft_value is not None:
+                hist.append(max(full_dur - ttft_value, 0.0))
+            else:
+                hist.append(full_dur)
+        fhist = getattr(agent, "_api_full_latency_history", None)
+        if fhist is not None:
+            fhist.append(full_dur)
+        ohist = getattr(agent, "_api_output_history", None)
+        if ohist is not None:
+            ohist.append(int(output_tokens or 0))
+        thist = getattr(agent, "_api_ttft_history", None)
+        if thist is not None and ttft_value is not None:
+            thist.append(ttft_value)
+    except Exception:
+        pass
+
+
 def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
@@ -3528,6 +3563,18 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
 
+                # Per-call time-to-first-token capture. Reset to None on every
+                # attempt (the closure is re-created each retry), so a later
+                # non-streaming / no-delta call never reuses a prior call's
+                # value. Composed in front of _stop_spinner so the spinner
+                # behavior is preserved unchanged.
+                _ttft_box = {"value": None}
+
+                def _on_first_delta():
+                    if _ttft_box["value"] is None:
+                        _ttft_box["value"] = max(time.time() - api_start_time, 0.0)
+                    _stop_spinner()
+
                 _use_streaming = True
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
@@ -3574,7 +3621,7 @@ def run_conversation(
                         )
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
-                            next_api_kwargs, on_first_delta=_stop_spinner
+                            next_api_kwargs, on_first_delta=_on_first_delta
                         )
                     from agent import relay_llm
 
@@ -4890,15 +4937,19 @@ def run_conversation(
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
                     # Rolling history for status-bar averages (last 10).
-                    try:
-                        hist = getattr(agent, "_api_latency_history", None)
-                        if hist is not None:
-                            hist.append(float(api_duration))
-                        ohist = getattr(agent, "_api_output_history", None)
-                        if ohist is not None:
-                            ohist.append(int(canonical_usage.output_tokens or 0))
-                    except Exception:
-                        pass
+                    # `_api_latency_history` stores DECODE-ONLY wall time (full
+                    # duration minus TTFT, floored at 0) so the velocity
+                    # readout is true decode throughput; full-wall duration is
+                    # kept in `_api_full_latency_history` for the (still
+                    # full-wall) avg_latency readout, and TTFT is tracked in
+                    # `_api_ttft_history`. Output-token accounting is
+                    # unchanged. See `_append_status_history`.
+                    _append_status_history(
+                        agent,
+                        api_duration,
+                        _ttft_box.get("value"),
+                        canonical_usage.output_tokens,
+                    )
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""
