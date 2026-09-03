@@ -3,6 +3,91 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Swarm-board single-slot race: heartbeat spam + frozen "0 tools" rows — 2026-09-03
+
+**Shared root cause.** `parent_agent._swarm_board` is a SINGLE SLOT, not a
+list. Any concurrent sibling `delegate_task()` call on the same parent
+overwrites it (`delegate_tool.py:5773`, `:5856`) and nulls it on exit
+(`:5797`). A PM-style orchestrator hits this hardest: its own nested
+`delegate_task` holds the slot for the entire time it is blocked waiting on
+its children. Trusting that slot as authoritative broke two independent
+consumers in two different ways.
+
+**Bug 1 — heartbeat suppression spammed scrollback while the board was
+rendering.** The heartbeat gate used the slot to decide "is a board visibly
+active right now, so plain-text heartbeat lines should be suppressed." While
+the slot pointed at a sibling's board (or was nulled mid-delegation), the
+gate concluded no board was active and force-emitted a heartbeat line every
+`_HEARTBEAT_FORCE_EMIT_CYCLES=4` × 30s cycle (i.e. every ~150s) even though
+the swarm board widget was on screen the whole time. **Fix:** a new
+`any_board_active()` helper in `tools/swarm_board.py` (~lines 436-461) asks
+the CLI host's authoritative `_swarm_boards` list — the same list the widget
+renders from — instead of trusting the single slot. The heartbeat gate
+(`delegate_tool.py` ~3193) and the completion-line gate (~4197) were switched
+to call it; the slot clear at exit (~5789) is now guarded so a call only
+clears its OWN board, never a sibling's.
+**Test:** `tests/tools/test_delegate_heartbeat_suppression.py` (new,
+passing) — proves heartbeats stay suppressed across a stolen/nulled slot
+while any board is genuinely on screen.
+
+**Bug 2 — orchestrator rows froze at "0 tools" after real tool calls.**
+`_current_board()` in `delegate_tool.py` (~lines 1596-1617) resolved the
+*target* board for row updates from the same single slot. `SwarmBoard.update()`
+returns silently when the row id isn't registered on the board it's called
+against (`swarm_board.py` ~697: `row = self._rows.get(subagent_id); if row is
+None: return`) — so every `board.update(subagent_id, tool_count=...,
+last_tool=..., status=...)` call at `delegate_tool.py:1840-1845`, issued while
+the slot pointed at a board that held no such row, was silently discarded.
+The row froze at its last pre-theft values ("running · 0 tools · thinking")
+for the rest of its life, while the row's *note* text kept updating because
+`make_child_print_fn` (`swarm_board.py:784`) captures the OWNING board by
+closure instead of going through the slot. Real-world symptom (live
+screenshot): a PM subagent showing `0 tools` after ~2 hours and dozens of
+actual tool calls. **Fix:** replaced `_current_board()` with a
+`_owns_our_row(board)` helper plus an ownership-matching `_current_board()`
+that treats the slot as a hint, not the authority — it first checks whether
+the slotted board actually carries this row (`get_rows_snapshot()` contains
+`subagent_id`), and if not, falls back to scanning the CLI host's
+authoritative `_swarm_boards` list for whichever board does own the row.
+Deliberately not memoised, since the same two liveness signals are also how
+teardown is observed.
+**Test:** `tests/tools/test_swarm_board_orchestrator_tool_count.py` (new, 6
+tests) — proves tool counts survive both a concurrent sibling dispatch
+stealing the slot and the row owner's own nested delegation stealing its own
+slot; RED pre-fix (`2 failed, 4 passed`), GREEN post-fix (`6 passed`).
+
+**Fix direction, shared.** Both fixes route AROUND the racy single slot by
+asking the CLI host's `_swarm_boards` list — one by liveness (any board
+showing), one by row ownership (this specific row) — rather than trusting
+whichever board happens to be parked in `parent_agent._swarm_board` at call
+time.
+
+**Known residual limitation.** `parent_agent._swarm_board` remains a single
+per-agent attribute, not a list/dict, and is still structurally unsafe for
+concurrent dispatch — documented in a NOTE at `delegate_tool.py:5739-5754`.
+Both fixes here are targeted workarounds for the two consumers that were
+provably broken by it; they do not replace the slot itself. A future fix
+should turn it into a keyed collection so no caller has to route around it.
+
+**Verification.**
+* `tests/tools/test_swarm_board_orchestrator_tool_count.py`: RED pre-fix
+  `2 failed, 4 passed in 0.76s`; GREEN post-fix `6 passed in 0.77s`.
+* Full targeted suite (`test_swarm_board.py`,
+  `test_swarm_board_orchestrator_tool_count.py`,
+  `test_delegate_heartbeat_suppression.py`, `test_delegate.py`):
+  `3 failed, 199 passed in 8.39s`. The 3 failures
+  (`TestDelegateRequirements::test_dynamic_limits_moved_to_param_descriptions`,
+  `TestDelegateRequirements::test_schema_valid`,
+  `TestOrchestratorRoleSchema::test_schema_no_longer_advertises_role`) are
+  pre-existing and unrelated: they assert `DELEGATE_TASK_SCHEMA` no longer
+  advertises `role`/`output_schema`, and neither of these two fixes touches
+  schema construction — confirmed by diffing `pyflakes` output against the
+  unmodified HEAD copies of both files (byte-identical warning sets, only
+  shifted line numbers from the added code).
+* `pyflakes tools/delegate_tool.py tools/swarm_board.py`: 8 warnings, all
+  8 present and identical at HEAD before this change — zero new
+  undefined-name or unused-import errors introduced.
+
 ### Canonical exo serializer + golden byte contract (wire-payload serialization stability) — 2026-09-03
 
 **What this changes.** A new module (`agent/exo_canonical_serializer.py`)
