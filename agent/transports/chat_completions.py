@@ -378,7 +378,19 @@ class ChatCompletionsTransport(ProviderTransport):
           gateways (e.g. opencode-go, codex.nekos.me) reject with
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
+        - For the exo provider (``provider`` kwarg, exact ``exo`` /
+          ``custom:exo``), messages are additionally rebuilt in a frozen
+          byte-stable key order and any whitespace-only
+          ``reasoning_content`` pad is omitted — see
+          ``agent.exo_canonical_serializer`` for the prefix-cache contract.
+          Every other provider's output is byte-for-byte unchanged; pass
+          ``provider=None`` (the default) to opt out entirely.
         """
+        from agent.exo_canonical_serializer import canonicalize_exo_messages
+
+        provider = kwargs.get("provider")
+        if provider is not None:
+            messages = canonicalize_exo_messages(messages, provider)
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )
@@ -587,7 +599,12 @@ class ChatCompletionsTransport(ProviderTransport):
         # Codex sanitization: drop reasoning_items / call_id / response_item_id.
         # Pass model so the Gemini thought_signature (extra_content) is kept for
         # Gemini targets and stripped for strict non-Gemini providers.
-        sanitized = self.convert_messages(messages, model=model)
+        # Pass provider so the exo canonical serializer (byte-stable key
+        # order + pad omission) is applied at this last-touch chokepoint —
+        # no-op for every non-exo provider.
+        sanitized = self.convert_messages(
+            messages, model=model, provider=params.get("provider")
+        )
 
         # ── Provider profile: single-path when present ──────────────────
         _profile = params.get("provider_profile")

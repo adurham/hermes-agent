@@ -3,6 +3,89 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Canonical exo serializer + golden byte contract (wire-payload serialization stability) — 2026-09-03
+
+**What this changes.** A new module (`agent/exo_canonical_serializer.py`)
+defines `canonicalize_exo_messages(messages, provider)`: for the exo backend
+it rebuilds every outgoing message dict in a frozen, explicit field order
+(`role, content, reasoning_content, tool_calls, tool_call_id, name`; nested
+`tool_calls` entries as `id, type, function` with `function` as
+`name, arguments`; unknown/extra keys after the known ones, sorted by name —
+never by dict insertion order) and omits any whitespace-only
+`reasoning_content` (the single-space pad) at the wire. It is wired in at the
+last-touch chokepoint — `ChatCompletionsTransport.convert_messages` — via a
+new defaulted `provider` kwarg threaded from `build_kwargs` (`params.get`
+only; both `build_api_kwargs` chat_completions call sites now pass
+`provider=agent.provider`). Every non-exo provider's messages are returned
+UNMODIFIED (same list object) — the fail-safe is non-negotiable and exact:
+`"exonerate"`, `"exo-foo"`, `"my-exo"` are not exo; only `exo` / `custom:exo`
+match, via the SAME shared predicate (`omits_reasoning_pad_for_provider`)
+every build site already uses — there is exactly one place that decides the
+pad question.
+
+**Why.** The exo server's prompt prefix cache is keyed by a NEAR-EXACT match
+on the serialized request body with only ~2 trailing tokens of tolerance. A
+round-4 audit against the live cluster proved the sensitivity empirically:
+6 of 9 tested serialization variants zeroed `cached_tokens` for the ENTIRE
+prompt. Any byte delta — a reordered JSON field, an injected whitespace, a
+placeholder value — silently forfeits the whole cached prefix (no error, just
+a cost/latency regression). Python dicts preserve insertion order and the
+client's build sites insert the same keys in different orders, so dict
+insertion order is NOT a stable serialization key; nothing on the repo-side
+wire path sorts keys (the `sort_keys=True` at chat_completions.py:103 feeds
+the prompt-cache-KEY hash, not the wire encoder). Round 3 (bdc9b6f1fc) fixed
+one instance of this class (the `" "` pad); this change makes the general
+property a CI-enforced CODE CONTRACT instead of a convention.
+
+**Golden byte test suite** (`tests/agent/test_exo_canonical_serializer.py`):
+* (a) idempotency/stability — every fixture serialized from two inputs built
+  with DIFFERENT dict insertion orders yields byte-identical output (this is
+  the test that proves canonicalization, not mere determinism), including
+  reordered nested `tool_calls` dicts.
+* (b) six frozen golden fixtures — no-reasoning turn, reasoning turn,
+  tool-call turn, multi-turn, message-ordering variant, pad-strip turn — each
+  pinned to an exact expected byte string; any field-order or whitespace
+  drift turns CI red.
+* (c) drift detector — reordered fields, injected whitespace, and reordered
+  nested tool_calls are asserted to DIFFER from the golden bytes, proving the
+  fixtures would have caught the round-4 failure class.
+* (d) fail-safe — non-exo providers keep current behavior byte-for-byte
+  (including the `" "` pad a require-side provider expects), and the exo
+  match is proven EXACT against lookalike provider strings.
+* The suite also proves the WIRED path (transport `build_kwargs` with
+  `provider="exo"`) produces bytes identical to the serializer's — the wiring
+  itself is under contract, not just the function.
+
+**Mutation check (test-has-teeth proof).** With the serializer's ordering
+guarantee deliberately neutered (keys emitted in REVERSED order), the suite
+went red exactly as designed:
+`FAILED tests/agent/test_exo_canonical_serializer.py::TestGoldenFixtures::test_exact_bytes[multi_turn]`
+(8 failed, 21 passed — every golden fixture and both wiring-equivalence
+tests caught the mutation; `E At index 3 diff: b'c' != b'r'`). Restored, the
+suite is green again: `29 passed in 0.54s`.
+
+**Implementation.** Purely additive: the serializer is a new module;
+`convert_messages` (which already took `**kwargs`) reads the new defaulted
+`provider` kwarg; `build_kwargs` forwards `params.get("provider")`; the two
+chat-completions `build_api_kwargs` call sites pass
+`provider=getattr(agent, "provider", None)`. No existing function signature
+changed shape for existing callers — every new parameter has a default and
+zero call sites had to be updated to preserve current behavior. The pad
+omission at the serializer reuses the shipped predicate and enforces the
+SAME invariant the strip logic already applied upstream (whitespace-only →
+key omitted; genuine reasoning verbatim) — the shipped strip sites are
+untouched and this chokepoint is last-touch defense-in-depth.
+
+**Verification.**
+* New suite: `29 passed in 0.54s`.
+* Existing reasoning suite (sanitization policy + all exo/reasoning suites):
+  `121 passed in 1.95s` — equal to the HEAD baseline, zero failures.
+* `ruff check` on all four changed files: `All checks passed!`.
+* basedpyright: 111 errors across the 3 touched agent files — byte-identical
+  error multiset to the HEAD baseline (verified by diffing file:col:rule
+  normalized sets); new serializer module 0 errors, new test file 0 errors.
+  Delta: ZERO new errors.
+
 ### exo provider scoped reasoning_content pad omission (prefix-cache LCP fix) — 2026-09-02
 
 **What this changes.** The one-character space pad in assistant
