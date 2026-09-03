@@ -141,6 +141,7 @@ def consult_tool(
     context: Optional[str] = None,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    effort: Optional[str] = None,
 ) -> str:
     """
     Ask a configured reference model (``auxiliary.consult``) for a second
@@ -165,6 +166,15 @@ def consult_tool(
                   model still uses the configured ``auxiliary.consult.model``
                   for that provider (or that provider's default consult model
                   when no consult model is configured).
+        effort:   Optional one-call reasoning-effort override (e.g. "low",
+                  "high", "max", or "none"/"off" to disable thinking for
+                  this call). Parsed with the same ``parse_reasoning_effort``
+                  helper used for ``auxiliary.<provider>.consult.
+                  reasoning_effort`` in config.yaml, and takes priority over
+                  that config value for this call only -- config is
+                  untouched. An unparseable value is ignored (logged) and
+                  the configured/default effort is used instead, same as an
+                  invalid config value would be.
 
     Returns:
         JSON string. On success: ``{"unavailable": false, "answer": "..."}``.
@@ -222,6 +232,21 @@ def consult_tool(
 
     from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
+    reasoning_config = None
+    if effort is not None and str(effort).strip():
+        from hermes_constants import parse_reasoning_effort
+
+        reasoning_config = parse_reasoning_effort(effort)
+        if reasoning_config is None:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "consult_tool: effort=%r is not a valid level (none, "
+                "minimal, low, medium, high, xhigh, max, ultra) -- "
+                "ignoring, falling back to configured/default effort.",
+                effort,
+            )
+
     try:
         response = call_llm(
             task="consult",
@@ -229,6 +254,7 @@ def consult_tool(
             model=model,
             messages=messages,
             max_tokens=2000,
+            reasoning_config=reasoning_config,
         )
     except Exception as exc:
         return json.dumps(
@@ -387,6 +413,20 @@ CONSULT_SCHEMA = {
                     "is configured)."
                 ),
             },
+            "effort": {
+                "type": "string",
+                "description": (
+                    "Optional: reasoning-effort override for this ONE call "
+                    "(e.g. \"low\", \"medium\", \"high\", \"max\", or "
+                    "\"none\"/\"off\" to disable thinking). Takes priority "
+                    "over the configured auxiliary.<provider>.consult."
+                    "reasoning_effort for this call only -- config is "
+                    "untouched. Use this to save latency/cost with a lower "
+                    "effort on a simple sanity check, or force max effort "
+                    "on a genuinely hard judgment call regardless of the "
+                    "configured default."
+                ),
+            },
         },
         "required": ["question"],
     },
@@ -405,6 +445,7 @@ registry.register(
         context=args.get("context"),
         model=args.get("model"),
         provider=args.get("provider"),
+        effort=args.get("effort"),
     ),
     check_fn=check_consult_requirements,
     emoji="🧭",
