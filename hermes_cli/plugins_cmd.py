@@ -1266,6 +1266,28 @@ def cmd_update(name: str) -> None:
     # __pycache__ compiled from the previous revision.
     _clear_plugin_bytecode(target)
 
+    # Member-manifest plugins: the pull may have changed its pyproject
+    # pins — re-sync the union so new deps land (Task 5, plugin
+    # auto-update plan). The venv stamp now includes member pyproject
+    # CONTENT (Task 4), so a pins change forces the re-lock; a
+    # content-identical pull is a no-op stamp match. Failures surface
+    # the resolver's message (conflict = loud refusal, bisect +
+    # write-back ride the shipped sync path) but never fail the update
+    # itself — the plugin code is already updated.
+    if (target / "pyproject.toml").is_file():
+        try:
+            import pm
+            pm.sync_venv(explicit=True)
+        except Exception as exc:
+            console.print(
+                f"[yellow]⚠[/yellow] Dependency re-sync failed for "
+                f"{name}: {exc}"
+            )
+            console.print(
+                "[dim]The plugin code updated; run `hermes pm install` "
+                "to retry the dependency sync.[/dim]"
+            )
+
     # Copy any new .example files
     _copy_example_files(target, console)
 
