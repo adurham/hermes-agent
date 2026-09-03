@@ -3,6 +3,60 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### CC identity refresh: stale 2.1.138 billing header broke fable-class consult (version gate) — 2026-09-03
+
+**What this changes.** The OAuth-path identity pair captured July 2026
+(CC 2.1.138) had aged out: Anthropic added a per-model minimum client-
+version gate that reads the `x-anthropic-billing-header` system block —
+not the user-agent — and fable-class models now require `cc_version` ≥
+2.1.251. Every anthropic-OAuth request 400'd with
+`claude_code_version_too_old` ("Claude Code 2.1.138 does not support this
+model; version 2.1.251 or newer is required"), while the dynamically
+detected UA already said 2.1.259. `mcp__consult`'s primary (fable) failed
+silently into its fallback; the aux fallback masked it. Refreshed the
+captured pair in lockstep per the code's own recipe
+(`scripts/refresh_cc_canonical.sh`, mitmdump against a live CC 2.1.259
+session): the header literal at `agent/anthropic_adapter.py` ~3933 is now
+`cc_version=2.1.259.910; cc_entrypoint=sdk-cli; cch=1d247;
+cc_prompt_id=4c664b24-...` (the two new fields CC now sends are kept
+verbatim with the pair they were captured with), and
+`_CLAUDE_CODE_VERSION_FALLBACK` (no-CLI-installed UA fallback) went
+2.1.138 → 2.1.259. The script also re-wrote `agent/cc_canonical/
+tools_eager.json` from the same capture: CC 2.1.259's eager set is 12
+tools — Agent, Bash, Edit, ListAgents, Read, ReportFindings,
+ScheduleWakeup, Skill, ToolSearch, Workflow, DeferredToolPlaceholder,
+Write. Grep/Glob/AskUserQuestion/ShareOnboardingGuide moved to deferred.
+Outbound `search_files`→`Grep` substitution now pass-through (Grep absent
+from eager set); inbound `Grep`→`search_files` still routes via
+`CC_TO_HERMES`, which is derived from `HERMES_TO_CC`, not the JSON.
+
+**Root cause, not mitigation.** The first subagent that looked at this
+misdiagnosed it as a stale `_detect_claude_code_version()` process cache
+and concluded "no fix needed" — wrong: the detected CLI version was
+always fine (2.1.259); the frozen *header* literal was the defect. Any
+retry/cache-refresh mitigation was rejected; the refresh is the actual
+contract the comment block prescribes ("Refresh both values in lockstep
+when CC ships a major version change").
+
+**Verification.**
+* Wire A/B (same OAuth token, UA pinned 2.1.259, same request body,
+  only the header block varies): old header → HTTP 400
+  `claude_code_version_too_old` … 2.1.251 or newer required; new header →
+  HTTP 200 from `claude-fable-5-1`. Reproduced both directions.
+* `tests/agent/test_anthropic_adapter.py` 144 passed.
+* `tests/agent/test_cc_aliases.py`,
+  `tests/run_agent/test_repair_tool_call_name.py`,
+  `tests/agent/test_anthropic_mcp_prefix_strip.py`,
+  `tests/tools/test_file_tools.py`: 118 passed, 2 skipped; the 2
+  `test_file_tools.py` failures are pre-existing APFS `/tmp` vs
+  `/private/tmp` artifacts (proven by failing identically with the
+  change stashed) and unrelated to this work.
+* Live capture pipeline proven end-to-end twice (two captures, both
+  got cch + cc_prompt_id; both rotate per prompt — noted in the code
+  comment so the next refresh keeps the captured pair verbatim).
+* Fable consult from a fresh process verified against the runtime tree
+  after deploy (see below).
+
 ### Swarm-board per-agent slot → keyed active-board registry (structural fix) — 2026-09-03
 
 **Decision: REDESIGN, not justify.** The follow-up to `5cd6452577` asked

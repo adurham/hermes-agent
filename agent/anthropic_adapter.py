@@ -731,8 +731,10 @@ _OAUTH_ONLY_BETAS = [
 # "You're out of extra usage" — a misleading billing-tier message that
 # actually signals the user-agent version is rejected. Bump this constant
 # whenever you notice deployments without Claude Code installed start to
-# 400 inexplicably.
-_CLAUDE_CODE_VERSION_FALLBACK = "2.1.138"
+# 400 inexplicably. 2026-09-03: raised 2.1.138 → 2.1.259 — Anthropic's
+# per-model version gate now requires >=2.1.251 (observed on fable-class
+# models), so the no-CLI fallback constant must clear that bar too.
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.259"
 _claude_code_version_cache: Optional[str] = None
 
 
@@ -3922,18 +3924,27 @@ def build_anthropic_kwargs(
     # WITH it (and matching CC tool surface via ``cc_aliases``), the
     # classifier accepts ~50K-byte requests as plan-budget traffic.
     #
-    # Captured from a live `claude` session via mitmdump (CC 2.1.138).
-    # cc_version is intentionally hardcoded rather than read from
-    # _detect_claude_code_version() because the classifier may
-    # validate the cch checksum against the (cc_version, prompt
-    # content) pair — using a different cc_version with a stale cch
-    # could fail validation. Refresh both values in lockstep when CC
-    # ships a major version change; see scripts in /tmp/cc-flows.har
-    # for the capture recipe.
+    # Captured from a live `claude` session via mitmdump (CC 2.1.259,
+    # 2026-09-03). cc_version is intentionally hardcoded rather than
+    # read from _detect_claude_code_version() because the classifier
+    # may validate the cch checksum against the (cc_version, …) pair —
+    # using a different cc_version with a stale cch could fail
+    # validation. cch and cc_prompt_id rotate per prompt in real CC
+    # (two same-build captures yielded different values for both);
+    # the captured pair is kept verbatim and self-consistent, since cch
+    # is presumed to bind to the cc_prompt_id it was captured with.
+    # Anthropic now ALSO enforces a per-model minimum cc_version gate
+    # that reads THIS header, not the user-agent: observed 2026-09-02,
+    # fable-class models require >=2.1.251 and 400 with "Claude Code
+    # 2.1.138 does not support this model" while the dynamically
+    # detected UA already said 2.1.259. Refresh the captured line in
+    # lockstep via scripts/refresh_cc_canonical.sh whenever CC ships
+    # a version change or the classifier starts rejecting again.
     if is_oauth and isinstance(system, list):
         _BILLING_HEADER_TEXT = (
-            "x-anthropic-billing-header: cc_version=2.1.138.de9; "
-            "cc_entrypoint=sdk-cli; cch=fa6a6;"
+            "x-anthropic-billing-header: cc_version=2.1.259.910; "
+            "cc_entrypoint=sdk-cli; cch=1d247; "
+            "cc_prompt_id=4c664b24-af7a-4d59-9d69-91cb0017fe8b;"
         )
         # Insert at index 0 unless one's already there (idempotent
         # against double-application, which would happen e.g. on a
