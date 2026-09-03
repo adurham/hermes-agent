@@ -15020,3 +15020,45 @@ live install's venv (`~/.hermes/hermes-agent/.venv`); did not run the fork's
 test suite this session — `tests/hermes_cli/test_curator*.py` is the
 relevant target for a follow-up regression test asserting `_cmd_run` calls
 `hot_tier_audit.run_hot_tier_audit` when the config flag is set.
+
+## 2026-09-02: `consult` tool gains a per-call `effort` override
+
+`consult`'s `model`/`provider` parameters already let a caller bypass the
+configured `auxiliary.<provider>.consult` model for a single call without
+touching config.yaml. There was no equivalent for reasoning depth — effort
+could only be set globally via `auxiliary.<provider>.consult.reasoning_effort`
+in config, so lowering it for a cheap sanity check or forcing max for a
+genuinely hard judgment call both required editing config.yaml.
+
+**Fix:** `tools/consult_tool.py::consult_tool()` takes a new optional
+`effort: Optional[str] = None` parameter, parsed with the existing
+`hermes_constants.parse_reasoning_effort()` helper (same parser
+`_get_task_extra_body()` already uses for the config-level
+`auxiliary.<task>.reasoning_effort` shorthand — valid levels: none, minimal,
+low, medium, high, xhigh, max, ultra). The parsed `{"enabled": ..., "effort":
+...}` dict is passed straight through to
+`agent.auxiliary_client.call_llm(..., reasoning_config=...)`, which already
+prioritizes an explicit `reasoning_config` over the task's config-derived
+`extra_body.reasoning` at both the generic `_build_call_kwargs` layer and the
+Anthropic-specific `_reasoning_config` private-kwarg path (see
+`AnthropicAuxiliaryClient.create`'s "Reasoning priority" comment) — no
+downstream change needed, `call_llm` already had the plumbing, `consult_tool`
+just wasn't using it. An unparseable `effort` value logs a warning and is
+ignored (falls back to config/default), matching the existing behavior for
+an invalid config-level `reasoning_effort` string. `CONSULT_SCHEMA` gained an
+`effort` property (optional, still only `question` required) and the
+registry handler forwards `args.get("effort")`.
+
+Verified: `.venv/bin/python -m pytest tests/tools/test_consult_tool.py -q`
+— 36 passed (27 pre-existing + 9 new `TestConsultToolEffortOverride` cases
+covering: no-override passes `reasoning_config=None`; `effort="max"` forwards
+`{"enabled": True, "effort": "max"}`; `effort="none"` forwards `{"enabled":
+False}`; an invalid value is ignored without raising and the call still
+succeeds; empty-string `effort` is treated as no override; `effort` composes
+with a `model` override; registry dispatch forwards `effort`; schema declares
+`effort` as optional). Also ran `tests/agent/ -k reasoning` (236 passed) to
+confirm no regression in the shared `parse_reasoning_effort` /
+`reasoning_config` plumbing this reuses. System Python is 3.9 and cannot
+import this repo (`X | Y` runtime type syntax needs 3.11+); all runs used the
+repo's own `.venv/bin/python` (3.11).
+

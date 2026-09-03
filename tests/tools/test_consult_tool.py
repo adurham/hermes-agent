@@ -297,3 +297,96 @@ class TestConsultToolModelOverride:
         assert "model" in props
         assert "provider" in props
         assert CONSULT_SCHEMA["parameters"]["required"] == ["question"]
+
+
+class TestConsultToolEffortOverride:
+    """effort lets the caller bypass the configured
+    auxiliary.<provider>.consult.reasoning_effort for a single call without
+    touching config.yaml, same override-only contract as model/provider.
+    """
+
+    def test_no_effort_passes_none_reasoning_config(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            consult_tool("q")
+        assert mock_call.call_args.kwargs.get("reasoning_config") is None
+
+    def test_effort_override_forwarded_as_reasoning_config(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            consult_tool("q", effort="max")
+        assert mock_call.call_args.kwargs.get("reasoning_config") == {
+            "enabled": True,
+            "effort": "max",
+        }
+        assert mock_call.call_args.kwargs.get("task") == "consult"
+
+    def test_effort_none_alias_disables_reasoning(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            consult_tool("q", effort="none")
+        assert mock_call.call_args.kwargs.get("reasoning_config") == {
+            "enabled": False
+        }
+
+    def test_invalid_effort_is_ignored_not_raised(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            result = json.loads(consult_tool("q", effort="ludicrous"))
+        assert mock_call.call_args.kwargs.get("reasoning_config") is None
+        assert result["unavailable"] is False
+
+    def test_empty_string_effort_is_treated_as_no_override(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            consult_tool("q", effort="")
+        assert mock_call.call_args.kwargs.get("reasoning_config") is None
+
+    def test_effort_combined_with_model_override(self):
+        resp = _fake_response("ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            consult_tool("q", model="claude-opus-4-7", effort="low")
+        assert mock_call.call_args.kwargs.get("model") == "claude-opus-4-7"
+        assert mock_call.call_args.kwargs.get("reasoning_config") == {
+            "enabled": True,
+            "effort": "low",
+        }
+
+    def test_dispatch_through_registry_with_effort_override(self):
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+
+        resp = _fake_response("dispatched ok")
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=resp
+        ) as mock_call:
+            result = json.loads(
+                registry.dispatch(
+                    "consult",
+                    {"question": "q", "effort": "high"},
+                )
+            )
+        assert result["unavailable"] is False
+        assert mock_call.call_args.kwargs.get("reasoning_config") == {
+            "enabled": True,
+            "effort": "high",
+        }
+
+    def test_schema_declares_effort_as_optional(self):
+        from tools.consult_tool import CONSULT_SCHEMA
+
+        props = CONSULT_SCHEMA["parameters"]["properties"]
+        assert "effort" in props
+        assert CONSULT_SCHEMA["parameters"]["required"] == ["question"]
