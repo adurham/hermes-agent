@@ -1593,79 +1593,39 @@ def _build_child_progress_callback(
     if not spinner and not parent_cb:
         return None  # No display → no callback → zero behavior change
 
-    def _owns_our_row(board) -> bool:
-        """True when *board* is a live board that actually carries our row.
-
-        ``is_active`` is checked with strict ``is True`` so MagicMock parents
-        in unit tests (where every attribute autovivifies to a truthy mock)
-        don't accidentally activate the board path and suppress the spinner
-        chatter the test was asserting.
-        """
-        if board is None or getattr(board, "is_active", False) is not True:
-            return False
-        if not subagent_id:
-            return False
-        try:
-            return any(
-                r.subagent_id == subagent_id for r in board.get_rows_snapshot()
-            )
-        except Exception:
-            return False
-
     def _current_board():
         """Look up the SwarmBoard that OWNS this row, at event-fire time.
 
         ``_build_child_progress_callback`` runs while the children are still
         being built — *before* the orchestrator enters the
-        ``SwarmBoard.maybe_start`` context that publishes the board onto
-        ``parent_agent._swarm_board``.  Capturing the board at construction
+        ``SwarmBoard.maybe_start`` context that publishes the board onto the
+        parent's active-board registry.  Capturing the board at construction
         time would always see ``None``.  Look it up fresh on every event so
         we pick up the board the moment the batch starts, and drop back to
         the spinner chatter the moment it tears down.
 
-        ``parent_agent._swarm_board`` is only a HINT, never the authority.
-        It is a SINGLE SLOT that any concurrent ``delegate_task()`` on the
-        same parent overwrites while this batch is still running, and nulls
-        when it finishes (see the NOTE in ``_execute_and_aggregate``).  While
-        it points elsewhere, every ``board.update(subagent_id, ...)`` below
-        was aimed at a board holding no row for this id — and
-        ``SwarmBoard.update`` drops writes for unknown rows silently.  The
-        row then froze on whatever it last received ("running · 0 tools ·
-        thinking") for the rest of its life, while its note slot kept
-        updating because ``make_child_print_fn`` captures the OWNING board by
-        closure.  A PM-style orchestrator hits this hardest: its own nested
-        ``delegate_task`` overwrites the slot for the entire time it is
-        blocked on its children.
+        Resolution is by row OWNERSHIP, never by "which board is current":
+        an agent can have SEVERAL boards active at once (a concurrent
+        sibling ``delegate_task()``, or — deterministically — a PM-style
+        orchestrator blocked inside its own nested ``delegate_task``, whose
+        grandchildren's board is attached to the same agent for the whole
+        wait).  Aiming an update at the wrong board is silent: ``update()``
+        drops writes for a row id it doesn't hold, so the row simply froze
+        on its last value ("running · 0 tools · thinking") while its note
+        slot kept updating, because ``make_child_print_fn`` captures the
+        OWNING board by closure.
 
-        So match on row OWNERSHIP: the update follows the row, not whichever
-        board happens to be sitting in the slot.  Deliberately NOT memoised —
-        the two liveness signals consulted here (the slot, and the CLI host's
-        ``_swarm_boards`` list) are also how teardown is observed, so a
-        cached board would keep absorbing writes after its board was hidden.
+        Deliberately NOT memoised — the registry is also how teardown is
+        observed, so a cached board would keep absorbing writes after it was
+        hidden.  See ``tools/swarm_board.py::board_for_row``.
         """
-        board = getattr(parent_agent, "_swarm_board", None)
-        if _owns_our_row(board):
-            return board
-
-        # Slot missed (stolen or cleared by a concurrent/nested dispatch, or
-        # this event arrived before our own batch published it).  The CLI
-        # host holds the authoritative list of every live board — the same
-        # list the widget renders from, appended/removed by the board's own
-        # show/hide — so ask it which one carries our row.
         try:
-            from tools.swarm_board import _find_cli_host
+            from tools.swarm_board import board_for_row
 
-            cli_ref = _find_cli_host(parent_agent)
-            for candidate in list(getattr(cli_ref, "_swarm_boards", None) or ()):
-                if _owns_our_row(candidate):
-                    return candidate
+            return board_for_row(parent_agent, subagent_id)
         except Exception as e:
             logger.debug("Swarm board owner lookup failed: %s", e)
-
-        # No live board owns this row: headless run, board already torn down,
-        # or a caller that never registered one.  Same contract as before —
-        # fall back to the spinner path.
-        return None
+            return None
 
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
@@ -5787,22 +5747,15 @@ def delegate_task(
 
             _i, _t, child = children[0]
             sid = getattr(child, "_subagent_id", None) or "subagent-0"
-            # NOTE: parent_agent._swarm_board is a single-slot attribute used
-            # to route THIS agent's own progress-callback lookups (see
-            # _current_board() and chat_completion_helpers.py's heartbeat) to
-            # its board — it is NOT the same thing as cli_ref._swarm_boards,
-            # the CLI-side list the widget renders from (fixed to support
-            # multiple concurrently-visible boards; see swarm_board.py).
-            # This attribute is still single-slot and is NOT safe against two
-            # concurrent delegate_task() calls on the SAME parent_agent (e.g.
-            # two overlapping background/detached dispatches sharing one
-            # agent object) — a second call's board would overwrite this
-            # one's slot mid-flight, and the finally-clause reset below could
-            # clear a sibling call's still-active board. Worst case is a
-            # missed/misdirected heartbeat note (falls back to _emit_status),
-            # not a crash, and the CLI widget itself now renders both boards
-            # correctly regardless of this attribute's state. Narrower
-            # pre-existing limitation, not introduced here.
+            # The board attaches itself to parent_agent's active-board
+            # registry on __enter__ and detaches on __exit__ (see
+            # tools/swarm_board.py). Registration is per-board, so a
+            # concurrent sibling delegate_task() on this same parent — or
+            # this agent's OWN nested dispatch, which overlaps by
+            # construction — adds alongside rather than displacing, and each
+            # call's teardown removes only its own entry. The legacy
+            # ``parent_agent._swarm_board`` attribute is kept in sync as a
+            # derived "current board" view for any external reader.
             with SwarmBoard.maybe_start(parent_agent, n_tasks) as _swarm_board:
                 parent_print_fn = getattr(parent_agent, "_print_fn", None) or print
                 # Lineage so the widget can nest this row under the
@@ -5820,33 +5773,22 @@ def delegate_task(
                 child._print_fn = make_child_print_fn(
                     _swarm_board, sid, fallback=parent_print_fn
                 )
-                child._swarm_board = _swarm_board
-                parent_agent._swarm_board = _swarm_board
-                try:
-                    result = _run_single_child(
-                        0,
-                        _t["goal"],
-                        child,
-                        parent_agent,
-                        owner_session_id=_origin_ui_session_id or None,
-                        owner_transport=_origin_owner_transport,
-                        owner_session_record=_origin_owner_session_record,
-                        # Sibling of the batch join loop's abandonment check:
-                        # notice an owner that walked away instead of blocking
-                        # on a child nobody will read the result of.
-                        abandon_check=lambda: _owner_abandoned(
-                            parent_agent, honor_parent_interrupt
-                        ),
-                    )
-                finally:
-                    # Clear only OUR OWN slot: a concurrent sibling
-                    # delegate_task() on the same parent may have published a
-                    # newer board here (single-slot attribute — see the NOTE
-                    # above). Unconditional clearing nulls a sibling's
-                    # still-active board and opens the heartbeat suppression
-                    # gate while its rows are still rendering.
-                    if getattr(parent_agent, "_swarm_board", None) is _swarm_board:
-                        parent_agent._swarm_board = None
+                _swarm_board.publish_to(child)
+                result = _run_single_child(
+                    0,
+                    _t["goal"],
+                    child,
+                    parent_agent,
+                    owner_session_id=_origin_ui_session_id or None,
+                    owner_transport=_origin_owner_transport,
+                    owner_session_record=_origin_owner_session_record,
+                    # Sibling of the batch join loop's abandonment check:
+                    # notice an owner that walked away instead of blocking
+                    # on a child nobody will read the result of.
+                    abandon_check=lambda: _owner_abandoned(
+                        parent_agent, honor_parent_interrupt
+                    ),
+                )
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines.
@@ -5900,11 +5842,12 @@ def delegate_task(
                     )
                     # Stash the board on the child so the progress callback
                     # closure (built in _build_child_progress_callback) can
-                    # find it via parent_agent's chain.
-                    child._swarm_board = _swarm_board
-                # Also stash on the parent so the progress relay can update
-                # rows from the parent thread.
-                parent_agent._swarm_board = _swarm_board
+                    # resolve it through the child's own board registry.
+                    _swarm_board.publish_to(child)
+                # The board is already attached to parent_agent by
+                # ``__enter__`` (and detached by ``__exit__``), scoped to this
+                # board alone — a concurrent sibling or nested dispatch on the
+                # same parent neither displaces nor is displaced by it.
 
                 with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                     _children_list = list(children)

@@ -31,6 +31,21 @@ Public surface used by ``delegate_tool.py``:
 * ``board.note(sid, text)`` — convenience for setting only ``last_note``.
 * ``board.finish(sid, status=..., summary=...)``
 * ``board.get_rows_snapshot()`` — used by the widget's text getter.
+* ``board.publish_to(agent)`` — make the board resolvable from ``agent``'s
+  active-board registry (the owning parent is published automatically on
+  ``__enter__``; children are published explicitly).
+
+Per-agent board registry (replaces the old single ``agent._swarm_board`` slot):
+
+* ``attach_agent_board(agent, board)`` / ``detach_agent_board(agent, board)`` —
+  scoped registration, so a sibling or nested dispatch can never evict
+  another dispatch's board.
+* ``agent_boards(agent)`` — every board currently active for that agent.
+* ``current_agent_board(agent)`` — the innermost one (what the retained
+  legacy ``agent._swarm_board`` attribute mirrors).
+* ``board_for_row(agent, subagent_id)`` — the board that OWNS a given row;
+  the only correct way to pick a target for ``update()``/``note()``.
+* ``any_board_active(agent)`` — is anything rendering for this agent's tree.
 
 Rendering helpers the CLI widget composes (all pure, no lock needed):
 
@@ -457,8 +472,213 @@ def any_board_active(agent, max_hops: int = _MAX_ANCESTOR_HOPS) -> bool:
             return len(boards) > 0
         ref = getattr(cur, "_delegate_parent_ref", None)
         cur = ref() if callable(ref) else None
-    board = getattr(agent, "_swarm_board", None)
-    return getattr(board, "is_active", False) is True
+    return any(
+        getattr(b, "is_active", False) is True for b in agent_boards(agent)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-agent active-board registry.
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS (the structural bug it replaces)
+#
+# ``agent._swarm_board`` used to be a SINGLE attribute slot: one dispatch's
+# board at a time, per agent.  Two separate changes turned that from a benign
+# simplification into a genuine correctness bug, and neither revisited it:
+#
+#   * 2026-07-28 (d4fd4bfb2b) documented the slot as acceptable BECAUSE
+#     "the CLI widget itself (cli_ref._swarm_board) is also single-slot so
+#     only one board renders at a time regardless."  That was true then.
+#   * 2026-08-09 (998aba516c) replaced the CLI host's singular slot with a
+#     ``_swarm_boards`` LIST and made the widget concatenate rows from EVERY
+#     board in it.  The premise above died here; the per-agent slot did not
+#     follow.
+#   * 2026-08-23 (f16110bd86) taught ``_find_cli_host`` to walk the
+#     delegation weakref chain, so a nested orchestrator's own
+#     ``delegate_task`` now gets a REAL board too.  That publishes a SECOND
+#     board onto the SAME agent object — not occasionally under load, but
+#     deterministically, for the entire time a PM subagent is blocked on its
+#     children.
+#
+# So the slot is overwritten and nulled on the normal path, and because
+# ``SwarmBoard.update()`` returns silently for a row id it doesn't hold, a
+# misdirected write is discarded with no error — the row just freezes.
+#
+# The fix mirrors what the CLI host already does one level up: a keyed
+# collection of currently-active boards, with attach/detach scoped to a
+# specific board so a sibling or nested dispatch can never evict another's
+# entry.  The legacy singular attribute is kept in sync as a derived "current
+# board" view so external/legacy readers of ``agent._swarm_board`` keep
+# working instead of breaking silently.
+
+# One lock for the whole registry rather than one per agent: attach/detach
+# happen a handful of times per dispatch (not per event), so contention is
+# irrelevant, and a single lock keeps the "read the list, then reconcile the
+# legacy slot" pair atomic across concurrent sibling dispatches.
+_REGISTRY_LOCK = threading.RLock()
+
+# Attribute holding an agent's ordered list of currently-attached boards.
+# Oldest attachment first, so the LAST entry is the innermost/newest dispatch
+# — which is what "current" means for a legacy single-board reader.
+_BOARDS_ATTR = "_swarm_board_stack"
+
+# The legacy single-slot attribute, retained as a derived view.
+_LEGACY_ATTR = "_swarm_board"
+
+
+def _legacy_slot_board(agent):
+    """Return a board parked in the legacy singular slot, if any.
+
+    Reads that never went through ``attach_agent_board`` (an external caller
+    or older code doing ``agent._swarm_board = board`` directly) must still
+    be discoverable, or this change would silently break them.
+    """
+    board = getattr(agent, _LEGACY_ATTR, None)
+    return board if board is not None else None
+
+
+def agent_boards(agent) -> List[Any]:
+    """Return every board currently attached to *agent*, oldest first.
+
+    Includes a board sitting in the legacy singular slot that was never
+    registered here, so a direct ``agent._swarm_board = board`` assignment is
+    still visible to every consumer in this module.
+    """
+    if agent is None:
+        return []
+    with _REGISTRY_LOCK:
+        stack = getattr(agent, _BOARDS_ATTR, None)
+        boards = list(stack) if isinstance(stack, list) else []
+        legacy = _legacy_slot_board(agent)
+        if legacy is not None and not any(b is legacy for b in boards):
+            boards.append(legacy)
+        return boards
+
+
+def current_agent_board(agent):
+    """Return the innermost (most recently attached) board, else ``None``.
+
+    This is the single-board view the legacy ``agent._swarm_board`` slot
+    exposes.  "Most recent" is the right answer for a caller that wants
+    "the" board: a nested dispatch's board is the one that just opened.
+    Callers that need to reach a SPECIFIC row must use ``board_for_row``
+    instead — "current" is a convenience, never a routing decision.
+    """
+    boards = agent_boards(agent)
+    return boards[-1] if boards else None
+
+
+def _sync_legacy_slot(agent) -> None:
+    """Point the legacy singular attribute at the current board.
+
+    Caller must hold ``_REGISTRY_LOCK``.
+    """
+    stack = getattr(agent, _BOARDS_ATTR, None)
+    current = stack[-1] if isinstance(stack, list) and stack else None
+    try:
+        setattr(agent, _LEGACY_ATTR, current)
+    except Exception:
+        # Slotted/immutable stand-ins: the registry is still authoritative,
+        # only the legacy mirror is unavailable.
+        pass
+
+
+def attach_agent_board(agent, board) -> None:
+    """Register *board* as active for *agent*.  Idempotent.
+
+    Never replaces an existing entry — a concurrent sibling or nested
+    dispatch appends alongside, and both stay reachable until each detaches
+    its own board.
+    """
+    if agent is None or board is None:
+        return
+    with _REGISTRY_LOCK:
+        stack = getattr(agent, _BOARDS_ATTR, None)
+        if not isinstance(stack, list):
+            stack = []
+            try:
+                setattr(agent, _BOARDS_ATTR, stack)
+            except Exception:
+                return  # can't register on this object; nothing else to do
+        if not any(b is board for b in stack):
+            stack.append(board)
+        _sync_legacy_slot(agent)
+
+
+def detach_agent_board(agent, board) -> None:
+    """Unregister *board* from *agent*.  Scoped, idempotent, sibling-safe.
+
+    Removes ONLY the named board.  The legacy slot is rewritten only when it
+    was pointing at the board being torn down — so a caller that never
+    attached (a raw ``agent._swarm_board = ...`` assignment by someone else)
+    is left untouched, and a still-running sibling's board is revealed rather
+    than nulled.
+    """
+    if agent is None or board is None:
+        return
+    with _REGISTRY_LOCK:
+        stack = getattr(agent, _BOARDS_ATTR, None)
+        if isinstance(stack, list):
+            for i, existing in enumerate(stack):
+                if existing is board:
+                    del stack[i]
+                    break
+        if _legacy_slot_board(agent) is board:
+            _sync_legacy_slot(agent)
+
+
+def _board_owns_row(board, subagent_id: str) -> bool:
+    """True when *board* is live AND actually carries a row for *subagent_id*.
+
+    ``is_active`` is compared with a strict ``is True`` so a ``MagicMock``
+    agent/board in a unit test (where every attribute autovivifies truthy)
+    can't accidentally claim ownership.  ``_NoopBoard`` reports
+    ``is_active = False`` and an empty snapshot, so headless runs resolve to
+    ``None`` and callers take their normal fallback path.
+    """
+    if board is None or getattr(board, "is_active", False) is not True:
+        return False
+    if not subagent_id:
+        return False
+    try:
+        return any(
+            r.subagent_id == subagent_id for r in board.get_rows_snapshot()
+        )
+    except Exception:
+        return False
+
+
+def board_for_row(
+    agent, subagent_id: Optional[str], max_hops: int = _MAX_ANCESTOR_HOPS
+):
+    """Return the live board that OWNS *subagent_id*'s row, else ``None``.
+
+    Row updates must follow the ROW, never whichever board is "current":
+    ``SwarmBoard.update()`` drops writes for an unregistered row id silently,
+    so a misdirected write freezes a row with no error anywhere.
+
+    Search order — agent's own attached boards first (the common case, no
+    ancestor walk), then the CLI host's authoritative ``_swarm_boards`` list
+    (covers a board owned by a different agent in the same delegation tree).
+
+    Deliberately NOT memoised: both sources are also how teardown is
+    observed, so a cached board would keep absorbing writes after it was
+    hidden.
+    """
+    if not subagent_id:
+        return None
+    for board in agent_boards(agent):
+        if _board_owns_row(board, subagent_id):
+            return board
+    try:
+        cli_ref = _find_cli_host(agent, max_hops)
+        for candidate in list(getattr(cli_ref, "_swarm_boards", None) or ()):
+            if _board_owns_row(candidate, subagent_id):
+                return candidate
+    except Exception:
+        pass
+    return None
 
 
 def resolve_row_lineage(parent_agent) -> tuple:
@@ -496,6 +716,9 @@ class _NoopBoard:
         return False
 
     def register(self, *_args, **_kwargs) -> None:
+        return None
+
+    def publish_to(self, *_args, **_kwargs) -> None:
         return None
 
     def update(self, *_args, **_kwargs) -> None:
@@ -555,6 +778,14 @@ class SwarmBoard:
         self._rows: Dict[str, _Row] = {}
         self._row_order: List[str] = []
         self._lock = threading.Lock()
+        # Agent that owns this board's dispatch (set by ``maybe_start``).
+        # ``None`` for a directly-constructed board, which simply has nothing
+        # to auto-attach to on ``__enter__``.
+        self._owner_agent: Any = None
+        # Every agent this board has been published to, so ``__exit__`` can
+        # retract it from all of them rather than leaving a torn-down board
+        # reachable (and silently absorbing writes) via a child agent.
+        self._published_to: List[Any] = []
 
     @classmethod
     def maybe_start(
@@ -606,9 +837,17 @@ class SwarmBoard:
         # SwarmBoard.__exit__ still calls a plain zero-arg ``self._on_hide()``,
         # unaware that a specific board identity is threaded through.
         board._on_hide = lambda: cli_ref._swarm_board_hide(board)
+        # Remember the dispatching agent so __enter__/__exit__ can attach and
+        # detach this board on it without the caller having to hand-maintain
+        # an attribute (the single-slot assignment this replaces).
+        board._owner_agent = parent_agent
         return board
 
     def __enter__(self) -> "SwarmBoard":
+        # Attach BEFORE showing: the show hook invalidates the app, which can
+        # drive a render on another thread that expects the board reachable
+        # from its owning agent.
+        self.publish_to(self._owner_agent)
         if self._on_show is not None:
             try:
                 self._on_show(self)
@@ -616,7 +855,33 @@ class SwarmBoard:
                 pass
         return self
 
+    def publish_to(self, agent) -> None:
+        """Make this board reachable from *agent*'s active-board registry.
+
+        Used for the owning parent (automatically, on ``__enter__``) and for
+        each child agent, whose own progress path resolves rows through the
+        same registry.  Additive: publishing never displaces a board that a
+        concurrent sibling or nested dispatch already attached to the same
+        agent.  Every agent published to is remembered so ``__exit__`` can
+        retract this board from ALL of them — a board that outlived its
+        dispatch would keep absorbing writes.
+        """
+        if agent is None:
+            return
+        with self._lock:
+            if not any(a is agent for a in self._published_to):
+                self._published_to.append(agent)
+        attach_agent_board(agent, self)
+
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        with self._lock:
+            published = list(self._published_to)
+            self._published_to.clear()
+        # Detach FIRST so no consumer can resolve this board after teardown
+        # has begun.  Scoped per board, so a sibling dispatch's still-active
+        # board on the same agent is untouched.
+        for agent in published:
+            detach_agent_board(agent, self)
         if self._on_hide is not None:
             try:
                 self._on_hide()
