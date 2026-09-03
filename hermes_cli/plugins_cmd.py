@@ -919,6 +919,17 @@ def _install_plugin_core(
             "revision": installed_revision,
             "source": source,
         }
+        # Saved update_url tag (settled: claims vs provenance): the
+        # manifest's update_url is COPIED into the row at install. Check
+        # time compares manifest vs tag; a mismatch is needs-fixing and
+        # only `hermes plugins trust-update-url` moves the tag.
+        try:
+            manifest = _read_manifest(Path(tmp_target))
+            update_url = (manifest or {}).get("update_url")
+            if isinstance(update_url, str) and update_url.strip():
+                new_metadata[plugin_name]["update_url"] = update_url.strip()
+        except Exception:
+            pass
         backup = Path(tmp) / "previous-plugin"
         replaced_existing = target.exists()
         if replaced_existing:
@@ -2036,6 +2047,108 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     return filtered
 
 
+def cmd_adopt(name: str) -> None:
+    """Adopt a self-cloned plugin dir into the provenance sidecar.
+
+    Reads the dir's git origin URL, validates it, writes the sidecar row
+    — from then on a normal git install (check-updates + update). The
+    ONLY mutation path for self-cloned dirs (settled: explicit verbs).
+    """
+    from rich.console import Console
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+    target = _require_installed_plugin(name, plugins_dir, console)
+
+    from hermes_cli.plugins_provenance import ProvenanceClass, plugins_provenance
+
+    prov = next((p for p in plugins_provenance(plugins_dir) if p.name == target.name), None)
+    if prov is None:
+        console.print(f"[red]Error:[/red] Plugin '{name}' not classifiable.")
+        sys.exit(1)
+    if prov.klass is not ProvenanceClass.SELF_CLONED:
+        console.print(
+            f"[red]Error:[/red] Plugin '{name}' is {prov.klass.value}, not "
+            "self-cloned — there is nothing to adopt."
+        )
+        sys.exit(1)
+    if not prov.origin_url:
+        console.print(
+            f"[red]Error:[/red] Plugin '{name}' has no readable git origin "
+            "remote. Add one (git remote add origin <url>) and retry."
+        )
+        sys.exit(1)
+
+    try:
+        _resolve_git_url(prov.origin_url)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] The dir's origin url is not installable: {e}")
+        sys.exit(1)
+
+    metadata = _read_install_metadata()
+    if target.name in metadata:
+        console.print(f"[red]Error:[/red] Plugin '{name}' already has a provenance row.")
+        sys.exit(1)
+
+    git_exe = _resolve_git_executable()
+    revision = _git_head_revision(target, git_exe) if git_exe else ""
+    metadata[target.name] = {
+        "pinned": False,
+        "revision": revision,
+        "source": _canonical_source(prov.origin_url, None),
+    }
+    _write_install_metadata(metadata)
+    console.print(
+        f"[green]✓[/green] Adopted [bold]{name}[/bold] "
+        f"(source: {prov.origin_url}, revision: {revision[:12] or 'unknown'}). "
+        "It is now a tracked git install."
+    )
+
+
+def cmd_trust_update_url(name: str) -> None:
+    """The ONLY path that moves a saved update_url tag.
+
+    A needs-fixing mismatch (manifest update_url vs the saved tag) is
+    resolved here: confirms the manifest's url into the sidecar row,
+    prints old → new. Refuses when there is nothing to trust.
+    """
+    from rich.console import Console
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+    target = _require_installed_plugin(name, plugins_dir, console)
+
+    from hermes_cli.plugins_provenance import plugins_provenance, read_sidecar_rows
+
+    rows = read_sidecar_rows(plugins_dir)
+    row = rows.get(target.name)
+    if not isinstance(row, dict):
+        console.print(
+            f"[red]Error:[/red] Plugin '{name}' has no provenance row — "
+            "nothing to trust. Reinstall it instead."
+        )
+        sys.exit(1)
+
+    saved = row.get("update_url") or None
+    manifest = _read_manifest(target)
+    claimed = (manifest or {}).get("update_url") or None
+    if claimed == saved:
+        console.print(
+            f"[yellow]Nothing to trust:[/yellow] '{name}' has no "
+            "update_url mismatch."
+        )
+        return
+
+    row["update_url"] = claimed
+    rows[target.name] = row
+    _write_install_metadata(rows)
+    console.print(
+        f"[green]✓[/green] Trusted [bold]{name}[/bold] update_url:\n"
+        f"  old: {saved or '(none)'}\n"
+        f"  new: {claimed or '(none)'}"
+    )
+
+
 def cmd_list(args: Any | None = None) -> None:
     """List all plugins (bundled + user) with enabled/disabled state."""
     from rich.console import Console
@@ -2083,6 +2196,13 @@ def cmd_list(args: Any | None = None) -> None:
     table.add_column("Description")
     table.add_column("Source", style="dim")
 
+    # provenance class per user-installed dir (bundled entries show '-')
+    from hermes_cli.plugins_provenance import plugins_provenance
+
+    prov_classes = {
+        p.name: p.klass.value for p in plugins_provenance(_plugins_dir())
+    }
+
     for name, version, description, source, _dir, key in entries:
         status_name = _plugin_status(name, enabled, disabled, key=key)
         if status_name == "disabled":
@@ -2092,6 +2212,13 @@ def cmd_list(args: Any | None = None) -> None:
         else:
             status = "[yellow]not enabled[/yellow]"
         table.add_row(name, status, str(version), description, source)
+        # class line rides the Source column for user plugins
+        if source in {"user", "git"}:
+            klass = prov_classes.get(name)
+            if klass and klass != "git":
+                table.add_row(
+                    "", "", "", f"[dim]provenance: {klass}[/dim]", ""
+                )
 
     console.print()
     console.print(table)
@@ -3230,6 +3357,10 @@ def plugins_command(args) -> None:
         )
     elif action == "update":
         cmd_update(args.name)
+    elif action == "adopt":
+        cmd_adopt(args.name)
+    elif action == "trust-update-url":
+        cmd_trust_update_url(args.name)
     elif action in {"remove", "rm", "uninstall"}:
         cmd_remove(args.name)
     elif action == "enable":
