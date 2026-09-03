@@ -2112,6 +2112,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
             cache_scope_id=_cache_scope_id,
+            provider=getattr(agent, "provider", None),
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:
@@ -2145,6 +2146,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         request_overrides=agent.request_overrides,
         session_id=getattr(agent, "session_id", None),
         cache_scope_id=_cache_scope_id,
+        provider=getattr(agent, "provider", None),
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
         is_nous=_is_nous,
