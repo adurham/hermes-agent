@@ -435,6 +435,32 @@ def _find_cli_host(agent, max_hops: int = _MAX_ANCESTOR_HOPS):
     return None
 
 
+def any_board_active(agent, max_hops: int = _MAX_ANCESTOR_HOPS) -> bool:
+    """Return True when a live swarm board is rendering for *agent*'s tree.
+
+    The authoritative source is the CLI host's ``_swarm_boards`` LIST — the
+    same collection the widget renders from (``cli.py::_swarm_board_show``).
+    ``agent._swarm_board`` is a single per-agent slot that concurrent
+    ``delegate_task()`` calls on the same agent overwrite and clear mid-flight
+    (see the NOTE in ``delegate_tool._execute_and_aggregate``), so suppression
+    checks that read only the slot open the emit gate while a sibling batch's
+    board is still on screen.  When no CLI host carrying the list is reachable
+    (TUI, test doubles, gateway/headless), fall back to the slot check — which
+    also preserves the headless contract (no board anywhere → emit).
+    """
+    cur = agent
+    for _ in range(max_hops + 1):
+        if cur is None:
+            break
+        boards = getattr(getattr(cur, "_cli_ref", None), "_swarm_boards", None)
+        if isinstance(boards, list):
+            return len(boards) > 0
+        ref = getattr(cur, "_delegate_parent_ref", None)
+        cur = ref() if callable(ref) else None
+    board = getattr(agent, "_swarm_board", None)
+    return getattr(board, "is_active", False) is True
+
+
 def resolve_row_lineage(parent_agent) -> tuple:
     """Return ``(depth, parent_subagent_id)`` for children of *parent_agent*.
 

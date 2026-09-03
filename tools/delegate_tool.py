@@ -1593,8 +1593,27 @@ def _build_child_progress_callback(
     if not spinner and not parent_cb:
         return None  # No display → no callback → zero behavior change
 
+    def _owns_our_row(board) -> bool:
+        """True when *board* is a live board that actually carries our row.
+
+        ``is_active`` is checked with strict ``is True`` so MagicMock parents
+        in unit tests (where every attribute autovivifies to a truthy mock)
+        don't accidentally activate the board path and suppress the spinner
+        chatter the test was asserting.
+        """
+        if board is None or getattr(board, "is_active", False) is not True:
+            return False
+        if not subagent_id:
+            return False
+        try:
+            return any(
+                r.subagent_id == subagent_id for r in board.get_rows_snapshot()
+            )
+        except Exception:
+            return False
+
     def _current_board():
-        """Look up the active SwarmBoard at event-fire time.
+        """Look up the SwarmBoard that OWNS this row, at event-fire time.
 
         ``_build_child_progress_callback`` runs while the children are still
         being built — *before* the orchestrator enters the
@@ -1604,17 +1623,49 @@ def _build_child_progress_callback(
         we pick up the board the moment the batch starts, and drop back to
         the spinner chatter the moment it tears down.
 
-        ``is_active`` is checked with strict ``is True`` so MagicMock parents
-        in unit tests (where every attribute autovivifies to a truthy mock)
-        don't accidentally activate the board path and suppress the spinner
-        chatter the test was asserting.
+        ``parent_agent._swarm_board`` is only a HINT, never the authority.
+        It is a SINGLE SLOT that any concurrent ``delegate_task()`` on the
+        same parent overwrites while this batch is still running, and nulls
+        when it finishes (see the NOTE in ``_execute_and_aggregate``).  While
+        it points elsewhere, every ``board.update(subagent_id, ...)`` below
+        was aimed at a board holding no row for this id — and
+        ``SwarmBoard.update`` drops writes for unknown rows silently.  The
+        row then froze on whatever it last received ("running · 0 tools ·
+        thinking") for the rest of its life, while its note slot kept
+        updating because ``make_child_print_fn`` captures the OWNING board by
+        closure.  A PM-style orchestrator hits this hardest: its own nested
+        ``delegate_task`` overwrites the slot for the entire time it is
+        blocked on its children.
+
+        So match on row OWNERSHIP: the update follows the row, not whichever
+        board happens to be sitting in the slot.  Deliberately NOT memoised —
+        the two liveness signals consulted here (the slot, and the CLI host's
+        ``_swarm_boards`` list) are also how teardown is observed, so a
+        cached board would keep absorbing writes after its board was hidden.
         """
         board = getattr(parent_agent, "_swarm_board", None)
-        if board is None:
-            return None
-        if getattr(board, "is_active", False) is not True:
-            return None
-        return board
+        if _owns_our_row(board):
+            return board
+
+        # Slot missed (stolen or cleared by a concurrent/nested dispatch, or
+        # this event arrived before our own batch published it).  The CLI
+        # host holds the authoritative list of every live board — the same
+        # list the widget renders from, appended/removed by the board's own
+        # show/hide — so ask it which one carries our row.
+        try:
+            from tools.swarm_board import _find_cli_host
+
+            cli_ref = _find_cli_host(parent_agent)
+            for candidate in list(getattr(cli_ref, "_swarm_boards", None) or ()):
+                if _owns_our_row(candidate):
+                    return candidate
+        except Exception as e:
+            logger.debug("Swarm board owner lookup failed: %s", e)
+
+        # No live board owns this row: headless run, board already torn down,
+        # or a caller that never registered one.  Same contract as before —
+        # fall back to the spinner path.
+        return None
 
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
@@ -3092,6 +3143,8 @@ def _run_single_child(
     _HEARTBEAT_FORCE_EMIT_CYCLES = 4  # ~every 2 min on the 30s interval
 
     def _heartbeat_loop():
+        from tools.swarm_board import any_board_active
+
         while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
             if parent_agent is None:
                 continue
@@ -3189,8 +3242,7 @@ def _run_single_child(
                 # iter + elapsed in-place.  Emitting both duplicates state
                 # and clutters scrollback.  Headless / non-TUI runs (no
                 # board) still get the heartbeat lines.
-                board = getattr(parent_agent, "_swarm_board", None)
-                board_active = getattr(board, "is_active", False) is True
+                board_active = any_board_active(parent_agent)
                 if emit and not board_active:
                     # Decide whether to actually print.  Skip when nothing
                     # has changed since the last emission, unless we've
@@ -4187,14 +4239,15 @@ def _run_single_child(
         # heartbeat emits above (running progress) and the rollup emit at the
         # end of delegate_task() (aggregate spend).
         try:
+            from tools.swarm_board import any_board_active
+
             emit = getattr(parent_agent, "_emit_status", None)
             # When the swarm board widget is active it already shows the
             # final per-row state (status icon + tokens + cost in the row's
             # note slot).  Skip the scrollback completion line in that case
             # so we don't duplicate.  Aggregate spend is still emitted once
             # at the end of delegate_task() (the rollup line).
-            board = getattr(parent_agent, "_swarm_board", None)
-            board_active = getattr(board, "is_active", False) is True
+            board_active = any_board_active(parent_agent)
             if emit and not board_active:
                 _model_str = (_model if isinstance(_model, str) else None) or "?"
                 _cost_total = (
@@ -5786,7 +5839,14 @@ def delegate_task(
                         ),
                     )
                 finally:
-                    parent_agent._swarm_board = None
+                    # Clear only OUR OWN slot: a concurrent sibling
+                    # delegate_task() on the same parent may have published a
+                    # newer board here (single-slot attribute — see the NOTE
+                    # above). Unconditional clearing nulls a sibling's
+                    # still-active board and opens the heartbeat suppression
+                    # gate while its rows are still rendering.
+                    if getattr(parent_agent, "_swarm_board", None) is _swarm_board:
+                        parent_agent._swarm_board = None
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines.
