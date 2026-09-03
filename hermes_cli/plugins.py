@@ -721,6 +721,9 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     # v2 (#64165)
     "manifest_version", "api_version", "requires_plugins",
     "python_dependencies", "config_schema", "license", "homepage", "tags",
+    # the plugin's update feed address (plugin auto-update plan, 2026-09-03):
+    # read at check time, saved as the sidecar tag at install
+    "update_url",
     # owned by sibling sub-issues but reserved so their manifests don't warn
     "capabilities", "emits", "listens", "hermes", "depends",
 }
@@ -863,6 +866,10 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
     # Standard metadata.
     out["license"] = str(data.get("license") or "")
     out["homepage"] = str(data.get("homepage") or "")
+    # update_url: the plugin's update feed address (plugin auto-update
+    # plan, 2026-09-03). Claims, not provenance — the sidecar saves its
+    # own copy at install; check time compares the two.
+    out["update_url"] = str(data.get("update_url") or "")
     raw_tags = data.get("tags")
     if raw_tags is not None and not isinstance(raw_tags, list):
         logger.warning("Plugin %s: tags must be a list; ignoring", key)
@@ -1167,6 +1174,9 @@ class PluginManifest:
     # Formalized standard metadata.
     license: str = ""
     homepage: str = ""
+    # the plugin's update feed address (plugin auto-update plan) — claims,
+    # not provenance; the sidecar saves its own copy at install
+    update_url: str = ""
     tags: List[str] = field(default_factory=list)
     # Inter-plugin event bus declarations (advisory in v1 — NOT enforced).
     # ``emits`` lists the bare event names this plugin publishes under its own
