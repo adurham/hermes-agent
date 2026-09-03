@@ -36,7 +36,9 @@ them from a real CC session via:
   claude -p "say hi"
 
 …with mitmdump capturing flows, then jq the request body's ``tools``
-array. See scripts/refresh_cc_canonical.sh (TODO) for the recipe.
+array. See scripts/refresh_cc_canonical.sh for the recipe (verified
+working 2026-09-03 — it recaptured the billing header and this file
+from a live CC 2.1.259 session).
 """
 
 from __future__ import annotations
