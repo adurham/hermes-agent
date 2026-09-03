@@ -2204,6 +2204,71 @@ def run_doctor(args):
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
 
+    # ── Plugin provenance health (the needs-fixing surface) ──────────
+    # Read-only reconciliation + saved-tag mismatches: the receipt/check
+    # verb surfaces these live; doctor makes them visible on-demand.
+    try:
+        _section("Plugin Provenance")
+        from hermes_cli.plugins_provenance import (
+            ProvenanceClass,
+            plugins_provenance,
+        )
+
+        def _manifest_update_url(plugin_dir) -> str:
+            try:
+                import yaml as _yaml
+
+                with (plugin_dir / "plugin.yaml").open(encoding="utf-8-sig") as f:
+                    data = _yaml.safe_load(f) or {}
+                value = data.get("update_url")
+                return value.strip() if isinstance(value, str) else ""
+            except Exception:
+                return ""
+
+        from hermes_cli.plugins_cmd import _plugins_dir
+
+        _prov_issues = 0
+        for prov in plugins_provenance(_plugins_dir()):
+            if prov.klass is ProvenanceClass.DRIFT:
+                check_warn(
+                    f"Plugin '{prov.name}': provenance drift",
+                    "the install record names a source but the dir has no "
+                    ".git — reinstall from the recorded source",
+                )
+                _prov_issues += 1
+            elif prov.klass is ProvenanceClass.SELF_CLONED:
+                check_info(
+                    f"Plugin '{prov.name}': self-cloned (untracked) — "
+                    f"run `hermes plugins adopt {prov.name}` to track it"
+                )
+            elif prov.klass is ProvenanceClass.MANUAL:
+                check_info(
+                    f"Plugin '{prov.name}': manually installed (no provenance; "
+                    "not auto-updatable)"
+                )
+            # needs-fixing: manifest update_url vs the saved tag
+            if prov.klass is ProvenanceClass.GIT and prov.row:
+                saved = (prov.row.get("update_url") or "").strip()
+                claimed = _manifest_update_url(prov.path)
+                if saved != claimed:
+                    detail = (
+                        f"manifest declares {claimed!r} but "
+                        f"{saved!r} was saved at install"
+                        if saved
+                        else f"manifest declares {claimed!r} but no url was saved at install"
+                    )
+                    check_warn(
+                        f"Plugin '{prov.name}': update_url mismatch (needs fixing)",
+                        f"{detail} — run `hermes plugins trust-update-url "
+                        f"{prov.name}` after review, or `hermes plugins "
+                        "check-updates` for the live view",
+                    )
+                    _prov_issues += 1
+        if _prov_issues == 0:
+            check_ok("Plugin provenance healthy (no mismatches, no drift)")
+    except Exception as _prov_err:
+        check_warn("Plugin provenance check skipped", f"({_prov_err})")
+
     if sys.platform != "win32":
         _section("Command Installation")
         # Determine the venv entry point location
