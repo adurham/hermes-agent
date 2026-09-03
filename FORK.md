@@ -3,6 +3,131 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Swarm-board per-agent slot → keyed active-board registry (structural fix) — 2026-09-03
+
+**Decision: REDESIGN, not justify.** The follow-up to `5cd6452577` asked
+whether the residual single-slot flaw warranted a structural fix or whether the
+prior route-around already closed the practical risk. It did not — a full
+consumer enumeration found a live consumer still trusting the raw slot, and the
+historical justification for the slot turned out to be provably stale. So the
+slot was replaced with a keyed collection of currently-active boards.
+
+**Symptom.** `agent._swarm_board` was a SINGLE per-agent attribute. Any second
+`delegate_task()` on the same agent overwrote it and nulled it on exit. Because
+`SwarmBoard.update()` returns silently for a row id the target board doesn't
+hold (`swarm_board.py`: `row = self._rows.get(subagent_id); if row is None:
+return`), a misdirected write produced no error at all — the row just froze
+(the reported "PM subagent stuck at `running · 0 tools` after 2h").
+
+**Root cause — the original justification went stale, twice.** The lead was
+confirmed against real history, not taken on faith:
+
+* `d4fd4bfb2b` (2026-07-28) explicitly justified the slot: *"the CLI widget
+  itself (`cli_ref._swarm_board`) is also single-slot so only one board renders
+  at a time regardless."* Verified true at that commit — `git show
+  d4fd4bfb2b:cli.py` has `self._swarm_board = None`, a scalar
+  `_swarm_board_show`/`_swarm_board_hide` pair, and a widget filter reading
+  `cli_ref._swarm_board is not None`. A per-agent single slot genuinely lost
+  nothing then.
+* `998aba516c` (2026-08-09, **12 days later**) replaced the CLI host's scalar
+  with a `_swarm_boards` LIST and made the widget concatenate rows from every
+  board in it (`cli.py::_all_swarm_rows`, filter `len(cli_ref._swarm_boards) >
+  0`). **This killed the premise.** The per-agent slot was never revisited.
+* `f16110bd86` (2026-08-23) taught `_find_cli_host` to walk the delegation
+  weakref chain, so a nested orchestrator's own `delegate_task` now gets a REAL
+  board. This is the invalidated invariant the task asked about: there WAS a
+  de-facto "one active board per agent" property, and nested delegation broke
+  it — not as a rare race, but **deterministically**, since a PM's own dispatch
+  publishes a second board onto the same agent object for the entire time it is
+  blocked on its children.
+
+So `FORK.md`'s own older entry (line ~5068, the `cli_ref._swarm_board` clause)
+is **stale documentation** — accurate when written, falsified by
+`998aba516c`. Trust the code: the CLI host is **multi-board today**.
+
+**Consumer enumeration (the evidence base).** Every read/write of
+`_swarm_board` (singular) and `_swarm_boards` (plural) in `*.py`:
+
+| Consumer | Before | Status |
+|---|---|---|
+| `cli.py:6211,7720-7745,23874,23962` — host list + widget | plural LIST | already correct; unchanged, and the model for this fix |
+| `delegate_tool.py:3193,4197` — heartbeat/completion gates | `any_board_active()` | safe (prior fix) |
+| `delegate_tool.py:1596-1668` — `_current_board()` | slot-as-hint + CLI-list rescan | safe but hand-rolled → replaced by `board_for_row()` |
+| **`agent/chat_completion_helpers.py:6001`** — thinking/wait heartbeat note | **raw `getattr(agent, "_swarm_board")`** | **(ii) STILL TRUSTED THE RAW SLOT** — fixed here |
+| `delegate_tool.py:5773,5824,5856,5907` — slot writes | raw assignment | replaced by registry attach |
+| `delegate_tool.py:5848` — slot clear | ownership-guarded null | replaced by scoped detach |
+
+That single remaining raw-slot consumer settles the redesign-vs-justify call.
+It is exactly the "misdirected write into a board that doesn't hold the row"
+class the prior fix chased, in a file the prior fix never touched: an
+orchestrator's thinking-heartbeat notes were being aimed at whichever board was
+parked in the slot — its grandchildren's board while it was blocked — and
+dropped. "No rewrite warranted" was not defensible.
+
+**Fix — push the CLI host's list structure down to the agent level.** Rather
+than inventing a new mechanism, `tools/swarm_board.py` now mirrors one level
+down what `cli.py` already does:
+
+* `attach_agent_board(agent, board)` / `detach_agent_board(agent, board)` —
+  scoped, idempotent, `RLock`-guarded. Attach appends; detach removes **only**
+  the named board. A sibling or nested dispatch can neither steal nor null
+  another's entry.
+* `agent_boards(agent)` / `current_agent_board(agent)` — full list / innermost.
+* `board_for_row(agent, subagent_id)` — resolves by **row ownership**, checking
+  the agent's own boards first, then the CLI host's list. The one correct way
+  to pick an `update()`/`note()` target.
+* `SwarmBoard.__enter__`/`__exit__` now attach/detach automatically, and
+  `board.publish_to(agent)` shares a board with child agents; `__exit__`
+  retracts from every agent it was published to, so a torn-down board can't
+  keep absorbing writes. `_NoopBoard` gained `publish_to` so headless/non-tty
+  still no-ops cleanly.
+
+**Backward compatibility preserved.** `agent._swarm_board` (singular) is
+**kept** as a derived read view — it always mirrors the innermost active board,
+and on detach it falls back to a still-running sibling instead of nulling. A
+raw external `agent._swarm_board = board` assignment that never went through
+the registry is still discovered by `agent_boards()`. No external reader breaks
+silently.
+
+**Verification.**
+* New `tests/tools/test_swarm_board_agent_registry.py` — 24 hermetic tests
+  (registry invariants, legacy-slot compat, row routing under concurrent
+  sibling + nested PM dispatch, lifecycle, and an 8-thread attach/detach churn
+  test asserting a long-lived board is never evicted).
+* **Mutation-checked (RED/GREEN).** Neutering the registry back to single-slot
+  semantics (`stack.clear()` on attach; unconditional clear + null on detach):
+  `10 failed, 27 passed in 1.92s`. Restored: `37 passed in 2.00s`
+  (registry + orchestrator-tool-count + heartbeat-suppression).
+* Full targeted suite (`test_swarm_board.py`, `test_swarm_board_agent_registry.py`,
+  `test_swarm_board_orchestrator_tool_count.py`,
+  `test_delegate_heartbeat_suppression.py`, `test_delegate.py`,
+  `test_async_delegation.py`): `4 failed, 284 passed in 19.14s`. All 4 failures
+  are pre-existing and unrelated — the 3 known `DELEGATE_TASK_SCHEMA` ones
+  (`test_dynamic_limits_moved_to_param_descriptions`, `test_schema_valid`,
+  `test_schema_no_longer_advertises_role`) plus
+  `test_async_delegation.py::test_delegate_task_background_batch_runs_as_one_unit`,
+  **a 4th pre-existing failure** confirmed by running the same file in a clean
+  `git worktree` at HEAD: `1 failed, 61 passed in 11.20s`. Not caused here, not
+  "fixed" here.
+* E2E through the **real** `delegate_task()` entrypoint (mocked
+  `_run_single_child`/`_build_child_agent`, no DB writes): 2 boards coexist on
+  one agent mid-dispatch, the PM's row still resolves to its owning board, the
+  child resolves its own, tool counts land, and teardown leaves agent boards,
+  CLI boards, and the legacy slot all empty.
+* `pyflakes`: `tools/swarm_board.py` 0 (was 1 at HEAD — the new code consumes a
+  previously-unused `typing.Any` import), `tools/delegate_tool.py` 7 (identical
+  to HEAD), `agent/chat_completion_helpers.py` 2 (identical to HEAD). Zero new
+  warnings.
+
+**Files touched.** `tools/swarm_board.py`, `tools/delegate_tool.py`,
+`agent/chat_completion_helpers.py`,
+`tests/tools/test_swarm_board_agent_registry.py` (new), `FORK.md`.
+
+**Residual limitation: none known.** The "known residual limitation" recorded
+in the entry below is now closed; the inline NOTE at `delegate_tool.py` that
+documented the slot as structurally unsafe has been removed along with the
+slot-writing code it described.
+
 ### Swarm-board single-slot race: heartbeat spam + frozen "0 tools" rows — 2026-09-03
 
 **Shared root cause.** `parent_agent._swarm_board` is a SINGLE SLOT, not a

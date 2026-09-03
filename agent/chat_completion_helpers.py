@@ -5998,11 +5998,20 @@ def interruptible_streaming_api_call(
                     # Route into the board row's note slot instead so the
                     # SAME row updates in place; the row's own elapsed-time
                     # column already covers what _emit_status's suffix said.
-                    _board = getattr(agent, "_swarm_board", None)
-                    _board_active = _board is not None and getattr(_board, "is_active", False) is True
-                    _board_sid = (
-                        getattr(agent, "_subagent_id", None) if _board_active else None
-                    )
+                    #
+                    # Resolve by ROW OWNERSHIP, not by "the agent's board":
+                    # an agent can have several boards active at once (its
+                    # own nested delegate_task publishes one for the whole
+                    # time it is blocked on children), and note()/update()
+                    # drop writes for a row id the target board doesn't hold
+                    # — silently. See tools/swarm_board.py::board_for_row.
+                    _board_sid = getattr(agent, "_subagent_id", None)
+                    try:
+                        from tools.swarm_board import board_for_row
+                        _board = board_for_row(agent, _board_sid)
+                    except Exception:
+                        _board = None
+                    _board_active = _board is not None
                     if thinking_active["yes"] and _thinking_delta_chars > 0:
                         _board_note_ok = False
                         if _board_active and _board_sid:
