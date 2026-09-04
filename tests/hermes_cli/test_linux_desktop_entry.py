@@ -56,8 +56,17 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
 
     # Exec must be the absolute path of the resolved binary. The launcher
     # runs with a minimal PATH, so a bare `hermes` would not resolve.
-    assert values["Exec"] == f"{hermes_bin} desktop"
-    assert Path(values["Exec"].split(" ")[0]).is_absolute()
+    # _quote_exec_arg quotes it per the desktop-entry spec when the path
+    # contains reserved characters (Windows drive/backslash paths do).
+    exec_value = values["Exec"]
+    exec_parts = exec_value.split(" ")
+    if exec_parts[0].startswith('"'):
+        # quoted path — strip the wrapping quotes for the comparison
+        unquoted = exec_parts[0][1:-1].replace("\\\\", "\\")
+    else:
+        unquoted = exec_parts[0]
+    assert unquoted == str(hermes_bin)
+    assert exec_value.endswith(" desktop")
 
     # Icon must be an absolute path to the real icon in the checkout.
     icon_path = Path(values["Icon"])
