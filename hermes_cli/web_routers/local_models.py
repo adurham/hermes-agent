@@ -28,6 +28,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from pm.downloader import Download, DownloadPaused, Source
+
 from hermes_cli.local_runtime.endpoint import _state_endpoint
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,9 @@ router = APIRouter()
 _GIB = 1 << 30
 _JOBS: Dict[str, Dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
+# Live download handles + the resume callable per job_id. Kept OFF the job
+# dict so the JSON-serializable poll payload never carries a Download object.
+_RUNNING: Dict[str, Dict[str, Any]] = {}
 
 
 def _human_gb(n: int | float) -> str:
@@ -60,39 +65,6 @@ def _job(kind: str, target: str, model_id: str | None = None) -> Dict[str, Any]:
     with _JOBS_LOCK:
         _JOBS[job["job_id"]] = job
     return job
-
-
-# ── fast download: ranged parallel streams ───────────────────
-
-# One TCP stream to a CDN rarely fills a fast line; 8 ranged connections
-# writing into a preallocated file saturate consumer gigabit.
-_DOWNLOAD_CONNECTIONS = 8
-_CHUNK = 4 << 20
-
-
-def _probe_range_support(url: str) -> int:
-    """Total size when the server honors Range requests, else 0.
-
-    Auth-shaped failures raise with a plain-language message — a 401/403
-    from the CDN means the repo is gated or the catalog entry names a
-    wrong repo, and the user deserves better than a bare status code.
-    """
-    req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            if r.status == 206:
-                content_range = r.headers.get("Content-Range", "")
-                if "/" in content_range:
-                    return int(content_range.rsplit("/", 1)[1])
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            raise RuntimeError(
-                "The model host refused the download (gated or moved). "
-                "This is a catalog problem, not yours — please report it.") from exc
-        raise
-    except Exception:  # noqa: BLE001
-        pass
-    return 0
 
 
 def _model_id_for(gguf: Path) -> str:
@@ -121,107 +93,33 @@ def _variant_files_on_disk(model_id: str) -> "list[Path]":
     return files
 
 
-def download_file(url: str, dest: Path, job: Dict[str, Any],
-                  *,
-                  base_done: int = 0, keep_totals: bool = False) -> None:
-    """Download url -> dest with byte progress on ``job``.
+def _download_job(job: Dict[str, Any], plan) -> None:
+    """Run a plan of (url, dest, size) downloads as ONE resumable Download.
 
-    Ranged-parallel when the server supports it, single-stream fallback
-    otherwise. There is no integrity check against the CATALOG by
-    design: catalog sizes may lag an upstream re-upload, and a
-    newer file than we know about must download fine. Completeness is
-    checked only against what the SERVER declared for this transfer
-    (range-probe total / Content-Length) — self-consistent and always
-    current — so a dropped connection still errors instead of staging a
-    truncated file. Never leaves a .part behind.
-
-    Multi-file variants: ``base_done`` offsets the progress so this file's
-    bytes accumulate onto the files before it, and ``keep_totals=True``
-    stops the per-file size from overwriting the variant's total.
+    Completion and range progress feed the job dict (done_bytes /
+    total_bytes / ranges — the bar reads the aggregate, the detail view
+    reads the bitmap; both come from the same callback). Sources carry NO
+    hash by design: catalog sizes may lag an upstream re-upload, so
+    completeness is judged by the downloader against the server's declared
+    total, never the catalog. On pause the downloader raises
+    DownloadPaused; the job is marked 'paused' with its partials intact
+    for a later resume.
     """
-    import shutil
-    import threading as _threading
+    dl = Download([Source(url, dest) for url, dest, _ in plan])
+    _RUNNING.setdefault(job["job_id"], {})["dl"] = dl
 
-    tmp = dest.with_suffix(".part")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    file_done = [0]
-    progress_lock = _threading.Lock()
-
-    def bump(n: int) -> None:
-        with progress_lock:
-            file_done[0] += n
-            job["done_bytes"] = base_done + file_done[0]
+    def tick(done: int, total: int, ranges: dict) -> None:
+        job["done_bytes"] = done
+        job["total_bytes"] = total
+        job["ranges"] = ranges
 
     try:
-        # The probe and the preallocation both take real seconds on a
-        # 20+ GB file — narrate them, or the pane shows a dead '— of X GB'
-        # until the first ranged byte lands.
-        job["detail"] = "Connecting"
-        total = _probe_range_support(url)
-        if total:
-            if not keep_totals:
-                job["total_bytes"] = total
-            # Preallocate so each worker writes at its own offset.
-            job["detail"] = f"Reserving {_human_gb(total)} of disk space"
-            with open(tmp, "wb") as f:
-                f.truncate(total)
-            job["detail"] = ""
-            errors: list[Exception] = []
-            bounds = [(i * total // _DOWNLOAD_CONNECTIONS,
-                       (i + 1) * total // _DOWNLOAD_CONNECTIONS - 1)
-                      for i in range(_DOWNLOAD_CONNECTIONS)]
-
-            def fetch_range(start: int, end: int) -> None:
-                try:
-                    req = urllib.request.Request(
-                        url, headers={"Range": f"bytes={start}-{end}"})
-                    with urllib.request.urlopen(req, timeout=120) as r, \
-                            open(tmp, "r+b") as f:
-                        f.seek(start)
-                        while True:
-                            chunk = r.read(_CHUNK)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            bump(len(chunk))
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(exc)
-
-            threads = [_threading.Thread(target=fetch_range, args=b, daemon=True,
-                                         name=f"lm-dl-{i}")
-                       for i, b in enumerate(bounds)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-            if errors:
-                raise errors[0]
-            if file_done[0] != total:
-                raise RuntimeError(
-                    f"download incomplete ({file_done[0]} of {total} bytes)")
-        else:
-            # No range support: single stream, large chunks. Completeness
-            # is judged by the server's own Content-Length when it sent
-            # one — never by the catalog, which may lag a re-upload.
-            with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-                length = int(r.headers.get("Content-Length") or 0)
-                if length and not keep_totals:
-                    job["total_bytes"] = length
-                while True:
-                    chunk = r.read(_CHUNK)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    bump(len(chunk))
-            if length and file_done[0] != length:
-                raise RuntimeError(
-                    f"Download ended at {file_done[0]:,} bytes but the server "
-                    f"said {length:,} — connection dropped? Removed; try again")
-
-        shutil.move(str(tmp), str(dest))
-    except Exception:
-        tmp.unlink(missing_ok=True)
+        dl.run(progress=tick)
+    except DownloadPaused:
+        job["status"] = "paused"
         raise
+    finally:
+        _RUNNING.get(job["job_id"], {}).pop("dl", None)
 
 
 def _models_dir() -> Path:
@@ -820,17 +718,7 @@ async def local_models_download(body: ModelDownloadBody):
         try:
             job["phase"] = "downloading"
             job["detail"] = f"{entry.display_name} — {_human_gb(total)}"
-            done_before = 0
-            for url, dest, size in plan:
-                if dest.exists():
-                    done_before += size
-                    job["done_bytes"] = done_before
-                    continue
-                download_file(url, dest, job,
-                              base_done=done_before, keep_totals=True)
-                job["phase"] = "downloading"
-                done_before += size
-                job["done_bytes"] = done_before
+            _download_job(job, plan)
             job["phase"] = "done"
             job["status"] = "done"
             job["detail"] = f"{entry.display_name} ready"
@@ -843,13 +731,55 @@ async def local_models_download(body: ModelDownloadBody):
                 refresh_local_runtime()
             except Exception:  # noqa: BLE001
                 logger.debug("post-download runtime refresh skipped", exc_info=True)
+        except DownloadPaused:
+            pass  # status already "paused"; partials kept for resume
         except Exception as exc:  # noqa: BLE001
             logger.warning("model download failed: %s", exc)
             job["status"] = "error"
             job["error"] = str(exc)
+        finally:
+            if job["status"] != "paused":
+                _RUNNING.pop(job["job_id"], None)
 
+    _RUNNING[job["job_id"]] = {"resume": _run, "dl": None}
     threading.Thread(target=_run, daemon=True, name="lr-model-download").start()
     return {"job_id": job["job_id"], "model_id": variant.model_id}
+
+
+class JobIdBody(BaseModel):
+    job_id: str
+
+
+@router.post("/api/local-models/download/pause")
+async def local_models_download_pause(body: JobIdBody):
+    """Pause a running model download. The downloader's live handle is
+    checked off the job dict (which stays JSON-serializable for the poll
+    route); when none is active (already done/paused) this is a no-op."""
+    running = _RUNNING.get(body.job_id)
+    if running is None:
+        raise HTTPException(status_code=404, detail="unknown download job")
+    dl = running.get("dl")
+    if dl is None:
+        return {"ok": True, "paused": False}
+    dl.pause()
+    return {"ok": True, "paused": True}
+
+
+@router.post("/api/local-models/download/resume")
+async def local_models_download_resume(body: JobIdBody):
+    """Resume a paused model download. Completed files are skipped and
+    partials resume from their byte-range bitmap (the downloader owns that
+    — the route just re-runs the job body)."""
+    job = _JOBS.get(body.job_id)
+    running = _RUNNING.get(body.job_id)
+    if job is None or running is None or running.get("resume") is None:
+        raise HTTPException(status_code=404, detail="unknown or finished download job")
+    if job["status"] != "paused":
+        return {"ok": True, "resumed": False}
+    job["status"] = "running"
+    threading.Thread(target=running["resume"], daemon=True,
+                     name="lm-dl-resume").start()
+    return {"ok": True, "resumed": True}
 
 
 @router.delete("/api/local-models/models/{model_id}")
@@ -1017,17 +947,7 @@ async def local_models_quickstart(body: QuickstartBody):
                 job["done_bytes"] = 0
                 job["total_bytes"] = total
                 job["detail"] = f"{entry.display_name} — {_human_gb(total)}"
-                done_before = 0
-                for url, dest, size in download_plan:
-                    if dest.exists():
-                        done_before += size
-                        job["done_bytes"] = done_before
-                        continue
-                    download_file(url, dest, job,
-                                  base_done=done_before, keep_totals=True)
-                    job["phase"] = "downloading"
-                    done_before += size
-                    job["done_bytes"] = done_before
+                _download_job(job, download_plan)
 
             # Activate: same sequence as /activate's job body.
             from hermes_cli.config import load_config, save_config
@@ -1361,16 +1281,13 @@ async def local_models_download_browsed(body: BrowsedDownloadBody):
     def _run():
         try:
             job["phase"] = "downloading"
+            plan = []
             for p in paths:
                 url = (f"https://huggingface.co/{body.repo}"
                        f"/resolve/main/{urllib.parse.quote(p)}")
                 dest = _models_dir() / p.rsplit("/", 1)[-1]
-                if dest.exists():
-                    continue
-                download_file(url, dest, job,
-                              base_done=int(job.get("done_bytes") or 0),
-                              keep_totals=bool(job.get("total_bytes")))
-                job["phase"] = "downloading"
+                plan.append((url, dest, 0))
+            _download_job(job, plan)
             job["phase"] = "done"
             job["status"] = "done"
             job["detail"] = f"{model_id} ready"
@@ -1380,10 +1297,16 @@ async def local_models_download_browsed(body: BrowsedDownloadBody):
                 refresh_local_runtime()
             except Exception:  # noqa: BLE001
                 logger.debug("post-download runtime refresh skipped", exc_info=True)
+        except DownloadPaused:
+            pass  # status already "paused"; partials kept for resume
         except Exception as exc:  # noqa: BLE001
             job["status"] = "error"
             job["error"] = str(exc)
+        finally:
+            if job["status"] != "paused":
+                _RUNNING.pop(job["job_id"], None)
 
+    _RUNNING[job["job_id"]] = {"resume": _run, "dl": None}
     threading.Thread(target=_run, daemon=True, name="lm-download-browsed").start()
     return {"job_id": job["job_id"], "model_id": model_id}
 
