@@ -25,6 +25,8 @@ import shutil
 import subprocess
 from typing import Dict, List, Optional
 
+from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+
 _GIT_TIMEOUT = 15
 _MAX_UNTRACKED_FILES = 50  # sanity cap so a node_modules explosion can't hang us
 
@@ -56,14 +58,22 @@ def _git_command() -> Optional[List[str]]:
 
 
 def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
-    """Run git, returning (returncode, stdout). Never raises on git failure."""
+    """Run git, returning (returncode, stdout). Never raises on git failure.
+
+    Hardened against a malicious repo's ``.git/config`` (GHSA-7x36-8jrh-v4pw):
+    ``noninteractive_git_env`` disables fsmonitor/hooks/pager/editor/credential
+    sinks, and ``harden_git_argv`` appends ``--no-ext-diff --no-textconv`` to
+    the diff-rendering subcommands so attribute-scoped diff/textconv drivers
+    can't execute either.
+    """
     command = _git_command()
     if command is None:
         return 127, ""
     proc = subprocess.run(
-        [*command, "-c", "core.quotePath=false", *args],
+        [*command, "-c", "core.quotePath=false", *harden_git_argv(args)],
         cwd=cwd, capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
+        stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
     )
     return proc.returncode, proc.stdout
 

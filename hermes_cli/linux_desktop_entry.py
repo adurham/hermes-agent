@@ -15,9 +15,9 @@ Two values must be absolute for the entry to work:
     checkout. Do not copy the icon: ``Exec`` already depends on that tree.
 
 Cache refresh is best-effort and tool-gated: ``update-desktop-database``
-for the freedesktop menu cache, and ``kbuildsycoca6``/``kbuildsycoca5``
-for Plasma. Run each tool only when it exists. A missing tool is not an
-error.
+for the freedesktop menu cache, ``gtk-update-icon-cache`` for the user
+hicolor tree, and ``kbuildsycoca6``/``kbuildsycoca5`` for Plasma. Run
+each tool only when it exists. A missing tool is not an error.
 
 Import-light and side-effect-free at import time: the uninstaller and the
 Electron main process both use this without loading the full CLI.
@@ -25,6 +25,7 @@ Electron main process both use this without loading the full CLI.
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess

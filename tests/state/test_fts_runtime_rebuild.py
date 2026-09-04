@@ -16,11 +16,11 @@ rebuild later, outside the failed live write/search operation.
 import json
 import os
 import sqlite3
-from types import SimpleNamespace
 
 import pytest
 
 import hermes_state
+import hermes_state_holders
 import hermes_state_schema
 from hermes_state import (
     FTS_REBUILD_DEFERRAL_KEY,
@@ -140,48 +140,53 @@ class TestRuntimeFtsRebuild:
             }
         )
 
-    def test_foreign_holder_detection_includes_deleted_wal(
-        self, db, tmp_path, monkeypatch
-    ):
-        db_path = tmp_path / "state.db"
+    @pytest.mark.parametrize(
+        "argv",
+        (
+            ("journalctl", "-u", "hermes-agent.service"),
+            ("grep", "hermes-agent", "/var/log/syslog"),
+            (
+                "/usr/sbin/tailscaled",
+                "be-child",
+                "ssh",
+                "--cmd=python -m hermes_cli.main gateway",
+            ),
+            ("tmux", "new-session", "/opt/hermes-agent/.venv/bin/hermes gateway"),
+            ("python3", "/opt/hermes-agent/tools/check_state.py"),
+            ("hermes-monitor", "gateway"),
+            ("hermesctl", "serve"),
+            ("python3", "worker.py", "hermes_cli.main"),
+            ("python3", "-m", "other.module", "hermes_cli.main"),
+            ("python3", "-c", "hermes_cli.main"),
+            ("python3", "-Icprint('hermes_cli.main')", "hermes_cli/main.py"),
+        ),
+    )
+    def test_uninspectable_non_hermes_process_is_not_a_holder(self, argv):
+        assert not hermes_state_holders._looks_like_hermes(argv)
 
-        class FakePsutil:
-            @staticmethod
-            def process_iter(_attrs):
-                return iter(
-                    (
-                        SimpleNamespace(
-                            info={
-                                "pid": 111,
-                                "open_files": [SimpleNamespace(path=str(db_path))],
-                            }
-                        ),
-                        SimpleNamespace(
-                            info={
-                                "pid": 222,
-                                "open_files": [
-                                    SimpleNamespace(path=f"{db_path}-wal (deleted)")
-                                ],
-                            }
-                        ),
-                        SimpleNamespace(
-                            info={
-                                "pid": 333,
-                                "open_files": [SimpleNamespace(path=str(tmp_path / "other.db"))],
-                            }
-                        ),
-                    )
-                )
-
-        monkeypatch.setattr(hermes_state, "psutil", FakePsutil)
-        monkeypatch.setattr(hermes_state, "_IS_WINDOWS", False)
-        monkeypatch.setattr(hermes_state.os, "getpid", lambda: 111)
-        # Force the macOS/psutil path even on Linux test runners
-        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
-
-        assert db._foreign_state_db_holders() == [
-            (222, f"{db_path}-wal (deleted)")
-        ]
+    @pytest.mark.parametrize(
+        "argv",
+        (
+            ("/usr/local/bin/hermes", "gateway"),
+            ("/usr/local/bin/hermes-agent", "serve"),
+            ("/usr/local/bin/hermes-acp", "--stdio"),
+            ("/usr/bin/python3", "-m", "hermes_cli.main", "gateway"),
+            ("/usr/bin/python3", "-m", "acp_adapter"),
+            ("/usr/bin/python3", "-Im", "hermes_cli.main", "gateway"),
+            ("/usr/bin/python3", "-mhermes_cli.main", "gateway"),
+            ("/usr/bin/python3", "-W", "ignore", "-m", "hermes_cli.main"),
+            ("/usr/bin/python3", "-Xdev", "-m", "hermes_cli.main"),
+            (
+                "/opt/hermes-agent/.venv/bin/python",
+                "/opt/hermes-agent/hermes_cli/main.py",
+                "gateway",
+            ),
+            ("python.exe", "--", "hermes_cli/main.py", "gateway"),
+            ("python3", "/opt/hermes-agent/run_agent.py", "--query", "hello"),
+        ),
+    )
+    def test_uninspectable_hermes_process_remains_a_holder(self, argv):
+        assert hermes_state_holders._looks_like_hermes(argv)
 
     @pytest.mark.platforms("linux")
     def test_foreign_holder_detection_proc_readlink_deleted_wal(
@@ -210,22 +215,32 @@ class TestRuntimeFtsRebuild:
         other.touch()
         os.symlink(str(other), str(proc_root / "333" / "fd" / "3"))
 
-        monkeypatch.setattr(hermes_state, "_IS_WINDOWS", False)
-        monkeypatch.setattr(hermes_state.os, "getpid", lambda: 111)
-        monkeypatch.setattr(hermes_state.sys, "platform", "linux")
+        monkeypatch.setattr(hermes_state_holders.os, "getpid", lambda: 111)
         real_listdir = os.listdir
         def _listdir(path):
             if isinstance(path, str):
                 path = path.replace("/proc", str(proc_root))
             return real_listdir(path)
-        monkeypatch.setattr(hermes_state.os, "listdir", _listdir)
+        monkeypatch.setattr(hermes_state_holders.os, "listdir", _listdir)
         real_readlink = os.readlink
         def _readlink(path):
             path = path.replace("/proc", str(proc_root))
             return real_readlink(path)
-        monkeypatch.setattr(hermes_state.os, "readlink", _readlink)
+        monkeypatch.setattr(hermes_state_holders.os, "readlink", _readlink)
+        real_stat = os.stat
+        def _stat(path, *args, **kwargs):
+            path_s = str(path).replace("/proc", str(proc_root))
+            if path_s.endswith("/222/fd/3"):
+                # A real /proc fd remains statable after unlink and retains
+                # the deleted sidecar's filesystem identity: same device as
+                # state.db, but an inode no live watched path can reach.
+                fields = list(real_stat(db_path))
+                fields[1] += 1000
+                return os.stat_result(fields)
+            return real_stat(path_s, *args, **kwargs)
+        monkeypatch.setattr(hermes_state_holders.os, "stat", _stat)
 
-        holders = db._foreign_state_db_holders()
+        holders = hermes_state_holders.foreign_state_db_holders(db_path)
         assert holders == [(222, db_path_wal + " (deleted)")]
 
     @pytest.mark.platforms("linux")
@@ -243,32 +258,34 @@ class TestRuntimeFtsRebuild:
         os.chmod(proc_root / "222" / "fd", 0o000)
         # PID 222's cmdline is world-readable and looks like Hermes
         cmdline_path = proc_root / "222" / "cmdline"
-        cmdline_path.write_bytes(b"python3\x00hermes_cli.main\x00chat\x00")
+        cmdline_path.write_bytes(
+            b"python3\x00-m\x00hermes_cli.main\x00chat\x00"
+        )
 
-        monkeypatch.setattr(hermes_state, "_IS_WINDOWS", False)
-        monkeypatch.setattr(hermes_state.os, "getpid", lambda: 111)
-        monkeypatch.setattr(hermes_state.sys, "platform", "linux")
+        monkeypatch.setattr(hermes_state_holders.os, "getpid", lambda: 111)
         real_listdir = os.listdir
         def _listdir(path):
             if isinstance(path, str):
+                if path == "/proc/222/fd":
+                    raise PermissionError(path)
                 path = path.replace("/proc", str(proc_root))
             return real_listdir(path)
-        monkeypatch.setattr(hermes_state.os, "listdir", _listdir)
-        # _read_proc_cmdline opens /proc/<pid>/cmdline directly; redirect
+        monkeypatch.setattr(hermes_state_holders.os, "listdir", _listdir)
+        # _read_proc_argv opens /proc/<pid>/cmdline directly; redirect
         # it to our fake proc tree.
-        def _fake_cmdline(pid):
+        def _fake_argv(pid):
             fake_path = str(proc_root / str(pid) / "cmdline")
             try:
                 with open(fake_path, "rb") as f:
                     raw = f.read()
                 if not raw:
                     return None
-                return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+                return raw.decode("utf-8", "replace").rstrip("\x00").split("\x00")
             except OSError:
                 return None
-        monkeypatch.setattr(hermes_state, "_read_proc_cmdline", _fake_cmdline)
+        monkeypatch.setattr(hermes_state_holders, "_read_proc_argv", _fake_argv)
 
-        holders = db._foreign_state_db_holders()
+        holders = hermes_state_holders.foreign_state_db_holders(db_path)
         # Should include PID 222 with the cmdline info
         assert len(holders) == 1
         assert holders[0][0] == 222
@@ -334,7 +351,15 @@ class TestRuntimeFtsRebuild:
         with pytest.raises(sqlite3.DatabaseError) as caught:
             db._execute_write(lambda _conn: (_ for _ in ()).throw(structural))
 
-        assert caught.value is structural
+        # Structural corruption quarantines the handle: the typed error wraps
+        # the original (cause preserved, SQLite result code copied) and the
+        # sticky flag is set, so later writes fail fast.
+        from hermes_state import StateDbCorruptError
+
+        assert isinstance(caught.value, StateDbCorruptError)
+        assert caught.value.__cause__ is structural
+        assert caught.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
+        assert db._db_corrupt is True
         assert rebuild_called is False
         assert db._fts_stale is False
         assert _meta_value(tmp_path / "state.db", FTS_STALE_KEY) is None
@@ -833,6 +858,19 @@ class TestPhysicalCorruptionAcceptance:
             # The misdiagnosis message from the field incident must be gone.
             assert "canonical message rows are preserved" not in caplog.text
             assert "attempting one-shot in-place FTS rebuild" not in caplog.text
+            # Structural damage quarantines the handle: typed error, sticky
+            # flag, later writes fail fast, and close() must not checkpoint
+            # the WAL over a damaged page image (the #90950 page-1 clobber).
+            from hermes_state import StateDbCorruptError
+
+            assert isinstance(caught.value, StateDbCorruptError)
+            assert db._db_corrupt is True
+            with pytest.raises(StateDbCorruptError):
+                db.append_message("s1", "user", "second write after corruption")
+            caplog.clear()
+            with caplog.at_level("WARNING", logger="hermes_state"):
+                db.close()
+            assert "Skipping the close-time WAL checkpoint" in caplog.text
         finally:
             db.close()
 

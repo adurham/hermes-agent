@@ -506,6 +506,8 @@ export interface Translations {
       embedsAlways: string
       embedsOff: string
       embedsReset: (count: number) => string
+      resumeLastSessionTitle: string
+      resumeLastSessionDesc: string
       product: string
       productDesc: string
       technical: string
@@ -569,6 +571,9 @@ export interface Translations {
       bundleOutOfSync: string
       bundleOutOfSyncDesc: string
       bundleOutOfSyncAction: string
+      bundleSwapPending: string
+      bundleSwapPendingDesc: string
+      bundleSwapPendingAction: string
       updates: string
       checkNow: string
       checking: string
@@ -2677,13 +2682,17 @@ export interface Translations {
       resetStatusbar: string
       toggleApprovalMode: string
       toggleBackendVersion: string
+      toggleCacheHitRate: string
       toggleCommandCenter: string
       toggleContextUsage: string
       toggleRunningTimer: string
       toggleSessionTimer: string
       toggleTerminal: string
+      toggleTokensPerSecond: string
       toggleVersion: string
       toggleWorkspace: string
+      cacheHitRateTitle: string
+      tokensPerSecondTitle: string
       agents: string
       closeAgents: string
       openAgents: string

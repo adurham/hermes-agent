@@ -50,6 +50,7 @@ jobs:
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
       installer: ${{ steps.classify.outputs.installer }}
       bootstrap: ${{ steps.classify.outputs.bootstrap }}
+      desktop_updater: ${{ steps.classify.outputs.desktop_updater }}
       rust: ${{ steps.classify.outputs.rust }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
@@ -75,6 +76,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
+
 
   lint:
     name: Python lints
@@ -123,7 +125,13 @@ jobs:
     # single job in the workflow — while still running the full pytest lanes.
     #
     # Re-disabled (Sep 2026): the Sep 1 re-enable is still incredibly flaky.
-    if: ${{ false && (needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' })}
+    # Keep this a bare `if: false`. The earlier
+    # `${{ false && (... || ...) }}` form on this reusable-workflow job made
+    # GitHub's workflow parser fail at startup ("An unexpected error has
+    # occurred") — every ci.yaml run repo-wide dispatched 0 jobs from
+    # 24f5a60ed1 until this line changed. To re-enable, restore:
+    #   if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
+    if: false
     uses: ./.github/workflows/e2e-desktop.yml
 
   docs-site:

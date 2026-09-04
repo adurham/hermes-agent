@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import ssl
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -68,6 +69,27 @@ def _coerce_insecure(ssl_verify: Any) -> bool:
     return False
 
 
+_CA_CONTEXTS: dict[str, ssl.SSLContext] = {}
+_CA_CONTEXTS_LOCK = threading.Lock()
+
+
+def _context_for_ca_bundle(ca_path: str) -> ssl.SSLContext:
+    """One ``SSLContext`` per CA bundle path, process-wide.
+
+    ``ssl.create_default_context(cafile=...)`` parses the whole bundle each
+    call. Every AIAgent (and every delegated child) resolves verify for its
+    own client, so an env/config CA bundle used to cost one parsed context —
+    and, because sharing keys on context identity, one private connection
+    pool — per agent. An ``SSLContext`` is safe to share across connections.
+    """
+    with _CA_CONTEXTS_LOCK:
+        ctx = _CA_CONTEXTS.get(ca_path)
+        if ctx is None:
+            ctx = ssl.create_default_context(cafile=ca_path)
+            _CA_CONTEXTS[ca_path] = ctx
+        return ctx
+
+
 def resolve_httpx_verify(
     *,
     ca_bundle: Optional[str] = None,
@@ -95,9 +117,15 @@ def resolve_httpx_verify(
         )
         return False
 
-    bundle = (ca_bundle or "").strip()
-    if bundle:
-        path = Path(bundle).expanduser()
+    effective_ca = (
+        (ca_bundle or "").strip()
+        or os.getenv("HERMES_CA_BUNDLE", "").strip()
+        or os.getenv("SSL_CERT_FILE", "").strip()
+        or os.getenv("REQUESTS_CA_BUNDLE", "").strip()
+        or os.getenv("CURL_CA_BUNDLE", "").strip()
+    )
+    if effective_ca:
+        path = Path(effective_ca).expanduser()
         if path.is_file():
             # An explicit bundle REPLACES the platform store for this client.
             # inject_into_ssl() rebinds ssl.SSLContext to truststore's class,
@@ -118,7 +146,7 @@ def resolve_httpx_verify(
             return ctx
         logger.warning(
             "ssl_ca_cert path does not exist: %s — using the OS trust store instead",
-            bundle,
+            effective_ca,
         )
     return True
 
