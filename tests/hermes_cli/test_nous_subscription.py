@@ -7,6 +7,8 @@ import pytest
 
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
+from tools import tool_backend_helpers
+from tools import browser_tool_install as bt_install
 
 
 _POOL_COVERAGE = {
@@ -125,7 +127,7 @@ def _stub_browser_probes(monkeypatch, *, has_agent_browser, chromium, lightpanda
     """Common monkeypatches for local-browser readiness scenarios.
 
     ``chromium`` / ``lightpanda`` drive the runtime probes that
-    ``_local_browser_runnable`` reuses from ``tools.browser_tool`` (lazy import,
+    ``_local_browser_runnable`` reuses from the ``tools.browser_tool_*`` siblings (lazy import,
     so patching the module attributes is enough).
     """
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
@@ -137,9 +139,9 @@ def _stub_browser_probes(monkeypatch, *, has_agent_browser, chromium, lightpanda
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
     monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
     monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
-    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: chromium)
+    monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: chromium)
     monkeypatch.setattr(
-        "tools.browser_tool._using_lightpanda_engine", lambda: lightpanda
+        "tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: lightpanda
     )
 
 
@@ -186,6 +188,24 @@ def _capture_checklist(monkeypatch, *, selected_idx):
         "hermes_cli.config.save_config", lambda cfg: None, raising=False
     )
     return captured
+
+
+def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch):
+    """The logged-in + entitled branch must produce a state for EVERY feature, including
+    those with no config selection field (modal). Regression: the managed-availability
+    table indexed the selection map by every feature key and raised KeyError('modal'),
+    crashing `hermes status`, `hermes tools`, and the dashboard toolsets API."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _pool_account())
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda gateway: True)
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    result = ns.get_nous_subscription_features({"model": {"provider": "nous"}})
+
+    assert set(result.features) == set(ns._FEATURES)
+    assert result.modal.available is True  # entitled + gateway ready → managed modal is offered
 
 
 def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
@@ -380,7 +400,7 @@ def test_prompt_enable_tool_gateway_choosing_declined_tool_clears_decline(monkey
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
     """apply_nous_managed_defaults must store the managed 'nous' selection
     when a Nous subscriber selects video_gen without a direct FAL_KEY."""
-    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.setattr(tool_backend_helpers, "managed_nous_tools_enabled", lambda **kw: True)
     monkeypatch.delenv("FAL_KEY", raising=False)
     monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
     monkeypatch.setattr(
@@ -454,7 +474,6 @@ def test_has_agent_browser_true_for_npx_only_resolution(monkeypatch):
     """No PATH binary and no runnable node_modules copy, but the browser_tool
     cascade resolves the npx fallback: browser capability is available."""
     _block_legacy_agent_browser_checks(monkeypatch)
-    import tools.browser_tool as browser_tool
 
     calls = []
 
@@ -471,20 +490,19 @@ def test_has_agent_browser_true_for_npx_only_resolution(monkeypatch):
 
 def test_has_agent_browser_false_when_nothing_resolvable(monkeypatch):
     _block_legacy_agent_browser_checks(monkeypatch)
-    import tools.browser_tool as browser_tool
 
     def raise_not_found(*, validate=True):
         raise FileNotFoundError("agent-browser CLI not found")
 
-    monkeypatch.setattr(browser_tool, "_find_agent_browser", raise_not_found)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", raise_not_found)
 
     assert ns._has_agent_browser() is False
 
 
 def test_has_agent_browser_import_failure_falls_back_to_path_check(monkeypatch):
-    """If tools.browser_tool cannot be imported, the old PATH + node_modules
+    """If tools.browser_tool_install cannot be imported, the old PATH + node_modules
     check must still answer (prior behaviour), not crash."""
-    monkeypatch.setitem(sys.modules, "tools.browser_tool", None)
+    monkeypatch.setitem(sys.modules, "tools.browser_tool_install", None)
     real_which = shutil.which
     monkeypatch.setattr(
         shutil,
@@ -507,11 +525,11 @@ def test_has_agent_browser_import_failure_falls_back_to_path_check(monkeypatch):
 def test_has_agent_browser_import_failure_falls_back_to_hermes_managed_node_path(
     monkeypatch, tmp_path
 ):
-    """If tools.browser_tool cannot be imported, the managed-Node rung must
+    """If tools.browser_tool_install cannot be imported, the managed-Node rung must
     still find a runnable agent-browser under the Hermes Node dir even when
     it's absent from the probe process's PATH — the Windows installer shape
     where install succeeded but the GUI still said needs setup."""
-    monkeypatch.setitem(sys.modules, "tools.browser_tool", None)
+    monkeypatch.setitem(sys.modules, "tools.browser_tool_install", None)
     managed_dir = tmp_path / "node"
     managed_dir.mkdir()
     managed_bin = managed_dir / "agent-browser"
@@ -540,7 +558,7 @@ def test_has_agent_browser_import_failure_falls_back_to_hermes_managed_node_path
 
 
 def test_has_agent_browser_import_failure_and_no_binary_is_false(monkeypatch):
-    monkeypatch.setitem(sys.modules, "tools.browser_tool", None)
+    monkeypatch.setitem(sys.modules, "tools.browser_tool_install", None)
     _block_legacy_agent_browser_checks(monkeypatch)
 
     assert ns._has_agent_browser() is False

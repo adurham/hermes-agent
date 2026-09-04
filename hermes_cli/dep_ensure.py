@@ -56,3 +56,4 @@ def ensure_dependency(dep: str, interactive: bool = True) -> bool:
             print(f"  {exc}")
         return False
     return check()
+

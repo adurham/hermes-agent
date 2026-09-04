@@ -1,12 +1,7 @@
 """Recover from npm ``EBADENGINE`` failures with the pm-pinned npm.
 
-The repo's ``.npmrc`` sets ``engine-strict=true`` and the root ``package.json``
-pins an ``engines.npm`` range, so an npm outside that range aborts every
-``npm ci`` / ``npm install`` we run inside the checkout::
-
-    npm error code EBADENGINE
-    npm error notsup Required: {"node":">=26.0.0","npm":">=12.0.0"}
-    npm error notsup Actual:   {"npm":"10.9.8","node":"v22.23.1"}
+We react to the failure rather than predict it: npm states the required range in the error, so the
+recovery reads the constraint out of the output it just produced (no semver matcher, no probe).
 
 Rather than predicting the failure (which would mean a semver range matcher and
 an ``npm --version`` probe before work that usually succeeds), we react to it:
@@ -35,53 +30,40 @@ __all__ = [
     "maybe_repair_npm_engine",
 ]
 
-# npm prints `npm error notsup Required: {...}` on npm >= 10 and
-# `npm ERR! notsup Required: {...}` on older releases.
+# `npm error notsup Required: {...}` on npm >= 10, `npm ERR! notsup Required: {...}` on older.
 _REQUIRED_RE = re.compile(r"Required:\s*(\{.*?\})")
 _ACTUAL_RE = re.compile(r"Actual:\s*(\{.*?\})")
 
-
 def is_ebadengine(output: str) -> bool:
     """Return True when *output* is an npm engine-compatibility failure."""
-    if not output:
-        return False
-    return "EBADENGINE" in output or "Unsupported engine" in output
+    return bool(output) and ("EBADENGINE" in output or "Unsupported engine" in output)
 
 
-def _iter_required_blocks(output: str) -> list[dict]:
-    blocks: list[dict] = []
-    for match in _REQUIRED_RE.finditer(output or ""):
+def _npm_fields(pattern: re.Pattern[str], output: str) -> list[str]:
+    """``npm`` values of every well-formed JSON block matching *pattern*, in order."""
+    values: list[str] = []
+    for match in pattern.finditer(output or ""):
         try:
             parsed = json.loads(match.group(1))
         except ValueError:
             continue
-        if isinstance(parsed, dict):
-            blocks.append(parsed)
-    return blocks
+        if isinstance(parsed, dict) and parsed.get("npm"):
+            values.append(str(parsed["npm"]).strip())
+    return values
 
 
 def required_npm_range(output: str) -> str | None:
     """Return the ``engines.npm`` range npm demanded in *output*.
 
-    Returns ``None`` when the output has no engine failure, or when the
-    failure is about Node rather than npm — upgrading npm cannot fix a Node
-    version mismatch, so the caller must not try.
-
-    When several packages report conflicting npm ranges the repo's own root
-    constraint is preferred (it is the one we control); otherwise the first
-    range wins, since any of them is a strict improvement over an npm that
-    satisfies none.
+    ``None`` when there is no engine failure or the failure is about Node (upgrading npm cannot fix
+    that, so the caller must not try). With conflicting ranges the repo's own root constraint wins
+    (we control it); otherwise the first range, since any is a strict improvement.
     """
     if not is_ebadengine(output):
         return None
-    ranges = [
-        str(block["npm"]).strip()
-        for block in _iter_required_blocks(output)
-        if block.get("npm")
-    ]
-    if not ranges:
+    distinct = list(dict.fromkeys(_npm_fields(_REQUIRED_RE, output)))
+    if not distinct:
         return None
-    distinct = list(dict.fromkeys(ranges))
     if len(distinct) > 1:
         repo_range = _repo_npm_range()
         if repo_range in distinct:
@@ -91,14 +73,7 @@ def required_npm_range(output: str) -> str | None:
 
 def actual_npm_version(output: str) -> str | None:
     """Return the npm version npm reported as ``Actual`` in *output*."""
-    for match in _ACTUAL_RE.finditer(output or ""):
-        try:
-            parsed = json.loads(match.group(1))
-        except ValueError:
-            continue
-        if isinstance(parsed, dict) and parsed.get("npm"):
-            return str(parsed["npm"]).strip()
-    return None
+    return next(iter(_npm_fields(_ACTUAL_RE, output)), None)
 
 
 def _repo_npm_range() -> str | None:
@@ -109,9 +84,7 @@ def _repo_npm_range() -> str | None:
     except (OSError, ValueError):
         return None
     engines = data.get("engines")
-    if not isinstance(engines, dict):
-        return None
-    value = engines.get("npm")
+    value = engines.get("npm") if isinstance(engines, dict) else None
     return str(value).strip() if value else None
 
 

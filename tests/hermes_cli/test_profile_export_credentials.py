@@ -13,7 +13,7 @@ import tarfile
 
 import pytest
 
-from hermes_cli.profiles import export_profile, _DEFAULT_EXPORT_EXCLUDE_ROOT
+from hermes_cli.profiles import export_profile
 
 # Long enough to match agent.redact prefix patterns (sk- + 10+ chars).
 _LEAKED_KEY = "sk-or-v1-reallyLongSecretKeyValue12345678"
@@ -26,11 +26,6 @@ def _patch_named_profile(monkeypatch, profiles_root, profile_dir):
 
 
 class TestCredentialExclusion:
-
-    def test_auth_json_in_default_exclude_set(self):
-        """auth.json must be in the default export exclusion set."""
-        assert "auth.json" in _DEFAULT_EXPORT_EXCLUDE_ROOT
-
 
     def test_named_profile_export_excludes_auth(self, tmp_path, monkeypatch):
         """Named profile export must not contain auth.json or .env."""

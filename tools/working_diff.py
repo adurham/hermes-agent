@@ -1,20 +1,10 @@
 """Working-tree git diff collection shared by the CLI and gateway ``/diff``.
 
-The ``/diff`` slash command answers "what changed here?" on every surface.
-This module holds the surface-agnostic collection logic so the CLI (colored
-terminal output) and the gateway (fenced, truncated messages) render the same
-underlying data.
-
-Modes
------
-- ``working`` (default): unstaged changes plus untracked files — what you'd
-  lose with ``git checkout . && git clean -fd``.
-- ``staged``: changes already staged for commit (``git diff --cached``).
-- ``all``: everything since HEAD (staged + unstaged) plus untracked files.
-
+Surface-agnostic so the CLI (colored terminal) and gateway (fenced, truncated
+messages) render the same data. Modes: ``working`` (unstaged + untracked),
+``staged`` (``git diff --cached``), ``all`` (everything since HEAD plus untracked).
 Untracked files are folded in via ``git diff --no-index /dev/null <file>`` so
-brand-new files show up as additions instead of being silently invisible
-(mirrors Codex CLI's ``/diff`` behaviour).
+brand-new files show as additions instead of being invisible.
 """
 
 from __future__ import annotations
@@ -23,6 +13,7 @@ import functools
 import os
 import shutil
 import subprocess
+from contextlib import suppress
 from typing import Dict, List, Optional
 
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
@@ -30,7 +21,12 @@ from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_en
 _GIT_TIMEOUT = 15
 _MAX_UNTRACKED_FILES = 50  # sanity cap so a node_modules explosion can't hang us
 
-VALID_MODES = ("working", "staged", "all")
+_MODE_ARGS = {
+    "working": ["diff"],
+    "staged": ["diff", "--cached"],
+    "all": ["diff", "HEAD"],
+}
+VALID_MODES = tuple(_MODE_ARGS)
 
 
 @functools.lru_cache(maxsize=1)
@@ -80,16 +76,14 @@ def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
 
 def _untracked_files(cwd: str) -> List[str]:
     code, out = _run(["ls-files", "--others", "--exclude-standard"], cwd)
-    if code != 0:
-        return []
-    return [line for line in out.splitlines() if line.strip()]
+    return [line for line in out.splitlines() if line.strip()] if code == 0 else []
 
 
 def _untracked_diff(cwd: str, files: List[str]) -> str:
     """Render untracked files as new-file diffs via ``git diff --no-index``."""
     chunks: List[str] = []
     for rel in files[:_MAX_UNTRACKED_FILES]:
-        try:
+        with suppress(subprocess.TimeoutExpired, OSError):
             # --no-index exits 1 when the files differ — that's the success
             # path here, so ignore the return code and keep the output.
             _, out = _run(
@@ -97,12 +91,8 @@ def _untracked_diff(cwd: str, files: List[str]) -> str:
             )
             if out.strip():
                 chunks.append(out.rstrip("\n"))
-        except (subprocess.TimeoutExpired, OSError):
-            continue
     if len(files) > _MAX_UNTRACKED_FILES:
-        chunks.append(
-            f"... ({len(files) - _MAX_UNTRACKED_FILES} more untracked files not shown)"
-        )
+        chunks.append(f"... ({len(files) - _MAX_UNTRACKED_FILES} more untracked files not shown)")
     return "\n".join(chunks)
 
 
@@ -121,7 +111,6 @@ def collect_working_diff(cwd: str, mode: str = "working",
 
     if _git_command() is None:
         return {"success": False, "error": "git is not installed or not on PATH."}
-
     try:
         code, _ = _run(["rev-parse", "--is-inside-work-tree"], cwd, timeout=5)
     except (subprocess.TimeoutExpired, OSError) as e:
@@ -133,41 +122,24 @@ def collect_working_diff(cwd: str, mode: str = "working",
     # gitconfig, e.g. difftastic) replaces the unified-diff format that the
     # CLI/gateway renderers and truncation logic parse. Force the internal
     # diff engine so the collected output shape is stable for all users.
-    if mode == "staged":
-        base_args = ["diff", "--no-ext-diff", "--cached"]
-    elif mode == "all":
-        base_args = ["diff", "--no-ext-diff", "HEAD"]
-    else:  # working
-        base_args = ["diff", "--no-ext-diff"]
-
+    # (_run's harden_git_argv also enforces this; explicit here for clarity.)
+    base_args = [a for a in _MODE_ARGS[mode] if a != "diff"]
+    base_args = ["diff", "--no-ext-diff", *base_args]
     pathspec = ["--", *paths] if paths else []
-
     try:
         _, stat_out = _run([*base_args, "--stat", *pathspec], cwd)
         _, diff_out = _run([*base_args, *pathspec], cwd, timeout=_GIT_TIMEOUT * 2)
-
-        untracked: List[str] = []
-        untracked_diff = ""
-        if mode in ("working", "all") and not paths:
-            untracked = _untracked_files(cwd)
-            if untracked:
-                untracked_diff = _untracked_diff(cwd, untracked)
+        untracked = _untracked_files(cwd) if mode in ("working", "all") and not paths else []
+        untracked_diff = _untracked_diff(cwd, untracked) if untracked else ""
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "git diff timed out."}
     except OSError as e:
         return {"success": False, "error": f"git failed: {e}"}
 
-    stat = stat_out.strip()
-    diff = diff_out.strip()
+    stat, diff = stat_out.strip(), diff_out.strip()
     if untracked_diff:
         diff = f"{diff}\n{untracked_diff}".strip()
-
-    result = {
-        "success": True,
-        "stat": stat,
-        "diff": diff,
-        "untracked": untracked,
-    }
+    result = {"success": True, "stat": stat, "diff": diff, "untracked": untracked}
     if not stat and not diff and not untracked:
         result["empty"] = True
     return result

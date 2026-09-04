@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_cli.web_server as web_server
+import hermes_cli.web_server_gateway as _web_server_gateway
 
 
 class TestDashboardSpawnExecutable:
@@ -30,7 +31,7 @@ class TestDashboardSpawnExecutable:
             patch.object(web_server, "PROJECT_ROOT", tmp_path),
             patch.object(sys, "executable", str(fake_venv)),
         ):
-            assert web_server._dashboard_spawn_executable() == str(fake_venv)
+            assert _web_server_gateway._dashboard_spawn_executable() == str(fake_venv)
 
     def test_base_interpreter_replaced_by_venv_python(self, tmp_path):
         """sys.executable pointing at the dependency-less uv base
@@ -44,7 +45,7 @@ class TestDashboardSpawnExecutable:
             patch.object(web_server, "PROJECT_ROOT", tmp_path),
             patch.object(sys, "executable", str(base_interp)),
         ):
-            chosen = web_server._dashboard_spawn_executable()
+            chosen = _web_server_gateway._dashboard_spawn_executable()
         assert chosen == str(fake_venv)
 
     def test_windows_layout_resolved(self, tmp_path):
@@ -57,7 +58,7 @@ class TestDashboardSpawnExecutable:
             patch.object(web_server, "PROJECT_ROOT", tmp_path),
             patch.object(sys, "executable", str(base_interp)),
         ):
-            chosen = web_server._dashboard_spawn_executable()
+            chosen = _web_server_gateway._dashboard_spawn_executable()
         assert Path(chosen).name == "python.exe"
         assert "Scripts" in chosen
 
@@ -68,7 +69,7 @@ class TestDashboardSpawnExecutable:
             patch.object(web_server, "PROJECT_ROOT", tmp_path),
             patch.object(sys, "executable", str(base_interp)),
         ):
-            assert web_server._dashboard_spawn_executable() == str(base_interp)
+            assert _web_server_gateway._dashboard_spawn_executable() == str(base_interp)
 
     @pytest.mark.require_symlinks
     def test_venv_symlink_to_base_is_still_preferred_unresolved(self, tmp_path):
@@ -87,7 +88,7 @@ class TestDashboardSpawnExecutable:
             patch.object(web_server, "PROJECT_ROOT", tmp_path),
             patch.object(sys, "executable", str(base)),
         ):
-            chosen = web_server._dashboard_spawn_executable()
+            chosen = _web_server_gateway._dashboard_spawn_executable()
         assert chosen == str(venv_py), (
             "must return the unresolved venv path, not the symlink target"
         )

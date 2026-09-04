@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from hermes_cli.status import show_status
+import subprocess
 
 
 def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, tmp_path):

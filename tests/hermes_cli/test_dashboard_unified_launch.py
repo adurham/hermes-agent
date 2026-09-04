@@ -8,6 +8,7 @@ launching profile preselected. `--isolated` opts out.
 import sys
 import types
 import pytest
+from hermes_cli import main_dashboard
 
 
 @pytest.fixture
@@ -35,6 +36,8 @@ class TestUnifiedDashboardRouting:
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
+        monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: False)
+        execs = []
 
         if sys.platform == "win32":
             # Windows cannot truly replace the process, so cmd_dashboard
@@ -93,8 +96,7 @@ class TestUnifiedDashboardRouting:
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         listening_calls = []
-        monkeypatch.setattr(
-            main_mod, "_dashboard_listening",
+        monkeypatch.setattr(main_dashboard, "_dashboard_listening",
             lambda host, port: listening_calls.append(1) or False,
         )
         execs = []

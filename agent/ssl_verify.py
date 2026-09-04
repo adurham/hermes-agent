@@ -76,11 +76,10 @@ _CA_CONTEXTS_LOCK = threading.Lock()
 def _context_for_ca_bundle(ca_path: str) -> ssl.SSLContext:
     """One ``SSLContext`` per CA bundle path, process-wide.
 
-    ``ssl.create_default_context(cafile=...)`` parses the whole bundle each
-    call. Every AIAgent (and every delegated child) resolves verify for its
-    own client, so an env/config CA bundle used to cost one parsed context —
-    and, because sharing keys on context identity, one private connection
-    pool — per agent. An ``SSLContext`` is safe to share across connections.
+    ``ssl.create_default_context(cafile=...)`` parses the whole bundle each call, and httpx
+    transport sharing keys on context identity — so a per-agent context cost one parsed bundle
+    AND one private connection pool per agent (and per delegated child). An ``SSLContext`` is
+    safe to share across connections.
     """
     with _CA_CONTEXTS_LOCK:
         ctx = _CA_CONTEXTS.get(ca_path)

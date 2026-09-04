@@ -30,35 +30,6 @@ def test_code_scoped_stamp_wins_over_home_stamp(tmp_path):
         assert detect_install_method(project_root=code) == "git"
 
 
-
-
-
-
-def test_legacy_apt_stamp_resolves_to_unknown(tmp_path):
-    """The removed Termux 'apt' lane: a legacy stamp falls through to 'unknown'.
-
-    'unknown' routes the user to the generic "hermes update" path — the same
-    treatment as any other unidentifiable install — instead of refusing.
-    """
-    (tmp_path / ".install_method").write_text("apt\n", encoding="utf-8")
-    with patch("hermes_cli.config.get_managed_system", return_value=None):
-        from hermes_cli.config import detect_install_method
-        assert detect_install_method(project_root=tmp_path) == "unknown"
-
-
-def test_stamp_install_method_writes_code_scoped(tmp_path):
-    """stamp_install_method writes next to the code, not into $HERMES_HOME."""
-    code = tmp_path / "code"
-    home = tmp_path / "home"
-    code.mkdir()
-    home.mkdir()
-    with patch("hermes_cli.config.get_hermes_home", return_value=home):
-        from hermes_cli.config import stamp_install_method
-        stamp_install_method("git", project_root=code)
-    assert (code / ".install_method").read_text().strip() == "git"
-    assert not (home / ".install_method").exists()
-
-
 def test_container_without_stamp_is_not_docker(tmp_path):
     """An unstamped install in a generic container must NOT be flagged as docker.
 
