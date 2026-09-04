@@ -31,6 +31,10 @@ jobs:
     # graph at dispatch (0 jobs). Each step that needs these exports them.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The mirror step pushes HEAD to a fresh bare repo — a shallow
+          # checkout can't (git: "shallow update not allowed").
+          fetch-depth: 0
 
       - name: Stage manifest is well-formed protocol v1
         shell: bash

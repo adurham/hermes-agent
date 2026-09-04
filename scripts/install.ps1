@@ -304,11 +304,6 @@ function Stage-Gateway {
     & (Join-Path $InstallDir "venv\Scripts\python.exe") (Join-Path $InstallDir "hermes") gateway install
 }
 
-function Stage-Desktop {
-    & (Join-Path $InstallDir "venv\Scripts\python.exe") (Join-Path $InstallDir "hermes") desktop build
-    if ($LASTEXITCODE) { Fail "desktop build failed" }
-}
-
 function Stage-Complete {
     $commit = $Commit
     if (-not $commit) { $commit = git -C $InstallDir rev-parse HEAD 2>$null }
@@ -318,6 +313,11 @@ function Stage-Complete {
             pinnedCommit = "$commit"
             pinnedBranch = $Branch
             completedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        }
+        $marker | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $InstallDir ".hermes-bootstrap-complete") -Encoding UTF8
+        Log "bootstrap complete marker written (pinned $commit)"
+    }
+}
 
 function Install-DesktopVoiceDeps {
     # Desktop ships with working voice out of the box: eagerly install the
