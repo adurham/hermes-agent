@@ -422,6 +422,15 @@ def ensure_mcp_discovery_started() -> None:
 def main():
     _install_sidecar_publisher()
 
+    # One TLS authority: trust the OS store process-wide before any
+    # outbound call resolves a CA bundle (see agent/ssl_verify.py).
+    try:
+        from agent.ssl_verify import install_truststore
+
+        install_truststore()
+    except Exception:
+        logger.debug("truststore install skipped", exc_info=True)
+
     # Cross-backend liveness (#94895): register a heartbeat row so the
     # startup orphan sweep can distinguish "row owned by a live but idle
     # backend" from "row truly orphaned". Must run BEFORE the sweep so
