@@ -817,6 +817,7 @@ class TestDefaultLiveVenv:
             )
         return root
 
+    @pytest.mark.platforms("linux")
     def test_dot_venv_only_is_targeted(self, tmp_path):
         from hermes_cli.runtime_repair import _default_live_venv
 

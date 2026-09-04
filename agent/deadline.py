@@ -105,6 +105,7 @@ MAX_SAFE_TIMEOUT_S = (
     _WINDOWS_MAX_WAIT_S if sys.platform == "win32" else 31_536_000.0
 )  # 365 days off-Windows
 
+
 # Grace period after a deadline fires before concluding the event loop thread
 # is blocked in a synchronous call and dumping stacks (family A diagnostics).
 _LOOP_BLOCKED_DUMP_GRACE_S = 5.0

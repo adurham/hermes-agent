@@ -26,6 +26,7 @@ from hermes_constants import (
 class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
+    @pytest.mark.platforms("linux")
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -47,7 +48,7 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
         local_appdata = tmp_path / "LocalAppData"
@@ -120,7 +121,7 @@ class TestGetDefaultHermesRoot:
 class TestGetHermesHome:
     """Tests for get_hermes_home() platform-aware fallback."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
         """When HERMES_HOME is unset on Windows, use %LOCALAPPDATA%\\hermes."""
         local_appdata = tmp_path / "LocalAppData"
@@ -552,6 +553,7 @@ class TestGetHermesDir:
 
 
 
+    @pytest.mark.require_symlinks
     def test_dangling_legacy_symlink_returns_new(self, tmp_path, monkeypatch):
         """A dangling legacy symlink must NOT shadow populated new-layout data.
 
@@ -570,6 +572,7 @@ class TestGetHermesDir:
         result = get_hermes_dir("platforms/pairing", "pairing")
         assert result == new
 
+    @pytest.mark.require_symlinks
     def test_symlink_to_populated_dir_returns_legacy(self, tmp_path, monkeypatch):
         """A legacy symlink pointing at a populated directory is honoured."""
         self._set_home(tmp_path, monkeypatch)

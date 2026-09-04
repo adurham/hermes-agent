@@ -2244,6 +2244,12 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     return out
 
 
+def _rmtree_force(path: Path) -> None:
+    from hermes_cli.fs_utils import rmtree_force
+
+    rmtree_force(path)
+
+
 def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
 
@@ -2255,7 +2261,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        _rmtree_force(base)
         out["bytes_freed"] = size
         out["deleted"] = True
     except OSError as exc:
@@ -2277,7 +2283,7 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
             continue
         try:
             size = _dir_size_bytes(child)
-            shutil.rmtree(child)
+            _rmtree_force(child)
             out["bytes_freed"] += size
             out["deleted"] += 1
         except OSError as exc:

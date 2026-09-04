@@ -84,6 +84,100 @@ class TestDetection:
         assert required_npm_range(broken) is None
 
 
+
+
+@pytest.mark.require_symlinks
+class TestManagedDetection:
+    """The upgrade must fire for every spelling of the managed npm, and for
+    no other npm — this is the boundary between "Hermes fixes it" and "the
+    user's own toolchain is left alone"."""
+
+    @pytest.fixture
+    def managed_tree(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        node = home / "node"
+        (node / "bin").mkdir(parents=True)
+        (node / "lib" / "node_modules" / "npm" / "bin").mkdir(parents=True)
+        cli = node / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        cli.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        (node / "bin" / "npm").symlink_to(cli)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def test_direct_managed_bin_is_managed(self, managed_tree):
+        npm = managed_tree / "node" / "bin" / "npm"
+        assert managed_npm_prefix(npm) == managed_tree / "node"
+
+    def test_symlink_from_local_bin_resolves_to_managed(self, managed_tree, tmp_path):
+        """An install links ~/.local/bin/npm at the managed tree; that link is
+        the npm a user's PATH actually resolves, so it must count as managed."""
+        local_bin = tmp_path / "local-bin"
+        local_bin.mkdir()
+        link = local_bin / "npm"
+        link.symlink_to(managed_tree / "node" / "bin" / "npm")
+        assert managed_npm_prefix(link) == managed_tree / "node"
+
+    def test_system_npm_is_not_managed(self, managed_tree, tmp_path):
+        system_npm = tmp_path / "usr" / "bin" / "npm"
+        system_npm.parent.mkdir(parents=True)
+        system_npm.write_text("#!/bin/sh\n", encoding="utf-8")
+        assert managed_npm_prefix(system_npm) is None
+
+    def test_no_npm_is_not_managed(self, managed_tree):
+        assert managed_npm_prefix(None) is None
+        assert managed_npm_prefix("") is None
+
+
+class TestInUseDeferral:
+    """The managed tree cannot be written while a running app executes from
+    it (WinError 5 on npm.cmd, #80926) — the npm upgrade defers instead."""
+
+    @pytest.fixture
+    def managed_npm(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        bin_dir = home / "node" / "bin"
+        bin_dir.mkdir(parents=True)
+        npm = bin_dir / "npm"
+        npm.write_text("#!/bin/sh\n", encoding="utf-8")
+        npm.chmod(0o755)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return npm
+
+    def test_in_use_managed_tree_defers_upgrade_without_running_npm(
+        self, managed_npm, monkeypatch
+    ):
+        monkeypatch.setattr(npm_engine, "managed_node_tree_in_use", lambda: True)
+
+        def forbidden_run(cmd, **kwargs):
+            raise AssertionError(f"npm must not run while the tree is in use: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", forbidden_run)
+
+        result = npm_engine.upgrade_managed_npm(
+            str(managed_npm),
+            ">=11.0.0",
+            prefix=managed_npm.parent,
+            quiet=True,
+        )
+        assert result is False
+
+    def test_in_use_deferral_blocks_repair_retry(self, managed_npm, monkeypatch):
+        """End-to-end: an in-use tree means no npm subprocess runs and no
+        retry is offered — the original EBADENGINE failure stands with the
+        deferral notice."""
+        monkeypatch.setattr(npm_engine, "managed_node_tree_in_use", lambda: True)
+
+        def forbidden_run(cmd, **kwargs):
+            raise AssertionError(f"npm must not run while the tree is in use: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", forbidden_run)
+
+        assert (
+            maybe_repair_npm_engine(str(managed_npm), EBADENGINE_OUTPUT, quiet=True)
+            is None
+        )
+
+
 class TestRepairDecision:
     """`maybe_repair_npm_engine` returns the npm to retry with (truthy) only
     when a repair actually happened, because its return value is what gates
