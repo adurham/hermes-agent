@@ -110,7 +110,7 @@ class TestFindBashCollapsedToPmShell:
     Program Files) and the ASLR diagnostic were deleted — the store is the
     authority on bundled bash."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_delegates_to_pm_shell(self, monkeypatch):
         """_find_bash returns whatever pm.shell() resolves (store bash or
         provisioned PATH)."""

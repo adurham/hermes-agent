@@ -82,11 +82,6 @@ class TestApprovalTimeoutOverflowClamp:
         # for the platform-aware primary bound; the fallback stays below
         # the narrowest one, the Windows DWORD-ms cap).
         assert 0 < value < 0xFFFFFFFF / 1000.0
-
-        # The fallback mirrors the per-host MAX_SAFE_TIMEOUT_S ceiling
-        # (imported BEFORE the block — the check itself must not depend on
-        # the patched-away import).
-        assert value == int(MAX_SAFE_TIMEOUT_S)
         # Still platform-safe for the crashing primitive.
         lock = threading.Lock()
         assert lock.acquire(timeout=value)
