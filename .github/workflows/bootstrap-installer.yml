@@ -71,7 +71,10 @@ jobs:
       - name: Run the installer stages against the PR checkout
         shell: bash
         env:
-          INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
+          # install.sh reads HERMES_INSTALL_DIR, not INSTALL_DIR (its default
+          # is $HOME/.hermes/hermes-agent); the marker/verification steps
+          # below use the same env var so they agree on the install root.
+          HERMES_INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
           HERMES_HOME: ${{ runner.temp }}/hermes-home
           HERMES_RUNTIME_DIR: ${{ runner.temp }}/hermes-tools
           HERMES_REPO_URL: ${{ steps.source.outputs.mirror }}
@@ -93,27 +96,27 @@ jobs:
           run_stage path
           run_stage config
           run_stage complete
-          test -f "$INSTALL_DIR/.hermes-bootstrap-complete"
+          test -f "$HERMES_INSTALL_DIR/.hermes-bootstrap-complete"
 
       - name: Verify the shipped version stamp
         shell: bash
         env:
-          INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
+          HERMES_INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
         run: |
           python3 scripts/verify-bootstrap-version-stamp.py \
-            --stamp "$INSTALL_DIR/.hermes-bootstrap-complete" \
-            --repo "$INSTALL_DIR" \
+            --stamp "$HERMES_INSTALL_DIR/.hermes-bootstrap-complete" \
+            --repo "$HERMES_INSTALL_DIR" \
             --expect-commit "${{ steps.source.outputs.sha }}" \
             --expect-branch ci-under-test
 
       - name: The pinned commit is on the branch the installer cloned
         shell: bash
         env:
-          INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
+          HERMES_INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
         run: |
           # The stamp must describe the bytes actually checked out: the
           # installed repo's HEAD is exactly the commit the installer pinned.
-          head="$(git -C "$INSTALL_DIR" rev-parse HEAD)"
+          head="$(git -C "$HERMES_INSTALL_DIR" rev-parse HEAD)"
           test "$head" = "${{ steps.source.outputs.sha }}" \
             || { echo "::error::installed HEAD $head != pinned ${{ steps.source.outputs.sha }}"; exit 1; }
 
