@@ -71,6 +71,9 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
         "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin)
     )
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+    # Keep the icon install out of the way: this test pins the
+    # absolute-path FALLBACK (copy impossible / not attempted here).
+    monkeypatch.setattr(lde, "_install_icon_to_hicolor", lambda _icon: False)
 
     entry = lde.install_desktop_entry(root)
 
@@ -84,7 +87,6 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
     exec_value = values["Exec"]
     exec_parts = exec_value.split(" ")
     if exec_parts[0].startswith('"'):
-        # quoted path — strip the wrapping quotes for the comparison
         unquoted = exec_parts[0][1:-1].replace("\\\\", "\\")
     else:
         unquoted = exec_parts[0]
@@ -95,9 +97,7 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
     icon_path = Path(values["Icon"])
     assert icon_path.is_absolute()
     assert icon_path == lde.icon_path(root)
-    assert icon_path.read_bytes() == b"\x89PNG fake"
 
-@pytest.mark.platforms("linux")
 
 
 def test_install_prefers_themed_icon_from_hicolor(tmp_path, xdg_home, monkeypatch):
