@@ -1345,9 +1345,9 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
          patch("hermes_cli.config.load_config", return_value={}), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
          patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
-         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
-        cli_main.cmd_gui(_ns())
+            cli_main.cmd_gui(_ns())
 
     mock_detect.assert_not_called()
     launch_env = mock_run.call_args_list[1].kwargs["env"]
