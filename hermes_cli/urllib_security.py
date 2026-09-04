@@ -164,7 +164,8 @@ def open_credentialed_url(
     ``ssl_context`` (an ``ssl.SSLContext``) overrides the HTTPS handler's TLS
     policy for this request only. It is used to honor a custom provider's
     ``ssl_ca_cert`` / ``ssl_verify`` on the ``/models`` discovery path, which
-    otherwise falls back to the process-wide ``SSL_CERT_FILE`` / certifi bundle.
+    otherwise falls back to the process-wide platform trust store
+    (``agent.ssl_verify.install_truststore``).
     """
     if opener_factory is None:
         opener = _secure_opener_from_installed_policy(

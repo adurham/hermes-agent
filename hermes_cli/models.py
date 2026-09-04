@@ -51,9 +51,10 @@ def _custom_provider_ssl_context(base_url: str):
 
     Mirrors the httpx/requests TLS resolution so the urllib ``/models``
     discovery probe honors a provider's ``ssl_ca_cert`` / ``ssl_verify``
-    instead of falling back to the process-wide ``SSL_CERT_FILE`` / certifi
-    bundle. Returns None when no per-provider TLS override applies, so the
-    caller keeps urllib's default policy for public/unconfigured endpoints.
+    instead of falling back to the process-wide platform trust store
+    (``agent.ssl_verify.install_truststore``). Returns None when no
+    per-provider TLS override applies, so the caller keeps urllib's default
+    policy for public/unconfigured endpoints.
     """
     if not base_url:
         return None
