@@ -92,7 +92,7 @@ def installed_tags() -> list[str]:
             continue
         for manifest in entry.glob("*/manifest.json"):
             try:
-                if json.loads(manifest.read_text(encoding="utf-8")).get("verified_version"):
+                if json.loads(manifest.read_text(encoding="utf-8-sig")).get("verified_version"):
                     found.append(entry.name)
                     break
             except (json.JSONDecodeError, OSError):
@@ -308,7 +308,7 @@ def ensure_runtime_installed(tag: str, backend: str,
     manifest_path = install_dir / "manifest.json"
     if manifest_path.exists():
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
             if manifest.get("verified_version"):
                 return install_dir
         except (json.JSONDecodeError, OSError):

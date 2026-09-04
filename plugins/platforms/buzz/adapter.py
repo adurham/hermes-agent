@@ -2038,7 +2038,7 @@ class BuzzAdapter(BasePlatformAdapter):
             path = self._cursor_path()
             if not path.exists():
                 return
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             logger.debug("Buzz: could not read channel cursors", exc_info=True)
             return

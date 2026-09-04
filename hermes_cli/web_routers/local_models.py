@@ -1034,7 +1034,7 @@ async def local_models_server(body: ServerActionBody):
 
                     from hermes_cli.local_runtime.supervisor import state_path
 
-                    state = json.loads(state_path().read_text(encoding="utf-8"))
+                    state = json.loads(state_path().read_text(encoding="utf-8-sig"))
                     pid = int(state.get("pid") or 0)
                     if pid > 0 and psutil.pid_exists(pid):
                         psutil.Process(pid).terminate()

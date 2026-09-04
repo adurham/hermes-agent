@@ -1153,7 +1153,7 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     for entry in entries:
         manifest = os.path.join(npx_root, entry, "package.json")
         try:
-            with open(manifest, "r", encoding="utf-8") as fh:
+            with open(manifest, "r", encoding="utf-8-sig") as fh:
                 deps = (json.load(fh) or {}).get("dependencies") or {}
         except (OSError, ValueError, TypeError):
             continue
@@ -1162,7 +1162,7 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
 
         pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
         try:
-            with open(pkg_json, "r", encoding="utf-8") as fh:
+            with open(pkg_json, "r", encoding="utf-8-sig") as fh:
                 bin_field = (json.load(fh) or {}).get("bin")
         except (OSError, ValueError, TypeError):
             continue

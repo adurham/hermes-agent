@@ -378,7 +378,7 @@ def _endpoint_disk_cache_get(normalized: str) -> Optional[Dict[str, Dict[str, An
     memoized: their loaded context is transient (LM Studio reloads).
     """
     try:
-        with _get_endpoint_metadata_cache_path().open("r", encoding="utf-8") as f:
+        with _get_endpoint_metadata_cache_path().open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         entry = data.get(normalized) if isinstance(data, dict) else None
         if not isinstance(entry, dict):
@@ -397,7 +397,7 @@ def _endpoint_disk_cache_put(normalized: str, cache: Dict[str, Dict[str, Any]]) 
         path = _get_endpoint_metadata_cache_path()
         data: Dict[str, Any] = {}
         if path.exists():
-            with path.open("r", encoding="utf-8") as f:
+            with path.open("r", encoding="utf-8-sig") as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
                 now = time.time()

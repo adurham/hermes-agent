@@ -4299,7 +4299,7 @@ def _resolve_copilot_catalog_api_key() -> str:
 
         cli_config = os.path.expanduser("~/.copilot/config.json")
         if os.path.isfile(cli_config):
-            with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+            with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
                 raw_text = "\n".join(
                     line for line in fh.read().splitlines()
                     if not line.lstrip().startswith("//")

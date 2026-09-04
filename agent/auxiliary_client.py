@@ -9812,7 +9812,7 @@ def _managed_local_netloc() -> str:
     try:
         from hermes_cli.local_runtime.supervisor import state_path
 
-        raw = state_path().read_text(encoding="utf-8")
+        raw = state_path().read_text(encoding="utf-8-sig")
         base = str((json.loads(raw) or {}).get("base_url", ""))
         netloc = urlparse(base).netloc.lower()
     except Exception:

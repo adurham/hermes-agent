@@ -5939,7 +5939,7 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
             if os.path.isfile(pid_file):
                 try:
                     from tools.process_registry import ProcessRegistry
-                    daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+                    daemon_pid = int(Path(pid_file).read_text(encoding="utf-8-sig").strip())
                     # The .pid file lives in a world-writable temp dir and
                     # PIDs recycle: verify this really is our daemon for
                     # this session before tree-killing, and pin the

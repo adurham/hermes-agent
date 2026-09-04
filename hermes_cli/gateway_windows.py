@@ -1309,7 +1309,7 @@ def _attested_pid_exited_cleanly(pid: int) -> bool:
         from hermes_cli.config import get_hermes_home
 
         sentinel_path = get_lifecycle_sentinel_path(Path(get_hermes_home()))
-        data = _json.loads(sentinel_path.read_text(encoding="utf-8"))
+        data = _json.loads(sentinel_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return False
     return (
@@ -1340,7 +1340,7 @@ def check_start_attestation(current_pids: list[int] | None = None) -> str | None
 
     try:
         path = _start_attestation_path()
-        data = _json.loads(path.read_text(encoding="utf-8"))
+        data = _json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):

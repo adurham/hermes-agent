@@ -1981,7 +1981,7 @@ def _adopt_oauth_material(target: Dict[str, Any], winner: Dict[str, Any]) -> Dic
 def _singleton_as_row(path: Path) -> Optional[Dict[str, Any]]:
     """Read a ``.anthropic_oauth.json`` as a pool-row-shaped dict, or None."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict) or not str(data.get("accessToken") or "").strip():
@@ -7931,7 +7931,7 @@ def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[st
     try:
         cli_config = os.path.expanduser("~/.copilot/config.json")
         if os.path.isfile(cli_config):
-            with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+            with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
                 raw = "\n".join(
                     line for line in fh.read().splitlines()
                     if not line.lstrip().startswith("//")
