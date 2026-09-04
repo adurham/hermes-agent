@@ -99,10 +99,45 @@ def _make_packaged_executable(root: Path, monkeypatch) -> Path:
     return exe
 
 
-@pytest.mark.platforms("linux")
+def _staging_dir_from(cmd) -> Path:
+    """Extract the ``-c.directories.output=<dir>`` electron-builder override
+    ``cmd_gui`` appends to ``npm run pack`` (stage-and-swap, #86443)."""
+    for arg in cmd:
+        if isinstance(arg, str) and arg.startswith("-c.directories.output="):
+            return Path(arg.split("=", 1)[1])
+    raise AssertionError(f"no staging output override in {cmd!r}")
+
+
+
+def _packaged_exe_rel() -> Path:
+    """Packaged-exe path relative to electron-builder's output dir on THIS host."""
+    if sys.platform == "darwin":
+        return Path("mac-arm64") / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
+    if sys.platform == "win32":
+        return Path("win-unpacked") / "Hermes.exe"
+    return Path("linux-unpacked") / "hermes"
+
+
+
+def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
+    """``subprocess.run`` side effect mimicking a real ``npm run pack``: lays
+    the packaged app down inside the STAGING dir named on the command line
+    (never in release/), then returns *returncode*. Non-pack commands (the
+    launch) return success."""
+    def _run(cmd, **kwargs):
+        if len(cmd) >= 3 and cmd[1:3] == ["run", "pack"]:
+            exe = _staging_dir_from(cmd) / _packaged_exe_rel()
+            exe.parent.mkdir(parents=True, exist_ok=True)
+            exe.write_text(content, encoding="utf-8")
+            if sys.platform not in ("darwin", "win32"):
+                (exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, returncode)
+        return subprocess.CompletedProcess(cmd, 0)
+    return _run
+
+
+
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
-    # Exercises the npm-pack → packaged-exe launch path; Windows desktop is
-    # MSIX-only (Electron autoUpdater) and takes a different launch route.
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -119,7 +154,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main._register_linux_desktop_entry"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
@@ -131,7 +166,13 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert mock_install.call_args.kwargs["capture_output"] is False
     install_env = mock_install.call_args.kwargs["env"]
     assert install_env is not None and "PATH" in install_env
-    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
+    pack_cmd = mock_run.call_args_list[0].args[0]
+    assert pack_cmd[:4] == ["/usr/bin/npm", "run", "pack", "--"]
+    # Stage-and-swap (#86443): the pack targets a staging dir beside release/,
+    # never release/ itself.
+    staging = _staging_dir_from(pack_cmd)
+    assert staging.parent == desktop_dir and staging.name.startswith(".staging-")
+    assert not staging.exists()  # swapped into release/ and cleaned up
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     launched = mock_run.call_args_list[1].args[0]
     if sys.platform.startswith("linux"):
@@ -289,23 +330,29 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     """
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    # Executable EXISTS at failure time → late failure, not a corrupt download.
-    _make_packaged_executable(root, monkeypatch)
+    live_exe = _make_packaged_executable(root, monkeypatch)
+    live_exe.write_text("good build", encoding="utf-8")
     monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
+    # Executable EXISTS in the STAGING output at failure time → late failure
+    # (e.g. signing), not a corrupt download. With stage-and-swap (#86443) the
+    # discriminator reads the staging dir, so the fake pack lays it down there.
+    pack_fail = _pack_into_staging(root, content="half-signed", returncode=1)
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
          patch("hermes_cli.main._redownload_electron_dist", return_value=True) as mock_dl, \
-         patch("hermes_cli.main.subprocess.run", return_value=pack_fail) as mock_run, \
+         patch("hermes_cli.main.subprocess.run", side_effect=pack_fail) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 1
+    # The live app was never touched by the failed pack (#86443).
+    assert live_exe.read_text(encoding="utf-8") == "good build"
+    assert not list((root / "apps" / "desktop").glob(".staging-*"))
     # Neither destructive recovery runs, and there is exactly ONE pack attempt.
     mock_purge.assert_not_called()
     mock_dl.assert_not_called()
