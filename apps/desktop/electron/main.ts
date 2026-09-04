@@ -33,6 +33,7 @@ import {
 import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import { PLACEHOLDER_FEED_BASE_URL } from './app-updater'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
   type BackendOutputTail,
@@ -275,14 +276,9 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
-import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { adoptPayloadVenv, installIdForRoot, isBundledInstall, resolvePayload, type PayloadInfo } from './payload-backend'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
-import { PLACEHOLDER_FEED_BASE_URL } from './app-updater'
-import { AppInstallerStrategy } from './updater/app-installer'
-import { ExternalStrategy } from './updater/external'
-import { resolveUpdaterMechanism } from './updater'
-import { writePendingRelaunch, consumePendingRelaunch } from './updater/relaunch'
+import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
+import { adoptPayloadVenv, installIdForRoot, isBundledInstall, type PayloadInfo, resolvePayload } from './payload-backend'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   buildRegistryProfileRoutes,
@@ -397,6 +393,7 @@ import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { classifyUpdateRoot } from './update-root-policy'
+import { resolveUpdaterMechanism } from './updater'
 import {
   collectRelaunchArgs,
   observeUpdaterHandoff,
@@ -408,6 +405,9 @@ import {
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
 } from './updater-process'
+import { AppInstallerStrategy } from './updater/app-installer'
+import { ExternalStrategy } from './updater/external'
+import { consumePendingRelaunch, writePendingRelaunch } from './updater/relaunch'
 import {
   formatBlockerMessage,
   formatProbeFailedMessage,
@@ -3031,6 +3031,7 @@ async function checkUpdates() {
   // newer package is on the registered .appinstaller source; Store installs
   // report unsupported (the steward owns their update loop).
   const bundledPayload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
+
   if (bundledPayload) {
     const strategy = resolveBundledUpdateStrategy(bundledPayload)
 
@@ -3063,10 +3064,12 @@ async function checkUpdates() {
   // territory. A steward-owned tree (external / electron-updater) must not be
   // pulled into from the desktop.
   const rootStamp = readCanonicalInstallStamp()
+
   const rootPolicy = classifyUpdateRoot({
     isGitTree: true,
     updateMechanism: (rootStamp?.updateMechanism as any) ?? null
   })
+
   if (!rootPolicy.updatable) {
     return {
       supported: false,
@@ -3350,9 +3353,12 @@ function isWindowsStore(): boolean {
  */
 function resolveDesktopFeedBaseUrl(): string {
   const configured = readUpdatesFeedBaseFromConfig()
-  if (configured) return configured
+
+  if (configured) {return configured}
   const env = process.env.HERMES_DESKTOP_FEED_BASE_URL
-  if (env) return env
+
+  if (env) {return env}
+
   return PLACEHOLDER_FEED_BASE_URL
 }
 
@@ -3360,11 +3366,14 @@ function resolveDesktopFeedBaseUrl(): string {
 function readUpdatesFeedBaseFromConfig(): string {
   try {
     const configPath = path.join(HERMES_HOME, 'config.yaml')
-    if (!fileExists(configPath)) return ''
+
+    if (!fileExists(configPath)) {return ''}
     const raw = fs.readFileSync(configPath, 'utf8')
     const match = raw.match(/^\s*desktop_feed_base_url\s*:\s*(.+)\s*$/m)
-    if (!match) return ''
+
+    if (!match) {return ''}
     const value = match[1].trim().replace(/^['"]|['"]$/g, '')
+
     return value
   } catch {
     return ''
@@ -3391,6 +3400,7 @@ function isLightVariant(): boolean {
 async function runPayloadPython(python: string, script: string): Promise<{ code: number; stdout: string }> {
   const payload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
   const env = { ...process.env }
+
   if (payload?.sitePackages) {
     env.PYTHONPATH = payload.sitePackages
   }
@@ -3401,13 +3411,14 @@ async function runPayloadPython(python: string, script: string): Promise<{ code:
       stdio: ['ignore', 'pipe', 'pipe'],
       env
     })
+
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', chunk => { stdout += chunk.toString() })
     child.stderr.on('data', chunk => { stderr += chunk.toString() })
     child.on('error', (error) => resolve({ code: 1, stdout: JSON.stringify({ available: null, error: error.message }) }))
     child.on('close', (code) => {
-      if (stderr) console.error(`[app-installer] checker stderr: ${stderr.slice(0, 400)}`)
+      if (stderr) {console.error(`[app-installer] checker stderr: ${stderr.slice(0, 400)}`)}
       resolve({ code: code ?? 1, stdout })
     })
   })
@@ -3421,6 +3432,7 @@ async function runPayloadPython(python: string, script: string): Promise<{ code:
  */
 async function teardownBundledBackend(): Promise<void> {
   const hermesProcess = backendConnectionState.getProcess()
+
   if (hermesProcess || backendPool.size > 0) {
     stopBackendTreesForUpdate(hermesProcess, {
       forceKillProcessTree,
@@ -5113,21 +5125,26 @@ function createActiveBackend(backendArgs) {
  */
 function provisionPosixCliOnPath(payload: PayloadInfo): void {
   const names = ['hermes', 'hermes-agent', 'hermes-acp']
+
   try {
     const binDir = path.join(os.homedir(), '.local', 'bin')
     fs.mkdirSync(binDir, { recursive: true })
     let linked = 0
+
     for (const name of names) {
       const source = path.join(payload.root, 'bin', name)
       const target = path.join(binDir, name)
+
       // lstat, not exists: a DANGLING symlink from a previous install (the
       // .app moved/uninstalled) is exactly the case we want to replace.
       if (fs.lstatSync(target, { throwIfNoEntry: false })) {
         continue
       }
+
       fs.symlinkSync(source, target)
       linked += 1
     }
+
     if (linked > 0) {
       rememberLog(`[payload] linked ${linked} CLI trampoline(s) into ${binDir}`)
     }
@@ -17913,10 +17930,12 @@ function readLatestSyncReceipt(): Record<string, unknown> | null {
     'update_receipts',
     'latest.json'
   )
+
   try {
     const text = fs.readFileSync(receiptPath, 'utf8')
     // tolerate a BOM (hermes writes plain, but editors touch configs)
     const stripped = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+
     return JSON.parse(stripped)
   } catch {
     return null
