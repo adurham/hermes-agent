@@ -73,6 +73,17 @@ def build_gateway_parser(
         ),
     )
     gateway_run.add_argument(
+        "--service",
+        action="store_true",
+        help=(
+            "Windows SCM frontend mode: run as the HermesGateway Windows "
+            "Service (started by the Service Control Manager; spawns the "
+            "real gateway as a child and reports STOP via the graceful "
+            "planned-stop path). Not for interactive use — the SCM invokes "
+            "this, or `hermes gateway service on` does."
+        ),
+    )
+    gateway_run.add_argument(
         "--no-supervise",
         action="store_true",
         help=(
