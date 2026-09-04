@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'user-guide/features/overview',
         'user-guide/features/tool-gateway',
+        'user-guide/features/gateway-service',
         {
           type: 'category',
           label: 'Core',

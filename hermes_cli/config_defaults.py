@@ -3212,6 +3212,13 @@ DEFAULT_CONFIG = {
         # the historical serve-all behavior; [] serves only the default.
         "multiplex_profile_allowlist": None,
 
+        # The MSIX HermesGateway Windows Service posture (windows MSIX
+        # installs only; see `hermes gateway service on|off|status`).
+        # False = the service exists but stays demand-start/stopped
+        # (config-only posture — settled 2026-09-03); True = automatic
+        # at logon, bots keep running without the desktop app.
+        "service": False,
+
         # After an unexpected SIGTERM interrupts a running gateway agent,
         # wait this many seconds for it to unwind before adapter and database
         # teardown proceeds. Keep this short so service-manager shutdowns do
