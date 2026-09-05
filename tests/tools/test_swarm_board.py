@@ -436,6 +436,36 @@ class TestFormatRow(unittest.TestCase):
         line = format_row(b.get_rows_snapshot()[0])
         assert "\n" not in line
 
+    def test_format_row_elapsed_under_60s_is_bare_seconds(self):
+        b = SwarmBoard()
+        b.register("a1")
+        row = b.get_rows_snapshot()[0]
+        row.elapsed_seconds = 42.0
+        line = format_row(row)
+        assert "42s" in line
+        assert "m" not in line.rsplit("·", 1)[-1]
+
+    def test_format_row_elapsed_switches_to_mins_seconds_past_60s(self):
+        # Matches the mm:ss rollover format used elsewhere in the TUI
+        # (cli.py::_render_spinner_text — minutes unpadded, seconds
+        # zero-padded, e.g. "1m05s") instead of an ever-growing bare
+        # second count like "421s".
+        b = SwarmBoard()
+        b.register("a1")
+        row = b.get_rows_snapshot()[0]
+        row.elapsed_seconds = 421.0
+        line = format_row(row)
+        assert "7m01s" in line
+        assert "421s" not in line
+
+    def test_format_row_elapsed_exact_60s_rolls_over(self):
+        b = SwarmBoard()
+        b.register("a1")
+        row = b.get_rows_snapshot()[0]
+        row.elapsed_seconds = 60.0
+        line = format_row(row)
+        assert "1m00s" in line
+
 
 def _snap(sid, *, parent=None, depth=0, status="running"):
     """Minimal RowSnapshot for the pure ordering/collapse helpers."""

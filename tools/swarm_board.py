@@ -238,6 +238,22 @@ def _flatten_to_oneline(text: str, max_len: int) -> str:
     return flat
 
 
+def _format_row_elapsed(seconds: float) -> str:
+    """Render a row's elapsed time, switching to ``MmSSs`` past 60s.
+
+    Mirrors ``cli.py::_render_spinner_text``'s rollover format (minutes NOT
+    zero-padded, seconds zero-padded to 2 digits — e.g. ``1m05s``,
+    ``12m09s``) so every live counter in the TUI reads the same way once it
+    crosses a minute, instead of the swarm board being the one place still
+    showing a bare growing second count like ``421s``.
+    """
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m{secs:02d}s"
+
+
 def format_row(row: RowSnapshot, *, depth: Optional[int] = None) -> str:
     """Render a single row to a one-line status string.
 
@@ -258,7 +274,7 @@ def format_row(row: RowSnapshot, *, depth: Optional[int] = None) -> str:
     model = row.model or "?"
     if "/" in model:
         model = model.split("/", 1)[1]
-    elapsed = f"{row.elapsed_seconds:.0f}s"
+    elapsed = _format_row_elapsed(row.elapsed_seconds)
     tool = _flatten_to_oneline(row.last_tool or "", 30)
     if tool.startswith("mcp_"):
         tool = tool[4:]
