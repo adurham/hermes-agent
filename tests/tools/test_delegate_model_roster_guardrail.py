@@ -278,7 +278,17 @@ def test_depth0_roster_valid_model_with_agent_type_kept():
     coder = next(c for c in captured if c["agent_type"] == "coder")
     assert coder["model"] == "claude-opus-5"
     assert coder["agent_type"] == "coder"
-    assert "model_roster_warnings" not in result
+    # Narrowed 2026-09-04 from a blanket `"model_roster_warnings" not in
+    # result`: this test's subject is task 0 (roster-valid model= alongside
+    # agent_type= must NOT be dropped), but the batch's filler task 1
+    # ({"goal": _G1}) states neither model= nor agent_type= and now
+    # legitimately draws the silent-omission notice. Assert the actual
+    # intent — no drop/ignore warning about task 0's model — instead of the
+    # absence of the shared channel, matching the `any(...)` style the
+    # sibling assertions in this file already use.
+    warnings = result.get("model_roster_warnings") or []
+    assert not any("IGNORED" in w for w in warnings), warnings
+    assert not any("Task 0" in w for w in warnings), warnings
 
 
 # ── depth 0: EMPTY roster -> fail-open ──────────────────────────────────────

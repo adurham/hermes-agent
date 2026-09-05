@@ -33,6 +33,34 @@ i.e. exactly the behavior before this module existed.  A routing decision is
 never worse than the status quo, and every decision (including fallbacks) is
 surfaced in the delegation result metadata so silent misrouting can't hide.
 
+Two ways in, one classifier call
+--------------------------------
+A task with NEITHER ``model`` nor ``agent_type`` (or one that explicitly
+opts in with ``agent_type="auto"``) is fully routed by the classifier —
+tier → role → model, as described above.
+
+A task that DOES carry an explicit ``agent_type`` is no longer excluded
+outright: it rides along in the SAME batch classifier call (no extra API
+call, no extra latency) purely so its tier recommendation can be compared
+against the tier the caller actually picked. That comparison is
+**escalate-only**: when the classifier's tier ranks HIGHER than the stated
+role's tier, the stated role is replaced by the higher tier's role (same
+``tier_roles`` map the full auto-route path uses); when it ranks equal or
+lower, the stated choice is kept completely unchanged. Auto-route can
+therefore only ever move a task UP the ladder, never quietly demote a
+deliberate choice. Ranks come from ``hermes_cli.model_tiers`` and resolve on
+EITHER ladder — the Anthropic one (``family_of``/``tier_rank_map``) or the
+local/non-Anthropic one (``local_ladder``, anchored on
+jr-coder=0/mid-coder=1/sr-coder=2/pm=2) — which matters because a role whose
+primary model is an ollama-cloud slug has no Anthropic family at all. When a
+rank cannot be resolved for either side, the task fails open (stated choice
+kept, no escalation, not an error). Toggleable via
+``delegation.auto_route.escalate_only`` (default True).
+
+An explicit per-task ``model`` bypasses BOTH paths — full auto-route and the
+escalate-only check — and is never sent to the classifier at all. A stated
+model is intent; nothing here overrides it.
+
 Classification also optionally picks a ruflo persona (``agent_type``) for a
 task, using the SAME single aux call — no second LLM round-trip. When the
 classifier confidently matches a task to a discovered persona (name
@@ -83,6 +111,15 @@ logger = logging.getLogger(__name__)
 AUX_TASK = "delegation_router"
 
 TIERS = ("light", "standard", "deep")
+
+#: Literal ``agent_type`` value meaning "let auto-route decide". It behaves
+#: EXACTLY like omitting ``agent_type`` for routing purposes (the task is
+#: fully classified), but it is an explicit, visible caller choice rather
+#: than a silent omission — so ``tools/delegate_tool.py`` does not emit its
+#: silent-omission warning for it. Kept here (the module that owns
+#: auto-routing semantics) so the tool and the router can never disagree
+#: about the spelling; delegate_tool imports it with a literal fallback.
+AUTO_AGENT_TYPE = "auto"
 
 # tier → role defaults; overridable via delegation.auto_route.tier_roles.
 # The role then resolves to a model via delegation.model_by_role — reusing the
@@ -222,12 +259,104 @@ def _parse_classifier_json(text: str) -> Optional[List[dict]]:
     return None
 
 
+def _norm_model(model: Any) -> str:
+    """Strip a provider prefix and normalize whitespace for rank lookups.
+
+    Mirrors ``hermes_cli.model_tiers._normalize_model`` (which is private to
+    that module) so the keys we look up match the keys both ladders are
+    built with. Pure string handling — no tier logic lives here.
+    """
+    m = str(model or "").strip()
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return m
+
+
+def _rank_maps() -> Tuple[Dict[str, int], Dict[str, int]]:
+    """Return ``(anthropic_ranks, local_ranks)`` resolved once per delegation.
+
+    Both ladders live in :mod:`hermes_cli.model_tiers` and both resolve from
+    the LIVE config on every call (a file read), so they are resolved once
+    here and threaded through the per-task comparison rather than re-read
+    per task. Either map is ``{}`` when its ladder can't be built — that
+    degrades to "rank unknown", which fails open at the comparison site.
+    """
+    try:
+        from hermes_cli.model_tiers import local_ladder, tier_rank_map
+    except Exception:
+        return {}, {}
+    try:
+        anthropic = dict(tier_rank_map())
+    except Exception:
+        anthropic = {}
+    try:
+        local = dict(local_ladder())
+    except Exception:
+        local = {}
+    return anthropic, local
+
+
+def _model_rank(
+    model: str,
+    anthropic_ranks: Dict[str, int],
+    local_ranks: Dict[str, int],
+) -> Optional[int]:
+    """Rank ``model`` on whichever ladder recognizes it, else ``None``.
+
+    Anthropic ladder first (exact roster-current model via
+    ``tier_rank_map()``, then the family regex via ``family_of()`` so a
+    dated/variant id like ``claude-haiku-4-5-20251001`` still ranks), then
+    the local/non-Anthropic ladder (``local_ladder()``, anchored on
+    jr-coder=0 / mid-coder=1 / sr-coder=2 / pm=2). The two ladders are
+    disjoint by construction — ``local_ladder()`` excludes anything with an
+    Anthropic tier family — so the order only decides which lookup answers
+    first, never which answer is correct.
+
+    ``None`` means "this ladder pair does not recognize the model": the
+    caller must fail open rather than guess a rank.
+    """
+    norm = _norm_model(model)
+    if not norm:
+        return None
+    rank = anthropic_ranks.get(norm)
+    if rank is not None:
+        return rank
+    try:
+        from hermes_cli.model_tiers import TIER_NAMES, family_of
+
+        family = family_of(norm)
+        if family in TIER_NAMES:
+            return TIER_NAMES.index(family)
+    except Exception:
+        pass
+    return local_ranks.get(norm)
+
+
+def _role_rank(
+    role: str,
+    role_model_map: Dict[str, Any],
+    anthropic_ranks: Dict[str, int],
+    local_ranks: Dict[str, int],
+) -> Optional[int]:
+    """Rank the model a role resolves to, or ``None`` when unrankable.
+
+    ``None`` covers both "the role has no ``model_by_role`` entry" and "its
+    model is on neither ladder" — indistinguishable to the caller on
+    purpose, since both mean the same thing: no comparison is possible.
+    """
+    if not role:
+        return None
+    return _model_rank(
+        _entry_model(role_model_map.get(role)), anthropic_ranks, local_ranks
+    )
+
+
 def route_task_models(
     task_list: List[Dict[str, Any]],
     role_model_map: Dict[str, Any],
     delegation_cfg: dict,
     active_provider: Optional[str],
-) -> Dict[int, Dict[str, str]]:
+) -> Dict[int, Dict[str, Any]]:
     """Classify unrouted tasks and return per-index model/persona routing.
 
     Args:
@@ -250,6 +379,15 @@ def route_task_models(
         otherwise, in which case the caller should treat the entry as
         tier/model-only routing. Tasks absent from the map fall through to
         the existing precedence chain (fail-open). Never raises.
+
+        ESCALATION entries (a task that stated an explicit ``agent_type``
+        whose configured tier ranks BELOW the classifier's recommendation)
+        additionally carry ``escalated: True``, ``escalated_from`` (the
+        stated role), ``escalated_from_rank`` and ``rank``. Their
+        ``agent_type`` is the higher tier's role — the caller REPLACES the
+        stated agent_type with it. Escalation never fires downward: an
+        equal-or-lower recommendation yields no entry at all, leaving the
+        stated choice untouched.
     """
     try:
         ar = _auto_route_cfg(delegation_cfg)
@@ -265,15 +403,33 @@ def route_task_models(
         if (active_provider or "").strip().lower() not in providers:
             return {}
 
-        # Only tasks with neither an explicit model nor an agent_type are
-        # eligible — a stated choice is intent and always wins.
-        pending: List[int] = [
-            i
-            for i, t in enumerate(task_list)
-            if not str(t.get("model") or "").strip()
-            and not str(t.get("agent_type") or "").strip()
-        ]
-        if not pending:
+        # Escalate-only checking for tasks that DID state an agent_type.
+        # On by default; delegation.auto_route.escalate_only: false restores
+        # the pre-2026-09-04 behavior (explicit agent_type excluded from
+        # classification entirely).
+        escalate_only = bool(ar.get("escalate_only", True))
+
+        # Two eligible populations, ONE classifier call:
+        #
+        #   pending  — no model AND (no agent_type, or the explicit opt-in
+        #              agent_type="auto"). Fully routed: tier→role→model.
+        #   escalate — no model AND an explicit agent_type. Classified only
+        #              to compare tiers; the result can raise the task's
+        #              tier but never lower it.
+        #
+        # An explicit per-task model is in NEITHER population — a stated
+        # model is intent and always wins, so it is never even classified.
+        pending: List[int] = []
+        escalate: Dict[int, str] = {}
+        for i, t in enumerate(task_list):
+            if str(t.get("model") or "").strip():
+                continue
+            stated = str(t.get("agent_type") or "").strip()
+            if not stated or stated.lower() == AUTO_AGENT_TYPE:
+                pending.append(i)
+            elif escalate_only:
+                escalate[i] = stated
+        if not pending and not escalate:
             return {}
 
         tier_roles_raw = ar.get("tier_roles")
@@ -305,15 +461,26 @@ def route_task_models(
         persona_catalog = _persona_catalog(role_model_map) if classify_persona else []
         persona_names = {name for name, _cat, _desc in persona_catalog}
 
+        # One call for BOTH populations — escalate-check tasks ride along
+        # with full-route tasks, so adding the check costs zero extra API
+        # calls and zero extra latency.
+        classify_indices = sorted(set(pending) | set(escalate))
         results = _classify(
-            [(i, _excerpt(task_list[i], max_chars)) for i in pending],
+            [(i, _excerpt(task_list[i], max_chars)) for i in classify_indices],
             timeout=float(timeout),
             persona_catalog=persona_catalog,
         )
         if not results:
             return {}
 
-        routes: Dict[int, Dict[str, str]] = {}
+        # Ladder maps resolved ONCE per delegation (each is a live config
+        # read), only when there is actually an escalate-check to run.
+        _anthropic_ranks: Dict[str, int] = {}
+        _local_ranks: Dict[str, int] = {}
+        if escalate:
+            _anthropic_ranks, _local_ranks = _rank_maps()
+
+        routes: Dict[int, Dict[str, Any]] = {}
         for idx, result in results.items():
             # Tolerate legacy 2-tuple (tier, reason) results — e.g. tests or
             # callers that monkeypatch _classify pre-persona-support — as
@@ -323,10 +490,50 @@ def route_task_models(
             else:
                 tier, reason = result
                 agent_type = ""
-            if idx not in pending:  # classifier hallucinated an index
-                continue
             role = tier_roles.get(tier, "")
             model = _entry_model(role_model_map.get(role)) if role else ""
+
+            if idx in escalate:
+                # ── Escalate-only path ────────────────────────────────────
+                stated_role = escalate[idx]
+                if not model:
+                    # The recommended tier's role has no model — nothing to
+                    # escalate TO. Fail open, keep the stated choice.
+                    continue
+                stated_rank = _role_rank(
+                    stated_role, role_model_map, _anthropic_ranks, _local_ranks
+                )
+                rec_rank = _role_rank(
+                    role, role_model_map, _anthropic_ranks, _local_ranks
+                )
+                if stated_rank is None or rec_rank is None:
+                    # Rank unresolvable on EITHER ladder for one side — fail
+                    # open for this task (keep the stated choice, no error).
+                    logger.debug(
+                        "delegation escalate-check: task %s rank unresolved "
+                        "(stated %r -> %r, recommended %r -> %r); keeping "
+                        "stated choice",
+                        idx, stated_role, stated_rank, role, rec_rank,
+                    )
+                    continue
+                if rec_rank <= stated_rank:
+                    # Equal or lower — NEVER downgrade a stated choice.
+                    continue
+                routes[idx] = {
+                    "model": model,
+                    "tier": tier,
+                    "role": role,
+                    "agent_type": role,
+                    "reason": reason,
+                    "escalated": True,
+                    "escalated_from": stated_role,
+                    "escalated_from_rank": stated_rank,
+                    "rank": rec_rank,
+                }
+                continue
+
+            if idx not in pending:  # classifier hallucinated an index
+                continue
             if not model:
                 # Unmapped role — fail open for this task, but say so.
                 logger.debug(
