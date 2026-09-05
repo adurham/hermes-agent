@@ -5399,14 +5399,25 @@ def delegate_task(
     # on the same role don't re-resolve the provider N times.
     _role_creds_cache: Dict[tuple, dict] = {}
 
-    # Auto-route: for tasks that state NEITHER an explicit model NOR an
-    # agent_type, a cheap classifier picks a capability tier → role → model
-    # (via the same model_by_role map above), so a cheap main model can fan
-    # work out onto the right tier without the caller having to remember to
-    # set agent_type.  Fail-open: on any failure this returns {} and every
-    # task falls through to the pre-existing precedence chain unchanged. The
-    # child's provider is creds["provider"] when delegation.provider is set,
-    # else the parent's provider (auto-route is provider-guarded on that).
+    # Auto-route: a cheap classifier reads goal+context for every task that
+    # did NOT pin an explicit model, in ONE batch call, and serves two
+    # distinct purposes:
+    #
+    #   * Tasks with no agent_type (or the explicit opt-in agent_type="auto")
+    #     are FULLY routed: tier → role → model via the same model_by_role
+    #     map above, so a cheap main model can fan work onto the right tier
+    #     without the caller having to remember to set agent_type.
+    #   * Tasks that DID state an agent_type get an ESCALATE-ONLY check: the
+    #     classifier's recommended tier is compared against the stated role's
+    #     configured tier rank, and the stated choice is replaced ONLY when
+    #     the recommendation ranks strictly higher. Never a downgrade.
+    #
+    # A task with an explicit model= is in neither population — it is never
+    # classified at all (see the invariant note at the precedence chain
+    # below). Fail-open: on any failure this returns {} and every task falls
+    # through to the pre-existing precedence chain unchanged. The child's
+    # provider is creds["provider"] when delegation.provider is set, else the
+    # parent's provider (auto-route is provider-guarded on that).
     try:
         from tools.delegation_router import route_task_models
 
@@ -5420,13 +5431,34 @@ def delegate_task(
         logger.debug("delegate_task: auto-route dispatch failed", exc_info=True)
         _auto_routes = {}
 
+    # The literal agent_type value meaning "auto-route this task" — an
+    # explicit, visible opt-in that routes exactly like omitting the field
+    # but does NOT trip the silent-omission warning below. Imported from the
+    # router (single source of truth) with a literal fallback so an older /
+    # partially-loaded router module can never break dispatch.
+    try:
+        from tools.delegation_router import AUTO_AGENT_TYPE as _AUTO_AGENT_TYPE
+    except Exception:
+        _AUTO_AGENT_TYPE = "auto"
+
     for i, t in enumerate(task_list):
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
         effective_role = _normalize_role(t.get("role") or top_role)
         # Per-task agent_type (ruflo persona) — when set, looks up a
         # per-role model override AND injects ruflo's persona prompt.
-        task_agent_type = (t.get("agent_type") or "").strip() or None
+        #
+        # agent_type="auto" is NOT a persona: it is the explicit opt-in to
+        # auto-routing, so it normalises to None here (identical routing to
+        # omitting the field — no bogus model_by_role["auto"] lookup, no
+        # "auto" persona-prompt injection) while still being recorded as an
+        # explicit choice so it does not trip the omission warning.
+        _stated_agent_type = (t.get("agent_type") or "").strip()
+        _agent_type_is_auto = _stated_agent_type.lower() == _AUTO_AGENT_TYPE
+        _agent_type_omitted = not _stated_agent_type
+        task_agent_type = (
+            None if (_agent_type_omitted or _agent_type_is_auto) else _stated_agent_type
+        )
         # Model precedence: per-task model → per-task role-map →
         # auto-route (classifier) → top-level model → delegation.model
         # config (creds["model"]) → parent's model.
@@ -5443,6 +5475,48 @@ def delegate_task(
             _auto_agent_type = (_route.get("agent_type") or "").strip() or None
             if _auto_agent_type:
                 task_agent_type = _auto_agent_type
+        # Escalate-only override (2026-09-04): the task DID state an
+        # agent_type, and the classifier judged the work to need a strictly
+        # DEEPER tier than that role is configured for. Replace the stated
+        # persona with the higher tier's role so the whole existing
+        # agent_type machinery (role→model, role→provider pin, role→
+        # persona prompt, role→iteration budget) follows the escalation with
+        # no duplicated logic. The router only ever emits an escalation
+        # upward — an equal-or-lower recommendation produces no entry at
+        # all, so a stated choice can never be silently demoted here.
+        _escalation = None
+        if (
+            task_agent_type is not None
+            and _route
+            and _route.get("escalated")
+            and (_route.get("agent_type") or "").strip()
+        ):
+            _escalation = {
+                "from": task_agent_type,
+                "to": (_route.get("agent_type") or "").strip(),
+                "tier": _route.get("tier"),
+                "from_rank": _route.get("escalated_from_rank"),
+                "to_rank": _route.get("rank"),
+                "reason": _route.get("reason"),
+            }
+            task_agent_type = _escalation["to"]
+            _roster_warnings.append(
+                f"Task {i}: agent_type={_escalation['from']!r} was ESCALATED to "
+                f"{_escalation['to']!r} (tier {_escalation['tier']!r}, rank "
+                f"{_escalation['from_rank']}→{_escalation['to_rank']}) by the "
+                f"auto-route classifier"
+                + (f": {_escalation['reason']}" if _escalation.get("reason") else "")
+                + ". Auto-route only ever escalates, never downgrades. Pass an "
+                f"explicit model= to bypass classification entirely, or set "
+                f"delegation.auto_route.escalate_only: false in config.yaml to "
+                f"disable this check."
+            )
+            logger.warning(
+                "delegate_task: task %d agent_type=%r escalated to %r "
+                "(tier=%r, rank %s->%s) by auto-route classifier",
+                i, _escalation["from"], _escalation["to"], _escalation["tier"],
+                _escalation["from_rank"], _escalation["to_rank"],
+            )
         # Orchestrator-without-agent_type gap (2026-08-30 incident): role=
         # grants CAPABILITY (can this child spawn its own children) and is
         # entirely independent of agent_type=, which is what actually routes
@@ -5486,7 +5560,23 @@ def delegate_task(
         role_map_model = (
             _role_model_map.get(_role_cfg_key) if _role_cfg_key else None
         )
-        _auto_route_model = _route.get("model") if _route else None
+        # The classifier's model is only a FALLBACK for tasks the classifier
+        # was actually allowed to route: ones that stated no agent_type (or
+        # opted in with "auto"), plus escalations, where task_agent_type was
+        # already replaced above so role_map_model is the escalated role's
+        # own model. For a task whose stated agent_type SURVIVED (no
+        # escalation fired), a route entry must not contribute a model at
+        # all — otherwise a role with no model_by_role entry would silently
+        # pick up the classifier's tier model, which is the downgrade path
+        # escalate-only exists to prevent.
+        _stated_agent_type_survived = (
+            _stated_agent_type
+            and not _agent_type_is_auto
+            and _escalation is None
+        )
+        _auto_route_model = (
+            _route.get("model") if (_route and not _stated_agent_type_survived) else None
+        )
         # T1-24: schema'd tasks get the contract appended to their context
         # so the child knows the expected output shape before it starts.
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -5637,12 +5727,68 @@ def delegate_task(
             # Final config fallback comes from the bundle actually used for
             # THIS child, so a role-provider child can never inherit the
             # other provider's default model.
+            #
+            # INVARIANT (fix #3, 2026-09-04): task_model_explicit is FIRST
+            # here on purpose and must stay first. A caller-stated model= is
+            # intent and always wins — it bypasses auto-route AND the
+            # escalate-only tier check entirely (the router never even
+            # classifies a task that carries a model=; see
+            # route_task_models()). Do NOT wire escalation, tier checking, or
+            # any other classifier-derived override into this branch.
             effective_task_model = (
                 task_model_explicit
                 or role_map_model
                 or _auto_route_model
                 or task_creds["model"]
             )
+            # Silent-omission visibility (fix #1, 2026-09-04): a task that
+            # stated NEITHER model= nor agent_type= is routed by something
+            # the caller never named — the auto-route classifier, the
+            # blanket delegation config default, or bare parent inheritance.
+            # Previously all three were silent, so a mis-tiered child only
+            # became visible after it had already run (the exact failure the
+            # auto-router was built for). Surface the decision that actually
+            # fired through the SAME _roster_warnings channel the roster
+            # guardrail uses, so it lands in both the immediate tool-call
+            # response (model_roster_warnings) and the completion event.
+            #
+            # agent_type="auto" is an EXPLICIT, visible opt-in to
+            # auto-routing and is deliberately exempt: the caller named the
+            # behavior they wanted, so there is no omission to report.
+            if (
+                _agent_type_omitted
+                and task_model_explicit is None
+                and not _agent_type_is_auto
+            ):
+                if _route:
+                    _decision = (
+                        f"auto-route classifier → tier "
+                        f"{_route.get('tier')!r} → role {_route.get('role')!r} "
+                        f"→ model {effective_task_model!r}"
+                    )
+                    _reason = str(_route.get("reason") or "").strip()
+                    if _reason:
+                        _decision += f" ({_reason})"
+                elif effective_task_model:
+                    _decision = (
+                        f"delegation config default → model "
+                        f"{effective_task_model!r}"
+                    )
+                else:
+                    _decision = "inherited the PARENT's own model/provider"
+                _roster_warnings.append(
+                    f"Task {i}: no agent_type= and no model= were given, so "
+                    f"the model was chosen for you: {_decision}. To route "
+                    f"deliberately, pass agent_type=<role> (resolved through "
+                    f"delegation.model_by_role) or model=<model>; pass "
+                    f"agent_type='auto' to opt into automatic routing "
+                    f"explicitly and silence this notice."
+                )
+                logger.info(
+                    "delegate_task: task %d dispatched with no agent_type= "
+                    "and no model=; routing decision: %s",
+                    i, _decision,
+                )
             # Per-task iteration budget: agent_type entry beats the spawn
             # role entry beats the global effective_max_iter (which already
             # folded in the top-level role cap). Mirrors the
@@ -5690,14 +5836,24 @@ def delegate_task(
         # Stash the auto-route decision (if any) so _run_single_child can
         # surface it in the result metadata — makes silent misrouting
         # impossible to hide (a routing choice is always visible/auditable).
+        # An escalate-only override carries its provenance too (which stated
+        # agent_type was raised, to what, and the two tier ranks), so a
+        # future reader of the result can tell a full auto-route apart from
+        # an escalation of the caller's own choice.
         if _route:
-            child._auto_route_info = {
+            _route_info: Dict[str, Any] = {
                 "tier": _route.get("tier"),
                 "role": _route.get("role"),
                 "model": _route.get("model"),
                 "reason": _route.get("reason"),
                 "agent_type": _route.get("agent_type"),
             }
+            if _escalation is not None:
+                _route_info["escalated"] = True
+                _route_info["escalated_from"] = _escalation["from"]
+                _route_info["escalated_from_rank"] = _escalation["from_rank"]
+                _route_info["rank"] = _escalation["to_rank"]
+            child._auto_route_info = _route_info
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
         if _task_schema is not None:
@@ -7134,7 +7290,15 @@ DELEGATE_TASK_SCHEMA = {
                                 "'researcher → Haiku' once via /delegation. "
                                 "Browse available agents with the /delegation "
                                 "slash command. Per-task 'model' still wins over "
-                                "the role-map model if both are set."
+                                "the role-map model if both are set. Pass the "
+                                "literal 'auto' to explicitly opt into automatic "
+                                "tier routing (a cheap classifier picks the "
+                                "role/model from this task's goal+context) — "
+                                "identical routing to omitting the field, but a "
+                                "deliberate, recorded choice. OMITTING the field "
+                                "entirely also auto-routes, and additionally "
+                                "returns a warning in the result naming whichever "
+                                "model was picked for you."
                             ),
                         },
                         "output_schema": {
@@ -7189,7 +7353,11 @@ DELEGATE_TASK_SCHEMA = {
                     "'reviewer', 'system-architect', 'security-architect', "
                     "'code-analyzer', 'performance-benchmarker'. Run "
                     "/delegation in the CLI to browse all ~90 available "
-                    "agent types and assign default models per-role."
+                    "agent types and assign default models per-role. Pass "
+                    "the literal 'auto' to explicitly opt every task in this "
+                    "batch into automatic tier routing (identical to omitting "
+                    "the field, but a deliberate, recorded choice that "
+                    "suppresses the omission warning)."
                 ),
             },
             "output_schema": {

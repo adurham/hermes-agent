@@ -3,6 +3,124 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### delegate_task auto-routing: visible omission, `agent_type='auto'`, escalate-only tier check — 2026-09-04
+
+**Decision: KEEP the backstop design, fix the silence.** The proposal on the
+table was to invert auto-routing — make the classifier the PRIMARY router for
+essentially every `delegate_task` call instead of a backstop that only fires
+when `agent_type` is omitted. A reference-model review rejected it, correctly:
+if `goal`+`context` is rich enough for a cheap classifier to route well, it is
+strictly *more* sufficient for the orchestrator that WROTE that text — a
+stronger model, already holding it in-context, and additionally holding
+routing-relevant state that has no business in a child's brief (retry/escalation
+history: "haiku botched this, bump to opus"; fan-out consistency: 8 sibling
+tasks should land on one model; verification-plan and budget state). Routing
+there costs zero extra latency, zero extra tokens, and — unlike a stochastic
+classifier — reruns of an identical call route identically, which debugging
+provenance depends on. So the precedence chain is unchanged. What changed is
+that the actual bug got fixed: the orchestrator sometimes SILENTLY omits
+`agent_type`/`model`, and every downstream consequence of that omission was
+invisible until after the child had already run on the wrong model.
+
+**1. Omission is now surfaced, not required.** Hard-requiring `agent_type` in
+the JSON schema was rejected outright — it would break every existing bare
+`delegate_task(tasks=[{goal: ...}])` call across the system, tests and other
+callers included, with no auto-route fallback at all. That is a far worse
+regression than the bug. Instead, a task stating NEITHER `model=` nor
+`agent_type=` now emits a warning naming *whichever* routing decision actually
+fired — auto-route classifier (with its tier, role, model and reason), the
+blanket `delegation` config default, or bare parent inheritance
+(`delegate_tool.py:5744-5790`). It rides the existing `_roster_warnings` list,
+so it lands in both the immediate tool-call response (`model_roster_warnings`)
+and the async completion event, exactly like the roster-staleness warnings
+(`... not in the current model roster and was IGNORED`) it is modeled on.
+
+**2. `agent_type='auto'` is now a first-class explicit opt-in.** It routes
+IDENTICALLY to omitting the field (same full auto-route population) but is a
+deliberate, recorded choice, so it does NOT draw the omission warning. It is
+normalized to `None` at dispatch (`delegate_tool.py:5456-5461`) so it can never
+be looked up as a persona named "auto" or injected as an "auto" persona prompt —
+regression-tested against a config that literally defines a `model_by_role`
+entry named `auto`. The literal lives in `delegation_router.AUTO_AGENT_TYPE`;
+`delegate_tool` imports it with a string fallback so a partially-loaded router
+can't break dispatch. Both schema descriptions document it.
+
+**3. Escalate-only tier check (new behavior).** Previously a task carrying an
+explicit `agent_type` was excluded from classification *entirely*. It now rides
+along in the SAME batch classifier call — one call per `delegate_task`
+invocation, no extra API round-trip, no extra latency — purely so the
+classifier's recommended tier can be compared against the stated role's
+configured tier rank. The comparison is strictly one-directional: a
+*strictly higher* recommendation replaces the stated `agent_type` with the
+recommended tier's role (same `tier_roles` map full auto-route uses), so the
+whole existing role machinery — model, provider pin, persona prompt, iteration
+budget — follows the escalation with no duplicated logic. Equal or lower
+produces no route entry at all, leaving the stated choice byte-identical.
+Auto-route can only ever move a task UP the ladder. Every escalation is
+surfaced through the same warnings channel (old role, new role, both ranks,
+classifier reason) and recorded in `_auto_route_info` for the result metadata.
+Toggle: `delegation.auto_route.escalate_only` (default `true`); `false` restores
+the old exclusion. No `config_defaults.py` entry was added — the whole
+`auto_route` block already defaults router-side with no key in defaults, and
+adding one knob there would have been the only entry in a block that has none.
+
+**Both ladders, or fail open.** Rank comparison composes
+`hermes_cli/model_tiers.py` rather than reinventing it: Anthropic ladder via
+`tier_rank_map()` plus a `family_of()` fallback so dated ids like
+`claude-haiku-4-5-20251001` still rank, then the local/non-Anthropic ladder via
+`local_ladder()` (anchored jr-coder=0 / mid-coder=1 / sr-coder=2 / pm=2). That
+second path is not hypothetical — the live `model_by_role` was just moved so
+most roles resolve their PRIMARY model to an ollama-cloud slug
+(`gemma4:31b`, `deepseek-v4-flash:0731`, `glm-5.3`) with Anthropic only as a
+nested fallback, so `family_of()` returns `None` for nearly every role now and
+rank MUST come from the local ladder. When a rank can't be resolved for either
+side, the task fails open — stated choice kept, no escalation, not an error
+(`delegation_router.py:496-533`).
+
+**4. `model=` is untouched, and now says so.** An explicit per-task `model=`
+still bypasses ALL classification: the router never even puts such a task in
+either population, so it is never sent to the classifier at all. An invariant
+comment sits on the precedence chain (`delegate_tool.py:5731-5737`) so a future
+maintainer doesn't wire escalate-only checking into the `model=` path.
+
+**One real leak found and closed while testing.** `_auto_route_model` was fed
+from any route entry present for the task index. With escalate-check tasks now
+producing entries for stated-`agent_type` tasks, a role with no `model_by_role`
+entry would have silently picked up the classifier's tier model — the exact
+downgrade escalate-only exists to prevent. It is now gated on the stated
+`agent_type` NOT having survived (`delegate_tool.py:5563-5579`), and
+regression-tested (`test_escalation_ignored_without_the_escalated_marker`).
+
+**Verification.**
+* New: `tests/test_delegation_router_escalate_only.py` (22 tests) — escalate up,
+  never-downgrade (lighter / equal / already-top), the ollama-cloud local-ladder
+  path with a real seeded `config.yaml` and an explicit precondition assert that
+  `family_of()` is `None` for those models, fail-open on both unrankable sides,
+  one-call-for-both-populations, the `escalate_only` toggle, and `model=` bypass.
+* New: `tests/tools/test_delegate_auto_route_visibility.py` (13 tests) —
+  dispatch-level: bare task warns and names the decision, `agent_type='auto'`
+  accepted with NO warning and never resolved as a role, escalation swaps the
+  dispatched agent_type + model and warns, no-entry leaves the stated choice
+  untouched, and `model=` bypasses both mechanisms.
+* **Mutation-checked, not just green.** Four independent mutants each killed the
+  relevant tests: escalate-only forced off (5 failures), downgrade guard removed
+  (4), omission warning suppressed (2), `auto` exemption removed (3). Restored
+  source diffed clean against backups afterward.
+* Full affected suite (64 files importing `delegate_tool` / `delegation_router`
+  / `model_tiers`): **1813 passed, 9 skipped, 6 failed**. All 6 failures
+  reproduce IDENTICALLY on a clean `git worktree` at HEAD (schema-snapshot
+  assertions in `test_delegate.py` / `test_delegate_output_schema.py`, a TUI
+  model-options test, and one async-delegation test) — pre-existing, unrelated.
+  Three further files (`test_cc_proxy_mcp`, `test_deferral_fixes`,
+  `test_slack_send_message_media`) fail COLLECTION on missing `aiohttp`,
+  likewise pre-existing.
+* One existing assertion narrowed, deliberately:
+  `test_depth0_roster_valid_model_with_agent_type_kept` asserted
+  `"model_roster_warnings" not in result`, but its batch carries a bare filler
+  task that now legitimately draws the omission notice. Narrowed to the test's
+  actual subject (no `IGNORED` / no `Task 0` warning), matching the `any(...)`
+  style its sibling assertions already use.
+
 ### CC identity refresh: stale 2.1.138 billing header broke fable-class consult (version gate) — 2026-09-03
 
 **What this changes.** The OAuth-path identity pair captured July 2026
@@ -8628,7 +8746,7 @@ will never touch them.
 || `tools/memory_extraction/` | Memory extraction system (extractor, buffer, conflict, prompts). |
 || `tools/memory_auto_feedback/` | Memory auto-feedback module (audit and learning-ledger). |
 | `tools/consult_tool.py` | Second-opinion tool — asks a configurable reference model (`auxiliary.consult`) for a review before a risky/uncertain decision; refusals/empty responses degrade gracefully to `unavailable: true` rather than erroring. Available to main agent + subagents (not in `DELEGATE_BLOCKED_TOOLS`). |
-| `tools/delegation_router.py` | Cheap classifier that sorts a delegate_task goal (no explicit model/agent_type) into a capability tier (light/standard/deep) and optionally a ruflo persona, then maps tier→role→model through `delegation.model_by_role`. Fail-open everywhere. Config: `delegation.auto_route.*`, `auxiliary.delegation_router`. |
+| `tools/delegation_router.py` | Cheap classifier that reads a delegate_task goal+context in ONE batch call and serves two roles: (a) full routing for tasks with no explicit model/agent_type (or `agent_type='auto'`) — capability tier (light/standard/deep) and optionally a ruflo persona, mapped tier→role→model through `delegation.model_by_role`; (b) an ESCALATE-ONLY tier check for tasks that DID state an agent_type — replaces the stated role only when the classifier's tier ranks strictly higher (never a downgrade), ranked via `hermes_cli/model_tiers.py`'s Anthropic AND local ladders. An explicit `model=` bypasses both. Fail-open everywhere. Config: `delegation.auto_route.*` (incl. `escalate_only`, default true), `auxiliary.delegation_router`. |
 | `FORK.md` | This file |
 | `scripts/fork-merge-plan.py` | Pre-merge analyzer (see "Future upstream merges" below) |
 | `scripts/setup-merge-drivers.sh` | One-time-per-clone registration of the uv.lock merge driver |
