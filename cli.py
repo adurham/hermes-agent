@@ -24401,6 +24401,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # only when nothing else is repainting.
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
+                elif self._swarm_boards:
+                    # One or more delegate_task() boards are on screen even
+                    # though the foreground prompt is idle — this is the
+                    # normal shape for a background dispatch ("Keep chatting"
+                    # while a subagent runs). Each row's elapsed_seconds is
+                    # computed live off time.time() in _Row.elapsed(), but
+                    # nothing repaints it: board mutations only call
+                    # _notify() on register/update/finish, which fire on
+                    # tool-call boundaries, not on a clock. Without a tick
+                    # here the on-screen timer only advanced when the child
+                    # happened to emit a tool event, making a real elapsed
+                    # counter look like it was frozen between updates. Tick
+                    # once a second — matches the "increments every second"
+                    # expectation and the cadence of every other live counter
+                    # in the TUI — regardless of how many boards/rows/nested
+                    # subagent boards are active, since a single invalidate
+                    # re-renders the full concatenated row set.
+                    self._invalidate(min_interval=1.0)
+                    time.sleep(0.5)
                 else:
                     # Do not repaint the idle prompt every second. In non-full-screen
                     # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux

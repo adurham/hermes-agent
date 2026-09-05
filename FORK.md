@@ -15326,3 +15326,49 @@ confirm no regression in the shared `parse_reasoning_effort` /
 import this repo (`X | Y` runtime type syntax needs 3.11+); all runs used the
 repo's own `.venv/bin/python` (3.11).
 
+
+## 2026-09-05 — swarm board: real per-second clock + mm:ss rollover past 60s
+
+The swarm board's per-row elapsed timer looked frozen between events: a
+subagent running 421s (visible live, screenshot from user) showed the same
+stale second count until the next tool-call/note/status update ticked it,
+because `SwarmBoard`'s only repaint trigger is `_notify()` — called from
+`register`/`update`/`finish`, all tool-call-boundary events, never a clock.
+`_Row.elapsed()` itself was already correct (computed live off
+`time.time()`), so the *number* was right the instant a repaint happened;
+nothing was driving repaints on a cadence. Reported by the user: "it's not
+incrementing per second like I'd expect, it only updates every time there's
+an update in the tooling message."
+
+**Fix (`cli.py`):** `spinner_loop()` (the same background thread that
+already ticks the idle-turn status bar at 10Hz while `_agent_running`) gained
+an `elif self._swarm_boards:` branch — when the foreground turn is idle
+(background `delegate_task()` dispatch, "Keep chatting" style) but one or
+more swarm boards are still on screen, invalidate the app once a second
+(`_invalidate(min_interval=1.0)`, 0.5s poll). `_swarm_boards` is a list
+already populated for every board — a lone dispatch, a batch, and every
+nested orchestrator's own board (each nested `delegate_task()` call gets its
+own `SwarmBoard`, appended via `_swarm_board_show`) — so one invalidate loop
+covers top-level and nested subagents alike without new plumbing per board.
+
+**Fix (`tools/swarm_board.py`):** `format_row()` used to render elapsed as a
+bare `f"{seconds:.0f}s"` forever (a 7-minute row showed `421s`, never
+switching to minutes). Added `_format_row_elapsed()`, matching the mm:ss
+rollover format `cli.py::_render_spinner_text` already uses elsewhere in the
+TUI (minutes NOT zero-padded, seconds zero-padded — `1m05s`, `12m09s`, not
+`01m05s`) so the swarm board's own timer stops being the one inconsistent
+counter in the app past 60s.
+
+Verified: `.venv/bin/python3 -m pytest tests/tools/test_swarm_board.py -q`
+— 88 passed (85 pre-existing + 3 new: `test_format_row_elapsed_under_60s_is_bare_seconds`,
+`test_format_row_elapsed_switches_to_mins_seconds_past_60s` (421s -> `7m01s`),
+`test_format_row_elapsed_exact_60s_rolls_over` (60s -> `1m00s`)). Also ran
+the full swarm-board/delegate test set (`test_swarm_board_agent_registry.py`,
+`test_swarm_board_orchestrator_tool_count.py`,
+`test_delegate_heartbeat_suppression.py`) — 119 passed, no regressions.
+`spinner_loop()` itself has no isolated unit test (none of its existing
+branches do either — it's an inline closure inside a large cli.py method);
+covered instead by the underlying `_format_row_elapsed`/board tests plus
+manual reasoning about the existing `_agent_running` tick branch this
+mirrors. System Python is 3.9 and can't import this repo; used the repo's
+own `.venv/bin/python3` (3.11) for all runs.
