@@ -1048,6 +1048,10 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
         err = data.get("error") or data.get("message")
         if err and (failed or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
+        # A JSON object is judged by its top-level shape only. An ``error`` key nested
+        # inside a success payload is data the tool read (a page's own validation
+        # message inside browser_cdp's ``result``), not a failure of the call.
+        return False, ""
     # Multimodal results (dicts) are successes; failures arrive as JSON-encoded strings.
     if isinstance(result, str) and has_failure_marker(result):
         return True, t("display.failure.generic")

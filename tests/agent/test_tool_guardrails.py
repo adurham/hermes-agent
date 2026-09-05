@@ -478,3 +478,26 @@ def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
     assert notices[:2] == [None, None]
     assert all(n is not None and "consecutive identical call to execute_code" in n for n in notices[2:]), notices
     assert controller.halt_decision is None, "warn-only surfaces must not halt"
+
+
+def test_classify_tool_failure_judges_a_json_object_by_its_top_level_shape():
+    # Mirrors agent.display._detect_tool_failure: an "error" key nested inside a
+    # success payload (browser_cdp's wrapped Runtime.evaluate result) is not a failure.
+    nested = json.dumps({
+        "success": True,
+        "method": "Runtime.evaluate",
+        "result": {"result": {"type": "object", "value": {"error": ["Vul een geldig telefoonnummer in."]}}},
+    })
+    assert classify_tool_failure("browser_cdp", nested) == (False, "")
+    assert classify_tool_failure("browser_cdp", json.dumps({"error": "CDP call timed out"})) == (True, " [error]")
+    assert classify_tool_failure("read_file", json.dumps({"success": False, "error": "File not found"})) == (True, " [error]")
+    assert classify_tool_failure("memory", json.dumps({"success": False, "error": "would exceed the limit"})) == (True, " [full]")
+    assert classify_tool_failure("web_search", json.dumps({"success": True, "data": "hello"})) == (False, "")
+
+
+def test_classify_tool_failure_keeps_the_substring_scan_for_plain_text():
+    assert classify_tool_failure("web_search", "Error executing tool 'web_search': boom") == (True, " [error]")
+    assert classify_tool_failure("web_search", 'request "failed" upstream') == (True, " [error]")
+    assert classify_tool_failure("web_search", "all good") == (False, "")
+    assert classify_tool_failure("terminal", json.dumps({"output": "x", "exit_code": 2})) == (True, " [exit 2]")
+    assert classify_tool_failure("terminal", json.dumps({"output": "x", "exit_code": 0})) == (False, "")
