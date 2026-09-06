@@ -1266,7 +1266,7 @@ $psi.Arguments = "-NoProfile -Command Start-Sleep -Seconds $Hold"
 $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true
 $grandchild = [System.Diagnostics.Process]::Start($psi)
-[System.IO.File]::WriteAllText($PidFile, [string]$grandchild.Id)
+[System.IO.File]::WriteAllLines($PidFile, @([string]$grandchild.Id, [string][System.Diagnostics.Stopwatch]::GetTimestamp()))
 Write-Output "pipe-drain step output"
 [Console]::Out.Flush()
 exit 7
@@ -1313,17 +1313,26 @@ exit 3
     [System.IO.File]::WriteAllText($floodPs1, $floodSource)
     [System.IO.File]::WriteAllText($stallPs1, $stallSource)
     [System.IO.File]::WriteAllText($logStallPs1, $logStallSource)
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $res = Invoke-HermesStep $powershell @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
-        "-Hold", [string]$hold, "-PidFile", $pidFile
-    ) "pipedrain"
-    $sw.Stop()
-    $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 2)
-
+    # The leak arm measures post-exit draining, not cold PowerShell startup.
+    $savedIdle = $script:StepIdleTimeoutSeconds
+    try {
+        $script:StepIdleTimeoutSeconds = 120
+        $res = Invoke-HermesStep $powershell @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
+            "-Hold", [string]$hold, "-PidFile", $pidFile
+        ) "pipedrain"
+    } finally {
+        $script:StepIdleTimeoutSeconds = $savedIdle
+    }
+    $returnedAt = [System.Diagnostics.Stopwatch]::GetTimestamp()
+    $elapsed = [double]::PositiveInfinity
     $leakPid = 0
     if (Test-Path -LiteralPath $pidFile) {
-        [void][int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$leakPid)
+        $leakReceipt = @(Get-Content -LiteralPath $pidFile)
+        [void][int]::TryParse($leakReceipt[0].Trim(), [ref]$leakPid)
+        if ($leakReceipt.Count -eq 2) {
+            $elapsed = [Math]::Round(($returnedAt - [long]$leakReceipt[1]) / [double][System.Diagnostics.Stopwatch]::Frequency, 2)
+        }
     }
     $leakAlive = $false
     if ($leakPid -gt 0) {
