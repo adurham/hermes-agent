@@ -41,7 +41,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from pm.downloader import Download, Source  # noqa: E402
 from pm.package import DebPackage  # noqa: E402
 
-PREFIX_REL = "data/data/com.termux/files/usr"
+PREFIX_REL = DebPackage.prefix_rel
 MANIFEST_NAME = "manifest.json"
 
 
@@ -105,9 +105,7 @@ def _cache_valid(out: Path, manifest_path: Path, table: dict) -> bool:
 
 
 def _ensure_extracted(work: Path, name: str, row: dict) -> Path:
-    """Return the package's extract dir, downloading + unpacking the
-    digest-verified .deb when the extraction is absent or stale (its
-    extraction marker does not match the currently pinned sha256)."""
+    """Extract fresh bytes from a digest-verified archive on every cache miss."""
     extract = work / "extract" / name
     scratch = work / "dl"
     scratch.mkdir(parents=True, exist_ok=True)
@@ -173,6 +171,10 @@ def stage(payload: Path, table: dict) -> Path:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(so, dest)
             n += 1
+        notices = extract / PREFIX_REL / "share/doc"
+        if notices.is_dir():
+            target = payload / "runtime-libs/share/doc"
+            shutil.copytree(notices, target, dirs_exist_ok=True)
         merged += n
         print(f"  {name} {row['version']}: {n} new .so* -> runtime-libs/lib")
 

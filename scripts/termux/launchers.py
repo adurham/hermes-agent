@@ -29,7 +29,7 @@ export HERMES_NODE="$root/tools/node/data/data/com.termux/files/usr/bin/node"
 export HERMES_RUNTIME_DIR="$root/tools"
 export PATH="$root/tools/npm/bin:$root/tools/node/data/data/com.termux/files/usr/bin:$root/tools/ffmpeg/data/data/com.termux/files/usr/bin:$root/tools/ripgrep:$PATH"
 export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-${XDG_CACHE_HOME:-$HOME/.cache}/hermes-pycache}"
-exec "$HERMES_PYTHON" -c __ENTRY__ "$@"
+exec "$HERMES_PYTHON" -P -c __ENTRY__ "$@"
 '''
 
 
@@ -38,7 +38,7 @@ def write_launchers(payload: Path, entries: dict[str, str]) -> None:
     bindir.mkdir(parents=True, exist_ok=True)
     for name, entry in entries.items():
         module, func = entry.split(":", 1)
-        script = f"import sys; from {module} import {func}; sys.exit({func}())"
+        script = f"import sys; sys.argv[0] = {name!r}; from {module} import {func}; sys.exit({func}())"
         path = bindir / name
         path.write_text(_LAUNCHER.replace("__ENTRY__", shlex.quote(script)), encoding="utf-8")
         path.chmod(0o755)

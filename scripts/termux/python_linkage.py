@@ -50,6 +50,8 @@ def repair_wheel(wheel: Path, library: Path, *, repair=link_extension) -> int:
     with tempfile.TemporaryDirectory(prefix="hermes-wheel-link-") as tmp:
         native = Path(tmp) / "extension.so"
         with zipfile.ZipFile(wheel) as archive:
+            if not any(info.filename.endswith(".so") for info in archive.infolist()):
+                return 0
             members = [(info, archive.read(info)) for info in archive.infolist() if not info.is_dir()]
         records = [info.filename for info, _ in members if info.filename.endswith(".dist-info/RECORD")]
         if len(records) != 1:

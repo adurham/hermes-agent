@@ -262,12 +262,15 @@ def _fetch_with_retry(store, url: str, sha256: str, scratch, progress=None, atte
     still proves the bytes; a retry cannot smuggle anything past the pin.
     """
     import time
+    from pm.downloader import DownloadPaused, HashError
 
     last: Exception | None = None
     for attempt in range(attempts):
         try:
             return store.fetch(url, sha256, scratch, progress=progress)
-        except Exception as exc:  # noqa: BLE001 -- retry any fetch failure
+        except (HashError, DownloadPaused):
+            raise
+        except Exception as exc:  # noqa: BLE001 -- transient fetch failures retain bounded retries
             last = exc
             if attempt + 1 < attempts:
                 wait = 30 * (attempt + 1)

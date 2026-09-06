@@ -363,9 +363,7 @@ chmod 0777 "$OUT_ABS/wheelhouse"
 
 # The cache verdict was computed before [d]; on a hit the resolve, probe,
 # and this container phase are all skipped (same flag guards each).
-if [ "$WHEELHOUSE_CACHE_OK" -eq 1 ]; then
-    :
-else
+if [ "$WHEELHOUSE_CACHE_OK" -eq 0 ]; then
     C_RESOLVED="/out/.work/resolved.txt"
     C_BUILD_SET="/out/.work/build_set.txt"
     C_WHEELHOUSE="/out/wheelhouse"

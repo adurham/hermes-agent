@@ -26,6 +26,7 @@ def test_launchers_forward_arguments_and_export_payload_environment(tmp_path):
         "['HERMES_NODE', 'HERMES_PYTHON', 'HERMES_RUNTIME_DIR', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONPYCACHEPREFIX']}}))\n",
         encoding="utf-8",
     )
+    (tmp_path / "json.py").write_text("raise RuntimeError('cwd shadowed stdlib')\n", encoding="utf-8")
     entries = {name: "capture_entry:main" for name in ("hermes", "hermes-agent", "hermes-acp")}
     write_launchers(payload, entries)
     bin_dir = tmp_path / "prefix/bin"

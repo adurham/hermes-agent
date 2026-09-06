@@ -94,27 +94,14 @@ if [ -d "$PAYLOAD_ABS/venv" ]; then rm -rf "$PAYLOAD_ABS/venv"; fi
 # evaluates them on bionic) and documented android build misses skipped --
 # uv pip check tolerates the app importing without them (its relay exporter
 # is the only casualty). Generated host-side; consumed in-container.
-python3 - "$PAYLOAD_ABS/.work/resolved.txt" "$PAYLOAD_ABS/.work/resolved-reqs.txt" <<'PYREQS' \
+python3 - "$HERE" "$PAYLOAD_ABS/.work/resolved.txt" "$PAYLOAD_ABS/.work/resolved-reqs.txt" <<'PYREQS' \
     || fail "deb-venv reqs generation failed"
 import sys
 from pathlib import Path
 
-src, dst = Path(sys.argv[1]), Path(sys.argv[2])
-MISSES = {"nemo-relay"}
-out = []
-for line in src.read_text(encoding="utf-8").splitlines():
-    if not line.strip():
-        continue
-    parts = line.split("\t")
-    name, spec, marker = parts[0], parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else ""
-    if name in MISSES:
-        continue
-    req = f"{name}{spec.strip()}" if spec.strip() else name
-    if marker:
-        req += f" ; {marker}"
-    out.append(req)
-dst.parent.mkdir(parents=True, exist_ok=True)
-dst.write_text(chr(10).join(out) + chr(10), encoding="utf-8")
+sys.path.insert(0, sys.argv[1])
+from build_wheels import write_reqs_file
+write_reqs_file(Path(sys.argv[2]), Path(sys.argv[3]))
 PYREQS
 # The bind mount is runner-owned: the container (any uid) can only write
 # into a dir the HOST pre-created with open perms (same as the wheelhouse).
