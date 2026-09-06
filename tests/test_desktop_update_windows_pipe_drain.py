@@ -110,7 +110,8 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
         # how long the leaking grandchild lives. hold >> grace is what makes a
         # regression measurable rather than lucky.
         "HERMES_UPDATE_PIPE_DRAIN_SECONDS": "3",
-        "HERMES_UPDATE_STEP_IDLE_SECONDS": "3",
+        # Cold PowerShell children can take more than three seconds to emit.
+        "HERMES_UPDATE_STEP_IDLE_SECONDS": "15",
         "HERMES_SELFTEST_HOLD_SECONDS": "45",
     }
 
@@ -138,5 +139,5 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     (tmp_path / "pipe-drain.stdout.log").write_text(result.stdout, encoding="utf-8")
     (tmp_path / "pipe-drain.stderr.log").write_text(result.stderr, encoding="utf-8")
     diagnosis = result.stdout[-6000:] + result.stderr[-6000:]
-    assert "PIPE-DRAIN SELF-TEST: PASS" in result.stdout, diagnosis
-    assert result.returncode == 0, diagnosis
+    if "PIPE-DRAIN SELF-TEST: PASS" not in result.stdout or result.returncode != 0:
+        pytest.fail(diagnosis, pytrace=False)
