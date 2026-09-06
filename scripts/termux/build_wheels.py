@@ -359,10 +359,10 @@ def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str]) -> 
         script = ",".join(mods)
         subprocess.run(
             [str(vp), '-c',
-             'import importlib, sys\n'
-             'for name in sys.argv[1].split(''):\n'
-             '    importlib.import_module(name)\n'
-             '    print(''  imported'', name)\n',
+             "import importlib, sys\n"
+             "for name in sys.argv[1].split(','):\n"
+             "    importlib.import_module(name)\n"
+             "    print('  imported', name)\n",
              script],
             check=True,
         )
