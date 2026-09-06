@@ -76,6 +76,11 @@ on:
         required: false
         type: boolean
         default: false
+      termux_upgrade_from_run:
+        description: 'Successful Termux run whose package must upgrade to this build'
+        required: false
+        type: string
+        default: ''
       upload_release:
         description: 'Upload artifacts to the R2 release bucket (staging + feeds)'
         required: false
@@ -84,6 +89,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
   packages: write
   id-token: write
 
@@ -1022,6 +1028,30 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Verify the previous Termux run
+        if: inputs.termux_upgrade_from_run != ''
+        env:
+          PREVIOUS_RUN: ${{ inputs.termux_upgrade_from_run }}
+        run: |
+          [[ "$PREVIOUS_RUN" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN" > "$RUNNER_TEMP/termux-previous-run.json"
+          python3 - "$RUNNER_TEMP/termux-previous-run.json" <<'PY'
+          import json, subprocess, sys
+          run = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert run["conclusion"] == "success", "previous run did not succeed"
+          assert run["path"] == ".github/workflows/desktop-bundled-release.yml", "wrong artifact producer"
+          subprocess.run(["git", "merge-base", "--is-ancestor", run["head_sha"], "origin/main"], check=True)
+          PY
+      - name: Download the previous Termux package
+        if: inputs.termux_upgrade_from_run != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.termux_upgrade_from_run }}
+          pattern: hermes-bundled-termux-*
+          merge-multiple: true
+          path: termux-build/previous
+
       - name: Write the APT signing key
         shell: bash
         env:
@@ -1037,6 +1067,7 @@ jobs:
         shell: bash
         env:
           CHANNEL: ${{ steps.channel.outputs.channel }}
+          PREVIOUS_RUN: ${{ inputs.termux_upgrade_from_run }}
           # Passphrase-protected signing keys only; unset for bare keys.
           TERMUX_APT_GPG_PASSPHRASE: ${{ secrets.TERMUX_APT_GPG_PASSPHRASE }}
         run: |
@@ -1058,6 +1089,16 @@ jobs:
             -v "$PWD/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
             -v "$PWD/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
             "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
+          if [ -n "$PREVIOUS_RUN" ]; then
+            previous=(termux-build/previous/*.deb)
+            test "${#previous[@]}" -eq 1
+            docker run --rm --platform linux/arm64 --user 1000:1000 --network none \
+              -v "$PWD/termux-build/apt:/apt:ro" \
+              -v "$PWD/${previous[0]}:/previous.deb:ro" \
+              -v "$PWD/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
+              -v "$PWD/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
+              "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
+          fi
 
           # --key-is-full is MANDATORY on every feed-dir upload: without it
           # r2-release.mjs re-prefixes the key into the tag archive
