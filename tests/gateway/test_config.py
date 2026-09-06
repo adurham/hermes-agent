@@ -1266,7 +1266,7 @@ class TestHomeChannelEnvOverrides:
 
         for platform, platform_config, env, expected in cases:
             config = GatewayConfig(platforms={platform: platform_config})
-            with patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, {**env, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
                 _apply_env_overrides(config)
 
             home = config.platforms[platform].home_channel
@@ -1402,7 +1402,7 @@ class TestApiServerEnvOverride:
         )
 
         api_server_key = "secret-key-at-least-16"
-        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key}, clear=True):
+        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
             _apply_env_overrides(config)
 
         # Explicit disable wins over the env-var presence.
@@ -1444,6 +1444,7 @@ class TestWebhookEnvOverride:
         with patch.dict(
             os.environ,
             {
+                "HERMES_HOME": os.environ["HERMES_HOME"],
                 "WEBHOOK_ENABLED": "true",
                 "WEBHOOK_PORT": "9999",
                 "WEBHOOK_SECRET": "shared-secret",

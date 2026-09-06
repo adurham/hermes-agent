@@ -1702,10 +1702,7 @@ export const ar = defineLocale({
       skills: 'المهارات',
       messaging: 'المراسلة',
       artifacts: 'العناصر',
-      chat: 'المحادثة',
-      settings: 'الإعدادات',
       cron: 'المهام المجدولة',
-      agents: 'الوكلاء',
       'session-import': 'استيراد جلسة'
     },
     searchAria: 'البحث في الجلسات',
