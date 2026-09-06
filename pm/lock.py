@@ -89,6 +89,18 @@ class Lockfile:
         _write(self.path, {"schema": SCHEMA, "packages": self._packages})
 
 
+def termux_docker_digest() -> str:
+    """The pinned termux-docker image digest (pm package `termux-docker`).
+
+    Single reader for every consumer -- the build/deb scripts, the builder
+    image script, and the release workflow -- so a lock-schema change lands
+    once.
+    """
+    from pm.paths import lockfile_path
+
+    return Lockfile(lockfile_path()).version("termux-docker")
+
+
 class Facts:
     """The installed-state file. Written only by pm."""
 
