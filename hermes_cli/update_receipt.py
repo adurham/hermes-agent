@@ -44,6 +44,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _RECEIPT_KEEP = 20  # keep the last N receipts per profile home
+COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"
 
 # Receipt state is per-CONTEXT, not a module global: a nested
 # ``hermes update`` receipt (or one in another thread) must never clobber

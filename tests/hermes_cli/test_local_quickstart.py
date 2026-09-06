@@ -82,7 +82,7 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
         "hermes_cli.web_routers.local_models._state_endpoint",
         lambda: {"base_url": "http://127.0.0.1:1/v1", "api_key": "k"})
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._assign_default",
+        "hermes_cli.web_server_config._apply_model_assignment_sync",
         lambda *a, **k: calls.append("assign"))
 
     r = client.post("/api/local-models/quickstart", json={})
@@ -133,7 +133,7 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
         "hermes_cli.web_routers.local_models._state_endpoint",
         lambda: {"base_url": "http://127.0.0.1:1/v1", "api_key": "k"})
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._assign_default",
+        "hermes_cli.web_server_config._apply_model_assignment_sync",
         lambda *a, **k: calls.append("assign"))
 
     r = client.post("/api/local-models/quickstart", json={})
@@ -182,3 +182,17 @@ def test_quickstart_is_single_flight(client, quickstart_ready, monkeypatch):
         assert "already running" in r.json()["detail"].lower()
     finally:
         lm._QUICKSTART_LOCK.release()
+
+
+def test_assign_default_reaches_model_assignment(monkeypatch):
+    """late() must resolve _apply_model_assignment_sync on web_server_config, the
+    sibling that defines it. Only the leaf is stubbed; the default web_server lookup
+    raised AttributeError at the quickstart's 'making it your default' step."""
+    import hermes_cli.web_routers.local_models as lm
+
+    seen: list[tuple] = []
+    monkeypatch.setattr(
+        "hermes_cli.web_server_config._apply_model_assignment_sync",
+        lambda *a, **k: seen.append(a))
+    lm._assign_default({}, "some-model")
+    assert seen == [("main", "llamacpp", "some-model", "", "", "")]

@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
   localModelsEnabled: featureFlags?.localModels === true,
-  getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
+  getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
