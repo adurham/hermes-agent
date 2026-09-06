@@ -3009,7 +3009,7 @@ def _try_termux_fast_cli_launch() -> bool:
     if _wants_tui_early(argv):  # TUI fast path / full dispatch owns those
         return False
 
-    if _startup_fast.is_termux_fast_version_argv(argv):
+    if _startup_fast.is_global_fast_version_argv(argv):
         _print_version_info(check_updates=True)
         return True
 
