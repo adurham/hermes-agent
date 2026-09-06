@@ -1027,7 +1027,7 @@ class CLICommandsMixin:
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
-        from cli import _IMAGE_EXTENSIONS, _resolve_attachment_path, _split_path_input
+        from cli import _DIM, _IMAGE_EXTENSIONS, _RST, _cprint, _resolve_attachment_path, _split_path_input
         raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
         if not raw_args:
             hint = "/path/to/image.png"

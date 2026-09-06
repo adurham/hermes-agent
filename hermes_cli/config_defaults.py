@@ -1551,6 +1551,13 @@ DEFAULT_CONFIG = {
         # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
         # old paths raise ImportError once the compat layer is actually removed.
         "allow_deprecated_imports": False,
+        # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
+        # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
+        # scan-gated by that same pipeline).
+        "auto_update_check_hours": 24,
+        # Opt-in unattended apply for the cadence check. Git-row plugins ONLY; every apply runs the
+        # same security scan / consent pipeline as the manual update command.
+        "auto_apply": False,
     },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
@@ -1862,13 +1869,6 @@ DEFAULT_CONFIG = {
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         # Named-profile allowlist for multiplex mode. None = serve all; [] = default only.
         "multiplex_profile_allowlist": None,
-
-        # The MSIX HermesGateway Windows Service posture (windows MSIX
-        # installs only; see `hermes gateway service on|off|status`).
-        # False = the service exists but stays demand-start/stopped
-        # (config-only posture — settled 2026-09-03); True = automatic
-        # at logon, bots keep running without the desktop app.
-        "service": False,
 
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.

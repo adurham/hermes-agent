@@ -151,7 +151,7 @@ def _boot_in_flight(config: dict | None) -> bool:
 
         for manifest in runtimes_root().glob("*/*/manifest.json"):
             try:
-                if _json.loads(manifest.read_text(encoding="utf-8-sig")).get("verified_version"):
+                if manifest_verified(manifest):
                     return True
             except (ValueError, OSError):
                 continue

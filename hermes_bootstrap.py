@@ -100,8 +100,18 @@ def harden_import_path(src_root: str | None = None) -> None:
 # (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
 # the very top of their module, before importing anything else.  The
 # import side effect does the right thing.
-# Upstream's ``activate_durable_lazy_target`` (tools.lazy_deps durable
-# lazy-install dir) is deliberately NOT merged: lazy_deps was removed on
-# this branch (pm replaced it). Do not reintroduce.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
+
+# Every entry point imports this module before its dependency graph.
+from pathlib import Path
+from hermes_cli.runtime_paths import activate_dependencies
+
+try:
+    activate_dependencies(Path(__file__).resolve().parent)
+except RuntimeError as exc:
+    # The repair command must remain usable even when the committed tree
+    # disappeared. Other commands must not silently run the wrong libraries.
+    if sys.argv[1:3] not in (["pm", "install"], ["pm", "doctor"]):
+        print(f"hermes: {exc}; run `hermes pm install` to repair", file=sys.stderr)
+        raise SystemExit(1) from None

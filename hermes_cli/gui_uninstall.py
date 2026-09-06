@@ -88,7 +88,7 @@ def gui_install_summary(hermes_home: "Path | None" = None) -> dict:
     # removed; sealed trees (nix / desktop-app / docker) get data-only.
     from hermes_cli import steward as steward_mod
 
-    steward, code_removal_allowed = steward_mod.classify_install(_agent_root(home))
+    steward, code_removal_allowed = steward_mod.classify_install(home / "hermes-agent")
 
     return {
         "hermes_home": str(home),

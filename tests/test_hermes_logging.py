@@ -138,9 +138,8 @@ class TestSetupLogging:
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
         ).read_text()
-        assert "profile-routed cron record" not in (
-            hermes_home / "logs" / "agent.log"
-        ).read_text()
+        default_log = hermes_home / "logs" / "agent.log"
+        assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text()
 
 
 

@@ -460,7 +460,7 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     # /profile reports the home via display_hermes_home(), which collapses a
     # home-relative path to "~/…" (Windows tmp paths live under USERPROFILE).
     try:
-        expected_home = "~/" + str(profile_home.relative_to(Path.home()))
+        expected_home = "~/" + profile_home.relative_to(Path.home()).as_posix()
     except ValueError:
         expected_home = str(profile_home)
     assert f"**Home:** `{expected_home}`" in result

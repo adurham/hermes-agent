@@ -904,8 +904,11 @@ class TestWebServerEndpoints:
         import hermes_cli.web_server as web_server
         import pm
 
-        # honcho declares pip_dependencies: [honcho-ai]; force it missing.
-        monkeypatch.setattr(_web_server_memory, "_dependency_importable", lambda dep: False)
+        # Force a provider with declared legacy dependencies and an owned extra.
+        manifest = {"pip_dependencies": ["honcho-ai"], "extra": "honcho"}
+        monkeypatch.setattr("hermes_cli.web_server_memory._memory_provider_manifest", lambda name: manifest)
+        monkeypatch.setattr("hermes_cli.web_routers.memory_providers._memory_provider_manifest", lambda name: manifest)
+        monkeypatch.setattr("hermes_cli.web_routers.memory_providers._dependency_importable", lambda dep: False)
 
         installed = []
 
@@ -931,7 +934,7 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
-        assert pip_rows and pip_rows[0]["status"] == "installed"
+        assert pip_rows and pip_rows[0]["status"] == "restart_required"
         assert pip_rows[0]["command"] == "hermes pm install"
         assert installed == [("honcho",)]
 
@@ -1275,7 +1278,7 @@ class TestWebServerEndpoints:
         # guidance instead of Termux-specific refusal.
         import hermes_cli.web_server as web_server
 
-        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        monkeypatch.setattr("hermes_cli.web_server_files._dashboard_local_update_managed_externally", lambda: False)
         monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda _root: "unknown")
 
         check = self.client.get("/api/hermes/update/check")

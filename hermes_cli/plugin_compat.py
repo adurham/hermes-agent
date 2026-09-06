@@ -158,7 +158,7 @@ def scan_plugin(plugin_dir: Optional[Path], manifest: Optional[Dict[str, Dict[st
             src = p.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
-        hits += scan_source(src, str(p.relative_to(plugin_dir)), manifest)
+        hits += scan_source(src, p.relative_to(plugin_dir).as_posix(), manifest)
     return hits
 
 

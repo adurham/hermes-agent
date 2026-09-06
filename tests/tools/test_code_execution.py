@@ -51,6 +51,20 @@ from tools.code_execution_tool import (
 from tools.registry import registry
 
 
+@pytest.fixture(autouse=True)
+def _fresh_kernel_registry():
+    """Session kernels are always on: dispose them per-test so one test's
+    kernel child can't outlive the run (hangs pytest at exit) or leak its
+    interpreter state / task key into the next test. Per-file process
+    isolation does not replace per-test kernel ownership.
+    """
+    from tools.code_kernel import shutdown_all_kernels
+
+    shutdown_all_kernels()
+    yield
+    shutdown_all_kernels()
+
+
 def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
     """Mock dispatcher that returns canned responses for each tool."""
     if function_name == "terminal":
@@ -175,9 +189,14 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertEqual(result["exit_code"], 0)
         self.assertFalse(result["stdout_truncated"])
         self.assertEqual(result["stdout_bytes_total"], len("hello\n".encode("utf-8")))
-        mkdir_cmd = env.commands[1][0]
+        # The session-kernel path runs first and fails open on this fake env
+        # (no PID from nohup), so search for the per-call sandbox commands
+        # rather than pinning positions.
+        mkdir_cmd = next(cmd for cmd, _, _ in env.commands
+                         if "mkdir -p" in cmd and "hermes_exec_" in cmd)
         run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
-        cleanup_cmd = env.commands[-1][0]
+        cleanup_cmd = next(cmd for cmd, _, _ in env.commands
+                           if "rm -rf" in cmd and "hermes_exec_" in cmd)
         self.assertIn("mkdir -p /var/host/tmp/hermes_exec_", mkdir_cmd)
         self.assertIn("HERMES_RPC_DIR=/var/host/tmp/hermes_exec_", run_cmd)
         self.assertIn("rm -rf /var/host/tmp/hermes_exec_", cleanup_cmd)

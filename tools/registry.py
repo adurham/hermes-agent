@@ -399,6 +399,7 @@ class ToolRegistry:
 
     def _slot(self, scope: Optional[str], *, create: bool = False) -> Dict[str, ToolEntry]:
         """The registration map for *scope*: global when None, else that profile's overlay."""
+        scope = normalize_scope(scope)
         if scope is None:
             return self._tools
         if create:
@@ -411,7 +412,7 @@ class ToolRegistry:
 
     def _merged_tools(self, scope: Optional[str] = None) -> Dict[str, ToolEntry]:
         """Return global tools overlaid with one profile's plugin tools."""
-        return {**self._tools, **self._scoped_tools.get(scope or self.current_scope_key(), {})}
+        return {**self._tools, **self._scoped_tools.get(hermes_home_key(scope), {})}
 
     def _toolset_entries(self, toolset: str, scope: Optional[str]) -> List[ToolEntry]:
         return self._grouped(self._merged_tools(scope).values()).get(toolset, [])
@@ -483,6 +484,7 @@ class ToolRegistry:
     ) -> _PluginOverridePolicy:
         """Bind a plugin module namespace to its current operator opt-in. The identity-bearing
         result lets unload/reload revoke a stale authorization without losing attribution."""
+        scope = normalize_scope(scope)
         with self._lock:
             policy = _PluginOverridePolicy(allowed)
             self._plugin_override_policy[(scope, module_namespace)] = policy
@@ -673,6 +675,7 @@ class ToolRegistry:
         ``register(override=True)``, else a plugin could deregister a tool it doesn't own
         and re-register over the empty slot (the override check only runs when an entry
         exists). ``mcp-*`` toolsets are exempt — discovery repaves its own tools per refresh."""
+        scope = normalize_scope(scope)
         with self._lock:
             caller_mod = self._caller_module()
             caller_owner = self._plugin_namespace_of_module(caller_mod)

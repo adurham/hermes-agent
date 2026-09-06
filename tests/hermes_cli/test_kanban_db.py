@@ -1200,8 +1200,8 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
     monkeypatch.setattr(shutil, "which", lambda name: None)
     # On Windows _resolve_hermes_argv() uses _safe_which_no_cwd() instead of
     # shutil.which — mock that too so the "no shim" path is the one tested.
-    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: None)
-    argv = kb._resolve_hermes_argv()
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: None)
+    argv = kbd._resolve_hermes_argv()
     argv = kbd._resolve_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]
 

@@ -351,11 +351,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         agree on the path form. No-op off Windows and for plain POSIX paths.
 
         ``translate_path=False`` skips that translation for non-path values
-        (regex patterns) whose backslashes are meaningful. On Windows those
-        backslashes are doubled first: the ``-c`` argument passes through
-        ``subprocess`` list-arg quoting (which wraps it in double quotes) and
-        ``bash`` then collapses ``\\\\`` → ``\\`` inside those double quotes,
-        so one level must survive the round trip.
+        (regex patterns) whose backslashes are meaningful. Bash single
+        quotes preserve those bytes; only path arguments are translated.
         """
         from tools.environments.local import _IS_WINDOWS, _bash_safe_path
 
@@ -1069,7 +1066,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         snippet = (
             "import shutil, pathlib, sys\n"
             f"p = pathlib.Path({json.dumps(path)})\n"
-            f"recursive = {bool(recursive)!r}\n"
+            "recursive = False\n"
             "try:\n"
             "    if p.is_dir() and not p.is_symlink():\n"
             "        if recursive:\n"

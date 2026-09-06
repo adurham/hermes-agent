@@ -126,8 +126,6 @@ def _read_manifest() -> Dict[str, str]:
         return result
     except (OSError, IOError):
         return {}
-    pairs = (line.partition(":") for line in map(str.strip, lines) if line)
-    return {name.strip(): hash_val.strip() for name, _, hash_val in pairs}
 
 
 def _read_suppressed_names() -> set:

@@ -150,31 +150,62 @@ def _step(job: Dict[str, Any], phase: str, detail: str) -> None:
 
 
 def _finish(job: Dict[str, Any], detail: str) -> None:
+    # The worker publishes terminal status after releasing its resources.
     _step(job, "done", detail)
-    job["status"] = "done"
 
 
 def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail_msg: str | None = None,
-               on_exit: Callable[[], None] | None = None, download_label: str | None = None) -> None:
-    """Run ``body`` on a daemon thread; an exception marks the job errored (warning ``fail_msg`` when
-    given); ``on_exit`` always runs last. ``download_label`` = download job: finishes as "<label> ready"
-    and bounces the router to pick the file up."""
+               on_exit: Callable[[], None] | None = None, download_label: str | None = None,
+               resumable: bool = False) -> None:
+    """One worker per job. Pauses retain ownership; terminal outcomes release it."""
+    guard = threading.Lock()
+
     def _run():
+        status = "done"
         try:
             body()
             if download_label is not None:
                 _finish(job, f"{download_label} ready")
                 _refresh_runtime("post-download runtime refresh skipped")
+        except DownloadPaused:
+            status = "paused"
         except Exception as exc:  # noqa: BLE001
             if fail_msg:
                 logger.warning(fail_msg, exc)
-            job["status"] = "error"
+            status = "error"
             job["error"] = str(exc)
         finally:
+            try:
+                if status != "paused":
+                    _RUNNING.pop(job["job_id"], None)
+                    if on_exit is not None:
+                        on_exit()
+            finally:
+                job["status"] = status
+                guard.release()
+
+    def start(*, initial: bool = False) -> bool:
+        if not guard.acquire(blocking=False):
+            return False
+        if not initial and job["status"] != "paused":
+            guard.release()
+            return False
+        job["status"] = "running"
+        job["error"] = None
+        try:
+            threading.Thread(target=_run, daemon=True, name=name).start()
+        except Exception:
+            _RUNNING.pop(job["job_id"], None)
             if on_exit is not None:
                 on_exit()
+            job["status"] = "error"
+            guard.release()
+            raise
+        return True
 
-    threading.Thread(target=_run, daemon=True, name=name).start()
+    if resumable:
+        _RUNNING[job["job_id"]] = {"resume": start}
+    start(initial=True)
 
 
 # ── runtime / router plumbing ────────────────────────────────
@@ -399,8 +430,10 @@ def _download_plan(entry, variant) -> list:
 def _run_download_plan(job: Dict[str, Any], plan: list, label: str) -> None:
     """Download every missing file in ``plan`` via pm.downloader (one resumable
     Download per job); already-present files count toward progress without a
-    transfer. The live handle is kept OFF the job dict (which stays
-    JSON-serializable for the poll route) under _RUNNING."""
+    transfer. Raises DownloadPaused straight through: the caller's worker
+    parks the job — the sequence must never advance past a pause. Handle
+    lifecycle (dl registration, resume handle, _RUNNING cleanup) belongs to
+    _spawn_job, not here."""
     _step(job, "downloading", f"{label} — {_human_gb(sum(p[2] for p in plan))}")
     done_before = 0
     for url, dest, size in plan:
@@ -409,7 +442,6 @@ def _run_download_plan(job: Dict[str, Any], plan: list, label: str) -> None:
             job["phase"] = "downloading"
         done_before += size
         job["done_bytes"] = done_before
-    _RUNNING.pop(job["job_id"], None)
 
 def _download_job(job: Dict[str, Any], plan) -> None:
     """Run a plan of (url, dest, size) downloads as ONE resumable Download.
@@ -420,8 +452,10 @@ def _download_job(job: Dict[str, Any], plan) -> None:
     hash by design: catalog sizes may lag an upstream re-upload, so
     completeness is judged by the downloader against the server's declared
     total, never the catalog. On pause the downloader raises
-    DownloadPaused; the job is marked 'paused' with its partials intact
-    for a later resume.
+    DownloadPaused and this propagates to the caller: the worker parks the
+    job 'paused' with its partials intact for a later resume. The live
+    handle is kept OFF the job dict (which stays JSON-serializable for the
+    poll route) under _RUNNING.
     """
     dl = Download([Source(url, dest) for url, dest, _ in plan])
     _RUNNING.setdefault(job["job_id"], {})["dl"] = dl
@@ -433,13 +467,8 @@ def _download_job(job: Dict[str, Any], plan) -> None:
 
     try:
         dl.run(progress=tick)
-    except DownloadPaused:
-        job["status"] = "paused"
-        # Do NOT re-raise: _spawn_job's except would mark the job 'error'.
-        # Paused is a terminal state the poll route reports as-is.
     finally:
         _RUNNING.get(job["job_id"], {}).pop("dl", None)
-
 
 
 def _loaded_models(running: Dict[str, Any]) -> "tuple[Dict[str, str], Dict[str, Any]]":
@@ -732,30 +761,13 @@ async def local_models_download(body: ModelDownloadBody):
     job["total_bytes"] = sum(p[2] for p in plan)
 
     def _run():
-        try:
-            job["phase"] = "downloading"
-            job["detail"] = f"{entry.display_name} — {_human_gb(job['total_bytes'])}"
-            _download_job(job, plan)
-            job["phase"] = "done"
-            job["status"] = "done"
-            job["detail"] = f"{entry.display_name} ready"
-            try:
-                from hermes_cli.local_runtime.bootstrap import refresh_local_runtime
-                refresh_local_runtime()
-            except Exception:  # noqa: BLE001
-                logger.debug("post-download runtime refresh skipped", exc_info=True)
-        except DownloadPaused:
-            pass  # status already "paused"; partials kept for resume
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("model download failed: %s", exc)
-            job["status"] = "error"
-            job["error"] = str(exc)
-        finally:
-            if job["status"] != "paused":
-                _RUNNING.pop(job["job_id"], None)
+        job["phase"] = "downloading"
+        job["detail"] = f"{entry.display_name} — {_human_gb(job['total_bytes'])}"
+        _download_job(job, plan)
+        _finish(job, f"{entry.display_name} ready")
+        _refresh_runtime("post-download runtime refresh skipped")
 
-    _RUNNING[job["job_id"]] = {"resume": _run, "dl": None}
-    threading.Thread(target=_run, daemon=True, name="lr-model-download").start()
+    _spawn_job(job, "lr-model-download", _run, fail_msg="model download failed: %s", resumable=True)
     return {"job_id": job["job_id"], "model_id": variant.model_id}
 
 
@@ -783,8 +795,7 @@ async def local_models_download_resume(body: JobIdBody):
     resume = running.get("resume")
     if resume is None:
         return {"ok": True, "resumed": False}
-    threading.Thread(target=resume, daemon=True, name="lr-model-download-resume").start()
-    return {"ok": True, "resumed": True}
+    return {"ok": True, "resumed": resume()}
 
 
 @router.delete("/api/local-models/models/{model_id}")
@@ -856,7 +867,8 @@ async def local_models_quickstart(body: QuickstartBody):
         _assign_default(job, variant.model_id)
         _finish(job, f"{entry.display_name} is ready — new chats use it")
 
-    _spawn_job(job, "lr-quickstart", _run, fail_msg="quickstart failed: %s", on_exit=_QUICKSTART_LOCK.release)
+    _spawn_job(job, "lr-quickstart", _run, fail_msg="quickstart failed: %s",
+               on_exit=_QUICKSTART_LOCK.release, resumable=True)
     return {"job_id": job["job_id"], "model_id": entry.id, "display_name": entry.display_name,
             "needs_runtime": need_runtime, "needs_download": need_download, "download_bytes": download_bytes}
 

@@ -127,7 +127,7 @@ _LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
 
 def _resolve_aux_verify(base_url: Optional[str]) -> Any:
     """httpx ``verify`` for an aux base_url, mirroring the main client (per-provider ``ssl_ca_cert`` /
-    ``ssl_verify``, ``HERMES_CA_BUNDLE`` / ``SSL_CERT_FILE``); any failure → httpx default (``True``)."""
+    ``ssl_verify``; otherwise the OS trust store); any failure → httpx default (``True``)."""
     try:
         from agent.ssl_verify import resolve_httpx_verify
         from hermes_cli.config import get_custom_provider_tls_settings, load_config_readonly

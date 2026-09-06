@@ -317,41 +317,30 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
 
 
 def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
-    """Reinstall Python deps (uv preferred, pip fallback) and re-arm active tool deps."""
-    from hermes_cli.update_cmd import (
-        _ensure_uv_for_termux, _ensure_venv_pip, _m, _refuse_update_for_contended_shims, _shim_quarantine_error_type,
-    )
+    """Reinstall Python deps via the PM sync authority (pm.sync_venv, no pip fallback).
 
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-    update_managed_uv()  # keep managed uv current — runs `uv self update` if we already have one
-    uv_bin = ensure_uv()
-    pip_cmd = [_m().sys.executable, "-m", "pip"]
-    if not uv_bin:
-        uv_bin = _ensure_uv_for_termux(pip_cmd)
-    if uv_bin:
-        # Same UV-env isolation as the main update path: a user-level UV_PYTHON_INSTALL_DIR / UV_PYTHON
-        # from unrelated software must not steer which interpreter uv resolves here.
-        from hermes_cli.managed_uv import managed_python_env
-        uv_env = managed_python_env()
-        uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
-        if _m()._is_termux_env(uv_env):
-            uv_env.pop("PYTHONPATH", None)
-            uv_env.pop("PYTHONHOME", None)
-        try:
-            _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-        except _shim_quarantine_error_type() as _sqe:
-            # Runs inside the ZIP-fallback error handler, so cmd_update's boundary except cannot catch
-            # it — refuse here with the same defer-via-marker contract.
-            # See #87331.
-            _refuse_update_for_contended_shims(_sqe)
-        install_prefix, install_env = [uv_bin, "pip"], uv_env
-    else:
-        # sys.executable -m pip avoids PEP 668 'externally-managed-environment' errors.
-        _ensure_venv_pip(pip_cmd, _m().sys.executable)
-        _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
-        install_prefix, install_env = pip_cmd, None
-    _m()._restore_active_tool_dependencies(active_tool_dependencies, install_prefix, env=install_env)
-    # Parity with git-pull path: heal the active memory provider's bridge packages after the reinstall.
+    The PM sync stages a fresh generation environment and commits the selection — the live
+    environment of the running process is never mutated, so no self-lock deferral guards this
+    and no pip/uv restore re-arms tool deps into the superseded pre-swap environment
+    (pm-clean-audit-49945b1402 final-gates item 9)."""
+    from hermes_cli.update_cmd import _m
+
+    import pm
+
+    # Same raising-uv realize the current-checkout repair path uses: the update command
+    # must SEE realization failures rather than silently fall back.
+    try:
+        pm.ensure("uv")
+    except pm.InstallError as e:
+        print(f"⚠ Managed uv unavailable: {e}")
+
+    try:
+        pm.sync_venv(["all"], explicit=True)
+    except pm.InstallError as _sync_err:
+        print(f"  ✗ {_sync_err}")
+        print("  Re-run `hermes update` (or `hermes pm install`) once resolved.")
+        raise
+
     _m()._refresh_active_memory_provider_dependencies()
 
 
@@ -359,11 +348,19 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
     drivers causing 'Invalid argument'). Returns ``False`` when a Desktop rebuild ran and failed."""
     from hermes_cli.update_cmd import (
-        _finish_dashboard_update_cleanup, _m, _print_bundled_skills_sync_report, _print_curator_first_run_notice,
-        _print_curator_recent_run_notice, _print_update_summary, _read_project_version, _rebuild_desktop_after_update,
-        _sweep_bytecode_after_update, _update_node_dependencies, _validate_critical_modules_import,
+        _finish_dashboard_update_cleanup,
+        _m,
+        _print_curator_first_run_notice,
+        _print_curator_recent_run_notice,
+        _print_update_summary,
+        _read_project_version,
+        _rebuild_desktop_after_update,
+        _update_node_dependencies,
+        _validate_critical_modules_import,
         _verify_and_restore_state_dbs_post_update,
     )
+    from hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
+    from hermes_cli.update_cmd_maint import _sweep_bytecode_after_update
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
     pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
@@ -381,12 +378,6 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     _abort_zip_update_if_dirty_tree()
     _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")
     _sweep_bytecode_after_update(branch)
-    # Self-lock deferral: the code swap is committed; defer only the dependency sync when this process
-    # holds a native extension the sync must rewrite.
-    # Reinstall Python dependencies. Prefer .[all], but if one optional extra breaks on this machine, keep
-    # base deps and reinstall the remaining extras individually so update does not silently strip working
-    # capabilities. See #86735.
-    _m()._abort_dependency_sync_if_self_locked()
     print("→ Updating Python dependencies...")
     _reinstall_python_deps_after_zip(active_tool_dependencies)
     # Verify the tree imports (catches the parse-OK-but-skewed tree an interrupted copy leaves). Runs

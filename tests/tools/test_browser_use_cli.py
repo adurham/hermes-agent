@@ -14,6 +14,7 @@ Covers the three seams the integration relies on:
 import json
 import os
 import stat
+import shutil
 import time
 
 import pytest
@@ -51,6 +52,10 @@ def _fake_cli(tmp_path, body):
     script = tmp_path / "browser-use"
     script.write_text("#!/bin/sh\n" + body)
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    if os.name == "nt":
+        wrapper = script.with_suffix(".cmd")
+        wrapper.write_text(f'@"{shutil.which("bash")}" "{script.as_posix()}" %*\n')
+        return str(wrapper)
     return str(script)
 
 

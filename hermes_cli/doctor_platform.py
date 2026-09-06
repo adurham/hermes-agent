@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 from pathlib import Path
@@ -176,51 +177,33 @@ def _check_s6_supervision(issues: list[str]) -> None:
 
 
 def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
-    """Verify the certifi CA bundle is loadable before the first HTTPS call tracebacks.
+    """Verify the actual TLS policy is usable before the first HTTPS call tracebacks.
 
-    ``--fix`` repairs a broken bundle (e.g. a brew Python upgrade rebuilt the venv) by force-reinstalling
-    certifi into THIS interpreter's environment and re-verifying.
+    The policy is ``agent.ssl_verify``: the platform verifier (truststore) is
+    installed process-wide and every stack builds SSL contexts through it. There
+    is no certifi bundle to validate anymore; the check is that the platform
+    store is in force and a default context constructs.
     """
     try:
-        from agent.ssl_guard import verify_ca_bundle
-        from agent.errors import SSLConfigurationError
+        from agent.ssl_verify import install_truststore
     except Exception as e:
-        return check_warn("SSL certificate check skipped", str(e))
+        return check_warn("TLS trust check skipped", str(e))
     if issues is None:
         issues = []
+    platform_store = install_truststore()
+    if not platform_store:
+        check_warn("TLS platform trust store unavailable",
+                   "OpenSSL default trust paths are in use; certificates trusted only by the OS store (a corporate root) will not verify")
     try:
-        verify_ca_bundle()
-        return check_ok("SSL CA certificate bundle is valid")
-    except SSLConfigurationError as e:
-        first_error = str(e)
+        ssl.create_default_context()
     except Exception as e:
-        return check_warn("SSL certificate check skipped", str(e))
-    check_fail("SSL CA certificate bundle is broken", first_error)
-    pip_cmd = f"{sys.executable} -m pip install --force-reinstall certifi"
-    if not should_fix:
-        issues.append(f"Repair the CA bundle: run `hermes doctor --fix`, or `{pip_cmd}`")
+        _fail_and_issue("TLS default SSL context cannot be constructed", str(e),
+                        "Recreate the venv or reinstall Hermes — the TLS stack is broken.", issues)
         return
-    print("    → Repairing: force-reinstalling certifi...")
-    try:
-        result = subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "certifi"],
-                                capture_output=True, text=True, timeout=300)
-        failure = ("certifi reinstall failed", (result.stderr or result.stdout or "")[-500:]) if result.returncode != 0 else None
-    except Exception as exc:
-        failure = ("certifi repair could not run pip", str(exc))
-    if failure:
-        return _fail_and_issue(*failure, f"Reinstall certifi manually: {pip_cmd}", issues)
-    # Drop cached certifi modules so where() resolves the fresh install without a restart.
-    import importlib
-    for mod_name in [m for m in sys.modules if m == "certifi" or m.startswith("certifi.")]:
-        sys.modules.pop(mod_name, None)
-    importlib.invalidate_caches()
-    try:
-        verify_ca_bundle()
-        check_ok("SSL CA certificate bundle repaired (certifi reinstalled)")
-    except SSLConfigurationError as e:
-        _fail_and_issue("SSL CA certificate bundle still broken after reinstall", str(e),
-                        "certifi reinstall did not restore the CA bundle — check for a custom CA env var "
-                        "(SSL_CERT_FILE/REQUESTS_CA_BUNDLE) pointing at a missing file, or recreate the venv.", issues)
+    if platform_store:
+        check_ok("TLS platform trust store configured; default SSL context available")
+    else:
+        check_ok("TLS default SSL context available (OpenSSL trust paths)")
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
@@ -367,6 +350,28 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
             check_warn(f"{h.package}=={h.installed_version} still installed (advisory {h.advisory.id} acknowledged)")
 
 
+def _staged_venv_dir() -> "Path | None":
+    """pm's provisioned runtime venv, or None when nothing is staged.
+
+    ``pm.packages.Venv().venv_dir()`` is pm's public authority for where
+    the runtime venv lives (sealed installs: the mutable venv in the
+    writable hermes root, seeded from the payload; dev installs: the repo
+    venv). A resolved path without a venv marker is not a provisioned
+    venv — pm also returns the intended location before first sync, and
+    doctor must not read an empty directory as staged dependencies.
+    """
+    try:
+        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        from pm.packages import Venv
+
+        venv_dir = Venv().venv_dir()
+    except Exception:
+        return None
+    if venv_dir is not None and (Path(venv_dir) / "pyvenv.cfg").is_file():
+        return Path(venv_dir)
+    return None
+
+
 @doctor_check()
 def _check_python_environment(should_fix: bool, f: Finding) -> None:
     """Interpreter, linked SQLite, venv, macOS TCC anchors/FDA/grants, version-file drift."""
@@ -387,7 +392,21 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
         if src:
             check_info(f"SQLite source id: {(src[:48] + '…') if len(src) > 48 else src}")
         _report_database_journal_modes()
-    check_bool(sys.prefix != sys.base_prefix, "Virtual environment active", ("Not in virtual environment", "(recommended)"))
+    # Staged dependencies vs the running interpreter, reported as two
+    # distinct facts. When pm has provisioned the runtime venv, its
+    # resolved location IS the answer ("dependencies staged"); whether
+    # THIS process runs inside THAT venv is a separate comparison of
+    # resolved prefixes (sys.prefix != base_prefix alone would also be
+    # true for an unrelated venv). Only when nothing is staged does the
+    # legacy interpreter probe stand alone.
+    staged = _staged_venv_dir()
+    if staged is not None:
+        running_here = Path(sys.prefix).resolve() == staged.resolve()
+        check_ok(f"Runtime venv staged ({staged})",
+                 "(active in this process)" if running_here else "(this process runs outside it)")
+    else:
+        check_bool(sys.prefix != sys.base_prefix, "Virtual environment active",
+                   ("Not in virtual environment", "(recommended)"))
     # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the mechanism reverted in #95563.
     # Silent on non-macOS.
     check_macos_tcc_anchor(should_fix=should_fix)

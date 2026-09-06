@@ -42,12 +42,12 @@ _DEFAULT_CONFIRMATION_FRAMES = 3
 _SILENCE_PEAK = 10
 _SILENCE_ALERT_SECONDS = 10
 
-# provider alias -> (engine class name on this module, lazy_deps feature).
+# provider alias -> (engine class name on this module, pm extra).
 # Unknown providers probe as openwakeword but fail to build.
 _PROVIDERS: Dict[str, tuple[str, str]] = {
-    "porcupine": ("_PorcupineEngine", "wake.porcupine"),
-    **{k: ("_SherpaKwsEngine", "wake.sherpa") for k in ("sherpa", "sherpa-onnx", "kws", "open")},
-    **{k: ("_OpenWakeWordEngine", "wake.openwakeword") for k in ("openwakeword", "oww", "local")},
+    "porcupine": ("_PorcupineEngine", "wake-porcupine"),
+    **{k: ("_SherpaKwsEngine", "wake-sherpa") for k in ("sherpa", "sherpa-onnx", "kws", "open")},
+    **{k: ("_OpenWakeWordEngine", "wake-openwakeword") for k in ("openwakeword", "oww", "local")},
 }
 
 
@@ -774,20 +774,6 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
                 f"(Voice section) or see the voice-mode docs.")
 
     capture_mode = resolve_capture_mode(cfg)
-    missing = " and ".join(n for n, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok)
-
-    # Ordered remediation ladder: first true predicate wins.
-    ladder = (
-        (not key_ok, lambda: "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."),
-        (not deps_ok and not lazy_ok, lambda: lazy_deps.feature_install_command(feature) or ""),
-        (not tflite_ok,
-         lambda: "The wake word needs the tflite runtime on this Mac: pip install ai-edge-litert"),
-        (deps_ok and not audio_ok and capture_mode == "local",
-         lambda: "Microphone capture needs sounddevice + numpy and a working audio device."),
-        (bool(missing), lambda: (f"Wake word needs {missing} configured — run `hermes tools` "
-                                 f"(Voice section) or see the voice-mode docs.")),
-    )
-    hint = next((make() for cond, make in ladder if cond), "")
 
     # Client capture needs deps (engine) but not a server-side PortAudio device.
     if capture_mode == "client":

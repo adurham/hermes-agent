@@ -180,23 +180,42 @@ json_frame() {
     fi
 }
 
+# The single authoritative stage list: emit_manifest prints it AND the
+# no-flag ladder runs it, so --include-desktop affects the real run
+# exactly as the manifest advertises.
+stage_names() {
+    printf '%s\n' prerequisites repository venv python-deps node-deps path config setup gateway
+    [ "$INCLUDE_DESKTOP" = true ] && printf '%s\n' desktop
+    printf '%s\n' complete
+}
+
+# "$1" stage name -> its manifest record fields (title|category|needs_user_input).
+stage_record() {
+    case "$1" in
+        prerequisites) echo "System prerequisites|runtime|false" ;;
+        repository)    echo "Download Hermes Agent|runtime|false" ;;
+        venv)          echo "Create Python environment|runtime|false" ;;
+        python-deps)   echo "Install Python dependencies|runtime|false" ;;
+        node-deps)     echo "Install tool dependencies|runtime|false" ;;
+        path)          echo "Install hermes command|runtime|false" ;;
+        config)        echo "Prepare config and skills|configuration|false" ;;
+        setup)         echo "Configure API keys and settings|configuration|true" ;;
+        gateway)       echo "Configure gateway service|configuration|true" ;;
+        desktop)       echo "Build desktop app|runtime|false" ;;
+        complete)      echo "Finish install|runtime|false" ;;
+    esac
+}
+
 emit_manifest() {
-    local desktop=""
-    if [ "$INCLUDE_DESKTOP" = true ]; then
-        desktop='{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false},'
-    fi
     printf '%s' '{"protocol_version":1,"stages":['
-    printf '%s' '{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},'
-    printf '%s' '{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},'
-    printf '%s' '{"name":"venv","title":"Create Python environment","category":"runtime","needs_user_input":false},'
-    printf '%s' '{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},'
-    printf '%s' '{"name":"node-deps","title":"Install tool dependencies","category":"runtime","needs_user_input":false},'
-    printf '%s' '{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},'
-    printf '%s' '{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},'
-    printf '%s' '{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},'
-    printf '%s' '{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'
-    printf '%s' "$desktop"
-    printf '%s\n' '{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
+    _sep=""
+    for _s in $(stage_names); do
+        IFS='|' read -r _title _category _needs <<< "$(stage_record "$_s")"
+        printf '%s{"name":"%s","title":"%s","category":"%s","needs_user_input":%s}' \
+            "$_sep" "$_s" "$_title" "$_category" "$_needs"
+        _sep=","
+    done
+    printf '%s\n' ']}'
 }
 
 stage_prerequisites() {
@@ -214,7 +233,38 @@ stage_repository() {
     else
         log "cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
         mkdir -p "$(dirname "$INSTALL_DIR")"
-        git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR" || fail "git clone failed"
+        local staged attempt cloned=false
+        staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone"
+        for attempt in 1 2 3; do
+            if git clone --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+                cloned=true
+                break
+            fi
+            rm -rf "$staged/tree"
+            [ "$attempt" = 3 ] || sleep "$((attempt * 5))"
+        done
+        if [ "$cloned" = false ]; then
+            log "direct clone failed; trying deferred blob download"
+            if git clone --depth 1 --single-branch --filter=blob:none --no-checkout \
+                --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+                for attempt in 1 2; do
+                    if git -C "$staged/tree" reset --hard HEAD; then
+                        cloned=true
+                        break
+                    fi
+                    [ "$attempt" = 2 ] || sleep 5
+                done
+            fi
+        fi
+        if [ "$cloned" = false ]; then
+            rm -rf "$staged"
+            fail "git clone failed; no checkout published"
+        fi
+        if ! mv "$staged/tree" "$INSTALL_DIR"; then
+            rm -rf "$staged"
+            fail "cannot publish cloned checkout"
+        fi
+        rmdir "$staged"
     fi
     if [ -n "$INSTALL_COMMIT" ]; then
         git -C "$INSTALL_DIR" checkout "$INSTALL_COMMIT" || fail "could not pin commit $INSTALL_COMMIT"
@@ -332,7 +382,9 @@ stage_gateway() {
 }
 
 stage_desktop() {
-    "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/hermes" desktop build || fail "desktop build failed"
+    # `hermes desktop --build-only` is the current authority (same path as
+    # `hermes gui` / the update flow); no installer-local node/electron code.
+    "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/hermes" desktop --build-only || fail "desktop build failed"
 }
 
 stage_complete() {
@@ -364,29 +416,35 @@ run_stage() {
     esac
 }
 
-if [ "$WANT_MANIFEST" = true ]; then
-    emit_manifest
-    exit 0
-fi
-
-check_platform
-
-if [ -n "$STAGE" ]; then
-    if [ "$NON_INTERACTIVE" = true ] && { [ "$STAGE" = setup ] || [ "$STAGE" = gateway ]; }; then
-        [ "$JSON" = true ] && json_frame true "$STAGE" true "needs user input"
+# Main. Guarded so the script can be SOURCED for its functions (the
+# installer-test harness sources it with --manifest, which must define
+# the functions and stop before main).
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    if [ "$WANT_MANIFEST" = true ]; then
+        emit_manifest
         exit 0
     fi
-    if run_stage "$STAGE"; then
-        [ "$JSON" = true ] && json_frame true "$STAGE" false
-        exit 0
-    else
-        rc=$?
-        [ "$JSON" = true ] && json_frame false "$STAGE" false "stage failed"
-        exit "$rc"
-    fi
-fi
 
-# No --stage: run the whole ladder.
-for s in prerequisites repository venv python-deps node-deps path config setup gateway complete; do
-    run_stage "$s"
-done
+    check_platform
+
+    if [ -n "$STAGE" ]; then
+        if [ "$NON_INTERACTIVE" = true ] && { [ "$STAGE" = setup ] || [ "$STAGE" = gateway ]; }; then
+            [ "$JSON" = true ] && json_frame true "$STAGE" true "needs user input"
+            exit 0
+        fi
+        if run_stage "$STAGE"; then
+            [ "$JSON" = true ] && json_frame true "$STAGE" false
+            exit 0
+        else
+            rc=$?
+            [ "$JSON" = true ] && json_frame false "$STAGE" false "stage failed"
+            exit "$rc"
+        fi
+    fi
+
+    # No --stage: run the whole ladder — the same authoritative list the
+    # manifest prints, so --include-desktop inserts desktop here too.
+    for s in $(stage_names); do
+        run_stage "$s"
+    done
+fi

@@ -193,11 +193,8 @@ def _has_agent_browser() -> bool:
     # the setup/status surfaces can't diverge from what browser tools actually
     # find at runtime; validate=False keeps this a cheap existence check with
     # no subprocess spawn.
-    # MERGE-CHECK: upstream moved the cascade to tools.browser_tool_install and added a
-    # Termux carve-out (_requires_real_termux_browser_install) — termux symbols are
-    # deliberately removed on this branch, so we keep our tools.browser_tool probe.
     try:
-        from tools.browser_tool import _find_agent_browser
+        from tools.browser_tool_install import _find_agent_browser
     except Exception:
         # Runtime probe unavailable: fall back to binary presence rather than crashing. Rungs: PATH;
         # Hermes-managed Node dirs ($HERMES_HOME/node, prepended to PATH at runtime but usually absent

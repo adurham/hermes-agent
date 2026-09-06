@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -27,14 +28,15 @@ SKIP_DIRS = {".git", "node_modules", "website", "skills", "optional-skills", "ap
 
 
 def _py_files():
-    for p in ROOT.rglob("*.py"):
-        parts = p.relative_to(ROOT).parts
-        if parts[0] in SKIP_DIRS or p.name == "check_compat_pointers.py":
-            continue
-        # The compat layer's own contract test uses the pointers on purpose; it is deleted with them.
-        if p.name == "test_compat_manifest_targets.py":
-            continue
-        yield p
+    def fail(error):
+        raise error
+
+    for directory, dirs, files in os.walk(ROOT, onerror=fail):
+        dirs[:] = [name for name in dirs if name not in SKIP_DIRS and not name.startswith(".")]
+        for name in files:
+            if not name.endswith(".py") or name in {"check_compat_pointers.py", "test_compat_manifest_targets.py"}:
+                continue
+            yield Path(directory) / name
 
 
 def main() -> int:

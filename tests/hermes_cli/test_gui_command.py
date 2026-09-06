@@ -142,6 +142,7 @@ def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
 
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(main_desktop, "_ensure_desktop_exe_launchable", lambda _root, exe: (exe, False))
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
@@ -150,7 +151,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
@@ -195,37 +196,33 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
     import os
 
     root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(main_desktop, "_ensure_desktop_exe_launchable", lambda _root, exe: (exe, False))
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch)
 
-    # A pm-installed Node/npm on disk so with_hermes_node_path() actually
-    # prepends the store dirs.
+    # Record tool identities matching the actual pin table; path-only legacy
+    # facts are intentionally not eligible for runtime activation.
+    from pm.ensure import _lockfile
+    from pm.lock import Facts
+    from pm.registry import get_package
+    from pm.store import current_target
     home = tmp_path / "hermes-home"
     store_root = home / "tools"
-    node_entry = store_root / "node-v22.0.0"
-    npm_entry = store_root / "npm-9.0.0" / "bin"
-    node_entry.mkdir(parents=True)
-    npm_entry.mkdir(parents=True)
-    (store_root / "facts.json").write_text(
-        json.dumps(
-            {
-                "schema": 1,
-                "packages": {
-                    "node": {
-                        "entry": "node-v22.0.0",
-                        "version": "22.0.0",
-                        "env": {"PATH": ["{{store}}/node-v22.0.0"]},
-                    },
-                    "npm": {
-                        "entry": "npm-9.0.0",
-                        "version": "9.0.0",
-                        "env": {"PATH": ["{{store}}/npm-9.0.0/bin"]},
-                    },
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    lock = _lockfile()
+    target = current_target()
+    dirs = {}
+    for name in ("node", "npm"):
+        package = get_package(name)
+        entry_name = package.store_entry(lock.version(name), target)
+        entry = store_root / entry_name
+        tool_dir = entry / "bin" if name == "npm" else entry
+        tool_dir.mkdir(parents=True)
+        dirs[name] = tool_dir
+        Facts(store_root / "facts.json").record(
+            name, lock.version(name), entry_name, {"PATH": [str(tool_dir)]}, store_root,
+            target=target, artifacts=[a["sha256"] for a in lock.artifacts(name, target)],
+        )
+    node_entry, npm_entry = dirs["node"], dirs["npm"]
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store_root))
     # Simulate the stripped PATH the desktop updater chain hands us.
@@ -1478,6 +1475,7 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
 
 def test_gui_successful_pack_swaps_new_app_into_release(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(main_desktop, "_ensure_desktop_exe_launchable", lambda _root, exe: (exe, False))
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     live_exe = _make_packaged_executable(root, monkeypatch)

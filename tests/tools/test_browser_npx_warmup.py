@@ -16,6 +16,7 @@ npx PID — on timeout.
 from __future__ import annotations
 
 import subprocess
+import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.browser_tool import AGENT_BROWSER_NPX_SPEC

@@ -110,7 +110,7 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
   const limit = 12
   const coordinator = new LocalBackendSpawnCoordinator(limit)
   const livePids = new Set<number>()
-  const seenPids = new Set<number>()
+  let completed = 0
   let maxLive = 0
 
   await Promise.all(
@@ -124,7 +124,6 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
 
         assert.ok(child.pid)
         livePids.add(child.pid)
-        seenPids.add(child.pid)
         maxLive = Math.max(maxLive, livePids.size)
 
         await new Promise<void>((resolve, reject) => {
@@ -139,13 +138,14 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
         })
 
         livePids.delete(child.pid)
+        completed += 1
       } finally {
         release()
       }
     })
   )
 
-  assert.equal(seenPids.size, 100)
+  assert.equal(completed, 100) // PID values may be reused after a child exits.
   assert.equal(maxLive, limit)
   assert.equal(livePids.size, 0)
   assert.equal(coordinator.activeCount, 0)

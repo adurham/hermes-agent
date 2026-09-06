@@ -86,7 +86,7 @@ def _patch_gateway_discovery():
          patch("hermes_cli.main._detect_venv_python_processes", return_value=[]), \
          patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
          patch("os.kill"), \
-         patch("pm.ensure.sync_venv"), \
+         patch("pm.sync_venv"), \
          patch(
              "hermes_cli.update_inventory.collect_runtime_inventory",
              return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
@@ -253,6 +253,7 @@ class TestCmdUpdateBranchFallback:
         origin but behind NousResearch/hermes-agent silently misses updates.
         """
         from hermes_cli import main as hm
+        from hermes_cli import update_cmd
 
         mock_run.side_effect = _make_run_side_effect(
             branch="main", verify_ok=True, commit_count="0"
@@ -262,7 +263,17 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock, patch.object(
+            update_cmd,
+            "_venv_core_imports_healthy",
+            return_value=(True, ""),
+        ), patch.object(
+            update_cmd, "_update_node_dependencies", return_value=[]
+        ), patch.object(
+            update_cmd, "_rebuild_desktop_after_update", return_value=True
+        ), patch.object(
+            update_cmd, "_check_and_apply_config_migration"
+        ):
             cmd_update(mock_args)
 
         expected_git_cmd = (
@@ -305,7 +316,12 @@ class TestCmdUpdateBranchFallback:
             update_cmd, "_add_upstream_remote"
         ) as add_remote, patch.object(
             update_cmd, "_mark_skip_upstream_prompt"
-        ) as mark_skip, patch("builtins.input") as stdin_input:
+        ) as mark_skip, patch.object(
+            # PM-era node resolution lives on the purge-protected hub (it must
+            # survive _reload_updated_runtime_modules); stub it with the same
+            # "no npm" fact shutil.which(None) stubs.
+            hm, "_resolve_node_runtime_npm", return_value=None
+        ), patch("builtins.input") as stdin_input:
             cmd_update(SimpleNamespace(yes=True))
 
         stdin_input.assert_not_called()
@@ -354,12 +370,8 @@ class TestCmdUpdateBranchFallback:
                 (False, "broken before repair"),
                 (health_after_repair, "broken after repair"),
             ],
-        ), patch.object(
-            hm, "_install_python_dependencies_with_optional_fallback"
-        ), patch.object(
-            hm, "_refresh_active_lazy_features"
-        ), patch.object(
-            hm, "_restore_active_tool_dependencies"
+        ), patch("pm.sync_venv"), patch.object(
+            update_cmd, "_rebuild_desktop_after_update", return_value=True
         ), patch.object(
             update_cmd, "_write_update_incomplete_marker"
         ), patch.object(
@@ -491,6 +503,8 @@ class TestCmdUpdateBranchFallback:
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
         with patch("shutil.which", return_value=None), patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
             "hermes_cli.config.get_missing_env_vars", return_value=["MISSING_KEY"]
@@ -535,6 +549,8 @@ class TestCmdUpdateMigrationPrompt:
     ):
         """Only the version moved → apply non-interactively, never prompt."""
         with patch("shutil.which", return_value=None), patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
             "hermes_cli.config.get_missing_env_vars", return_value=[]
@@ -574,6 +590,8 @@ class TestCmdUpdateMigrationPrompt:
         warnings must be re-surfaced even in the silent branch.
         """
         with patch("shutil.which", return_value=None), patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
             "hermes_cli.config.get_missing_env_vars", return_value=[]
@@ -616,6 +634,8 @@ class TestCmdUpdateMigrationPrompt:
             {"key": "display.new_widget", "description": "New config option: display.new_widget"},
         ]
         with patch("shutil.which", return_value=None), patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input", return_value="n"), patch(
             "hermes_cli.config.get_missing_env_vars", return_value=env_items
@@ -710,6 +730,7 @@ class TestCmdUpdateProfileSkillSync:
             patch("hermes_cli.profiles.list_profiles", return_value=all_profiles),
             patch("hermes_cli.profiles.seed_profile_skills", side_effect=fake_seed),
             patch("tools.skills_sync.sync_skills", return_value=empty_sync),
+            patch("hermes_cli.main._resolve_node_runtime_npm", return_value=None),
         ):
             cmd_update(mock_args)
 
@@ -744,6 +765,7 @@ class TestCmdUpdateProfileSkillSync:
             patch("hermes_cli.profiles.list_profiles", return_value=[default_p]),
             patch("hermes_cli.profiles.seed_profile_skills", side_effect=fake_seed),
             patch("tools.skills_sync.sync_skills", return_value=empty_sync),
+            patch("hermes_cli.main._resolve_node_runtime_npm", return_value=None),
         ):
             cmd_update(mock_args)
 
@@ -801,7 +823,10 @@ class TestCmdUpdateBranchFlag:
         )
         args = SimpleNamespace(branch="bb/gui")
 
-        cmd_update(args)
+        with patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ):
+            cmd_update(args)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
@@ -1418,6 +1443,7 @@ class TestUpdateNodeDependencies:
 
         (tmp_path / "package.json").write_text("{}")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: None)
 
         update_cmd._update_node_dependencies()
 

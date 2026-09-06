@@ -119,7 +119,7 @@ def find_shell_configs() -> list:
 def remove_path_from_shell_configs():
     """Remove Hermes PATH entries from shell configuration files."""
     removed_from = []
-    for config_path in (c for c in (Path.home() / n for n in _SHELL_RC_NAMES) if c.exists()):
+    for config_path in find_shell_configs():
         try:
             content = config_path.read_text(encoding="utf-8-sig")
             original_content = content
@@ -222,7 +222,10 @@ def remove_node_symlinks(hermes_home: Path) -> list:
         # os.readlink + manual join handles dangling links too (Path.resolve() on a dangling
         # link still returns the target path); the link must point into OUR node dir.
         target = (link.parent / os.readlink(link)).resolve()
-        return _unlink_if(target == node_dir or node_dir in target.parents, link)
+        if target != node_dir and node_dir not in target.parents:
+            return False
+        link.unlink()
+        return True
 
     candidates = (bin_dir / name for name in ("node", "npm", "npx") for bin_dir in _node_symlink_candidate_dirs())
     return _remove_each(candidates, _unlink_ours)
@@ -251,10 +254,13 @@ def uninstall_gateway_service():
     except Exception as e:
         log_warn(f"Could not check for gateway processes: {e}")
 
-    system = platform.system()
+    # Termux/Android has no systemd and no launchd — nothing left to do.
+    if os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in os.getenv("PREFIX", ""):
+        return stopped_something
 
-    # 2. Linux: uninstall systemd services (both user and system scopes)
-    if system == "Linux":
+    # 2. Per-platform service removal (systemd / launchd / Scheduled Task).
+    remover, warn_label = _GATEWAY_SERVICE_REMOVERS.get(platform.system(), (None, ""))
+    if remover is not None:
         try:
             stopped_something = remover() or stopped_something
         except Exception as e:
@@ -899,7 +905,7 @@ def _perform_uninstall(
             lambda: remove_portable_tooling_windows(hermes_home), "Removed {}",
             "No Windows installer artifacts to remove")
 
-    # 4b. Remove managed-runtime trees a PRE-SPLIT install left in
+    # 4c. Remove managed-runtime trees a PRE-SPLIT install left in
     #     HERMES_HOME. Current installs keep these inside the checkout, so
     #     step 4 already removed them — but a checkout outside the home
     #     (~/src/hermes-agent) used to leave its node/uv behind, surviving
@@ -914,21 +920,6 @@ def _perform_uninstall(
     else:
         log_info("No legacy runtime trees to remove")
 
-    # 4c. Remove Windows-only installer artifacts that are NOT user data:
-    #     PortableGit, bundled Node, gateway-service dir.  Installer put them
-    #     under HERMES_HOME but they're install tooling, not config — safe to
-    #     remove even in "keep data" mode.  If we're doing a full uninstall
-    #     the step-5 rmtree(hermes_home) would sweep them anyway; calling
-    #     this helper there is a no-op since they'll already be gone.
-    if _is_windows():
-        log_info("Removing Windows installer artifacts (PortableGit, Node, gateway-service)...")
-        removed_artifacts = remove_portable_tooling_windows(hermes_home)
-        if removed_artifacts:
-            for path in removed_artifacts:
-                log_success(f"Removed {path}")
-        else:
-            log_info("No Windows installer artifacts to remove")
-    
     # 5. Optionally remove ~/.hermes/ data directory (and named profiles)
     if full_uninstall:
         # 5a. Named profiles' homes live under <default>/profiles/ (swept by the rmtree below),
@@ -1022,29 +1013,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def find_shell_configs() -> list:
-    """Find shell configuration files that might have PATH entries."""
-    home = Path.home()
-    configs = []
-
-    candidates = [
-        home / ".bashrc",
-        home / ".bash_profile",
-        home / ".profile",
-        home / ".zshrc",
-        home / ".zprofile",
-    ]
-
-    for config in candidates:
-        if config.exists():
-            configs.append(config)
-
-    return configs
-# ---- END PLUGIN-COMPAT ----

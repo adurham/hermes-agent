@@ -681,12 +681,10 @@ def ensure_matrix_deps() -> bool:
                 "ContentURI": ContentURI,
                 "EventID": EventID,
                 "EventType": EventType,
-                "PaginationDirection": PaginationDirection,
-                "PresenceState": PresenceState,
+                    "PresenceState": PresenceState,
                 "RoomCreatePreset": RoomCreatePreset,
                 "RoomID": RoomID,
-                "SyncToken": SyncToken,
-                "TrustState": TrustState,
+                    "TrustState": TrustState,
                 "UserID": UserID,
             }
 

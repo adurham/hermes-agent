@@ -483,7 +483,8 @@ class BaseEnvironment(ABC):
     # --- Process lifecycle ---
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
-        bounded_capture: bool = False, watch_interrupt_tid: int | None = None) -> dict:
+        bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
+        output=None) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
         ``bounded_capture=True`` (foreground terminal-tool path only) retains at most
         ``tool_output.max_bytes`` in a head/tail window so a verbose subprocess cannot OOM the
@@ -499,7 +500,8 @@ class BaseEnvironment(ABC):
         reads feeding the patch engine, code-execution RPC reads, log reads — where truncation would corrupt
         data. See #64435.
         """
-        output = _new_output_collector(proc, bounded_capture)
+        if output is None:
+            output = _new_output_collector(proc, bounded_capture)
         drain_thread = _start_drain_thread(proc, output)
         _now = time.monotonic()
         deadline = _now + timeout
@@ -648,14 +650,18 @@ class BaseEnvironment(ABC):
         # deadline worker, so copy it across or long commands look idle.
         parent_activity_cb = get_activity_callback()
         proc_holder: list = []
+        output_holder: list = []
 
         def _spawn_and_wait() -> dict:
             if parent_activity_cb is not None:
                 set_activity_callback(parent_activity_cb)
             spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
             proc_holder.append(spawned)
+            output = _new_output_collector(spawned, bounded_capture)
+            output_holder.append(output)
             return self._wait_for_process(
-                spawned, timeout=effective_timeout, bounded_capture=bounded_capture, watch_interrupt_tid=parent_tid)
+                spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
+                watch_interrupt_tid=parent_tid, output=output)
 
         def _on_timeout() -> None:
             if proc_holder:
@@ -682,9 +688,15 @@ class BaseEnvironment(ABC):
             _on_timeout()
             raise
 
-        result = (
-            {"output": f"[Command timed out after {effective_timeout}s]", "returncode": 124}
-            if bounded.timed_out else bounded.value)
+        if bounded.timed_out:
+            suffix = f"\n[Command timed out after {effective_timeout}s]"
+            if output_holder:
+                collector = output_holder[0]
+                result = self._finalize_wait_result(collector, collector.render(suffix=suffix).lstrip("\n"), 124)
+            else:
+                result = {"output": suffix.lstrip(), "returncode": 124}
+        else:
+            result = bounded.value
         self._update_cwd(result)
         return result
 

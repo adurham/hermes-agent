@@ -481,7 +481,7 @@ def test_has_agent_browser_true_for_npx_only_resolution(monkeypatch):
         calls.append({"validate": validate})
         return "npx agent-browser"
 
-    monkeypatch.setattr(browser_tool, "_find_agent_browser", fake_find_agent_browser)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", fake_find_agent_browser)
 
     assert ns._has_agent_browser() is True
     # A readiness probe must resolve without spawning the daemon.
