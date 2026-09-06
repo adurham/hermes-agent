@@ -23,6 +23,9 @@ def _isolate_venv_holders(monkeypatch):
     import hermes_cli.main as cli_main
 
     monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+    # Collection can import native extensions from other test files. This
+    # suite tests branch and migration behavior, not Windows self-locking.
+    monkeypatch.setattr(cli_main, "_detect_self_loaded_native_modules", lambda: [])
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -308,6 +311,32 @@ class TestUpdateManagedPythonEnvIsolation:
 
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
+
+    def test_self_lock_defers_only_after_the_code_pull(self, mock_args, monkeypatch):
+        from hermes_cli import main as hm
+
+        events = []
+        git_result = _make_run_side_effect(commit_count="1")
+
+        def run(cmd, **kwargs):
+            if "fetch" in cmd:
+                events.append("fetch")
+            if "merge" in cmd and "--ff-only" in cmd:
+                events.append("code-merge")
+            return git_result(cmd, **kwargs)
+
+        def locked():
+            events.append("self-lock")
+            return ["held native extension"]
+
+        monkeypatch.setattr(hm, "_detect_self_loaded_native_modules", locked)
+        monkeypatch.setattr(hm, "_defer_update_for_self_lock", lambda modules: None)
+        monkeypatch.setattr(hm, "_get_origin_url", lambda *args: "https://github.com/NousResearch/hermes-agent.git")
+        with patch("shutil.which", return_value=None), patch("subprocess.run", side_effect=run):
+            with pytest.raises(SystemExit) as exc:
+                cmd_update(mock_args)
+        assert exc.value.code == 2
+        assert events.index("fetch") < events.index("code-merge") < events.index("self-lock")
 
 
 

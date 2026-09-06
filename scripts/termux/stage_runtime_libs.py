@@ -145,9 +145,8 @@ def stage(payload: Path, table: dict, licenses: dict | None = None) -> Path:
         return out
 
     # A cache miss rebuilds from verified archives, never scratch extracts.
-    manifest_path.unlink(missing_ok=True)
-    if out.exists():
-        shutil.rmtree(out)
+    if out.parent.exists():
+        shutil.rmtree(out.parent)
     out.mkdir(parents=True, exist_ok=True)
 
     merged = 0

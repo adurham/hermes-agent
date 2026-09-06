@@ -205,6 +205,18 @@ def test_collision_identical_ok_conflicting_raises(tmp_path, lib_source):
         srl.stage(tmp_path / "payload", table)
 
 
+def test_rebuild_removes_superseded_license_files(tmp_path, lib_source):
+    _, table = lib_source
+    out = _stage(tmp_path, table)
+    stale = out.parent / "share/doc/obsolete/copyright"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("old package notice", encoding="utf-8")
+    table["liba"]["version"] = "next"
+    srl.stage(tmp_path / "payload", table)
+    assert not stale.exists()
+    assert (out / "liba.so").is_file()
+
+
 def test_stale_scratch_cannot_poison_a_rebuilt_cache(tmp_path, lib_source):
     _, table = lib_source
     out = _stage(tmp_path, table)

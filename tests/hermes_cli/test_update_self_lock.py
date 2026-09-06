@@ -232,31 +232,6 @@ def test_abort_helper_resumes_paused_gateways_before_exit():
 # ---------------------------------------------------------------------------
 
 
-def test_pre_fetch_flow_has_no_self_lock_preflight():
-    """#86780 regression: a loaded native module must not block the git fetch.
-
-    The old preflight sat between the venv-holder sweep and the fetch, so a
-    universally-loaded module (bitwarden's module-level cryptography import)
-    deferred every update before any code was pulled — the Windows infinite
-    update loop.  The deferral now lives at the dependency-sync boundaries
-    only; the stretch of _cmd_update_impl between the venv-holder sweep and
-    the fetch must not consult the detector at all.
-    """
-    import inspect
-
-    src = inspect.getsource(update_cmd._cmd_update_impl)
-    fetch_idx = src.index("Fetching updates")
-    pre_fetch = src[:fetch_idx]
-    assert "_detect_self_loaded_native_modules()" not in pre_fetch
-    assert "_m()._abort_dependency_sync_if_self_locked" not in pre_fetch
-    # ... and it must still guard the dependency sync after the code swap
-    # (the sync itself lives in _sync_python_dependencies_after_pull).
-    post_fetch = src[fetch_idx:] + inspect.getsource(update_cmd._apply_pulled_update)
-    assert "_sync_python_dependencies_after_pull(" in post_fetch
-    sync_src = inspect.getsource(update_cmd._sync_python_dependencies_after_pull)
-    assert "_m()._abort_dependency_sync_if_self_locked" in sync_src
-
-
 def test_zip_update_guards_dependency_sync():
     import inspect
 
