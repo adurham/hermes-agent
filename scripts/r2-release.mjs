@@ -345,6 +345,14 @@ export function rewriteFeedPaths(ymlText, absKey) {
 // Commands
 // ---------------------------------------------------------------------------
 
+/** APT indexes are mutable; by-hash indexes and versioned packages are not. */
+export function cacheControlFor(key) {
+  if (!key.startsWith('releases/termux/')) return undefined
+  return key.includes('/by-hash/') || key.includes('/pool/')
+    ? 'public, max-age=31536000, immutable'
+    : 'no-store'
+}
+
 async function putObject(creds, base, bucket, key, payload, now, contentType) {
   // `payload` is either a small in-memory Buffer (feed manifests from
   // finalize) or a FILE PATH (binaries via `put`). The msixbundle is
@@ -367,7 +375,9 @@ async function putObject(creds, base, bucket, key, payload, now, contentType) {
     // ReadableStream cannot be replayed for the retry ("body object
     // should not be disturbed").
     const body = isPath ? fs.createReadStream(payload) : payload
-    const { res, text } = await signedFetch('PUT', url, { body, bodyHash, contentLength: size, creds, now, contentType })
+    const cacheControl = cacheControlFor(key)
+    const extraHeaders = cacheControl ? { 'Cache-Control': cacheControl } : undefined
+    const { res, text } = await signedFetch('PUT', url, { body, bodyHash, contentLength: size, creds, now, contentType, extraHeaders })
     if (!res.ok) throw new Error(`PUT ${key} -> ${res.status}${text ? `: ${text.slice(0, 300)}` : ''}`)
   })
   // HEAD can come back without content-length (intermediaries strip it on

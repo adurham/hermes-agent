@@ -286,6 +286,7 @@ def stage(pool_dir: Path, out_dir: Path, suite: str, gpg_key_file: Path | None) 
         f"Codename: {suite}",
         f"Architectures: {ARCH}",
         f"Components: {COMPONENT}",
+        "Acquire-By-Hash: yes",
         f"Description: Hermes Agent apt repository ({suite})",
         "Date: " + time.strftime("%a, %d %b %Y %H:%M:%S UTC", time.gmtime()),
     ]
@@ -296,8 +297,12 @@ def stage(pool_dir: Path, out_dir: Path, suite: str, gpg_key_file: Path | None) 
         rel = f"{COMPONENT}/binary-{ARCH}/{name}"
         size = p.stat().st_size
         data = p.read_bytes()
-        checksums.append(f" {hashlib.sha256(data).hexdigest()} {size:8d} {rel}")
-        sha512.append(f" {hashlib.sha512(data).hexdigest()} {size:8d} {rel}")
+        for algorithm, rows in (("SHA256", checksums), ("SHA512", sha512)):
+            digest = hashlib.new(algorithm.lower(), data).hexdigest()
+            rows.append(f" {digest} {size:8d} {rel}")
+            immutable = binary_dir / "by-hash" / algorithm / digest
+            immutable.parent.mkdir(parents=True, exist_ok=True)
+            immutable.write_bytes(data)
     release = "\n".join(release_fields) + "\n"
     release += "SHA256:\n" + "\n".join(checksums) + "\n"
     release += "SHA512:\n" + "\n".join(sha512) + "\n"

@@ -1110,7 +1110,7 @@ jobs:
           # cwd and a bare `node scripts/r2-release.mjs` would ENOENT.
           R2="$GITHUB_WORKSPACE/scripts/r2-release.mjs"
           cd termux-build/apt
-          files=(pool/**/*.deb key.asc
+          files=(pool/**/*.deb "dists/hermes-$CHANNEL"/main/binary-aarch64/by-hash/*/* key.asc
                  "dists/hermes-$CHANNEL/main/binary-aarch64/Packages"
                  "dists/hermes-$CHANNEL/main/binary-aarch64/Packages.gz"
                  "dists/hermes-$CHANNEL/Release"
@@ -1126,6 +1126,16 @@ jobs:
               --file "$f" \
               --key-is-full
           done
+
+          # Verify the public CDN path, not only the object-store origin.
+          public_repo="${CLOUDFLARE_R2_PUBLIC_URL%/}/releases/termux/$CHANNEL"
+          curl --fail --silent --show-error "$public_repo/key.asc" -o "$RUNNER_TEMP/termux-public-key.asc"
+          cmp key.asc "$RUNNER_TEMP/termux-public-key.asc"
+          docker run --rm --platform linux/arm64 --user 1000:1000 \
+            -v "$PWD:/apt:ro" \
+            -v "$GITHUB_WORKSPACE/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
+            -v "$GITHUB_WORKSPACE/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
+            "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version" "$public_repo"
   builds-pending:
     name: Mark the builds table as in progress
     if: inputs.upload_release == true && inputs.termux_only != true

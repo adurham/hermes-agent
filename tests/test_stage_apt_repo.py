@@ -172,6 +172,32 @@ def test_immutability_refusal(tmp_path, fake_gpg, capsys):
     assert "already published" in capsys.readouterr().err
 
 
+def test_by_hash_indexes_match_release_and_survive_later_publication(tmp_path):
+    import hashlib
+
+    pool = tmp_path / "pool"
+    pool.mkdir()
+    package = pool / "hermes-agent.deb"
+    make_deb(package, "hermes-agent", "1.0-1")
+    out = tmp_path / "repo"
+    assert stage_apt_repo.stage(pool, out, "hermes-canary", None) == 3
+    binary = out / "dists/hermes-canary/main/binary-aarch64"
+    original = {}
+    for name in ("Packages", "Packages.gz"):
+        data = (binary / name).read_bytes()
+        for algorithm in ("SHA256", "SHA512"):
+            digest = hashlib.new(algorithm.lower(), data).hexdigest()
+            immutable = binary / "by-hash" / algorithm / digest
+            assert immutable.read_bytes() == data
+            original[immutable] = data
+    release = (out / "dists/hermes-canary/Release").read_text()
+    assert "Acquire-By-Hash: yes\n" in release
+    make_deb(package, "hermes-agent", "1.1-1")
+    assert stage_apt_repo.stage(pool, out, "hermes-canary", None) == 3
+    for path, data in original.items():
+        assert path.read_bytes() == data
+
+
 def test_unsigned_release_exit_3_without_gpg(tmp_path, no_gpg):
     pool = tmp_path / "pool-in"
     pool.mkdir()

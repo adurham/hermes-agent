@@ -5,10 +5,11 @@ export PREFIX=/data/data/com.termux/files/usr
 export PATH="$PREFIX/bin:$PATH"
 suite="${1:?APT suite required}"
 expected="${2:?expected package version required}"
+repository="${3:-file:/apt}"
 work="$(mktemp -d "$PREFIX/tmp/hermes-apt-proof.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/lists/partial" "$work/archives/partial"
-printf 'deb [signed-by=/apt/key.asc] file:/apt %s main\n' "$suite" > "$work/sources.list"
+printf 'deb [signed-by=/apt/key.asc by-hash=force] %s %s main\n' "$repository" "$suite" > "$work/sources.list"
 apt_options=(
     -o "Dir::Etc::sourcelist=$work/sources.list"
     -o "Dir::Etc::sourceparts=-"

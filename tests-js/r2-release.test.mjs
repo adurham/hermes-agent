@@ -24,6 +24,7 @@ import {
   canonicalRequest,
   channelForTag,
   contentTypeFor,
+  cacheControlFor,
   encodeKeyPath,
   feedDirFor,
   mergeFeedYmls,
@@ -192,6 +193,16 @@ test('contentTypeFor maps MSIX / App Installer artifacts to their MIME types', (
   assert.equal(contentTypeFor('latest-mac.yml'), undefined)
   // Case-insensitive on the suffix.
   assert.equal(contentTypeFor('X.APPINSTALLER'), 'application/appinstaller')
+})
+
+test('APT mutable metadata revalidates while immutable index bytes can cache', () => {
+  const feed = 'releases/termux/canary'
+  for (const name of ['key.asc', 'dists/hermes-canary/InRelease', 'dists/hermes-canary/Release', 'dists/hermes-canary/main/binary-aarch64/Packages.gz']) {
+    assert.equal(cacheControlFor(`${feed}/${name}`), 'no-store')
+  }
+  assert.equal(cacheControlFor(`${feed}/dists/hermes-canary/main/binary-aarch64/by-hash/SHA256/abcd`), 'public, max-age=31536000, immutable')
+  assert.equal(cacheControlFor(`${feed}/pool/h/hermes-agent_1.2.3_aarch64.deb`), 'public, max-age=31536000, immutable')
+  assert.equal(cacheControlFor('releases/win32/stable/stable.appinstaller'), undefined)
 })
 
 test('canonicalRequest reads mixed-case header values (Content-Type)', () => {
