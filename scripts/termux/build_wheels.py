@@ -354,6 +354,7 @@ def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str]) -> 
             "cffi": "_cffi_backend",
             "pillow": "PIL",
             "pyyaml": "yaml",
+            "firecrawl-anydoc": "anydoc",
         }
         mods = [MODULE.get(n, n.replace("-", "_")) for n in build_set]
         script = ",".join(mods)
