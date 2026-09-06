@@ -560,9 +560,6 @@ def load_cli_config() -> Dict[str, Any]:
 
             "skin": "default",
         },
-        "clarify": {
-            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
-        },
         "code_execution": {
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution
@@ -19015,6 +19012,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_state = state
         self._clarify_batch_set_active(state, 0)
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
+
+        # Bell + native notification — clarify questions can sit on the
+        # screen for a long time before the user notices. Mirror the
+        # single-question path's summary construction: first question text,
+        # plus a count suffix when the batch has more than one.
+        _first = state["questions"][0]["question"] if state["questions"] else ""
+        _batch_summary = _first if _first else "Hermes is asking a question"
+        if len(_batch_summary) > 120:
+            _batch_summary = _batch_summary[:117] + "..."
+        if len(state["questions"]) > 1:
+            _batch_summary += f" (+{len(state['questions']) - 1} more questions)"
+        self._fire_attention_signals(_batch_summary)
+
         self._paint_now()
 
         _last_countdown_refresh = _time.monotonic()

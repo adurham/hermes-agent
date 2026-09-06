@@ -283,6 +283,47 @@ class TestClarifyTimeoutResolution:
         assert cm.resolve_clarify_timeout({"clarify": {"timeout": -1}}) == -1
 
 
+    def test_cli_defaults_do_not_shadow_agent_clarify_timeout(self):
+        """The CLI's built-in DEFAULT_CONFIG must NOT inject a legacy
+        top-level ``clarify.timeout`` that shadows the canonical
+        ``agent.clarify_timeout``.
+
+        Regression: cli.py's DEFAULT_CONFIG used to ship ``clarify:
+        {'timeout': 120}``, and because resolve_clarify_timeout reads the
+        legacy top-level key FIRST, every CLI surface resolving through
+        CLI_CONFIG got 120s even when the user set
+        ``agent.clarify_timeout: 600`` in config.yaml. A batch clarify
+        timed out at 120.86s with timed_out:true despite the 600 config.
+        """
+        import cli as cli_mod
+        from tools import clarify_gateway as cm
+
+        defaults = cli_mod.load_cli_config()
+        # The stale legacy default must not be injected by the CLI defaults.
+        assert "clarify" not in defaults, (
+            "cli.py DEFAULT_CONFIG still injects a legacy top-level "
+            "'clarify' key — it shadows agent.clarify_timeout"
+        )
+
+        # A user who sets agent.clarify_timeout must get exactly that value
+        # through the CLI config path, not the legacy 120 default.
+        merged = dict(defaults)
+        merged["agent"] = {**(defaults.get("agent") or {}), "clarify_timeout": 600}
+        assert cm.resolve_clarify_timeout(merged) == 600
+
+    def test_explicit_legacy_clarify_timeout_still_wins(self):
+        """A user who REALLY sets top-level ``clarify.timeout`` in their
+        config.yaml still gets it (documented legacy-first order). The bug
+        was the DEFAULT injecting the key, not the resolution order."""
+        import cli as cli_mod
+        from tools import clarify_gateway as cm
+
+        defaults = cli_mod.load_cli_config()
+        merged = dict(defaults)
+        merged["clarify"] = {"timeout": 42}
+        assert cm.resolve_clarify_timeout(merged) == 42
+
+
 class TestUnlimitedWait:
     """timeout <= 0 makes wait_for_response block until the answer arrives
     instead of auto-skipping."""
