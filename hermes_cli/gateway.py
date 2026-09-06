@@ -5873,6 +5873,29 @@ def _no_backend_exit(subcommand: str, reason: str) -> None:
         sys.exit(code)
 
 
+def _is_apt_termux_install() -> bool:
+    """True when this install is a sealed ``apt-termux`` tree.
+
+    A Termux APT package is a sealed tree owned by the package manager with
+    no service manager behind it. Keyed on the steward stamp
+    (``sealed_steward``), never a platform probe, so the refusal follows the
+    INSTALL PROVENANCE (our apt distribution's own stamp) rather than the
+    ambient environment; the platform-shaped ``is_termux()`` lanes stay
+    for generic on-device installs. Foreground process management (stop/
+    status via the PID registry) is NOT gated: it works on every install.
+    """
+    from hermes_cli.steward import STEWARD_APT_TERMUX, sealed_steward
+
+    return sealed_steward(PROJECT_ROOT) == STEWARD_APT_TERMUX
+
+
+def _service_mgmt_blocked() -> bool:
+    """Service lanes are unavailable: a Termux device (platform probe) or a
+    sealed apt-termux install (provenance probe). One predicate so a fourth
+    service gate cannot forget the disjunction."""
+    return is_termux() or _is_apt_termux_install()
+
+
 def _handle_no_backend(subcommand: str, *, wsl: bool, s6: bool) -> None:
     """Fallthrough when no service backend matched. Predicate order: WSL (only when ``wsl``) ->
     container (s6 slot hint only when ``s6``; ``start`` reaches here only when s6 isn't running) ->
@@ -5920,7 +5943,7 @@ def _cmd_install(args):
     force = getattr(args, "force", False)
     system = getattr(args, "system", False)
     run_as_user = getattr(args, "run_as_user", None)
-    if is_termux():
+    if _service_mgmt_blocked():
         _no_backend_exit("install", "termux")
     backend = _service_backend()
     if backend == "systemd":
@@ -5944,7 +5967,7 @@ def _cmd_uninstall(args):
         managed_error("uninstall gateway service")
         return
     system = getattr(args, "system", False)
-    if is_termux():
+    if _service_mgmt_blocked():
         _no_backend_exit("uninstall", "termux")
     backend = _service_backend()
     if backend is not None:
@@ -5964,7 +5987,7 @@ def _cmd_start(args):
             print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
-    if is_termux():
+    if _service_mgmt_blocked():
         _no_backend_exit("start", "termux")
     backend = _service_backend()
     if backend is not None:
@@ -6151,6 +6174,12 @@ def _cmd_migrate_legacy(args):
         print("Legacy unit migration only applies to systemd-based Linux hosts.")
         return
     remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
+
+
+def _cmd_service(args):
+    """Windows SCM frontend (MSIX HermesGateway service): translate the SCM
+    protocol onto the payload launcher (sealed-install surface)."""
+    _windows_scm_service_command(getattr(args, "gateway_service_action", None))
 
 
 _GATEWAY_SUBCOMMANDS = {
@@ -6375,9 +6404,4 @@ def _windows_scm_service_command(action: str | None) -> None:
         return
 
     print_error(f"Unknown service action: {action!r} (on|off|status)")
-
-def _cmd_service(args):
-    """Windows SCM frontend (MSIX HermesGateway service): translate the SCM
-    protocol onto the payload launcher (sealed-install surface)."""
-    _windows_scm_service_command(getattr(args, "gateway_service_action", None))
 
