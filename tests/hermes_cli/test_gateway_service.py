@@ -1382,13 +1382,16 @@ class TestSystemUnitHermesHome:
 
         assert entries == ["/opt/external-node/bin"]
 
-    def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
-        # Simulate sudo: Path.home() returns /root, target user is alice
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
-        monkeypatch.delenv("HERMES_HOME", raising=False)
+    def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch, tmp_path):
+        caller_home = tmp_path / "root"
+        target_home = tmp_path / "alice"
+        caller_home.mkdir()
+        target_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: caller_home))
+        monkeypatch.setenv("HERMES_HOME", str(caller_home / ".hermes"))
         monkeypatch.setattr(
             gateway_cli, "_system_service_identity",
-            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+            lambda run_as_user=None: ("alice", "alice", str(target_home)),
         )
         monkeypatch.setattr(
             gateway_cli, "_build_user_local_paths",
@@ -1397,8 +1400,8 @@ class TestSystemUnitHermesHome:
 
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
-        assert 'HERMES_HOME=/home/alice/.hermes' in unit
-        assert '/root/.hermes' not in unit
+        assert f'HERMES_HOME={target_home / ".hermes"}' in unit
+        assert str(caller_home / ".hermes") not in unit
 
 
     def test_user_unit_unaffected_by_change(self):
