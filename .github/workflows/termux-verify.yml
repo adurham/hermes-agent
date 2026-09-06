@@ -47,8 +47,27 @@ jobs:
             tests/pm/test_stage_only.py tests/pm/test_deb_safety.py tests/test_stage_apt_repo.py \
             tests/test_run_tests_shell.py
 
-  native-linkage:
-    name: Reproduce and verify bionic Python linkage
+  tui:
+    name: Prebuilt TUI checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Install the locked JS workspace
+        run: npm ci --workspace ui-tui --workspace tests-js --include-workspace-root --include=dev --no-fund --no-audit
+      - name: Check and bundle the TUI
+        run: |
+          npm run check --workspace tests-js
+          npm run check --workspace ui-tui
+          npm run build --workspace ui-tui
+
+  native-runtime:
+    name: Verify bionic runtime tools
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
@@ -79,38 +98,3 @@ jobs:
               test -s "$PREFIX/tmp/ffmpeg-proof.wav"
               printf "FFMPEG_BARE_RUNTIME_OK\n"
             '
-      - name: Download the wheel from the confirmed failing build
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: 34044387547
-          name: termux-linkage-842e3b0eed0eafbfb3d7f219ea465bd92d055cc2
-          path: termux-build/baseline
-      - name: Run the native reproduction
-        run: |
-          image=ghcr.io/ethernet8023/hermes-termux-builder:c14ffb703abf
-          docker pull "$image"
-          image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
-          printf 'Builder image: %s\n' "$image"
-          mkdir -p termux-build/linkage
-          chmod 0777 termux-build/linkage
-          docker run --rm --platform linux/arm64 --user 1000:1000 \
-            -v "$PWD:/repo:ro" -v "$PWD/termux-build/payload:/payload:ro" \
-            -v "$PWD/termux-build/linkage:/evidence" \
-            "$image" bash -c '
-              set -euo pipefail
-              export PREFIX=/data/data/com.termux/files/usr
-              export LD_LIBRARY_PATH="/payload/python$PREFIX/lib:/payload/runtime-libs/lib:$PREFIX/lib"
-              exec "/payload/python$PREFIX/bin/python3.11" \
-                /repo/scripts/termux/probe_python_linkage.py \
-                --repo /repo --payload /payload --output /evidence \
-                --built-wheel /repo/termux-build/baseline/firecrawl_anydoc-0.2.4-cp310-abi3-android_24_arm64_v8a.whl
-            '
-      - name: Preserve the built wheel and linker evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: termux-linkage-${{ github.sha }}
-          path: termux-build/linkage/
-          if-no-files-found: warn
-          retention-days: 7

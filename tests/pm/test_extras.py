@@ -135,9 +135,12 @@ def test_ensure_and_bind_false_on_import_failure(monkeypatch, synced):
     assert extras.ensure_and_bind("fal", importer, {}) is False
 
 
-def test_package_reexports():
-    assert pm.available is extras.available
-    assert pm.ensure_import is extras.ensure_import
+def test_package_exports_preserve_availability_and_noop_install(monkeypatch, synced):
+    monkeypatch.setitem(sys.modules, "some_new_thing", SimpleNamespace())
+    assert pm.available("some-new-thing") == extras.available("some-new-thing") is True
+    assert pm.available("no-such-extra-anywhere") == extras.available("no-such-extra-anywhere") is False
+    pm.ensure_import("some-new-thing")
+    assert synced == []
 
 
 def test_every_anchor_extra_exists_in_pyproject():
