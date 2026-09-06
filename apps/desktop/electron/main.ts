@@ -205,7 +205,6 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
-import { clearStaleGitLocks } from './gitlock'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -309,6 +308,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -390,35 +390,28 @@ import {
 import {
   compareApiUrl,
   parseCompareBehindCount,
-  resolveBehindCount,
-  resolveCommitLogSelection,
-  shouldCountCommits
+  resolveCommitLogSelection
 } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import { classifyUpdateRoot } from './update-root-policy'
-import { resolveUpdaterMechanism } from './updater'
 import {
-  collectRelaunchArgs,
+  resolveUpdaterMechanism,
+  type UpdaterStrategy
+} from './updater'
+import {
   observeUpdaterHandoff,
-  resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
-  resolveUpdateScriptHandoff,
-  sandboxFallbackFromEnv,
   spawnUpdaterProcess,
-  stagedUpdaterSupportsPrewrittenMarker,
-  wrapHandoffForDetachedConsole
+  stagedUpdaterSupportsPrewrittenMarker
 } from './updater-process'
 import { AppInstallerStrategy } from './updater/app-installer'
-import { ExternalStrategy } from './updater/external'
-import { consumePendingRelaunch, writePendingRelaunch } from './updater/relaunch'
 import {
-  formatBlockerMessage,
-  formatProbeFailedMessage,
-  scanVenvBlockers,
-  stopSafeVenvBlockers
-} from './venv-blocker-scan'
+  createCheckoutStrategy
+} from './updater/checkout'
+import { ExternalStrategy } from './updater/external'
+import { consumePendingRelaunch, registerUpdateRelaunch } from './updater/relaunch'
+import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
@@ -3049,176 +3042,10 @@ async function checkUpdates() {
     }))
   }
 
-  const updateRoot = resolveUpdateRoot()
-  let { branch } = readDesktopUpdateConfig()
-  const gitDir = path.join(updateRoot, '.git')
-
-  if (!directoryExists(gitDir)) {
-    return {
-      supported: false,
-      reason: 'not-a-git-checkout',
-      message: `${updateRoot} isn't a git checkout — desktop self-update only runs against a source install.`,
-      hermesRoot: updateRoot,
-      branch
-    }
-  }
-
-  // The update-root policy (update-root-policy.ts): a `.git` tree the install
-  // contract does not manage with updateMechanism "self" (or one with no
-  // stamp at all — a dev checkout) is the only legitimate git-update
-  // territory. A steward-owned tree (external / electron-updater) must not be
-  // pulled into from the desktop.
-  const rootStamp = readCanonicalInstallStamp()
-
-  const rootPolicy = classifyUpdateRoot({
-    isGitTree: true,
-    updateMechanism: (rootStamp?.updateMechanism as any) ?? null
-  })
-
-  if (!rootPolicy.updatable) {
-    return {
-      supported: false,
-      reason: `update-root-${rootPolicy.verdict}`,
-      message: rootPolicy.message || `${updateRoot} is not desktop-updatable.`,
-      advice: rootPolicy.advice,
-      hermesRoot: updateRoot,
-      branch
-    }
-  }
-
-  branch = await resolveHealedBranch(updateRoot, branch)
-  const originUrl = await getOriginUrl(updateRoot)
-
-  if (isOfficialSshRemote(originUrl)) {
-    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
-      git(['rev-parse', 'HEAD']),
-      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
-      git(['status', '--porcelain']),
-      git(['rev-parse', '--abbrev-ref', 'HEAD'])
-    ])
-
-    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
-
-    if (target.code !== 0 || !targetSha) {
-      return {
-        supported: true,
-        branch,
-        error: 'fetch-failed',
-        message: firstLine(target.stderr) || 'git ls-remote failed.',
-        hermesRoot: updateRoot,
-        fetchedAt: Date.now()
-      }
-    }
-
-    // Passive SSH-official checks only know tip SHAs (ls-remote) — never
-    // fabricate a "1 commit behind". Recover the exact count via the GitHub
-    // compare API when possible; otherwise behind stays null ("update
-    // available, count unknown") and updateAvailable carries the signal.
-    // ahead_by === 0 with differing tips means the remote tip is reachable
-    // from our HEAD — a local carried commit sitting AHEAD, not behind:
-    // flagging that as an update nudges the user into wiping their work.
-    const tipsEqual = Boolean(currentSha && currentSha === targetSha)
-
-    const sshBehind = tipsEqual
-      ? 0
-      : await fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
-
-    const upToDate = tipsEqual || sshBehind === 0
-
-    return {
-      supported: true,
-      branch,
-      currentBranch,
-      behind: upToDate ? 0 : sshBehind,
-      updateAvailable: !upToDate,
-      currentSha,
-      targetSha,
-      commits: [],
-      dirty: dirtyStr.length > 0,
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  // Self-heal abandoned git lock files before fetching. A stale
-  // .git/shallow.lock from a crashed/interrupted fetch otherwise fails every
-  // later fetch ("Unable to create '.git/shallow.lock': File exists") and this
-  // check reports 'fetch-failed' forever — git never removes these itself.
-  await clearStaleGitLocks(updateRoot)
-
-  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
-
-  if (fetched.code !== 0) {
-    return {
-      supported: true,
-      branch,
-      error: 'fetch-failed',
-      message: firstLine(fetched.stderr) || 'git fetch failed.',
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
-    git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
-    git(['status', '--porcelain']),
-    git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    git(['rev-parse', '--is-shallow-repository'])
-  ])
-
-  const isShallow = shallowStr === 'true'
-
-  // A shallow graph cannot provide a trustworthy exact count, even when it has
-  // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
-  const countStr = shouldCountCommits({ isShallow }) ? await git(['rev-list', `HEAD..origin/${branch}`, '--count']) : ''
-
-  // A positive directional ancestry result remains trustworthy in a shallow
-  // graph and prevents a local commit on top of origin from looking outdated.
-  const targetIsAncestorOfHead =
-    isShallow &&
-    currentSha !== targetSha &&
-    (await runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
-
-  let behind = resolveBehindCount({
-    countStr,
-    currentSha,
-    targetSha,
-    isShallow,
-    targetIsAncestorOfHead
-  })
-
-  // Recover the exact count a shallow clone can't compute: the GitHub compare
-  // API knows the full graph regardless of local clone depth. Best-effort —
-  // offline, rate-limited, or non-GitHub origins keep the honest null
-  // ("update available", no fabricated number).
-  if (behind === null) {
-    behind = await fetchCompareBehindCount({ currentSha, originUrl, targetSha })
-  }
-
-  // behind === null means "update available, exact count unknown" (shallow
-  // clone): still list what origin offers — resolveCommitLogSelection keeps
-  // the shallow log to the fetched tip so the range walk can't enumerate the
-  // contaminated ancestry — so "See what's new" stays useful and honest.
-  const commits = behind !== 0 ? await readCommitLog(updateRoot, branch, isShallow) : []
-
-  return {
-    supported: true,
-    branch,
-    currentBranch,
-    behind,
-    updateAvailable: behind === null || behind > 0,
-    currentSha,
-    targetSha,
-    commits,
-    dirty: dirtyStr.length > 0,
-    hermesRoot: updateRoot,
-    fetchedAt: Date.now()
-  }
+  // Checkout install: dispatch through the strategy layer — one mechanism,
+  // one stamp, no direct body path. The flow lives in updater/checkout.ts;
+  // this is the only production door to the checkout arms.
+  return resolveCheckoutUpdateStrategy().check()
 }
 
 // Best-effort exact behind-count for graphs the local clone can't measure.
@@ -3329,11 +3156,76 @@ function resolveBundledUpdateStrategy(bundledPayload) {
       emitUpdateProgress,
       appVersion: app.getVersion(),
       quit: () => app.quit(),
-      registerPendingRelaunch: fromVersion => writePendingRelaunch(HERMES_HOME, fromVersion)
+      registerPendingRelaunch: fromVersion =>
+        registerUpdateRelaunch(HERMES_HOME, fromVersion, {
+          // The relaunch mechanism: a detached waiter, external to the dying
+          // process. It snapshots the OLD package, signals the handshake,
+          // waits for this process to exit and for the OS to swap the
+          // installed package version, then activates the NEW package.
+          // Electron's app.relaunch would re-execute the OLD package's
+          // binary and can hold the swap open, so it is not used. The
+          // script is staged to a temp dir and resolved absolutely so
+          // nothing inherited from the package holds the swap open.
+          relaunch: () =>
+            startRelaunchWaiter({
+              processId: process.pid,
+              processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
+              identityName: PRODUCT_IDENTITY.msixAppIdWithOrg,
+              scriptPath: path.join(
+                bundledPayload.repoDir,
+                'apps',
+                'desktop',
+                'scripts',
+                'update-relaunch-waiter.ps1'
+              )
+            })
+        })
     })
   }
 
   return new ExternalStrategy()
+}
+
+/**
+ * The checkout updater strategy (windows-handoff / posix-handoff). The flow
+ * lives in updater/checkout.ts; this is the composition root that hands it
+ * the app shell's impure edges. The public checkUpdates/applyUpdates
+ * entrypoints dispatch only through this strategy — there is no other
+ * production path to the checkout arms.
+ */
+function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
+  return createCheckoutStrategy({
+    hermesHome: HERMES_HOME,
+    isWindows: IS_WINDOWS,
+    isMac: IS_MAC,
+    defaultUpdateBranch: DEFAULT_UPDATE_BRANCH,
+    updateHandoffDwellMs: UPDATE_HANDOFF_DWELL_MS,
+    directoryExists,
+    readCanonicalInstallStamp,
+    readDesktopUpdateConfig,
+    resolveUpdateRoot,
+    resolveUpdaterBinary,
+    resolveHealedBranch,
+    getOriginUrl,
+    runGit,
+    firstLine,
+    readCommitLog,
+    fetchCompareBehindCount,
+    pathWithVenvBin,
+    venvHermesShimPath,
+    emitUpdateProgress,
+    rememberLog,
+    startHermes,
+    startGatewaysAfterUpdateAbort,
+    releaseBackendLockForUpdate,
+    repairMacUpdaterHelper,
+    preflightStateDb,
+    runningAppBundle,
+    markQuittingForHandoff: () => {
+      isQuittingForHandoff = true
+    },
+    quit: () => app.quit()
+  })
 }
 
 /** True when this process is a Microsoft Store deployment. */
@@ -4034,340 +3926,13 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     return strategy.apply(opts)
   }
 
+  // Checkout install: dispatch through the strategy layer. The in-flight
+  // guard stays with the public entrypoint so no body path can start a
+  // second update. The flow lives in updater/checkout.ts.
   updateInFlight = true
 
   try {
-    const updater = resolveUpdaterBinary()
-
-    if (!updater && !IS_WINDOWS) {
-      // macOS/Linux: hand off to the repo-owned posix script — same shape as
-      // Windows (quit → detached orchestrator → `hermes update` → relaunch),
-      // minus the venv-lock gauntlet POSIX doesn't need. The old in-app
-      // updater (applyUpdatesPosixInApp) is gone with everything it dragged
-      // in: the HERMES_DESKTOP_CHILD_PID reaper-exclusion dance (#37532),
-      // the in-window rebuild retry, and the relaunch-outcome matrix — the
-      // script owns swap/relaunch, and the app is DEAD during the update so
-      // there is nothing to reap around. Checkouts that predate the script
-      // get the manual `hermes update` card once; their next update pulls it.
-      return await applyUpdatesPosixHandoff(opts)
-    }
-
-    if (!updater) {
-      // No staged updater binary — this is a CLI-installed user (they ran
-      // `hermes desktop`, never the Tauri installer that self-copies
-      // hermes-setup.exe into HERMES_HOME). On Windows the repo hand-off
-      // script serves them just as well as installer users — it only needs
-      // PowerShell and the checkout — so fall through to the normal hand-off
-      // when the script exists. Only when the checkout predates the script do
-      // we surface the manual one-liner.
-      const updateRoot = resolveUpdateRoot()
-
-      if (!resolveUpdateScriptHandoff(updateRoot)) {
-        // They DO have a working `hermes` on PATH / in the venv, so the
-        // correct path is the one-liner in their native medium. We show the
-        // EXACT command, branch-pinned to the checkout they're on — bare
-        // `hermes update` defaults to main and would silently switch a
-        // bb/gui (or any non-main) install off-branch. Mirror the GUI
-        // button's contract: append --branch <current> for non-main
-        // checkouts, keep it bare for main so the card stays clean.
-        let command = 'hermes update'
-
-        try {
-          const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-          const current = (head.stdout || '').trim()
-
-          if (head.code === 0 && current && current !== 'HEAD') {
-            const branch = await resolveHealedBranch(updateRoot, current)
-
-            if (branch !== 'main') {
-              command = `hermes update --branch ${branch}`
-            }
-          }
-        } catch {
-          // Best-effort: fall back to bare `hermes update` if branch detection fails.
-        }
-
-        rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
-        emitUpdateProgress({ stage: 'manual', message: command, percent: null })
-
-        return { ok: true, manual: true, command, hermesRoot: updateRoot }
-      }
-
-      rememberLog('[updates] no staged updater; using repo hand-off script for CLI install')
-    }
-
-    const handoffConflict = updateHandoffConflict(HERMES_HOME)
-
-    if (handoffConflict) {
-      // A different updater already owns the marker — most often a previous
-      // "Update" click whose updater is still alive and parked mid-run.
-      // Spawning another here would overwrite its claim and let two updaters
-      // mutate the checkout at once (#75778); refuse instead.
-      rememberLog(`[updates] refusing hand-off: ${handoffConflict.message}`)
-      emitUpdateProgress({ stage: 'error', message: handoffConflict.message, percent: null })
-
-      return { ok: false, error: 'update-already-running', message: handoffConflict.message }
-    }
-
-    emitUpdateProgress({
-      stage: 'restart',
-      message:
-        'Updating Hermes — this window will close and the updater will open. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
-      percent: 100
-    })
-    repairMacUpdaterHelper(updater)
-
-    const updateRoot = resolveUpdateRoot()
-    const { branch: configuredBranch } = readDesktopUpdateConfig()
-    const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    const updaterArgs = ['--update', '--branch', branch]
-    const targetApp = IS_MAC ? runningAppBundle() : null
-
-    if (targetApp) {
-      updaterArgs.push('--target-app', targetApp)
-    }
-
-    const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
-
-    // ── Pre-flight state.db integrity guard (#68474) ─────────────────
-    // Emergency backup and header verification before the update touches
-    // anything.  Runs while the backend is still alive.
-    preflightStateDb(HERMES_HOME, rememberLog)
-
-    // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
-    // spawn the updater. Without this the updater races a still-locked
-    // hermes.exe (held by the backend child / its grandchildren) and the update
-    // bricks. See releaseBackendLockForUpdate for the full failure analysis.
-    const lock = await releaseBackendLockForUpdate(updateRoot)
-
-    if (!lock.unlocked) {
-      // Something OUTSIDE this app holds the venv (a second window, a user
-      // terminal running hermes, an unkillable child). Handing off anyway
-      // guarantees a half-updated venv — abort loudly instead and let the
-      // user close the holder and retry. Restart our own backend so the app
-      // keeps working after the failed attempt.
-      const message =
-        'Update aborted: another process is holding the Hermes install open ' +
-        '(a second Hermes window or a terminal running hermes?). Close it and retry.'
-
-      emitUpdateProgress({ stage: 'error', message, percent: null })
-      startHermes().catch(() => {})
-
-      if (IS_WINDOWS) {
-        // The pre-gate `gateway stop --all` (#70337) took every profile's
-        // gateway down for an update that never happened — bring them back.
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
-      }
-
-      return { ok: false, error: message }
-    }
-
-    // Preflight: after releasing our own backends, check for remaining
-    // Hermes processes running from this venv.  The updater normally refuses
-    // when it detects a holder, but because the updater is spawned detached
-    // with stdio:ignore, the user never sees that refusal and the update
-    // silently fails.  This preflight detects holders early and gives the
-    // user an actionable error.  Windows-only; the .pyd lock hazard is a
-    // Windows phenomenon.  ALL failures (blocked, missing python, timeout,
-    // malformed output, missing psutil) abort the handoff — never proceed
-    // to the detached updater when the venv state is unknown.
-    if (IS_WINDOWS) {
-      let scanOutcome = await scanVenvBlockers(updateRoot)
-
-      if (scanOutcome.kind === 'blocked' && opts.stopSafeBlockers) {
-        const stopResult = await stopSafeVenvBlockers(updateRoot, scanOutcome.result)
-        rememberLog(
-          `[updates] user-approved blocker cleanup: stopped=${stopResult.stopped.join(',') || 'none'} failed=${stopResult.failed.join(',') || 'none'}`
-        )
-        // Let verified process-tree termination finish unwinding wrapper shells,
-        // then make the scanner — not the stale renderer payload — authoritative.
-        await new Promise(resolve => setTimeout(resolve, 300))
-        scanOutcome = await scanVenvBlockers(updateRoot)
-      }
-
-      // Re-scan before aborting on 'blocked' (#74805). Process-table teardown
-      // is asynchronous on Windows: even after releaseBackendLock's PID-exit
-      // wait, a grandchild the desktop never tracked (or a process an AV /
-      // NTFS filter driver is holding in teardown) can stay enumerable for a
-      // few more seconds and read as a holder. Each scan already costs
-      // seconds (spawns a venv python + psutil sweep), so two retries with a
-      // short dwell give the table time to settle without meaningfully
-      // delaying the abort path when a REAL holder (a user terminal, second
-      // window) is present — that holder is still there on the third scan.
-      for (let attempt = 0; scanOutcome.kind === 'blocked' && attempt < 2; attempt++) {
-        rememberLog(
-          `[updates] venv-blocker scan reported ${scanOutcome.result.processes.length} holder(s); re-scanning after settle (attempt ${attempt + 2}/3)`
-        )
-        await new Promise(resolve => setTimeout(resolve, 1500))
-        scanOutcome = await scanVenvBlockers(updateRoot)
-      }
-
-      if (scanOutcome.kind === 'blocked') {
-        const message = formatBlockerMessage(scanOutcome.result)
-
-        rememberLog(`[updates] venv-blocked: ${scanOutcome.result.processes.length} process(es) hold the install`)
-        emitUpdateProgress({ stage: 'error', message, percent: null })
-        startHermes().catch(() => {})
-        // Restore the gateways the pre-gate stop took down (#70337 drain
-        // semantics): the update aborted, so nothing else will relaunch them.
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
-
-        return { ok: false, error: 'venv-blocked', message, blockers: scanOutcome.result.processes }
-      }
-
-      if (scanOutcome.kind === 'probe-failure') {
-        const message = formatProbeFailedMessage(scanOutcome.error)
-
-        rememberLog(`[updates] venv-blocker probe failed: ${scanOutcome.error}`)
-        emitUpdateProgress({ stage: 'error', message, percent: null })
-        startHermes().catch(() => {})
-        // Same drain-semantics restore as the venv-blocked abort above.
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
-
-        return { ok: false, error: 'venv-probe-failed', message }
-      }
-    }
-
-    // Detached so the updater outlives this process — it needs us GONE before
-    // `hermes update` will run (the venv shim is locked while we live).
-    //
-    // Prefer the repo-owned hand-off script over the staged Tauri binary.
-    // The staged binary is frozen (no self-update path) and historically runs
-    // months-stale updater logic — pre-#67369 cache resolver, pre-#74782
-    // marker adoption — producing failures that were fixed on main long ago
-    // (2026-08-09 incident). scripts/desktop-update/windows.ps1 ships WITH the
-    // checkout, so each `hermes update` refreshes the code that drives the
-    // next one. Checkouts that predate the script fall back to the binary
-    // path unchanged.
-    const scriptHandoff = resolveUpdateScriptHandoff(updateRoot)
-    let child
-
-    if (scriptHandoff) {
-      const updateStartedAt = Math.floor(Date.now() / 1000)
-
-      // A bare detached+hidden powershell spawn silently dies before -File
-      // processing (console-subsystem init failure — see
-      // wrapHandoffForDetachedConsole). Route through `cmd start` so the
-      // script gets its own minimized console and survives our exit. The
-      // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
-      // pid — the script claims the update marker itself with its own $PID
-      // as its first action, and a relaunched Desktop parks on that.
-      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
-        '-InstallRoot',
-        updateRoot,
-        '-Branch',
-        branch,
-        '-DesktopPid',
-        String(process.pid),
-        '-RelaunchExe',
-        process.execPath
-      ])
-
-      child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
-        cwd: HERMES_HOME,
-        env: {
-          ...process.env,
-          HERMES_HOME,
-          HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-          PATH: pathWithVenvBin(venvBin)
-        },
-        detached: true,
-        stdio: 'ignore'
-      })
-
-      // Bridge marker: child.pid is the short-lived cmd.exe WRAPPER, not the
-      // script (see wrapHandoffForDetachedConsole). Write it anyway to cover
-      // the first moments of the hand-off — the script's step 0 overwrites it
-      // with its own live $PID, and if the script never starts the wrapper's
-      // dead pid makes the marker read as stale and self-delete (no wedge).
-      // The `hermes update` child adopts the SCRIPT's claim via
-      // update_lock.py's process-ancestry rule; no mtime heuristics needed.
-      if (Number.isInteger(child.pid)) {
-        writeUpdateMarker(HERMES_HOME, child.pid, { startedAt: updateStartedAt })
-      }
-
-      rememberLog(
-        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (branch ${branch}); exiting desktop to release venv shim`
-      )
-    } else {
-      child = spawnUpdaterProcess(updater, updaterArgs, {
-        cwd: HERMES_HOME,
-        env: {
-          ...process.env,
-          HERMES_HOME,
-          PATH: pathWithVenvBin(venvBin)
-        },
-        detached: true,
-        stdio: 'ignore'
-      })
-
-      // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
-      // quit dwell. The Tauri updater won't write its own marker for several
-      // seconds (window init + manifest), and during that gap our renderer
-      // can reconnect and spawn a fresh backend that re-locks .pyd files in
-      // the venv. By writing the marker ourselves the renderer's
-      // waitForUpdateToFinish() gate sees a live update and parks instead.
-      // The updater overwrites this with its own PID later; same format.
-      //
-      // SKIPPED for pre-#74782 staged updaters: those have no self-PID
-      // exclusion, so they read this very marker as a foreign live owner and
-      // abort with "Another Hermes update is already running (PID <itself>)" —
-      // an unbreakable loop, because the update that would replace the stale
-      // binary is the one being refused. Losing the anti-respawn hardening is
-      // strictly better than never updating again, and the updater still writes
-      // its own marker moments later.
-      if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
-        writeUpdateMarker(HERMES_HOME, child.pid)
-      } else if (Number.isInteger(child.pid)) {
-        rememberLog(
-          `[updates] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
-        )
-      }
-
-      rememberLog(
-        `[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`
-      )
-    }
-
-    // Linger on the "updating — don't reopen" overlay long enough for the user
-    // to actually read it (and to bridge the gap until the updater's own window
-    // appears), THEN quit to release the venv shim. The updater rebuilds and
-    // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
-    // and lured users into the #50238 relaunch loop.)
-    //
-    // The dwell doubles as the hand-off settle window (#66753): watch the
-    // detached child for an async spawn `error` (ENOENT/EACCES) or an early
-    // non-zero/signal exit. On failure, DON'T quit — the user would be left
-    // with no app, no updater, and no evidence. Restart our backend and
-    // surface the error instead. The pre-written marker names the dead child
-    // pid, so readLiveUpdateMarker self-heals it; no cleanup needed.
-    const dwellStartedAt = Date.now()
-    const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
-
-    if (!handoffOutcome.ok) {
-      const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
-
-      rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
-      emitUpdateProgress({ stage: 'error', message, percent: null })
-      startHermes().catch(() => {})
-
-      if (IS_WINDOWS) {
-        // Same drain-semantics restore as the earlier abort paths (#70337).
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
-      }
-
-      return { ok: false, error: 'updater-spawn-failed', message }
-    }
-
-    isQuittingForHandoff = true
-    setTimeout(
-      () => {
-        app.quit()
-      },
-      Math.max(0, UPDATE_HANDOFF_DWELL_MS - (Date.now() - dwellStartedAt))
-    )
-
-    return { ok: true, handedOff: true, updater }
+    return await resolveCheckoutUpdateStrategy().apply(opts)
   } finally {
     updateInFlight = false
   }
@@ -4602,129 +4167,6 @@ function preflightStateDb(hermesHome, rememberLog) {
 // .hermes-update-result.json for the relaunched Desktop to surface. It shows
 // its own tiny shim window (or nothing, headless) — this process only needs
 // to leave. Checkouts that predate the script get the manual card once.
-async function applyUpdatesPosixHandoff(opts: any) {
-  const updateRoot = resolveUpdateRoot()
-  const handoff = resolvePosixScriptHandoff(updateRoot)
-
-  if (!handoff) {
-    emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
-
-    return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
-  }
-
-  const handoffConflict = updateHandoffConflict(HERMES_HOME)
-
-  if (handoffConflict) {
-    // Same hazard as the Windows path (#75778): a live foreign updater
-    // already owns the marker — refuse rather than double-mutate the tree.
-    rememberLog(`[updates] refusing posix hand-off: ${handoffConflict.message}`)
-    emitUpdateProgress({ stage: 'error', message: handoffConflict.message, percent: null })
-
-    return { ok: false, error: 'update-already-running', message: handoffConflict.message }
-  }
-
-  // ── Pre-flight state.db integrity guard (#68474) ──
-  preflightStateDb(HERMES_HOME, rememberLog)
-
-  // Branch-pin so a non-main checkout doesn't get switched to main (and
-  // self-heal to main when the pinned branch no longer exists on origin).
-  let branch = 'main'
-
-  try {
-    const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-    const current = (head.stdout || '').trim()
-
-    if (head.code === 0 && current && current !== 'HEAD') {
-      branch = await resolveHealedBranch(updateRoot, current)
-    }
-  } catch {
-    // best effort
-  }
-
-  const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
-  const updateStartedAt = Math.floor(Date.now() / 1000)
-
-  // Relaunch target: the running .app bundle on mac (script swaps the
-  // rebuilt bundle over it), the running binary elsewhere. The script's gate
-  // (an exact port of update-relaunch.ts's decideRelaunchOutcome) relaunches
-  // only a binary the rebuild replaced with a launchable sandbox helper —
-  // replaying the original launch context (filtered args, cwd, sandbox
-  // opt-out) so a deep-link or --no-sandbox launch survives the update.
-  const targetApp = IS_MAC ? runningAppBundle() : process.execPath
-
-  if (targetApp) {
-    args.push('--relaunch-target', targetApp)
-  }
-
-  const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
-
-  if (!IS_MAC) {
-    args.push('--relaunch-cwd', process.cwd())
-
-    if (sandboxFallbackFromEnv(process.env, relaunchArgs)) {
-      args.push('--sandbox-fallback')
-    }
-
-    if (relaunchArgs.length) {
-      args.push('--', ...relaunchArgs)
-    }
-  }
-
-  const child = spawnUpdaterProcess(handoff.command, args, {
-    cwd: HERMES_HOME,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-      PATH: pathWithVenvBin(path.join(updateRoot, 'venv', 'bin'))
-    },
-    detached: true,
-    stdio: 'ignore'
-  })
-
-  // Bridge marker (same contract as the Windows hand-off): cover the gap
-  // until the script claims the marker with its own pid as step 0. If the
-  // script never starts, the dead pid reads as stale and self-deletes.
-  if (Number.isInteger(child.pid)) {
-    writeUpdateMarker(HERMES_HOME, child.pid, { startedAt: updateStartedAt })
-  }
-
-  rememberLog(`[updates] launched posix hand-off: ${handoff.scriptPath} (branch ${branch}); quitting to hand off`)
-  emitUpdateProgress({
-    stage: 'restart',
-    message:
-      'Updating Hermes — this window will close. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
-    percent: 100
-  })
-
-  // Settle window (#66753): the reported macOS failure mode is exactly this
-  // path — the app quits, bash/posix.sh dies early (or was never spawnable),
-  // and the user is left with no app, no updater, and no relaunch. Watch the
-  // child through the dwell; on spawn error or early death, stay alive and
-  // surface the failure instead of quitting into nothing.
-  const dwellStartedAt = Date.now()
-  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
-
-  if (!handoffOutcome.ok) {
-    const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
-
-    rememberLog(`[updates] posix hand-off not viable, aborting quit: ${handoffOutcome.message}`)
-    emitUpdateProgress({ stage: 'error', message, percent: null })
-
-    return { ok: false, error: 'updater-spawn-failed', message }
-  }
-
-  isQuittingForHandoff = true
-  setTimeout(
-    () => {
-      app.quit()
-    },
-    Math.max(0, UPDATE_HANDOFF_DWELL_MS - (Date.now() - dwellStartedAt))
-  )
-
-  return { ok: true, handedOff: true, updater: handoff.scriptPath }
-}
-
 function readJson(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'))
@@ -7031,6 +6473,7 @@ async function showPluginCompatNoticeOnce() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   let notice
 
   try {
@@ -7044,6 +6487,7 @@ async function showPluginCompatNoticeOnce() {
   if (!notice) {
     return
   }
+
   pluginCompatNoticeShown = true
   rememberLog(`[plugins] compat notice shown (${notice.key})`)
 

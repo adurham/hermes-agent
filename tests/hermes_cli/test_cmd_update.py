@@ -62,49 +62,9 @@ def mock_args():
 # to control whether uv is "available" — this autouse fixture makes
 # pm.uv delegate to the patched ``shutil.which`` so the existing test
 # setup keeps working without per-test changes.
-@pytest.fixture(autouse=True)
-def _patch_managed_uv(request, patch_pm_uv_to_shutil_which):
-    """Make pm.uv follow shutil.which mocking in tests."""
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _patch_gateway_discovery():
-    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
-
-    The restart phase used to swallow every exception at debug level, so these
-    end-to-end tests never noticed it touching real gateway discovery. Since
-    the phase is surfaced (#78574: an aborted restart now fails the update),
-    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
-    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
-    Discovery returning nothing makes the phase a clean no-op for every test
-    in this module (none of them assert on gateway restarts).
-    """
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
-         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
-         patch("hermes_cli.main._detect_venv_python_processes", return_value=[]), \
-         patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
-         patch("os.kill"), \
-         patch("pm.sync_venv"), \
-         patch(
-             "hermes_cli.update_inventory.collect_runtime_inventory",
-             return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
-         ), \
-         patch("hermes_cli.main._purge_stale_hermes_modules"), \
-         patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None), \
-         patch("hermes_cli.main._resume_windows_gateways_after_update"), \
-         patch(
-             "hermes_cli.main._install_hangup_protection",
-             return_value={
-                 "prev_stdout": None, "prev_stderr": None,
-                 "log_file": None, "installed": False,
-             },
-         ), \
-         patch("hermes_cli.main._finalize_update_output"), \
-         patch("hermes_cli.update_cmd._reload_config_modules"):
-        yield
-
+pytestmark = pytest.mark.usefixtures(
+    "isolated_update_uv", "isolated_update_processes", "isolated_update_checkout",
+)
 
 class TestCmdUpdateNpmLockfileCache:
     @staticmethod
@@ -281,7 +241,9 @@ class TestCmdUpdateBranchFallback:
         )
         sync_mock.assert_called_once_with(
             expected_git_cmd,
-            PROJECT_ROOT,
+            # Resolved live: the module autouse fixture pins PROJECT_ROOT to
+            # tmp_path, so the imported constant would be stale here.
+            hm.PROJECT_ROOT,
             assume_yes=False,
             input_fn=None,
         )
@@ -999,7 +961,7 @@ class TestCmdUpdateZipBranchRefusal:
     """
 
     def test_zip_fallback_refuses_non_main_branch(self, capsys):
-        from hermes_cli.update_cmd import _update_via_zip
+        from hermes_cli.update_cmd_zip import _update_via_zip
 
         args = SimpleNamespace(branch="bb/gui")
         with pytest.raises(SystemExit) as exc_info:
@@ -1089,7 +1051,13 @@ class TestNodeRuntimeNpmResolution:
         from hermes_cli import main as hm
         from hermes_cli import update_cmd
 
-        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        # Resolved live: the module autouse fixture pins PROJECT_ROOT to
+        # tmp_path, so the imported constant would be stale here.
+        desktop_dir = hm.PROJECT_ROOT / "apps" / "desktop"
+        # The rebuild gate requires a desktop workspace with a package.json;
+        # under the fixture's tmp PROJECT_ROOT nothing exists on disk.
+        desktop_dir.mkdir(parents=True, exist_ok=True)
+        (desktop_dir / "package.json").write_text("{}")
         packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
         build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
 
@@ -1112,7 +1080,7 @@ class TestNodeRuntimeNpmResolution:
         assert packaged.call_count == 2
         desktop_build.assert_called_once_with(
             [hm.sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
-            cwd=PROJECT_ROOT,
+            cwd=hm.PROJECT_ROOT,
             env=ANY,
         )
 
@@ -1130,6 +1098,7 @@ class TestNodeRuntimeNpmResolution:
 
         from hermes_cli import main as hm
         from hermes_cli import update_cmd
+        from hermes_cli import update_cmd_zip
 
         project_root = tmp_path / "hermes-agent"
         (project_root / ".git").mkdir(parents=True)
@@ -1190,6 +1159,12 @@ class TestNodeRuntimeNpmResolution:
 
         with (
             patch("hermes_cli.config.load_config", return_value={}),
+            # This test legitimately exercises the real ZIP fallback; undo the
+            # module autouse fixture's fail-fast tripwire for exactly this run.
+            patch(
+                "hermes_cli.update_cmd._update_via_zip",
+                update_cmd_zip._update_via_zip,
+            ),
             patch("subprocess.run", side_effect=fail_git_fetch),
             patch("urllib.request.urlretrieve", side_effect=write_source_zip),
             patch("pm.uv", return_value=("uv", dict(os.environ))),

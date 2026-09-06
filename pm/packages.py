@@ -386,6 +386,7 @@ class Venv(StatePackage):
         members = enabled_member_dirs() if plugin_dirs is None else plugin_dirs
         try:
             generation.mkdir(parents=True)
+            (generation / ".lease-managed").touch()
             create = subprocess.run(
                 [uv_bin, "venv", "--relocatable", "--python", sys.executable, str(candidate)],
                 env=env, capture_output=True, text=True, timeout=120,
@@ -408,6 +409,7 @@ class Venv(StatePackage):
         except BaseException:
             shutil.rmtree(generation, ignore_errors=True)
             raise
+        (generation / ".lease-managed").touch()
         return {"environment": candidate, "resolved_lock": resolved_lock}
 
 
