@@ -45,6 +45,16 @@ def clarify_callback(cli, question, choices, multi_select=False):
     cli._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
     cli._clarify_freetext = is_open_ended
 
+    # Bell + native notification — clarify questions can sit on the screen
+    # for a long time before the user notices. Mirror the single-question
+    # path's summary construction (cli.py _clarify_callback). Guard with
+    # hasattr so a cli object without the helper degrades gracefully.
+    _clarify_summary = question if question else "Hermes is asking a question"
+    if len(_clarify_summary) > 120:
+        _clarify_summary = _clarify_summary[:117] + "..."
+    if hasattr(cli, "_fire_attention_signals"):
+        cli._fire_attention_signals(_clarify_summary)
+
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
 

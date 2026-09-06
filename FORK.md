@@ -3,6 +3,72 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### CLI clarify timeout shadowed by legacy default; batch/oneshot clarify never fire attention signals — 2026-09-06
+
+**Symptom:** two separate bugs on the interactive CLI clarify invocation path
+(not the gateway/MCP surfaces).
+
+1. **Timeout:** `~/.hermes/config.yaml` sets `agent.clarify_timeout: 600`, but
+   every CLI surface resolved **120** instead. Live probe confirmed the
+   mechanism: `resolve_clarify_timeout(load_config()) -> 600` while
+   `resolve_clarify_timeout(CLI_CONFIG) -> 120`. Real incident: a batch clarify
+   call timed out at **120.86s** with `timed_out:true` despite the 600 config.
+2. **Notification:** the single-question clarify callback fires
+   `_fire_attention_signals` (bell + macOS native notification) when the
+   prompt opens, but the **batch** callback and the **oneshot/quick-query**
+   path (`hermes_cli/callbacks.py`) never did — so those clarify prompts sat
+   silently with no bell/notification.
+
+**Root cause 1 (timeout):** `cli.py` `load_cli_config()`'s `DEFAULT_CONFIG`
+block injected a stale legacy top-level `'clarify': {'timeout': 120}` key
+(`cli.py:563-565`). `tools/clarify_gateway.py:531-551`
+`resolve_clarify_timeout()` reads the legacy top-level `clarify.timeout` key
+FIRST (documented resolution order: legacy `clarify.timeout` >
+`agent.clarify_timeout` > 3600), so the CLI-injected default shadowed the
+user's 600. Every surface resolving through `CLI_CONFIG` got 120:
+`cli.py _clarify_callback` (~18793-18800), `cli.py _clarify_callback_batch`
+(~18996-18998), `hermes_cli/callbacks.py clarify_callback` (lines 27-32).
+
+**Root cause 2 (notification):** `cli.py _clarify_callback_batch`
+(`cli.py:18985-19048`) never called `_fire_attention_signals` (the single
+question path does, at `cli.py:18820-18825`), and
+`hermes_cli/callbacks.py clarify_callback` (used by the oneshot/quick-query
+path via `hermes_cli/cli_agent_setup_mixin.py` and `oneshot.py`) also never
+fired it.
+
+**Fix (root-cause only, no band-aids):**
+
+1. Removed the stale legacy `'clarify': {'timeout': 120}` default from
+   `cli.py` `DEFAULT_CONFIG` so `resolve_clarify_timeout(CLI_CONFIG)` stops
+   shadowing `agent.clarify_timeout`. Grepped all readers of the top-level
+   `clarify` config key — the only reader is `resolve_clarify_timeout`
+   itself, so the removal is surgical. The documented legacy-first resolution
+   order is unchanged (a user who REALLY sets top-level `clarify.timeout`
+   still gets it).
+2. `cli.py _clarify_callback_batch` now fires `_fire_attention_signals` with
+   a batch summary mirroring the single-question path's 120-char truncation:
+   first question text + `(+N more questions)` when batch size > 1.
+3. `hermes_cli/callbacks.py clarify_callback` now fires
+   `cli._fire_attention_signals(...)` on the passed-in cli object (guarded
+   with `hasattr` in that module's style), mirroring the single-question
+   summary construction.
+
+**Audited and confirmed already-correct (NO changes):** `gateway/run.py:1166`
+and `tui_gateway/server.py:4759-4769` read the canonical timeout correctly;
+`hermes_cli/mcp_gateway.py` has no clarify handling; `tools/clarify_gateway.py`
+resolution order is correct as-is.
+
+**Regression tests (each fails on unpatched main, passes post-fix):**
+
+- `tests/tools/test_clarify_gateway.py::TestClarifyTimeoutResolution::test_cli_defaults_do_not_shadow_agent_clarify_timeout` — asserts `load_cli_config()` no longer injects a top-level `clarify` key and that `agent.clarify_timeout: 600` resolves to 600 through the CLI config path.
+- `tests/tools/test_clarify_gateway.py::TestClarifyTimeoutResolution::test_explicit_legacy_clarify_timeout_still_wins` — asserts a user-set top-level `clarify.timeout: 42` still wins (documented legacy-first order preserved).
+- `tests/cli/test_cli_clarify_batch.py::TestClarifyBatchPanel::test_batch_fires_attention_signals` — asserts `_clarify_callback_batch` calls `_fire_attention_signals` with first-question + count summary.
+- `tests/cli/test_cli_clarify_batch.py::TestClarifyBatchPanel::test_batch_attention_summary_truncates_long_first_question` — asserts the 120-char truncation + count suffix.
+- `tests/cli/test_cli_secret_capture.py::test_clarify_callback_fires_attention_signals` — asserts `hermes_cli/callbacks.py clarify_callback` fires `_fire_attention_signals` via the cli object.
+- `tests/cli/test_cli_secret_capture.py::test_clarify_callback_attention_guarded_when_helper_missing` — asserts graceful degradation when the cli object lacks the helper.
+
+**Verification evidence:** live probe `resolve_clarify_timeout(load_config()) -> 600` vs `resolve_clarify_timeout(CLI_CONFIG) -> 120`; incident timing 120.86s with `timed_out:true`; mutation-checked — the 4 core regression tests fail on unpatched main and pass post-fix.
+
 ### Gateway restart → open desktop tabs 404 "session not found": stale-runtime recovery chain ported from upstream — 2026-09-06
 
 **Symptom (2026-09-05 04:17 UTC):** an ansible-driven `systemctl restart

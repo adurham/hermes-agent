@@ -25,6 +25,7 @@ def _make_cli_stub():
     cli._clarify_deadline = None
     cli._paint_now = MagicMock()
     cli._persist_prompt_summary = MagicMock()
+    cli._fire_attention_signals = MagicMock()
     return cli
 
 
@@ -236,6 +237,52 @@ class TestClarifyBatchPanel:
         cli._clarify_state["response_queue"].put("a")
         thread.join(timeout=2)
         assert result["value"] == "a"
+
+    def test_batch_fires_attention_signals(self):
+        """The batch clarify panel must ring the bell / fire a native
+        notification when it opens, mirroring the single-question path.
+
+        Regression: _clarify_callback_batch never called
+        _fire_attention_signals, so batch clarifies sat silently with no
+        bell/notification while the single-question path did fire it.
+        """
+        cli = _make_cli_stub()
+        questions = [
+            _q(0, "Color?", ["red", "blue"]),
+            _q(1, "Size?", ["small", "large"]),
+        ]
+        thread, result = _start_batch(cli, questions)
+
+        cli._fire_attention_signals.assert_called_once()
+        summary = cli._fire_attention_signals.call_args.args[0]
+        # First question text + count suffix for the extra question.
+        assert "Color?" in summary
+        assert "(+1 more questions)" in summary
+
+        cli._clarify_state["response_queue"].put("cancel")
+        thread.join(timeout=2)
+
+    def test_batch_attention_summary_truncates_long_first_question(self):
+        """The batch attention summary truncates an over-long first question
+        to 120 chars like the single-question path, then appends the count."""
+        cli = _make_cli_stub()
+        long_q = "Q" * 200
+        questions = [
+            _q(0, long_q, ["a", "b"]),
+            _q(1, "Size?", ["small", "large"]),
+        ]
+        thread, result = _start_batch(cli, questions)
+
+        cli._fire_attention_signals.assert_called_once()
+        summary = cli._fire_attention_signals.call_args.args[0]
+        # The question text is truncated to 117 chars + "...", then the
+        # count suffix is appended after it.
+        assert summary.startswith("Q" * 117 + "...")
+        assert "(+1 more questions)" in summary
+        assert len(summary) == 117 + 3 + len(" (+1 more questions)")
+
+        cli._clarify_state["response_queue"].put("cancel")
+        thread.join(timeout=2)
 
 
 class TestClarifyBatchNavigation:
