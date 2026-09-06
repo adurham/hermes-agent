@@ -180,12 +180,7 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     assert exec_line.endswith("-m hermes_cli.main desktop")
-    # No-boot-through-venv: a DE launch inherits no environment, so the
-    # Exec line carries the repo PYTHONPATH explicitly via `env`.
-    tokens = exec_line.split(" ")
-    assert tokens[0] == "env"
-    assert tokens[1].startswith("PYTHONPATH=")
-    assert Path(tokens[2].strip('"')).is_absolute()
+    assert Path(exec_line.split(" ")[0]).is_absolute()
 
 
 # #90292: the shell installer's bash wrapper makes argv[0] the repo `hermes`
@@ -210,11 +205,10 @@ def test_exec_prefixes_interpreter_for_env_shebang_python_script(
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    interpreter = str(Path(sys.executable).resolve())
-    tokens = exec_line.split(" ")
-    assert tokens[0] == "env"
-    assert tokens[1].startswith("PYTHONPATH=")
-    assert tokens[2].strip('"') == interpreter
+    # The Exec carries the venv-LEXICAL interpreter (resolving would follow
+    # uv/pyenv symlinks out of the venv and lose pyvenv.cfg discovery).
+    interpreter = os.path.abspath(sys.executable)
+    assert exec_line.split(" ")[0].strip('"') == interpreter
     assert str(hermes_bin) in exec_line
     assert exec_line.endswith("desktop")
 
@@ -243,7 +237,10 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
     root = _make_project(tmp_path)
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
-    interpreter = str(Path(sys.executable).resolve())
+    # venv-LEXICAL interpreter, matching what the launcher persists: a
+    # resolved() path would dereference out of the venv and look foreign to
+    # the lexical comparison, provoking a spurious interpreter prefix.
+    interpreter = os.path.abspath(sys.executable)
     hermes_bin.write_text(f"#!{interpreter}\nimport hermes_cli\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))

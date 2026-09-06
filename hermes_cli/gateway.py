@@ -2666,11 +2666,20 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
             return False
 
     candidates = []
-    venv_bin = project_root / "venv" / "bin"
-    if _is_dir(venv_bin):
-        candidates.append(str(venv_bin))
-    elif sys.prefix != sys.base_prefix:
-        candidates.append(str(Path(sys.prefix) / "bin"))
+    # pm-provisioned runtime venv first — the same authority _detect_venv_dir()
+    # trusts: under no-boot-through-venv sys.prefix equals base_prefix and the
+    # committed environment is the only record of which venv serves this install.
+    pm_venv = _pm_runtime_venv_dir(project_root)
+    if pm_venv is not None:
+        pm_bin = pm_venv / ("Scripts" if is_windows() else "bin")
+        if _is_dir(pm_bin):
+            candidates.append(str(pm_bin))
+    if not candidates:
+        venv_bin = project_root / "venv" / "bin"
+        if _is_dir(venv_bin):
+            candidates.append(str(venv_bin))
+        elif sys.prefix != sys.base_prefix:
+            candidates.append(str(Path(sys.prefix) / "bin"))
 
     hermes_home = get_hermes_home()
     extras = (project_root / "node_modules" / ".bin", hermes_home / "node" / "bin", hermes_home / "node_modules" / ".bin")
@@ -2711,9 +2720,45 @@ def _systemd_watchdog_seconds(hermes_home: str | Path | None = None) -> int:
             reset_home_override(override_token)
 
 
+def _pm_managed_node_dirs(home: Path) -> list[str]:
+    """Node dirs pm's installed-state records under *home*'s store, resolved
+    via ``Facts.env_for`` (``{{store}}`` templates against the store beside
+    the recorded facts). Only dirs present on disk count; a record whose
+    store dirs are gone vouches for nothing.
+    """
+    from pm.lock import Facts
+
+    store = Path(home) / "tools"
+    facts = Facts(store / "facts.json")
+    dirs: list[str] = []
+    for name in ("node", "npm", "npx"):
+        for value in facts.env_for(name, store).get("PATH") or []:
+            if value and Path(value).is_dir():
+                dirs.append(str(value))
+    return dirs
+
+
 def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | None = None) -> None:
-    """Append the Node dir a service unit should use: managed ``<hermes_root>/node`` (profile-scoped)
-    first — a unit survives reboots, so baking a shell-PATH Node is permanent breakage — else PATH lookup."""
+    """Append the Node dir a service unit should use.
+
+    PM's installed-state is the owner: facts.json under the target hermes
+    home's store records node/npm PATH entries, and those dirs — resolved via
+    Facts.env_for — are used verbatim. With managed Node recorded, consulting
+    the invoker's PATH would make a system unit depend on who ran sudo, so
+    lookup stops there. The legacy ``<hermes>/node`` tree and finally a PATH
+    lookup are fallbacks for installs pm never recorded.
+    """
+    home = Path(hermes_root) if hermes_root is not None else Path(get_hermes_home())
+    try:
+        managed_dirs = _pm_managed_node_dirs(home)
+    except Exception:
+        managed_dirs = []  # pm absent or unreadable: fall through to the legacy probe
+    for entry in managed_dirs:
+        if entry not in path_entries:
+            path_entries.append(entry)
+    if managed_dirs:
+        return
+
     from hermes_constants import (hermes_managed_node_tree_present, iter_hermes_node_dirs)
     managed_node_present = hermes_managed_node_tree_present(hermes_root)
     for directory in iter_hermes_node_dirs(hermes_root) if managed_node_present else ():
@@ -6201,39 +6246,24 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
 # ---- END PLUGIN-COMPAT ----
 
 
-def _pm_runtime_venv_dir() -> Path | None:
-    """The venv pm provisioned for this install, resolved from pm's own
-    records (facts.json + store layout) — never from interpreter state.
+def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
+    """The venv pm provisioned for this install, resolved through
+    ``runtime_paths.selected_venv`` — the committed-environment contract —
+    never from interpreter state.
 
     Under no-boot-through-venv the gateway runs the store python with the
     venv's site-packages on PYTHONPATH, so ``sys.prefix`` always equals
     ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled installs;
-    prefix/env probing silently degrades. pm is the authority instead: a
-    bundled install keeps its relocatable venv beside the manifest (a
-    sibling of the store), a dev install syncs the project venv
-    (``venv``/``.venv``, per ``hermes_constants.project_venv_dir`` — the
-    same layout ``pm.packages.Venv.venv_dir`` materializes). The venv fact
-    must exist: pm only vouches for what it provisioned.
+    prefix/env probing silently degrades. Resolution follows the committed-
+    environment contract: a committed selection is returned as-is, a host
+    with nothing committed yields nothing launchable, and a malformed
+    selection raises — fail closed, never a silently wrong venv.
     """
-    try:
-        from pm import paths
-        from pm.lock import Facts
-    except Exception:
-        return None
-    try:
-        if not Facts(paths.facts_path()).get("venv"):
-            return None
-    except Exception:
-        return None
-    store = paths.store_root()
-    bundled = store.parent / "venv"
-    if (store.parent / "manifest.json").is_file():
-        return bundled if bundled.is_dir() else None
-    try:
-        from hermes_constants import project_venv_dir
-    except ImportError:
-        return None
-    return project_venv_dir(paths.repo_root())
+    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    from hermes_cli.runtime_paths import selected_venv
+
+    venv = selected_venv(root)  # a malformed committed selection raises: fail closed
+    return venv if venv.is_dir() else None
 
 def _systemd_watchdog_service_fields(
     hermes_home: str | Path | None = None,
