@@ -14,11 +14,11 @@ from scripts.termux import python_linkage
 
 @pytest.mark.platforms("linux")
 def test_python_symbols_gain_an_explicit_library_dependency(tmp_path):
-    import _ctypes
+    import _cffi_backend
 
     library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
-    extension = tmp_path / Path(_ctypes.__file__).name
-    shutil.copy2(_ctypes.__file__, extension)
+    extension = tmp_path / Path(_cffi_backend.__file__).name
+    shutil.copy2(_cffi_backend.__file__, extension)
     original = subprocess.check_output(["patchelf", "--print-needed", str(extension)], text=True).splitlines()
     for name in original:
         if name.startswith("libpython"):
@@ -29,7 +29,7 @@ def test_python_symbols_gain_an_explicit_library_dependency(tmp_path):
     assert soname in needed
     assert not python_linkage.link_extension(extension, library), "a second pass must not edit a correct extension"
     subprocess.run(
-        [sys.executable, "-c", "import _ctypes; print(_ctypes.__file__)"],
+        [sys.executable, "-c", "import _cffi_backend; print(_cffi_backend.__file__)"],
         cwd=tmp_path, check=True,
     )
 

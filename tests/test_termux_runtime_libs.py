@@ -160,8 +160,6 @@ def test_stage_cache_correctness(tmp_path, lib_source, corruption):
 
     # True cache hit: source deleted, no downloads possible.
     server.stop()
-    for p in (tmp_path / "payload" / ".work").rglob("*"):
-        pass
     import shutil
     shutil.rmtree(tmp_path / "payload" / ".work")
     assert srl.stage(tmp_path / "payload", table) == out
@@ -207,9 +205,12 @@ def test_collision_identical_ok_conflicting_raises(tmp_path, lib_source):
         srl.stage(tmp_path / "payload", table)
 
 
-def test_main_thin_caller(tmp_path):
-    """main() is a thin wrapper over stage() reading runtime_libs.json."""
-    import importlib
-    mod = importlib.reload(srl)
-    assert callable(mod.stage)
-    assert callable(mod.main)
+def test_stale_scratch_cannot_poison_a_rebuilt_cache(tmp_path, lib_source):
+    _, table = lib_source
+    out = _stage(tmp_path, table)
+    expected = (out / "liba.so").read_bytes()
+    scratch = tmp_path / "payload/.work/runtime-libs/extract/liba" / PREFIX / "lib/liba.so"
+    scratch.write_bytes(b"corrupted scratch bytes")
+    (out / "liba.so").unlink()
+    srl.stage(tmp_path / "payload", table)
+    assert (out / "liba.so").read_bytes() == expected
