@@ -78,24 +78,62 @@ These receipts cover different layers. Thin-package deployment and unpacked
 runtime startup do not prove bundled installation or App Installer-triggered
 relaunch. No tests sent an LLM request as evidence of this acceptance pass.
 
+## Merge-ready closeout
+
+The branch includes upstream `5e645791aca87dfe46844502fab9e77a42a2681f`.
+The following limits from the earlier audit are resolved:
+
+- Context-only homes share one dependency root across journal recovery,
+  selected runtime state, and plugin unions. The regression batch passed
+  71 tests with eight host skips.
+- `tests/tools/test_subagent_steer.py` produced the relative `MagicMock`
+  databases. Its mock parents now explicitly have no database. The delegate
+  verification batch passed without new debris. Earlier debris is archived
+  outside the repository.
+- Docker bootstrap includes the stdlib runtime-path and locking owners that
+  PM imports before third-party dependencies exist. Both architecture builds
+  passed after this fix.
+- Installer path probes no longer read a missing lockfile. PowerShell 5.1 and
+  7 installer tests passed in CI.
+- Service runtime selection uses the shared selected-environment resolver.
+  PM facts supply managed Node paths. Native fixtures use disposable homes.
+- The Windows updater uses its registered App Installer source unless an
+  explicit feed override is configured. It downloads the descriptor before
+  teardown and opens the local file. It does not require the disabled
+  `ms-appinstaller:` protocol.
+
+The complete Linux run on `f54141c07aa0f99dcd99170ea68663ef0fc1bf38`
+reported 45,927 passed, zero failed, and 492 skipped across 3,776 files.
+It reported one retry-only encoding-test flake. Commit
+`6d9eefdab12d3555d763d57c4f643bfb4cfd259c` scopes that test's subprocess
+receipt to its actual consumer. Its canonical targeted run passed without
+retries. The final-head complete rerun remains separate evidence.
+
+The same CI run passed JS/TS, macOS tests, Python E2E, installers, docs,
+lockfile checks, and static gates. Windows verification remains pending.
+
+A fresh Windows ARM64 PM bundle records
+`07ee9299790e5635fd917da1769f969f14fc8030`. Later changes through
+`6d9eefdab12d3555d763d57c4f643bfb4cfd259c` affect tests and CI only.
+The corresponding desktop MSIX is being packaged. Microsoft App Installer
+was installed and verified inside the offline Windows Sandbox. That setup
+alone does not prove Hermes installation or automatic update/relaunch.
+
 ## Remaining acceptance work
 
-- Obtain a green complete Python run on the final tree. The completed run and
-  later bounded reruns must be reported separately.
-- Repeat bundled MSIX deployment with the corrected Sandbox harness and the
-  final source snapshot. The existing fresh bundle predates the final cron,
-  install-ID, and plugin-cadence fixes. Its unpacked runtime proof remains
-  scoped to the recorded payload tree.
-- Exercise an actual App Installer-triggered package update and automatic
-  relaunch. The tested Windows Sandbox image has no Desktop App Installer.
-- Run the relevant native macOS/Linux acceptance lanes. Windows host selection
-  verifies markers, not foreign-platform behavior.
-- Resolve the remaining review limit: a context-only config home outside the
-  process install root cannot be recovered by the current journal validator.
-- Identify the test that creates relative `MagicMock` SQLite artifacts. The
-  generated files are preserved outside the commit, but the producer is unresolved.
-- Record the final commit and native CI verification.
+- Obtain complete final-head native CI results without retry-only failures.
+- Verify bundled MSIX deployment from the fresh payload.
+- Exercise an actual App Installer-triggered update and automatic relaunch.
+- Obtain explicit maintainer review for CI-sensitive changes. Manual CI runs
+  skip PR-only review gates and do not satisfy that approval.
+
+CI: [f54141c07a](https://github.com/NousResearch/hermes-agent/actions/runs/34050547009),
+[6d9eefdab1](https://github.com/NousResearch/hermes-agent/actions/runs/34051022947).
+The latter uses the same workflow from the same commit on an upstream
+validation branch. GitHub intermittently rejected graph creation with
+`resource_exhausted: gitmon refuses to schedule us: fail-fast:network`.
 
 The external audit directory contains original findings, exact test selections,
-per-run logs, source snapshots, and review adjudication. No remote release,
-production service installation, or push is implied by this work.
+per-run logs, source snapshots, and review adjudication. Host application,
+certificate trust, and production services remain unchanged. No release has
+been published.
