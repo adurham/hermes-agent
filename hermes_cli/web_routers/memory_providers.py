@@ -329,29 +329,56 @@ def _command_result(
     }
 
 
-def _install_memory_provider_pip_dependencies(dependencies: List[str]) -> List[Dict[str, Any]]:
-    if not dependencies:
-        return []
+def _install_memory_provider_pip_dependencies(name: str, dependencies: List[str]) -> List[Dict[str, Any]]:
+    extra = str(_memory_provider_manifest(name).get("extra") or "").strip()
     missing = [dep for dep in dependencies if not _dependency_importable(dep)]
+    need_sync, already = bool(missing), False
     if not missing:
+        if not dependencies and not extra:
+            return []  # nothing declared, nothing pm owns
+        if extra:
+            # The pm extra may still be un-synced on this machine even when
+            # every declared pip name imports (fresh checkout, rebuilt venv).
+            try:
+                import pm
+                already = pm.available(extra)
+            except Exception:
+                already = False
+            need_sync = not already
+            if already and not dependencies:
+                return []  # extra healthy and nothing declared to report on
+        else:
+            already = True  # declared deps all importable and no extra
+    if not need_sync:
         return [_command_result(kind="pip", name=", ".join(dependencies), status="already_installed")]
-    # Route through the lazy-install pipeline rather than pip against
-    # sys.executable: on hosted/immutable images the agent venv is sealed
-    # read-only and installs must go to HERMES_LAZY_INSTALL_TARGET, which
-    # install_specs also activates on sys.path so the recheck sees the packages.
-    name = ", ".join(missing)
+    # Route through pm's venv sync of the provider's declared extra (NS-605
+    # lineage): pm owns HOW (uv sync inside the venv package), so installs
+    # honor the sealed/managed-venv policy. A direct
+    # ``pip install --python sys.executable`` would corrupt a sealed venv.
+    display = ", ".join(missing) or extra
+    command = "hermes pm install"
     try:
-        from tools.lazy_deps import install_specs
-        outcome = install_specs(missing, timeout=240)
+        import pm
+        extra = str(_memory_provider_manifest(name).get("extra") or "").strip()
+        if extra:
+            pm.sync_venv([extra], explicit=True)
+        else:
+            # No ``extra:`` — the legacy third-party shape. Bridge the
+            # declared pip_dependencies into the pm workspace union (a
+            # generated pyproject.toml member) and sync the venv; the
+            # member stamp picks the specs up on the next apply.
+            from pathlib import Path as _Path
+            from plugins.memory import find_provider_dir
+            from pm.workspace import materialize_legacy_pyproject
+            plugin_dir = find_provider_dir(name)
+            if plugin_dir is not None:
+                materialize_legacy_pyproject(_Path(plugin_dir))
+            pm.sync_venv(explicit=True)
     except Exception as exc:
-        return [_command_result(kind="pip", name=name, status="failed", error=str(exc))]
-    if outcome.blocked:
-        return [_command_result(kind="pip", name=name, status="failed", command=outcome.command, error=outcome.reason)]
+        return [_command_result(kind="pip", name=display, status="failed", command=command, error=str(exc))]
     return [_command_result(
-        kind="pip", name=name, status="installed" if outcome.ok else "failed", command=outcome.command,
-        completed=subprocess.CompletedProcess(
-            args=outcome.command, returncode=0 if outcome.ok else 1, stdout=outcome.stdout, stderr=outcome.stderr,
-        ),
+        kind="pip", name=display, status="installed", command=command,
+        completed=subprocess.CompletedProcess(args=command, returncode=0),
     )]
 
 
@@ -396,7 +423,7 @@ def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
     if provider is None and not manifest:
         raise _unknown_provider(name)
     setup = _memory_provider_setup_manifest(name)
-    results = _install_memory_provider_pip_dependencies(setup["pip_dependencies"])
+    results = _install_memory_provider_pip_dependencies(name, setup["pip_dependencies"])
     results.extend(_install_memory_provider_external_dependencies(setup["external_dependencies"]))
     if not results:
         results.append(_command_result(kind="setup", name=name, status="no_declared_steps"))

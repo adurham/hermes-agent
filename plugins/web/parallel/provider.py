@@ -38,7 +38,7 @@ def _client(slot: str, cls_name: str) -> Any:
         pass
     except Exception as exc:  # noqa: BLE001 — surface install hint as ImportError
         raise ImportError(str(exc))
-    return cached_sdk_client(slot, "PARALLEL_API_KEY", _MISSING_KEY, "search.parallel", _factory)
+    return cached_sdk_client(slot, "PARALLEL_API_KEY", _MISSING_KEY, "parallel-web", _factory)
 
 
 def _get_sync_client() -> Any:

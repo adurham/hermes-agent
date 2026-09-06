@@ -23,7 +23,7 @@ from hermes_cli.update_cmd_common import _best_effort
 logger = logging.getLogger("hermes_cli.update_cmd")
 
 
-_UPDATE_RUNTIME_RELOAD_MODULES = "hermes_constants", "tools.environments.local", "tools.lazy_deps"
+_UPDATE_RUNTIME_RELOAD_MODULES = "hermes_constants", "tools.environments.local", "pm.extras"
 
 #: Package prefixes whose cached modules go stale when the checkout changes under this
 #: process; purged (not reloaded) so any LATER import chain resolves against fresh source.
@@ -862,7 +862,7 @@ def _sweep_bytecode_after_update(branch: str) -> None:
     from hermes_cli.update_cmd import _m
     # The update process is still the old Python interpreter process. Run one final cache/module refresh
     # immediately before lazy backend refresh, which imports newly-pulled modules that may depend on fresh
-    # symbols in hermes_constants or lazy_deps. The dependency install above may also have regenerated
+    # symbols in hermes_constants or pm.extras. The dependency install above may also have regenerated
     # bytecode from build-cache copies — this second sweep catches those stragglers (#60242, #65240).
     removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
     if removed:

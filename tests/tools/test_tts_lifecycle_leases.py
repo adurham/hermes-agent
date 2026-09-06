@@ -9,6 +9,8 @@ resident local models.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 
 import pytest
@@ -116,30 +118,27 @@ def test_warm_is_noop_for_cloud_provider_without_lazy_sdk(monkeypatch):
 
 
 def test_warm_lazy_sdk_provider_reports_cached_when_installed(monkeypatch):
-    import types
+    import pm
 
-    fake = types.SimpleNamespace(
-        is_available=lambda feature: feature == "tts.edge",
-        ensure=lambda *a, **k: pytest.fail("ensure must not run when the SDK is present"),
+    monkeypatch.setattr(pm, "available", lambda extra: extra == "edge-tts")
+    monkeypatch.setattr(
+        pm, "ensure_import",
+        lambda extra: pytest.fail("ensure_import must not run when the SDK is present"),
     )
-    monkeypatch.setitem(__import__("sys").modules, "tools.lazy_deps", fake)
     result = tts_tool_lifecycle.warm_tts_provider({"provider": "edge"})
     assert result["warmed"] is True
     assert result["action"] == "cached"
 
 
 def test_warm_lazy_sdk_provider_installs_when_missing(monkeypatch):
-    import types
+    import pm
 
     calls = []
-    fake = types.SimpleNamespace(
-        is_available=lambda feature: False,
-        ensure=lambda feature, prompt: calls.append((feature, prompt)),
-    )
-    monkeypatch.setitem(__import__("sys").modules, "tools.lazy_deps", fake)
+    monkeypatch.setattr(pm, "available", lambda extra: False)
+    monkeypatch.setattr(pm, "ensure_import", lambda extra: calls.append(extra))
     result = tts_tool_lifecycle.warm_tts_provider({"provider": "edge"})
     assert result["action"] == "installed"
-    assert calls == [("tts.edge", False)]
+    assert calls == ["edge-tts"]
 
 
 # --------------------------------------------------------------------------
@@ -302,4 +301,13 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch):
     done.clear()
     tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
     assert done.wait(5)
-    assert ran == ["curl -s localhost:5002/load?model='kokoro v1'", "curl -s localhost:5002/unload"]
+    # Native platform-as-data: the placeholder renderer quotes for the HOST
+    # shell — POSIX shlex (single quotes) vs Windows list2cmdline (double
+    # quotes) — so the expected string is built with the same native contract
+    # instead of freezing one platform's quoting.
+    if os.name == "nt":
+        expected_model = subprocess.list2cmdline(["kokoro v1"])
+    else:
+        import shlex
+        expected_model = shlex.quote("kokoro v1")
+    assert ran == [f"curl -s localhost:5002/load?model={expected_model}", "curl -s localhost:5002/unload"]

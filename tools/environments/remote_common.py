@@ -20,12 +20,12 @@ def bash_argv(cmd_string: str, login: bool = False) -> list[str]:
 
 
 def ensure_lazy_dep(feature: str) -> None:
-    """Lazy-install an optional SDK via ``tools.lazy_deps`` (idempotent). Missing ``tools.lazy_deps``
+    """Lazy-install an optional SDK via ``pm.ensure_import`` (idempotent). Missing ``pm``
     is tolerated (the SDK import that follows fails with its own message); any other failure
     surfaces as ``ImportError``."""
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure(feature, prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure(feature)
     except ImportError:
         pass
     except Exception as e:

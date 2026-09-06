@@ -90,6 +90,10 @@ def _hermes_home_points_at_production(value: str) -> bool:
 if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
     _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
     os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
+    # Marker for re-imported conftest module bodies (xdist workers exec this
+    # file more than once): the second import sees the already-redirected
+    # sandbox in the env and must not register it as a guarded "real" root.
+    os.environ["HERMES_TEST_SANDBOX_HOME"] = _SESSION_HERMES_HOME
     atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
 
 # PYTHONPYCACHEPREFIX is a bytecode-mirror escape hatch: when set (the
@@ -1876,6 +1880,11 @@ def _capture_real_hermes_root() -> list[Path]:
     ):
         try:
             custom = Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve()
+            # The live session sandbox is test-owned, never a guarded root
+            # (a re-imported conftest body sees it as _PRE_SANDBOX_HERMES_HOME).
+            sandbox = os.environ.get("HERMES_TEST_SANDBOX_HOME", "")
+            if sandbox and custom == Path(sandbox).expanduser().resolve():
+                return roots
             if custom not in roots:
                 roots.append(custom)
         except Exception:

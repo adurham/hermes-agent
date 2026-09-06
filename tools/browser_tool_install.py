@@ -254,8 +254,8 @@ def _maybe_autoinstall_chromium() -> bool:
     _bt._chromium_autoinstall_attempted = True
     if _running_in_docker():
         return False
-    from tools.lazy_deps import _allow_lazy_installs
-    if not _allow_lazy_installs():
+    from pm import lazy_installs_allowed
+    if not lazy_installs_allowed():
         return False
     try:
         browser_cmd = _find_agent_browser()

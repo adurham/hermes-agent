@@ -90,55 +90,56 @@ def test_repair_runs_force_reinstall_with_pyproject_pins(
     assert detect_calls["count"] == 1
 
 
-def test_refresh_repairs_venv_after_lazy_failure(tmp_path, monkeypatch, capsys):
-    import tools.lazy_deps as lazy_deps_mod
+def test_refresh_resyncs_enabled_extras_via_pm(monkeypatch, capsys):
+    """The post-rebuild refresh is one explicit pm sync of the enabled extras."""
+    import importlib
 
-    monkeypatch.setattr(lazy_deps_mod, "active_features", lambda: ["platform.matrix"])
+    pm_ensure = importlib.import_module("pm.ensure")
+
+    sync_calls: list[tuple[list[str] | None, bool]] = []
     monkeypatch.setattr(
-        lazy_deps_mod,
-        "refresh_active_features",
-        lambda **kw: {"platform.matrix": "failed: pip install failed"},
-    )
+        pm_ensure, "sync_venv", lambda extras=None, *, explicit=False: sync_calls.append((extras, explicit)))
 
-    repair_calls: list[list[str]] = []
-
-    def fake_repair(prefix, packages, *, env=None):
-        repair_calls.append(packages)
-        return True
-
-    monkeypatch.setattr(main_install_repair, "_detect_broken_lazy_refresh_imports", lambda *a, **k: ["PyYAML"])
-    monkeypatch.setattr(main_install_repair, "_repair_broken_lazy_refresh_imports", fake_repair)
-
-    ok = m._refresh_active_lazy_features(["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path)})
-    out = capsys.readouterr().out
+    ok = m._refresh_active_lazy_features(["platform.telegram"])
 
     assert ok is True
-    assert repair_calls == [["PyYAML"]]
-    assert "Venv repair succeeded" in out
-    assert "import probes" in out
-    assert "Backends keep their previously-installed version" not in out
+    assert sync_calls == [(["platform.telegram"], True)]
+    assert "Extra re-sync failed" not in capsys.readouterr().out
+
+
+def test_refresh_reports_failure_and_stays_unsafe(monkeypatch, capsys):
+    """A failed re-sync must not read as a healthy venv."""
+    import importlib
+
+    pm_ensure = importlib.import_module("pm.ensure")
+
+    def broken_sync(extras=None, *, explicit=False):
+        raise RuntimeError("uv sync failed")
+
+    monkeypatch.setattr(pm_ensure, "sync_venv", broken_sync)
+
+    assert m._refresh_active_lazy_features(["platform.telegram"]) is False
+    assert "Extra re-sync failed" in capsys.readouterr().out
 
 
 def test_refresh_uses_pre_rebuild_snapshot_when_provided(monkeypatch):
-    """Replacement runtimes must not re-detect features after packages vanish."""
-    import tools.lazy_deps as lazy_deps_mod
+    """Replacement runtimes must not re-detect enabled extras after packages vanish."""
+    import importlib
+
+    pm_ensure = importlib.import_module("pm.ensure")
 
     monkeypatch.setattr(
-        lazy_deps_mod,
-        "active_features",
+        pm_ensure, "enabled_extras",
         lambda: pytest.fail("post-rebuild detection must not run"),
     )
-    restored = []
+    synced = []
     monkeypatch.setattr(
-        lazy_deps_mod,
-        "restore_features",
-        lambda features: restored.append(features) or {"platform.telegram": "restored"},
+        pm_ensure, "sync_venv",
+        lambda extras=None, *, explicit=False: synced.append((extras, explicit)),
     )
 
-    assert m._refresh_active_lazy_features(
-        ["uv", "pip"], features=["platform.telegram"]
-    ) is True
-    assert restored == [["platform.telegram"]]
+    assert m._refresh_active_lazy_features(["platform.telegram"]) is True
+    assert synced == [(["platform.telegram"], True)]
 
 
 def test_capture_active_tool_dependencies_uses_tools_status_probes(monkeypatch):

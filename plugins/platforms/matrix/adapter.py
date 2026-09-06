@@ -2958,7 +2958,7 @@ def interactive_setup() -> None:
                     print_info(f"  Error: {exc}")
         except ImportError:
             try:
-                _lazy_ensure("platform.matrix", prompt=False)
+                _lazy_ensure("matrix")
                 print_success(f"{matrix_pkg} installed")
             except Exception as exc:
                 print_warning(
