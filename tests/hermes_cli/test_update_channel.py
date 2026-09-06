@@ -228,6 +228,16 @@ class TestSetChannelCLI:
         base.update(kw)
         return SimpleNamespace(**base)
 
+    @pytest.fixture(autouse=True)
+    def _no_real_updater(self, monkeypatch, tmp_path):
+        """Metadata commands must not enter the code-update pipeline."""
+        from hermes_cli import main, update_cmd
+
+        monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
+        def unexpected_update(*args, **kwargs):
+            pytest.fail("metadata command entered the real updater")
+        monkeypatch.setattr(update_cmd, "_cmd_update_impl", unexpected_update)
+
     def test_stable_switch_from_canary_is_an_honest_wait(self, capsys):
         from unittest.mock import patch
 

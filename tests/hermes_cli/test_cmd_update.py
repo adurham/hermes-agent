@@ -1,5 +1,6 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
+import contextlib
 import hashlib
 import os
 import subprocess
@@ -49,6 +50,42 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     return side_effect
 
 
+class _NoSpawnProcess:
+    """Stand-in for a spawned child: context manager, empty stderr tee, exit 0.
+
+    Used by the autouse machine-boundary fixture so no real process can ever
+    launch from the end-to-end cmd_update tests (the npm install path streams
+    via subprocess.Popen, which per-test `subprocess.run` patches miss).
+    """
+
+    def __init__(self, cmd, **kwargs):
+        self.cmd = cmd
+        self.stdout = iter(())
+        self.stderr = iter(())
+        self.returncode = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def communicate(self, timeout=None):
+        return ("", "")
+
+    def terminate(self):
+        return None
+
+    kill = terminate
+
+
+def _no_spawn_popen(cmd, *args, **kwargs):
+    return _NoSpawnProcess(cmd, **kwargs)
+
+
 @pytest.fixture
 def mock_args():
     return SimpleNamespace()
@@ -80,29 +117,62 @@ def _patch_gateway_discovery():
     Discovery returning nothing makes the phase a clean no-op for every test
     in this module (none of them assert on gateway restarts).
     """
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
-         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
-         patch("hermes_cli.main._detect_venv_python_processes", return_value=[]), \
-         patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
-         patch("os.kill"), \
-         patch("pm.ensure.sync_venv"), \
-         patch(
-             "hermes_cli.update_inventory.collect_runtime_inventory",
-             return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
-         ), \
-         patch("hermes_cli.main._purge_stale_hermes_modules"), \
-         patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None), \
-         patch("hermes_cli.main._resume_windows_gateways_after_update"), \
-         patch(
-             "hermes_cli.main._install_hangup_protection",
-             return_value={
-                 "prev_stdout": None, "prev_stderr": None,
-                 "log_file": None, "installed": False,
-             },
-         ), \
-         patch("hermes_cli.main._finalize_update_output"), \
-         patch("hermes_cli.update_cmd._reload_config_modules"):
+    # ExitStack rather than one parenthesized `with`: the patch list exceeds
+    # CPython's 20 statically-nested-block limit.
+    _patches = [
+        patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+        patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
+        patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]),
+        patch("hermes_cli.main._detect_venv_python_processes", return_value=[]),
+        patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False),
+        patch("os.kill"),
+        patch("pm.ensure.sync_venv"),
+        patch(
+            "hermes_cli.update_inventory.collect_runtime_inventory",
+            return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+        ),
+        patch("hermes_cli.main._purge_stale_hermes_modules"),
+        patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None),
+        patch("hermes_cli.main._resume_windows_gateways_after_update"),
+        patch(
+            "hermes_cli.main._install_hangup_protection",
+            return_value={
+                "prev_stdout": None, "prev_stderr": None,
+                "log_file": None, "installed": False,
+            },
+        ),
+        patch("hermes_cli.main._finalize_update_output"),
+        patch("hermes_cli.update_cmd._reload_config_modules"),
+        # ── Machine boundary: the update pipeline must not touch this host ──
+        # The npx warm-up spawns a real npx (network + node resolution) — stub
+        # it at its defining module (same seam the dedicated warm-up test
+        # asserts against).
+        patch("tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=False),
+        # Post-pull steps walk and mutate the REAL checkout (delete stale
+        # __pycache__ dirs, rewrite the bytecode fingerprint, regenerate the
+        # bootstrap cache scripts). None of this module's assertions cover
+        # them; keep them off the working tree.
+        patch("hermes_cli.main._clear_bytecode_cache", return_value=0),
+        patch("hermes_cli.main._record_bytecode_fingerprint"),
+        patch("hermes_cli.main._refresh_bootstrap_cache_scripts"),
+        # Same for the web/desktop rebuild phases: they resolve the real
+        # machine's npm and run real `npm run build` / electron-builder against
+        # PROJECT_ROOT. Stub at the hm facade, exactly as the Windows
+        # ZIP-fallback test in this file already does.
+        patch("hermes_cli.main._build_web_ui", return_value=True),
+        patch("hermes_cli.main._desktop_build_needed", return_value=False),
+        # _update_node_dependencies' npm install streams via subprocess.Popen
+        # (capture_output=False), which the per-test `subprocess.run` patches
+        # do not cover — on Windows the real machine's bundled npm.cmd is
+        # resolved (hermes_constants.find_node_executable managed-tree scan)
+        # and CreateProcess on it raises PermissionError [WinError 5]. Stub
+        # Popen so no real process can ever launch from these end-to-end
+        # tests; dedicated npm-flow tests patch Popen themselves.
+        patch("subprocess.Popen", side_effect=_no_spawn_popen),
+    ]
+    with contextlib.ExitStack() as stack:
+        for cm in _patches:
+            stack.enter_context(cm)
         yield
 
 
@@ -1415,9 +1485,16 @@ class TestUpdateNodeDependencies:
     def test_returns_silently_when_npm_not_found(self, _which, mock_run, tmp_path, monkeypatch):
         """No npm on PATH → return without calling subprocess."""
         from hermes_cli import main as hm
+        import hermes_constants
 
         (tmp_path / "package.json").write_text("{}")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        # Production resolves npm via hermes_constants.find_node_executable
+        # (managed-tree scan first, then a PATH walk that on Windows never
+        # calls shutil.which), so patching shutil.which alone cannot make the
+        # resolver return None — it would find the real machine's bundled npm
+        # and spawn it. Patch the defining resolver seam.
+        monkeypatch.setattr(hermes_constants, "find_node_executable", lambda _name: None)
 
         update_cmd._update_node_dependencies()
 

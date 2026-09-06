@@ -10,13 +10,18 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 import json
 import logging
 import os
+import re
 import shlex
+import subprocess
 import threading
 import time
 import uuid
+import codecs
+import select
 from abc import ABC, abstractmethod
+from collections import deque
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, IO, Iterable, Protocol
 
 from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted, is_thread_interrupted

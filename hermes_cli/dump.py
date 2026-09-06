@@ -57,8 +57,8 @@ def _get_git_commit(project_root: Path) -> str:
     if value:
         return value
     try:
-        from hermes_cli.build_info import get_build_sha  # deferred: keeps dump cheap on non-dump paths
-        return get_build_sha(short=8) or "(unknown)"
+        from hermes_cli.version_info import get_code_identity
+        return get_code_identity().get("short_sha") or "(unknown)"
     except Exception:
         return "(unknown)"
 

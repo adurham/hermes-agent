@@ -229,6 +229,33 @@ def set_install_channel(
     return sha16
 
 
+def handle_metadata_args(args, project_root: Path) -> bool:
+    """Handle metadata-only update commands before any update side effect."""
+    if getattr(args, "install_id", False):
+        print(install_id(project_root))
+        return True
+    channel = getattr(args, "set_channel", None)
+    if channel is None:
+        return False
+    try:
+        key = set_install_channel(channel, project_root)
+    except ValueError as exc:
+        print(str(exc))
+        raise SystemExit(2) from exc
+    print(f"Update channel for {key}: {channel}")
+    if channel == CHANNEL_CANARY:
+        print("Canary builds can write forward-incompatible state. Back up your data before switching.")
+    elif channel == CHANNEL_STABLE:
+        from hermes_cli.steward import read_install_stamp
+
+        current = read_install_stamp(project_root).get("displayVersion", "")
+        if "-canary." in current:
+            stable = current.partition("-canary.")[0]
+            print(f"You are on {current}. Wait for v{stable} or a newer stable release.")
+            print("For a manual reinstall, see https://hermes-agent.nousresearch.com.")
+    return True
+
+
 def _write_channel_record(sha16: str, path: str, channel: str) -> None:
     """Write ``update.installs.<sha16>`` into config.yaml, preserving the rest."""
     import yaml

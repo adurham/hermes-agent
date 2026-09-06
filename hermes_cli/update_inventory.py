@@ -237,7 +237,7 @@ def collect_runtime_inventory() -> UpdatePlan:
     plan = UpdatePlan()
     _collect_install_shape(plan)
     with _probe("Code-identity probe"):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
         plan.expected_sha = identity.get("sha")

@@ -2184,7 +2184,10 @@ def _finalize_update_receipt(code: int, reason: str) -> None:
 def _update_preflight_handled(args) -> bool:
     """Managed-install refusal, --plan, admission gate, --check. True = nothing more to do."""
     from hermes_cli.config import is_managed, managed_error
+    from hermes_cli.update_channel import handle_metadata_args
 
+    if handle_metadata_args(args, PROJECT_ROOT):
+        sys.exit(0)
     if is_managed():
         managed_error("update Hermes Agent")
         return True

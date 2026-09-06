@@ -54,7 +54,7 @@ def _utc_now_iso() -> str:
 def _code_identity(refresh: bool = False) -> dict[str, Any]:
     """Running-code identity, or ``{}`` when the probe fails."""
     with suppress(Exception):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         return get_code_identity(refresh=refresh) or {}
     return {}
