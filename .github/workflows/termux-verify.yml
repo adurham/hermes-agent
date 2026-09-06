@@ -44,7 +44,8 @@ jobs:
             tests/test_termux_python_linkage.py tests/test_termux_retag_wheel.py \
             tests/test_termux_wheelhouse_cache.py tests/test_termux_runtime_libs.py \
             tests/test_termux_launchers.py tests/test_pm_bionic.py \
-            tests/pm/test_stage_only.py tests/pm/test_deb_safety.py tests/test_stage_apt_repo.py
+            tests/pm/test_stage_only.py tests/pm/test_deb_safety.py tests/test_stage_apt_repo.py \
+            tests/test_run_tests_shell.py
 
   native-linkage:
     name: Reproduce and verify bionic Python linkage

@@ -112,22 +112,12 @@ def _ensure_extracted(work: Path, name: str, row: dict) -> Path:
     scratch = work / "dl"
     scratch.mkdir(parents=True, exist_ok=True)
     archive = scratch / f"{name}.deb"
-    marker = extract / ".deb-sha256"
-
     archive_ok = False
     if archive.exists():
         try:
             archive_ok = _sha256_file(archive) == row["sha256"]
         except OSError:
             archive_ok = False
-    extraction_ok = (
-        any(extract.glob(f"{PREFIX_REL}/lib/*.so*"))
-        and marker.is_file()
-        and marker.read_text(encoding="utf-8").strip() == row["sha256"]
-    )
-    if extraction_ok and archive_ok:
-        return extract
-
     if not archive_ok:
         Download([Source(row["url"], archive, row["sha256"])],
                  partials_dir=scratch).run()
@@ -135,7 +125,6 @@ def _ensure_extracted(work: Path, name: str, row: dict) -> Path:
         shutil.rmtree(extract)
     extract.mkdir(parents=True, exist_ok=True)
     _LibDeb(name).unpack(archive, extract, "linux-arm64-bionic")
-    marker.write_text(row["sha256"], encoding="utf-8")
     return extract
 
 
@@ -156,8 +145,8 @@ def stage(payload: Path, table: dict) -> Path:
               f"{len(list(out.glob('*.so*')))} .so* -> {out}")
         return out
 
-    # Miss: rebuild the merged dir COMPLETELY from scratch. Nothing from
-    # a previous partial or corrupted state survives.
+    # A cache miss rebuilds from verified archives, never scratch extracts.
+    manifest_path.unlink(missing_ok=True)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True, exist_ok=True)

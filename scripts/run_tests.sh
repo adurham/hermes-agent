@@ -213,5 +213,4 @@ fi
 echo "▶ posix: per-file parallel suite via run_tests_parallel.py"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
 exec env -i "${HERMETIC_ENV[@]}" \
-
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

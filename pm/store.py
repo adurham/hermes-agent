@@ -76,17 +76,12 @@ def _is_bionic_libc() -> bool:
     """
     if sys.platform == "android":
         return True
-    # Termux python reports sys.platform == "linux"; ask the C runtime.
-    try:
-        with open("/system/lib/libc.so", "rb") as f:
-            return b"Bionic" in f.read(4096)
-    except OSError:
-        pass
-    try:
-        with open("/lib/libc.so", "rb") as f:
-            return b"Bionic" in f.read(4096)
-    except OSError:
-        return False
+    # Termux's pre-3.13 interpreter reports Linux but records its Android
+    # build target in sysconfig. This also works in a container without
+    # the phone's /system mount or a recognizable string in libc's header.
+    import sysconfig
+
+    return bool(sysconfig.get_config_var("ANDROID_API_LEVEL"))
 
 
 def current_target() -> str:

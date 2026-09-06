@@ -41,6 +41,13 @@ def main() -> int:
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--built-wheel", type=Path)
     args = ap.parse_args()
+    sys.path.insert(0, str(args.repo))
+    from pm.store import current_target
+
+    target = current_target()
+    print("PAYLOAD_TARGET", target, "ANDROID_API_LEVEL", sysconfig.get_config_var("ANDROID_API_LEVEL"), flush=True)
+    if target != "linux-arm64-bionic":
+        raise RuntimeError(f"payload interpreter misclassified: {target}")
     prefix = Path("/data/data/com.termux/files/usr")
     python = args.payload / "python" / prefix.relative_to("/") / "bin/python3.11"
     uv = args.payload / "uv" / prefix.relative_to("/") / "bin/uv"
