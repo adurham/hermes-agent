@@ -168,6 +168,9 @@ jobs:
             -m "platforms and not integration" \
             -v --tb=short
         env:
+          # These files spawn nested PowerShell trees. CPU-count parallelism
+          # starves cold child startup before the fixture's idle deadline.
+          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && '8' || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ""
