@@ -80,7 +80,7 @@ relaunch. No tests sent an LLM request as evidence of this acceptance pass.
 
 ## Merge-ready closeout
 
-The branch includes upstream `5e645791aca87dfe46844502fab9e77a42a2681f`.
+The branch includes upstream `5bd439d3ed4ae5f099857813383389dcd0ab4369`.
 The following limits from the earlier audit are resolved:
 
 - Context-only homes share one dependency root across journal recovery,
@@ -102,35 +102,66 @@ The following limits from the earlier audit are resolved:
   teardown and opens the local file. It does not require the disabled
   `ms-appinstaller:` protocol.
 
-The complete Linux run on `f54141c07aa0f99dcd99170ea68663ef0fc1bf38`
-reported 45,927 passed, zero failed, and 492 skipped across 3,776 files.
-It reported one retry-only encoding-test flake. Commit
-`6d9eefdab12d3555d763d57c4f643bfb4cfd259c` scopes that test's subprocess
-receipt to its actual consumer. Its canonical targeted run passed without
-retries. The final-head complete rerun remains separate evidence.
+## Non-E2E closeout
 
-The same CI run passed JS/TS, macOS tests, Python E2E, installers, docs,
-lockfile checks, and static gates. Windows verification remains pending.
+The full CI workflow on `a27cd5902a446eb4f1e457e09904d75edc616c2e`
+completed successfully:
 
-A fresh Windows ARM64 PM bundle records
-`07ee9299790e5635fd917da1769f969f14fc8030`. Later changes through
-`6d9eefdab12d3555d763d57c4f643bfb4cfd259c` affect tests and CI only.
-The corresponding desktop MSIX is being packaged. Microsoft App Installer
-was installed and verified inside the offline Windows Sandbox. That setup
-alone does not prove Hermes installation or automatic update/relaunch.
+- Linux: 46,041 passed, zero failed, 492 skipped. No retry-only flakes.
+- macOS: 94 passed, zero failed, 121 skipped. No retry-only flakes.
+- Windows: 178 passed, zero failed, 174 skipped. One pipe-drain fixture
+  passed only on retry because its cold child exceeded the idle window.
 
-## Remaining acceptance work
+Commit `04182813cfa74111c6e4e10bedcc0f9de6510f55` limits Windows
+nested-process concurrency without relaxing the fixture's assertions.
+It also fixes compute-host stdin framing: a real Windows child received
+its initial turn but did not receive subsequent control frames through the
+text stream. The byte-stream reader passed the actual interrupt and
+second-turn tests. Those tests now run in each native OS lane.
 
-- Obtain complete final-head native CI results without retry-only failures.
-- Verify bundled MSIX deployment from the fresh payload.
-- Exercise an actual App Installer-triggered update and automatic relaunch.
-- Obtain explicit maintainer review for CI-sensitive changes. Manual CI runs
-  skip PR-only review gates and do not satisfy that approval.
+The other test repairs distinguish worker scheduling from the behavior
+under test. Compression waits for engine entry, cron assertions observe
+blocked work, orphan teardown asserts that the resume lock is free, and
+hosted-room tests observe durable settlement after a concurrent snapshot.
+Targeted parent verification passed 638 gateway/delegation tests, 41
+cron/hygiene tests, four compression isolation tests, 53 hosted/compute
+tests, and 19 real-child/compute protocol tests. These batches overlap;
+they are not a whole-suite total.
 
-CI: [f54141c07a](https://github.com/NousResearch/hermes-agent/actions/runs/34050547009),
-[6d9eefdab1](https://github.com/NousResearch/hermes-agent/actions/runs/34051022947).
-The latter uses the same workflow from the same commit on an upstream
-validation branch. GitHub intermittently rejected graph creation with
+The browser BOM regression failed before the read fix and passed after it.
+Its file passed 79 tests with two host skips. The full Windows-footgun and
+plugin-compat checks passed.
+
+## Bundle acceptance (separate workstream)
+
+The actual bundled Windows ARM64 MSIX built from
+`07ee9299790e5635fd917da1769f969f14fc8030` installed in a disposable
+Windows Sandbox as version `0.17.0.0`. Its registered app presented the UI,
+About identified the embedded runtime, and its own packaged backend
+answered HTTP 200. The unsigned build artifact's SHA-256 is
+`31d3dfb53977e0e8fd662d0ef2475a7be92a31a49d6e514ceed812099867f304`.
+Test signing and trust were confined to the guest.
+
+The guest was terminated before update/relaunch verification completed.
+There is no automatic-update acceptance claim. This artifact also predates
+subsequent upstream integration and the compute-host fix. Bundle E2E work
+belongs to the existing install/update test family, not a second local
+Sandbox pipeline.
+
+## Remaining gates
+
+- Final-head native CI must confirm the latest fixes without retry-only failures.
+- Maintainers must decide the `needs-decision` disposition and apply
+  `ci-reviewed` after review. Manual CI skips PR-only review gates.
+- Automatic package update/relaunch remains with the separate E2E workstream.
+
+PR #95281 was closed as superseded by #102765, following the triage request
+for one canonical PM PR. The duplicate label was removed. No approval
+label was self-applied.
+
+[Verified CI at a27cd5902a](https://github.com/NousResearch/hermes-agent/actions/runs/34059149746).
+The exact-head validation uses the same workflow on an upstream validation
+branch. Earlier GitHub graph failures reported
 `resource_exhausted: gitmon refuses to schedule us: fail-fast:network`.
 
 The external audit directory contains original findings, exact test selections,
