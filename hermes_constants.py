@@ -143,11 +143,11 @@ def get_process_hermes_home() -> Path:
 _default_hermes_root_memo: "tuple[str, str, Path] | None" = None
 
 
-def get_default_hermes_root() -> Path:
-    """Root Hermes dir for profile-level ops: ``<root>`` when ``HERMES_HOME=<root>/profiles/<name>``."""
+def get_default_hermes_root(*, home: str | Path | None = None) -> Path:
+    """Root of an explicit home, or the process home when none is supplied."""
     global _default_hermes_root_memo
     native_home = _get_platform_default_hermes_home()
-    env_home = os.environ.get("HERMES_HOME", "")
+    env_home = str(home) if home is not None else os.environ.get("HERMES_HOME", "")
     memo = _default_hermes_root_memo
     if memo is not None and memo[:2] == (str(native_home), env_home):
         return memo[2]
