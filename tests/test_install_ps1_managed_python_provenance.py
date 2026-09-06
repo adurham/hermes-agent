@@ -36,7 +36,9 @@ function Get-Command {
     Microsoft.PowerShell.Core\Get-Command $Name
 }
 function Invoke-WebRequest { throw 'network access outside test boundary' }
-. $Installer -Stage python-deps -Json -InstallDir $InstallDir -HermesHome $HomeDir
+# Load the definitions, then execute the real stage dispatcher.
+. $Installer -InstallDir $InstallDir -HermesHome $HomeDir
+Invoke-StageByName 'python-deps'
 exit $LASTEXITCODE
 ''', encoding="utf-8-sig")
     run = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(wrapper),

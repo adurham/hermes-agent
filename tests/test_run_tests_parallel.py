@@ -39,17 +39,6 @@ def isolated_probe_environment(monkeypatch):
     monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
 
 
-# Both tests share the same handoff file: the leaker writes here, the
-# verifier reads here. We park it in $TMPDIR with a unique-per-run name
-# so concurrent invocations of the suite don't clobber each other.
-_HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
-_HANDOFF_DIR.mkdir(exist_ok=True)
-
-
-def _handoff_path_for(nonce: str) -> Path:
-    return _HANDOFF_DIR / f"grandchild-{nonce}.json"
-
-
 def _probe_root(tmp_path):
     root = tmp_path / "runner-root"
     scripts = root / "scripts"
@@ -137,9 +126,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
     probe_dir.mkdir()
     probe = probe_dir / "test_probe_leaker.py"
     nonce = f"{os.getpid()}-{int(time.time() * 1000)}"
-    handoff = _handoff_path_for(nonce)
-    if handoff.exists():
-        handoff.unlink()
+    handoff = tmp_path / f"grandchild-{nonce}.json"
 
     probe_src = textwrap.dedent(f"""
         import json, os, subprocess, sys, time

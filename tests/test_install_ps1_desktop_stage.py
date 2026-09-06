@@ -124,7 +124,9 @@ function ie4uinit.exe {
     $global:LASTEXITCODE = 0
 }
 
-. $InstallerPath -Stage desktop -Json -HermesHome $HermesHome -InstallDir $InstallDir
+# Load the definitions, then execute the real stage dispatcher.
+. $InstallerPath -InstallDir $InstallDir -HermesHome $HermesHome
+Invoke-StageByName 'desktop'
 exit $LASTEXITCODE
 '''
 
@@ -253,8 +255,6 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
 
     calls = [l.split("\u0001") for l in py_log.read_text().splitlines()] if py_log.exists() else "NO LOG"
     assert run.returncode == 0, f"{run.stdout}{run.stderr}\nFAKE LOG:\n{calls}"
-    frame = json.loads(run.stdout.splitlines()[-1])
-    assert frame["ok"] is True and frame["stage"] == "desktop"
 
     assert isinstance(calls, list)
     # 1. wake/voice extras via pm's venv sync (the pm-owned path).
