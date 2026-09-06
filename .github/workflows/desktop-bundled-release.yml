@@ -1049,6 +1049,16 @@ jobs:
             --suite "hermes-$CHANNEL" \
             --gpg-key-file "$RUNNER_TEMP/termux-apt-gpg.asc"
 
+          debs=(termux-build/deb/*.deb)
+          test "${#debs[@]}" -eq 1
+          version=$(dpkg-deb --field "${debs[0]}" Version)
+          digest=$(python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')
+          docker run --rm --platform linux/arm64 --user 1000:1000 --network none \
+            -v "$PWD/termux-build/apt:/apt:ro" \
+            -v "$PWD/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
+            -v "$PWD/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
+            "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
+
           # --key-is-full is MANDATORY on every feed-dir upload: without it
           # r2-release.mjs re-prefixes the key into the tag archive
           # (releases/tag/<tag>/) and the APT feed never lands at
