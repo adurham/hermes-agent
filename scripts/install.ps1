@@ -16,10 +16,29 @@ param(
     [switch]$ProtocolVersion,
     [switch]$NonInteractive,
     [switch]$Json,
-    [switch]$IncludeDesktop
+    [switch]$IncludeDesktop,
+    # Print the paths this install would use, as JSON on stdout, and exit
+    # without touching anything. The first question on any "installer says a
+    # path doesn't exist" report is which paths it actually resolved --
+    # especially on profiles Windows exposes through an 8.3 alias.
+    #   powershell -File install.ps1 -ShowResolvedPaths
+    [switch]$ShowResolvedPaths
 )
 
 $ErrorActionPreference = "Stop"
+
+# --- Dot-source guard (part 1: detect) ---------------------------------------
+# Tests (and any embedding host) dot-source this file (`. install.ps1`) to get
+# at its FUNCTIONS. Only the definitions must enter the caller's session --
+# the install itself must never run, not even its side-effectful-looking
+# prologue (the 8.3 normalization below rewrites process env vars). Dot-sourced
+# files see InvocationName '.'; a real invocation sees the script
+# path/expression. The flag is checked before the entry dispatch at the bottom
+# (part 2), so dot-sourcing still loads every function definition.
+$script:IsDotSourced = $MyInvocation.InvocationName -eq '.'
+# $PSBoundParameters inside a FUNCTION refers to the function's own binding,
+# so the script's binding is captured here, once, at script scope.
+$script:BoundParams = $PSBoundParameters
 $RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/NousResearch/hermes-agent.git" }
 
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
@@ -49,6 +68,259 @@ $script:GitPinFiles = @{
     }
 }
 # --- END GENERATED: bootstrap pins ---
+
+# ============================================================================
+# 8.3 short-path normalization
+# ============================================================================
+# Windows generates an 8.3 short alias for a user-profile folder whose name
+# contains a space ("First Last" -> FIRST~1.LAS), a dot, or an accented
+# character. It can then expose %TEMP%, %TMP%, %LOCALAPPDATA%, %APPDATA% and
+# %USERPROFILE% -- plus everything derived from them, including the default
+# HERMES_HOME and InstallDir -- in that short form:
+#   C:\Users\FIRST~1.LAS\AppData\Local\Temp
+# PowerShell's FileSystem provider mishandles the aliased component once it
+# reaches a provider cmdlet (Tee-Object -FilePath, Out-File, New-Item,
+# Test-Path), throwing "An object at the specified path ... does not exist".
+# Expanding every profile-rooted path back to long form once, up front, lets
+# every downstream cmdlet and child process see something the provider can
+# resolve. Three resolvers, tried in order, because no single one covers every
+# host:
+#   1. kernel32!GetLongPathNameW -- expands any 8.3 component regardless of
+#      locale.
+#   2. Scripting.FileSystemObject -- fallback where P/Invoke is blocked.
+#   3. Profile-root substitution -- when the volume has 8.3 generation
+#      disabled or the alias is stale, neither resolver can expand the name
+#      because it no longer maps to anything on disk. The aliased component
+#      is always the profile folder itself (everything below it was created
+#      long), so swap in a profile root we can prove is long and reattach
+#      the tail.
+# All three degrade to returning the input untouched, so a host where none
+# of them apply -- including non-Windows -- behaves exactly as before.
+
+$script:LongProfileRoot = $null
+
+function Write-PathDiag {
+    # Diagnostics for this block go to stderr, never stdout: the stage
+    # protocol hands drivers a single line of JSON on stdout and a stray note
+    # would break anything parsing it. Suppressed entirely under
+    # -ShowResolvedPaths, which is a machine-readable query: Windows
+    # PowerShell 5.1 wraps any native-command stderr in a NativeCommandError
+    # and folds it back into the caller's own stream, so a child writing here
+    # at all is enough to corrupt a 5.1 caller's capture. The JSON already
+    # carries everything these lines say.
+    param([string]$Message)
+    if ($ShowResolvedPaths) { return }
+    [Console]::Error.WriteLine("[hermes] $Message")
+}
+
+function Get-LongProfileRoot {
+    # The user's profile directory in long form, or '' when every source we
+    # can reach is itself aliased. Cached: this runs per env var.
+    if ($null -ne $script:LongProfileRoot) { return $script:LongProfileRoot }
+    $script:LongProfileRoot = ''
+
+    # %USERPROFILE% first: it is what the rest of the install derives from.
+    # Then the HOMEDRIVE/HOMEPATH pair, then the profile's parent (C:\Users
+    # never carries an alias) plus %USERNAME%, which stays the long account
+    # name even when every path is short.
+    $envProfile = [Environment]::GetEnvironmentVariable('USERPROFILE')
+    $shellProfile = [Environment]::GetFolderPath('UserProfile')
+    $candidates = @($envProfile, $shellProfile, "$env:HOMEDRIVE$env:HOMEPATH")
+    foreach ($anchor in @($envProfile, $shellProfile)) {
+        if ($anchor -and $env:USERNAME) {
+            $parent = Split-Path -Parent $anchor.TrimEnd('\', '/')
+            if ($parent) { $candidates += (Join-Path $parent $env:USERNAME) }
+        }
+    }
+
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        # Trailing separators make Split-Path -Parent return the directory
+        # itself, which would silently break the ancestry check downstream.
+        $candidate = $candidate.TrimEnd('\', '/')
+        if (-not $candidate) { continue }
+        if ($candidate -match '~\d') { continue }
+        try {
+            if (Test-Path -LiteralPath $candidate -PathType Container) {
+                $script:LongProfileRoot = $candidate
+                break
+            }
+        } catch {
+            # Unreadable candidate (denied, malformed): try the next one.
+        }
+    }
+
+    if ($script:LongProfileRoot) {
+        Write-PathDiag "long profile root: $script:LongProfileRoot"
+    } else {
+        Write-PathDiag "no long profile root found; 8.3 paths left as-is (tried: $($candidates -join ', '))"
+    }
+    return $script:LongProfileRoot
+}
+
+function Expand-ShortProfileRoot {
+    # Rebuild $Path onto a known-long profile root when its aliased component
+    # is the profile folder. Returns $Path unchanged when it isn't, so a
+    # custom TEMP on another volume (D:\SHORT~1\Temp) is never rewritten.
+    param([string]$Path)
+
+    $longRoot = Get-LongProfileRoot
+    if (-not $longRoot) { return $Path }
+    $longRootParent = Split-Path -Parent $longRoot
+    if (-not $longRootParent) { return $Path }
+
+    $node = $Path
+    $tail = ''
+    while ($node -and ($node -match '~\d')) {
+        $leaf = Split-Path -Leaf $node
+        $parent = Split-Path -Parent $node
+        if (-not $parent) { return $Path }
+        if ($leaf -match '~\d') {
+            # Candidate profile folder. Only substitute when it sits in the
+            # same directory as the real profile (both C:\Users).
+            if ($parent -ne $longRootParent) { return $Path }
+            if ($tail) { return (Join-Path $longRoot $tail) }
+            return $longRoot
+        }
+        $tail = if ($tail) { Join-Path $leaf $tail } else { $leaf }
+        $node = $parent
+    }
+    return $Path
+}
+
+function ConvertTo-LongPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    # Only 8.3 short names carry a tilde+digit ("~1"); skip every resolver
+    # for ordinary long paths, which is the overwhelmingly common case.
+    if ($Path -notmatch '~\d') {
+        $script:LastResolver = 'skipped-long-path'
+        return $Path
+    }
+
+    # 1. kernel32. Compiled on first use only, so a normal profile never pays
+    #    the Add-Type cost (this file is re-entered once per install stage).
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'HermesInstall.LongPath').Type) {
+            Add-Type -Namespace 'HermesInstall' -Name 'LongPath' -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern int GetLongPathNameW(string lpszShortPath, System.Text.StringBuilder lpszLongPath, int cchBuffer);
+'@
+        }
+        $buffer = New-Object System.Text.StringBuilder 4096
+        $length = [HermesInstall.LongPath]::GetLongPathNameW($Path, $buffer, $buffer.Capacity)
+        if ($length -gt $buffer.Capacity) {
+            $buffer = New-Object System.Text.StringBuilder $length
+            $length = [HermesInstall.LongPath]::GetLongPathNameW($Path, $buffer, $buffer.Capacity)
+        }
+        if ($length -gt 0) {
+            $expanded = $buffer.ToString()
+            if ($expanded -and $expanded -notmatch '~\d') {
+                $script:LastResolver = 'kernel32'
+                return $expanded
+            }
+        }
+    } catch {
+        # Not Windows, or P/Invoke denied by policy: try the next resolver.
+    }
+
+    # 2. COM. Validate the result the same way the kernel32 branch does: this
+    #    resolver can report success and still hand back a path that carries
+    #    the alias (observed on a windows-latest runner). An unexpanded
+    #    result counts as failure and falls through.
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        $resolved = $null
+        if ($fso.FolderExists($Path))   { $resolved = $fso.GetFolder($Path).Path }
+        elseif ($fso.FileExists($Path)) { $resolved = $fso.GetFile($Path).Path }
+        if ($resolved -and $resolved -notmatch '~\d') {
+            $script:LastResolver = 'com'
+            return $resolved
+        }
+    } catch {
+        # COM unavailable / locked-down host: try the next resolver.
+    }
+
+    # 3. The alias resolves to nothing. Rebuild from a long profile root.
+    $rebuilt = Expand-ShortProfileRoot $Path
+    $script:LastResolver = if ($rebuilt -ne $Path) { 'profile-root' } else { 'none' }
+    return $rebuilt
+}
+
+function Set-LongProfileEnvVars {
+    # Normalize every profile-rooted variable the install reads, not just
+    # %TEMP%: the desktop stage derives InstallDir from %LOCALAPPDATA%, and a
+    # short root there fails the post-build probe after a successful build.
+    # Returns $true when anything was rewritten.
+    $rewrote = $false
+    $script:NormalizedPathRewrites = @{}
+    foreach ($name in @('TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE')) {
+        $current = [Environment]::GetEnvironmentVariable($name)
+        if (-not $current) { continue }
+        $expanded = ConvertTo-LongPath $current
+        if ($expanded -and $expanded -ne $current) {
+            Set-Item -Path "Env:$name" -Value $expanded
+            $rewrote = $true
+            $script:NormalizedPathRewrites[$name] = $expanded
+            Write-PathDiag "expanded 8.3 short path in %$name%: $current -> $expanded"
+        }
+    }
+    return $rewrote
+}
+
+# ConvertTo-LongPath only assigns $script:LastResolver when a ~\d short path
+# actually needs expansion, so an ordinary long profile leaves it unset --
+# and the report below reads it unconditionally. 'none' is the resolver's own
+# value for "nothing ran".
+$script:LastResolver = 'none'
+$script:NormalizedPathRewrites = @{}
+
+# (Dot-source guard, prologue side: a dot-source must not rewrite the
+# caller's process env, so the normalization prologue runs only on real
+# entry. Called from the entry dispatch below, before -ProtocolVersion and
+# every other switch, so the resolved paths are always the install's own.)
+function Initialize-ResolvedPaths {
+    $script:NormalizedProfilePaths = Set-LongProfileEnvVars
+
+    # Re-derive the install paths now that the env vars behind their defaults
+    # are long. An explicitly passed -HermesHome / -InstallDir is normalized
+    # in place rather than replaced, so a caller's choice is never
+    # overwritten by a default. The script's own $PSBoundParameters was
+    # captured at script scope ($script:BoundParams) because a function body
+    # sees its own binding, not the script's. The re-derived paths land at
+    # script scope so every stage below sees them.
+    if ($script:BoundParams.ContainsKey('HermesHome')) {
+        $script:HermesHome = ConvertTo-LongPath $script:HermesHome
+    } else {
+        $script:HermesHome = ConvertTo-LongPath $(
+            if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
+        )
+    }
+    if ($script:BoundParams.ContainsKey('InstallDir')) {
+        $script:InstallDir = ConvertTo-LongPath $script:InstallDir
+    } else {
+        $script:InstallDir = ConvertTo-LongPath $(
+            if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
+        )
+    }
+    if ($script:NormalizedProfilePaths) {
+        Write-PathDiag "resolved install paths: HermesHome=$script:HermesHome InstallDir=$script:InstallDir"
+    }
+
+    # Captured here, where the values are final. The report goes to STDOUT as
+    # JSON under -ShowResolvedPaths: on Windows a child's stderr does not
+    # reliably reach a parent process, and the first question on any
+    # "installer says a path doesn't exist" report is which paths it
+    # actually resolved.
+    $script:ResolvedPathReport = @{
+        long_profile_root = (Get-LongProfileRoot)
+        normalized        = $script:NormalizedPathRewrites
+        resolver          = $script:LastResolver
+        temp              = $env:TEMP
+        hermes_home       = $script:HermesHome
+        install_dir       = $script:InstallDir
+    }
+}
 
 # Resolve the pm store root (same resolution as pm's store_root()):
 # $env:HERMES_RUNTIME_DIR wins, else <HermesHome>\tools.
@@ -339,7 +611,8 @@ function Stage-Desktop {
             if (Test-Path $cand) { $desktopExe = $cand; break }
         }
         if (-not $desktopExe) {
-            Fail "desktop build produced no Hermes.exe under $desktopDir\release\*-unpacked\"
+            Fail "desktop build produced no Hermes.exe under $desktopDir
+elease\*-unpacked\"
         }
         Log "Desktop ready: $desktopExe"
 
@@ -458,7 +731,28 @@ function Invoke-StageByName([string]$name) {
     }
 }
 
+# --- Dot-source guard (part 2: stop before entry) ----------------------------
+# Every function definition above has loaded; now stop before any real work.
+if ($script:IsDotSourced) {
+    Write-Verbose "[hermes] install.ps1 was dot-sourced; definitions only, no execution"
+    return
+}
+
+# The normalization prologue runs exactly once per real entry, before any
+# switch is honored, so every contract below sees long-form paths.
+Initialize-ResolvedPaths
+
 if ($ProtocolVersion) { Write-Output 1; exit 0 }
+
+if ($ShowResolvedPaths) {
+    # Side-effect-free contract: by this point every mutation the prologue
+    # performs (process-env 8.3 normalization) has already happened, and no
+    # stage, download, or write has run. This process's env is private to it,
+    # so the parent's environment is untouched. Stdout carries the resolved
+    # path report; diagnostics were suppressed by Write-PathDiag.
+    $script:ResolvedPathReport | ConvertTo-Json -Depth 5 -Compress | Write-Output
+    exit 0
+}
 
 if ($Manifest) {
     @{ protocol_version = 1; stages = $Stages } | ConvertTo-Json -Depth 4 -Compress | Write-Output
