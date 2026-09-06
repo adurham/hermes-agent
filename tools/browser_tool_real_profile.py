@@ -85,7 +85,7 @@ def _surviving_chrome_cdp(data_dir: str) -> Optional[str]:
     outlives a crashed Chrome and its port can be recycled by another local CDP server, so the
     file's browser id (line 2) must match what ``/json/version`` reports before it is trusted."""
     try:
-        with open(os.path.join(data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+        with open(os.path.join(data_dir, "DevToolsActivePort"), encoding="utf-8-sig") as fh:
             port, browser_path = fh.readline().strip(), fh.readline().strip()
     except OSError:
         return None

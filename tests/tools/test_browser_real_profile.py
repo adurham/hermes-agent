@@ -355,15 +355,16 @@ class TestRealProfileCdpLaunch:
         assert cdp == "http://127.0.0.1:41000"
         self._reset()
 
+    @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
     @pytest.mark.parametrize("live_browser_id", ["/devtools/browser/x", "/devtools/browser/other"])
-    def test_reattaches_to_surviving_chrome_instead_of_overlaying_its_profile(self, tmp_path, live_browser_id):
+    def test_reattaches_to_surviving_chrome_instead_of_overlaying_its_profile(self, tmp_path, live_browser_id, encoding):
         """The attach daemon of a crashed owner gets reaped, but its Chrome (Hermes-launched,
         own session) survives holding the copy dir: re-attach, never re-run the snapshot.
         A DevToolsActivePort left by a crash whose port was recycled by ANOTHER CDP server
         (browser id mismatch) must not be attached to; the normal launch path runs."""
         import tools.browser_tool as bt
         self._reset()
-        (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+        (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n", encoding=encoding)
         version = Mock()
         version.json.return_value = {"webSocketDebuggerUrl": f"ws://127.0.0.1:41000{live_browser_id}"}
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
