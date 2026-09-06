@@ -71,3 +71,33 @@ def test_postinst_refuses_foreign_path_and_prerm_preserves_it(tmp_path):
     assert subprocess.run(command, env=env).returncode != 0
     subprocess.run([shutil.which("sh"), str(control / "prerm"), "remove"], check=True, env=env)
     assert link.read_text(encoding="utf-8") == "foreign launcher"
+
+
+@pytest.mark.platforms("posix")
+def test_verifier_stops_detached_descendants_before_cleanup(tmp_path):
+    import psutil
+    from scripts.termux.validate_installed import stop_child_tree
+
+    code = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], "
+        "start_new_session=True)\n"
+        "print(child.pid, flush=True)\n"
+        "time.sleep(120)\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", code], stdout=subprocess.PIPE, text=True,
+        cwd=tmp_path, start_new_session=True,
+    )
+    descendant = psutil.Process(int(child.stdout.readline()))
+    try:
+        stop_child_tree(child)
+        assert child.poll() is not None
+        assert not descendant.is_running() or descendant.status() == psutil.STATUS_ZOMBIE
+    finally:
+        if child.poll() is None:
+            child.kill()
+        if descendant.is_running() and descendant.status() != psutil.STATUS_ZOMBIE:
+            descendant.kill()
+        child.wait(timeout=10)
+        child.stdout.close()

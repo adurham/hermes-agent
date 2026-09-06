@@ -2,17 +2,14 @@
 from __future__ import annotations
 
 import fcntl
-import importlib
 import json
 import os
 from pathlib import Path
 import pty
 import re
 import select
-import signal
 import struct
 import subprocess
-import sys
 import termios
 import tempfile
 import time
@@ -24,6 +21,24 @@ def run(argv: list[str], env: dict[str, str], cwd: Path) -> subprocess.Completed
     print(result.stdout, result.stderr, flush=True)
     result.check_returncode()
     return result
+
+
+def stop_child_tree(child: subprocess.Popen) -> None:
+    import psutil
+    from agent.deadline import kill_process_tree
+
+    if child.poll() is not None:
+        return
+    descendants = psutil.Process(child.pid).children(recursive=True)
+    kill_process_tree(child.pid)
+    child.wait(timeout=10)
+    deadline = time.monotonic() + 10
+    while descendants and time.monotonic() < deadline:
+        descendants = [p for p in descendants if p.is_running() and p.status() != psutil.STATUS_ZOMBIE]
+        if descendants:
+            time.sleep(0.05)
+    if descendants:
+        raise RuntimeError(f"TUI children still alive: {[p.pid for p in descendants]}")
 
 
 def tui_smoke(launcher: Path, env: dict[str, str], cwd: Path) -> None:
@@ -57,14 +72,10 @@ def tui_smoke(launcher: Path, env: dict[str, str], cwd: Path) -> None:
             raise RuntimeError("TUI never reached its real setup screen:\n" + captured.decode(errors="replace"))
         print("TUI_SETUP_SCREEN_OK", flush=True)
     finally:
-        if child.poll() is None:
-            os.killpg(child.pid, signal.SIGTERM)
         try:
-            child.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=10)
-        os.close(master)
+            stop_child_tree(child)
+        finally:
+            os.close(master)
 
 
 def main() -> None:
