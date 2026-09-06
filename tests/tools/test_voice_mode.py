@@ -199,6 +199,7 @@ class TestDetectAudioEnvironment:
         assert result["warnings"] == []
         assert any("SSH" in n for n in result.get("notices", []))
 
+    @pytest.mark.platforms("linux")
     def test_wsl_without_pulse_blocks_voice(self, monkeypatch, tmp_path):
         """WSL without PULSE_SERVER should block voice mode."""
         monkeypatch.delenv("SSH_CLIENT", raising=False)

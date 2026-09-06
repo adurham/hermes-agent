@@ -396,6 +396,11 @@
       "url": "https://packages.termux.dev/apt/termux-main/pool/main/s/svt-av1/svt-av1_4.2.0_aarch64.deb",
       "version": "4.2.0"
     },
+    "vulkan-loader-generic": {
+      "sha256": "f830c374fae2b3d421de401185e4171ff52b706701a1d9e19ab17281a84893ac",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/v/vulkan-loader-generic/vulkan-loader-generic_1.4.362_aarch64.deb",
+      "version": "1.4.362"
+    },
     "xvidcore": {
       "sha256": "2f358b11fd750935b43ac19f09bb7c4228e007079426e0b73ee8bae1ddf26fc1",
       "url": "https://packages.termux.dev/apt/termux-main/pool/main/x/xvidcore/xvidcore_1.3.7-1_aarch64.deb",

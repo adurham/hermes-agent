@@ -63,7 +63,22 @@ jobs:
         run: |
           bash scripts/termux/build_cpython.sh termux-build/payload
           bash scripts/termux/build_uv.sh termux-build/payload
+          bash scripts/termux/termux_pkg_build.sh ffmpeg ffmpeg termux-build/payload
           python3 scripts/termux/stage_runtime_libs.py termux-build/payload
+      - name: Verify ffmpeg on the bare bionic runtime
+        run: |
+          digest=$(python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')
+          docker run --rm --platform linux/arm64 --user 1000:1000 --network none \
+            -v "$PWD/termux-build/payload:/payload:ro" \
+            "termux/termux-docker@$digest" bash -c '
+              set -euo pipefail
+              export PREFIX=/data/data/com.termux/files/usr
+              export LD_LIBRARY_PATH="/payload/ffmpeg$PREFIX/lib:/payload/runtime-libs/lib:$PREFIX/lib"
+              "/payload/ffmpeg$PREFIX/bin/ffmpeg" -hide_banner \
+                -f lavfi -i anullsrc=r=16000:cl=mono -t 0.1 -f wav "$PREFIX/tmp/ffmpeg-proof.wav"
+              test -s "$PREFIX/tmp/ffmpeg-proof.wav"
+              printf "FFMPEG_BARE_RUNTIME_OK\n"
+            '
       - name: Download the wheel from the confirmed failing build
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:

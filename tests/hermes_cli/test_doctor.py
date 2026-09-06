@@ -41,13 +41,11 @@ class TestDoctorPlatformHints:
 
         assert "run `hermes update`" in hint
 
-    def test_sqlite_upgrade_hint_apt_stamp_falls_back_to_generic_update(self):
-        # The Termux 'apt' lane was removed; a legacy stamp now routes to the
-        # generic `hermes update` path.
-        hint = doctor._sqlite_upgrade_hint("apt")
+    def test_sqlite_upgrade_hint_uses_apt_remediation(self):
+        hint = doctor_platform._sqlite_upgrade_hint("apt")
 
-        assert "run `hermes update`" in hint
-        assert "pkg upgrade" not in hint
+        assert "pkg upgrade hermes-agent" in hint
+        assert "run `hermes update`" not in hint
 
     def test_sqlite_upgrade_hint_preserves_nix_guidance_as_prose(self):
         from hermes_cli.config import recommended_update_command_for_method
@@ -348,9 +346,10 @@ class TestDoctorMemoryProviderSection:
         # when gh resolves to a Store/MSIX reparse-point shim. The gh-
         # specific doctor behaviors have their own dedicated tests below,
         # which mock gh explicitly.
-        real_which = doctor_mod.shutil.which
+        import shutil
+        real_which = shutil.which
         monkeypatch.setattr(
-            doctor_mod.shutil,
+            shutil,
             "which",
             lambda cmd: None if cmd == "gh" else real_which(cmd),
         )
@@ -1670,7 +1669,7 @@ class TestPmVenvActive:
         monkeypatch.setattr(doctor_mod.sys, "prefix", "/usr")
         monkeypatch.setattr(doctor_mod.sys, "base_prefix", "/usr")
 
-        assert doctor_mod._pm_venv_active() is True
+        assert doctor_platform._pm_venv_active() is True
 
     def test_no_venv_fact_falls_back_to_legacy_probe(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "no-such-store"))
@@ -1678,10 +1677,10 @@ class TestPmVenvActive:
         monkeypatch.setattr(doctor_mod.sys, "prefix", "/usr")
         monkeypatch.setattr(doctor_mod.sys, "base_prefix", "/usr")
 
-        assert doctor_mod._pm_venv_active() is False
+        assert doctor_platform._pm_venv_active() is False
 
         monkeypatch.setattr(doctor_mod.sys, "prefix", "/some/venv")
-        assert doctor_mod._pm_venv_active() is True
+        assert doctor_platform._pm_venv_active() is True
 
     def test_bundled_venv_fact_without_venv_dir_is_not_active(self, tmp_path, monkeypatch):
         import json
@@ -1700,7 +1699,7 @@ class TestPmVenvActive:
         monkeypatch.setattr(doctor_mod.sys, "prefix", "/usr")
         monkeypatch.setattr(doctor_mod.sys, "base_prefix", "/usr")
 
-        assert doctor_mod._pm_venv_active() is False
+        assert doctor_platform._pm_venv_active() is False
 
 def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()

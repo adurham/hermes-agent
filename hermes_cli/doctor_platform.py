@@ -367,6 +367,17 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
             check_warn(f"{h.package}=={h.installed_version} still installed (advisory {h.advisory.id} acknowledged)")
 
 
+def _pm_venv_active() -> bool:
+    """A resident bundle can use its dependency tree without a venv interpreter."""
+    if sys.prefix != sys.base_prefix:
+        return True
+    from pm.lock import Facts
+    from pm.paths import store_root
+
+    store = store_root()
+    return bool(Facts(store / "facts.json").get("venv")) and (store.parent / "venv").is_dir()
+
+
 @doctor_check()
 def _check_python_environment(should_fix: bool, f: Finding) -> None:
     """Interpreter, linked SQLite, venv, macOS TCC anchors/FDA/grants, version-file drift."""
@@ -387,7 +398,7 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
         if src:
             check_info(f"SQLite source id: {(src[:48] + '…') if len(src) > 48 else src}")
         _report_database_journal_modes()
-    check_bool(sys.prefix != sys.base_prefix, "Virtual environment active", ("Not in virtual environment", "(recommended)"))
+    check_bool(_pm_venv_active(), "Virtual environment active", ("Not in virtual environment", "(recommended)"))
     # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the mechanism reverted in #95563.
     # Silent on non-macOS.
     check_macos_tcc_anchor(should_fix=should_fix)
