@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from pathlib import Path
 
@@ -201,17 +202,17 @@ def existing_published(out_dir: Path, suite: str) -> set:
     published = set()
     if packages_file.exists():
         text = packages_file.read_text(encoding="utf-8")
-        pkg = ver = None
-        for line in text.splitlines():
-            if line.startswith("Package: "):
-                pkg = line[len("Package: "):].strip()
-            elif line.startswith("Version: "):
-                ver = line[len("Version: "):].strip()
-            elif not line.strip() and pkg and ver:
+        # deb822 records are separated by blank lines; never rely on field
+        # order inside a record.
+        for stanza in text.split("\n\n"):
+            pkg = ver = None
+            for line in stanza.splitlines():
+                if line.startswith("Package: "):
+                    pkg = line[len("Package: "):].strip()
+                elif line.startswith("Version: "):
+                    ver = line[len("Version: "):].strip()
+            if pkg and ver:
                 published.add((pkg, ver))
-                pkg = ver = None
-        if pkg and ver:
-            published.add((pkg, ver))
     return published
 
 
@@ -258,11 +259,15 @@ def stage(pool_dir: Path, out_dir: Path, suite: str, gpg_key_file: Path | None) 
             }
         )
 
-    # Packages sorted by version, canary (~) below stable
+    # Packages stanzas MUST be separated by blank lines: apt parses the file
+    # as deb822 records and a missing blank line merges consecutive records
+    # into one garbled stanza (biting exactly when the repo carries multiple
+    # versions of the same package -- the first thing a canary+stable repo
+    # has). existing_published() below relies on the same blank-line layout.
     stanzas.sort(
         key=lambda s: (s["Package"], deb_version_key(s["Version"]))
     )
-    packages_text = "\n".join(
+    packages_text = "\n\n".join(
         "\n".join(f"{k}: {v}" for k, v in stanza.items()) for stanza in stanzas
     ) + ("\n" if stanzas else "")
 
@@ -307,62 +312,195 @@ def stage(pool_dir: Path, out_dir: Path, suite: str, gpg_key_file: Path | None) 
     return 3
 
 
-def sign(dists: Path, release_path: Path, gpg_key_file: Path) -> None:
-    # Real signing keys are usually passphrase-protected; TERMUX_APT_GPG_PASSPHRASE
-    # (set only when the key needs one) rides in via argv -- never the key material.
-    passphrase = os.environ.get("TERMUX_APT_GPG_PASSPHRASE", "")
-    base = ["gpg", "--batch", "--yes", "--pinentry-mode", "loopback"]
-    if passphrase:
-        base += ["--passphrase", passphrase]
+def _gpg_homedir_arg(path: Path) -> str:
+    """Format a homedir path for the host's gpg.
 
-    def gpg(*args: str, stdin: bytes | None = None) -> bytes:
-        result = subprocess.run(
-            [*base, *args],
-            input=stdin, capture_output=True,
+    On Windows the commonly available gpg is the MSYS/Git-for-Windows build,
+    which rejects native ``C:\\...`` paths for --homedir and needs the
+    ``/c/...`` form. POSIX gpg (CI's ubuntu runner) needs paths untouched,
+    so the conversion applies only to Windows drive-letter paths.
+    """
+    s = str(path)
+    if os.name == "nt" and len(s) >= 2 and s[1] == ":":
+        return f"/{s[0].lower()}{s[2:].replace(chr(92), '/')}"
+    return s
+
+
+def _gpg_run(
+    homedir: Path,
+    args: list,
+    *,
+    stdin: bytes | None = None,
+    passphrase: str | None = None,
+) -> subprocess.CompletedProcess:
+    """Run gpg with an explicit isolated homedir.
+
+    The passphrase, when the key needs one, is fed on STDIN via
+    ``--passphrase-fd 0`` -- it is never placed in argv (visible in
+    /proc or error output) and never written to disk.
+    """
+    cmd = ["gpg", "--batch", "--yes", "--homedir", _gpg_homedir_arg(homedir)]
+    if passphrase is not None:
+        cmd += ["--pinentry-mode", "loopback", "--passphrase-fd", "0"]
+        if stdin is not None:
+            raise StageError("internal error: passphrase and data stdin are the same fd")
+        stdin = passphrase.encode("utf-8")
+
+    # File-backed capture, not pipes: gpg's spawned gpg-agent can outlive
+    # (and inherit) the child's stdout/stderr pipes, and a reader waiting
+    # for pipe EOF would then hang forever after gpg itself has exited.
+    # A wait() on files returns as soon as gpg exits.
+    # Also guarantee HOME: hardened CI runners execute with a scrubbed
+    # environment (env -i), and the gpg-agent spawned by gpg fails to start
+    # with no HOME set.
+    env = dict(os.environ)
+    if not env.get("HOME"):
+        env["HOME"] = str(homedir)
+    with tempfile.TemporaryDirectory(prefix="apt-stage-gpg-io-") as io_dir:
+        out_path = Path(io_dir) / "stdout"
+        err_path = Path(io_dir) / "stderr"
+        with open(out_path, "wb") as fo, open(err_path, "wb") as fe:
+            result = subprocess.run(
+                [*cmd, *args],
+                input=stdin,
+                stdin=subprocess.DEVNULL if stdin is None else None,
+                stdout=fo, stderr=fe, env=env,
+            )
+        result.stdout = out_path.read_bytes()
+        result.stderr = err_path.read_bytes()
+    if result.returncode != 0:
+        raise StageError(
+            f"gpg {' '.join(args[:2])} failed: {result.stderr.decode(errors='replace').strip()}"
         )
-        if result.returncode != 0:
-            raise StageError(f"gpg failed: {result.stderr.decode(errors='replace')}")
-        return result.stdout
+    return result
 
-    secret = gpg_key_file.read_bytes()
-    gpg("--import", stdin=secret)
-    # key file may be a full keypair; extract the key id via listing
-    listing = gpg("--list-secret-keys", "--with-colons").decode()
-    key_id = None
+
+def _sole_secret_key_fingerprint(homedir: Path) -> str:
+    """Fingerprint of the ONLY signing-capable secret key in the homedir.
+
+    The homedir is a fresh temp dir into which exactly the supplied key file
+    was imported, so whatever is here came from the import -- never a
+    pre-existing unrelated key from a user keyring. If the file carried
+    multiple keys we fail closed rather than silently signing with the
+    first one.
+    """
+    listing = _gpg_run(
+        homedir, ["--with-colons", "--list-secret-keys"]
+    ).stdout.decode("utf-8", "replace")
+    fingerprints = []
+    primary = False
     for line in listing.splitlines():
-        if line.startswith("sec:"):
-            key_id = line.split(":")[4]
-            break
-    if not key_id:
-        raise StageError("no secret key found after import")
+        fields = line.split(":")
+        if fields[0] in ("sec", "ssb"):
+            primary = fields[0] == "sec"
+        elif fields[0] == "fpr" and primary:
+            fingerprints.append(fields[9])
+            primary = False
+    if not fingerprints:
+        raise StageError("supplied key file produced no secret key after import")
+    if len(set(fingerprints)) != 1:
+        raise StageError(
+            f"supplied key file contains {len(set(fingerprints))} secret keys; "
+            "refusing to guess which one signs the repository"
+        )
+    return fingerprints[0]
 
-    gpg(
-        "--clearsign", "--local-user", key_id,
-        "--output", str(dists / "InRelease"),
-        str(release_path),
-    )
-    gpg(
-        "--detach-sign", "--armor", "--local-user", key_id,
-        "--output", str(dists / "Release.gpg"),
-        str(release_path),
-    )
 
-    # Publish the signing key's public half at the repo root. The published
-    # key is exported from the exact key that signed THIS suite, so the two
-    # can never drift -- a key rotation re-publishes itself on the next
-    # run. Users fetch it from a stable URL (docs point here).
-    root = dists.parent.parent
-    pub = gpg("--armor", "--export", key_id)
-    if not pub.strip():
-        raise StageError("gpg exported an empty public key")
-    (root / "key.asc").write_bytes(pub)
+def _verify_signature(
+    homedir: Path, expected_fpr: str, sig_path: Path, signed_path: Path | None
+) -> None:
+    """Fail-closed check that sig_path is a GOOD signature by expected_fpr.
+
+    Verified via gpg --status-fd VALIDSIG (not exit code alone), and the
+    fingerprint must match the key that was selected from the import.
+    """
+    args = ["--with-colons", "--status-fd", "1", "--verify", str(sig_path)]
+    if signed_path is not None:
+        args.append(str(signed_path))
+    result = _gpg_run(homedir, args)
+    valid = []
+    for line in result.stdout.decode("utf-8", "replace").splitlines():
+        if line.startswith("[GNUPG:] VALIDSIG "):
+            fields = line.split()
+            valid.append(fields[2])
+            if len(fields) > 11:
+                valid.append(fields[11])  # Primary key when a signing subkey made the signature.
+    if expected_fpr not in valid:
+        raise StageError(
+            f"post-sign verification failed for {sig_path.name}: no VALIDSIG "
+            f"for {expected_fpr}; refusing to publish the repository"
+        )
+
+
+def sign(dists: Path, release_path: Path, gpg_key_file: Path) -> None:
+    """Sign Release as InRelease + detached Release.gpg in an ISOLATED
+    temp GNUPGHOME, verify the signatures fail-closed, then publish the
+    signing key's public half at the repo root.
+
+    Nothing here touches the invoking user's real keyring: the gpg homedir
+    is a throwaway temp directory whose only content is the supplied key
+    file, and it is removed afterwards. Real signing keys are usually
+    passphrase-protected; TERMUX_APT_GPG_PASSPHRASE (set only when the key
+    needs one) reaches gpg via stdin, never argv.
+    """
+    passphrase = os.environ.get("TERMUX_APT_GPG_PASSPHRASE", "")
+    homedir = Path(tempfile.mkdtemp(prefix="apt-stage-gnupg-"))
+    try:
+        secret = gpg_key_file.read_bytes()
+        _gpg_run(homedir, ["--import"], stdin=secret)
+        key_id = _sole_secret_key_fingerprint(homedir)
+
+        _gpg_run(
+            homedir,
+            [
+                "--clearsign", "--local-user", key_id,
+                "--output", str(dists / "InRelease"),
+                str(release_path),
+            ],
+            passphrase=passphrase,
+        )
+        _gpg_run(
+            homedir,
+            [
+                "--detach-sign", "--armor", "--local-user", key_id,
+                "--output", str(dists / "Release.gpg"),
+                str(release_path),
+            ],
+            passphrase=passphrase,
+        )
+
+        # Fail closed: the run is only a success if both artifacts verify as
+        # GOOD signatures from the exact imported key. A signature that does
+        # not verify is worse than none -- apt would reject the repo, but so
+        # would any mirror that already cached it.
+        _verify_signature(homedir, key_id, dists / "InRelease", None)
+        _verify_signature(homedir, key_id, dists / "Release.gpg", release_path)
+
+        # Publish the signing key's public half at the repo root. The key is
+        # exported from the exact key that signed THIS suite, so the two can
+        # never drift -- a key rotation re-publishes itself on the next run.
+        # Users verify it by fingerprint (see website/docs/getting-started/
+        # termux.md); the fingerprint is the trust anchor, not the URL.
+        pub = _gpg_run(homedir, ["--armor", "--export", key_id]).stdout
+        if not pub.strip():
+            raise StageError("gpg exported an empty public key")
+        (dists.parent.parent / "key.asc").write_bytes(pub)
+    finally:
+        shutil.rmtree(homedir, ignore_errors=True)
 
 
 def main(argv: list | None = None) -> int:
     ap = argparse.ArgumentParser(description="Stage a static APT repo layout.")
     ap.add_argument("--pool", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--suite", required=True, choices=["hermes-stable", "hermes-canary"])
+    # hermes-nightly is the suite actually published today
+    # (https://hermes-assets.nousresearch.com/releases/termux/nightly/,
+    # verified 2026-09-06); hermes-stable/hermes-canary are what CI stages
+    # for the stable/canary channels.
+    ap.add_argument(
+        "--suite", required=True,
+        choices=["hermes-stable", "hermes-canary", "hermes-nightly"],
+    )
     ap.add_argument("--gpg-key-file", type=Path, default=None)
     args = ap.parse_args(argv)
 

@@ -15,13 +15,20 @@ dpkg, never executing package content). Every *.so* from the package's
 lib/ payload merges into ONE flat directory -- the trampolines then put a
 single payload dir on the linker path.
 
-Idempotent: the merged directory is rebuilt per package (missing files are
-restored), so this also serves as the cache-restore path.
+Cache correctness: the merged directory is only trusted when a manifest
+(runtime-libs/manifest.json) records it. The manifest binds the EXACT pin
+table (its sha256) to every merged .so's sha256, and is usable only when
+the staged set is nonempty, EXACTLY matches the manifest's file set, and
+every hash matches. Anything else -- missing file, extra file, stale
+bytes, stale table -- is a miss: the merged dir is rebuilt COMPLETELY
+from digest-verified .deb downloads/extractions and the manifest is
+emitted only after the complete build succeeds.
 
 Usage: stage_runtime_libs.py <payload-dir>
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
@@ -35,6 +42,11 @@ from pm.downloader import Download, Source  # noqa: E402
 from pm.package import DebPackage  # noqa: E402
 
 PREFIX_REL = "data/data/com.termux/files/usr"
+MANIFEST_NAME = "manifest.json"
+
+
+class StageError(RuntimeError):
+    """Runtime-lib staging failed; the merged dir may be incomplete."""
 
 
 class _LibDeb(DebPackage):
@@ -51,11 +63,144 @@ class _LibDeb(DebPackage):
         return ""
 
 
-def _extracted_sonames(work: Path, name: str) -> list[Path]:
-    """The .so* files a package's extract dir holds (empty when the extract
-    dir is absent -- cold cache)."""
-    lib_dir = work / "extract" / name / PREFIX_REL / "lib"
-    return list(lib_dir.glob("*.so*")) if lib_dir.is_dir() else []
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _table_sha256(table: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(table, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _cache_valid(out: Path, manifest_path: Path, table: dict) -> bool:
+    """The staged merged dir is usable only when a manifest exists that
+    binds the exact current table to a nonempty, EXACT set of .so files
+    whose bytes all hash to the recorded values."""
+    if not out.is_dir() or not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        files = manifest["files"]
+    except (ValueError, KeyError, OSError):
+        return False
+    if manifest.get("table_sha256") != _table_sha256(table):
+        return False
+    if not isinstance(files, dict) or not files:
+        return False
+    staged = {p.name: p for p in out.glob("*.so*")}
+    if set(staged) != set(files):
+        return False  # extra or missing files: do not trust the survivor
+    for name, want in files.items():
+        try:
+            if _sha256_file(staged[name]) != want:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _ensure_extracted(work: Path, name: str, row: dict) -> Path:
+    """Return the package's extract dir, downloading + unpacking the
+    digest-verified .deb when the extraction is absent or stale (its
+    extraction marker does not match the currently pinned sha256)."""
+    extract = work / "extract" / name
+    scratch = work / "dl"
+    scratch.mkdir(parents=True, exist_ok=True)
+    archive = scratch / f"{name}.deb"
+    marker = extract / ".deb-sha256"
+
+    archive_ok = False
+    if archive.exists():
+        try:
+            archive_ok = _sha256_file(archive) == row["sha256"]
+        except OSError:
+            archive_ok = False
+    extraction_ok = (
+        any(extract.glob(f"{PREFIX_REL}/lib/*.so*"))
+        and marker.is_file()
+        and marker.read_text(encoding="utf-8").strip() == row["sha256"]
+    )
+    if extraction_ok and archive_ok:
+        return extract
+
+    if not archive_ok:
+        Download([Source(row["url"], archive, row["sha256"])],
+                 partials_dir=scratch).run()
+    if extract.exists():
+        shutil.rmtree(extract)
+    extract.mkdir(parents=True, exist_ok=True)
+    _LibDeb(name).unpack(archive, extract, "linux-arm64-bionic")
+    marker.write_text(row["sha256"], encoding="utf-8")
+    return extract
+
+
+def stage(payload: Path, table: dict) -> Path:
+    """Stage every pinned runtime lib into <payload>/runtime-libs/lib/.
+
+    Returns the merged output dir. Raises StageError on any failure; the
+    manifest is written only after a complete, verified build.
+    """
+    payload = Path(payload).resolve()
+    payload.mkdir(parents=True, exist_ok=True)
+    out = payload / "runtime-libs" / "lib"
+    work = payload / ".work" / "runtime-libs"
+    manifest_path = payload / "runtime-libs" / MANIFEST_NAME
+
+    if _cache_valid(out, manifest_path, table):
+        print(f"runtime libs already staged (manifest-verified): "
+              f"{len(list(out.glob('*.so*')))} .so* -> {out}")
+        return out
+
+    # Miss: rebuild the merged dir COMPLETELY from scratch. Nothing from
+    # a previous partial or corrupted state survives.
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    merged = 0
+    for name, row in table.items():
+        extract = _ensure_extracted(work, name, row)
+        lib_dir = extract / PREFIX_REL / "lib"
+        sos = sorted(lib_dir.glob("*.so*"))
+        if not sos:
+            raise StageError(f"{name}: no shared objects in "
+                             f"{PREFIX_REL}/lib of the package")
+        n = 0
+        for so in sos:
+            dest = out / so.name
+            if dest.exists():
+                # Co-installed packages share sonames: only identical
+                # bytes may collide.
+                if _sha256_file(so) != _sha256_file(dest):
+                    raise StageError(
+                        f"soname collision with different bytes: "
+                        f"{so.name} from {name} vs already-staged")
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(so, dest)
+            n += 1
+        merged += n
+        print(f"  {name} {row['version']}: {n} new .so* -> runtime-libs/lib")
+
+    if not any(out.glob("*.so*")):
+        raise StageError("no shared objects staged")
+
+    # Manifest last: its existence is the promise that the build above
+    # completed for the exact table.
+    manifest = {
+        "table_sha256": _table_sha256(table),
+        "files": {p.name: _sha256_file(p) for p in sorted(out.glob("*.so*"))},
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"runtime libs staged: {len(table)} packages, {merged} new .so* "
+          f"-> {out}")
+    return out
 
 
 def main() -> int:
@@ -63,58 +208,13 @@ def main() -> int:
         print("usage: stage_runtime_libs.py <payload-dir>", file=sys.stderr)
         return 2
     payload = Path(sys.argv[1]).resolve()
-    payload.mkdir(parents=True, exist_ok=True)
-    out = payload / "runtime-libs" / "lib"
-
-    table = json.loads((HERE / "runtime_libs.json").read_text(encoding="utf-8"))["libs"]
-    work = payload / ".work" / "runtime-libs"
-    scratch = work / "dl"
-    scratch.mkdir(parents=True, exist_ok=True)
-
-    # The merged output dir IS the cache-restore surface (the CI workflow
-    # caches payload/runtime-libs, not the scratch extract dirs), so the
-    # skip check keys on it: a complete merged dir means every pinned .deb
-    # already made it in, and the whole download+unpack pass is skipped.
-    expected_sonames = {
-        so.name
-        for name in table
-        for so in _extracted_sonames(work, name)
-    }
-    merged_now = {so.name for so in out.glob("*.so*")} if out.is_dir() else set()
-    # Guard the empty>=empty cold-start case: with nothing staged there is
-    # nothing to skip -- run the full download+unpack pass.
-    if merged_now and merged_now >= expected_sonames:
-        print(f"runtime libs already staged: {len(merged_now)} .so* -> {out}")
-        return 0
-
-    merged = 0
-    for name, row in table.items():
-        extract = work / "extract" / name
-        if not any(extract.glob(f"{PREFIX_REL}/lib/*.so*")):
-            archive = scratch / f"{name}.deb"
-            Download([Source(row["url"], archive, row["sha256"])], partials_dir=scratch).run()
-            if extract.exists():
-                shutil.rmtree(extract)
-            extract.mkdir(parents=True, exist_ok=True)
-            _LibDeb(name).unpack(archive, extract, "linux-arm64-bionic")
-        lib_dir = extract / PREFIX_REL / "lib"
-        if not lib_dir.is_dir():
-            print(f"  {name}: no {PREFIX_REL}/lib in the package", file=sys.stderr)
-            return 1
-        n = 0
-        for so in sorted(lib_dir.glob("*.so*")):
-            dest = out / so.name
-            if dest.exists():
-                continue  # co-installed packages share sonames; first wins
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(so, dest)
-            n += 1
-        merged += n
-        print(f"  {name} {row['version']}: {n} new .so* -> runtime-libs/lib")
-    if not any(out.glob("*.so*")):
-        print("no shared objects staged", file=sys.stderr)
+    table = json.loads(
+        (HERE / "runtime_libs.json").read_text(encoding="utf-8"))["libs"]
+    try:
+        stage(payload, table)
+    except Exception as exc:  # noqa: BLE001 -- CLI boundary reports and exits
+        print(f"runtime-lib staging failed: {exc}", file=sys.stderr)
         return 1
-    print(f"runtime libs staged: {len(table)} packages, {merged} new .so* -> {out}")
     return 0
 
 

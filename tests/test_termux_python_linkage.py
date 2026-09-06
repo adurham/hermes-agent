@@ -14,7 +14,6 @@ from scripts.termux import python_linkage
 
 @pytest.mark.platforms("linux")
 def test_python_symbols_gain_an_explicit_library_dependency(tmp_path):
-    from ctypes import _endian
     import _ctypes
 
     library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")

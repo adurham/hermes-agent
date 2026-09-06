@@ -3,6 +3,7 @@ and hand back its composed environment."""
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -137,6 +138,18 @@ def _remove_entry(store: Store, entry_name: str) -> None:
             time.sleep(0.2 * (attempt + 1))
 
 
+def _entry_proven(entry: Path, entry_name: str, previous: Optional[dict], artifacts: list) -> bool:
+    """Does a recorded fact PROVE the published entry's bytes were realized
+    from exactly the pin the lock holds now? It must name this entry, be
+    recorded against these artifact digests, and the realized tree digest
+    must still match the bytes on disk (tree_digest, as adopt() checks)."""
+    if not previous or previous.get("entry") != entry_name:
+        return False
+    if (previous.get("artifacts") or []) != [a["sha256"] for a in artifacts]:
+        return False
+    return previous.get("digest") == tree_digest(entry)
+
+
 def _install(
     package: Package,
     lockfile: Lockfile,
@@ -165,8 +178,15 @@ def _install(
         ):
             return
         entry = store.entry(entry_name)
-        _cond = store.published(entry_name) and package.verify(entry, target) == ""
-        if _cond:
+        # Removal is a REPAIR decision, not housekeeping. verify() returns
+        # '' on success; the entry is removed only when it fails
+        # verification, or when no fact proves it was realized from the pin
+        # the lock holds now (missing facts, or a same-version repin — the
+        # recorded artifacts no longer match). A proven entry is kept.
+        proven = _entry_proven(entry, entry_name, facts.get(package.name), artifacts)
+        if store.published(entry_name) and (
+            package.verify(entry, target) != "" or not proven
+        ):
             _remove_entry(store, entry_name)
         if not store.published(entry_name):
             if not artifacts:
@@ -282,10 +302,25 @@ def stage_only(name: str, target: str, progress=None) -> "Path":
         return store.root / package.store_entry(version, target)
     artifacts = lockfile.artifacts(package.name, target)
     entry_name = package.store_entry(version, target)
+    # The stage pin marker (same identity shape as a fact's recorded
+    # artifacts: target + artifact digests) lets stage_only honor a
+    # same-version hash repin without any host-side facts: the entry
+    # belongs to ANOTHER machine, so the marker travels inside the entry.
+    pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
     with store.install_lock():
         entry = store.entry(entry_name)
-        if store.published(entry_name) and not package.verify(entry, target):
-            shutil.rmtree(entry, ignore_errors=True)
+        if store.published(entry_name):
+            marker = entry / ".pm-stage-pin.json"
+            try:
+                recorded = marker.read_text(encoding="utf-8")
+            except OSError:
+                recorded = None
+            # verify() returns '' on success — a non-empty reason is the
+            # invalid case. A valid entry is NEVER deleted; an invalid one
+            # or one staged from a different pin (same version, repinned
+            # hash, or pre-marker) is rebuilt.
+            if package.verify(entry, target) or recorded != pin:
+                _remove_entry(store, entry_name)
         if not store.published(entry_name):
             if not artifacts:
                 raise InstallError(
@@ -307,6 +342,10 @@ def stage_only(name: str, target: str, progress=None) -> "Path":
                         package.unpack(archive, extra, target)
                         merge_tree(extra, staged)
                 package.stage(store, staged, version, target)
+                reason = package.verify(staged, target)
+                if reason:
+                    raise InstallError(package.name, f"staged entry failed verification: {reason}")
+                (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
                 store.publish(staged, entry_name)
         reason = package.verify(store.entry(entry_name), target)
         if reason:

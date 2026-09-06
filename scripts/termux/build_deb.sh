@@ -28,8 +28,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # from the single lock beside every other third-party artifact pin.
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 DIGEST="$(cd "$REPO_ROOT" && python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
-[ -n "$DIGEST" ] || fail "failed to read the termux-docker digest from pm/lock.json"
-[ -n "$DIGEST" ] || fail "termux-docker digest missing from pm/lock.json"
+[ -n "$DIGEST" ] || { printf 'termux-docker digest missing from pm/lock.json\n' >&2; exit 1; }
 # The derived builder image (toolchain pre-baked) when CI provides it;
 # the bare pinned base otherwise. Its tag IS this lock digest (short
 # form), so a lock bump rolls the builder image with the base.
@@ -68,7 +67,7 @@ OUT_ABS="$(mkdir -p "$OUT" && cd "$OUT" && pwd)"
 # captured ONCE here and reused for the install stamp below.
 COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
     || fail "tag $TAG not found in $REPO_ABS"
-for d in python node app wheelhouse; do
+for d in python node uv npm ffmpeg ripgrep runtime-libs app wheelhouse; do
     [ -d "$PAYLOAD_ABS/$d" ] || fail "payload missing $d/ -- run termux_build.sh + build_cpython.sh + build_node.sh first"
 done
 PYBIN_REL="data/data/com.termux/files/usr/bin/python3.11"
@@ -125,10 +124,10 @@ chmod 0777 "$PAYLOAD_ABS/venv"
 # absolute paths (interpreter symlink, pyvenv.cfg) that must be correct
 # on-device from birth -- a /payload alias would bake container paths in.
 docker run --rm --platform linux/arm64 \
-    --user root \
-    -v "$PAYLOAD_ABS/python:/data/data/com.termux/files/usr/lib/hermes-agent/python" \
-    -v "$PAYLOAD_ABS/node:/data/data/com.termux/files/usr/lib/hermes-agent/node" \
-    -v "$PAYLOAD_ABS/uv:/data/data/com.termux/files/usr/lib/hermes-agent/uv" \
+    --user root --network none \
+    -v "$PAYLOAD_ABS/python:/data/data/com.termux/files/usr/lib/hermes-agent/tools/python" \
+    -v "$PAYLOAD_ABS/node:/data/data/com.termux/files/usr/lib/hermes-agent/tools/node" \
+    -v "$PAYLOAD_ABS/uv:/data/data/com.termux/files/usr/lib/hermes-agent/tools/uv" \
     -v "$PAYLOAD_ABS/runtime-libs:/data/data/com.termux/files/usr/lib/hermes-agent/runtime-libs" \
     -v "$PAYLOAD_ABS/wheelhouse:/data/data/com.termux/files/usr/lib/hermes-agent/wheelhouse" \
     -v "$PAYLOAD_ABS/.work:/data/data/com.termux/files/usr/lib/hermes-agent/.work" \
@@ -140,12 +139,12 @@ docker run --rm --platform linux/arm64 \
         # The staged binary is dynamically linked against its OWN tree lib;
         # the container linker needs to be told where it lives (same fix as
         # the wheelhouse container half).
-        export LD_LIBRARY_PATH="$PREFIX/lib/hermes-agent/python$PREFIX/lib:$PREFIX/lib/hermes-agent/node$PREFIX/lib:$PREFIX/lib/hermes-agent/runtime-libs/lib$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        export LD_LIBRARY_PATH="$PREFIX/lib/hermes-agent/tools/python$PREFIX/lib:$PREFIX/lib/hermes-agent/tools/node$PREFIX/lib:$PREFIX/lib/hermes-agent/runtime-libs/lib:$PREFIX/lib"
         # The staged tree is mounted at its REAL $PREFIX path so the venv
         # recorded absolute paths are correct on-device from birth.
         mkdir -p "$PREFIX" 2>/dev/null || true
-        PY="$PREFIX/lib/hermes-agent/python$PREFIX/bin/python3.11"
-        UV="$PREFIX/lib/hermes-agent/uv$PREFIX/bin/uv"
+        PY="$PREFIX/lib/hermes-agent/tools/python$PREFIX/bin/python3.11"
+        UV="$PREFIX/lib/hermes-agent/tools/uv$PREFIX/bin/uv"
                 # Desktop payload canon: the venv holds the DEPENDENCY tree only;
         # the app runs from its own directory via PYTHONPATH (the wheel
         # build is deliberately blocked in setup.py -- Hermes is not a
@@ -154,12 +153,12 @@ docker run --rm --platform linux/arm64 \
         # hermes-agent) so every absolute path the venv records --
         # interpreter symlink, pyvenv.cfg home -- is correct after
         # dpkg installs the tree to exactly that location.
-        "$UV" venv --python "$PY" --seed "$PREFIX/lib/hermes-agent/venv"
+        "$UV" venv --python "$PY" "$PREFIX/lib/hermes-agent/venv"
         # The dep graph with markers intact (the installer evaluates
         # them on bionic); documented android build misses skipped --
         # nemo-relay is the only casualty (the relay exporter).
         "$UV" pip install --python "$PREFIX/lib/hermes-agent/venv/bin/python" \
-            --no-index --find-links "$PREFIX/lib/hermes-agent/wheelhouse" \
+            --offline --no-index --only-binary :all: --find-links "$PREFIX/lib/hermes-agent/wheelhouse" \
             -r "$PREFIX/lib/hermes-agent/.work/resolved-reqs.txt"
         "$UV" pip check --python "$PREFIX/lib/hermes-agent/venv/bin/python"
     ' || fail "venv assembly failed inside the container (offline wheelhouse install)"
@@ -169,54 +168,9 @@ docker run --rm --platform linux/arm64 \
 # to route hermes update -> pkg upgrade remediation.
 printf 'apt\n' > "$PAYLOAD_ABS/app/.install_method"
 
-# [3] Trampolines: POSIX sh, resolve their own dir, dispatch on the bundled
-# python. Installed under $PREFIX/lib/hermes-agent/bin; ../python is a sibling.
+# [3] Entry functions come from the archived project's script declarations.
 log "Writing trampolines"
-mkdir -p "$PAYLOAD_ABS/bin"
-# One trampoline shape, three entrypoints: the bodies are identical
-# except the exec'd module. Emit the QUOTED heredoc once with a
-# placeholder (quoting keeps every $var literal in the output file)
-# and sed the module in per entrypoint: adding an entrypoint is a
-# word in MODULES, not a fourth heredoc.
-MODULES="hermes:hermes_cli.main hermes-agent:hermes_cli.run_agent hermes-acp:hermes_cli.acp"
-for spec in $MODULES; do
-    name="${spec%%:*}"
-    mod="${spec#*:}"
-    tramp="$PAYLOAD_ABS/bin/$name"
-    cat > "$tramp" <<'EOF'
-#!/data/data/com.termux/files/usr/bin/sh
-# invoked via the $PREFIX/bin symlink: resolve to the real file so
-# Termux always exports PREFIX; hard fallback for exotic shells.
-PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-self="${0}"
-while [ -L "$self" ]; do
-    tgt="$(readlink "$self")"
-    case "$tgt" in
-        /*) self="$tgt" ;;
-        *) self="$(dirname "$self")/$tgt" ;;
-    esac
-done
-self_dir="$(cd "$(dirname "$self")" && pwd)"
-# The bundled interpreter links its OWN libpython: put the payload
-# lib dirs on the linker path (the image does not rpath them).
-LD_LIBRARY_PATH="$self_dir/../python$PREFIX/lib:$self_dir/../node$PREFIX/lib:$self_dir/../runtime-libs/lib:$PREFIX/lib" \
-export LD_LIBRARY_PATH
-# Desktop canon: deps live in the venv, the app runs from its own
-# directory -- put it on PYTHONPATH for the interpreter.
-PYTHONPATH="$self_dir/../app" \
-exec "$self_dir/../venv/bin/python" -m __HERMES_MODULE__ "$@"
-export PYTHONPATH
-# The prebuilt TUI bundle ships inside the deb: hand its launchers
-# the payload node (HERMES_NODE) and this venv (HERMES_PYTHON) so they
-# never fall back to PATH lookups the phone cannot satisfy.
-HERMES_NODE="$self_dir/../node$PREFIX/bin/node"
-HERMES_PYTHON="$self_dir/../venv/bin/python"
-export HERMES_NODE HERMES_PYTHON
-EOF
-    sed -i "s/__HERMES_MODULE__/$mod/" "$tramp"
-done
-
-chmod 755 "$PAYLOAD_ABS/bin/hermes" "$PAYLOAD_ABS/bin/hermes-agent" "$PAYLOAD_ABS/bin/hermes-acp"
+python3 "$HERE/launchers.py" --payload "$PAYLOAD_ABS"
 
 # [4] Install stamp: provenance for the steward contract (distribution
 # apt-termux -> update/uninstall refuse with pkg remediation). Written by the
@@ -243,32 +197,14 @@ rm -rf "$STAGE"
 # dpkg try to create /lib and fail on the read-only root.
 ROOT_IN_DEB=data/data/com.termux/files/usr
 DEST="$STAGE/$ROOT_IN_DEB/lib/hermes-agent"
-mkdir -p "$STAGE/DEBIAN" "$DEST"
-cp -a "$PAYLOAD_ABS/python" "$PAYLOAD_ABS/node" "$PAYLOAD_ABS/runtime-libs" "$PAYLOAD_ABS/app" "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/bin" "$DEST/"
+mkdir -p "$STAGE/DEBIAN" "$DEST/tools"
+for tool in python node uv npm ffmpeg ripgrep; do
+    cp -a "$PAYLOAD_ABS/$tool" "$DEST/tools/"
+done
+cp -a "$PAYLOAD_ABS/runtime-libs" "$PAYLOAD_ABS/app" "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/bin" "$DEST/"
+python3 "$HERE/payload_facts.py" "$DEST" "$PAYLOAD_ABS/.work/build_set.txt"
 
-# postinst/prerm: manage the ONE leak, $PREFIX/bin/hermes, idempotently.
-cat > "$STAGE/DEBIAN/postinst" <<'EOF'
-#!/data/data/com.termux/files/usr/bin/sh
-# Ensure $PREFIX/bin/hermes -> lib/hermes-agent/bin/hermes (idempotent).
-LINK="$PREFIX/bin/hermes"
-TARGET="../lib/hermes-agent/bin/hermes"
-mkdir -p "$PREFIX/bin"
-# Atomic: ln either creates the link or fails (EEXIST); never a
-# check-then-create race. A pre-existing link is fine; any other ln failure
-# is a loud nonzero exit, not a swallowed one.
-ln -s "$TARGET" "$LINK" 2>/dev/null || [ -L "$LINK" ]
-exit 0
-EOF
-cat > "$STAGE/DEBIAN/prerm" <<'EOF'
-#!/data/data/com.termux/files/usr/bin/sh
-# Remove $PREFIX/bin/hermes if it points at us (never clobber a foreign file).
-LINK="$PREFIX/bin/hermes"
-if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "../lib/hermes-agent/bin/hermes" ]; then
-    rm -f "$LINK"
-fi
-exit 0
-EOF
-chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
+python3 "$HERE/launchers.py" --payload "$DEST" --control "$STAGE/DEBIAN"
 
 cat > "$STAGE/DEBIAN/control" <<EOF
 Package: $PKG
@@ -285,77 +221,18 @@ EOF
 log "Validating in a fresh pinned termux-docker container"
 DEB="$OUT_ABS/${PKG}_${DEB_VERSION}_aarch64.deb"
 rm -f "$DEB"
-# -Zxz: uniform xz compression for data AND control. The apt stager
-                        dpkg-deb --build -Zxz --root-owner-group "$STAGE" "$DEB" || fail "dpkg-deb --build failed"
+# Use xz for both archive members so Termux dpkg can extract the package.
+dpkg-deb --build -Zxz --root-owner-group "$STAGE" "$DEB" || fail "dpkg-deb --build failed"
 rm -rf "$STAGE"
 [ -f "$DEB" ] || fail "dpkg-deb did not produce $DEB"
 
-VD="$OUT_ABS/.deb-validate"
-rm -rf "$VD"; mkdir -p "$VD"
-cat > "$VD/check.sh" <<"CHECK"
-set -eu
-export PATH="$PREFIX/bin:$PATH"
-# termux patched dpkg ALWAYS chroots maintscripts into the instdir;
-# chroot(2) is EPERM inside this container even under --privileged
-# (a runner-docker artifact -- real devices run maintscripts natively).
-# So validate the real artifacts without dpkg script-wrapping:
-# real payload extraction, real postinst, real trampolines.
-dpkg-deb -I /tmp/pkg.deb | grep -q "Package: hermes-agent"
-mkdir -p "$PREFIX/tmp/deb-x"
-dpkg-deb -x /tmp/pkg.deb "$PREFIX/tmp/deb-x"
-# Layout contract: the payload must sit exactly at the on-device
-# path (android-fs-rooted) so a real-device dpkg -i extracts it
-# into the writable /data/data region without touching /.
-XROOT="$PREFIX/tmp/deb-x/data/data/com.termux/files/usr"
-[ -d "$XROOT/lib/hermes-agent" ] || { echo "FAIL: deb payload not staged at data/data/com.termux/files/usr"; exit 1; }
-cp -a "$XROOT/." "$PREFIX/"
-dpkg-deb -e /tmp/pkg.deb "$PREFIX/tmp/ctrl"
-test -x "$PREFIX/lib/hermes-agent/bin/hermes"
-sh "$PREFIX/tmp/ctrl/postinst"
-test -L "$PREFIX/bin/hermes"
-echo "--- hermes --version ---"
-"$PREFIX/bin/hermes" --version
-# C-extension gate: every stdlib module that dlopens a runtime lib must
-# import. This is the bug class the first real-device install hit
-# (ctypes -> libffi.so): catch a missing payload lib BEFORE shipping.
-echo "--- python C-extension imports ---"
-LD_LIBRARY_PATH="$PREFIX/lib/hermes-agent/python$PREFIX/lib:$PREFIX/lib/hermes-agent/node$PREFIX/lib:$PREFIX/lib/hermes-agent/runtime-libs/lib" \
-PYTHONPATH="$PREFIX/lib/hermes-agent/app" \
-"$PREFIX/lib/hermes-agent/venv/bin/python" -c 'import ctypes, ssl, sqlite3, bz2, lzma, zlib, hashlib, readline; print("C extensions OK")'
-echo "--- bundled node ---"
-LD_LIBRARY_PATH="$PREFIX/lib/hermes-agent/runtime-libs/lib" \
-"$PREFIX/lib/hermes-agent/node$PREFIX/bin/node" --version
-# The deb ships the prebuilt TUI: the bundle must be present in the
-# installed tree and parseable by the payload node (hermes --tui runs
-# it directly; there is no npm on-device to rebuild it).
-TUI="$PREFIX/lib/hermes-agent/app/hermes_cli/tui_dist/entry.js"
-test -f "$TUI" || { echo "FAIL: prebuilt TUI bundle missing from the deb"; exit 1; }
-LD_LIBRARY_PATH="$PREFIX/lib/hermes-agent/runtime-libs/lib" \
-"$PREFIX/lib/hermes-agent/node$PREFIX/bin/node" --check "$TUI"
-echo "--- install method (must be apt) ---"
-LD_LIBRARY_PATH="$PREFIX/lib/hermes-agent/python$PREFIX/lib:$PREFIX/lib/hermes-agent/node$PREFIX/lib:$PREFIX/lib/hermes-agent/runtime-libs/lib" \
-PYTHONPATH="$PREFIX/lib/hermes-agent/app" "$PREFIX/lib/hermes-agent/venv/bin/python" -c 'import hermes_cli.config as c; m = c.detect_install_method(); print("install method:", m); exit(0 if m == "apt" else 1)'
-echo "--- hermes update (must refuse with pkg remediation) ---"
-set +e
-UPD_OUT="$("$PREFIX/bin/hermes" update 2>&1)"
-RC=$?
-set -e
-echo "$UPD_OUT"
-[ "$RC" -ne 0 ] || { echo "FAIL: hermes update exited 0 -- it must refuse"; exit 1; }
-echo "$UPD_OUT" | grep -q "pkg upgrade hermes-agent" ||
-    { echo "FAIL: refusal does not mention pkg upgrade hermes-agent"; exit 1; }
-echo "VALIDATION OK"
-CHECK
-# The validation must run the BARE pinned base, never the builder image:
-# the builder carries the whole toolchain (libffi among it), which hid
-# the missing-payload-lib bug class from CI while a real phone hit it.
-# The base rootfs matches a first-boot termux device.
+# The bare rootfs has no build toolchain to hide a missing payload library.
 docker run --rm --platform linux/arm64 \
-    --user root --privileged \
+    --user 1000:1000 --network none \
     -v "$DEB:/tmp/pkg.deb:ro" \
-    -v "$VD/check.sh:/tmp/check.sh:ro" \
-    "termux/termux-docker@$DIGEST" sh /tmp/check.sh \
+    -v "$HERE/check_deb.sh:/tmp/check.sh:ro" \
+    -v "$HERE/validate_installed.py:/tmp/validate_installed.py:ro" \
+    "termux/termux-docker@$DIGEST" bash /tmp/check.sh \
     || fail "container validation failed"
-rm -rf "$VD"
 
 log "Built $DEB (validated)"

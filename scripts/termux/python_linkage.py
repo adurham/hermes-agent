@@ -78,6 +78,7 @@ def repair_wheel(wheel: Path, library: Path, *, repair=link_extension) -> int:
             with zipfile.ZipFile(staged, "w", zipfile.ZIP_DEFLATED) as archive:
                 for info, data in updated:
                     archive.writestr(info, record.getvalue().encode() if info.filename == records[0] else data)
+            os.chmod(staged, wheel.stat().st_mode & 0o777)
             os.replace(staged, wheel)
         finally:
             Path(staged).unlink(missing_ok=True)

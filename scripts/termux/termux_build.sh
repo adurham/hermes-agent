@@ -30,6 +30,8 @@ fail() { printf 'termux_build: FAILED: %s\n' "$*" >&2; exit 1; }
 if [ "${1:-}" = "--in-container" ]; then
     # =================== CONTAINER HALF (bionic) =======================
     RESOLVED="$2"; BUILD_SET="$3"; WHEELHOUSE="$4"
+    # Readers on the host must retain failed-build evidence too.
+    umask 022
     # $5 (optional) is the staged payload root (mounted at /payload):
     # the wheels are built with THE PAYLOAD'S OWN python -- the TUR .deb
     # pm staged from the lock -- so the ABI is the shipped ABI by
@@ -43,7 +45,7 @@ if [ "${1:-}" = "--in-container" ]; then
     # (linkerconfig on-device). Inside the container the tree lives at
     # $PAYLOAD_ROOT/python$PREFIX, so the dynamic linker needs to be told
     # where the payload's libs live before any staged binary runs.
-    export LD_LIBRARY_PATH="$PAYLOAD_ROOT/python$PREFIX/lib:$PAYLOAD_ROOT/node$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH="$PAYLOAD_ROOT/python$PREFIX/lib:$PAYLOAD_ROOT/node$PREFIX/lib:$PAYLOAD_ROOT/runtime-libs/lib:$PREFIX/lib"
     if [ -n "$PAYLOAD_ROOT" ] && [ -x "$STAGED_PY" ] && [ -x "$STAGED_UV" ]; then
         PY="$STAGED_PY"
         UV="$STAGED_UV"
@@ -180,63 +182,37 @@ REPO_ABS="$(cd "$REPO" && pwd)"
 OUT_ABS="$(mkdir -p "$OUT" && cd "$OUT" && pwd)"
 WORK="$OUT_ABS/.work"
 WHEELHOUSE="$OUT_ABS/wheelhouse"
-# Clear ONLY the scratch work dir: the wheelhouse may hold the CI-restored
-# cache the fast-path check (below) verifies; deleting it here would force
-# the 20-minute container rebuild on every run. A cache miss rebuilds into
-# the same dir (the container phase overwrites/extends it). resolved.txt
-# rides the same cache and the skip path's reqs generation consumes it, so
-# carry it across the wipe.
-RESOLVED_KEEP=""
-if [ -f "$WORK/resolved.txt" ]; then
-    RESOLVED_KEEP="$(mktemp)"
-    cp "$WORK/resolved.txt" "$RESOLVED_KEEP"
-fi
-rm -rf "$WORK"
-mkdir -p "$WORK" "$WHEELHOUSE"
-if [ -n "$RESOLVED_KEEP" ] && [ -f "$RESOLVED_KEEP" ]; then
-    cp "$RESOLVED_KEEP" "$WORK/resolved.txt"
-    rm -f "$RESOLVED_KEEP"
-fi
+# Preserve cached requirements and the native-build list until the manifest
+# verifies both. Only the application archive changes for every release tag.
+rm -rf "$WORK/tree"
+mkdir -p "$WORK/tree" "$WHEELHOUSE"
 
 # [c] Stage the tag as a gitless tree.
 log "Archiving $TAG into $WORK/tree"
-git -C "$REPO_ABS" archive --format=tar "$TAG" | tar -xf - -C "$WORK/tree" 2>/dev/null || {
-    mkdir -p "$WORK/tree"
-    git -C "$REPO_ABS" archive --format=tar -o "$WORK/tree.tar" "$TAG"
-    tar -xf "$WORK/tree.tar" -C "$WORK/tree"
-    rm -f "$WORK/tree.tar"
-}
+git -C "$REPO_ABS" archive --format=tar "$TAG" | tar -xf - -C "$WORK/tree"
 [ -f "$WORK/tree/pyproject.toml" ] || fail "archived tag tree has no pyproject.toml -- bad tag?"
-
-# Cache-hit fast path (checked BEFORE the resolve/probe so a hit skips the
-# ~100-round-trip PyPI coverage probe too): the wheelhouse cache key covers
-# uv.lock + the build scripts, so a restored wheelhouse is BY CONSTRUCTION
-# the exact graph the gates proved on the run that saved it. resolved.txt
-# rides the same cache (the deb's reqs generation consumes it).
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+DIGEST="$(cd "$REPO_ROOT" && python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
+[ -n "$DIGEST" ] || fail "termux-docker digest missing from pm/lock.json"
+IMAGE="${TERMUX_BUILDER_IMAGE:-termux/termux-docker@$DIGEST}"
+docker pull "$IMAGE"
+IMAGE="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"
+CACHE_ARGS=(--payload "$OUT_ABS" --repo "$WORK/tree" --builder "$IMAGE"
+            --platform-tag "$PLATFORM_TAG" --python-abi "$PYTHON_ABI")
 WHEELHOUSE_CACHE_OK=0
-if python3 - "$OUT_ABS/index.json" "$OUT_ABS/wheelhouse" <<'PYCHK' 2>/dev/null
-import hashlib, json, sys
-from pathlib import Path
-
-index_file, wheelhouse = Path(sys.argv[1]), Path(sys.argv[2])
-if not index_file.is_file():
-    sys.exit(1)
-index = json.loads(index_file.read_text(encoding="utf-8"))
-for wheel in index.get("wheels", []):
-    f = wheelhouse / wheel["name"]
-    if not f.is_file() or hashlib.sha256(f.read_bytes()).hexdigest() != wheel["sha256"]:
-        sys.exit(1)
-sys.exit(0)
-PYCHK
-then
+if python3 "$HERE/wheelhouse_cache.py" check "${CACHE_ARGS[@]}"; then
     WHEELHOUSE_CACHE_OK=1
-    log "Wheelhouse cache restored complete -- skipping resolve, probe, and the container build"
+    log "Wheelhouse cache verified -- skipping resolve, probe, and native builds"
 fi
 
 if [ "$WHEELHOUSE_CACHE_OK" -eq 0 ]; then
+# An unproven wheel must not reach the per-package skip check.
+rm -rf "$WHEELHOUSE"
+mkdir -p "$WHEELHOUSE"
+rm -f "$OUT_ABS/index.json" "$OUT_ABS/SHA256SUMS" "$WORK/resolved.txt" "$WORK/build_set.txt"
 # [d] Resolve the real graph from the tag's own lock.
 log "Resolving dependency graph from the tag's uv.lock"
-( cd "$WORK/tree" && uv export --frozen --no-emit-project -o "$WORK/req.txt" ) \
+( cd "$WORK/tree" && uv export --frozen --no-emit-project --extra acp -o "$WORK/req.txt" ) \
     || fail "uv export failed (frozen lock at $TAG)"
 RESOLVED="$WORK/resolved.txt"
 python3 - "$WORK/req.txt" "$RESOLVED" <<'PYEOF' || fail "failed to normalize requirements"
@@ -370,16 +346,6 @@ PYEOF
 [ -s "$BUILD_SET" ] || fail "build set is empty -- nothing to build (probe bug?)"
 fi
 
-# [f] Container digest comes from pm/lock.json (termux-docker package).
-REPO_ROOT="$(cd "$HERE/../.." && pwd)"
-DIGEST="$(cd "$REPO_ROOT" && python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
-[ -n "$DIGEST" ] || fail "termux-docker digest missing from pm/lock.json"
-[ -n "$DIGEST" ] || fail "termux-docker digest missing from pm/lock.json"
-# The derived builder image (toolchain pre-baked) when CI provides it;
-# the bare pinned base otherwise. Its tag IS this lock digest (short
-# form), so a lock bump rolls the builder image with the base.
-IMAGE="${TERMUX_BUILDER_IMAGE:-termux/termux-docker@$DIGEST}"
-
 # [g] The build itself runs in the pinned container: the wheels must be
 # bionic, and they are built with THE PAYLOAD'S OWN staged python (the
 # exact TUR .deb pm staged from the lock), so the ABI matches the shipped
@@ -421,33 +387,9 @@ fi
 rm -rf "$OUT_ABS/app"
 cp -a "$WORK/tree" "$OUT_ABS/app"
 
-# [h] Emit the manifest artifacts (host side: pure data over the results).
-log "Emitting index.json, system-packages.txt, SHA256SUMS"
-python3 - "$WHEELHOUSE" "$OUT_ABS" "$TAG" "$PLATFORM_TAG" "$PYTHON_ABI" <<'PYEOF' || fail "manifest emission failed"
-import hashlib, json, subprocess, sys
-from pathlib import Path
-
-wheelhouse, out, tag, platform_tag, python_abi = sys.argv[1:6]
-wheels = sorted(Path(wheelhouse).glob("*.whl"))
-digests = {w.name: hashlib.sha256(w.read_bytes()).hexdigest() for w in wheels}
-index = {
-    "schemaVersion": 1,
-    "tag": tag,
-    "platformTag": platform_tag,
-    "pythonAbi": python_abi,
-    "wheels": [{"name": w.name, "sha256": digests[w.name]} for w in wheels],
-}
-Path(out, "index.json").write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
-try:
-    syspkgs = subprocess.run(["dpkg-query", "-W", "-f", "${Package} ${Version}\n"],
-                             capture_output=True, text=True, check=False)
-    Path(out, "system-packages.txt").write_text(syspkgs.stdout or "unavailable\n", encoding="utf-8")
-except Exception:
-    Path(out, "system-packages.txt").write_text("unavailable\n", encoding="utf-8")
-with open(Path(out, "SHA256SUMS"), "w", encoding="utf-8", newline="\n") as f:
-    for w in wheels:
-        f.write(f"{digests[w.name]}  {w.name}\n")
-print(f"  {len(wheels)} wheels indexed")
-PYEOF
+# [h] Only a successful native build and both gates can publish cache proof.
+log "Emitting index.json and SHA256SUMS"
+python3 "$HERE/wheelhouse_cache.py" write "${CACHE_ARGS[@]}" --tag "$TAG" \
+    || fail "manifest emission failed"
 
 log "Wheelhouse complete: $WHEELHOUSE"

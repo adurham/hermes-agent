@@ -174,6 +174,28 @@ def test_python_bionic_verify_is_file_evidence(tmp_path: Path):
     assert "missing" in py.verify(empty, "linux-arm64-bionic")
 
 
+def test_bionic_binary_and_env_contract(tmp_path: Path):
+    """On bionic, _BionicDebArm.binary() must return the staged deb's main
+    binary path (file evidence, no exec), so the base Package.env contract
+    exposes the tool through PATH like every other pm package."""
+    from pm.registry import get_package
+
+    for name in ("uv", "python", "node"):
+        pkg = get_package(name)
+        entry = tmp_path / name
+        main = entry / pkg.prefix_rel / pkg.main_rel("linux-arm64-bionic")
+        main.parent.mkdir(parents=True)
+        main.write_bytes(b"bionic-elf")
+
+        binary = pkg.binary(entry, "linux-arm64-bionic")
+        assert binary == main, f"{name}.binary() on bionic: {binary}"
+
+        env = pkg.env(entry, "linux-arm64-bionic")
+        assert env.get("PATH") == [str(main.parent)], (
+            f"{name}.env() on bionic does not follow the Package.env PATH contract"
+        )
+
+
 def test_stage_only_does_not_record_host_facts(tmp_path, monkeypatch):
     """stage_only publishes the entry but must not touch this machine's
     installed facts -- the fact slot belongs to the HOST target."""

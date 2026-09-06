@@ -219,7 +219,16 @@ class DebPackage(Package):
         import io
         import posixpath
         import shutil
+        import stat as stat_mod
         import tarfile
+
+        real_staged = os.path.realpath(staged)
+
+        def _contained(p: Path) -> bool:
+            """True when p's REAL location (following any planted symlink
+            ancestors) stays inside the staged tree."""
+            real = os.path.realpath(p)
+            return real == real_staged or real.startswith(real_staged + os.sep)
 
         deferred_links = []
         with tarfile.open(fileobj=io.BytesIO(payload)) as tf:
@@ -231,14 +240,24 @@ class DebPackage(Package):
                 if not parts:
                     continue  # the "./" root member
                 target = staged.joinpath(*parts)
+                if not _contained(target):
+                    raise InstallError(self.name, f"member escapes staged tree: {member.name}")
                 if member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue
                 if member.issym():
+                    if PurePosixPath(member.linkname).is_absolute() or Path(member.linkname).is_absolute():
+                        raise InstallError(
+                            self.name,
+                            f"absolute symlink target {member.linkname!r} "
+                            f"in {member.name}",
+                        )
                     link_dir = "/".join(parts[:-1])
                     resolved = posixpath.normpath(posixpath.join(link_dir, member.linkname))
                     if resolved == ".." or resolved.startswith("../"):
                         raise InstallError(self.name, f"symlink escapes root: {member.name}")
+                    if not _contained(target.parent / member.linkname):
+                        raise InstallError(self.name, f"symlink escapes staged tree: {member.name}")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     if target.exists() or target.is_symlink():
                         target.unlink()
@@ -254,6 +273,12 @@ class DebPackage(Package):
                 if not member.isfile():
                     raise InstallError(self.name, f"unsupported member type: {member.name}")
                 target.parent.mkdir(parents=True, exist_ok=True)
+                if not _contained(target.parent):
+                    raise InstallError(
+                        self.name,
+                        f"member {member.name} resolves outside the staged tree "
+                        "through a symlinked ancestor",
+                    )
                 extracted = tf.extractfile(member)
                 if extracted is None:
                     raise InstallError(self.name, f"cannot read member {member.name}")
@@ -264,6 +289,11 @@ class DebPackage(Package):
                 except OSError:
                     pass
         for _linkname, target, resolved_path in deferred_links:
+            if not _contained(resolved_path):
+                raise InstallError(
+                    self.name,
+                    f"symlink {target.name} resolves outside the staged tree",
+                )
             if not (target.exists() or target.is_symlink()) and resolved_path.is_file():
                 shutil.copy2(resolved_path, target)
         # Termux debs carry owner-only modes across the whole tree (700 on
@@ -273,13 +303,19 @@ class DebPackage(Package):
         # linker cannot read a 700 lib, the interpreter cannot read a 600
         # encoding module. Normalize EVERYTHING: a+r on all regular files,
         # a+X on anything that was executable. The deb's bytes are pinned
-        # by digest; modes are not part of the pin.
+        # by digest; modes are not part of the pin. Symlinks are skipped:
+        # chmod through one would follow it outside the staged tree.
         for root, dirs, files in os.walk(staged):
+            dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
             for name in files:
                 f = Path(root) / name
                 try:
-                    mode = f.stat().st_mode
+                    mode = f.lstat().st_mode
                 except OSError:
+                    continue
+                if stat_mod.S_ISLNK(mode):
+                    continue
+                if not _contained(f):
                     continue
                 wanted = 0o644 | (0o111 if mode & 0o111 else 0)
                 try:
@@ -319,7 +355,7 @@ def machine_matches_binary(binary: Path, target: str) -> Optional[bool]:
     which is not a mismatch."""
     import struct
 
-    arch = target.rsplit("-", 1)[-1]
+    arch = target.split("-")[1]
     try:
         with open(binary, "rb") as f:
             head = f.read(64)

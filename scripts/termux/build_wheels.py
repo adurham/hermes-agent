@@ -319,7 +319,20 @@ def retag_all(wheelhouse: Path, retag_script: Path, platform_tag: str) -> None:
     print(f"  retagged {len(linux_tagged)} linux-tagged wheels; {len(android_tagged)} were android-tagged at build; {total_android} android wheels total")
 
 
-def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str]) -> None:
+def import_native_modules(build_set: list[str]) -> None:
+    import importlib
+
+    modules = {
+        "ruamel-yaml-clib": "_ruamel_yaml", "cffi": "_cffi_backend",
+        "pillow": "PIL._imaging", "pyyaml": "yaml._yaml", "firecrawl-anydoc": "anydoc",
+    }
+    for name in build_set:
+        module = modules.get(name, name.replace("-", "_"))
+        importlib.import_module(module)
+        print("  imported", module, flush=True)
+
+
+def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str], uv: str) -> None:
     """Offline install of every marker-admitted dep into ONE clean venv,
     shared by both gates (the full offline install runs once, not twice).
 
@@ -335,50 +348,34 @@ def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str]) -> 
         tmp = Path(tmp)
         venv = tmp / "venv"
         subprocess.run(
-            [UV, "venv", "--python", sys.executable, str(venv)],
+            [uv, "venv", "--python", sys.executable, str(venv)],
             check=True,
         )
         vp = venv / "bin" / "python"
         reqs = tmp / "reqs.txt"
         write_reqs_file(resolved, reqs)
         subprocess.run(
-            [UV, "pip", "install", "--python", str(vp),
+            [uv, "pip", "install", "--python", str(vp),
              "--only-binary", ":all:", "--no-index",
              "--find-links", str(wheelhouse), "-r", str(reqs)],
             check=True,
         )
-        subprocess.run([UV, "pip", "check", "--python", str(vp)], check=True)
+        subprocess.run([uv, "pip", "check", "--python", str(vp)], check=True)
         print("  completeness gate: offline install of the marker-admitted graph OK")
-        # dist -> module (only where they differ)
-        MODULE = {
-            "ruamel-yaml-clib": "_ruamel_yaml",
-            "cffi": "_cffi_backend",
-            "pillow": "PIL",
-            "pyyaml": "yaml",
-            "firecrawl-anydoc": "anydoc",
-        }
-        mods = [MODULE.get(n, n.replace("-", "_")) for n in build_set]
-        script = ",".join(mods)
         subprocess.run(
-            [str(vp), '-c',
-             "import importlib, sys\n"
-             "for name in sys.argv[1].split(','):\n"
-             "    importlib.import_module(name)\n"
-             "    print('  imported', name)\n",
-             script],
+            [str(vp), str(Path(__file__).resolve()), "--import-modules", *build_set],
             check=True,
         )
         print("  import gate: every built native wheel imports")
 
 
 
-UV = ""
-
-
 def main() -> int:
-    global UV
+    if sys.argv[1:2] == ["--import-modules"]:
+        import_native_modules(sys.argv[2:])
+        return 0
     args = parse_args()
-    UV = str(Path(args.uv))
+    uv = str(Path(args.uv))
     resolved = Path(args.resolved)
     build_set = [l.strip() for l in Path(args.build_set).read_text(encoding="utf-8").splitlines() if l.strip()]
     wheelhouse = Path(args.wheelhouse)
@@ -397,7 +394,7 @@ def main() -> int:
         repaired = repair_wheel(wheel, library)
         if repaired:
             print(f"  linked {repaired} native extensions to {library.name}: {wheel.name}")
-    wheelhouse_gates(resolved, wheelhouse, build_set)
+    wheelhouse_gates(resolved, wheelhouse, build_set, uv)
     print(f"wheelhouse complete: {len(list(wheelhouse.glob('*.whl')))} wheels in {wheelhouse}")
     return 0
 

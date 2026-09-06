@@ -128,9 +128,16 @@ class _BionicDebArm:
         else:
             BinaryPackage.unpack(self, archive, staged, target)
 
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        if target != "linux-arm64-bionic":
+            BinaryPackage.stage(self, store, staged, version, target)
+
     def binary(self, entry: Path, target: str) -> Optional[Path]:
         if target == "linux-arm64-bionic":
-            return None  # bionic binaries cannot exec on the staging host
+            # File evidence, not exec: the staged .deb's main binary.
+            # Cross-target verify() never probes it; consumers (env PATH,
+            # bundle layout) need the real path.
+            return entry / self.prefix_rel / self.main_rel(target)
         return BinaryPackage.binary(self, entry, target)
 
     def verify(self, entry: Path, target: str) -> str:
@@ -166,13 +173,6 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         triple = _RUST_TRIPLE[target]
         ext = "zip" if target.startswith("win32") else "tar.gz"
         return f"https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.{ext}"
-
-    def env(self, entry: Path, target: str) -> dict:
-        """The bionic arm exposes uv through PATH composition -- the same
-        mechanism every other pm package uses. No system PATH install."""
-        if target == "linux-arm64-bionic":
-            return {"PATH": str(entry / self.prefix_rel / "bin")}
-        return BinaryPackage.env(self, entry, target)
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         return github_release_tags("astral-sh/uv")
@@ -611,6 +611,28 @@ class Npm(BinaryPackage):
         bundled npm instead. --offline pins the bytes to the verified
         tarball; --ignore-scripts + a sanitized env keep user npm/node
         config out of the staging."""
+        if target == "linux-arm64-bionic":
+            from pm.store import extract
+
+            unpacked = staged / ".unpacked"
+            extract(archive, unpacked)
+            package = unpacked / "package"
+            lib = staged / "lib/node_modules/npm"
+            lib.parent.mkdir(parents=True, exist_ok=True)
+            package.rename(lib)
+            unpacked.rmdir()
+            bindir = staged / "bin"
+            bindir.mkdir()
+            for name in ("npm", "npx"):
+                wrapper = bindir / name
+                wrapper.write_text(
+                    "#!/data/data/com.termux/files/usr/bin/sh\n"
+                    'here="$(cd "$(dirname "$0")" && pwd)"\n'
+                    f'exec node "$here/../lib/node_modules/npm/bin/{name}-cli.js" "$@"\n',
+                    encoding="utf-8",
+                )
+                wrapper.chmod(0o755)
+            return
         from pm.ensure import _facts, _store
         from pm.registry import get_package
 
@@ -735,7 +757,7 @@ class Gh(BinaryPackage):
 
 
 @register
-class Ffmpeg(BinaryPackage):
+class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     """Static ffmpeg. GPLv3 builds; always bundled.
     optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
     it baked into the payload (post_update skips provisioning sealed
@@ -746,7 +768,12 @@ class Ffmpeg(BinaryPackage):
     no ffprobe)."""
 
     name = "ffmpeg"
+    deb_package = "ffmpeg"
     optional = False
+
+    def main_rel(self, target: str) -> str:
+        return "bin/ffmpeg"
+
     # The posix (martin-riedl) and win32 (BtbN) build streams have no shared
     # release cadence — they drift in PATCH. The lockfile version label is
     # major.minor; each target's exact patch lives in its artifact urls.
@@ -762,6 +789,8 @@ class Ffmpeg(BinaryPackage):
     probe_args = ["-version"]
 
     def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return f"https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_{version}_aarch64.deb"
         osname, arch = target.split("-")
         if osname == "win32":
             # BtbN: the newest autobuild tag whose assets carry this version.
@@ -810,7 +839,14 @@ class Ripgrep(BinaryPackage):
     name = "ripgrep"
     binary_rel = {"win32": "rg.exe", "posix": "rg"}
 
+    def verify(self, entry: Path, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return Package.verify(self, entry, target)
+        return super().verify(entry, target)
+
     def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            target = "linux-arm64"  # This upstream artifact is a static musl executable.
         triple = _RUST_TRIPLE[target].replace("-unknown-linux-gnu", "-unknown-linux-musl")
         ext = "zip" if target.startswith("win32") else "tar.gz"
         return (

@@ -110,6 +110,10 @@
           "sha256": "92cff3dec20d996bb5b8a918b156b64301338e7c28046053c82d0935cf7c6eb2",
           "url": "https://ffmpeg.martin-riedl.de/download/linux/arm64/1787072884_9.0.1/ffmpeg.zip"
         },
+        "linux-arm64-bionic": {
+          "sha256": "1ec37f4f092521cb785e0ccfa2d82cc4a79ec8d2a4864f5eefc50a314f2d5dec",
+          "url": "https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_8.1.2-5_aarch64.deb"
+        },
         "linux-x64": {
           "sha256": "18bec7d5c2ab3b24d277466b758394e109b0479133b98d155c5540ed3013fa74",
           "url": "https://ffmpeg.martin-riedl.de/download/linux/amd64/1787074600_9.0.1/ffmpeg.zip"
@@ -308,8 +312,8 @@
           "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260814/cpython-3.11.16+20260814-aarch64-unknown-linux-gnu-install_only.tar.gz"
         },
         "linux-arm64-bionic": {
-          "sha256": "b927d1cbeacffb426d52e4860650caf9afd1945f85eaece26f37ae3327d5fa7c",
-          "url": "https://tur.kcubeterm.com/pool/tur/python3.11_3.11.15_aarch64.deb"
+          "sha256": "61a8df1dfee53de364757aa751faac033725262a4be04f086c3e3fedbe38991d",
+          "url": "https://tur.kcubeterm.com/pool/tur/python3.11_3.11.16_aarch64.deb"
         },
         "linux-x64": {
           "sha256": "33994fad90145ba559ebbe8a18d69fa7e56653502f7ba14ba07199b52cde3775",
@@ -337,6 +341,10 @@
           "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-apple-darwin.tar.gz"
         },
         "linux-arm64": {
+          "sha256": "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
+          "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz"
+        },
+        "linux-arm64-bionic": {
           "sha256": "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
           "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz"
         },

@@ -71,6 +71,11 @@ on:
         description: 'Release tag to bundle (vX.Y.Z or vX.Y.0-canary.YYYYMMDDHHMMSS). Must exist on the repo.'
         required: true
         type: string
+      termux_only:
+        description: 'Build and publish only the Termux package'
+        required: false
+        type: boolean
+        default: false
       upload_release:
         description: 'Upload artifacts to the R2 release bucket (staging + feeds)'
         required: false
@@ -152,6 +157,7 @@ jobs:
   # Store submission) is gated on THIS job, never on mac/linux.
   build-win32:
     name: bundled ${{ matrix.target.label }}
+    if: inputs.termux_only != true
     needs: validate
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -777,7 +783,7 @@ jobs:
   publish-darwin-updater:
     name: Publish the macOS updater feed (disabled for now)
     needs: [validate, build-darwin]
-    if: inputs.upload_release == true
+    if: inputs.upload_release == true && inputs.termux_only != true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -804,12 +810,11 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      # Full checkout: build_deb.sh verifies the tag in-repo and assembles the
-      # .deb from the checkout's app/ tree — a sparse tree would ship a
-      # partial payload.
+      # Use the admitted commit, not a tag that can move after validation.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-depth: 0
           fetch-tags: true
 
       - name: Resolve toolchain pins from pm/lock.json
@@ -863,6 +868,9 @@ jobs:
             termux-build/payload/python
             termux-build/payload/node
             termux-build/payload/uv
+            termux-build/payload/npm
+            termux-build/payload/ffmpeg
+            termux-build/payload/ripgrep
             termux-build/payload/runtime-libs
           key: termux-payload-${{ hashFiles('pm/lock.json', 'scripts/termux/build_cpython.sh', 'scripts/termux/build_node.sh', 'scripts/termux/build_uv.sh', 'scripts/termux/runtime_libs.json', 'scripts/termux/stage_runtime_libs.py') }}
           restore-keys: |
@@ -892,6 +900,13 @@ jobs:
         run: bash scripts/termux/build_uv.sh termux-build/payload
 
 
+      - name: Stage the remaining CLI runtime tools
+        shell: bash
+        run: |
+          for tool in npm ffmpeg ripgrep; do
+            bash scripts/termux/termux_pkg_build.sh "$tool" "$tool" termux-build/payload
+          done
+
       - name: Save the payload builds
         # Save regardless of the wheelhouse/deb phases' outcome: the staged
         # tool payload is only stale when the lock or a stager changes, and
@@ -903,6 +918,9 @@ jobs:
             termux-build/payload/python
             termux-build/payload/node
             termux-build/payload/uv
+            termux-build/payload/npm
+            termux-build/payload/ffmpeg
+            termux-build/payload/ripgrep
             termux-build/payload/runtime-libs
           key: termux-payload-${{ hashFiles('pm/lock.json', 'scripts/termux/build_cpython.sh', 'scripts/termux/build_node.sh', 'scripts/termux/build_uv.sh', 'scripts/termux/runtime_libs.json', 'scripts/termux/stage_runtime_libs.py') }}
 
@@ -937,7 +955,8 @@ jobs:
             termux-build/payload/index.json
             termux-build/payload/SHA256SUMS
             termux-build/payload/.work/resolved.txt
-          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh') }}
+            termux-build/payload/.work/build_set.txt
+          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/termux-builder.Dockerfile') }}
           restore-keys: |
             termux-wheelhouse-
 
@@ -954,9 +973,8 @@ jobs:
             --out termux-build/payload
 
       - name: Save the wheelhouse
-        # Save even when the deb assembly/validation later fails: the gates
-        # have already proven the wheels by this point.
-        if: always()
+        # Only proven wheels enter the cache. Saving before deb assembly
+        # preserves them if a later packaging step fails.
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -964,7 +982,8 @@ jobs:
             termux-build/payload/index.json
             termux-build/payload/SHA256SUMS
             termux-build/payload/.work/resolved.txt
-          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh') }}
+            termux-build/payload/.work/build_set.txt
+          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/termux-builder.Dockerfile') }}
 
       - name: Build the TUI bundle for the deb
         shell: bash
@@ -1040,8 +1059,16 @@ jobs:
           # cwd and a bare `node scripts/r2-release.mjs` would ENOENT.
           R2="$GITHUB_WORKSPACE/scripts/r2-release.mjs"
           cd termux-build/apt
-          for f in **/*; do
-            [ -f "$f" ] || continue
+          files=(pool/**/*.deb key.asc
+                 "dists/hermes-$CHANNEL/main/binary-aarch64/Packages"
+                 "dists/hermes-$CHANNEL/main/binary-aarch64/Packages.gz"
+                 "dists/hermes-$CHANNEL/Release"
+                 "dists/hermes-$CHANNEL/Release.gpg"
+                 "dists/hermes-$CHANNEL/InRelease")
+          # APT reads InRelease first. Publish it only after every referenced
+          # index and package has been uploaded and read back successfully.
+          for f in "${files[@]}"; do
+            test -f "$f"
             node "$R2" put \
               --tag "$HERMES_PAYLOAD_TAG" \
               --key "releases/termux/$CHANNEL/$f" \
@@ -1050,7 +1077,7 @@ jobs:
           done
   builds-pending:
     name: Mark the builds table as in progress
-    if: inputs.upload_release == true
+    if: inputs.upload_release == true && inputs.termux_only != true
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
