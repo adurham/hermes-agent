@@ -288,14 +288,23 @@ class DebPackage(Package):
                     target.chmod(member.mode & 0o777)
                 except OSError:
                     pass
-        for _linkname, target, resolved_path in deferred_links:
-            if not _contained(resolved_path):
-                raise InstallError(
-                    self.name,
-                    f"symlink {target.name} resolves outside the staged tree",
-                )
-            if not (target.exists() or target.is_symlink()) and resolved_path.is_file():
-                shutil.copy2(resolved_path, target)
+        while deferred_links:
+            pending = []
+            for linkname, target, resolved_path in deferred_links:
+                if not _contained(resolved_path):
+                    raise InstallError(
+                        self.name,
+                        f"symlink {target.name} resolves outside the staged tree",
+                    )
+                if target.exists() or target.is_symlink():
+                    continue
+                if resolved_path.is_file():
+                    shutil.copy2(resolved_path, target)
+                else:
+                    pending.append((linkname, target, resolved_path))
+            if len(pending) == len(deferred_links):
+                break
+            deferred_links = pending
         # Termux debs carry owner-only modes across the whole tree (700 on
         # binaries n libs, 600 on stdlib .py files) -- postinst would
         # normalize on a real phone, but pm extracts without postinst, and

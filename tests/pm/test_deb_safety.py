@@ -65,6 +65,25 @@ def _symlink_member(name: str, linkname: str) -> tarfile.TarInfo:
     return info
 
 
+def test_chained_aliases_survive_without_symlink_support(tmp_path, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise OSError("symlinks unavailable")
+
+    monkeypatch.setattr(Path, "symlink_to", unavailable)
+    deb = tmp_path / "aliases.deb"
+    lib = "data/data/com.termux/files/usr/lib"
+    _build_deb(deb, [
+        _symlink_member(f"{lib}/libexample.so", "libexample.so.1"),
+        _symlink_member(f"{lib}/libexample.so.1", "libexample.so.1.2"),
+        (f"{lib}/libexample.so.1.2", b"library payload"),
+    ])
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    _P().unpack(deb, staged, "linux-arm64-bionic")
+    for name in ("libexample.so", "libexample.so.1", "libexample.so.1.2"):
+        assert (staged / lib / name).read_bytes() == b"library payload"
+
+
 def test_absolute_symlink_target_rejected(tmp_path: Path):
     """A member whose symlink target is ABSOLUTE must be refused outright:
     the link points outside the staged tree the moment it is created."""
