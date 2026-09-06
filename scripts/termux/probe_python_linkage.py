@@ -39,6 +39,7 @@ def main() -> int:
     ap.add_argument("--repo", type=Path, required=True)
     ap.add_argument("--payload", type=Path, required=True)
     ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("--built-wheel", type=Path)
     args = ap.parse_args()
     prefix = Path("/data/data/com.termux/files/usr")
     python = args.payload / "python" / prefix.relative_to("/") / "bin/python3.11"
@@ -63,10 +64,13 @@ def main() -> int:
             "RUSTFLAGS": f"-L{pylib}",
             "LDFLAGS": f"-L{pylib}",
         }
-        run([
-            str(vp), "-m", "pip", "wheel", "--no-deps", "--no-cache-dir",
-            "--no-binary", ":all:", "-w", str(args.output), requirement,
-        ], env=build_env)
+        if args.built_wheel:
+            shutil.copy2(args.built_wheel, args.output / args.built_wheel.name)
+        else:
+            run([
+                str(vp), "-m", "pip", "wheel", "--no-deps", "--no-cache-dir",
+                "--no-binary", ":all:", "-w", str(args.output), requirement,
+            ], env=build_env)
         wheels = sorted(args.output.glob("firecrawl_anydoc-*.whl"))
         if len(wheels) != 1:
             raise RuntimeError(f"expected one anydoc wheel, found {wheels}")
@@ -86,8 +90,14 @@ def main() -> int:
         print(baseline.stdout, baseline.stderr, flush=True)
         soname = subprocess.run(["patchelf", "--print-soname", str(library)], check=True, capture_output=True, text=True).stdout.strip()
         needed = subprocess.run(["patchelf", "--print-needed", str(extension)], check=True, capture_output=True, text=True).stdout.splitlines()
-        if soname not in needed:
-            run(["patchelf", "--add-needed", soname, str(extension)])
+        from python_linkage import repair_wheel
+
+        repaired = repair_wheel(wheels[0], library)
+        if repaired == 0:
+            raise RuntimeError("production wheel repair did not change the failing extension")
+        shutil.rmtree(site)
+        with zipfile.ZipFile(wheels[0]) as wheel:
+            wheel.extractall(site)
         explicit = import_anydoc(vp, site, env)
         print("EXPLICIT_LINK_EXIT", explicit.returncode, flush=True)
         print(explicit.stdout, explicit.stderr, flush=True)

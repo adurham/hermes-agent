@@ -19,6 +19,7 @@ import argparse
 import os
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import tempfile
 import shutil
@@ -387,6 +388,15 @@ def main() -> int:
     build_wheels(build_set, specs, wheelhouse)
     fetch_pure_wheels(build_set, specs, wheelhouse, Path(args.resolved))
     retag_all(wheelhouse, Path(args.retag), args.platform_tag)
+    from python_linkage import repair_wheel
+
+    library = Path(sys.base_prefix) / "lib" / sysconfig.get_config_var("LDLIBRARY")
+    if not library.is_file():
+        raise RuntimeError(f"payload libpython missing: {library}")
+    for wheel in sorted(wheelhouse.glob("*.whl")):
+        repaired = repair_wheel(wheel, library)
+        if repaired:
+            print(f"  linked {repaired} native extensions to {library.name}: {wheel.name}")
     wheelhouse_gates(resolved, wheelhouse, build_set)
     print(f"wheelhouse complete: {len(list(wheelhouse.glob('*.whl')))} wheels in {wheelhouse}")
     return 0
