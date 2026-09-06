@@ -14,7 +14,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 cd "$REPO_ROOT"
 
-DIGEST="python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())'"
+DIGEST="$(python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
 [ -n "$DIGEST" ] || { echo "termux-docker digest missing" >&2; exit 1; }
 [ -n "$DIGEST" ] || { echo "termux-docker digest missing" >&2; exit 1; }
 
