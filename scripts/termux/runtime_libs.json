@@ -1,5 +1,10 @@
 {
   "_comment": "Pinned runtime libraries for Python, Node, uv, and ffmpeg. The ffmpeg set follows the real binaries' recursive DT_NEEDED dependencies; libc and Android system libraries remain platform-provided. Artifacts and hashes were verified from the Termux package pool.",
+  "licenses": {
+    "sha256": "a3265cd1cf7d04754f2fb683eaf5b21918263792fd714457127900c1d6d9bcd9",
+    "url": "https://packages.termux.dev/apt/termux-main/pool/main/t/termux-licenses/termux-licenses_2.2_all.deb",
+    "version": "2.2"
+  },
   "libs": {
     "brotli": {
       "sha256": "db1502601d40fb44e6085ad8bfd9311a8b472e98db831ceec9d404c5708bb52c",

@@ -126,7 +126,7 @@ def _ensure_extracted(work: Path, name: str, row: dict) -> Path:
     return extract
 
 
-def stage(payload: Path, table: dict) -> Path:
+def stage(payload: Path, table: dict, licenses: dict | None = None) -> Path:
     """Stage every pinned runtime lib into <payload>/runtime-libs/lib/.
 
     Returns the merged output dir. Raises StageError on any failure; the
@@ -138,7 +138,8 @@ def stage(payload: Path, table: dict) -> Path:
     work = payload / ".work" / "runtime-libs"
     manifest_path = payload / "runtime-libs" / MANIFEST_NAME
 
-    if _cache_valid(out, manifest_path, table):
+    identity = {"libs": table, "licenses": licenses}
+    if _cache_valid(out, manifest_path, identity):
         print(f"runtime libs already staged (manifest-verified): "
               f"{len(list(out.glob('*.so*')))} .so* -> {out}")
         return out
@@ -174,17 +175,23 @@ def stage(payload: Path, table: dict) -> Path:
         notices = extract / PREFIX_REL / "share/doc"
         if notices.is_dir():
             target = payload / "runtime-libs/share/doc"
-            shutil.copytree(notices, target, dirs_exist_ok=True)
+            shutil.copytree(notices, target, dirs_exist_ok=True, symlinks=True)
         merged += n
         print(f"  {name} {row['version']}: {n} new .so* -> runtime-libs/lib")
 
     if not any(out.glob("*.so*")):
         raise StageError("no shared objects staged")
 
+    if licenses:
+        extract = _ensure_extracted(work, "termux-licenses", licenses)
+        shutil.copytree(
+            extract / PREFIX_REL / "share/LICENSES", payload / "runtime-libs/share/LICENSES",
+            dirs_exist_ok=True, symlinks=True,
+        )
     # Manifest last: its existence is the promise that the build above
     # completed for the exact table.
     manifest = {
-        "table_sha256": _table_sha256(table),
+        "table_sha256": _table_sha256(identity),
         "files": {p.name: _sha256_file(p) for p in sorted(out.glob("*.so*"))},
     }
     manifest_path.write_text(
@@ -199,10 +206,9 @@ def main() -> int:
         print("usage: stage_runtime_libs.py <payload-dir>", file=sys.stderr)
         return 2
     payload = Path(sys.argv[1]).resolve()
-    table = json.loads(
-        (HERE / "runtime_libs.json").read_text(encoding="utf-8"))["libs"]
+    table = json.loads((HERE / "runtime_libs.json").read_text(encoding="utf-8"))
     try:
-        stage(payload, table)
+        stage(payload, table["libs"], table.get("licenses"))
     except Exception as exc:  # noqa: BLE001 -- CLI boundary reports and exits
         print(f"runtime-lib staging failed: {exc}", file=sys.stderr)
         return 1
