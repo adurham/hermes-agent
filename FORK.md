@@ -3,6 +3,114 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Gateway restart → open desktop tabs 404 "session not found": stale-runtime recovery chain ported from upstream — 2026-09-06
+
+**Symptom (2026-09-05 04:17 UTC):** an ansible-driven `systemctl restart
+hermes-gateway.service` on hermes-gw-01 bounced the gateway while three
+desktop chat tabs were open against it. After the restart, typing in those
+tabs surfaced "Prompt failed / session not found" instead of a graceful
+reconnect-and-resume. Sessions were NOT lost — all three stored sessions
+(`20260905_034859_6cb58e`, `20260905_034130_2e9bdb`,
+`20260905_032940_c099ba`) were intact in state.db with full history.
+
+**Root cause (verified against live logs + code):** the gateway's server
+half was healthy — the SIGTERM shutdown ran the full graceful phase sequence
+(`notify_active_sessions done`, `drain done`, `.clean_shutdown` marker
+written, `Exiting with code 1` so systemd revived it), and the new process
+booted clean. The break was entirely client-side, and it was a **version
+gap, not a logic bug in current main**:
+
+1. The installed desktop app was **v0.19.0, built 2026-08-03 from commit
+   `a124d56f42`** (install-stamp.json) — it predates the entire stale-runtime
+   recovery stack that landed upstream 2026-08-07..2026-09-02
+   (`withSessionNotFoundResume`, `resetTileRuntimeBindings` scope-aware
+   reconnect, the dispatcher 4001→resume seam, the gone-latch).
+2. The fork's `main` (synced to v2026.8.31 on 2026-09-01) was also missing
+   the **post-8.31 hardening chain** — 15 upstream commits (2026-08-26..09-02)
+   that close the remaining 4001-recovery gaps: approval/goal poll latching,
+   the owner-routed RPC seam that wakes route-resume on a structured 4001,
+   heal-budget refund on rebind, deleted-session rebind guards, and the
+   tombstone store refactor they depend on.
+3. Live gateway log (`errors.log` lines 3751/3782/3783): three
+   `prompt.submit` rejections against the same dead runtime id `351212a5`
+   at 04:24:09-30 — the old client held a runtime id the restarted process
+   had never minted, and its pre-recovery submit path had no resume-on-4001
+   (the tile submit path was a bare `requestGateway('prompt.submit', ...)`
+   with zero recovery).
+
+**Fix (15 upstream commits cherry-picked onto main, in original order):**
+
+- `8b28bdceb5` stop a stale composer model pinning every new chat
+- `36bea50139` latch approval and goal polls off a dead runtime
+- `d72ce5e434` rebind the visible chat after a reaped runtime
+- `b3b5671094` keep deleted sessions from rebinding
+- `16021395f9` stop stale session RPC retries
+- `0a80adc127` harden stale session RPC guard
+- `c37181a4ec` preserve transient approval errors
+- `3f87a8090c` fold the stale-RPC guard into runtime-gone + refund heal
+  budget on rebind (creates `store/session-gone-latch.ts`)
+- `9ed8331ced` style: eslint --fix + prettier on the salvaged files
+- `1df78c2da8` refactor: review follow-ups for the stale-RPC salvage
+- `ad800ea8cd` cold resume paints the prefetched REST transcript before
+  session.resume settles
+- `990879d688` don't rebind a deleted chat from a leftover 4001 resume
+- `195c3e5a3b` refuse every resume for a chat the user is deleting
+- `86acfee949` refactor: give session tombstones their own store
+  (`store/session-removal.ts` — prerequisite for the above)
+- `8d6a286fe8` restored background tabs resolve their session title without
+  a click (test dependency)
+
+Two cherry-picks needed conflict resolution (test files only, took
+upstream's side): `use-route-resume.test.tsx` and `session-tile.test.ts`
+(195c3e5a3b), `use-session-list-actions.ts` import block (86acfee949),
+`session-tile.test.ts` (8d6a286fe8). All production code auto-merged; the
+fork's own features in the touched files (inflight-turn journal recovery,
+connection-scoped persistence, tile owner routing) are intact — verified by
+diffing the recovery files against upstream (byte-identical) and the
+fork-only files against the pre-chain base.
+
+**Why this is the root-cause fix, not a mitigation:** the 4001 is the
+gateway's terminal verdict for a runtime id it no longer holds; the only
+correct recovery is to re-register the session by its durable stored id
+(`session.resume`) and retry once. The chain makes that recovery fire from
+every surface that can hold a stale binding — the primary chat's submit
+path, tiles, the owner-routed RPC dispatcher, and the background pollers —
+and prevents the failure modes that made it not-fire (gone-latch storm,
+heal-budget exhaustion, deleted-session rebinds, cross-wired warm cache).
+No retries/timeouts/backoff were added; every commit either routes a 4001
+into the existing resume machinery or stops a poller from hammering a dead
+id.
+
+**Verification:**
+
+- `apps/desktop`: `npx tsc --noEmit -p tsconfig.json` clean; full vitest
+  suite 8893 passed / 3 failed — the 3 failures are pre-existing
+  environment flakes in `electron/` and `ui/` trees untouched by this chain
+  (verified: `git diff <base> HEAD -- apps/desktop/electron/
+  apps/desktop/src/components/pane-shell/` is empty; the same 3 fail on the
+  base commit). Recovery-focused suites: 362 passed (runtime-gone,
+  session-removal, session-request-router, session-rpc-dispatcher,
+  use-route-resume, session-tile, single-flight-resume, use-session-actions,
+  composer-status, goals, prompts, native-notifications, session,
+  gateway-reconnect).
+- Python: `tests/tui_gateway/` 916 passed / 2 failed — both pre-existing on
+  the base commit (verified via stash; `test_gui_surface_toolsets` passes
+  in isolation, cross-test pollution). New regression test
+  `tests/tui_gateway/test_restart_stale_runtime_recovery.py` (2 tests)
+  pins the server half of the contract: a stale runtime id 4001s, and
+  `session.resume` by stored id mints a fresh runtime immediately usable by
+  the same RPCs. 58 gateway restart/resume tests pass
+  (`test_clean_shutdown_marker`, `test_restart_resume_pending`,
+  `test_resume_live_lazy_session`, `test_session_resume_db_ownership`).
+
+**Deployment note:** the fix is in the repo; the *installed* desktop app
+must be rebuilt/reinstalled (v0.19.0 → current main) for the client half to
+take effect. The gateway host's Python side needs no change — the server
+contract was already correct. The ansible playbook's service-restart task
+could additionally write the planned-stop marker before SIGTERM so the
+gateway treats it as a planned stop (cleaner exit path), but that is
+homelab-repo territory, not this repo.
+
 ### delegate_task auto-routing: visible omission, `agent_type='auto'`, escalate-only tier check — 2026-09-04
 
 **Decision: KEEP the backstop design, fix the silence.** The proposal on the
