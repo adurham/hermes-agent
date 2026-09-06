@@ -162,7 +162,8 @@ def _run_child(mode, directory):
             self.session_id = sid
             self._interrupt = threading.Event()
             if mode == "previous":
-                self._last_activity_ts = time.time() - 60
+                # Precedes this turn but remains inside the parent's freshness window.
+                self._last_activity_ts = time.time() - 1
 
         def get_activity_summary(self):
             return build_activity_snapshot(last_activity_at=getattr(self, "_last_activity_ts", None),
