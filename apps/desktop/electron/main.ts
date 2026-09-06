@@ -33,7 +33,7 @@ import {
 import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
-import { PLACEHOLDER_FEED_BASE_URL } from './app-updater'
+import { stageAppInstallerFile } from './app-installer-file'
 import { runAppInstallerChecker } from './appinstaller-checker'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
@@ -3222,7 +3222,10 @@ function resolveBundledUpdateStrategy(bundledPayload) {
       channel: resolveUpdaterChannelFromStamp(),
       light: isLightVariant(),
       feedBaseUrl: resolveDesktopFeedBaseUrl(),
-      shell: { openExternal: url => shell.openExternal(url) },
+      installer: {
+        prepare: url => stageAppInstallerFile(url, path.join(app.getPath('userData'), 'updates')),
+        open: file => shell.openPath(file)
+      },
       teardownBundledBackend,
       emitUpdateProgress,
       appVersion: app.getVersion(),
@@ -3317,7 +3320,7 @@ function isWindowsStore(): boolean {
 /**
  * The App Installer feed base URL for a bundled MSIX install: config.yaml's
  * `updates.desktop_feed_base_url`, then HERMES_DESKTOP_FEED_BASE_URL, then
- * the documented placeholder. Empty only when nothing configured the feed.
+ * Windows' registered App Installer source when no override is set.
  */
 function resolveDesktopFeedBaseUrl(): string {
   const configured = readUpdatesFeedBaseFromConfig()
@@ -3327,7 +3330,7 @@ function resolveDesktopFeedBaseUrl(): string {
 
   if (env) {return env}
 
-  return PLACEHOLDER_FEED_BASE_URL
+  return ''
 }
 
 /** Read `updates.desktop_feed_base_url` from the user's config.yaml. */
