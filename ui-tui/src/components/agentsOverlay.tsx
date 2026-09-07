@@ -13,6 +13,7 @@ import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '..
 import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
+import { fallbackModelLabel } from '../lib/modelFallback.js'
 import { asRpcResult } from '../lib/rpc.js'
 import {
   buildSubagentTree,
@@ -344,7 +345,15 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
 
       <Box flexDirection="column" marginTop={1}>
         <Field name="depth" t={t} value={`${item.depth} · ${item.status}`} />
-        {item.model ? <Field name="model" t={t} value={item.model} /> : null}
+        {item.model ? (
+          <Field
+            name="model"
+            t={t}
+            value={
+              item.fallbackActive ? <Text color={t.color.warn}>{fallbackModelLabel(item)}</Text> : item.model
+            }
+          />
+        ) : null}
         {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
         <Field name="tools" t={t} value={`${item.toolCount ?? 0} (subtree ${agg.totalTools})`} />
         <Field

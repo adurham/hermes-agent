@@ -545,15 +545,26 @@ export interface SubagentEventPayload {
   cost_usd?: number
   depth?: number
   duration_seconds?: number
+  /** True when this subagent's live model/provider differs from what it was dispatched with. */
+  fallback_active?: boolean
   files_read?: string[]
   files_written?: string[]
   goal: string
   input_tokens?: number
   iteration?: number
+  /** The EFFECTIVE (live, post-failover) model. Semantics changed; the key stayed. */
   model?: string
+  /** Prerendered display string, e.g. "⚠ claude-opus-5 (fallback from glm-5.3)". Prefer this over composing locally. */
+  model_label?: string
   output_tail?: { is_error?: boolean; preview?: string; tool?: string }[]
   output_tokens?: number
   parent_id?: null | string
+  /** The originally-dispatched model, when it differs from the live `model`. */
+  primary_model?: null | string
+  /** The originally-dispatched provider, when it differs from the live `provider`. */
+  primary_provider?: null | string
+  /** Effective (live, post-failover) provider. */
+  provider?: string
   reasoning_tokens?: number
   status?: SubagentStatus
   subagent_id?: string

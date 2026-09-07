@@ -988,6 +988,16 @@ def _push_completion_event(
         "toolsets": record.get("toolsets"),
         "role": record.get("role"),
         "model": result.get("model") or record.get("model"),
+        # Failover state resolved live off the child at completion
+        # (delegate_tool's result-entry build). Carried onto the event so
+        # _format_async_delegation can render the ⚠ marker instead of
+        # reporting a fallback run as if it had used the dispatched model.
+        # .get with defaults: a result from an interrupted/failed path may
+        # never have reached the entry build.
+        "provider": result.get("provider"),
+        "fallback_active": bool(result.get("fallback_active", False)),
+        "primary_model": result.get("primary_model"),
+        "primary_provider": result.get("primary_provider"),
         "status": status,
         "summary": summary,
         "error": error,

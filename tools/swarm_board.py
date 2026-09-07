@@ -155,6 +155,12 @@ class RowSnapshot:
     re-derives an effective depth from the parent links actually present in
     the render set, so an orphan row (parent already finished and torn its
     board down) doesn't render indented under nothing.
+    ``fallback_active`` / ``primary_model`` carry the row's failover state so
+    ``format_row`` can mark a child that silently switched providers.  They
+    live on the snapshot rather than being resolved at render time because
+    ``format_row`` is a pure function the CLI widget calls WITHOUT the
+    board's lock — reaching back to a live agent object from there would
+    reintroduce exactly the lock coupling the snapshot exists to avoid.
     """
     subagent_id: str
     model: str
@@ -166,6 +172,8 @@ class RowSnapshot:
     elapsed_seconds: float
     depth: int = 0
     parent_subagent_id: Optional[str] = None
+    fallback_active: bool = False
+    primary_model: Optional[str] = None
 
 
 @dataclass
@@ -179,6 +187,12 @@ class _Row:
     last_note: str = ""
     depth: int = 0
     parent_subagent_id: Optional[str] = None
+    # Failover state, pushed in by the delegation progress path whenever the
+    # child's live model changes (see SwarmBoard.update).  Defaults mean "on
+    # its primary", so a caller that never reports failover renders exactly
+    # as before.
+    fallback_active: bool = False
+    primary_model: Optional[str] = None
     started_at: float = field(default_factory=time.time)
     ended_at: Optional[float] = None
     # Freeze point for the displayed elapsed clock once the child stops
@@ -214,6 +228,8 @@ class _Row:
             elapsed_seconds=self.elapsed(),
             depth=self.depth,
             parent_subagent_id=self.parent_subagent_id,
+            fallback_active=self.fallback_active,
+            primary_model=self.primary_model,
         )
 
 
@@ -254,6 +270,20 @@ def _format_row_elapsed(seconds: float) -> str:
     return f"{minutes}m{secs:02d}s"
 
 
+def _shorten_model(model: Optional[str]) -> str:
+    """Strip a ``provider/model`` prefix down to the model slug.
+
+    Extracted from ``format_row`` so the same rule applies to BOTH halves of
+    a fallback label — otherwise a swap between two namespaced slugs renders
+    as ``⚠ ollama-cloud/glm-5.3→claude-opus-5``, shortening only the
+    effective model and blowing the row's width budget with the one part the
+    user least needs.
+    """
+    if not model:
+        return ""
+    return model.split("/", 1)[1] if "/" in model else model
+
+
 def format_row(row: RowSnapshot, *, depth: Optional[int] = None) -> str:
     """Render a single row to a one-line status string.
 
@@ -271,9 +301,19 @@ def format_row(row: RowSnapshot, *, depth: Optional[int] = None) -> str:
     eff_depth = max(0, min(int(eff_depth or 0), _MAX_RENDER_DEPTH))
     glyph = _STATUS_GLYPH.get(row.status, "🔀")
     sid = row.subagent_id[-12:] if len(row.subagent_id) > 12 else row.subagent_id
-    model = row.model or "?"
-    if "/" in model:
-        model = model.split("/", 1)[1]
+    model = _shorten_model(row.model) or "?"
+    # Mark a row whose child silently failed over onto a different model.
+    # Compact form ("⚠ primary→effective") because this shares one line with
+    # status, tool, note and elapsed.  The state is read off the SNAPSHOT —
+    # no live agent lookup here, so this stays a pure, lock-free function.
+    from agent.failover_state import format_model_label
+
+    model = format_model_label(
+        model,
+        fallback_active=row.fallback_active,
+        primary_model=_shorten_model(row.primary_model),
+        compact=True,
+    )
     elapsed = _format_row_elapsed(row.elapsed_seconds)
     tool = _flatten_to_oneline(row.last_tool or "", 30)
     if tool.startswith("mcp_"):
@@ -922,6 +962,8 @@ class SwarmBoard:
         status: Optional[str] = None,
         depth: int = 0,
         parent_subagent_id: Optional[str] = None,
+        fallback_active: bool = False,
+        primary_model: Optional[str] = None,
     ) -> None:
         """Add or refresh a row.
 
@@ -937,6 +979,13 @@ class SwarmBoard:
         nesting gets exactly the previous flat behavior.  When supplied,
         ``order_rows_for_display`` groups children under their parent and
         ``format_row`` indents them.
+
+        ``fallback_active`` / ``primary_model`` seed the row's failover
+        marker.  Normally both are defaults (a child registers on its
+        primary), but a child can already be on a fallback at registration
+        time — ``init_agent`` activates one during build when the primary
+        provider has no usable credential — so the initial paint has to be
+        able to say so rather than waiting for the first progress event.
         """
         with self._lock:
             if subagent_id not in self._rows:
@@ -946,6 +995,8 @@ class SwarmBoard:
                     goal=goal,
                     depth=max(0, int(depth or 0)),
                     parent_subagent_id=parent_subagent_id or None,
+                    fallback_active=bool(fallback_active),
+                    primary_model=primary_model or None,
                 )
                 if status:
                     row.status = status
@@ -955,6 +1006,13 @@ class SwarmBoard:
                 row = self._rows[subagent_id]
                 if model:
                     row.model = model
+                # Unconditional, unlike the truthy-guarded fields above: a
+                # re-register that reports "no longer in fallback" must be
+                # able to CLEAR the marker (restore_primary_runtime makes
+                # failover reversible), and a truthy guard would latch it on
+                # forever.
+                row.fallback_active = bool(fallback_active)
+                row.primary_model = primary_model or None
                 if goal:
                     row.goal = goal
                 if status:
@@ -973,11 +1031,38 @@ class SwarmBoard:
         tool_count: Optional[int] = None,
         last_tool: Optional[str] = None,
         last_note: Optional[str] = None,
+        model: Optional[str] = None,
+        fallback_active: Optional[bool] = None,
+        primary_model: Optional[str] = None,
     ) -> None:
+        """Mutate a registered row.  Unknown ids are dropped silently.
+
+        ``model`` / ``fallback_active`` / ``primary_model`` let the caller
+        RE-SYNC a row's model identity after registration.  ``register()``
+        stamps the model once at dispatch, but a child can silently fail over
+        onto a different provider mid-run (``try_activate_fallback`` mutates
+        the live agent), which used to leave the row frozen on a model the
+        child was no longer using.  The delegation progress path pushes the
+        current values through here on the events it already emits — no new
+        polling.
+
+        ``fallback_active`` is tri-state on purpose: ``None`` means "no
+        opinion, leave the row alone", so a caller updating only
+        ``tool_count`` can't accidentally clear a fallback marker.  Passing
+        ``False`` explicitly DOES clear it, which is what a
+        ``restore_primary_runtime`` (failover is reversible) must be able to
+        do.
+        """
         with self._lock:
             row = self._rows.get(subagent_id)
             if row is None:
                 return
+            if model:
+                row.model = model
+            if fallback_active is not None:
+                row.fallback_active = bool(fallback_active)
+            if primary_model is not None:
+                row.primary_model = primary_model or None
             if status is not None:
                 # Reset the elapsed clock when the row transitions out of
                 # "queued" — otherwise a child that waited 30s for an

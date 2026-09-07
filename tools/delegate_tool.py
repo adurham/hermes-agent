@@ -428,25 +428,62 @@ def _capture_gateway_steer_authority(
         return None, None
 
 
+def _live_model_fields(record: Dict[str, Any], *, compact: bool = False) -> Dict[str, Any]:
+    """Resolve a registry record's EFFECTIVE model identity.
+
+    The record's ``"model"`` value is a dispatch-time snapshot written once
+    at registration and never rewritten, so it goes stale the moment
+    ``try_activate_fallback()`` swaps the child onto its fallback provider.
+    The record also carries the live child object under ``"agent"``, which
+    is authoritative — read that, and use the snapshot only as the
+    degradation path for a record whose agent ref is gone.
+
+    Returns the six-key wire payload (``model``, ``provider``,
+    ``fallback_active``, ``primary_model``, ``primary_provider``,
+    ``model_label``).  Never raises — callers use it inside the registry
+    lock and on display paths.
+    """
+    from agent.failover_state import effective_model_fields
+
+    return effective_model_fields(
+        record.get("agent"),
+        snapshot_model=record.get("model"),
+        snapshot_provider=record.get("provider"),
+        compact=compact,
+    )
+
+
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 
-    Each record: {subagent_id, parent_id, depth, goal, model, started_at,
-    tool_count, status}.  Safe to call from any thread — returns a copy.
+    Each record: {subagent_id, parent_id, depth, goal, model, provider,
+    fallback_active, primary_model, primary_provider, model_label,
+    started_at, tool_count, status}.  Safe to call from any thread —
+    returns a copy.
+
+    ``model`` is the child's EFFECTIVE model, re-resolved from the live
+    agent object on every call, not the dispatch-time snapshot stored on
+    the record.  The ``"agent"`` key is stripped from the output (it is a
+    live object, not serialisable state), so the resolution must happen
+    HERE, before the filter — consumers downstream have no way to do it
+    themselves.
     """
     with _active_subagents_lock:
         return [
             {
-                k: v
-                for k, v in r.items()
-                if k
-                not in {
-                    "agent",
-                    "owner_session_id",
-                    "owner_transport",
-                    "owner_session_record",
-                    "accepting_steer",
-                }
+                **{
+                    k: v
+                    for k, v in r.items()
+                    if k
+                    not in {
+                        "agent",
+                        "owner_session_id",
+                        "owner_transport",
+                        "owner_session_record",
+                        "accepting_steer",
+                    }
+                },
+                **_live_model_fields(r),
             }
             for r in _active_subagents.values()
         ]
@@ -559,12 +596,25 @@ def _handle_control_action(
             if not _owns_subagent_record(r, parent_agent):
                 continue
             started = r.get("started_at")
+            # Effective model/provider read LIVE off the child agent, not the
+            # dispatch-time snapshot on the record: a child that silently
+            # failed over is running on a different model than the one it was
+            # registered with, and reporting the stale one is how a
+            # supervising model ends up reasoning about the wrong runtime.
+            # Same live-read discipline as ``live_transcript`` below and as
+            # ``cli.py::_get_status_bar_snapshot`` does for the main session.
+            _model_state = _live_model_fields(r)
             entries.append(
                 {
                     "subagent_id": r.get("subagent_id"),
                     "parent_id": r.get("parent_id"),
                     "goal": r.get("goal"),
-                    "model": r.get("model"),
+                    "model": _model_state["model"],
+                    "provider": _model_state["provider"],
+                    "fallback_active": _model_state["fallback_active"],
+                    "primary_model": _model_state["primary_model"],
+                    "primary_provider": _model_state["primary_provider"],
+                    "model_label": _model_state["model_label"],
                     "status": r.get("status"),
                     "running_seconds": (
                         round(time.time() - started, 1)
@@ -1541,6 +1591,26 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     )
 
 
+def _board_register_model_kwargs(child: Any) -> Dict[str, Any]:
+    """``model``/``fallback_active``/``primary_model`` for a board register().
+
+    A child can ALREADY be on a fallback the first time its row is painted:
+    ``init_agent`` activates one during build when the configured primary
+    provider has no usable credential.  Seeding the row from the live child
+    (rather than a bare ``getattr(child, "model", "")``) means the very first
+    frame is honest, instead of showing the primary until the first progress
+    event corrects it.
+    """
+    from agent.failover_state import resolve_effective_model
+
+    state = resolve_effective_model(child)
+    return {
+        "model": state["model"] or "",
+        "fallback_active": state["fallback_active"],
+        "primary_model": state["primary_model"],
+    }
+
+
 def _emit_parent_console(parent_agent, line: str) -> None:
     """Emit a human-readable progress line to the parent's console.
 
@@ -1571,6 +1641,7 @@ def _build_child_progress_callback(
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     session_ref: Optional[Dict[str, Any]] = None,
+    agent_ref: Optional[Dict[str, Any]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -1583,6 +1654,14 @@ def _build_child_progress_callback(
     reconstruct the live spawn tree and route per-branch controls (kill,
     pause) back by ``subagent_id``.  All are optional for backward compat —
     older callers that ignore them still produce a flat list on the TUI.
+
+    ``model`` is the DISPATCH-TIME model — what the child was built to run
+    on.  It is the fallback value only: ``agent_ref`` is a shared mutable
+    slot (same late-binding pattern as ``session_ref``, since this callback
+    is constructed before the child agent exists) into which the caller
+    drops a weakref to the child.  Every relayed event then resolves the
+    child's model/provider LIVE, so a silent failover shows up on the wire
+    instead of every event repeating the model the child started on.
 
     Returns None if no display mechanism is available, in which case the
     child agent runs with no progress callback (identical to current behavior).
@@ -1636,6 +1715,22 @@ def _build_child_progress_callback(
     _batch: List[str] = []
     _tool_count = [0]  # per-subagent running counter (list for closure mutation)
 
+    def _live_identity() -> Dict[str, Any]:
+        """Resolve the child's CURRENT model/provider + fallback state.
+
+        Re-read per event, never cached: ``try_activate_fallback()`` swaps
+        ``agent.model``/``agent.provider`` in place mid-run and
+        ``restore_primary_runtime()`` swaps them back, so a value baked in
+        at callback-construction time is wrong for the entire remainder of
+        a failed-over run.  Degrades to the dispatch-time ``model`` when
+        the child agent doesn't exist yet (the first events fire during
+        build) or its weakref has died.
+        """
+        from agent.failover_state import effective_model_fields
+
+        holder = agent_ref.get("agent") if agent_ref else None
+        return effective_model_fields(holder, snapshot_model=model)
+
     def _identity_kwargs() -> Dict[str, Any]:
         kw: Dict[str, Any] = {
             "task_index": task_index,
@@ -1648,8 +1743,18 @@ def _build_child_progress_callback(
             kw["parent_id"] = parent_id
         if depth is not None:
             kw["depth"] = depth
-        if model is not None:
-            kw["model"] = model
+        # Live model identity (see _live_identity).  ``model`` keeps its
+        # existing "omit when unknown" contract so a caller that passed no
+        # model and has no child agent yet still emits no model key at all.
+        _identity = _live_identity()
+        if _identity["model"] is not None:
+            kw["model"] = _identity["model"]
+        if _identity["provider"] is not None:
+            kw["provider"] = _identity["provider"]
+        kw["fallback_active"] = _identity["fallback_active"]
+        kw["primary_model"] = _identity["primary_model"]
+        kw["primary_provider"] = _identity["primary_provider"]
+        kw["model_label"] = _identity["model_label"]
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
         # The child's own session id — filled into the shared ref once the
@@ -1659,6 +1764,27 @@ def _build_child_progress_callback(
             kw["child_session_id"] = str(session_ref["session_id"])
         kw["tool_count"] = _tool_count[0]
         return kw
+
+    def _board_model_kwargs() -> Dict[str, Any]:
+        """Board-row model state to ride along on an existing update() call.
+
+        ``register()`` stamps a row's model once at dispatch; nothing ever
+        rewrote it, so a child that silently failed over kept rendering the
+        model it started on.  Rather than adding a polling thread, re-sync
+        the row on the board writes this callback ALREADY makes — every
+        tool-start / thinking / status event carries the current identity.
+
+        Returns ``{}`` when the child agent isn't resolvable yet, so the
+        row keeps its registration value instead of being blanked.
+        """
+        identity = _live_identity()
+        if identity["model"] is None:
+            return {}
+        return {
+            "model": identity["model"],
+            "fallback_active": identity["fallback_active"],
+            "primary_model": identity["primary_model"],
+        }
 
     def _relay(
         event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs
@@ -1681,7 +1807,9 @@ def _build_child_progress_callback(
         if event_type == "subagent.start":
             if board and subagent_id:
                 try:
-                    board.update(subagent_id, status="running")
+                    board.update(
+                        subagent_id, status="running", **_board_model_kwargs()
+                    )
                 except Exception as e:
                     logger.debug("Swarm board update failed: %s", e)
             elif spinner and goal_label:
@@ -1781,6 +1909,10 @@ def _build_child_progress_callback(
                 update_kwargs = {
                     "last_tool": "thinking",
                     "last_note": short,
+                    # Re-sync model identity on the write we're already
+                    # making — this is the highest-frequency board event, so
+                    # a mid-run failover surfaces within one streamed chunk.
+                    **_board_model_kwargs(),
                 }
                 if _looks_like_summary_phase(text):
                     update_kwargs["status"] = "summarizing"
@@ -1852,6 +1984,7 @@ def _build_child_progress_callback(
                     tool_count=_tool_count[0],
                     last_tool=tool_name or "",
                     status=_row_status,
+                    **_board_model_kwargs(),
                 )
             except Exception as e:
                 logger.debug("Swarm board update failed: %s", e)
@@ -2192,12 +2325,20 @@ def _build_child_agent(
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
     # Resolve the child's effective model early so it can ride on every event.
+    # This is only the DISPATCH-TIME value — the callback re-resolves the live
+    # one per event via child_agent_ref (populated once the child is built).
     effective_model_for_cb = model or getattr(parent_agent, "model", None)
 
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
     # TUI can reconstruct the spawn tree and route per-branch controls.
     child_session_ref: Dict[str, Any] = {}
+    # Late-bound handle on the child agent, same pattern as
+    # child_session_ref: the callback is built BEFORE the child exists, and
+    # every relayed event needs the child's live model/provider (which
+    # failover mutates mid-run).  A weakref so a finished child is not kept
+    # alive by a callback closure that outlives it.
+    child_agent_ref: Dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index,
         goal,
@@ -2209,6 +2350,7 @@ def _build_child_agent(
         model=effective_model_for_cb,
         toolsets=child_toolsets,
         session_ref=child_session_ref,
+        agent_ref=child_agent_ref,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -2536,6 +2678,15 @@ def _build_child_agent(
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
+    # Same late-binding for the child object itself: every relayed event
+    # re-reads its live model/provider so a mid-run failover is visible on
+    # the wire.  Weakref — the callback closure must not keep a finished
+    # child alive.  Some test doubles aren't weakref-able; fall back to a
+    # strong ref there rather than losing the identity entirely.
+    try:
+        child_agent_ref["agent"] = weakref.ref(child)
+    except TypeError:
+        child_agent_ref["agent"] = child
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the cwd-collision warning (if any) so _run_single_child's result
@@ -3932,7 +4083,14 @@ def _run_single_child(
         # Extract token counts (safe for mock objects)
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
         _output_tokens = getattr(child, "session_completion_tokens", 0)
-        _model = getattr(child, "model", None)
+        # Effective model identity, read off the child NOW (post-run) rather
+        # than from a dispatch-time snapshot — a child that silently failed
+        # over finished on its fallback, and the completion notification the
+        # parent reads must say which model actually did the work.
+        from agent.failover_state import effective_model_fields
+
+        _model_state = effective_model_fields(child)
+        _model = _model_state["model"]
 
         # --- result entry contract (see _run_single_child docstring) ---
         # status ∈ {completed, interrupted, failed}
@@ -3946,6 +4104,17 @@ def _run_single_child(
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
+            # Live failover state to go with "model" above. The completion
+            # notification renders `model_label` (glyph + swap arrow) so a
+            # result produced on a fallback model is never silently
+            # attributed to the model the child was dispatched with.
+            # provider is NEW here — "model" alone can't distinguish the
+            # same slug served by two different providers.
+            "provider": _model_state["provider"],
+            "fallback_active": _model_state["fallback_active"],
+            "primary_model": _model_state["primary_model"],
+            "primary_provider": _model_state["primary_provider"],
+            "model_label": _model_state["model_label"],
             # Delegation identity the parent model can correlate with its own
             # dispatch request: role is the delegation role ("leaf"/
             # "orchestrator") AFTER kill-switch/depth degradation, agent_type
@@ -5920,11 +6089,11 @@ def delegate_task(
                 _row_depth, _row_parent_sid = resolve_row_lineage(parent_agent)
                 _swarm_board.register(
                     sid,
-                    model=getattr(child, "model", "") or "",
                     goal=(_t.get("goal") or "")[:60],
                     status="running",
                     depth=_row_depth,
                     parent_subagent_id=_row_parent_sid,
+                    **_board_register_model_kwargs(child),
                 )
                 child._print_fn = make_child_print_fn(
                     _swarm_board, sid, fallback=parent_print_fn
@@ -5984,11 +6153,11 @@ def delegate_task(
                     sid = getattr(child, "_subagent_id", None) or f"subagent-{i}"
                     _swarm_board.register(
                         sid,
-                        model=getattr(child, "model", "") or "",
                         goal=(t.get("goal") or "")[:60],
                         status="queued",
                         depth=_row_depth,
                         parent_subagent_id=_row_parent_sid,
+                        **_board_register_model_kwargs(child),
                     )
                     # Patch the child's _print_fn so its chatter goes to its
                     # row's note slot instead of stdout.  No-op when the

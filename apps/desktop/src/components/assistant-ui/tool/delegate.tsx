@@ -11,7 +11,7 @@ import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
-import { displayModelName } from '@/lib/model-status-label'
+import { fallbackModelLabel } from '@/lib/model-fallback-label'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $subagentsBySession } from '@/store/subagents'
@@ -77,10 +77,8 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
       ? copy.statusError
       : copy.statusDone
 
-  const meta = [
-    row.model ? displayModelName(row.model) : '',
-    !live && row.durationSeconds ? formatDurationSeconds(row.durationSeconds) : ''
-  ].filter(Boolean)
+  const modelText = row.model ? fallbackModelLabel(row) : ''
+  const durationText = !live && row.durationSeconds ? formatDurationSeconds(row.durationSeconds) : ''
 
   // Only a child that reported its own session id has somewhere to go.
   const open = sessionId ? () => void openSessionInNewWindow(sessionId, { watch: true }) : undefined
@@ -101,7 +99,17 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
         >
           {row.goal}
         </button>
-        {meta.length > 0 && <span className={SCAFFOLD_META_CLASS}>{meta.join(' · ')}</span>}
+        {(modelText || durationText) && (
+          <span className={SCAFFOLD_META_CLASS}>
+            {modelText && (
+              <span className={row.fallbackActive ? 'text-amber-600 dark:text-amber-400' : undefined}>
+                {modelText}
+              </span>
+            )}
+            {modelText && durationText ? ' · ' : ''}
+            {durationText}
+          </span>
+        )}
         {live && <ActivityTimerText className={cn(SCAFFOLD_META_CLASS, 'ml-auto')} seconds={elapsed} />}
       </div>
       {activity.length > 0 && (

@@ -335,3 +335,127 @@ describe('subagent store', () => {
     expect(listFor('s1')[0]?.status).toBe('failed')
   })
 })
+
+// A subagent can silently fail over from its dispatched model to a fallback
+// model/provider mid-run. The store must carry the new wire fields onto
+// SubagentProgress and never let a later event that omits them clobber an
+// already-known fallback state — a `subagent.progress` event typically
+// carries only `text`, not the full model/provider set.
+describe('subagent store — fallback model fields', () => {
+  beforeEach(() => $subagentsBySession.set({}))
+
+  it('carries fallback_active/primary_model/primary_provider/model_label/provider from the payload', () => {
+    upsertSubagent('s1', {
+      fallback_active: true,
+      goal: 'do work',
+      model: 'claude-opus-5',
+      model_label: '⚠ claude-opus-5 (fallback from glm-5.3)',
+      primary_model: 'glm-5.3',
+      primary_provider: 'zhipu',
+      provider: 'anthropic',
+      status: 'running',
+      subagent_id: 'a1',
+      task_index: 0
+    })
+
+    const item = listFor('s1')[0]
+    expect(item?.model).toBe('claude-opus-5')
+    expect(item?.provider).toBe('anthropic')
+    expect(item?.fallbackActive).toBe(true)
+    expect(item?.primaryModel).toBe('glm-5.3')
+    expect(item?.primaryProvider).toBe('zhipu')
+    expect(item?.modelLabel).toBe('⚠ claude-opus-5 (fallback from glm-5.3)')
+  })
+
+  it('leaves the new fields undefined for an older gateway payload that never sends them', () => {
+    upsertSubagent('s1', { goal: 'do work', status: 'running', subagent_id: 'a1', task_index: 0 })
+
+    const item = listFor('s1')[0]
+    expect(item?.fallbackActive).toBeUndefined()
+    expect(item?.primaryModel).toBeUndefined()
+    expect(item?.primaryProvider).toBeUndefined()
+    expect(item?.provider).toBeUndefined()
+    expect(item?.modelLabel).toBeUndefined()
+  })
+
+  it('a later progress event that omits the fallback fields does not clobber previously-known values', () => {
+    upsertSubagent(
+      's1',
+      {
+        fallback_active: true,
+        goal: 'do work',
+        model: 'claude-opus-5',
+        model_label: '⚠ claude-opus-5 (fallback from glm-5.3)',
+        primary_model: 'glm-5.3',
+        primary_provider: 'zhipu',
+        provider: 'anthropic',
+        status: 'running',
+        subagent_id: 'a1',
+        task_index: 0
+      },
+      true,
+      'subagent.start'
+    )
+
+    // Real subagent.progress events carry only `text` — no model/fallback
+    // fields at all.
+    upsertSubagent(
+      's1',
+      { status: 'running', subagent_id: 'a1', task_index: 0, text: 'still working' },
+      false,
+      'subagent.progress'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.model).toBe('claude-opus-5')
+    expect(item?.provider).toBe('anthropic')
+    expect(item?.fallbackActive).toBe(true)
+    expect(item?.primaryModel).toBe('glm-5.3')
+    expect(item?.primaryProvider).toBe('zhipu')
+    expect(item?.modelLabel).toBe('⚠ claude-opus-5 (fallback from glm-5.3)')
+  })
+
+  it('a later event can flip fallbackActive back to false once the primary model recovers', () => {
+    upsertSubagent('s1', {
+      fallback_active: true,
+      goal: 'do work',
+      model: 'claude-opus-5',
+      primary_model: 'glm-5.3',
+      status: 'running',
+      subagent_id: 'a1',
+      task_index: 0
+    })
+
+    upsertSubagent(
+      's1',
+      { fallback_active: false, goal: 'do work', model: 'glm-5.3', status: 'running', subagent_id: 'a1', task_index: 0 },
+      false,
+      'subagent.progress'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.fallbackActive).toBe(false)
+    expect(item?.model).toBe('glm-5.3')
+  })
+
+  it('treats primary_model: null as a known non-fallback state, distinct from an omitted key', () => {
+    upsertSubagent('s1', {
+      fallback_active: true,
+      goal: 'do work',
+      model: 'claude-opus-5',
+      primary_model: 'glm-5.3',
+      status: 'running',
+      subagent_id: 'a1',
+      task_index: 0
+    })
+
+    upsertSubagent(
+      's1',
+      { fallback_active: false, primary_model: null, status: 'running', subagent_id: 'a1', task_index: 0 },
+      false,
+      'subagent.progress'
+    )
+
+    expect(listFor('s1')[0]?.primaryModel).toBeNull()
+  })
+})
