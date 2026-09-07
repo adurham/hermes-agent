@@ -326,10 +326,13 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
       name: identity.appNamePascal,
     }
   }
+  if (tag && !STABLE_TAG_RE.test(tag)) throw new Error(`Invalid release tag: ${tag}`)
+  // Release builds override Electron's version without rewriting package.json.
+  const version = tag ? tag.slice(1) : pkg.version
   return {
     identity,
-    version: `${pkg.version}.0`,
-    fileVersion: pkg.version,
+    version: `${version}.0`,
+    fileVersion: version,
     name: identity.appNamePascal,
   }
 }

@@ -179,8 +179,6 @@ def materialize(manifest: dict, root: Path, *, public_base: str, store_only: boo
                 file.write(chunk)
         if digest.hexdigest() != item["sha256"]:
             raise ValueError(f"Artifact digest mismatch: {relative}")
-    if not manifest.get("files"):
-        raise ValueError("Missing candidate file receipts")
 
 
 def publish(manifest: dict, root: Path, public_base: str) -> None:

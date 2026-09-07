@@ -36,9 +36,19 @@ its version commit, stable tag and draft. Stable dispatch selects
 a moved tag, a tag outside repository main, or a project-version mismatch.
 Canary dispatch still uses the default branch for its workflow/cache scope.
 
-To resume an existing draft, dispatch `Stable Release` with the exact tag as
-both the workflow ref and the `tag` input. Keep tags immutable. The local
-workflow calls and their checkouts use the tag's commit, not moving main.
+To start the gate for an existing draft, dispatch `Stable Release` with the
+exact tag as both the workflow ref and the `tag` input. Keep tags immutable.
+The local workflow calls and their checkouts use the tag's commit, not moving
+main.
+
+For a failed publication or promotion, retry the failed jobs in the original
+run while its candidate artifacts remain available. Cross-phase artifact
+handoff is scoped to that run. Immutable uploads accept an existing object
+only after verifying that its bytes match; different bytes fail. Do not delete
+archive objects or rebuild signed candidates under the same tag to bypass a
+conflict. A fresh dispatch starts the build phases again and is not a
+promotion-only retry. If the original artifacts are unavailable, stop recovery
+rather than replace the accepted candidate.
 
 ## Signed-package baseline
 
@@ -49,9 +59,12 @@ provenance. The next run combines those records with its candidate manifest
 and uses the existing native bundled-update drivers.
 
 For an existing stable release that predates this metadata, supply
-`baseline-manifest` as an HTTPS URL to an equivalent manifest of its actual
-published packages. The baseline tag must be a published stable release,
-package identities must agree, and versions must increase. Missing baseline
+`baseline-manifest` as an HTTPS URL on the configured R2 public origin to an
+equivalent manifest of its actual published packages. Manifest redirects must
+stay on the same origin. The baseline tag must be a published stable release,
+package identities must agree, and versions must increase. Stable sideload
+Windows versions must equal the tag's three components plus `.0`; Store
+packages retain their separate version policy. Missing baseline
 artifacts are a blocker, not permission to fabricate or skip acceptance.
 See [the bundled update contract](../tests/install/BUNDLED_UPDATES.md).
 

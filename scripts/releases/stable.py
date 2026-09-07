@@ -56,6 +56,8 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str)
             raise ValueError(f"Invalid candidate digest or identity: {target}")
         if item["platform"] == "windows":
             windows_version(item.get("version", ""))
+            if item["version"] != f"{tag[1:]}.0":
+                raise ValueError("Stable Windows package version must match its release tag")
             if not item.get("publisher") or not item.get("applicationId") or not url.path.endswith(".msixbundle"):
                 raise ValueError("Windows candidate needs publisher, applicationId and MSIX bundle")
         elif item["platform"] == "macos":
@@ -100,13 +102,20 @@ def plan_transitions(previous: dict, candidate: dict, public_base: str) -> list[
     return result
 
 
-def read_manifest(url: str, expected_hash: str | None = None, *, opener=urllib.request.urlopen) -> dict:
+def read_manifest(url: str, expected_hash: str | None = None, *, expected_origin: str | None = None,
+                  opener=urllib.request.urlopen) -> dict:
     location = urlsplit(url)
-    if location.scheme != "https" or location.username or location.password:
-        raise ValueError("Manifest URL must use HTTPS without credentials")
+    origin = urlsplit(expected_origin or url)
+
+    def check_origin(target):
+        if target.scheme != "https" or not target.hostname or target.username or target.password:
+            raise ValueError("Manifest origin must use HTTPS without credentials")
+        if (target.scheme, target.hostname, target.port or 443) != (origin.scheme, origin.hostname, origin.port or 443):
+            raise ValueError("Manifest is outside the expected release origin")
+
+    check_origin(location)
     with opener(url, timeout=60) as response:
-        if urlsplit(response.geturl()).scheme != "https":
-            raise ValueError("Manifest redirected outside HTTPS")
+        check_origin(urlsplit(response.geturl()))
         data = response.read(1024 * 1024 + 1)
     if len(data) > 1024 * 1024:
         raise ValueError("Release manifest exceeds size limit")
@@ -171,7 +180,8 @@ def transitions(env: dict) -> None:
     candidate = read_candidate(env)
     validate_candidates(candidate, tag, commit, base)
     try:
-        previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/stable/release-candidates.json")
+        previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/stable/release-candidates.json",
+                                 expected_origin=base)
     except urllib.error.HTTPError as error:
         if error.code == 404:
             raise ValueError("No published stable package baseline. Supply baseline-manifest for an actual previous stable release; acceptance cannot be skipped.") from error

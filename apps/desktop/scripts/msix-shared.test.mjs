@@ -6,7 +6,6 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { beforeEach, test, vi } from 'vitest'
 
 vi.mock('node:child_process', () => ({
@@ -41,11 +40,17 @@ beforeEach(() => {
   execFileSync.mockReset()
 })
 
-test('stable tag keeps the 3-part version plus .0', () => {
-  const desktop = makeFakeDesktop('0.27.1')
-  const { version, fileVersion } = msix.appIdentity(desktop, 'v0.27.1')
-  assert.equal(version, '0.27.1.0')
-  assert.equal(fileVersion, '0.27.1')
+test('explicit stable tag owns the package version, independent of checkout metadata', () => {
+  const desktop = makeFakeDesktop('0.1.0')
+  try {
+    const { version, fileVersion } = msix.appIdentity(desktop, 'v0.27.1')
+    assert.equal(version, '0.27.1.0')
+    assert.equal(fileVersion, '0.27.1')
+    assert.equal(msix.appIdentity(desktop, '').version, '0.1.0.0')
+    assert.throws(() => msix.appIdentity(desktop, 'v0.27.1-invalid'), /release tag/)
+  } finally {
+    fs.rmSync(desktop, { recursive: true, force: true })
+  }
 })
 
 test('canary version is tag base + minutes since the same-minor stable', () => {

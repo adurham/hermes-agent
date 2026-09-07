@@ -38,6 +38,8 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
     required = ["ci", "docker", "acceptance", "publication"]
     success = {name: {"result": "success"} for name in required}
     require_success(success, required)
+    with pytest.raises(ValueError, match="required-job list"):
+        require_success(success, [])
     for name in required:
         for result in ("failure", "cancelled", "skipped", None):
             needs = copy.deepcopy(success)
@@ -51,6 +53,9 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
     env = {**os.environ, "RELEASE_NEEDS": json.dumps(success), "GITHUB_STEP_SUMMARY": str(summary), "PYTHONPATH": str(ROOT)}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
     assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode == 0
+    empty = subprocess.run(argv[:4], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    assert empty.returncode != 0
+    assert "required-job list" in empty.stderr
     env["RELEASE_NEEDS"] = json.dumps({**success, "publication": {"result": "cancelled"}})
     result = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode != 0
@@ -73,7 +78,7 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
         plan_transitions(old, missing, BASE)
     with pytest.raises(ValueError, match="identity"):
         validate_candidates(new, new["tag"], old["commit"], BASE)
-    for key, value in [("commit", old["commit"]), ("identity", "different"), ("publisher", "CN=Other")]:
+    for key, value in [("commit", old["commit"]), ("identity", "different"), ("publisher", "CN=Other"), ("version", "9.9.9.0")]:
         changed = copy.deepcopy(new)
         changed["packages"][0][key] = value
         with pytest.raises(ValueError):
@@ -89,6 +94,77 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
             plan_transitions(old, traversal, BASE)
     with pytest.raises(ValueError, match="increase"):
         plan_transitions(new, old, BASE)
+
+
+def test_manifest_origin_checks_with_real_https(tmp_path):
+    import datetime
+    import ipaddress
+    import ssl
+    import threading
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc))
+            .add_extension(x509.SubjectAlternativeName([
+                x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+            ]), critical=False).sign(key, hashes.SHA256()))
+    cert_file, key_file = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(key.private_bytes(serialization.Encoding.PEM,
+                                         serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    requests = []
+    data = b'{"schema":1}'
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path in ("/same", "/cross"):
+                self.send_response(302)
+                host = "127.0.0.1" if self.path == "/same" else "localhost"
+                self.send_header("Location", f"https://{host}:{self.server.server_port}/manifest")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(cert_file, key_file)
+    server.socket = server_context.wrap_socket(server.socket, server_side=True)
+    client_context = ssl.create_default_context(cafile=str(cert_file))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                        urllib.request.HTTPSHandler(context=client_context)).open
+    base = f"https://127.0.0.1:{server.server_port}"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        digest = hashlib.sha256(data).hexdigest()
+        assert read_manifest(f"{base}/same", digest, expected_origin=base, opener=opener) == {"schema": 1}
+        with pytest.raises(ValueError, match="origin"):
+            read_manifest(f"{base}/cross", opener=opener)
+        requests.clear()
+        with pytest.raises(ValueError, match="origin"):
+            read_manifest(f"https://localhost:{server.server_port}/manifest", expected_origin=base, opener=opener)
+        assert requests == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_manifest_digest_and_tag_movement_fail_closed(tmp_path, monkeypatch):
