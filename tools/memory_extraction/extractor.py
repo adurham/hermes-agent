@@ -406,14 +406,19 @@ def on_pre_compress(
 # proposes removals/merges for ones that have gone stale, been superseded by
 # a new proposal, or duplicate another existing fact.
 #
-# Safety posture — deletion is strictly higher-risk than addition, so:
-#   * cleanup NEVER auto-commits, regardless of ``auto_commit_session_end``;
-#   * with no interactive confirm callback, proposals are dropped (logged at
-#     debug), never applied;
+# Automation posture (2026-09-07, explicit user decision): the user does not
+# want to review memory maintenance at session end — they trust the LLM
+# classification and correct any drift live in a future session instead.
+# Cleanup proposals are therefore auto-applied UNCONDITIONALLY, in both
+# interactive and non-interactive session ends, with no confirm step and no
+# countdown. This intentionally removes the earlier "cleanup never
+# auto-commits" gate. Remaining safety properties, unchanged:
 #   * the LLM can only name fact_ids we explicitly showed it (enforced in
 #     ``prompts.parse_cleanup_response`` via ``valid_fact_ids``);
 #   * a merge writes the surviving fact BEFORE removing the absorbed one, so
-#     a crash mid-way leaves both facts intact rather than losing content.
+#     a crash mid-way leaves both facts intact rather than losing content;
+#   * cleanup candidates are capped (``_CLEANUP_CANDIDATE_LIMIT``) and scoped
+#     to facts topically related to the session, bounding blast radius.
 # ---------------------------------------------------------------------------
 
 # Cap on how many existing facts we pull in as cleanup candidates. Keeps the
@@ -643,13 +648,19 @@ def on_session_end(
         session_id: id of the session that just ended
         messages: final conversation state (post-compression)
         interactive: when True, calls ``confirm_callback`` with the proposed
-            entry list and uses the returned list. When False, the
-            ``auto_commit_session_end`` config flag decides whether entries
-            are auto-committed.
-        confirm_callback: required when interactive=True. Called as
-            ``cb(entries, cleanup)`` when it accepts two parameters,
-            otherwise ``cb(entries)``. See ``_invoke_confirm_callback``
-            for the accepted return shapes.
+            NEW-entry list and uses the returned list. When False, the
+            ``auto_commit_session_end`` config flag decides whether NEW
+            entries are auto-committed. Either way, EXISTING-fact cleanup
+            (merge/remove) is always computed and always auto-applied — it
+            is no longer gated by ``interactive``/``confirm_callback``/
+            ``auto_commit_session_end`` at all (2026-09-07 automation
+            posture; see the module-level note above ``_CLEANUP_CANDIDATE_LIMIT``).
+        confirm_callback: only consulted for NEW entries when
+            interactive=True. Called as ``cb(entries, cleanup)`` when it
+            accepts two parameters (``cleanup`` is always passed as ``[]``
+            now — cleanup review has no callback path) or ``cb(entries)``
+            otherwise. See ``_invoke_confirm_callback`` for accepted return
+            shapes.
 
     Returns a summary dict:
         {
@@ -659,8 +670,8 @@ def on_session_end(
           "committed": int,          # actually written to warm tier
           "skipped": int,            # rejected by user / dedup'd / errored
           "cleanup_proposed": int,   # existing-fact cleanup actions proposed
-          "cleanup_applied": int,    # cleanup actions the user approved+applied
-          "cleanup_skipped": int,    # proposed but not applied
+          "cleanup_applied": int,    # cleanup actions actually applied (always auto)
+          "cleanup_skipped": int,    # proposed but failed to apply (errors only)
           "actions": [...],          # per-entry verdict + outcome
           "cleanup_actions": [...]   # per-cleanup outcome
         }
@@ -708,55 +719,101 @@ def on_session_end(
 
     # Step 1b: cleanup pass over EXISTING warm facts related to this session.
     #
-    # Only worth running when a human will actually see the result: cleanup
-    # is never auto-committed (see the module note above), so computing it on
-    # a non-interactive exit would burn an LLM call to produce proposals we
-    # are contractually going to throw away.
+    # Always computed and, per the module-level automation-posture note
+    # above, unconditionally auto-applied immediately below (Step 1c)
+    # regardless of interactive/confirm_callback/auto_commit_session_end —
+    # there is no review gate on cleanup anymore.
     cleanup_proposals: List[Dict[str, Any]] = []
-    if interactive and confirm_callback is not None:
-        try:
-            cleanup_proposals = propose_cleanup(messages or [], final_entries)
-        except Exception as e:
-            logger.debug("memory cleanup: proposal pass failed: %s", e)
-            cleanup_proposals = []
-        summary["cleanup_proposed"] = len(cleanup_proposals)
+    try:
+        cleanup_proposals = propose_cleanup(messages or [], final_entries)
+    except Exception as e:
+        logger.debug("memory cleanup: proposal pass failed: %s", e)
+        cleanup_proposals = []
+    summary["cleanup_proposed"] = len(cleanup_proposals)
 
-    if not final_entries and not cleanup_proposals:
-        # Nothing to commit. Clear the buffer to free space.
+    # Step 1c: apply ALL proposed cleanup actions — unconditionally, no
+    # confirmation gate. Applied HERE, before Step 3 touches the store via
+    # new-entry commits, so every action executes against exactly the store
+    # state it was computed from (propose_cleanup ran against the
+    # pre-commit store). Applying after Step 3 would risk a cleanup merge
+    # overwriting a fact Step 3 just refined/superseded with stale
+    # precomputed merge text.
+    #
+    # ``consumed_ids`` guards against a single LLM batch naming the same
+    # fact as source/target of more than one action (e.g. "merge A->B" then
+    # "merge B->C" using B's pre-merge content) — skip any action that
+    # touches a fact already mutated earlier in this same batch rather than
+    # applying stale-content actions in sequence.
+    consumed_ids: set = set()
+    for action in cleanup_proposals:
+        fact_id = action.get("fact_id")
+        target_id = action.get("merge_target_id")
+        if fact_id in consumed_ids or (
+            target_id is not None and target_id in consumed_ids
+        ):
+            summary["cleanup_actions"].append({
+                "fact_id": fact_id,
+                "requested": action.get("action"),
+                "outcome": "cleanup_skipped",
+                "reason": action.get("reason", ""),
+                "error": "fact already touched by an earlier action in this batch",
+            })
+            summary["cleanup_skipped"] += 1
+            continue
+        try:
+            outcome = apply_cleanup_action(action)
+        except Exception as e:
+            logger.warning("memory cleanup: apply failed: %s", e)
+            outcome = {"action": "cleanup_skipped", "fact_id": fact_id,
+                       "error": str(e)}
+        summary["cleanup_actions"].append({
+            "fact_id": outcome.get("fact_id"),
+            "requested": action.get("action"),
+            "outcome": outcome.get("action"),
+            "reason": action.get("reason", ""),
+            "error": outcome.get("error"),
+        })
+        if outcome.get("action") in (
+            "cleanup_removed", "cleanup_merged", "cleanup_merged_source_retained",
+        ):
+            summary["cleanup_applied"] += 1
+            consumed_ids.add(fact_id)
+            if target_id is not None:
+                consumed_ids.add(target_id)
+        else:
+            summary["cleanup_skipped"] += 1
+
+    if not final_entries:
+        # Nothing on the new-entry side — cleanup (if any) already applied
+        # above. Never invoke the confirm callback / stash path with an
+        # empty entry list; just clear the buffer and return.
         _buffer.clear_session(session_id)
         return summary
 
-    # Step 2: confirm UI (interactive) or auto-commit
+    # Step 2: confirm UI (interactive) or auto-commit — NEW ENTRIES ONLY.
+    # Cleanup was already applied in Step 1c and is deliberately NOT routed
+    # through confirm_callback here — the callback always receives an
+    # empty cleanup list.
     auto_commit = bool(cfg.get("auto_commit_session_end", False))
-    approved_cleanup: List[Dict[str, Any]] = []
+    entries_stashed = False
     if interactive and confirm_callback is not None:
         try:
-            approved, approved_cleanup = _invoke_confirm_callback(
-                confirm_callback, final_entries, cleanup_proposals,
+            approved, _unused_cleanup = _invoke_confirm_callback(
+                confirm_callback, final_entries, [],
             )
         except Exception as e:
             logger.warning("memory extraction confirm callback failed: %s", e)
             approved = []
-            approved_cleanup = []
     elif auto_commit:
-        # NOTE: auto_commit covers NEW entries only. Cleanup mutates/deletes
-        # existing facts and always requires explicit confirmation, so any
-        # proposals here are dropped rather than applied.
         approved = final_entries
     else:
-        # Default safe path: skip auto-commit when the user isn't watching.
-        # Stash proposals back into the buffer so they survive. The next
-        # interactive session can pick them up via a "memory pending" prompt.
+        # Default safe path for NEW entries when the user isn't watching:
+        # stash proposals back into the buffer so they survive for the next
+        # interactive session. Cleanup already happened above regardless.
         _buffer.replace_session_entries(session_id, final_entries)
         summary["skipped"] = len(final_entries)
-        return summary
-
-    if cleanup_proposals and not approved_cleanup:
-        logger.debug(
-            "memory cleanup: dropping %d unconfirmed cleanup proposal(s) for session %s",
-            len(cleanup_proposals), session_id,
-        )
-    summary["cleanup_skipped"] = len(cleanup_proposals) - len(approved_cleanup)
+        entries_stashed = True
+        approved = []
 
     # Step 3: dispatch each approved entry through conflict resolution
     #
@@ -797,32 +854,14 @@ def on_session_end(
             logger.warning("memory extraction commit failed: %s", e)
             summary["skipped"] += 1
 
-    # Step 3b: apply approved cleanup actions — AFTER new entries are
-    # committed, so a "superseded" removal never runs before its replacement
-    # exists in the store.
-    for action in approved_cleanup:
-        try:
-            outcome = apply_cleanup_action(action)
-        except Exception as e:
-            logger.warning("memory cleanup: apply failed: %s", e)
-            outcome = {"action": "cleanup_skipped", "fact_id": action.get("fact_id"),
-                       "error": str(e)}
-        summary["cleanup_actions"].append({
-            "fact_id": outcome.get("fact_id"),
-            "requested": action.get("action"),
-            "outcome": outcome.get("action"),
-            "reason": action.get("reason", ""),
-            "error": outcome.get("error"),
-        })
-        if outcome.get("action") in (
-            "cleanup_removed", "cleanup_merged", "cleanup_merged_source_retained",
-        ):
-            summary["cleanup_applied"] += 1
-        else:
-            summary["cleanup_skipped"] += 1
-
-    # Step 4: clear the buffer — proposals are now committed (or surfaced)
-    _buffer.clear_session(session_id)
+    # Step 4: clear the buffer — new-entry proposals are now committed (or
+    # surfaced). Cleanup was already applied in Step 1c, before this point.
+    # Skip when entries were stashed above (entries_stashed):
+    # replace_session_entries() already set the buffer to exactly the
+    # pending proposals for the next session to pick up, and clearing it
+    # here would silently drop them.
+    if not entries_stashed:
+        _buffer.clear_session(session_id)
     return summary
 
 

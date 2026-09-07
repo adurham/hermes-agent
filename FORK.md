@@ -3,6 +3,59 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Memory-extraction cleanup now fully automatic, zero review gate — 2026-09-07 (explicit user decision)
+
+**Change:** `tools/memory_extraction/extractor.py::on_session_end()` used to
+gate EXISTING-fact cleanup (LLM-proposed merge/remove of warm-tier memory
+facts) behind an explicit interactive confirm step, and never even computed
+it in non-interactive mode ("cleanup NEVER auto-commits, regardless of
+`auto_commit_session_end`" — the old module comment). The user explicitly
+requested this gate be removed entirely: they don't want to review memory
+maintenance at session end, trust the LLM classification, and will correct
+any drift live in a future session if something goes wrong. New behavior:
+cleanup is always computed (`propose_cleanup`) and always auto-applied
+(`apply_cleanup_action`) in BOTH interactive and non-interactive session
+ends, with no confirm callback path and no countdown. This is a deliberate,
+explicit removal of a prior safety gate — not a bug fix.
+
+NEW-entry behavior is untouched: the CLI's 3s auto-accept countdown
+(`hermes_cli/memory_confirm.py::_interactive_review`) and the
+`memory.auto_extract`/`auxiliary.*.memory_extraction.auto_commit_session_end`
+config flags for non-interactive auto-commit still work exactly as before.
+
+Implementation details worth knowing if this needs to change again:
+- Cleanup is applied in a NEW Step 1c, immediately after `propose_cleanup()`
+  and BEFORE the new-entry commit step (old Step 3). This ordering matters:
+  `propose_cleanup` computes merge/remove actions (including precomputed
+  merged text) against the pre-commit store state, so applying them before
+  new-entry commits mutate that same store avoids a merge silently
+  overwriting a fact the new-entry pass just refined/superseded.
+- A `consumed_ids` set inside the Step 1c loop guards against a single LLM
+  cleanup response naming the same `fact_id` (as source or merge target) in
+  more than one action — e.g. "merge A→B" then "remove B" — which would
+  otherwise apply the second action against a fact already mutated/removed
+  by the first, using stale precomputed content. The second action is
+  skipped and recorded as `cleanup_skipped` with an explanatory error.
+- `confirm_callback` (interactive mode) is now called with an always-empty
+  cleanup list — it only ever governs NEW entries. `hermes_cli/memory_confirm
+  .py`'s `_review_cleanup()` / `_render_cleanup_action()` are consequently
+  dead code (never invoked with a non-empty list anymore) but left in place
+  rather than deleted, since `confirm_callback` is a documented 2-arg shape
+  and a future revert of this decision would want them back.
+- When `final_entries` is empty but cleanup proposals exist, `on_session_end`
+  applies cleanup and returns WITHOUT invoking `confirm_callback` at all —
+  calling it with an empty entries list would surface a misleading "0
+  entries, reviewing..." UI for a session that only had cleanup.
+- Tests: `tests/tools/test_memory_extraction.py::TestSessionEndCleanup`
+  rewritten for the new unconditional-apply semantics (was asserting the
+  opposite — that cleanup gets dropped without a callback). Added regression
+  coverage for the ordering fix (cleanup-only sessions skip the callback)
+  and the batch-dedupe guard (`test_cleanup_batch_skips_action_touching_
+  already_consumed_fact`). 131/131 tests green across
+  `test_memory_extraction.py` + `test_memory_confirm.py` +
+  `test_memory_confirm_before_exit.py` + `test_exit_summary_before_cleanup_
+  ordering.py` + `test_curator_cost_before_exit.py`.
+
 ### Fork-only fix — 2026-09-07 (CI: large GitHub-hosted runners not provisioned on this fork, stuck runs permanently held the concurrency group)
 
 **Symptom:** jobs requesting large GitHub-hosted runners
