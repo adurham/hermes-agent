@@ -42,6 +42,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { isMain } from './utils.mjs'
+import { createPayloadSignCache } from './payload-sign-cache.mjs'
 
 export const CHUNK_SIZE = 100
 // How many signtool children may run at once. Azure Trusted Signing and the
@@ -376,12 +377,11 @@ export async function timestampChunk(files, opts) {
  *
  * Two passes: (1) Azure Authenticode sign — concurrent signtool children,
  * no timestamp; (2) RFC3161 timestamp — concurrent, no Azure/dlib, retried
- * per chunk. Parallelism is the whole speed story: both Azure and the
- * timestamp server are per-file network round-trips, so N concurrent children
- * multiply throughput ~Nx.
+ * per chunk. A verified content cache removes unchanged inputs from both
+ * passes. Identical cacheable inputs share one signing operation.
  *
  * @param {string[]} binaries file list from getBinaries
- * @param {{ env?: NodeJS.ProcessEnv, exec?: typeof execFile, chunkSize?: number, concurrency?: number, mkdtemp?: typeof fs.mkdtempSync, signtool?: string, dlib?: string, timestampUrl?: string, timestampAttempts?: number, timestampRetryDelayMs?: number }} [opts]
+ * @param {{ env?: NodeJS.ProcessEnv, exec?: typeof execFile, chunkSize?: number, concurrency?: number, mkdtemp?: typeof fs.mkdtempSync, signtool?: string, dlib?: string, dotnetRoot?: string, timestampUrl?: string, timestampAttempts?: number, timestampRetryDelayMs?: number, cache?: ReturnType<typeof createPayloadSignCache> }} [opts]
  * @returns {Promise<{ signed: number, chunks: number, skipped: boolean }>}
  *   skipped=true when Azure signing is not configured (caller warns).
  */
@@ -401,6 +401,14 @@ export async function batchSignBinaries(binaries, opts = {}) {
   if (!signtool) {
     throw new Error('batch-sign-binaries: signtool.exe not found under the electron-builder cache (or SIGNTOOL_PATH)')
   }
+  const started = performance.now()
+  const cache = opts.cache === undefined ? createPayloadSignCache({
+    root: env.ELECTRON_BUILDER_CACHE ? `${env.ELECTRON_BUILDER_CACHE}-payload-signatures` : null,
+    env, signtool, dlib, timestampUrl: opts.timestampUrl ?? TIMESTAMP_URL
+  }) : opts.cache
+  const plan = cache ? await cache.prepare(binaries) : null
+  const toSign = plan?.files ?? binaries
+  console.log(`[batch-sign] ${plan?.restored ?? 0} cache hits, ${toSign.length} to sign, ${plan?.duplicates ?? 0} duplicate copies`)
   // The ATS dlib is a .NET assembly; Ijwhost.dll finds hostfxr.dll via
   // DOTNET_ROOT. Mirror app-builder-lib's WindowsSignAzureManager and point it
   // at the bundled runtime so the dlib initializes (a missing runtime reads as
@@ -417,7 +425,7 @@ export async function batchSignBinaries(binaries, opts = {}) {
     CertificateProfileName: env.AZURE_SIGN_PROFILE
   }))
   const concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY
-  const batches = chunk(binaries, opts.chunkSize ?? CHUNK_SIZE)
+  const batches = chunk(toSign, opts.chunkSize ?? CHUNK_SIZE)
   const execOptions = { stdio: 'inherit', env: signEnv }
   try {
     // Pass 1: Azure Authenticode sign — concurrent, no timestamp.
@@ -435,7 +443,9 @@ export async function batchSignBinaries(binaries, opts = {}) {
         timestampRetryDelayMs: opts.timestampRetryDelayMs
       })
     )
-    return { signed: binaries.length, chunks: batches.length, skipped: false }
+    if (cache) await cache.publish(plan)
+    console.log(`[batch-sign] completed in ${((performance.now() - started) / 1000).toFixed(1)}s`)
+    return { signed: toSign.length, chunks: batches.length, skipped: false }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   }

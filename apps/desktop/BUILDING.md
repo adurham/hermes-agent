@@ -74,11 +74,24 @@ AZURE_CLIENT_ID         (the OIDC app id)
 `electron-builder.config.cjs` reads these variables and composes the
 `win.sign` configuration itself. Do not pass the values as `-c` arguments:
 the publisher name contains spaces, and spaces do not survive the cmd.exe
-argument hop. Signing runs through `scripts/sign-msix.mjs`, a plain hook
-that signs ONLY the .msix package: Windows validates the package signature
-(AppxSignature.p7x over AppxBlockMap.xml), and inner binaries are covered
-by the block-map hashes — per-file Authenticode is neither required nor
-validated.
+argument hop. `scripts/batch-sign-binaries.mjs` signs and timestamps payload
+EXEs/DLLs after packing. The product EXE is signed after resource edits.
+`scripts/sign-msix.mjs` signs the package, except Store packages that
+Partner Center signs on ingestion.
+
+Unchanged payload files reuse signatures from
+`${ELECTRON_BUILDER_CACHE}-payload-signatures`. The cache key combines the exact
+pre-sign bytes with the Azure profile, publisher, signing tools and timestamp
+policy. Paths, filenames and release versions do not affect the key.
+Each hit must match the input's executable content and pass Windows
+Authenticode verification with the expected publisher and a timestamp.
+Invalid entries become misses. Only verified, signed and timestamped results
+enter the cache. Product EXEs and package envelopes still receive fresh signatures.
+
+Bundled and Store builds share the cache. CI restores the most recent snapshot
+and saves additions under a new run key. Dispatch on the default branch to
+share GitHub's cache scope across release tags. Delete the cache to force
+fresh signatures. The signer logs hits, misses, duplicate copies and time.
 
 On win32, `scripts/after-pack.mjs` runs `sanitize-pe-signatures.mjs` before
 the MSIX pack: python-build-standalone's `llvm-strip` can leave dangling PE

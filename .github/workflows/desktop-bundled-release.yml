@@ -275,6 +275,16 @@ jobs:
           version: ${{ steps.pins.outputs.uv }}
           enable-cache: false
 
+      - name: Cache verified payload signatures
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/electron-builder-payload-signatures
+          # Each run saves additions. Content and signing policy select entries.
+          key: payload-signatures-v1-${{ runner.os }}-${{ matrix.target.label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            payload-signatures-v1-${{ runner.os }}-${{ matrix.target.label }}-
+            payload-signatures-v1-${{ runner.os }}-
+
       - name: Cache vcpkg OpenSSL (arm64)
         if: matrix.target.label == 'win32-arm64'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -426,6 +436,11 @@ jobs:
           # bundles these into the universal Store .msixbundle and submits it;
           # they also land in the tag archive, never a feed dir).
           uv run --no-project --python 3.11 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
+
+      - name: Verify native signature cache contracts
+        shell: bash
+        working-directory: apps/desktop
+        run: node ../../node_modules/vitest/vitest.mjs run --project electron scripts/payload-sign-cache.test.mjs scripts/batch-sign-binaries.test.mjs
 
       - name: Audit bundle architecture
         shell: bash
