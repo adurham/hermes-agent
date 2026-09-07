@@ -11,7 +11,9 @@ name: Desktop Bundled Release
 # legs never block the win32 feed or Store submission):
 #
 #   build-win32 (win32-x64 + win32-arm64)   → stage to R2 + upload *.msix
-#   build-darwin / build-linux              → DISABLED for now (dummy skips)
+#   build-darwin (darwin-arm64 + darwin-x64) → sign + notarize + stage
+#     dmg/zip/blockmap to R2; per-arch feed ymls as artifacts
+#   build-linux                              → DISABLED for now (dummy skips)
 #   publish-win32-updater                   → App Installer feed
 #     (needs build-win32): releases/win32/<stable|canary>/*.appinstaller +
 #       *.msixbundle (stage-msixbundle.mjs --variant bundled)
@@ -21,23 +23,26 @@ name: Desktop Bundled Release
 #     MSStore CLI. Stable → production; canary → package flight ring
 #     (delete-then-replace, newest always wins). Gated on MS_STORE_PRODUCT_ID
 #     (+ MS_STORE_CANARY_FLIGHT_ID for the canary arm).
-#   publish-darwin-updater                  → DISABLED (dummy skip — the
-#     darwin electron-updater arm was removed; nothing publishes a mac feed)
+#   publish-darwin-updater                  → macOS electron-updater feed
+#     (needs BOTH darwin legs): r2-release.mjs finalize merges the per-arch
+#     ymls into releases/darwin/<channel>/<channel>-mac.yml — the feed
+#     pointer is written LAST, and the job's concurrency group serializes
+#     same-channel publications.
 #
 # Feed layout (matches apps/desktop/electron/app-updater.ts's arms):
 #   releases/win32/<stable|canary>/<ch>.appinstaller   App Installer feed
 #     releases/win32/<stable|canary>/*.msixbundle      (publish-win32-updater)
-#   releases/darwin/<stable|canary>/*-mac.yml electron-updater feed (dmg/zip)
-#     — feed layout preserved for when the darwin updater returns; the job is
-#       currently a dummy skip.
-# The publish jobs write the feeds ONCE after the whole build-win32 matrix is
+#   releases/darwin/<stable|canary>/<channel>-mac.yml  electron-updater feed
+#     (dmg/zip live once in releases/tag/<tag>/; the merged feed points at
+#     them with absolute object keys)
+# The publish jobs write the feeds ONCE after their whole build matrix is
 # green, so a failed leg can never publish a partial channel.
 #
 # Payload staging is `hermes pm bundle` on the native runner. There is
-# no cross-target staging. Signing and notarization are a later commit;
-# this file produces unsigned artifacts on forks. When the
-# release-signing environment has the Apple and Azure identifiers,
-# the same job signs and notarizes.
+# no cross-target staging. The darwin legs sign (CSC_LINK) and notarize
+# (afterSign notarize.mjs) when the release-signing environment carries the
+# Apple credentials, and FAIL rather than publish unsigned — forks without
+# the credentials can only build (upload_release=false), never publish.
 #
 # scripts/build-bundled-desktop.mjs is the one driver. Local and CI run
 # the same command. This workflow adds caching and upload only.
@@ -106,6 +111,11 @@ jobs:
       # The tag's commit, resolved ONCE here and exported as a full SHA.
       # Every privileged job checks out THIS — never the tag ref, which a
       # force-push can move between the validate and build jobs.
+      # The tag's channel (stable | canary). publish-darwin-updater scopes
+      # its concurrency group on this so two dispatches for the SAME
+      # channel can never race their feed writes (a stable and a canary
+      # publish in parallel by design — different feed files).
+      channel: ${{ steps.admission.outputs.channel }}
       sha: ${{ steps.admission.outputs.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -156,6 +166,10 @@ jobs:
             exit 1
           fi
           echo "tag $TAG resolves to $SHA (on origin/main)"
+          case "$TAG" in
+            *-canary.*) echo "channel=canary" >> "$GITHUB_OUTPUT" ;;
+            *)          echo "channel=stable" >> "$GITHUB_OUTPUT" ;;
+          esac
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
   # ── Windows builders (REAL) ───────────────────────────────────────────────
@@ -461,26 +475,330 @@ jobs:
               --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
           done
 
-  # ── macOS builders (DISABLED for now) ─────────────────────────────────────
-  # No macOS updater arm exists today (the darwin electron-updater arm was
-  # removed), so there is nothing to publish and no reason to burn mac
-  # runner minutes. Re-enable by restoring the build body + runners here and
-  # un-skipping publish-darwin-updater below.
+  # ── macOS builders (REAL) ──────────────────────────────────────────────────
+  # Native per-arch darwin builds via scripts/build-bundled-desktop.mjs (the
+  # one driver: same `--mac dmg zip` pass a local mac build runs). Each leg
+  # signs (CSC_LINK) and notarizes (afterSign notarize.mjs) when the
+  # release-signing environment carries the Apple credentials; a publishing
+  # run FAILS the leg instead of shipping unsigned (no silent unsigned
+  # publish). Binaries stage to releases/tag/<tag>/; the per-arch feed ymls
+  # travel as workflow artifacts (arch-prefixed so both legs survive the
+  # merge-multiple download) and publish-darwin-updater merges them into
+  # releases/darwin/<channel>/<channel>-mac.yml — artifacts first, feed
+  # pointer last, whole channel green before anything publishes.
   build-darwin:
-    name: bundled darwin (disabled for now)
+    name: bundled ${{ matrix.target.label }}
+    if: inputs.termux_only != true
     needs: validate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    runs-on: ${{ matrix.target.runner }}
+    environment: release-signing
+    timeout-minutes: 900
     strategy:
       fail-fast: false
       matrix:
         target:
-          - { label: darwin-arm64 }  # runner: macos-15
-          - { label: darwin-x64 }    # runner: macos-15-intel
+          - label: darwin-arm64
+            runner: macos-15
+          - label: darwin-x64
+            runner: macos-15-intel
+    env:
+      HERMES_DESKTOP_VARIANT: bundled
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - name: Disabled
+      - name: Disable Spotlight indexing and XProtect
+        # Spotlight indexes the freshly-mounted dmg staging image past
+        # hdiutil's detach retries (per-VM, not a cross-job race).
         shell: bash
-        run: echo "::notice::darwin bundled builds are disabled for now — no macOS updater arm (wt/darwin-updater removed it); re-enable in desktop-bundled-release.yml"
+        run: |
+          sudo mdutil -a -i off || true
+          sudo pkill -9 XProtect >/dev/null || true
+          while pgrep XProtect; do sleep 3; done
+
+      # Check out the SHA the validate job admitted — never the tag ref,
+      # which a force-push can move between jobs. This is the privileged
+      # (release-signing) build; it must run the reviewed bytes.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-tags: true
+
+      - name: Resolve toolchain pins from pm/lock.json
+        id: pins
+        shell: bash
+        # The host toolchain that BUILDS the artifact comes from the same
+        # pin table as the embedded runtimes (pm/lock.json), so gate == pin
+        # by construction in build-bundled-desktop.mjs's toolchain gates.
+        run: |
+          python3 -c '
+          import json
+          pkgs = json.load(open("pm/lock.json"))["packages"]
+          for tool in ("node", "npm", "uv"):
+              print(tool + "=" + pkgs[tool]["version"])
+          ' >> "$GITHUB_OUTPUT"
+
+      - name: Resolve toolchain cache key
+        id: toolchain
+        shell: bash
+        run: |
+          node -e '
+            const l = require("./package-lock.json")
+            const el = l.packages["apps/desktop/node_modules/electron"].version
+            const eb = l.packages["node_modules/electron-builder"].version
+            if (!el || !eb) process.exit(1)
+            console.log(`electron=${el}`)
+            console.log(`builder=${eb}`)
+          ' >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7.0.0 # immutable release. safe to pin.
+        with:
+          node-version: ${{ steps.pins.outputs.node }}
+          cache: npm
+
+      - name: Install pinned npm
+        shell: bash
+        env:
+          NPM_PIN: ${{ steps.pins.outputs.npm }}
+        run: npm --version | grep -qx "$NPM_PIN" || npm i -g "npm@$NPM_PIN"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # 9.0.0
+        with:
+          version: ${{ steps.pins.outputs.uv }}
+          enable-cache: false
+
+      - name: Cache pm store
+        # Tag-dispatched runs (every canary) scope actions/cache under the
+        # dispatch ref, which GitHub mangles to refs/heads/refs/tags/<tag> —
+        # a different scope per tag, so an exact key can never be restored
+        # by a later canary. The content key below is stable across tags
+        # when pm/lock.json + uv.lock are unchanged; the restore-keys prefix
+        # (which ignores the tag entirely) rescues the previous canary's
+        # store when the locks DID move.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: apps/desktop/build/agent-payload/tools
+          key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
+          restore-keys: |
+            pm-store-v2-${{ matrix.target.label }}-
+
+      - name: Resolve electron's default download cache path
+        shell: bash
+        run: |
+          # @electron/get does NOT honor ELECTRON_CACHE/electron_config_cache:
+          # the electron-builder build's electron zip download uses the
+          # default env-paths cache root. It must be in the actions/cache
+          # path list or every build re-downloads electron (~115MB).
+          case "$RUNNER_OS" in
+            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
+            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
+            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Cache electron + electron-builder toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron-builder
+            ${{ github.workspace }}/.cache/electron
+            ${{ env.ELECTRON_DEFAULT_CACHE }}
+          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
+          # An electron/builder bump misses the exact key, but the previous
+          # dist is still mostly reusable (electron's postinstall skips the
+          # download when dist/ exists) — restore it and let npm ci top up.
+          restore-keys: |
+            eb2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache node_modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            web/node_modules
+            tests-js/node_modules
+          key: node-modules-${{ matrix.target.label }}-node${{ steps.pins.outputs.node }}-npm${{ steps.pins.outputs.npm }}-${{ hashFiles('package-lock.json') }}
+          # npm ci rm -rf's node_modules before installing, so a restore is
+          # never shipped stale — but a restore-key hit still makes the
+          # reinstall incremental (postinstall outputs like node-pty's
+          # prebuilds/ and esbuild's platform binary survive in place).
+          # The build-bundled install-stamp gate (lock sha + node + npm +
+          # target) is the real guard against stale trees shipping.
+          restore-keys: |
+            node-modules-${{ matrix.target.label }}-node${{ steps.pins.outputs.node }}-npm${{ steps.pins.outputs.npm }}-
+
+      - name: Cache node-pty prebuilds (postinstall output)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            node_modules/node-pty/prebuilds
+            node_modules/node-pty/build
+          key: node-pty-prebuilds-${{ matrix.target.label }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            node-pty-prebuilds-${{ matrix.target.label }}-
+
+      # Signing/notarization gate. A publishing run MUST have the Apple
+      # credentials; missing credentials fail the leg here (before any
+      # build work) instead of producing an unsigned artifact that a later
+      # job would publish. A non-publishing run (upload_release=false,
+      # e.g. forks) builds unsigned on purpose.
+      - name: Require signing credentials when publishing
+        if: inputs.upload_release == true
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          missing=()
+          [ -z "$CSC_LINK" ] && missing+=(CSC_LINK)
+          [ -z "$CSC_KEY_PASSWORD" ] && missing+=(CSC_KEY_PASSWORD)
+          [ -z "$APPLE_API_KEY_P8" ] && missing+=(APPLE_API_KEY_P8)
+          [ -z "$APPLE_API_KEY_ID" ] && missing+=(APPLE_API_KEY_ID)
+          [ -z "$APPLE_API_ISSUER" ] && missing+=(APPLE_API_ISSUER)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::upload_release=true but required signing/notarization credentials are not set in the release-signing environment: ${missing[*]} — refusing to produce an unsigned publishable build"
+            exit 1
+          fi
+
+      - name: Write App Store Connect key for notarytool
+        # notarytool takes a FILE PATH for --key; raw .p8 content in argv
+        # dies with `Invalid option: ***`. The build step must NOT re-declare
+        # APPLE_API_KEY in its env: step env shadows GITHUB_ENV.
+        if: inputs.upload_release == true
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/apple-api-key.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/apple-api-key.p8" >> "$GITHUB_ENV"
+
+      - name: Pin CMake < 4 for sdist builds
+        # python-olm (matrix extra) builds libolm from sdist on non-Linux
+        # targets, and its libolm/CMakeLists.txt requires CMake < 3.5
+        # compat (removed in CMake 4, which the darwin runners ship). Pin a
+        # CMake 3.x first on PATH so the sdist build configures.
+        shell: bash
+        run: |
+          uv tool install cmake==3.31.6
+          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+
+      - name: Derive the feed channel from the tag
+        id: channel
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$TAG" in
+            *-canary.*) echo "channel=canary" >> "$GITHUB_OUTPUT" ;;
+            *)          echo "channel=stable" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Build and package
+        shell: bash
+        timeout-minutes: 900
+        env:
+          PYTHONUTF8: '1'
+          # electron-osx-sign*/electron-notarize* keep the sign+notarize
+          # phase visible: without them NOTHING logs between "signing
+          # file=..." and a queue-wait timeout, so a slow notary queue is
+          # indistinguishable from a hang.
+          DEBUG: 'electron-osx-sign*,electron-notarize*'
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          # Sign + notarize of a bundled-payload app runs long (Apple scans
+          # every Mach-O) — raise the fd limit and let DEBUG show progress.
+          ulimit -n 16384 2>/dev/null || true
+          echo "file descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+          node scripts/build-bundled-desktop.mjs --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+
+      - name: Audit bundle architecture
+        shell: bash
+        run: |
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          node apps/desktop/scripts/audit-bundle-arch.mjs \
+            --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
+
+      - name: Verify the build is signed and notarized
+        # The backstop against a silent unsigned publish: assess the packed
+        # app against the real Gatekeeper policy (requires a Developer ID
+        # signature AND a stapled notarization ticket to pass offline).
+        if: inputs.upload_release == true
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apps=(apps/desktop/release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "::error::no packed .app found under apps/desktop/release to verify"
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            codesign --verify --strict --verbose=2 "$app"
+            spctl -a -vv -t exec "$app"
+            echo "signed + notarized: $app"
+          done
+
+      - name: Rename the feed yml per arch
+        # electron-builder writes the channel feed yml (stable-mac.yml /
+        # canary-mac.yml) with the SAME name on both legs; prefix the arch
+        # so the publish job's merge-multiple download keeps both and
+        # r2-release finalize can merge them into <channel>-mac.yml. The
+        # channel token is preserved verbatim in the staged name
+        # (arm64-stable-mac.yml / x64-canary-mac.yml …).
+        shell: bash
+        run: |
+          shopt -s nullglob
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          arch="${MATRIX_LABEL##*-}"
+          channel="${{ steps.channel.outputs.channel }}"
+          for f in apps/desktop/release/*-mac.yml; do
+            mv "$f" "apps/desktop/release/${arch}-${channel}-mac.yml"
+            echo "renamed: $(basename "$f") -> ${arch}-${channel}-mac.yml"
+          done
+          test -n "$(shopt -s nullglob; echo apps/desktop/release/*-mac.yml)"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          # The per-arch feed ymls for publish-darwin-updater to merge. The
+          # dmg/zip/blockmap binaries go straight to R2 from this leg.
+          name: hermes-bundled-${{ matrix.target.label }}-${{ inputs.tag }}
+          path: |
+            apps/desktop/release/*-mac.yml
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Stage to Cloudflare R2
+        if: inputs.upload_release == true
+        shell: bash
+        # Every artifact goes to releases/tag/<tag>/ (immutable staging).
+        # publish-darwin-updater merges the per-arch ymls into the channel
+        # feed AFTER both legs are green — never from a leg, so a failed
+        # leg cannot publish a partial channel.
+        run: |
+          shopt -s nullglob
+          files=(apps/desktop/release/*.dmg apps/desktop/release/*.zip \
+                 apps/desktop/release/*.blockmap)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no darwin release artifacts found"; exit 1
+          fi
+          for f in "${files[@]}"; do
+            node scripts/r2-release.mjs put \
+              --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
+          done
 
   # ── Linux builders (DISABLED for now) ─────────────────────────────────────
   build-linux:
@@ -780,22 +1098,72 @@ jobs:
             msstore publish "$bundle" -id "$MS_STORE_PRODUCT_ID"
           fi
 
-  # ── macOS updater channel (DISABLED — dummy skip) ─────────────────────────
-  # No macOS updater arm exists (darwin electron-updater was removed in
-  # wt/darwin-updater), so there is no mac feed to publish. Kept as a dummy
-  # success so the dependency graph (builds-table, publish-canary) stays
-  # green. Re-enable with the darwin arm: restore r2-release.mjs finalize
-  # (merged *-mac.yml → releases/darwin/<channel>/<channel>-mac.yml).
+  # ── macOS updater channel (REAL) ───────────────────────────────────────────
+  # Merges the per-arch feed ymls (arm64-stable-mac.yml / x64-stable-mac.yml
+  # …) into releases/darwin/<channel>/<channel>-mac.yml via
+  # scripts/r2-release.mjs finalize. The binaries were staged by the build
+  # legs (releases/tag/<tag>/); the feed POINTER is written here, last, only
+  # after BOTH darwin legs are green — a failed leg can never publish a
+  # partial channel. The concurrency group is scoped to the channel so two
+  # dispatches for the same channel serialize their feed writes (r2-release
+  # finalize also refuses backward publication); stable and canary still
+  # publish in parallel by design (distinct feed files).
   publish-darwin-updater:
-    name: Publish the macOS updater feed (disabled for now)
+    name: Publish the macOS updater feed
     needs: [validate, build-darwin]
     if: inputs.upload_release == true && inputs.termux_only != true
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    environment: release-signing
+    timeout-minutes: 15
+    concurrency:
+      group: darwin-updater-feed-${{ needs.validate.outputs.channel }}
+      cancel-in-progress: false
+    env:
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - name: Disabled
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Privileged job: pin to the SHA validate admitted, not the tag.
+          ref: ${{ needs.validate.outputs.sha }}
+
+      - name: Download both darwin legs' feed ymls
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: hermes-bundled-darwin-*-${{ inputs.tag }}
+          path: staged
+          merge-multiple: true
+
+      - name: Assert the per-arch feeds are present
         shell: bash
-        run: echo "::notice::macOS updater feed publish is disabled for now — no macOS updater arm; re-enable with r2-release.mjs finalize when the darwin updater returns"
+        # finalize merges *-mac.yml and (feed-side) rejects mixed versions
+        # and conflicting digests; here we fail fast if a leg never
+        # produced its yml so a single-arch feed can never publish.
+        run: |
+          shopt -s nullglob
+          ymls=(staged/*-mac.yml)
+          if [ ${#ymls[@]} -lt 2 ]; then
+            echo "::error::expected the arm64 AND x64 feed ymls in the staged artifacts, found ${#ymls[@]}: ${ymls[*]}"
+            exit 1
+          fi
+          archs=()
+          for f in "${ymls[@]}"; do archs+=("$(basename "$f" | cut -d- -f1)"); done
+          printf '%s\n' "${archs[@]}" | sort -u | grep -qx arm64 || { echo "::error::arm64 feed yml missing"; exit 1; }
+          printf '%s\n' "${archs[@]}" | sort -u | grep -qx x64   || { echo "::error::x64 feed yml missing"; exit 1; }
+          echo "staged feeds: ${ymls[*]}"
+
+      - name: Finalize the macOS updater feeds
+        # Writes releases/darwin/<channel>/<channel>-mac.yml pointing at the
+        # already-staged /releases/tag/<tag>/ binaries. Immutable objects
+        # referenced by the feed are verified before the pointer uploads
+        # (feed-side); the pointer upload is the last write of the run.
+        shell: bash
+        run: |
+          node scripts/r2-release.mjs finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
 
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
