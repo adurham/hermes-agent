@@ -102,9 +102,10 @@ def build(repo: Path, tag: str, variant: str, builder_args: list[str]) -> None:
     # Windows file-version and MSIX build-number policy remains with its packager.
     version_args = []
     if sys.platform == "win32":
-        script = "const w=require('./apps/desktop/scripts/windows-file-version.mjs');const m=require('./scripts/msix-shared.mjs');console.log(JSON.stringify({file:w.windowsFileVersion(process.argv[1]),build:process.argv[1].includes('-canary.')?m.canaryBuildMinutes(process.argv[1],process.cwd()):null}))"
-        metadata = json.loads(capture([node, "-e", script, tag], repo))
-        if metadata["build"] is not None:
+        script = "const w=require('./apps/desktop/scripts/windows-file-version.mjs');const m=require('./scripts/msix-shared.mjs');console.log(JSON.stringify({file:w.windowsFileVersion(process.argv[1]),build:process.argv[2]!=='store'&&process.argv[1].includes('-canary.')?m.canaryBuildMinutes(process.argv[1],process.cwd()):null}))"
+        metadata = json.loads(capture([node, "-e", script, tag, variant], repo))
+        env.pop("BUILD_NUMBER", None)
+        if metadata["build"] is not None and variant != "store":
             env["BUILD_NUMBER"] = str(metadata["build"])
         if metadata["file"]:
             version_args = [f'-c.extraMetadata.shortVersion={metadata["file"]}', f'-c.extraMetadata.shortVersionWindows={metadata["file"]}']

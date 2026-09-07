@@ -3,7 +3,7 @@
 // and the release job that stages the feed (scripts/stage-msixbundle.mjs).
 //
 // The two call sites must agree on every name/URL that Windows keys on — the
-// .appinstaller's MainPackage identity and the bundle URI — so the XML
+// .appinstaller's MainBundle identity and the bundle URI — so the XML
 // builder and the version/filename derivations live here, once.
 
 import fs from 'node:fs'
@@ -151,12 +151,15 @@ function escapeAttr(value) {
  *   identityName: string        // package Identity Name (e.g. "NousResearch.HermesBundled")
  *   version: string             // 4-part MSIX version, e.g. "1.2.3.0"
  *   bundleFilename: string      // the universal .msixbundle filename in the feed dir
+ *   descriptorFilename?: string // defaults to the channel's .appinstaller name
  * }} o
  * @returns {string} the .appinstaller XML
  */
 export function buildAppInstaller(o) {
-  const bundleUrl = `${o.baseUrl}/${o.variantChannelPath.replace(/\/+$/, '')}/${o.bundleFilename}`
-  const appinstallerUri = bundleUrl.replace(/\.msixbundle$/, '.appinstaller')
+  const directory = [o.baseUrl.replace(/\/+$/, ''), o.variantChannelPath.replace(/^\/+|\/+$/g, '')].filter(Boolean).join('/')
+  const bundleUrl = `${directory}/${o.bundleFilename}`
+  const descriptor = o.descriptorFilename || `${o.variantChannelPath.replace(/\/+$/, '').split('/').pop()}.appinstaller`
+  const appinstallerUri = `${directory}/${descriptor}`
 
   return [
     '<?xml version="1.0" encoding="utf-8"?>',
@@ -164,7 +167,7 @@ export function buildAppInstaller(o) {
     `  Uri="${escapeAttr(appinstallerUri)}"`,
     `  Version="${escapeAttr(o.version)}"`,
     '  xmlns="http://schemas.microsoft.com/appx/appinstaller/2017/2">',
-    '  <MainPackage',
+    '  <MainBundle',
     `    Name="${escapeAttr(o.identityName)}"`,
     `    Publisher="${escapeAttr(OUT_OF_STORE_PUBLISHER)}"`,
     `    Version="${escapeAttr(o.version)}"`,
@@ -261,6 +264,51 @@ export function canaryBuildMinutes(tag, gitRoot) {
   return canaryBuildMinutesFor(tag, gitTagCommitTime(gitRoot, stable))
 }
 
+/** Store reserves revision for itself. Keep its package sequence separate
+ * from the app's displayed semver and the sideload update sequence.
+ * Calendar fields retain second precision without an epoch offset.
+ * @param {number} epochSeconds immutable release time in UTC
+ * @returns {string}
+ */
+export function storePackageVersionAt(epochSeconds) {
+  const date = new Date(epochSeconds * 1000)
+  const year = date.getUTCFullYear()
+  if (!Number.isInteger(epochSeconds) || !Number.isFinite(date.getTime()) || year < 1000 || year > 65535) {
+    throw new Error('Store package version needs a valid immutable release timestamp')
+  }
+  const hourOfYear = Math.floor((date.getTime() - Date.UTC(year, 0, 1)) / 3_600_000)
+  const secondOfHour = date.getUTCMinutes() * 60 + date.getUTCSeconds()
+  return `${year}.${hourOfYear}.${secondOfHour}.0`
+}
+
+/** @param {string} tag @param {string} gitRoot */
+export function storePackageVersion(tag, gitRoot) {
+  const canary = CANARY_TAG_RE.exec(tag)
+  if (canary) {
+    const epoch = stampToEpoch(canary[2])
+    const roundtrip = new Date(epoch * 1000).toISOString().replace(/[-:T]/g, '').slice(0, canary[2].length)
+    if (roundtrip !== canary[2]) throw new Error('Invalid canary calendar timestamp')
+    return storePackageVersionAt(epoch)
+  }
+  if (!STABLE_TAG_RE.test(tag)) throw new Error('A Store build requires an exact release tag')
+  const timestamp = execFileSync('git', ['for-each-ref', '--format=%(creatordate:unix)', `refs/tags/${tag}`], {
+    cwd: gitRoot, encoding: 'utf8'
+  }).trim()
+  if (!/^\d+$/.test(timestamp)) throw new Error(`No immutable release timestamp for ${tag}`)
+  return storePackageVersionAt(Number(timestamp))
+}
+
+/** The custom template controls package identity, not executable VERSIONINFO.
+ * @param {string} template @param {string} version
+ */
+export function storeManifestTemplate(template, version) {
+  if (!/^[1-9]\d*\.\d+\.\d+\.0$/.test(version) || version.split('.').some(part => Number(part) > 65535)) {
+    throw new Error('Store package version must have a nonzero major, 16-bit fields and zero revision')
+  }
+  if (template.split('${version}').length !== 2) throw new Error('MSIX template must have one version macro')
+  return template.replace('${version}', version)
+}
+
 /**
  * Resolve the app identity for a desktop build from the app dir: the product
  * identity + package version. Pure-ish (reads product-identity.cjs and
@@ -275,6 +323,10 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
   const identity = require(path.join(desktopDir, 'product-identity.cjs'))
   const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'))
   const repoRoot = path.resolve(desktopDir, '..', '..')
+  if (identity.store) {
+    return { identity, version: storePackageVersion(String(tag), repoRoot),
+      fileVersion: String(tag).slice(1), name: identity.appNamePascal }
+  }
   const canary = CANARY_TAG_RE.exec(String(tag))
   if (canary) {
     // Manifest + feed version: tag base (0.27.2) + minutes-since-stable.

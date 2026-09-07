@@ -11,7 +11,6 @@
 'use strict'
 
 const fs = require('node:fs')
-const path = require('node:path')
 const feedContract = require('./update-feed.cjs')
 
 const {
@@ -199,13 +198,15 @@ module.exports = {
     displayName,
     publisher: store ? mustStoreMsix(storeMsixWhenStore).publisher : OUT_OF_STORE_PUBLISHER,
     publisherDisplayName: store ? mustStoreMsix(storeMsixWhenStore).publisherDisplayName : 'Nous Research',
-    // Canary MSIX versions are `X.Y.Z.<minutes-since-stable>` (see
+    // Sideload canary MSIX versions are `X.Y.Z.<minutes-since-stable>` (see
     // scripts/msix-shared.mjs). setBuildNumber makes getVersionInWeirdWindowsForm
     // use the BUILD_NUMBER env (4th component) instead of hardcoding ".0" — a
     // stable build sets no BUILD_NUMBER and stays X.Y.Z.0, a canary build sets
     // it via scripts/bundles/desktop.py so App Installer updates over equal
     // canary-over-canary versions instead of refusing them.
-    setBuildNumber: true,
+    setBuildNumber: !store,
+    // Store versions are baked into a build-time template. App semver and
+    // artifact filenames stay unchanged; the Store reserves revision zero.
     // Floor Windows 11 22H2. Below build 18307 the manifest schema caps
     // AppExtension Name at 39 chars and Microsoft's own
     // "com.microsoft.windows.copilotkeyprovider" is 40 (makeappx
@@ -218,7 +219,7 @@ module.exports = {
     // build time (see the comment on the hook) — never at config require
     // time, so typecheck/test imports don't touch the filesystem.
     customExtensionsPath: 'build/msix-extensions.xml',
-    customManifestPath: 'assets/msix-manifest.xml',
+    customManifestPath: store ? 'build/store-msix-manifest.xml' : 'assets/msix-manifest.xml',
     showNameOnTiles: true
   },
   linux: {

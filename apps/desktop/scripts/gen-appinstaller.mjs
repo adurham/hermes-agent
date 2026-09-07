@@ -9,7 +9,7 @@
 //
 // The identity comes from product-identity.cjs via scripts/msix-shared.mjs
 // (the SAME single derivation as the package manifest), so the
-// .appinstaller's MainPackage Name/Publisher always match the bundle's
+// .appinstaller's MainBundle Name/Publisher always match the bundle's
 // manifest. `store` has no appinstaller (the Store owns its distribution).
 //
 // Pure buildAppInstaller() lives in scripts/msix-shared.mjs and is

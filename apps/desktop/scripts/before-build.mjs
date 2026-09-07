@@ -20,11 +20,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
+import { appIdentity, storeManifestTemplate } from '../../../scripts/msix-shared.mjs'
 
 
 const require = createRequire(import.meta.url)
 const {
   light,
+  store,
   displayName,
   appNamePascal
 } = require('../product-identity.cjs')
@@ -32,6 +34,7 @@ const {
 export default async function beforeBuild() {
   stageMsixAssets()
   writeMsixExtensions()
+  if (store) stageStoreManifest(path.join(import.meta.dirname, '..'), process.env.HERMES_PAYLOAD_TAG)
 
   const payloadDir = path.join(import.meta.dirname, '..', 'build', 'agent-payload')
   const manifest = path.join(payloadDir, 'manifest.json')
@@ -63,6 +66,15 @@ function stageMsixAssets() {
     }
     fs.copyFileSync(source, path.join(stageDir, name))
   }
+}
+
+export function stageStoreManifest(desktop, tag) {
+  const template = fs.readFileSync(path.join(desktop, 'assets/msix-manifest.xml'), 'utf8')
+  const { version } = appIdentity(desktop, tag)
+  const output = path.join(desktop, 'build/store-msix-manifest.xml')
+  fs.mkdirSync(path.dirname(output), { recursive: true })
+  fs.writeFileSync(output, storeManifestTemplate(template, version), 'utf8')
+  return output
 }
 
 function writeMsixExtensions() {
