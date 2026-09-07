@@ -22,7 +22,7 @@
 //     releases/win32/<channel>/*.msixbundle           (produced by the
 //                                                     publish-win32-updater job)
 //   releases/darwin/<channel>/<channel>-mac.yml   electron-updater feed
-//     releases/darwin/<channel>/*.{dmg,zip,blockmap}
+//     dmg/zip/blockmap artifacts stay in releases/tag/<tag>/.
 // where <channel> is stable | canary (from the tag: -canary. → canary).
 // The publish-win32-updater job merges the win32 legs' staging into the
 // win32 feed; r2 finalize publishes the validated Darwin channel feed.

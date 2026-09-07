@@ -665,6 +665,8 @@ jobs:
           [ -z "$APPLE_API_KEY_P8" ] && missing+=(APPLE_API_KEY_P8)
           [ -z "$APPLE_API_KEY_ID" ] && missing+=(APPLE_API_KEY_ID)
           [ -z "$APPLE_API_ISSUER" ] && missing+=(APPLE_API_ISSUER)
+          [ -z "$CLOUDFLARE_R2_PUBLIC_URL" ] && missing+=(CLOUDFLARE_R2_PUBLIC_URL)
+          [ -z "$CLOUDFLARE_R2_BUCKET" ] && missing+=(CLOUDFLARE_R2_BUCKET)
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::upload_release=true but required signing/notarization credentials are not set in the release-signing environment: ${missing[*]} — refusing to produce an unsigned publishable build"
             exit 1
