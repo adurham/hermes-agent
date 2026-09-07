@@ -301,15 +301,15 @@ DEFAULT_CONFIG = {
         # go first because n/nvm/asdf write PATH exports there without an interactivity guard. Turn
         # off if an rc file misbehaves when sourced non-interactively (exits on TTY check).
         "auto_source_bashrc": True,
-        "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "docker_image": "nikolaik/python-nodejs:python3.14-nodejs22",
         "docker_forward_env": [],
         # Exact key-value env pairs set inside Docker containers (unlike docker_forward_env, which
         # reads host values) — useful under systemd without the user's shell env. Example:
         # {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
         "docker_env": {},
-        "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-        "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "singularity_image": "docker://nikolaik/python-nodejs:python3.14-nodejs22",
+        "modal_image": "nikolaik/python-nodejs:python3.14-nodejs22",
+        "daytona_image": "nikolaik/python-nodejs:python3.14-nodejs22",
         "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,
@@ -1148,19 +1148,16 @@ DEFAULT_CONFIG = {
         # the model/keyword below)
         "phrase": "hey hermes",
         "sensitivity": 0.6,  # 0.0-1.0 threshold, consistent across engines (higher = stricter)
-        # openWakeWord only: consecutive over-threshold frames to fire (higher = fewer false
-        # triggers, more latency; 1 = single-frame)
+        # openWakeWord/pyopen-wakeword only: consecutive over-threshold frames to fire (higher = fewer
+        # false triggers, more latency; 1 = single-frame)
         "confirmation_frames": 3,
         "start_new_session": True,  # fresh session on wake vs. continue the current one
         # sherpa only: listen for every wake-enabled profile's phrase and route to it
         "profile_routing": True,
         "openwakeword": {
             # "hey_hermes" | built-in openWakeWord name ("hey_jarvis", "alexa", ...) | path to a
-            # custom .onnx/.tflite model
+            # custom .tflite model
             "model": "hey_hermes",
-            # "" (auto: tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite" — onnx scores
-            # near-zero on macOS ARM64 (arms but never fires)
-            "inference_framework": "",
         },
         "sherpa": {
             # sherpa-onnx KWS model dir; empty = auto-download the small English zipformer

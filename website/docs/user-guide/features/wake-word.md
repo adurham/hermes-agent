@@ -126,8 +126,7 @@ wake_word:
   confirmation_frames: 3      # openWakeWord only — consecutive over-threshold frames required to fire
   start_new_session: true     # start a fresh session on wake vs. continue the current one
   openwakeword:
-    model: hey_hermes         # bundled default; OR a built-in name OR a path to a custom .onnx/.tflite
-    inference_framework: ""   # "" (auto) | "onnx" | "tflite"
+    model: hey_hermes         # bundled default; OR a built-in name OR a path to a custom .tflite
   porcupine:
     keyword: jarvis           # built-in keyword OR path to a custom .ppn
 ```
@@ -165,13 +164,12 @@ The `sherpa` and `porcupine` engines decode the whole phrase internally, so they
 don't have the single-frame-spike problem and ignore `confirmation_frames`
 (but they still honor `sensitivity`).
 
-`inference_framework` picks the openWakeWord backend. Leave it empty (the
-default) to let Hermes choose per platform: **tflite on Apple Silicon**, onnx
-everywhere else. openWakeWord's onnx backend returns near-zero scores on macOS
-ARM64 ([openWakeWord#336](https://github.com/dscripka/openWakeWord/issues/336)),
-so a listener pinned to `onnx` there will arm, show as listening, and never
-fire. The tflite backend needs `ai-edge-litert` on macOS, which Hermes installs
-on demand alongside the other wake-word deps.
+The `openwakeword` engine is [pyopen-wakeword](https://github.com/rhasspy/pyopen-wakeword)
+(rhasspy's maintained fork of openWakeWord): it runs TFLite via a library
+bundled in its wheel and ships the same shared feature models openWakeWord
+downloaded at runtime (byte-identical, verified by hash), so the shipped
+`hey_hermes.tflite` scores exactly as before — with no runtime download and no
+backend to pick. There is no `inference_framework` setting anymore.
 
 ### Surfaces (CLI, TUI, GUI)
 

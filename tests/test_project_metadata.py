@@ -67,7 +67,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "modal", "daytona", "vercel",
         "messaging", "slack", "matrix", "dingtalk", "feishu",
         "telegram", "discord",
-        "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "wake-tflite",
+        "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine",
         "google-chat",
         "honcho", "hindsight",
         "supermemory", "mem0",

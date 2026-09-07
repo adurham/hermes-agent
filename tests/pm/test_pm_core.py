@@ -490,12 +490,12 @@ def test_python_package_url_carries_release_tag():
     from pm.registry import get_package
 
     python = get_package("python")
-    url = python.fetch_url("3.11.16+20260814", "win32-arm64")
-    assert "download/20260814/" in url
-    assert "cpython-3.11.16+20260814-aarch64-pc-windows-msvc-install_only" in url
+    url = python.fetch_url("3.14.7+20260901", "win32-arm64")
+    assert "download/20260901/" in url
+    assert "cpython-3.14.7+20260901-aarch64-pc-windows-msvc-install_only" in url
 
     try:
-        python.fetch_url("3.11.16", "win32-arm64")
+        python.fetch_url("3.14.7", "win32-arm64")
         raise AssertionError("bare version must be rejected")
     except PmInstallError:
         pass
@@ -742,7 +742,7 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
     (staged / "vcruntime140.dll").write_bytes(b"arm64")
 
     monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
-    get_package("python").stage(None, staged, "3.11.16", "win32-arm64")
+    get_package("python").stage(None, staged, "3.14.7", "win32-arm64")
 
     assert not (staged / "vcruntime140_1.dll").exists()
     assert (staged / "vcruntime140.dll").is_file()
@@ -757,7 +757,7 @@ def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
 
     monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
-    get_package("python").stage(None, staged, "3.11.16", "win32-x64")
+    get_package("python").stage(None, staged, "3.14.7", "win32-x64")
 
     assert (staged / "vcruntime140_1.dll").is_file()
 

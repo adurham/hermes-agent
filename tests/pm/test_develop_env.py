@@ -53,7 +53,7 @@ def _fake_repo(tmp_path: Path, monkeypatch) -> Path:
     """A fake repo root with a synced venv, substituted for pm.paths.repo_root."""
     repo = tmp_path / "repo"
     win = current_target().startswith("win32")
-    site = repo / "venv" / ("Lib" if win else "lib/python3.11") / "site-packages"
+    site = repo / "venv" / ("Lib" if win else "lib/python3.14") / "site-packages"
     site.mkdir(parents=True)
     monkeypatch.setattr(paths, "repo_root", lambda: repo)
     return repo
@@ -63,7 +63,7 @@ def _develop_env(tmp_path, monkeypatch, *, with_python=True):
     _fake_store(tmp_path, monkeypatch, with_python=with_python)
     repo = _fake_repo(tmp_path, monkeypatch)
     win = current_target().startswith("win32")
-    site = repo / "venv" / ("Lib" if win else "lib/python3.11") / "site-packages"
+    site = repo / "venv" / ("Lib" if win else "lib/python3.14") / "site-packages"
     return pm_cli._develop_env(["faketool"]), repo, site
 
 

@@ -37,7 +37,7 @@ def _pkg(pkg_name="node", version_style="semver", **latest):
 
 def test_version_key_sorts_numeric_and_suffixes():
     assert version_key("2.53.0+5") > version_key("2.53.0+3")
-    assert version_key("3.11.16+20260814") > version_key("3.11.16+20260801")
+    assert version_key("3.14.7+20260901") > version_key("3.14.7+20260900")
     assert version_key("26.8.1") > version_key("26.7.0")
     assert version_key("10362") > version_key("10361")
     # prerelease-ish segments sort after numerics
@@ -46,7 +46,7 @@ def test_version_key_sorts_numeric_and_suffixes():
 
 def test_minor_of():
     assert minor_of("26.7.0") == (26, 7)
-    assert minor_of("3.11.16+20260814") == (3, 11)
+    assert minor_of("3.14.7+20260901") == (3, 14)
     assert minor_of("10362") is None  # single component
 
 

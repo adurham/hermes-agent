@@ -39,7 +39,7 @@ if [ "${1:-}" = "--in-container" ]; then
     # interpreter the phone will run.
     PAYLOAD_ROOT="${5:-}"
     export PREFIX=/data/data/com.termux/files/usr
-    STAGED_PY="$PAYLOAD_ROOT/python$PREFIX/bin/python3.11"
+    STAGED_PY="$PAYLOAD_ROOT/python$PREFIX/bin/python3.14"
     STAGED_UV="$PAYLOAD_ROOT/uv$PREFIX/bin/uv"
     # The staged binaries' RUNPATHs point at the phone's $PREFIX layout
     # (linkerconfig on-device). Inside the container the tree lives at
@@ -88,7 +88,7 @@ if [ "${1:-}" = "--in-container" ]; then
     export UV_CONCURRENT_BUILDS=1
     # Native extension links need the STAGED payload's libpython: the
     # container's own $PREFIX/lib (bootstrap only) is on the default
-    # -L path, but libpython3.11.so lives in the staged tree. setuptools
+    # -L path, but libpython3.14.so lives in the staged tree. setuptools
     # honors LDFLAGS, so every sdist build's link step finds it.
     STAGED_PYLIB="$PAYLOAD_ROOT/python$PREFIX/lib"
     export LDFLAGS="-L$STAGED_PYLIB ${LDFLAGS:-}"
@@ -259,20 +259,22 @@ import json, re, sys, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 # The TARGET environment the wheelhouse must satisfy: Termux's bionic
-# python. TUR 3.11 reports sys.platform "linux" (the android value only
-# arrived in 3.13), so markers keying on linux admit it -- and windows/
-# darwin markers exclude it, which is the whole point.
+# python. termux-main 3.14 reports sys.platform "android" (the linux value
+# applied to 3.11/3.12; 3.13 changed it), so markers keying on
+# `sys_platform == 'linux'` no longer admit the termux target -- and
+# `platform_system` stays "Linux" (Android kernel), admitting
+# platform_system-gated deps. windows/darwin markers exclude it as before.
 TARGET_ENV = {
     "implementation_name": "cpython",
-    "implementation_version": "3.11.15",
+    "implementation_version": "3.14.6",
     "os_name": "posix",
     "platform_machine": "aarch64",
     "platform_release": "",
     "platform_system": "Linux",
     "platform_version": "",
-    "python_full_version": "3.11.15",
-    "python_version": "3.11",
-    "sys_platform": "linux",
+    "python_full_version": "3.14.6",
+    "python_version": "3.14",
+    "sys_platform": "android",
 }
 
 def locked_version(spec: str) -> str | None:
@@ -358,7 +360,7 @@ fi
 # interpreter by construction. The payload must be staged before this.
 log "Building the wheelhouse inside the pinned container (payload ABI)"
 PAYLOAD_ABS="$OUT_ABS"
-[ -f "$PAYLOAD_ABS/python/data/data/com.termux/files/usr/bin/python3.11" ] \
+[ -f "$PAYLOAD_ABS/python/data/data/com.termux/files/usr/bin/python3.14" ] \
     || fail "staged payload python missing -- run build_cpython.sh first (the wheelhouse builds with the payload interpreter)"
 # The container mounts OUT_ABS at /out; translate the host-side work
 # paths before crossing the boundary (host absolutes do not exist inside).

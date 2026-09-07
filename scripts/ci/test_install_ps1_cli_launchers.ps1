@@ -115,7 +115,7 @@ try {
     Copy-Item (Join-Path $repoRoot 'hermes_constants.py') (Join-Path $installRoot 'hermes_constants.py')
 
     $store = Join-Path $caseRoot 'store'
-    $entryName = 'python-3.11.15+x20260807-win32-arm64'
+    $entryName = 'python-3.14.7+x20260901-win32-arm64'
     New-Item -ItemType Directory -Force -Path (Join-Path $store $entryName) | Out-Null
     Copy-Item $python (Join-Path $store "$entryName\python.exe")
     ('{"schema": 1, "packages": {"python": {"entry": "' + $entryName + '"}}}') |

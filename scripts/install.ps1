@@ -505,7 +505,7 @@ function Invoke-BootstrapPm {
     $uv = Get-Uv
     $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json
     $pyPin = $lock.packages.python
-    $pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.11' }
+    $pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.14' }
     Log "delegating python + venv + tools to pm (hash-verified via uv.lock)"
     Push-Location $InstallDir
     try {

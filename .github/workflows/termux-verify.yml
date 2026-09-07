@@ -47,7 +47,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y patchelf
-          uv venv --python 3.11 .venv
+          uv venv --python 3.14 .venv
           uv export --frozen --extra dev --no-emit-project --no-hashes -o "$RUNNER_TEMP/requirements.txt"
           uv pip install --python .venv/bin/python -r "$RUNNER_TEMP/requirements.txt"
       - name: Run the native linker and wheel contracts

@@ -239,12 +239,20 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
     probe_version = False
     binary_rel = {"win32": "python.exe", "posix": "bin/python3"}
     # The staged .deb's main binary: DebPackage.verify checks it.
-    main_bin_rel = "bin/python3.11"
+    main_bin_rel = "bin/python3.14"
 
     def main_rel(self, target: str) -> str:
         return self.main_bin_rel
 
-    deb_package = "python3.11"
+    # termux-main (official termux repo) python deb. It lags python-build-
+    # standalone by one patch (3.14.6-1 vs 3.14.7), so the bionic row is a
+    # manual pin -- never derived from the node version, and pm update leaves
+    # it alone (no bionic resolver).
+    deb_package = "python"
+    _BIONIC_URL = (
+        "https://packages.termux.dev/apt/termux-main/pool/main/p/python/"
+        "python_3.14.6-1_aarch64.deb"
+    )
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
@@ -261,9 +269,8 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
-            pyver = version.partition("+")[0]
-            return f"https://tur.kcubeterm.com/pool/tur/python3.11_{pyver}_aarch64.deb"
-        # lock version is "<python>+<release tag>", e.g. "3.11.13+202****0807"
+            return self._BIONIC_URL
+        # lock version is "<python>+<release tag>", e.g. "3.14.7+20260901"
         pyver, _, tag = version.partition("+")
         if not tag:
             raise InstallError(self.name, f"version {version!r} needs the +<release> tag")
@@ -274,10 +281,11 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        # Stay on the locked python minor line (3.11); bump only the
+        # Stay on the locked python minor line (3.14); bump only the
         # +<build-tag>. A major/minor bump is a deliberate decision, never
-        # an auto-update.
-        if not locked or "+" not in locked:
+        # an auto-update. The bionic row is a manual termux-main pin -- no
+        # python-build-standalone build exists for it, so leave it locked.
+        if target == "linux-arm64-bionic" or not locked or "+" not in locked:
             return []
         pyver = locked.partition("+")[0]
         minor = ".".join(pyver.split(".")[:2])

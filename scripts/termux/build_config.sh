@@ -12,9 +12,9 @@
 PLATFORM_TAG="android_24_arm64_v8a"
 
 # ABI tag of the bundled interpreter, derived from the pm python version
-# (cp311 for the 3.11.x line the lock pins). Kept beside the platform tag
+# (cp314 for the 3.14.x line the lock pins). Kept beside the platform tag
 # because index.json's pythonAbi field must agree with it.
-PYTHON_ABI="cp311"
+PYTHON_ABI="cp314"
 
 # Toolchain pins for the psutil patched-local build path (--no-build-
 # isolation). Pure-python installs only: maturin is deliberately absent --
