@@ -292,6 +292,13 @@ def _apply_model_switch(
         session["model_override"] = {
             "model": result.new_model, "provider": result.target_provider,
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
+        if not persist_global and session.get("follow_profile_config"):
+            profile_model, profile_provider = _config_model_target()
+            session["composer_override_profile"] = {
+                "model": profile_model, "provider": profile_provider}
+        if agent:
+            # _commit_agent_switch persists before the session pin and its provenance exist.
+            _persist_live_session_runtime(session)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
@@ -368,19 +375,35 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     """Adopt a config.yaml model change at turn start (like gateways do per message). Sessions
     pinned with /model keep their choice; a failed switch keeps the current model."""
     agent = session.get("agent")
-    if agent is None or session.get("model_override"):
+    if agent is None:
         return
     target = _config_model_target()
     if not target[0]:
         return
     seen = session.get("config_model_seen")
+    if target == seen:
+        return
+    superseded_pin = None
+    if session.get("model_override"):
+        composer_profile = session.get("composer_override_profile")
+        pinned_profile = (
+            str(composer_profile.get("model") or "").strip(),
+            str(composer_profile.get("provider") or "").strip(),
+        ) if isinstance(composer_profile, dict) else None
+        if pinned_profile is None or pinned_profile == target:
+            return
+        # A later profile edit supersedes the canonical chat's explicit pick. Clearing both fields lets
+        # the normal config-sync path switch now and prevents the old composer pick resurfacing on rebuild.
+        superseded_pin = session.pop("model_override"), composer_profile
+        session["composer_override_profile"] = None
     # Record first so a broken config gets one attempt per edit, not per turn.
     session["config_model_seen"] = target
     model, provider = target
     # Already on the configured model (resumed before first sync, or a config revert after
     # a failed switch): adopt without switching.
-    if target == seen or (
-            model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", ""))):
+    if model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", "")):
+        if superseded_pin is not None:
+            _persist_live_session_runtime(session)
         return
     raw = f"{model} --provider {provider}" if provider else model
     try:
