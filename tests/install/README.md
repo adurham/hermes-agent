@@ -81,6 +81,40 @@ Cost per run, so nobody is surprised: 41 legs per sampled tag (windows 18, macos
 
 Running the drivers locally: don't, except in a disposable VM. The windows driver kills every process named Hermes during teardown and the macos driver operates on `/Applications/Hermes.app`; on a machine with a real Hermes install they will interfere with it.
 
+## Plugin upgrade preservation
+
+Every upgrade leg also carries a plugin-survival contract: a tagged upgrade
+must not delete or modify anything under the active home's `plugins/**` tree
+or any profile's `profiles/<name>/plugins/**` tree. Destructive flows
+(explicit uninstall, plugin removal, profile or user deletion) are out of
+contract and not exercised.
+
+- `e2e-assets/verify-plugin-preservation.py` is the shared, stdlib-only,
+  read-only verifier. `snapshot` records every entry (kind, byte size +
+  sha256, link targets, and a recursive fingerprint of a symlink's external
+  target) across all plugin roots, including empty directories and the roots
+  themselves; `verify` diffs the live tree against that snapshot and fails
+  on any deletion or modification. Unreadable paths are hard errors; an
+  empty snapshot is refused as inconclusive rather than claimed as a pass.
+- `e2e-assets/preserve-plugins.sh` is the POSIX/macOS hook pair: after the
+  install phase it seeds controlled, non-dependency directory fixtures (a
+  `mnemosyne-wrapper` plugin with its marker, a symlinked runtime, a second
+  profile plugin tree, and the externally-owned sidecar witness outside the
+  home — no pyproject anywhere in the scanned root, nothing downloaded) and
+  snapshots; after the update lands it verifies and fails the leg on any
+  violation. Seeding is not a clobber: a populated wrapper without the
+  expected marker aborts the leg. The Windows driver carries the same
+  fixtures and hooks inline (`Seed-PreservationFixtures`,
+  `Invoke-PreserveSnapshot`, `Invoke-PreserveVerify`).
+- Unit tests live at `tests/scripts/test_verify_plugin_preservation.py` and
+  exercise the verifier against a real temp filesystem (real files, real
+  symlinks; junction fallback on Windows).
+- Stable-to-stable: the drivers accept `--update-ref REF` (Windows:
+  `-UpdateRef`), defaulting to HEAD. Pass the next release tag to target a
+  stable→stable upgrade through the same serve.git staging; only label a leg
+  stable-to-stable when BOTH the install ref and the target ref are release
+  tags. The workflow matrix itself is unchanged.
+
 ## Artifacts
 
 Each leg uploads its logs as an artifact. Every leg also records the screen for its whole run: the composite action `.github/actions/e2e-screen-record` installs ffmpeg, records with the OS's capture backend (x11grab on linux, gdigrab on windows, avfoundation on macos), and fails the leg if the recording is missing or has zero frames. Linux runners have no display, so the action starts `Xvfb :99` first and exports `DISPLAY` for every later step — the app under test and the recorder share that display. The windows GUI leg also uploads screenshots and the update result file. Get them with `gh run download <run-id>`.

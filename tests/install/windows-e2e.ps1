@@ -98,6 +98,10 @@ param(
     # swallows an empty-string argument ('Missing an argument for
     # parameter'), so the workflow cannot pass "".
     [string]$InstallRef = "auto",
+    # Update target ref (default HEAD). A stable-to-stable leg passes the
+    # next release tag here; only label the leg stable-to-stable when BOTH
+    # refs are release tags.
+    [string]$UpdateRef = "HEAD",
 
     # Repo checkout whose HEAD is the update target.
     [string]$RepoRoot = "",
@@ -546,7 +550,8 @@ function Invoke-PhaseStage {
     # bare-clone below (and everything after) sees the redirect file.
     Set-GitRedirect
 
-    $current = Invoke-Git @("-C", $RepoRoot, "rev-parse", "HEAD")
+    $current = Invoke-Git @("-C", $RepoRoot, "rev-parse", $UpdateRef)
+    $targetLabel = if ($UpdateRef -eq "HEAD") { "HEAD" } else { $UpdateRef }
     Write-Host "  HEAD (update target): $current"
 
     # OLD: explicit -InstallRef, or the newest release tag -- the version a
@@ -580,7 +585,7 @@ function Invoke-PhaseStage {
     Invoke-Git @("-C", $ServeRepo, "config", "uploadpack.allowAnySHA1InWant", "true") | Out-Null
     Write-Host "  serve.git: uploadpack.allowAnySHA1InWant=true (installer commit pin, if any)"
 
-    @{ old = $old; old_ref = $oldRef; current = $current } |
+    @{ old = $old; old_ref = $oldRef; current = $current; target_label = $targetLabel } |
         ConvertTo-Json | Set-Content -LiteralPath $StatePath -Encoding UTF8
     Write-Host "  state written: $StatePath"
     New-Item -ItemType Directory -Path $ProofRoot -Force | Out-Null
@@ -888,6 +893,75 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
     }
 }
 
+# --- plugin upgrade-preservation hooks -------------------------------------
+# A tagged upgrade must not delete or modify anything under the active
+# home's plugins/** or any profile's plugins/** tree: wrapper markers
+# (mnemosyne-wrapper.json), symlinked runtimes, and the externally-owned
+# sidecar witness outside the home. Fixtures are directory-only (no
+# pyproject in the scanned root, nothing downloaded). Snapshot is taken
+# after install, verified after update.
+function Seed-PreservationFixtures {
+    $wrapper = Join-Path $HermesHome "plugins\mnemosyne-wrapper"
+    $external = Join-Path $WorkRoot "external-mnemosyne-runtime"
+    $marker = Join-Path $wrapper "mnemosyne-wrapper.json"
+    # NOT a clobbering seeder: pre-existing populated wrapper is left
+    # untouched so a retried leg cannot erase a recorded regression.
+    if (Test-Path -LiteralPath $wrapper) {
+        $existing = @(Get-ChildItem -LiteralPath $wrapper -ErrorAction SilentlyContinue)
+        if ($existing.Count -gt 0) {
+            $markerOk = (Test-Path -LiteralPath $marker) -and
+                ((Get-Content -LiteralPath $marker -Raw) -match "mnemosyne-wrapper")
+            if (-not $markerOk) {
+                throw "refusing to reseed preservation fixtures: $wrapper already populated without the expected marker"
+            }
+            Write-Host "  preservation fixtures already present; left untouched"
+            return
+        }
+    }
+    New-Item -ItemType Directory -Path $wrapper, $external, `
+        (Join-Path $HermesHome "profiles\e2e-preserve\plugins\second-plugin") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $wrapper "mnemosyne-wrapper.json") `
+        -Value '{"wrapper": true, "marker": "mnemosyne-wrapper", "owner": "e2e-preservation"}' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $wrapper "plugin.py") `
+        -Value '# directory wrapper fixture: no dependencies' + [Environment]::NewLine + 'PLUGIN = "mnemosyne-wrapper"' -Encoding UTF8
+    if (-not (Test-Path -LiteralPath (Join-Path $wrapper "runtime"))) {
+        try {
+            New-Item -ItemType SymbolicLink -Path (Join-Path $wrapper "runtime") -Target $external -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Host "  (symlink unavailable: $($_.Exception.Message); runtime link omitted from fixtures)"
+        }
+    }
+    Set-Content -LiteralPath (Join-Path $external "sidecar-witness.txt") -Value "external-sidecar-witness-v1" -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $external "engine.bin") -Value "external-engine" -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $HermesHome "profiles\e2e-preserve\plugins\second-plugin\marker.json") `
+        -Value '{"plugin": "second-plugin", "profile": "e2e-preserve"}' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $HermesHome "profiles\e2e-preserve\plugins\second-plugin\data.bin") `
+        -Value "profile-plugin-bytes" -Encoding UTF8
+    Write-Host "  preservation fixtures seeded (wrapper + profile tree; external witness at $external)"
+}
+
+function Invoke-PreserveSnapshot {
+    Seed-PreservationFixtures
+    $out = Join-Path $WorkRoot "plugin-preservation-snapshot.json"
+    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") snapshot --home $HermesHome --out $out
+    if ($LASTEXITCODE -ne 0) { throw "plugin preservation snapshot failed (exit $LASTEXITCODE)" }
+    # An empty snapshot proves nothing; refuse to build the leg's claim on it.
+    $snap = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+    if (@($snap.entries.PSObject.Properties).Count -eq 0) {
+        throw "plugin preservation snapshot is EMPTY: no plugin entries recorded, cannot verify preservation"
+    }
+    Write-Host "  pre-upgrade plugin snapshot: $out"
+}
+
+function Invoke-PreserveVerify {
+    $snap = Join-Path $WorkRoot "plugin-preservation-snapshot.json"
+    if (-not (Test-Path -LiteralPath $snap)) { throw "no pre-upgrade plugin snapshot at $snap; cannot verify preservation" }
+    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") verify --home $HermesHome --snapshot $snap `
+        --report (Join-Path $WorkRoot "logs\plugin-preservation-report.json")
+    if ($LASTEXITCODE -ne 0) { throw "plugin preservation violated by the upgrade (exit $LASTEXITCODE); see the report for deleted/modified entries" }
+    Write-Host "  plugins/** and profile plugin trees survived the upgrade intact"
+}
+
 function Invoke-PhaseInstall {
     # Dispatch on the install axis. Each arm ends with the same contract:
     # checkout at OLD, hermes runs, and state carries how OLD landed so any
@@ -930,6 +1004,8 @@ function Invoke-PhaseUpdate {
     # remote's main moves forward. The GUI route re-advances harmlessly
     # (same sha); script routes need it here because only the GUI arm's
     # helper used to own this step.
+    # Snapshot every plugin tree BEFORE the upgrade moves anything.
+    Invoke-PreserveSnapshot
     Invoke-Git @("-C", $ServeRepo, "update-ref", "refs/heads/main", $state.current) | Out-Null
     Write-Host "  serve.git main advanced to $($state.current)"
 
@@ -975,6 +1051,7 @@ function Invoke-PhaseUpdate {
 
     Assert-True ((Get-InstalledHead) -eq $state.current) "checkout landed on HEAD"
     Test-HermesRuns "post-update"
+    Invoke-PreserveVerify
 }
 
 function Invoke-CheckedPhaseUpdate {
