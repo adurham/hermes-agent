@@ -123,7 +123,11 @@ dependencies = [
   # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
-  "psutil==7.2.2",
+  "psutil==7.2.2; sys_platform != 'android'",
+  # Android Python 3.13+ needs upstream #2891 for platform recognition and
+  # disk_partitions(). The fix is not in a published psutil release yet.
+  # Keep this commit until a release includes it, then remove the source pin.
+  "psutil @ git+https://github.com/giampaolo/psutil.git@380bd2b59c67b0e1b04bbf3a90b11744f4f96644 ; sys_platform == 'android'",
   # Browser CDP supervisor + browser_dialog import this directly. Keep core
   # so browser tool discovery doesn't fail on lean installs.
   "websockets==15.0.1",

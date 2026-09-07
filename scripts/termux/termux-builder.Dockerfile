@@ -28,7 +28,7 @@ RUN printf '%s\n' "deb https://packages.termux.dev/apt/termux-main stable main" 
  && rm -f "${PREFIX}/etc/apt/sources.list.d/"*.list \
  && (apt update || apt update) \
  && apt install -y \
-      clang rust make patchelf binutils pkg-config protobuf cmake ninja \
+      clang rust make git patchelf binutils pkg-config protobuf cmake ninja \
       autoconf automake libtool \
       libandroid-posix-semaphore libandroid-support libbz2 libffi \
       libjpeg-turbo libpng freetype libtiff libwebp openjpeg littlecms \

@@ -17,13 +17,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
+import shutil
 import subprocess
 import sys
 import sysconfig
 import tarfile
 import tempfile
-import shutil
+import tomllib
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,22 +40,43 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def parse_reqs(resolved: Path) -> list[tuple[str, str]]:
-    """(name, spec) pairs for every non-empty resolved line."""
-    out: list[tuple[str, str]] = []
-    for line in resolved.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
+def normalize_reqs(export: Path, lock: Path, resolved: Path) -> None:
+    """Retain both the build source and the locked offline wheel version."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    packages = tomllib.loads(lock.read_text(encoding="utf-8"))["package"]
+    rows = []
+    for line in export.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        parts = line.split("\t")
-        out.append((parts[0], parts[1] if len(parts) > 1 else ""))
-    return out
+        req = Requirement(line)
+        name = canonicalize_name(req.name)
+        spec = str(req.specifier)
+        source = req.url or ""
+        if source:
+            repository, separator, commit = source.removeprefix("git+").rpartition("@")
+            if not source.startswith("git+") or not separator or not re.fullmatch(r"[a-f0-9]{40}", commit):
+                raise ValueError(f"Source requirement needs an exact Git commit: {name}")
+            matches = [p for p in packages if canonicalize_name(p["name"]) == name
+                       and (git := p.get("source", {}).get("git"))
+                       and urlsplit(git).fragment == commit
+                       and git.split("?", 1)[0].split("#", 1)[0] == repository]
+            if len(matches) != 1:
+                raise ValueError(f"Source requirement does not match one locked package: {name}")
+            spec = f"=={matches[0]['version']}"
+        rows.append((name, spec, str(req.marker) if req.marker else "", source))
+    resolved.write_text("".join("\t".join(row) + "\n" for row in rows), encoding="utf-8")
 
 
 def load_entries(resolved: Path) -> dict[str, str]:
-    """name -> version spec ('==x.y.z') for the build loop's locked pins."""
+    """Select build requirements using the payload's platform markers."""
     entries: dict[str, str] = {}
-    for name, spec in parse_reqs(resolved):
-        entries[name] = spec.strip()
+    for name, spec, marker, source in _parse_full(resolved):
+        if _marker_admits(marker):
+            if name in entries:
+                raise ValueError(f"Duplicate applicable requirement: {name}")
+            entries[name] = f" @ {source}" if source else spec.strip()
     return entries
 
 
@@ -63,7 +87,7 @@ def write_reqs_file(resolved: Path, reqs: Path) -> None:
     are skipped (no offline solution exists for them, by design).
     """
     out = []
-    for name, spec, marker in _parse_full(resolved):
+    for name, spec, marker, source in _parse_full(resolved):
         if name in BUILD_MISSES:
             continue
         line = f"{name}{spec.strip()}" if spec.strip() else name
@@ -102,27 +126,14 @@ def safe_extract(archive: Path, dest: Path) -> Path:
     return roots[0] if roots else dest
 
 
-PSUTIL_MARKER = 'LINUX = sys.platform.startswith("linux")'
-PSUTIL_PATCH = 'LINUX = sys.platform.startswith(("linux", "android"))'
-
-
-def patch_psutil(src_root: Path) -> None:
-    common = src_root / "psutil" / "_common.py"
-    if not common.is_file():
-        return  # not a psutil sdist; nothing to patch
-    content = common.read_text(encoding="utf-8-sig")
-    if PSUTIL_MARKER not in content:
-        raise RuntimeError("psutil android patch marker not found -- update the patch for the pinned psutil pin")
-    common.write_text(content.replace(PSUTIL_MARKER, PSUTIL_PATCH), encoding="utf-8")
-
-
 def _dist_version(name: str, spec: str) -> str | None:
     # Exact pins carry the version ("==X.Y.Z"); anything else cannot be
     # skip-checked safely, so it always builds.
     return spec.strip().lstrip("=") if spec.strip().startswith("==") else None
 
 
-def build_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: Path) -> None:
+def build_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: Path,
+                 *, python: str = sys.executable) -> None:
     for name in build_set:
         spec = specs.get(name, "")
         req = f"{name}{spec}" if spec else name
@@ -132,14 +143,14 @@ def build_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: Path) 
         ):
             print(f"==> {name} {ver} already in the wheelhouse (cache restore); skipping")
             continue
-        if name in ("psutil", "uvloop"):
+        if name == "uvloop":
             print(f"==> building {name} (download + extract + pre-build fixups)")
             with tempfile.TemporaryDirectory(prefix=f"hermes-build-{name}-") as tmp:
                 tmp = Path(tmp)
                 sdist_dir = tmp / "sdist"
                 sdist_dir.mkdir()
                 subprocess.run(
-                    [sys.executable, "-m", "pip", "download", "--no-deps", "--no-binary", ":all:",
+                    [python, "-m", "pip", "download", "--no-deps", "--no-binary", ":all:",
                      "--no-build-isolation", "-d", str(sdist_dir), req],
                     check=True, cwd=tmp,
                 )
@@ -147,48 +158,46 @@ def build_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: Path) 
                 if len(archives) != 1:
                     raise RuntimeError(f"expected exactly one sdist archive for {name}, got {len(archives)}")
                 src = safe_extract(archives[0], tmp / "src")
-                patch_psutil(src)
-                if name == "uvloop":
-                    # uvloop vendors libuv at vendor/libuv/ WITH its own
-                    # autogen.sh + generated configure; the build backend
-                    # expects libuv CONFIGURED (build artifacts present)
-                    # before setup.py runs it. We run configure ourselves:
-                    # setup.py's own ['./configure'] invocation 127s on the
-                    # rewritten shebang (subprocess execv semantics), but a
-                    # completed configure leaves artifacts setup.py reuses.
-                    libuv = src / "vendor" / "libuv"
-                    if libuv.is_dir():
-                        # bash-invoked: the sdist's autogen.sh may carry a
-                        # non-exec mode (extraction preserves it). autogen
-                        # also (re)writes ./configure WITHOUT the exec bit
-                        # (setup.py then 127s) -- chmod after bootstrap.
-                        proc = subprocess.run(["bash", "autogen.sh"], cwd=libuv,
-                                              check=False, capture_output=True, text=True)
-                        if proc.returncode == 0 and (libuv / "configure").is_file():
-                            # Run configure under the container's own sh
-                            # (its #!/bin/sh shebang can't exec here).
-                            cfg_proc = subprocess.run(
-                                [os.environ["PREFIX"] + "/bin/sh", "./configure"],
-                                cwd=libuv, check=False, capture_output=True, text=True,
-                            )
-                            if cfg_proc.returncode != 0:
-                                print(f"FIXUP FAILED (libuv configure) for {name}")
-                                print("stdout:", cfg_proc.stdout[-1500:])
-                                print("stderr:", cfg_proc.stderr[-1500:])
-                                raise subprocess.CalledProcessError(cfg_proc.returncode, cfg_proc.args)
-                        if proc.returncode != 0:
-                            # autogen needs autoreconf when configure is
-                            # stale; fall back to explicit bootstrap
-                            proc2 = subprocess.run(["autoreconf", "-i"], cwd=libuv,
-                                                   check=False, capture_output=True, text=True)
-                            if proc2.returncode != 0:
-                                print(f"FIXUP FAILED (libuv bootstrap) for {name}")
-                                print("autogen stdout:", proc.stdout[-1200:])
-                                print("autogen stderr:", proc.stderr[-1200:])
-                                print("autoreconf stderr:", proc2.stderr[-1200:])
-                                raise subprocess.CalledProcessError(proc2.returncode, proc2.args)
+                # uvloop vendors libuv at vendor/libuv/ WITH its own
+                # autogen.sh + generated configure; the build backend
+                # expects libuv CONFIGURED (build artifacts present)
+                # before setup.py runs it. We run configure ourselves:
+                # setup.py's own ['./configure'] invocation 127s on the
+                # rewritten shebang (subprocess execv semantics), but a
+                # completed configure leaves artifacts setup.py reuses.
+                libuv = src / "vendor" / "libuv"
+                if libuv.is_dir():
+                    # bash-invoked: the sdist's autogen.sh may carry a
+                    # non-exec mode (extraction preserves it). autogen
+                    # also (re)writes ./configure WITHOUT the exec bit
+                    # (setup.py then 127s) -- chmod after bootstrap.
+                    proc = subprocess.run(["bash", "autogen.sh"], cwd=libuv,
+                                          check=False, capture_output=True, text=True)
+                    if proc.returncode == 0 and (libuv / "configure").is_file():
+                        # Run configure under the container's own sh
+                        # (its #!/bin/sh shebang can't exec here).
+                        cfg_proc = subprocess.run(
+                            [os.environ["PREFIX"] + "/bin/sh", "./configure"],
+                            cwd=libuv, check=False, capture_output=True, text=True,
+                        )
+                        if cfg_proc.returncode != 0:
+                            print(f"FIXUP FAILED (libuv configure) for {name}")
+                            print("stdout:", cfg_proc.stdout[-1500:])
+                            print("stderr:", cfg_proc.stderr[-1500:])
+                            raise subprocess.CalledProcessError(cfg_proc.returncode, cfg_proc.args)
+                    if proc.returncode != 0:
+                        # autogen needs autoreconf when configure is
+                        # stale; fall back to explicit bootstrap
+                        proc2 = subprocess.run(["autoreconf", "-i"], cwd=libuv,
+                                               check=False, capture_output=True, text=True)
+                        if proc2.returncode != 0:
+                            print(f"FIXUP FAILED (libuv bootstrap) for {name}")
+                            print("autogen stdout:", proc.stdout[-1200:])
+                            print("autogen stderr:", proc.stderr[-1200:])
+                            print("autoreconf stderr:", proc2.stderr[-1200:])
+                            raise subprocess.CalledProcessError(proc2.returncode, proc2.args)
                 proc = subprocess.run(
-                    [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
+                    [python, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
                      "-w", str(wheelhouse), str(src)],
                     check=False, cwd=tmp, capture_output=True, text=True,
                 )
@@ -205,7 +214,7 @@ def build_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: Path) 
             # never resolves/compiles -- the build container may fetch.
             print(f"==> building {name} (direct pip wheel, isolated backend)")
             proc = subprocess.run(
-                [sys.executable, "-m", "pip", "wheel", "--no-deps",
+                [python, "-m", "pip", "wheel", "--no-deps",
                  "--no-binary", ":all:", "-w", str(wheelhouse), req],
                 check=False, capture_output=True, text=True,
             )
@@ -241,21 +250,19 @@ def _marker_admits(marker: str) -> bool:
     if not marker:
         return True
     from packaging.markers import Marker
-    try:
-        return Marker(marker).evaluate(TARGET_ENV)
-    except Exception:
-        return True
+    return Marker(marker).evaluate(TARGET_ENV)
 
 
-def _parse_full(resolved: Path) -> list[tuple[str, str, str]]:
-    """(name, spec, marker) triples from the tab-separated resolved file."""
-    out: list[tuple[str, str, str]] = []
+def _parse_full(resolved: Path) -> list[tuple[str, str, str, str]]:
+    """Name, wheel version, marker and optional build source for each entry."""
+    out: list[tuple[str, str, str, str]] = []
     for line in resolved.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         parts = line.split("\t")
-        out.append((parts[0], parts[1] if len(parts) > 1 else "",
-                    parts[2] if len(parts) > 2 else ""))
+        if len(parts) != 4:
+            raise ValueError("Expected name, version, marker and source fields")
+        out.append((parts[0], parts[1], parts[2], parts[3]))
     return out
 
 
@@ -274,7 +281,7 @@ def fetch_pure_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: P
     The gate reqs keep all lines; pip/uv on bionic skips the win32 ones.
     """
     reqs = []
-    for name, spec, marker in _parse_full(resolved):
+    for name, spec, marker, source in _parse_full(resolved):
         if name in build_set or name in BUILD_MISSES:
             continue
         if not _marker_admits(marker):
@@ -374,6 +381,9 @@ def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str], uv:
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--normalize"]:
+        normalize_reqs(*(Path(value) for value in sys.argv[2:]))
+        return 0
     if sys.argv[1:2] == ["--import-modules"]:
         import_native_modules(sys.argv[2:])
         return 0

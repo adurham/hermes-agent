@@ -16,7 +16,7 @@ PLATFORM_TAG="android_24_arm64_v8a"
 # because index.json's pythonAbi field must agree with it.
 PYTHON_ABI="cp314"
 
-# Toolchain pins for the psutil patched-local build path (--no-build-
+# Toolchain pins for the uvloop configured-source build path (--no-build-
 # isolation). Pure-python installs only: maturin is deliberately absent --
 # it is a native wheel that uv (rightly) refuses to install onto bionic,
 # and the rust-backend sdists (pydantic-core, jiter, ...) build through

@@ -58,7 +58,7 @@ if [ "${1:-}" = "--in-container" ]; then
     fi
     # BUILD tools come from termux's own apt (the image is a bare
     # bootstrap). The USER machine never does any of this.
-    if ! command -v clang >/dev/null 2>&1; then
+    if ! command -v clang >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
         log "Provisioning the container build toolchain (termux apt)"
         export DEBIAN_FRONTEND=noninteractive
         # Pin the OFFICIAL mirror and use apt DIRECTLY: pkg (the wrapper)
@@ -70,7 +70,7 @@ if [ "${1:-}" = "--in-container" ]; then
         rm -f "$PREFIX/etc/apt/sources.list.d"/*.list 2>/dev/null || true
         apt update || apt update \
             || fail "apt update failed in the container"
-        apt install -y clang rust make patchelf binutils pkg-config protobuf cmake ninja autoconf automake libtool \
+        apt install -y clang rust make git patchelf binutils pkg-config protobuf cmake ninja autoconf automake libtool \
             libandroid-posix-semaphore libandroid-support libbz2 libffi \
             libjpeg-turbo libpng freetype libtiff libwebp openjpeg littlecms \
             libyaml openssl readline zlib liblzma libsqlite ncurses \
@@ -78,7 +78,7 @@ if [ "${1:-}" = "--in-container" ]; then
     fi
     # BINARIES, not package names: the rust package provides rustc/cargo
     # (there is no `rust` binary).
-    for tool in clang rustc cargo make; do
+    for tool in clang rustc cargo make git; do
         command -v "$tool" >/dev/null 2>&1 \
             || fail "container lacks $tool after provisioning"
     done
@@ -218,43 +218,29 @@ mkdir -p "$WHEELHOUSE"
 rm -f "$OUT_ABS/index.json" "$OUT_ABS/SHA256SUMS" "$WORK/resolved.txt" "$WORK/build_set.txt"
 # [d] Resolve the real graph from the tag's own lock.
 log "Resolving dependency graph from the tag's uv.lock"
-( cd "$WORK/tree" && uv export --frozen --no-emit-project --extra acp -o "$WORK/req.txt" ) \
+( cd "$WORK/tree" && uv export --frozen --no-emit-project --extra acp \
+    --no-hashes --no-annotate --no-header -o "$WORK/req.txt" ) \
     || fail "uv export failed (frozen lock at $TAG)"
+# Host parsing needs packaging too. Use the release lock, not runner packages.
+PACKAGING_SPEC="$(python3 - "$WORK/tree/uv.lock" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as stream:
+    packages = tomllib.load(stream)["package"]
+package, = [item for item in packages if item["name"] == "packaging"]
+print("packaging==" + package["version"])
+PY
+)" || fail "locked packaging dependency missing"
+HOST_PY=(uv run --isolated --no-project --python "$(command -v python3)" --with "$PACKAGING_SPEC" python)
 RESOLVED="$WORK/resolved.txt"
-python3 - "$WORK/req.txt" "$RESOLVED" <<'PYEOF' || fail "failed to normalize requirements"
-import re, sys
-out = []
-for line in open(sys.argv[1], encoding="utf-8"):
-    line = line.strip()
-    # uv export wraps long lines with backslash continuations; strip the
-    # trailing continuation BEFORE capturing markers/specs -- a backslash
-    # riding into a marker makes Marker() throw (and a throwing marker
-    # must not silently admit the package into the build set).
-    line = re.sub(r"\\\s*$", "", line)
-    if not line or line.startswith("#"):
-        continue
-    marker = ""
-    m = re.search(r"\s;\s*(.+)$", line)
-    if m:
-        marker = m.group(1).strip()
-        line = line[: m.start()]
-    line = re.sub(r"\s*--.*$", "", line)
-    if line.startswith("--") or not line:
-        continue
-    m = re.match(r"^([A-Za-z0-9._-]+)(\[[^]]*\])?([=<>~!^].*)?$", line)
-    if m:
-        out.append((m.group(1), m.group(3) or "", marker))
-open(sys.argv[2], "w", encoding="utf-8").write(
-    "\n".join(f"{name}\t{spec}\t{marker}" for name, spec, marker in out) + "\n"
-)
-PYEOF
+"${HOST_PY[@]}" "$HERE/build_wheels.py" --normalize "$WORK/req.txt" "$WORK/tree/uv.lock" "$RESOLVED" \
+    || fail "failed to normalize requirements"
 [ -s "$RESOLVED" ] || fail "resolved dependency list is empty"
 
 # [e] Marker-aware PyPI wheel-coverage probe: build set = resolved deps
 # whose marker admits android AND that have no installable none-any wheel.
 log "Probing PyPI wheel coverage (android markers)"
 BUILD_SET="$WORK/build_set.txt"
-python3 - "$RESOLVED" "$BUILD_SET" <<'PYEOF' || fail "PyPI wheel-coverage probe failed"
+"${HOST_PY[@]}" - "$RESOLVED" "$BUILD_SET" <<'PYEOF' || fail "PyPI wheel-coverage probe failed"
 import json, re, sys, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -296,13 +282,15 @@ entries = []
 for line in open(sys.argv[1], encoding="utf-8"):
     if not line.strip():
         continue
-    name, spec, marker = (line.split("\t", 2) + ["", ""])[:3]
-    entries.append((name, spec, marker))
+    name, spec, marker, source = (line.rstrip("\n").split("\t") + [""])[:4]
+    entries.append((name, spec, marker, source))
 
 def probe(item):
-    name, spec, marker = item
+    name, spec, marker, source = item
     if not marker_admits(marker):
         return name, None, None
+    if source:
+        return name, False, None
     try:
         with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/json", timeout=30) as r:
             d = json.load(r)
