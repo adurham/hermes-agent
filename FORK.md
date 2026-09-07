@@ -3,6 +3,56 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-09-07 (CI: large GitHub-hosted runners not provisioned on this fork, stuck runs permanently held the concurrency group)
+
+**Symptom:** jobs requesting large GitHub-hosted runners
+(`ubuntu-latest-96-core`, `ubuntu-latest-32-core`, `windows-latest-32-core`)
+sat `queued` with `runner_id: 0` forever on this fork — they never start and
+never time out (GitHub's runner-provisioning timeout doesn't apply the same
+way to hosted-larger-runner labels the account isn't provisioned for).
+`ci.yaml`'s `concurrency: group: ci-${{ github.ref }}` has
+`cancel-in-progress: ${{ github.event_name == 'pull_request' }}` — false on
+push — so the first stuck push run permanently held the concurrency group
+and every later push queued behind it indefinitely. Two runs were stuck
+>21 hours before this was caught.
+
+**Root cause:** large/non-standard GitHub-hosted runner labels
+(`*-core`, `*-arm-core`) require a paid runner tier GitHub provisions per
+repository; a personal fork doesn't get them, but nothing in the workflow
+told GitHub to skip those jobs instead of trying to schedule them.
+`docker.yml` already solved exactly this with
+`if: github.repository == 'NousResearch/hermes-agent' && ...` gates on its
+large-runner jobs — the fix here is applying that same pattern everywhere
+else a job can land on a large runner.
+
+**Fix:** added `github.repository == 'NousResearch/hermes-agent'` gates
+(merged with `&&` into each job's existing `if:`, or added fresh where none
+existed) to every job that can request a large runner on any leg:
+- `ci.yaml` callers: `tests`, `tests-os`, `js-tests`, `rust-tests`,
+  `e2e-desktop` (already permanently disabled via `false &&` — gate added
+  for defence-in-depth, the `false &&` itself left untouched).
+- `nix.yml`'s `flake-check` job — a separate workflow with its own push
+  trigger and concurrency group, not called from `ci.yaml`.
+- Inside the reusable `workflow_call` workflows themselves (`tests.yml`,
+  `js-tests.yml`, `rust-tests.yml`, `e2e-desktop.yml`, `tests-os.yml`) —
+  `github.repository` resolves to the calling repository inside a
+  `workflow_call`, so gating there too protects any other caller.
+- `tests-os.yml`'s `os-tests` job runs a matrix with one `windows-latest-32-core`
+  leg alongside `macos-latest`; a matrix job with even one large-runner leg
+  needs the whole job gated (a single stuck leg still holds the run open),
+  so the fork loses the `macos-latest` leg too — accepted tradeoff.
+- Runners left ungated: everything using only `ubuntu-latest` /
+  `windows-latest` / `macos-latest` (works fine and has real value on a
+  fork), `install-e2e-run.yml` (traced both callers in `install-e2e.yml` —
+  neither passes a `runner:` input, so it always defaults to
+  `ubuntu-latest`), and `docker.yml` (already gated).
+
+**Verification:** `python3 -c "import yaml,glob; [yaml.safe_load(open(f))
+for f in glob.glob('.github/workflows/*.y*ml')]"` — all workflow YAML parses
+clean post-edit. `grep -rnE 'runs-on:.*(-core|\$\{\{)' .github/workflows/`
+re-run after the edits confirms every large/dynamic-runner site is either
+gated or was traced and confirmed standard-runner-only.
+
 ### CLI clarify timeout shadowed by legacy default; batch/oneshot clarify never fire attention signals — 2026-09-06
 
 **Symptom:** two separate bugs on the interactive CLI clarify invocation path

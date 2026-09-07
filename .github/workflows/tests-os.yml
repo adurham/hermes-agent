@@ -38,6 +38,11 @@ concurrency:
 jobs:
   os-tests:
     name: ${{ matrix.name }}
+    # The matrix includes windows-latest-32-core, not provisioned on
+    # forks. A single stuck leg keeps the job (and this run) incomplete, so
+    # the whole job is gated rather than just the Windows leg — losing the
+    # macos-latest leg too is the accepted tradeoff on forks.
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:

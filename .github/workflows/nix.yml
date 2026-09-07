@@ -49,7 +49,9 @@ jobs:
   flake-check:
     name: nix flake check
     needs: [detect]
-    if: needs.detect.outputs.nix == 'true'
+    # ubuntu-latest-32-core is not provisioned on forks — skip so it
+    # doesn't queue forever and hold this workflow's own concurrency group.
+    if: github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.nix == 'true'
     # The build compiles the package and its whole dependency closure, so this
     # takes minutes and not seconds when the cache misses. `nix flake check`
     # builds 21 checks, and --max-jobs defaults to the core count. It uses the

@@ -21,6 +21,9 @@ jobs:
     # 96 cores clear the floor that the slowest single test file sets (about
     # 82s). A second slice divides work that is already at that floor, and
     # adds a second setup.
+    # ubuntu-latest-96-core is not provisioned on forks — skip so a
+    # workflow_call from another repo's fork doesn't queue forever.
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest-96-core
     timeout-minutes: 30
     steps:
