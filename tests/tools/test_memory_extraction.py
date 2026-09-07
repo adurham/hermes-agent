@@ -974,9 +974,13 @@ class TestSessionEndCleanup:
         assert out["action"] == "cleanup_skipped"
         assert warm.get(fid) is not None
 
-    def test_session_end_surfaces_cleanup_to_callback_and_applies_approved(
+    def test_session_end_auto_applies_cleanup_without_callback_involvement(
         self, warm, auto_extract_on, monkeypatch,
     ):
+        """Cleanup (2026-09-07 automation posture): always computed and
+        always auto-applied, independent of the confirm_callback — the
+        callback is only ever consulted for NEW entries now, and always
+        receives an empty cleanup list (there is no cleanup review path)."""
         fid = warm.add(content="the deploy script lives at /old/deploy.sh")["fact_id"]
         monkeypatch.setattr(mex_extractor, "_get_extraction_config", self._cfg)
         monkeypatch.setattr(mex_extractor, "_call_extraction_llm", self._llm(
@@ -995,15 +999,18 @@ class TestSessionEndCleanup:
             "sid-cleanup", [{"role": "user", "content": "deploy script moved"}],
             interactive=True, confirm_callback=cb,
         )
-        assert [a["fact_id"] for a in seen["cleanup"]] == [fid]
+        # Callback never sees cleanup actions — it has no say in them anymore.
+        assert seen["cleanup"] == []
         assert result["cleanup_proposed"] == 1
         assert result["cleanup_applied"] == 1
         assert warm.get(fid) is None
 
-    def test_cleanup_not_applied_when_callback_approves_only_entries(
+    def test_cleanup_still_applied_with_legacy_single_arg_callback(
         self, warm, auto_extract_on, monkeypatch,
     ):
-        """Accept-all on NEW entries must not sweep cleanup along with it."""
+        """A legacy single-arg callback (only handles NEW entries) must not
+        block cleanup — cleanup is unconditional now, decoupled entirely
+        from whatever shape the confirm_callback is."""
         fid = warm.add(content="the deploy script lives at /old/deploy.sh")["fact_id"]
         monkeypatch.setattr(mex_extractor, "_get_extraction_config", self._cfg)
         monkeypatch.setattr(mex_extractor, "_call_extraction_llm", self._llm(
@@ -1011,16 +1018,14 @@ class TestSessionEndCleanup:
             {"cleanup": [{"fact_id": fid, "action": "remove", "reason": "path moved"}]},
         ))
 
-        # Legacy single-arg callback shape returning a bare list == the
-        # "accept all new entries" path. Cleanup must be dropped.
         result = mex_extractor.on_session_end(
             "sid-nomix", [{"role": "user", "content": "deploy script moved"}],
             interactive=True, confirm_callback=lambda proposals: list(proposals),
         )
         assert result["cleanup_proposed"] == 1
-        assert result["cleanup_applied"] == 0
-        assert result["cleanup_skipped"] == 1
-        assert warm.get(fid) is not None
+        assert result["cleanup_applied"] == 1
+        assert result["cleanup_skipped"] == 0
+        assert warm.get(fid) is None
         assert result["committed"] >= 1
 
     def test_cleanup_empty_does_not_error(
@@ -1041,30 +1046,120 @@ class TestSessionEndCleanup:
         assert result["cleanup_applied"] == 0
         assert result["cleanup_actions"] == []
 
-    def test_non_interactive_never_proposes_or_applies_cleanup(
+    def test_non_interactive_auto_commit_also_auto_applies_cleanup(
         self, warm, auto_extract_on, monkeypatch,
     ):
-        """auto_commit_session_end=True must NOT enable cleanup."""
+        """2026-09-07: cleanup is unconditional now — a fully non-interactive
+        session end (no confirm_callback, auto_commit_session_end=True) must
+        still auto-apply cleanup actions, same as the interactive path."""
         fid = warm.add(content="the deploy script lives at /old/deploy.sh")["fact_id"]
         cfg = dict(self._cfg())
         cfg["auto_commit_session_end"] = True
         monkeypatch.setattr(mex_extractor, "_get_extraction_config", lambda: cfg)
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", self._llm(
+            {"entries": [{"content": "the deploy script lives at /new/deploy.sh"}]},
+            {"cleanup": [{"fact_id": fid, "action": "remove", "reason": "path moved"}]},
+        ))
 
-        systems = []
-
-        def fake_llm(*, system, user, max_tokens, timeout=None):
-            systems.append(system)
-            return json.dumps({"entries": [
-                {"content": "the deploy script lives at /new/deploy.sh"}
-            ]})
-
-        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", fake_llm)
         result = mex_extractor.on_session_end(
             "sid-auto", [{"role": "user", "content": "deploy script moved"}],
             interactive=False,
         )
-        assert result["cleanup_proposed"] == 0
-        assert result["cleanup_applied"] == 0
-        assert warm.get(fid) is not None
-        # The cleanup prompt was never even sent.
-        assert not any("auditing" in s for s in systems)
+        assert result["cleanup_proposed"] == 1
+        assert result["cleanup_applied"] == 1
+        assert warm.get(fid) is None
+        assert result["committed"] >= 1
+
+    def test_non_interactive_no_auto_commit_still_auto_applies_cleanup(
+        self, warm, auto_extract_on, monkeypatch,
+    ):
+        """Even the default-safe NEW-entry path (auto_commit_session_end=False,
+        entries stashed back to buffer) must still auto-apply cleanup — the
+        two are fully decoupled now."""
+        fid = warm.add(content="the deploy script lives at /old/deploy.sh")["fact_id"]
+        monkeypatch.setattr(mex_extractor, "_get_extraction_config", self._cfg)
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", self._llm(
+            {"entries": [{"content": "the deploy script lives at /new/deploy.sh"}]},
+            {"cleanup": [{"fact_id": fid, "action": "remove", "reason": "path moved"}]},
+        ))
+
+        result = mex_extractor.on_session_end(
+            "sid-nocommit", [{"role": "user", "content": "deploy script moved"}],
+            interactive=False,
+        )
+        assert result["cleanup_proposed"] == 1
+        assert result["cleanup_applied"] == 1
+        assert warm.get(fid) is None
+        # NEW entries were stashed (not auto-committed), not lost.
+        assert result["skipped"] == 1
+
+    def test_cleanup_only_session_with_no_new_entries_never_hits_callback(
+        self, warm, auto_extract_on, monkeypatch,
+    ):
+        """A session that produces zero new-entry proposals but DOES have a
+        cleanup proposal must still apply cleanup, and must NOT invoke
+        confirm_callback with an empty entries list (that would surface a
+        misleading "0 memories, reviewing..." prompt to the user)."""
+        fid = warm.add(content="the deploy script lives at /old/deploy.sh")["fact_id"]
+        monkeypatch.setattr(mex_extractor, "_get_extraction_config", self._cfg)
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", self._llm(
+            {"entries": []},
+            {"cleanup": [{"fact_id": fid, "action": "remove", "reason": "path moved"}]},
+        ))
+
+        callback_calls = []
+
+        def cb(entries, cleanup):
+            callback_calls.append((entries, cleanup))
+            return {"entries": entries, "cleanup": cleanup}
+
+        result = mex_extractor.on_session_end(
+            "sid-cleanuponly", [{"role": "user", "content": "deploy script moved"}],
+            interactive=True, confirm_callback=cb,
+        )
+        assert callback_calls == []
+        assert result["final_proposed"] == 0
+        assert result["cleanup_proposed"] == 1
+        assert result["cleanup_applied"] == 1
+        assert warm.get(fid) is None
+
+    def test_cleanup_batch_skips_action_touching_already_consumed_fact(
+        self, warm, auto_extract_on, monkeypatch,
+    ):
+        """A single LLM cleanup response naming the same fact twice (e.g.
+        "merge A->B" then a second action also touching A or B) must only
+        apply the first action; the second is skipped rather than acting on
+        stale precomputed content."""
+        a = warm.add(content="cdsdb is the storage backend for TDS records")["fact_id"]
+        b = warm.add(content="TDS stores records in cdsdb somewhere")["fact_id"]
+        c = warm.add(content="cdsdb TDS records also has a third stale fact")["fact_id"]
+        monkeypatch.setattr(mex_extractor, "_get_extraction_config", self._cfg)
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", self._llm(
+            {"entries": [{"content": "new unrelated entry"}]},
+            {"cleanup": [
+                {"fact_id": a, "action": "merge", "merge_target_id": b,
+                 "merged_content": "TDS stores records in cdsdb", "reason": "dupe"},
+                # Second action also touches b (the merge target above) —
+                # must be skipped, not applied against stale content.
+                {"fact_id": b, "action": "remove", "reason": "redundant"},
+                # Unrelated action must still apply normally.
+                {"fact_id": c, "action": "remove", "reason": "stale"},
+            ]},
+        ))
+
+        result = mex_extractor.on_session_end(
+            "sid-batch-dedupe",
+            [{"role": "user", "content": "cdsdb TDS records cleanup dupes"}],
+            interactive=False,
+        )
+        assert result["cleanup_proposed"] == 3
+        # a merged away, c removed => applied; b's remove skipped (already
+        # touched as the merge target).
+        assert result["cleanup_applied"] == 2
+        assert result["cleanup_skipped"] == 1
+        assert warm.get(a) is None
+        assert warm.get(b) is not None
+        assert warm.get(b)["content"] == "TDS stores records in cdsdb"
+        assert warm.get(c) is None
+
+
