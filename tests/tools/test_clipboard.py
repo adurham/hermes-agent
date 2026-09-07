@@ -34,6 +34,9 @@ from hermes_cli.clipboard import (
     _windows_save,
     _windows_has_image,
     _convert_to_png,
+    _kitten_save,
+    _kitten_has_image,
+    _kitten_preferred,
 )
 from cli import _should_auto_attach_clipboard_image_on_paste
 
@@ -281,27 +284,204 @@ class TestXclipSave:
 # ── Linux dispatch ──────────────────────────────────────────────────────
 
 class TestLinuxSave:
-    """Test that _linux_save dispatches correctly to WSL → Wayland → X11."""
+    """Test that _linux_save dispatches correctly to kitten → WSL → Wayland → X11."""
 
     def setup_method(self):
         import hermes_cli.clipboard as cb
         cb._wsl_detected = None
+        cb._kitten_unavailable = False
 
-    def test_wsl_tried_first(self, tmp_path):
+    def teardown_method(self):
+        import hermes_cli.clipboard as cb
+        cb._kitten_unavailable = False
+
+    def test_wsl_tried_first_when_kitten_absent(self, tmp_path):
         dest = tmp_path / "out.png"
-        with patch("hermes_cli.clipboard._is_wsl", return_value=True):
-            with patch("hermes_cli.clipboard._wsl_save", return_value=True) as m:
-                assert _linux_save(dest) is True
-                m.assert_called_once_with(dest)
+        with patch("hermes_cli.clipboard._kitten_save", return_value=False):
+            with patch("hermes_cli.clipboard._is_wsl", return_value=True):
+                with patch("hermes_cli.clipboard._wsl_save", return_value=True) as m:
+                    assert _linux_save(dest) is True
+                    m.assert_called_once_with(dest)
 
     def test_wayland_fails_falls_through_to_xclip(self, tmp_path):
         dest = tmp_path / "out.png"
-        with patch("hermes_cli.clipboard._is_wsl", return_value=False):
-            with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
-                with patch("hermes_cli.clipboard._wayland_save", return_value=False):
-                    with patch("hermes_cli.clipboard._xclip_save", return_value=True) as m:
-                        assert _linux_save(dest) is True
-                        m.assert_called_once_with(dest)
+        with patch("hermes_cli.clipboard._kitten_save", return_value=False):
+            with patch("hermes_cli.clipboard._is_wsl", return_value=False):
+                with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+                    with patch("hermes_cli.clipboard._wayland_save", return_value=False):
+                        with patch("hermes_cli.clipboard._xclip_save", return_value=True) as m:
+                            assert _linux_save(dest) is True
+                            m.assert_called_once_with(dest)
+
+    def test_kitten_tried_first_on_headless(self, tmp_path):
+        """The bug case: SSH vars stripped by `su -`, no DISPLAY/WAYLAND —
+        kitten is the only backend that can reach the user's clipboard."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                def fake_run(cmd, **kw):
+                    dest.write_bytes(FAKE_PNG)
+                    return MagicMock(returncode=0)
+                mock_run.side_effect = fake_run
+                assert _linux_save(dest) is True
+        assert dest.stat().st_size == len(FAKE_PNG)
+        assert mock_run.call_count == 1
+
+    def test_kitten_success_skips_native_backends(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._kitten_save", return_value=True) as kitten:
+            with patch("hermes_cli.clipboard._is_wsl", return_value=True) as wsl:
+                with patch("hermes_cli.clipboard._wsl_save") as wsl_save:
+                    assert _linux_save(dest) is True
+                    kitten.assert_called_once_with(dest)
+                    wsl.assert_not_called()
+                    wsl_save.assert_not_called()
+
+    def test_kitten_timeout_falls_through_and_caches(self, tmp_path):
+        """Non-kitty far-end terminal: kitten hangs → TimeoutExpired → fall
+        through, and cache the negative so the next attempt skips kitten."""
+        dest = tmp_path / "out.png"
+        import hermes_cli.clipboard as cb
+        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.side_effect = subprocess.TimeoutExpired("kitten", 3)
+                with patch("hermes_cli.clipboard._xclip_save", return_value=False):
+                    assert _linux_save(dest) is False
+        # Second call: kitten must be skipped via the negative cache
+        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten") as find:
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.side_effect = subprocess.TimeoutExpired("kitten", 3)
+                with patch("hermes_cli.clipboard._xclip_save", return_value=True):
+                    assert _linux_save(dest) is True
+                    find.assert_not_called()
+        assert cb._kitten_unavailable is True
+
+
+class TestKittenSave:
+    """Direct tests for the kitten (kitty OSC 5522) backend."""
+
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._kitten_unavailable = False
+
+    def teardown_method(self):
+        import hermes_cli.clipboard as cb
+        cb._kitten_unavailable = False
+
+    def test_success_writes_file(self, tmp_path):
+        dest = tmp_path / "out.png"
+        def fake_run(cmd, **kw):
+            dest.write_bytes(FAKE_PNG)
+            return MagicMock(returncode=0)
+        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
+            with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run) as mock_run:
+                assert _kitten_save(dest) is True
+        assert dest.stat().st_size == len(FAKE_PNG)
+        assert mock_run.call_args[0][0] == ["/usr/bin/kitten", "clipboard", "-g", str(dest)]
+
+    def test_rc0_but_no_file_fails(self, tmp_path):
+        """kitten exited 0 but produced nothing — must not report success."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                assert _kitten_save(dest) is False
+        assert not dest.exists()
+
+    def test_kitten_not_found_falls_through(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._find_kitten", return_value=None):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                assert _kitten_save(dest) is False
+                mock_run.assert_not_called()
+
+    def test_timeout_returns_false(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.side_effect = subprocess.TimeoutExpired("kitten", 3)
+                assert _kitten_save(dest) is False
+
+    def test_display_set_skips_kitten(self, tmp_path):
+        """Local desktop / X-forwarded session: native tools own the
+        clipboard; kitten must not be tried (avoids a needless stall when
+        the far end isn't kitty but xclip/wl-paste work)."""
+        dest = tmp_path / "out.png"
+        with patch.dict(os.environ, {"DISPLAY": ":0"}):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                assert _kitten_save(dest) is False
+                mock_run.assert_not_called()
+
+    def test_wayland_set_skips_kitten(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                assert _kitten_save(dest) is False
+                mock_run.assert_not_called()
+
+
+class TestKittenHasImage:
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._kitten_unavailable = False
+
+    def teardown_method(self):
+        import hermes_cli.clipboard as cb
+        cb._kitten_unavailable = False
+
+    @pytest.mark.parametrize("stdout, expected", [
+        ("image/png\ntext/plain\n", True),
+        ("text/plain\ntext/html\n", False),
+        ("", False),
+    ])
+    def test_mime_list_detection(self, stdout, expected):
+        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout=stdout, returncode=0)
+                assert _kitten_has_image() is expected
+
+    def test_timeout_returns_false(self):
+        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.side_effect = subprocess.TimeoutExpired("kitten", 3)
+                assert _kitten_has_image() is False
+
+    def test_display_set_skips_kitten(self):
+        with patch.dict(os.environ, {"DISPLAY": ":0"}):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                assert _kitten_has_image() is False
+                mock_run.assert_not_called()
+
+
+class TestKittenPreferred:
+    """Gate contract: only headless Linux sessions prefer the
+    terminal-emulator path."""
+
+    def setup_method(self):
+        import hermes_constants
+        hermes_constants._wsl_detected = None
+
+    def teardown_method(self):
+        import hermes_constants
+        hermes_constants._wsl_detected = None
+
+    def test_headless_true(self):
+        assert _kitten_preferred({"DISPLAY": "", "WAYLAND_DISPLAY": ""}) is True
+
+    def test_display_set_false(self):
+        assert _kitten_preferred({"DISPLAY": ":0"}) is False
+
+    def test_wayland_set_false(self):
+        assert _kitten_preferred({"WAYLAND_DISPLAY": "wayland-0"}) is False
+
+    def test_wsl_false_even_when_headless(self):
+        with patch("hermes_cli.clipboard._is_wsl", return_value=True):
+            assert _kitten_preferred({"DISPLAY": "", "WAYLAND_DISPLAY": ""}) is False
+
+    def test_env_argument_overrides_os_environ(self):
+        with patch.dict(os.environ, {"DISPLAY": ":0"}):
+            with patch("hermes_cli.clipboard._is_wsl", return_value=False):
+                assert _kitten_preferred({"DISPLAY": "", "WAYLAND_DISPLAY": ""}) is True
 
 
 # ── Native Windows (PowerShell) ─────────────────────────────────────────

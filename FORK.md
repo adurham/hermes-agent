@@ -294,6 +294,120 @@ regression-tested (`test_escalation_ignored_without_the_escalated_marker`).
   task that now legitimately draws the omission notice. Narrowed to the test's
   actual subject (no `IGNORED` / no `Task 0` warning), matching the `any(...)`
   style its sibling assertions already use.
+### Ctrl+V/Alt+V image paste over SSH into headless Linux (kitten clipboard backend) — 2026-09-07
+
+**Symptom.** Ctrl+V (and Alt+V, `escape,v`) did nothing — silently — when
+`hermes` ran inside the hlxc tmux session on the headless hermes-gw-01 LXC
+(kitty on the MacBook → `ssh -t` → `su - hermes` → tmux → hermes). The
+image lives on the MacBook's clipboard; the remote box has no display
+server (`DISPLAY`/`WAYLAND_DISPLAY` empty), no clipboard daemon, and none
+of xclip/wl-paste/xsel installed — so `_linux_save`'s entire fallback
+chain (WSL → wl-paste → xclip) had nothing to talk to, and the key
+handlers failed with no else-branch feedback.
+
+**Root cause, verified live.** Re-confirmed on the box: `which xclip
+wl-paste pngpaste xsel` → all empty; `$DISPLAY`/`$WAYLAND_DISPLAY` unset;
+`kitten` absent. The clipboard that holds the wanted image is the LOCAL
+terminal emulator's (kitty), reachable only from the remote side via a
+terminal-protocol hop. Kitty's `kitten clipboard -g <file>` (OSC 5522 over
+the tty) is the upstream-blessed mechanism — its own short_desc is
+"Copy/paste with the system clipboard, even over SSH".
+
+**Fix.** New first-choice Linux backend in `hermes_cli/clipboard.py`:
+`_kitten_save` / `_kitten_has_image` / `_kitten_preferred` /
+`_find_kitten`, wired FIRST in `_linux_save` and in
+`has_clipboard_image`'s Linux chain (order: kitten → WSL → Wayland →
+X11). Design points, each verified against kitty 0.46.2 source:
+- **Gate:** headless only (`not DISPLAY and not WAYLAND_DISPLAY`,
+  WSL excluded). NOT gated on `is_remote_shell_session()` because the
+  real hlxc path runs `su - hermes`, which strips `SSH_*` — an SSH-gate
+  would never fire in the exact case being fixed. A local desktop keeps
+  its native backends (including X-forwarded sessions where xclip reads
+  the forwarded clipboard).
+- **kitten discovery:** `shutil.which`, falling back to the fixed
+  standalone-binary path `~/.local/bin/kitten` (kitty officially ships
+  kitten as a static binary needing no kitty install on the remote host).
+- **Timeouts are mandatory:** when the far-end terminal is NOT kitty the
+  OSC 5522 request goes unanswered and kitten waits indefinitely (its
+  own abort is Esc-Esc) — `subprocess.run(timeout=3)` bounds it. A
+  process-lifetime negative cache (`_kitten_unavailable`) makes a
+  non-kitty session pay that timeout once, not per keypress. The timeout
+  path also saves/restores the tty termios (SIGKILL leaves kitten's raw
+  mode in place otherwise).
+- **`start_new_session=True` is a trap:** verified it breaks kitten
+  (loses the controlling tty → rc=1). The hermes call shape
+  (`capture_output=True`, no new session) is the verified-working one.
+- **No `HERMES_*` env vars, no new config knobs** — autodetected from
+  PATH + env, matching the existing backends' style.
+
+**Verification (real command output, not narrated).**
+* `tests/tools/test_clipboard.py`: 60 passed, 0 failed (was 41 passed +
+  1 pre-existing platform skip at HEAD before this change; +19 new tests
+  covering the su-stripped-env headless case, timeout caching,
+  rc=0-but-no-file, has-image mime parsing, DISPLAY/WAYLAND/WSL gates,
+  and dispatch order). `ruff check` clean on both files.
+* Live local proof (real kitty window, no tmux):
+  `subprocess.run(["kitten","clipboard","-g",out], capture_output=True)`
+  → rc=0, PNG sha256 `5e15dd30…` byte-identical to the clipboard probe
+  image — the exact hermes call shape works.
+* Live remote proof over real SSH (no tmux, `script`-allocated tty, wire
+  capture): the OSC 5522 request traveled ssh→remote, a kitty-side
+  emulator answered OK/DATA/DONE with PNG bytes, and the probe PNG
+  landed on hermes-gw-01 at `/tmp/wire_v2_notmux.png` with sha256
+  `5e15dd30…` matching byte-for-byte. The mechanism round-trips a real
+  image over a real SSH session into a real file on the box.
+* kitten v0.46.2 (pinned == the Mac's kitty version, sha256
+  `031d40a8…`) deployed to `/home/hermes/.local/bin/kitten` on
+  hermes-gw-01 via the homelab role (see that repo's commit).
+
+**Known limitation — tmux breaks the OSC 5522 round trip (the real hlxc
+path).** Wire-capture experiments on the actual chain proved:
+(a) a pane's unwrapped OSC 5522 request is dropped by the tmux server's
+output parser; (b) with `allow-passthrough on`, a `Ptmux;`-wrapped
+request DOES reach the outer terminal — but kitty writes its response
+to the child pty UNWRAPPED, and the tmux client drops unknown OSC from
+terminal input, so the pane receives 0 bytes (verified twice, wire
+logs). Kitty's own `DCSToKitty` wraps only the `@`-protocol, never OSC
+5522 responses; upstream master (2026-09) has no tmux handling in
+kittens/clipboard either. The tmux maintainer states passthrough is
+explicitly not for request/response (tmux#4386). Consequence: inside
+tmux, `kitten clipboard -g` times out after 3s and falls through —
+same silent behavior as before, but now bounded and cached. The fix as
+shipped therefore works for the no-multiplexer SSH case and for the
+hlxc session ONLY if the OSC 5522 hop can bypass tmux.
+
+**Open decision (surfaced, not silently decided):** two viable routes
+to close the tmux gap, both matching kitty's own ssh-kitten architecture
+(`forward_remote_control`): (1) kitty `--listen-on unix:...` +
+`allow_remote_control yes` on the Mac, with hlxc reverse-forwarding the
+socket (`ssh -R /tmp/kitty-rc.sock:unix:...`) so the remote side calls
+`kitten @ run --allow-remote-control pngpaste /path` — verified working
+in pieces headlessly (socket `@ ls` OK; `@ run` + pngpaste returns the
+clipboard PNG over the socket), mirroring the existing 1Password
+hlxc-bridge reverse-socket pattern exactly; or (2) OSC 5522 response
+wrapping support landing in tmux/kitty (not available today). Route (1)
+requires Mac-side kitty.conf/`--listen-on` setup + an hlxc alias change
+— user's call, not made here. The alternative accepted by the user for
+now: `hermes` can also run outside tmux on the box (`ssh -t` without
+tmux) where the shipped backend works end-to-end today.
+
+**Security note (investigated, reported, NOT weakened).** Kitty's
+default `clipboard_control` is `write-clipboard write-primary
+read-clipboard-ask read-primary-ask` — i.e. default kitty PROMPTS on
+every remote clipboard read (source: kitty 0.46.2
+options/definition.py:3541). Silent reads require the local user to
+opt into `read-clipboard read-primary` in their kitty.conf. The user's
+Mac already has exactly that (`clipboard_control write-clipboard
+write-primary read-clipboard read-primary` + `allow_remote_control yes`,
+verified in `~/.config/kitty/kitty.conf`) — no default was weakened by
+this change. For anyone else adopting this backend: the first
+`kitten clipboard -g` from a remote box will pop kitty's permission
+prompt unless they make the same opt-in; the backend never touches or
+overrides that setting (it can't — it's local-terminal-side).
+
+**Files touched.** `hermes_cli/clipboard.py`,
+`tests/tools/test_clipboard.py`, `FORK.md`; homelab repo
+(`hermes_gateway` role: kitten binary deploy + README).
 
 ### CC identity refresh: stale 2.1.138 billing header broke fable-class consult (version gate) — 2026-09-03
 

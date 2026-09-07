@@ -9,12 +9,14 @@ Platform support:
   macOS   — osascript (always available), pngpaste (if installed)
   Windows — PowerShell via WinForms, Get-Clipboard, file-drop fallback
   WSL2    — powershell.exe via WinForms, Get-Clipboard, file-drop fallback
-  Linux   — wl-paste (Wayland), xclip (X11)
+  Linux   — kitten clipboard (kitty terminal over SSH / headless),
+            wl-paste (Wayland), xclip (X11)
 """
 
 import base64
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,7 +49,9 @@ def has_clipboard_image() -> bool:
         return _macos_has_image()
     if sys.platform == "win32":
         return _windows_has_image()
-    # Match _linux_save fallthrough order: WSL → Wayland → X11
+    # Match _linux_save fallthrough order: kitten → WSL → Wayland → X11
+    if _kitten_has_image():
+        return True
     if _is_wsl() and _wsl_has_image():
         return True
     if os.environ.get("WAYLAND_DISPLAY") and _wayland_has_image():
@@ -374,7 +378,10 @@ def _windows_save(dest: Path) -> bool:
 # ── Linux ────────────────────────────────────────────────────────────────
 
 def _linux_save(dest: Path) -> bool:
-    """Try clipboard backends in priority order: WSL → Wayland → X11."""
+    """Try clipboard backends in priority order: kitten → WSL → Wayland → X11."""
+    if _kitten_save(dest):
+        return True
+
     if _is_wsl():
         if _wsl_save(dest):
             return True
@@ -385,6 +392,158 @@ def _linux_save(dest: Path) -> bool:
             return True
 
     return _xclip_save(dest)
+
+
+# ── kitty terminal (kitten clipboard, OSC 5522 over the tty) ─────────────
+#
+# `kitten clipboard -g <file>` is kitty's mechanism for reading the system
+# clipboard from inside an SSH session: the request travels as an OSC 5522
+# escape sequence down the controlling terminal (wrapping itself in the tmux
+# DCS passthrough when $TMUX is set), and the LOCAL terminal emulator — the
+# kitty window physically sitting at the far end of the SSH connection —
+# answers with the clipboard content.  This works with no display server, X11,
+# Wayland, or clipboard daemon on the remote host, which is exactly the
+# headless-LXC-over-SSH case where wl-paste/xclip have nothing to talk to.
+#
+# kitten is officially distributed as a standalone static binary that needs
+# no kitty installation on the remote host (see the kitty GitHub releases).
+#
+# Two cautions shape this backend:
+#   * When the far-end terminal is NOT kitty, the OSC 5522 request goes
+#     unanswered and `kitten` waits INDEFINITELY (its own abort is Esc-Esc).
+#     We must always run it under a subprocess timeout.
+#   * `kitten clipboard -g` may prompt for permission on the local kitty
+#     (kitty's clipboard_control option).  With the kitty default config the
+#     read needs `read-clipboard` in clipboard_control to be silent; the
+#     docs describe this as a UX tradeoff the user controls on their local
+#     terminal, not something the remote side can (or should) override.
+#
+# Process-lifetime negative cache: if kitten ever times out here (no kitty
+# at the far end), later attempts in the same process skip it entirely so a
+# single Ctrl+V press never pays the timeout cost twice.
+#
+# subprocess.run(timeout=) kills with SIGKILL, which kitten cannot intercept
+# to restore the tty termios it set to raw — so on the timeout path we save
+# and restore the tty settings ourselves, keeping the interactive prompt's
+# Ctrl+C/echo behavior intact for whatever session survives us.
+
+_KITTEN_TIMEOUT_S = 3  # a live kitty answers in well under a second
+_kitten_unavailable: bool = False
+
+
+def _tty_settings() -> list | None:
+    """Snapshot termios of the controlling tty (if any), for restore."""
+    try:
+        import termios
+        if os.isatty(0):
+            return termios.tcgetattr(0)
+    except Exception:
+        pass
+    return None
+
+
+def _restore_tty(settings) -> None:
+    """Re-apply termios saved by _tty_settings (no-op when None)."""
+    if not settings:
+        return
+    try:
+        import termios
+        termios.tcsetattr(0, termios.TCSANOW, settings)
+    except Exception as e:
+        logger.debug("tty restore after kitten timeout failed: %s", e)
+
+
+def _find_kitten() -> str | None:
+    """Return the kitten executable path, or None.
+
+    PATH lookup first; then the fixed install location used by the
+    standalone-binary deployment (kitty ships kitten as a static binary
+    that needs no kitty install on the remote host).  The fallback must
+    actually exist — an unconditional path string here would turn "not
+    found" into a guaranteed FileNotFoundError on every call.
+    """
+    found = shutil.which("kitten")
+    if found:
+        return found
+    fixed = Path.home() / ".local/bin/kitten"
+    if fixed.is_file():
+        return str(fixed)
+    return None
+
+
+def _kitten_preferred(env=None) -> bool:
+    """True when the session has no local display server to read instead.
+
+    Over SSH into a headless box there is no DISPLAY/WAYLAND_DISPLAY and no
+    clipboard daemon, so wl-paste/xclip cannot work and the only reachable
+    clipboard is the local terminal emulator's (kitty).  On a local desktop
+    (DISPLAY/WAYLAND_DISPLAY set) the native tools are the right choice —
+    including X-forwarded sessions, where xclip reads the forwarded
+    clipboard of the machine the user is actually sitting at.  WSL is
+    excluded too: kitty has no native Windows build, so the far-end
+    terminal of a WSL pty can never answer the OSC 5522 request and the
+    Windows clipboard is already reachable via powershell.exe.
+    """
+    if _is_wsl():
+        return False
+    e = os.environ if env is None else env
+    return not (e.get("DISPLAY") or e.get("WAYLAND_DISPLAY"))
+
+
+def _kitten_save(dest: Path) -> bool:
+    """Read the clipboard via `kitten clipboard -g` (kitty over SSH)."""
+    global _kitten_unavailable
+    if _kitten_unavailable or not _kitten_preferred():
+        return False
+    kitten = _find_kitten()
+    if not kitten:
+        return False
+    saved_tty = _tty_settings()
+    try:
+        r = subprocess.run(
+            [kitten, "clipboard", "-g", str(dest)],
+            capture_output=True, timeout=_KITTEN_TIMEOUT_S,
+        )
+        if r.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
+            return True
+    except FileNotFoundError:
+        return False
+    except subprocess.TimeoutExpired:
+        # No kitty answered — don't pay this timeout again in this process.
+        _kitten_unavailable = True
+    except Exception as e:
+        logger.debug("kitten clipboard extraction failed: %s", e)
+    finally:
+        _restore_tty(saved_tty)
+    dest.unlink(missing_ok=True)
+    return False
+
+
+def _kitten_has_image() -> bool:
+    """Check for an image via `kitten clipboard -g -m .` (lists MIME types)."""
+    global _kitten_unavailable
+    if _kitten_unavailable or not _kitten_preferred():
+        return False
+    kitten = _find_kitten()
+    if not kitten:
+        return False
+    try:
+        r = subprocess.run(
+            [kitten, "clipboard", "-g", "-m", ".", "/dev/stdout"],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=_KITTEN_TIMEOUT_S,
+        )
+        if r.returncode == 0 and any(
+            t.strip().startswith("image/") for t in r.stdout.splitlines()
+        ):
+            return True
+    except FileNotFoundError:
+        return False
+    except subprocess.TimeoutExpired:
+        _kitten_unavailable = True
+    except Exception as e:
+        logger.debug("kitten clipboard mime check failed: %s", e)
+    return False
 
 
 # ── WSL2 (powershell.exe) ────────────────────────────────────────────────
