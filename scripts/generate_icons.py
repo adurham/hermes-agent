@@ -3,7 +3,7 @@
 
 Usage (from repo root):
     .venv/Scripts/python.exe scripts/generate_icons.py           # write
-    .venv/Scripts/python.exe scripts/generate_icons.py --check   # verify only
+    .venv/Scripts/python.exe scripts/generate_icons.py --check   # verify structure
 
 Sources of truth — two axes, composed per target:
   Girl art (vector):  assets/nous-girl-black.svg  (black positive space)
@@ -12,27 +12,26 @@ Sources of truth — two axes, composed per target:
                       5487^2 viewBox, one path each).
 
   Backgrounds (per platform surface, light/dark):
-                      assets/backgrounds/squircle-light.svg    white rounded
-                      assets/backgrounds/squircle-dark.svg     #0d1117 rounded
-                      assets/backgrounds/logo-frame.svg        black frame +
-                                                               white interior (website)
-                      assets/backgrounds/logo-frame-dark.svg   white frame +
-                                                               #0d1117 interior
-                      assets/backgrounds/tile-light.svg        solid white (BrandMark)
-                      assets/backgrounds/tile-dark.svg         solid #0d1117
+                      assets/backgrounds/squircle-light.svg   white rounded
+                      assets/backgrounds/squircle-dark.svg    #0d1117 rounded
 
   The master SVGs (assets/icon-master.svg light, assets/icon-master-dark.svg
   dark) are GENERATED artifacts — squircle background + girl nested into the
-  824px HIG content safe zone — not hand-edited sources. The 1024 master is
-  what every squircle target renders from.
+  824px HIG content safe zone. The light master drives every squircle target;
+  the dark master drives the dark-appearance targets.
 
-If the girl SVGs are missing a red-circle placeholder master is written so a
-partial checkout still generates; --check then flags the drift.
+The girl is nested via its art bbox as viewBox, so it always lands centered in
+the box (824 safe zone for squircles / height-fitted for the marks) without
+distortion. The girl art corners sit ~185px from the squircle arc centers vs
+the 245px radius, so no art touches the rounded corners on any OS mask.
 
---check mode regenerates every target in memory and byte-compares it
-against the committed file, exiting nonzero on any drift. This is what
-CI runs (see .github/workflows/icons-freshness-check.yml) so the repo
-can never hold a hand-edited or stale generated icon.
+GENERATED OUTPUTS ARE NOT COMMITTED. Everything this script writes is
+gitignored and regenerated on demand by the consuming pipelines (website
+prebuild, desktop prebuild/predev, installer prebuild, web prebuild — via
+scripts/generate-icons.mjs). The freshness lane (icons-freshness-check.yml)
+runs --check, which regenerates in memory and asserts structural invariants
+(sizes, transparency, container frame sets) — there are no committed bytes to
+byte-compare against.
 
 Rendering: resvg (resvg-py) for SVG -> PNG fidelity at every size.
 Containers: Pillow for multi-size .ico and .icns.
@@ -41,7 +40,7 @@ Deps:
     Pillow (core dependency), resvg-py (dev extra):
     uv sync --extra dev
 
-Outputs (35 files):
+Outputs (30 files):
   assets/icon-master.svg                              generated light master
   assets/icon-master-dark.svg                         generated dark master
   apps/desktop/assets/icon.png                        1024x1024 squircle (light)
@@ -54,21 +53,18 @@ Outputs (35 files):
   apps/desktop/assets/appx/StoreLogo.png              50x50 squircle
   apps/desktop/assets/appx/Square44x44Logo.png        44x44 squircle
   apps/desktop/assets/appx/Square150x150Logo.png      150x150 squircle
-  apps/desktop/assets/appx/*-dark.png                 dark-appearance logos (ready
-                                                      to wire into the MSIX
-                                                      manifest when app-builder-lib
-                                                      supports contrast images)
+  apps/desktop/assets/appx/*-dark.png                 dark-appearance logos
   apps/desktop/public/apple-touch-icon.png            1024x1024 squircle
-  apps/desktop/public/nous-girl.png                   256x256 PNG, black girl on white (light)
-  apps/desktop/public/nous-girl-dark.png              256x256 PNG, white girl on #0d1117 (dark)
+  apps/desktop/public/nous-girl.png                   256x256 squircle, black girl (light mark)
+  apps/desktop/public/nous-girl-dark.png              256x256 squircle, white girl (dark mark)
   apps/bootstrap-installer/src-tauri/icons/32x32.png       32x32
   apps/bootstrap-installer/src-tauri/icons/128x128.png     128x128
   apps/bootstrap-installer/src-tauri/icons/128x128@2x.png  256x256
   apps/bootstrap-installer/src-tauri/icons/icon.ico        16,32,64,128,256
   apps/bootstrap-installer/src-tauri/icons/icon.icns       16..1024
-  apps/bootstrap-installer/public/nous-girl.png   256x256 PNG, black girl on white (light)
-  website/static/img/logo.png                     1772x1799 black-frame wordmark
-  website/static/img/logo-dark.png                1772x1799 white-frame wordmark
+  apps/bootstrap-installer/public/nous-girl.png   256x256 squircle mark (light)
+  website/static/img/logo.png                     1772x1799 girl alone, transparent (light)
+  website/static/img/logo-dark.png                1772x1799 girl alone, transparent (dark)
   website/static/img/nous-logo.png                150x150 on white (opaque)
   website/static/img/nous-logo-dark.png           150x150 on #0d1117 (opaque)
   website/static/img/favicon-16x16.png            16x16
@@ -113,24 +109,41 @@ DARK_RGB = (13, 17, 23)
 
 # Girl placement per background: (x, y, w, h) in that background's coordinate
 # space. Squircle backgrounds put the girl in the 824px HIG content safe zone
-# (centered, 100px pad on a 1024 canvas); logo frames fill the white/dark
-# interior at ~1.7x; BrandMark tiles take the girl height-fitted (meet).
+# (centered, 100px pad on a 1024 canvas). Marks reuse the same squircles.
 GIRL_BOXES = {
     "squircle-light.svg": (100, 100, 824, 824),
     "squircle-dark.svg": (100, 100, 824, 824),
-    "logo-frame.svg": (14, 17, 1743, 1766),
-    "logo-frame-dark.svg": (14, 17, 1743, 1766),
-    "tile-light.svg": (0, 0, 256, 256),
-    "tile-dark.svg": (0, 0, 256, 256),
 }
 # The brand-kit SVG canvas (both girl svgs share this viewBox).
 GIRL_VIEWBOX = 5487.0615
 
-PLACEHOLDER = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect x="0" y="0" width="1024" height="1024" rx="{SQUIRCLE_RADIUS}" fill="#ffffff"/>
-  <circle cx="512" cy="512" r="420" fill="#e34c4c"/>
-</svg>
-'''
+# Target sizes for --check's structural verification: relpath -> (format, size)
+CHECK_SIZES: dict[str, tuple[str, tuple[int, int]]] = {
+    "apps/desktop/assets/icon.png": ("PNG", (1024, 1024)),
+    "apps/desktop/assets/icon-dark.png": ("PNG", (1024, 1024)),
+    "apps/desktop/assets/appx/Wide310x150Logo.png": ("PNG", (310, 150)),
+    "apps/desktop/assets/appx/Wide310x150Logo-dark.png": ("PNG", (310, 150)),
+    "apps/desktop/assets/appx/StoreLogo.png": ("PNG", (50, 50)),
+    "apps/desktop/assets/appx/StoreLogo-dark.png": ("PNG", (50, 50)),
+    "apps/desktop/assets/appx/Square44x44Logo.png": ("PNG", (44, 44)),
+    "apps/desktop/assets/appx/Square44x44Logo-dark.png": ("PNG", (44, 44)),
+    "apps/desktop/assets/appx/Square150x150Logo.png": ("PNG", (150, 150)),
+    "apps/desktop/assets/appx/Square150x150Logo-dark.png": ("PNG", (150, 150)),
+    "apps/desktop/public/apple-touch-icon.png": ("PNG", (1024, 1024)),
+    "apps/desktop/public/nous-girl.png": ("PNG", (256, 256)),
+    "apps/desktop/public/nous-girl-dark.png": ("PNG", (256, 256)),
+    "apps/bootstrap-installer/src-tauri/icons/32x32.png": ("PNG", (32, 32)),
+    "apps/bootstrap-installer/src-tauri/icons/128x128.png": ("PNG", (128, 128)),
+    "apps/bootstrap-installer/src-tauri/icons/128x128@2x.png": ("PNG", (256, 256)),
+    "apps/bootstrap-installer/public/nous-girl.png": ("PNG", (256, 256)),
+    "website/static/img/logo.png": ("PNG", (1772, 1799)),
+    "website/static/img/logo-dark.png": ("PNG", (1772, 1799)),
+    "website/static/img/nous-logo.png": ("PNG", (150, 150)),
+    "website/static/img/nous-logo-dark.png": ("PNG", (150, 150)),
+    "website/static/img/favicon-16x16.png": ("PNG", (16, 16)),
+    "website/static/img/favicon-32x32.png": ("PNG", (32, 32)),
+    "website/static/img/apple-touch-icon.png": ("PNG", (180, 180)),
+}
 
 # (relpath, kind, arg)
 TARGETS: list[tuple[str, str, object]] = [
@@ -216,7 +229,7 @@ def girl_layer(girl: str, box: tuple[float, float, float, float]) -> str:
 def background_inner(name: str) -> tuple[str, int, int]:
     """Inner content + (width, height) of a background SVG asset."""
     text = (BACKGROUNDS / name).read_text(encoding="utf-8")
-    m = re.search(r"<svg\b[^>]*viewBox=\"0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)\"[^>]*>", text)
+    m = re.search(r'<svg\b[^>]*viewBox="0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)"[^>]*>', text)
     assert m, f"cannot parse viewBox of {name}"
     w, h = float(m.group(1)), float(m.group(2))
     inner = re.sub(r"^.*?>\s*", "", text, count=1, flags=re.S)
@@ -224,14 +237,15 @@ def background_inner(name: str) -> tuple[str, int, int]:
     return inner, int(w), int(h)
 
 
-def compose_master(girl: str, bg: str) -> str:
-    """Composed master SVG: background + girl layer."""
+def compose_svg(girl: str, bg: str) -> str:
+    """Full svg text: background + girl layer, in the background's native
+    coordinate space (resvg scales to whatever output size is requested, so
+    the composition is size-agnostic — no manual box scaling)."""
     inner, w, h = background_inner(bg)
-    x, y, bx, bh = GIRL_BOXES[bg]
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}">\n'
         f"  {inner.strip()}\n"
-        f"  {girl_layer(girl, (x, y, bx, bh))}\n"
+        f"  {girl_layer(girl, GIRL_BOXES[bg])}\n"
         "</svg>\n"
     )
 
@@ -243,12 +257,17 @@ def ensure_masters(check: bool = False) -> None:
     if missing:
         if check:
             sys.exit(f"[check] girl art missing: {[p.name for p in missing]}")
-        for path, content in ((MASTER, PLACEHOLDER), (MASTER_DARK, PLACEHOLDER)):
-            path.write_text(content, encoding="utf-8")
+        placeholder = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <rect x="0" y="0" width="1024" height="1024" rx="{SQUIRCLE_RADIUS}" fill="#ffffff"/>
+  <circle cx="512" cy="512" r="420" fill="#e34c4c"/>
+</svg>
+'''
+        for path in (MASTER, MASTER_DARK):
+            path.write_text(placeholder, encoding="utf-8")
         print(f"[master] wrote placeholder masters ({[p.name for p in missing]})")
         return
-    MASTER.write_text(compose_master("black", "squircle-light.svg"), encoding="utf-8")
-    MASTER_DARK.write_text(compose_master("white", "squircle-dark.svg"), encoding="utf-8")
+    MASTER.write_text(compose_svg("black", "squircle-light.svg"), encoding="utf-8")
+    MASTER_DARK.write_text(compose_svg("white", "squircle-dark.svg"), encoding="utf-8")
 
 
 # ─── rendering ──────────────────────────────────────────────────────────────
@@ -261,67 +280,56 @@ def render(master: Path, size: int, *, background: str | None = None) -> Image.I
     return Image.open(io.BytesIO(data)).convert("RGBA")
 
 
+def render_svg(svg: str, size: int | tuple[int, int]) -> Image.Image:
+    if isinstance(size, int):
+        w = h = size
+    else:
+        w, h = size
+    data = resvg_py.svg_to_bytes(svg_string=svg, width=w, height=h)
+    return Image.open(io.BytesIO(data)).convert("RGBA")
+
+
 def paste_centered(canvas: Image.Image, img: Image.Image) -> None:
     x = (canvas.width - img.width) // 2
     y = (canvas.height - img.height) // 2
     canvas.alpha_composite(img, (x, y))
 
 
-def girl_mark(kind: str, size: int) -> Image.Image:
-    """Composite the girl SVG onto a fixed tile (BrandMark asset), rendered
-    straight from the vector art (crisp at any size).
-
-    girl_light: black girl on white tile.  girl_dark: white girl on #0d1117.
-    """
-    if kind == "girl_light":
-        girl, bg = "black", "tile-light.svg"
+def save_png(img: Image.Image, buf: io.BytesIO) -> None:
+    """Save with alpha preserved. Flat art quantizes losslessly to an 8-bit
+    palette (tRNS per-index alpha keeps the AA edges), so use that when the
+    palette round-trips pixel-identically; fall back to RGBA otherwise."""
+    if img.mode != "RGBA":
+        img.convert("RGBA").save(buf, "PNG", optimize=True)
+        return
+    quantized = img.quantize(colors=256, method=Image.FASTOCTREE, dither=Image.NONE)
+    if quantized.convert("RGBA").tobytes() == img.tobytes():
+        quantized.save(buf, "PNG", optimize=True)
     else:
-        girl, bg = "white", "tile-dark.svg"
+        img.save(buf, "PNG", optimize=True)
+
+
+def girl_mark(kind: str, size: int) -> Image.Image:
+    """The girl in the app-icon squircle (BrandMark asset) — the mark IS the
+    icon shape. girl_light: black girl on white squircle.  girl_dark: white
+    girl on #0d1117 squircle."""
+    if kind == "girl_light":
+        girl, bg = "black", "squircle-light.svg"
+    else:
+        girl, bg = "white", "squircle-dark.svg"
     if not GIRLS[girl].exists():
         print(f"  [girl] {GIRLS[girl].name} missing — placeholder fallback")
         return render(MASTER if kind == "girl_light" else MASTER_DARK, size)
-
-    inner, w, h = background_inner(bg)
-    svg = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}">\n'
-        f"  {inner.strip()}\n"
-        f"  {girl_layer(girl, GIRL_BOXES[bg])}\n"
-        "</svg>\n"
-    )
-    data = resvg_py.svg_to_bytes(svg_string=svg, width=size, height=size)
-    return Image.open(io.BytesIO(data)).convert("RGBA")
+    return render_svg(compose_svg(girl, bg), size)
 
 
 def build_logo_image(master: Path, dark: bool = False) -> Image.Image:
-    """1772x1799 wordmark: frame (light: black / dark: white, ~14-17px) +
-    interior (light: white / dark: #0d1117) + art at ~1.7x.
-
-    Measured from the real logo.png: border L/R 14, T 17, B 16; interior
-    spans (15,18)..(1758,1784) = 1743x1766.
-    """
-    from PIL import ImageDraw
-
+    """1772x1799 wordmark: the girl alone on transparency (no frame), centered.
+    Light = black girl, dark = white girl — the consuming surface's background
+    (navbar light/dark) shows through."""
     W, H = 1772, 1799
-    art_w, art_h = 1743, 1766
-    border = 14
-    top, bottom = 17, 16
-    if dark:
-        frame, interior = DARK_RGB, (255, 255, 255)
-    else:
-        frame, interior = (0, 0, 0), (255, 255, 255)
-
-    canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle((0, 0, W - 1, H - 1), radius=2, fill=frame)
-    draw.rectangle(
-        (border, top, W - 1 - border, H - 1 - bottom),
-        fill=interior,
-    )
-
-    # Art: render the master square at ~1.7x, tiny vertical stretch to fill.
-    art = render(master, art_w).resize((art_w, art_h), Image.LANCZOS)
-    canvas.alpha_composite(art, (border, top))
-    return canvas
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}">\n  {girl_layer("white" if dark else "black", (0, 0, W, H))}\n</svg>\n'
+    return render_svg(svg, (W, H))
 
 
 def target_bytes(kind: str, arg: object) -> bytes:
@@ -335,23 +343,15 @@ def target_bytes(kind: str, arg: object) -> bytes:
 
     buf = io.BytesIO()
     if kind == "png":
-        render(MASTER, arg).save(buf, "PNG")
+        save_png(render(MASTER, arg), buf)
     elif kind == "png_dark":
-        render(MASTER_DARK, arg).save(buf, "PNG")
+        save_png(render(MASTER_DARK, arg), buf)
     elif kind == "png_white":
-        render(MASTER, arg, background="#ffffff").save(buf, "PNG")
+        render(MASTER, arg, background="#ffffff").convert("RGB").save(buf, "PNG", optimize=True)
     elif kind == "png_dark_white":
-        render(MASTER_DARK, arg, background=DARK_HEX).save(buf, "PNG")
-    elif kind == "girl_light" or kind == "girl_dark":
-        # Flat 2-tone vector-style art: <256 distinct colors, so an 8-bit
-        # palette PNG holds it pixel-identically. Saved with compress_level=0
-        # (stored deflate blocks): the icons-freshness lane byte-compares
-        # against an ubuntu regen, and compressed PNG bytes drift per host
-        # zlib — stored blocks are spec-locked, identical on every platform.
-        # ~66KB vs ~15KB compressed is a non-issue for a bundled asset.
-        girl_mark(kind, arg).convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=256).save(
-            buf, "PNG", compress_level=0
-        )
+        render(MASTER_DARK, arg, background=DARK_HEX).convert("RGB").save(buf, "PNG", optimize=True)
+    elif kind in ("girl_light", "girl_dark"):
+        save_png(girl_mark(kind, arg), buf)
     elif kind == "ico":
         img = render(MASTER, max(arg))
         img.save(buf, format="ICO", sizes=[(s, s) for s in arg])
@@ -424,33 +424,84 @@ def cmd_write() -> None:
 
 
 def cmd_check() -> int:
+    """Structural verification: regenerate every target in memory and assert
+    the invariants that actually matter (there are no committed bytes to
+    byte-compare — outputs are generated on demand)."""
     ensure_masters(check=True)
-    drifted: list[str] = []
+    problems: list[str] = []
+
+    # every target must generate without error
     for rel, kind, arg in TARGETS:
+        try:
+            target_bytes(kind, arg)
+        except Exception as exc:  # noqa: BLE001
+            problems.append(f"{rel}: REGENERATE FAILED ({exc})")
+
+    # PNG targets must have the expected format + size
+    for rel, (fmt, size) in CHECK_SIZES.items():
         path = ROOT / rel
         if not path.exists():
-            drifted.append(f"{rel}: MISSING (expected generated file)")
+            problems.append(f"{rel}: MISSING (expected generated file)")
             continue
         try:
-            expected = target_bytes(kind, arg)
+            im = Image.open(path)
+            if im.format != fmt or im.size != size:
+                problems.append(f"{rel}: got {im.format} {im.size}, expected {fmt} {size}")
         except Exception as exc:  # noqa: BLE001
-            drifted.append(f"{rel}: REGENERATE FAILED ({exc})")
-            continue
-        actual = path.read_bytes()
-        if actual != expected:
-            drifted.append(f"{rel}: drift ({len(actual)} bytes on disk vs {len(expected)} generated)")
+            problems.append(f"{rel}: UNREADABLE ({exc})")
 
-    if not drifted:
-        print(f"[ok] all {len(TARGETS)} generated icons match the girl art + backgrounds")
+    # squircles must keep transparent corners (alpha extrema include 0)
+    for rel in (
+        "apps/desktop/assets/icon.png",
+        "apps/desktop/assets/icon-dark.png",
+        "apps/desktop/public/nous-girl.png",
+        "apps/desktop/public/nous-girl-dark.png",
+        "apps/desktop/public/apple-touch-icon.png",
+    ):
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        alpha = Image.open(path).convert("RGBA").getchannel("A")
+        lo, hi = alpha.getextrema()
+        if lo != 0 or hi != 255:
+            problems.append(f"{rel}: alpha extrema {alpha.getextrema()}, expected (0, 255) transparent corners")
+
+    # containers must have the right frame sets (parse ICO headers directly —
+    # PIL's ICO n_frames is unreliable across versions)
+    def ico_sizes(path: Path) -> list[int]:
+        data = path.read_bytes()
+        count = int.from_bytes(data[4:6], "little")
+        sizes = []
+        for i in range(count):
+            entry = data[6 + i * 16 : 6 + (i + 1) * 16]
+            w = entry[0] or 256
+            h = entry[1] or 256
+            sizes.append(w)
+        return sorted(set(sizes))
+
+    for rel, sizes in (
+        ("apps/desktop/assets/icon.ico", [16, 24, 32, 48, 64, 128, 256]),
+        ("apps/desktop/assets/icon-dark.ico", [16, 24, 32, 48, 64, 128, 256]),
+        ("apps/bootstrap-installer/src-tauri/icons/icon.ico", [16, 32, 64, 128, 256]),
+    ):
+        path = ROOT / rel
+        if not path.exists():
+            problems.append(f"{rel}: MISSING")
+            continue
+        try:
+            got = ico_sizes(path)
+            if got != sizes:
+                problems.append(f"{rel}: ICO frames {got}, expected {sizes}")
+        except Exception as exc:  # noqa: BLE001
+            problems.append(f"{rel}: UNREADABLE ({exc})")
+
+    if not problems:
+        print(f"[ok] all {len(TARGETS)} targets generate and pass structural checks")
         return 0
 
-    print(f"[check] {len(drifted)} file(s) out of sync:")
-    for line in drifted:
+    print(f"[check] {len(problems)} problem(s):")
+    for line in problems:
         print(f"  - {line}")
-    print(
-        "\nFix: run `.venv/Scripts/python.exe scripts/generate_icons.py` "
-        "and commit the regenerated files."
-    )
     return 1
 
 

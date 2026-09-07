@@ -29,9 +29,11 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
+const repoRoot = resolve(websiteDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
+const iconGenScript = join(repoRoot, "scripts", "generate-icons.mjs");
 const outputFile = join(websiteDir, "static", "api", "skills.json");
 const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
@@ -119,7 +121,19 @@ async function ensureUnifiedIndex() {
   }
 }
 
-// 0) Pull unified index if we don't have a fresh one.
+// 0) Icon assets — the navbar logo, favicons, and apple-touch-icon are
+// generated (not committed). This must fail loudly: a docs build without the
+// logo ships a broken navbar.
+console.log("[prebuild] generating icon assets…");
+{
+  const r = spawnSync("node", [iconGenScript], { stdio: "inherit", cwd: repoRoot });
+  if (r.status !== 0) {
+    console.error("[prebuild] icon generation failed — install the dev extra with `uv sync --extra dev`");
+    process.exit(1);
+  }
+}
+
+// 0b) Pull unified index if we don't have a fresh one.
 await ensureUnifiedIndex();
 
 // 1) skills.json — required for the Skills Hub page.
