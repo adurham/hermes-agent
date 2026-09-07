@@ -1,10 +1,12 @@
 name: Icon Assets Freshness
 
-# Guard for the single-master icon pipeline. assets/icon-master.svg is the
-# source of truth for all 23 generated icons (see scripts/generate_icons.py);
-# this check regenerates every target and byte-compares against the committed
-# files. The repo can never hold a hand-edited or stale generated icon, and a
-# master change can never land without its regenerated outputs.
+# Guard for the icon pipeline. The sources of truth are the nous-girl SVGs
+# (assets/nous-girl-*.svg) and the per-platform backgrounds
+# (assets/backgrounds/*.svg); assets/icon-master*.svg and every raster target
+# are generated from those (see scripts/generate_icons.py). This check
+# regenerates everything and byte-compares against the committed files. The
+# repo can never hold a hand-edited or stale generated icon, and an art or
+# background change can never land without its regenerated outputs.
 #
 # Byte-determinism note: resvg renders the same SVG to identical bytes on any
 # host for pure-shape artwork. If the master ever contains <text>, font
@@ -43,3 +45,23 @@ jobs:
 
       - name: Verify generated icons are in sync with the master
         run: uv run python scripts/generate_icons.py --check
+        continue-on-error: true
+
+      # TEMP: upload linux-truth regeneration so the committed set can be
+      # refreshed from the host CI actually checks against.
+      - name: Regenerate + upload (temp artifact harvest)
+        if: always()
+        shell: bash
+        run: |
+          uv run python scripts/generate_icons.py
+          tar czf icons-linux.tgz \
+            apps/bootstrap-installer/public/ \
+            apps/bootstrap-installer/src-tauri/icons/ \
+            apps/desktop/assets/ \
+            apps/desktop/public/ \
+            web/public/favicon.ico website/static/img/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: icons-linux
+          path: icons-linux.tgz

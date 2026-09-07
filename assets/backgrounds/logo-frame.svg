@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1772 1799">
+  <!-- website wordmark background, light: black frame (L/R 14, T 17, B 16) + white interior -->
+  <rect x="0" y="0" width="1772" height="1799" rx="2" fill="#000000"/>
+  <rect x="14" y="17" width="1743" height="1766" fill="#ffffff"/>
+</svg>
