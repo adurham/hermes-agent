@@ -35,57 +35,19 @@ _preserve_python() {
 }
 
 seed_plugin_preservation_fixtures() {
-  # NOT a clobbering seeder: if the wrapper is already populated the fixture
-  # state is left untouched, so a re-entered leg cannot erase a regression
-  # the earlier phase recorded. Only a matching marker may be pre-existing.
-  local home="$1" external="$2"
-  local wrapper="$home/plugins/mnemosyne-wrapper"
-  local marker="$wrapper/mnemosyne-wrapper.json"
-  if [ -d "$wrapper" ] && [ -n "$(ls -A "$wrapper" 2>/dev/null)" ]; then
-    grep -qF '"marker": "mnemosyne-wrapper"' "$marker" 2>/dev/null \
-      || fail "refusing to reseed preservation fixtures: $wrapper already populated without the expected marker"
-    ok "preservation fixtures already present; left untouched"
-  else
-    mkdir -p "$wrapper"
-    printf '{"wrapper": true, "marker": "mnemosyne-wrapper", "owner": "e2e-preservation"}\n' \
-      > "$marker"
-    printf '#!/usr/bin/env python3\n# directory wrapper fixture: no dependencies\nPLUGIN = "mnemosyne-wrapper"\n' \
-      > "$wrapper/plugin.py"
-    if [ ! -e "$wrapper/runtime" ] && [ ! -L "$wrapper/runtime" ]; then
-      ln -s "$external" "$wrapper/runtime" \
-        || fail "could not create the runtime link at $wrapper/runtime; the preservation contract cannot be exercised"
-    fi
-  fi
-  mkdir -p "$external" "$home/profiles/e2e-preserve/plugins/second-plugin"
-  [ -e "$external/sidecar-witness.txt" ] \
-    || printf 'external-sidecar-witness-v1\n' > "$external/sidecar-witness.txt"
-  [ -e "$external/engine.bin" ] \
-    || printf '\x00\x01\x02external-engine\n' > "$external/engine.bin"
-  [ -e "$home/profiles/e2e-preserve/plugins/second-plugin/marker.json" ] \
-    || printf '{"plugin": "second-plugin", "profile": "e2e-preserve"}\n' \
-      > "$home/profiles/e2e-preserve/plugins/second-plugin/marker.json"
-  [ -e "$home/profiles/e2e-preserve/plugins/second-plugin/data.bin" ] \
-    || printf 'profile-plugin-bytes\n' \
-      > "$home/profiles/e2e-preserve/plugins/second-plugin/data.bin"
-  ok "seeded preservation fixtures: $wrapper (marker + runtime link) + profile tree; external witness at $external"
+  "$(_preserve_python)" "$REPO_ROOT/tests/install/e2e-assets/verify-plugin-preservation.py" \
+    seed --home "$1" --external "$2" || fail "could not seed fresh preservation fixtures"
 }
 
 preserve_before_upgrade() {
   step "plugin preservation: seeding fixtures and snapshotting pre-upgrade state"
+  [ ! -e "$PRESERVE_SNAPSHOT" ] || fail "refusing to overwrite an existing preservation snapshot"
   seed_plugin_preservation_fixtures "$HERMES_HOME" "$PRESERVE_EXTERNAL"
   local py; py="$(_preserve_python)"
   "$py" "$REPO_ROOT/tests/install/e2e-assets/verify-plugin-preservation.py" \
     snapshot --home "$HERMES_HOME" --out "$PRESERVE_SNAPSHOT" 2>&1 | ts_prefix \
     || fail "plugin preservation snapshot failed"
-  # An empty snapshot proves nothing; refuse to build the leg's claim on it.
-  "$py" - "$PRESERVE_SNAPSHOT" <<'PYEOF' || fail "plugin preservation snapshot is EMPTY: no plugin entries recorded, cannot verify preservation"
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as fh:
-    snap = json.load(fh)
-n = len(snap.get("entries", {}))
-print(f"snapshot entries: {n}")
-raise SystemExit(0 if n else 3)
-PYEOF
+
   ok "pre-upgrade plugin snapshot at $PRESERVE_SNAPSHOT"
 }
 

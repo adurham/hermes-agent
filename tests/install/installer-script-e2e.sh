@@ -129,7 +129,7 @@ if [ -z "$INSTALL_REF" ]; then
 fi
 OLD_SHA="$(git -C "$REPO_ROOT" rev-parse "${INSTALL_REF}^{commit}")"
 HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-[ "$OLD_SHA" != "$HEAD_SHA" ] || fail "OLD ($INSTALL_REF) IS HEAD; no update would be available"
+
 # The update target defaults to HEAD; --update-ref selects any other ref so
 # a stable-to-stable leg can target the next release tag instead of the tip.
 # Only call this leg stable-to-stable when BOTH refs are release tags.

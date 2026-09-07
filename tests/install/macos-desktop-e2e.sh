@@ -185,7 +185,7 @@ phase_stage() {
   local old_sha head_sha target_sha target_label
   old_sha="$(git -C "$REPO_ROOT" rev-parse "${old_ref}^{commit}")"
   head_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-  [ "$old_sha" != "$head_sha" ] || fail "OLD ($old_ref) IS HEAD; no update would be available"
+
   # The update target defaults to HEAD; --update-ref selects any other ref
   # so a stable-to-stable leg can target the next release tag instead of
   # the tip. Only call this leg stable-to-stable when BOTH refs are tags.

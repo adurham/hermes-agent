@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Plugin upgrade-preservation verifier (Hermes release-harness hook).
 
-Standalone, stdlib-only, READ-ONLY against the scanned home. Two modes:
+Standalone and stdlib-only. Snapshot/verify are read-only against the home;
+the explicit seed command creates controlled fixtures in a disposable home.
 
   snapshot  walk every plugin tree of a HERMES_HOME (the active home's
             ``plugins/**`` plus each ``profiles/<name>/plugins/**`` tree,
@@ -33,6 +34,7 @@ import json
 import os
 import stat
 import sys
+from pathlib import Path
 
 SCHEMA_VERSION = 2
 PROFILES_DIR = "profiles"
@@ -76,7 +78,7 @@ def _lstat_exists(path: str) -> bool:
     try:
         os.lstat(path)
         return True
-    except OSError:
+    except FileNotFoundError:
         return False
 
 
@@ -168,6 +170,7 @@ def snapshot_home(home: str, profiles_dir: str | None = None) -> dict:
                 abs_path = os.path.join(dirpath, name)
                 rel = os.path.relpath(abs_path, home).replace(os.sep, "/")
                 entries[rel] = _entry_record(abs_path)
+            dirnames[:] = [name for name in dirnames if not _is_link(os.path.join(dirpath, name))]
     return {
         "schema": SCHEMA_VERSION,
         "home": home,
@@ -204,9 +207,36 @@ def verify_home(home: str, snap: dict) -> dict:
     }
 
 
+def seed_fixtures(home: Path, external: Path) -> None:
+    """Only create fresh fixtures; retries must not repair damaged witnesses."""
+    wrapper = home / "plugins/mnemosyne-wrapper"
+    profile = home / "profiles/e2e-preserve/plugins/second-plugin"
+    for path in (wrapper, profile, external):
+        if os.path.lexists(path):
+            raise FileExistsError(f"refusing to replace preservation fixture: {path}")
+    for path in (wrapper, profile, external):
+        path.mkdir(parents=True)
+    (wrapper / "mnemosyne-wrapper.json").write_text(
+        '{"wrapper":true,"marker":"mnemosyne-wrapper","owner":"e2e-preservation"}\n', encoding="utf-8")
+    (wrapper / "plugin.py").write_text('# directory wrapper fixture: no dependencies\n', encoding="utf-8")
+    (profile / "marker.json").write_text('{"plugin":"second-plugin"}\n', encoding="utf-8")
+    (profile / "data.bin").write_bytes(b"profile-plugin-bytes\n")
+    (external / "sidecar-witness.txt").write_text("external-sidecar-witness-v1\n", encoding="utf-8")
+    (external / "engine.bin").write_bytes(b"\x00\x01\x02external-engine\n")
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(external.resolve()), str(wrapper / "runtime"))
+    else:
+        (wrapper / "runtime").symlink_to(external.resolve(), target_is_directory=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="mode", required=True)
+
+    p_seed = sub.add_parser("seed", help="create fresh controlled fixtures in a disposable home")
+    p_seed.add_argument("--home", required=True)
+    p_seed.add_argument("--external", required=True)
 
     p_snap = sub.add_parser("snapshot", help="record plugin-tree state to JSON")
     p_snap.add_argument("--home", required=True)
@@ -222,6 +252,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = ap.parse_args(argv)
 
+    if args.mode == "seed":
+        seed_fixtures(Path(args.home), Path(args.external))
+        return 0
+
     if not os.path.isdir(os.path.abspath(args.home)):
         print(f"error: --home is not a directory: {args.home}", file=sys.stderr)
         return 2
@@ -232,6 +266,9 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ScanError) as exc:
             print(f"snapshot failed: {exc}", file=sys.stderr)
             return 2
+        if not snap["entries"]:
+            print("snapshot INCONCLUSIVE: ZERO entries", file=sys.stderr)
+            return 3
         if args.profiles_dir:
             snap["_profiles_dir"] = args.profiles_dir
         with open(args.out, "w", encoding="utf-8") as fh:
@@ -240,16 +277,12 @@ def main(argv: list[str] | None = None) -> int:
             f"snapshot: {len(snap['entries'])} entries across "
             f"{len(snap['roots'])} plugin root(s) -> {args.out}"
         )
-        if not snap["entries"]:
-            print(
-                "WARNING: snapshot recorded ZERO entries -- an empty snapshot "
-                "proves nothing; the E2E driver must treat this as a failure.",
-                file=sys.stderr,
-            )
         return 0
 
     with open(args.snapshot, "r", encoding="utf-8") as fh:
         snap = json.load(fh)
+    if args.profiles_dir:
+        snap["_profiles_dir"] = args.profiles_dir
     try:
         report = verify_home(args.home, snap)
     except (OSError, ScanError) as exc:

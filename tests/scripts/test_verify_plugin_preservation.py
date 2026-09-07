@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -33,8 +34,10 @@ _spec.loader.exec_module(vpp)
 
 def _make_link(target, link):
     try:
-        os.symlink(str(target), str(link))
+        os.symlink(str(target), str(link), target_is_directory=True)
     except OSError:
+        if os.name != "nt":
+            raise
         # Windows without symlink privilege: same reparse-point shape.
         import _winapi
 
@@ -131,12 +134,7 @@ def test_catches_plugin_file_deletion(home, tmp_path):
 
 def test_catches_whole_plugin_root_deletion(home, tmp_path):
     snap = _snapshot(home, tmp_path / "snap.json")
-    for root, dirs, files in os.walk(home / "plugins", topdown=False):
-        for name in files:
-            os.remove(os.path.join(root, name))
-        for name in dirs:
-            os.rmdir(os.path.join(root, name))
-    os.rmdir(home / "plugins")
+    shutil.rmtree(home / "plugins")
     report = _verify(home, snap)
     assert report["ok"] is False
     assert report["counts"]["deleted"] > 0
@@ -225,7 +223,6 @@ def test_verifier_is_read_only_against_home(home, tmp_path):
 def test_catches_empty_dir_deletion(home, tmp_path):
     # A plugin directory emptied (or an empty dir removed) must be caught:
     # directories themselves are recorded, not skipped.
-    snap = _snapshot(home, tmp_path / "snap.json")
     empty = home / "plugins" / "wrapper-b" / "empty-cache"
     empty.mkdir(parents=True)
     snap2 = _snapshot(home, tmp_path / "snap2.json")
@@ -247,8 +244,9 @@ def test_empty_snapshot_is_inconclusive(home, tmp_path):
          "--out", str(snap_file)],
         capture_output=True, text=True,
     )
-    assert r1.returncode == 0
+    assert r1.returncode == 3
     assert "ZERO entries" in r1.stderr
+    snap_file.write_text(json.dumps(vpp.snapshot_home(str(empty_home))), encoding="utf-8")
     r2 = subprocess.run(
         [sys.executable, VERIFIER, "verify", "--home", str(empty_home),
          "--snapshot", str(snap_file)],
@@ -258,18 +256,18 @@ def test_empty_snapshot_is_inconclusive(home, tmp_path):
     assert "INCONCLUSIVE" in r2.stderr
 
 
+@pytest.mark.platforms("posix")
 def test_unreadable_path_is_hard_error(home, tmp_path):
     # A scanner that cannot see a path must fail loudly, not skip silently.
     # Skip where chmod-based unreadability is not enforceable (Windows).
-    if os.name != "posix":
-        pytest.skip("chmod-based unreadability is POSIX-only")
-    snap = _snapshot(home, tmp_path / "snap.json")
+    if os.geteuid() == 0:
+        pytest.skip("root can read chmod-000 directories")
     secret = home / "plugins" / "mnemosyne-wrapper" / "locked"
     secret.mkdir()
     (secret / "x.txt").write_text("data", encoding="utf-8")
     os.chmod(secret, 0o000)
     try:
-        with pytest.raises(OSError):
+        with pytest.raises((OSError, vpp.ScanError)):
             _snapshot(home, tmp_path / "snap2.json")
     finally:
         os.chmod(secret, 0o755)
@@ -304,3 +302,19 @@ def test_cli_roundtrip_end_to_end(home, tmp_path):
     )
     assert r3.returncode == 1
     assert "PLUGIN PRESERVATION FAILED" in r3.stderr
+
+
+def test_release_fixture_seed_is_shared_and_never_repairs_damage(tmp_path):
+    home, external = tmp_path / "home", tmp_path / "external"
+    args = [sys.executable, VERIFIER, "seed", "--home", str(home), "--external", str(external)]
+    result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    snap = vpp.snapshot_home(str(home))
+    runtime = snap["entries"]["plugins/mnemosyne-wrapper/runtime"]
+    assert runtime["target_tree"]["engine.bin"]["kind"] == "file"
+    witness = external / "sidecar-witness.txt"
+    witness.unlink()
+    retry = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    assert retry.returncode != 0
+    assert not witness.exists()
+    assert not vpp.verify_home(str(home), snap)["ok"]

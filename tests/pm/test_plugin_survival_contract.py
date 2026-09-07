@@ -18,15 +18,9 @@ resolves offline local path-source fixtures):
    reason, and a machine-readable pm receipt records the failure.
    The retry path — re-admitting only the resolvable candidate —
    commits through the same public function.
-3. GAP, documented honestly in pm/plugins_state.py: pm has NO
-   automatic bisect/disable decision today, so "prefer the active
-   memory provider over ordinary plugins" is not implemented anywhere.
-   When such a decision exists it must keep the memory provider.
-4. Active-home propagation. The active CONTEXT home
+3. Active-home propagation. The active CONTEXT home
    (hermes_constants.set_hermes_home_override) is what wrapper/sidecar
-   subprocess launches must inherit: the detached respawn spec exports
-   the active home as HERMES_HOME, and a child process launched with
-   that overlay observes it.
+   subprocess launches must inherit through build_subprocess_env.
 """
 
 from __future__ import annotations
@@ -173,7 +167,7 @@ def admission_env(tmp_path, monkeypatch):
     monkeypatch.setattr(pm.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ws.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
-    monkeypatch.setattr(ensure, "_facts", lambda: {})
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
     # pm's store uv realization is a package-manager concern; the store
     # is empty under tmp, so pin the resolution to the PATH uv (same
     # precedence _uv_binary applies on dev machines).
@@ -182,9 +176,10 @@ def admission_env(tmp_path, monkeypatch):
 
 
 def _latest_receipt(home: Path) -> dict:
-    receipts = sorted((home / "logs" / "update_receipts").glob("*.json"))
-    assert receipts, "no pm receipt written"
-    return json.loads(receipts[-1].read_text(encoding="utf-8-sig"))
+    from pm.receipt import latest
+    receipt = latest()
+    assert receipt is not None, f"no pm receipt written for {home}"
+    return receipt
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
@@ -197,6 +192,10 @@ def test_conflicting_candidate_refused_unenabled_and_unimported(admission_env):
 
     tmp_path, home = admission_env
     plug_a, plug_b, *_ = _local_conflict_members(home)
+    _write_enabled(home, [], provider="plug-a")
+    admission.admit_plugin_set_change(set(), set(), active_plugins_dir=home / "plugins")
+    from hermes_cli.runtime_paths import selected_venv
+    working = selected_venv(tmp_path / "core")
     config_before = (home / "config.yaml").read_bytes()
     tree_before = {p: sorted(str(f) for f in p.rglob("*")) for p in (plug_a, plug_b)}
 
@@ -219,6 +218,8 @@ def test_conflicting_candidate_refused_unenabled_and_unimported(admission_env):
         "a refused candidate must stay unenabled — config published a set that never resolved"
     )
     assert (home / "config.yaml").read_bytes() == config_before
+    assert cfg["memory"]["provider"] == "plug-a"
+    assert selected_venv(tmp_path / "core") == working
 
     # no plugin tree was deleted or mutated by the failed resolution
     for plug, listing in tree_before.items():
@@ -244,6 +245,14 @@ def test_retry_after_conflict_enables_resolvable_candidate(admission_env):
     tmp_path, home = admission_env
     plug_a, plug_b, *_ = _local_conflict_members(home)
 
+    wrapper = home / "plugins/mnemosyne-wrapper"
+    wrapper.mkdir()
+    marker = wrapper / "mnemosyne-wrapper.json"
+    marker.write_bytes(b'{"wrapper":true}\n')
+    sidecar = tmp_path / "external-sidecar"
+    subprocess.run([shutil.which("uv"), "venv", "--python", sys.executable, str(sidecar)], check=True, capture_output=True, timeout=60)
+    sidecar_python = sidecar / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    before = marker.read_bytes()
     with pytest.raises(admission.AdmissionRefused):
         admission.admit_plugin_set_change(
             {"plug-a", "plug-b"}, set(), active_plugins_dir=home / "plugins"
@@ -260,6 +269,19 @@ def test_retry_after_conflict_enables_resolvable_candidate(admission_env):
     assert "plug-b" not in cfg["plugins"]["enabled"], (
         "the conflicting candidate must remain unenabled after the retry"
     )
+    assert marker.read_bytes() == before
+    child = subprocess.run([str(sidecar_python), "-c", "import sys; print(sys.prefix)"], check=True, capture_output=True, text=True, timeout=30)
+    assert Path(child.stdout.strip()) == sidecar
+    from hermes_cli.runtime_paths import selected_venv
+    selected = selected_venv(tmp_path / "core")
+    assert selected.is_dir() and selected != sidecar
+    # A declared version range remains a member across the next managed rebuild.
+    project = plug_a / "pyproject.toml"
+    project.write_text(project.read_text(encoding="utf-8").replace("sharedlib==1.0.0", "sharedlib>=1,<2"), encoding="utf-8")
+    admission.admit_plugin_set_change({"plug-a"}, set(), active_plugins_dir=home / "plugins")
+    assert selected_venv(tmp_path / "core") != selected
+    assert marker.read_bytes() == before
+    subprocess.run([str(sidecar_python), "-c", "import sys; assert sys.prefix != sys.base_prefix"], check=True, timeout=30)
 
 
 # ---------------------------------------------------------------------------

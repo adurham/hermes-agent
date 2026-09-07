@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # not hardcoded: a new script in scripts/ gets gated automatically.
 PS1_SCRIPTS = sorted(
     list(REPO_ROOT.glob("scripts/*.ps1"))
+    + list(REPO_ROOT.glob("tests/install/*.ps1"))
     + list(REPO_ROOT.glob("*.ps1"))  # repo-root scripts (setup-hermes.ps1, activate.ps1)
 )
 

@@ -102,10 +102,9 @@ contract and not exercised.
   profile plugin tree, and the externally-owned sidecar witness outside the
   home — no pyproject anywhere in the scanned root, nothing downloaded) and
   snapshots; after the update lands it verifies and fails the leg on any
-  violation. Seeding is not a clobber: a populated wrapper without the
-  expected marker aborts the leg. The Windows driver carries the same
-  fixtures and hooks inline (`Seed-PreservationFixtures`,
-  `Invoke-PreserveSnapshot`, `Invoke-PreserveVerify`).
+  violation. Both shell and Windows hooks call the same Python `seed`
+  command. Existing fixtures or snapshots abort rather than masking damage
+  by reseeding. Windows uses a junction without requiring symlink privilege.
 - Unit tests live at `tests/scripts/test_verify_plugin_preservation.py` and
   exercise the verifier against a real temp filesystem (real files, real
   symlinks; junction fallback on Windows).

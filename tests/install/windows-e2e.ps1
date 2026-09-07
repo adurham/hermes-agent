@@ -550,7 +550,7 @@ function Invoke-PhaseStage {
     # bare-clone below (and everything after) sees the redirect file.
     Set-GitRedirect
 
-    $current = Invoke-Git @("-C", $RepoRoot, "rev-parse", $UpdateRef)
+    $current = Invoke-Git @("-C", $RepoRoot, "rev-parse", "${UpdateRef}^{commit}")
     $targetLabel = if ($UpdateRef -eq "HEAD") { "HEAD" } else { $UpdateRef }
     Write-Host "  HEAD (update target): $current"
 
@@ -901,55 +901,18 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
 # pyproject in the scanned root, nothing downloaded). Snapshot is taken
 # after install, verified after update.
 function Seed-PreservationFixtures {
-    $wrapper = Join-Path $HermesHome "plugins\mnemosyne-wrapper"
     $external = Join-Path $WorkRoot "external-mnemosyne-runtime"
-    $marker = Join-Path $wrapper "mnemosyne-wrapper.json"
-    # NOT a clobbering seeder: pre-existing populated wrapper is left
-    # untouched so a retried leg cannot erase a recorded regression.
-    if (Test-Path -LiteralPath $wrapper) {
-        $existing = @(Get-ChildItem -LiteralPath $wrapper -ErrorAction SilentlyContinue)
-        if ($existing.Count -gt 0) {
-            $markerOk = (Test-Path -LiteralPath $marker) -and
-                ((Get-Content -LiteralPath $marker -Raw) -match "mnemosyne-wrapper")
-            if (-not $markerOk) {
-                throw "refusing to reseed preservation fixtures: $wrapper already populated without the expected marker"
-            }
-            Write-Host "  preservation fixtures already present; left untouched"
-            return
-        }
-    }
-    New-Item -ItemType Directory -Path $wrapper, $external, `
-        (Join-Path $HermesHome "profiles\e2e-preserve\plugins\second-plugin") -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $wrapper "mnemosyne-wrapper.json") `
-        -Value '{"wrapper": true, "marker": "mnemosyne-wrapper", "owner": "e2e-preservation"}' -Encoding UTF8
-    Set-Content -LiteralPath (Join-Path $wrapper "plugin.py") `
-        -Value '# directory wrapper fixture: no dependencies' + [Environment]::NewLine + 'PLUGIN = "mnemosyne-wrapper"' -Encoding UTF8
-    if (-not (Test-Path -LiteralPath (Join-Path $wrapper "runtime"))) {
-        try {
-            New-Item -ItemType SymbolicLink -Path (Join-Path $wrapper "runtime") -Target $external -ErrorAction Stop | Out-Null
-        } catch {
-            Write-Host "  (symlink unavailable: $($_.Exception.Message); runtime link omitted from fixtures)"
-        }
-    }
-    Set-Content -LiteralPath (Join-Path $external "sidecar-witness.txt") -Value "external-sidecar-witness-v1" -Encoding UTF8
-    Set-Content -LiteralPath (Join-Path $external "engine.bin") -Value "external-engine" -Encoding UTF8
-    Set-Content -LiteralPath (Join-Path $HermesHome "profiles\e2e-preserve\plugins\second-plugin\marker.json") `
-        -Value '{"plugin": "second-plugin", "profile": "e2e-preserve"}' -Encoding UTF8
-    Set-Content -LiteralPath (Join-Path $HermesHome "profiles\e2e-preserve\plugins\second-plugin\data.bin") `
-        -Value "profile-plugin-bytes" -Encoding UTF8
-    Write-Host "  preservation fixtures seeded (wrapper + profile tree; external witness at $external)"
+    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") seed --home $HermesHome --external $external
+    if ($LASTEXITCODE -ne 0) { throw "could not seed fresh preservation fixtures (exit $LASTEXITCODE)" }
 }
 
 function Invoke-PreserveSnapshot {
-    Seed-PreservationFixtures
     $out = Join-Path $WorkRoot "plugin-preservation-snapshot.json"
+    if (Test-Path -LiteralPath $out) { throw "refusing to overwrite an existing preservation snapshot" }
+    Seed-PreservationFixtures
     & python (Join-Path $AssetsDir "verify-plugin-preservation.py") snapshot --home $HermesHome --out $out
     if ($LASTEXITCODE -ne 0) { throw "plugin preservation snapshot failed (exit $LASTEXITCODE)" }
-    # An empty snapshot proves nothing; refuse to build the leg's claim on it.
-    $snap = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
-    if (@($snap.entries.PSObject.Properties).Count -eq 0) {
-        throw "plugin preservation snapshot is EMPTY: no plugin entries recorded, cannot verify preservation"
-    }
+
     Write-Host "  pre-upgrade plugin snapshot: $out"
 }
 
