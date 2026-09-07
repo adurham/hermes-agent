@@ -430,12 +430,12 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_TOKEN_CREDENTIALS: prod
         run: |
-          uv run --no-project --python 3.11 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+          uv run --no-project --python 3.14 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
           # The Store-submission MSIX is the same bundled payload re-packed
           # with the Partner Center packaging identity (publish-win32-store
           # bundles these into the universal Store .msixbundle and submits it;
           # they also land in the tag archive, never a feed dir).
-          uv run --no-project --python 3.11 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
+          uv run --no-project --python 3.14 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
 
       - name: Verify native signature cache contracts
         shell: bash
@@ -730,7 +730,7 @@ jobs:
           # every Mach-O) — raise the fd limit and let DEBUG show progress.
           ulimit -n 16384 2>/dev/null || true
           echo "file descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
-          uv run --no-project --python 3.11 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+          uv run --no-project --python 3.14 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
 
       - name: Audit bundle architecture
         shell: bash

@@ -70,15 +70,15 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.14
         uses: ./.github/actions/retry
         with:
-          command: uv python install 3.11
+          command: uv python install 3.14
 
       - name: Install Python dependencies
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev
+          command: uv sync --locked --python 3.14 --extra all --extra dev
 
       # ── Build desktop app ─────────────────────────────────────────────
       # The Playwright step below runs `npm run build` before testing so

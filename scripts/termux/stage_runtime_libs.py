@@ -5,7 +5,7 @@ The sealed termux deb is self-contained by contract: the device's termux
 tree may have NONE of the payload interpreters' runtime libs installed
 (first real-device install: `import ctypes` dlopened libffi.so and died).
 The pin table (runtime_libs.json) is derived from the suppliers' own
-dependency metadata -- the TUR python3.11 .deb's Depends line, uv's zstd,
+dependency metadata -- the termux-main python .deb's Depends line, uv's zstd,
 nodejs's libc++/c-ares/libicu -- not from whichever lib happens to error
 first.
 

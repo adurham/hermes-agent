@@ -43,7 +43,7 @@ _VERSION_PART_RE = re.compile(r"\d+|[A-Za-z]+")
 
 def version_key(version: str) -> tuple:
     """A sortable key for a version string. Handles dot-separated numerics,
-    +suffixes (python's 3.11.16+20260814, git's 2.53.0+3), and plain build
+    +suffixes (python's 3.14.7+20260901, git's 2.53.0+3), and plain build
     numbers (llamacpp's 10362). Non-numeric segments sort after numerics so
     a prerelease never beats its release."""
     key = []

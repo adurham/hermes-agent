@@ -70,7 +70,7 @@ COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
 for d in python node uv npm ffmpeg ripgrep runtime-libs app wheelhouse; do
     [ -d "$PAYLOAD_ABS/$d" ] || fail "payload missing $d/ -- run termux_build.sh + build_cpython.sh + build_node.sh first"
 done
-PYBIN_REL="data/data/com.termux/files/usr/bin/python3.11"
+PYBIN_REL="data/data/com.termux/files/usr/bin/python3.14"
 [ -f "$PAYLOAD_ABS/python/$PYBIN_REL" ] || fail "payload python tree lacks $PYBIN_REL"
 NODEBIN_REL="data/data/com.termux/files/usr/bin/node"
 [ -f "$PAYLOAD_ABS/node/$NODEBIN_REL" ] || fail "payload node tree lacks $NODEBIN_REL"
@@ -130,7 +130,7 @@ docker run --rm --platform linux/arm64 \
         # The staged tree is mounted at its REAL $PREFIX path so the venv
         # recorded absolute paths are correct on-device from birth.
         mkdir -p "$PREFIX" 2>/dev/null || true
-        PY="$PREFIX/lib/hermes-agent/tools/python$PREFIX/bin/python3.11"
+        PY="$PREFIX/lib/hermes-agent/tools/python$PREFIX/bin/python3.14"
         UV="$PREFIX/lib/hermes-agent/tools/uv$PREFIX/bin/uv"
                 # Desktop payload canon: the venv holds the DEPENDENCY tree only;
         # the app runs from its own directory via PYTHONPATH (the wheel

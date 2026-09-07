@@ -289,7 +289,7 @@ bootstrap_pm() {
     _py="$(awk '/^    "python": \{/ { in_py = 1 }
         in_py && /^      "version":/ { gsub(/.*: "|"$|",$/, ""); print; exit }' \
         "$INSTALL_DIR/pm/lock.json" | cut -d+ -f1 | cut -d. -f1,2)"
-    [ -n "$_py" ] || _py="3.11"
+    [ -n "$_py" ] || _py="3.14"
     log "delegating python + venv + tools to pm (hash-verified via uv.lock)"
     (cd "$INSTALL_DIR" && "$UV_CMD" run --no-project --python "$_py" python -m pm.cli install) \
         || fail "pm install failed"

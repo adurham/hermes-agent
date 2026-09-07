@@ -14,7 +14,7 @@ PYTHON_ENTRY=$(node -e "
 " "$PWD")
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) PY="$PWD/tools/$PYTHON_ENTRY/python.exe"; SP="$PWD/venv/Lib/site-packages" ;;
-  *)                    PY="$PWD/tools/$PYTHON_ENTRY/bin/python3"; SP="$PWD/venv/lib/python3.11/site-packages" ;;
+  *)                    PY="$PWD/tools/$PYTHON_ENTRY/bin/python3"; SP="$PWD/venv/lib/python3.14/site-packages" ;;
 esac
 
 [ -f "$PY" ] || { echo "FAIL: no store interpreter at $PY"; exit 1; }
