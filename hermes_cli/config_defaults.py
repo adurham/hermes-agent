@@ -1148,19 +1148,16 @@ DEFAULT_CONFIG = {
         # the model/keyword below)
         "phrase": "hey hermes",
         "sensitivity": 0.6,  # 0.0-1.0 threshold, consistent across engines (higher = stricter)
-        # openWakeWord only: consecutive over-threshold frames to fire (higher = fewer false
-        # triggers, more latency; 1 = single-frame)
+        # openWakeWord/pyopen-wakeword only: consecutive over-threshold frames to fire (higher = fewer
+        # false triggers, more latency; 1 = single-frame)
         "confirmation_frames": 3,
         "start_new_session": True,  # fresh session on wake vs. continue the current one
         # sherpa only: listen for every wake-enabled profile's phrase and route to it
         "profile_routing": True,
         "openwakeword": {
             # "hey_hermes" | built-in openWakeWord name ("hey_jarvis", "alexa", ...) | path to a
-            # custom .onnx/.tflite model
+            # custom .tflite model
             "model": "hey_hermes",
-            # "" (auto: tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite" — onnx scores
-            # near-zero on macOS ARM64 (arms but never fires)
-            "inference_framework": "",
         },
         "sherpa": {
             # sherpa-onnx KWS model dir; empty = auto-download the small English zipformer

@@ -7,12 +7,11 @@ description = "The self-improving AI agent — creates skills from experience, i
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
 # Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
-# fresh distro whose newest interpreter uv auto-picks) will otherwise select
-# 3.14, where Rust-backed transitives (e.g. pydantic-core) have no cp314
-# wheel yet and fall back to a maturin source build that fails. Capping at
-# <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
-# build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+# fresh distro whose newest interpreter uv auto-picks) would otherwise select
+# a newer major. The 3.14 ceiling tracks the newest CPython line the full
+# dependency graph resolves on (py3 wheels for every target); raise it in the
+# same commit as a lock regen after verifying the new interpreter resolves.
+requires-python = ">=3.14,<3.15"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -257,11 +256,16 @@ voice = [
 # [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
 # first /wake; mirrored in tools/lazy_deps.py.
 wake = [
-  # onnxruntime has no darwin-x64 wheel and no sdist (prebuilt only), so
-  # openwakeword (which hard-requires onnxruntime) cannot install there.
-  # sherpa-onnx / sentencepiece / pvporcupine / sounddevice / numpy ship.
-  "openwakeword==0.6.0; platform_machine != 'x86_64' or platform_system != 'Darwin'",
-  "onnxruntime==1.27.0; platform_machine != 'x86_64' or platform_system != 'Darwin'",
+  # pyopen-wakeword (rhasspy's maintained fork of openWakeWord) — py3 wheels
+  # plus a bundled tensorflowlite_c lib. Loads the shipped hey_hermes.tflite
+  # and bundles the SAME shared feature models openwakeword's download_models()
+  # fetched at runtime (byte-identical v0.5.1 melspectrogram/embedding, verified
+  # by hash). Replaces openwakeword + onnxruntime + ai-edge-litert: upstream
+  # tflite-runtime (a hard openwakeword dep on linux) has no cp312+ wheels
+  # (caps at cp311), which is why the old requires-python ceiling existed.
+  # No win32-arm64 wheel: gate it there like sherpa-onnx; porcupine still
+  # covers wake on that target.
+  "pyopen-wakeword==1.1.0; platform_machine != 'ARM64' or sys_platform != 'win32'",
   # sherpa-onnx ships win_amd64/win32 wheels only (its kaldi-decoder C++ has
   # no win_arm64 build), so win32-arm64 would build the sdist and fail. Gate
   # it off there like faster-whisper; the other engines still ship.
@@ -270,12 +274,6 @@ wake = [
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
-  # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
-  # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
-  # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the
-  # macOS ARM64 equivalent (no darwin-x64 wheel, no sdist), bridged in
-  # tools/wake_word.py.
-  "ai-edge-litert==2.1.6; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
 honcho = ["honcho-ai==2.2.0"]
 # Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
@@ -292,11 +290,9 @@ audio-io = ["sounddevice==0.5.5", "numpy==2.4.3"]
 silk = ["pilk==0.2.4"]
 # Wake-engine sub-extras — lazy per-engine installs so a user who only wants
 # sherpa-onnx doesn't pull the whole [wake] bundle. Pins match [wake].
-wake-openwakeword = ["openwakeword==0.6.0; platform_machine != 'x86_64' or platform_system != 'Darwin'", "onnxruntime==1.27.0; platform_machine != 'x86_64' or platform_system != 'Darwin'"]
+wake-openwakeword = ["pyopen-wakeword==1.1.0; platform_machine != 'ARM64' or sys_platform != 'win32'"]
 wake-sherpa = ["sherpa-onnx==1.13.4; platform_machine != 'ARM64' or sys_platform != 'win32'"]
 wake-porcupine = ["pvporcupine==4.0.3"]
-# macOS tflite bridge (tools/wake_word.py); same marker policy as [wake].
-wake-tflite = ["ai-edge-litert==2.1.6; platform_system == 'Darwin' and platform_machine == 'arm64'"]
 # Google Chat service account push (gateway/platforms/google_chat) — pubsub
 # subscriber for the Chat API's Cloud Pub/Sub delivery.
 # grpcio (pubsub's native transitive) has no win_arm64 wheel, so win32-arm64
@@ -559,7 +555,6 @@ exclude-newer = "14 days"
 # 14-day window is younger than the reviewed release.
 [tool.uv.exclude-newer-package]
 agent-client-protocol = false
-ai-edge-litert = false
 aiohttp = false
 aiohttp-socks = false
 aiosqlite = false
@@ -611,11 +606,9 @@ mistralai = false
 modal = false
 nemo-relay = false
 numpy = false
-onnxruntime = false
 openai = false
 opentelemetry-exporter-otlp-proto-http = false
 opentelemetry-sdk = false
-openwakeword = false
 packaging = false
 parallel-web = false
 pathspec = false

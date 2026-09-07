@@ -203,145 +203,65 @@ def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
     assert "audio device" in r["hint"] or "microphone" in r["hint"].lower()
 
 
-# ── openWakeWord engine (bundled model + base-model fetch) ───────────────
+# ── openWakeWord engine (pyopen-wakeword; bundled model, no runtime fetch) ──
 
 
-def _install_fake_openwakeword(monkeypatch):
-    """Swap in a fake ``openwakeword`` so the engine builds with no network.
-
-    Returns a ``calls`` dict recording every ``download_models`` invocation.
-    """
-    calls = {"download": []}
+def test_openwakeword_custom_model_path_used(monkeypatch):
+    # A custom ``model`` path passes through to pyopen-wakeword as-is. The
+    # shared feature models come from the wheel (from_builtin) — there is no
+    # download_models step to regress.
+    captured = {}
 
     class _FakeModel:
-        def __init__(self, wakeword_models, inference_framework="onnx"):
-            self.wakeword_models = list(wakeword_models)
-            self.models = {"hey_hermes": object()}
+        def __init__(self, model_path, libtensorflowlite_c_path=None):
+            self.id = os.path.splitext(os.path.basename(str(model_path)))[0]
+            captured["path"] = str(model_path)
 
-        def predict(self, frame):
-            return {"hey_hermes": 0.0}
+        @staticmethod
+        def from_model(model_path, libtensorflowlite_c_path=None):
+            return _FakeModel(model_path, libtensorflowlite_c_path)
+
+        def process_streaming(self, embeddings):
+            return iter(())
 
         def reset(self):
             pass
 
-    oww = types.ModuleType("openwakeword")
-    oww.utils = types.SimpleNamespace(
-        download_models=lambda names=[]: calls["download"].append(list(names))
-    )
-    model_mod = types.ModuleType("openwakeword.model")
-    model_mod.Model = _FakeModel
+        def close(self):
+            pass
 
-    monkeypatch.setitem(sys.modules, "openwakeword", oww)
-    monkeypatch.setitem(sys.modules, "openwakeword.model", model_mod)
+    class _FakeFeatures:
+        @staticmethod
+        def from_builtin(models_dir=None, libtensorflowlite_c_path=None):
+            return _FakeFeatures()
+
+        def process_streaming(self, audio_chunk):
+            return iter(())
+
+        def reset(self):
+            pass
+
+        def close(self):
+            pass
+
+    mod = types.ModuleType("pyopen_wakeword")
+    mod.OpenWakeWord = _FakeModel
+    mod.OpenWakeWordFeatures = _FakeFeatures
+    monkeypatch.setitem(sys.modules, "pyopen_wakeword", mod)
     monkeypatch.setattr(pm, "ensure_import", lambda *a, **k: None)
-    return calls
-
-
-def test_openwakeword_ensures_base_models_for_custom_path(monkeypatch):
-    # Regression: a custom ``.onnx`` path used to skip download_models entirely,
-    # so a fresh install crashed at load time on a missing melspectrogram.onnx.
-    # The base feature models must be ensured for a custom path too.
-    calls = _install_fake_openwakeword(monkeypatch)
     eng = ww._OpenWakeWordEngine(
-        {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_hermes.onnx"}}
+        {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_hermes.tflite"}}
     )
-    assert calls["download"] == [["/models/hey_hermes.onnx"]]
+    assert captured["path"] == "/models/hey_hermes.tflite"
     assert eng._labels == ["hey_hermes"]
 
 
 def test_bundled_hey_hermes_model_ships_on_disk():
     # The "hey hermes" wake word works out of the box only if the model is
-    # actually bundled. Both framework artifacts must exist and be non-trivial.
-    for framework in ("onnx", "tflite"):
-        path = ww._bundled_wakeword_path(framework)
-        assert os.path.exists(path), path
-        assert os.path.getsize(path) > 1024, path
-
-
-# ── platform-aware backend selection (openWakeWord onnx is broken on macOS ARM64,
-#    upstream dscripka/openWakeWord#336) ────────────────────────────────────────
-
-def test_default_framework_tracks_the_macos_arm64_probe():
-    """``default_inference_framework()`` is exactly the ``_is_macos_arm64()``
-    branch — tflite there, onnx everywhere else.
-
-    Stated as an invariant between the probe and its consumer so it holds on
-    every host, including the macOS runner (where both sides are real) and an
-    Intel Mac (where ONNX is fine and both sides say so).
-    """
-    expected = "tflite" if ww._is_macos_arm64() else "onnx"
-    assert ww.default_inference_framework() == expected
-
-
-@pytest.mark.platforms("macos")
-def test_macos_arm64_prefers_tflite_on_this_host():
-    """On a real ARM64 Mac the default must be tflite (upstream #336).
-
-    Runs on the macOS CI job, where ``platform.machine()`` and
-    ``sys.platform`` are the genuine article rather than a patched pair.
-    """
-    if not ww._is_macos_arm64():
-        pytest.skip("Intel Mac — ONNX works here, nothing to assert")
-    assert ww.default_inference_framework() == "tflite"
-    assert ww.resolve_inference_framework({}) == "tflite"
-    assert ww.resolve_inference_framework({"openwakeword": {"inference_framework": ""}}) == "tflite"
-    # The one explicit value we override: pinned onnx is provably dead here.
-    assert ww.resolve_inference_framework(
-        {"openwakeword": {"inference_framework": "onnx"}}
-    ) == "tflite"
-
-
-def test_explicit_framework_kept_where_onnx_works(monkeypatch):
-    # An operator who pins a backend keeps it everywhere ONNX actually works.
-    calls = _install_fake_openwakeword(monkeypatch)
-    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
-    ww._OpenWakeWordEngine(
-        {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
-    )
-    (downloaded,) = calls["download"]
-    assert downloaded == [ww._bundled_wakeword_path("onnx")]
-
-
-def test_empty_framework_falls_back_to_platform_default(monkeypatch):
-    """Empty/missing config defers to ``default_inference_framework()``.
-
-    The macOS-ARM64 side of the fallback is asserted for real in
-    ``test_macos_arm64_prefers_tflite_on_this_host``; here we pin the
-    delegation itself by swapping the platform probe (a seam in our own
-    module) rather than lying to the interpreter about which OS it is on.
-    """
-    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: True)
-    assert ww.resolve_inference_framework({}) == "tflite"
-    assert ww.resolve_inference_framework({"openwakeword": {"inference_framework": ""}}) == "tflite"
-    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
-    assert ww.resolve_inference_framework({}) == "onnx"
-
-
-# ── ambient-speech rejection: consecutive-frame confirmation ──────────────────
-
-def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
-    """Build a real _OpenWakeWordEngine whose predict() replays ``scores``."""
-    seq = iter(scores)
-
-    class _ScriptedModel:
-        def __init__(self, wakeword_models, inference_framework="onnx"):
-            self.models = {"hey_hermes": object()}
-
-        def predict(self, frame):
-            return {"hey_hermes": next(seq)}
-
-        def reset(self):
-            pass
-
-    oww = types.ModuleType("openwakeword")
-    oww.utils = types.SimpleNamespace(download_models=lambda names=[]: None)
-    model_mod = types.ModuleType("openwakeword.model")
-    model_mod.Model = _ScriptedModel
-    monkeypatch.setitem(sys.modules, "openwakeword", oww)
-    monkeypatch.setitem(sys.modules, "openwakeword.model", model_mod)
-    monkeypatch.setattr(pm, "ensure_import", lambda *a, **k: None)
-    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
-    return ww._OpenWakeWordEngine({"provider": "openwakeword", **cfg_wake})
+    # actually bundled. pyopen-wakeword runs TFLite only.
+    path = ww._bundled_wakeword_path()
+    assert os.path.exists(path), path
+    assert os.path.getsize(path) > 1024, path
 
 
 # ── sherpa-onnx open-vocabulary engine ───────────────────────────────────
