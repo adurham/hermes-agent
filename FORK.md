@@ -294,6 +294,162 @@ regression-tested (`test_escalation_ignored_without_the_escalated_marker`).
   task that now legitimately draws the omission notice. Narrowed to the test's
   actual subject (no `IGNORED` / no `Task 0` warning), matching the `any(...)`
   style its sibling assertions already use.
+### Layer 2: reverse-tunnel clipboard bridge fixes Ctrl+V/Alt+V inside the hlxc tmux session — 2026-09-07
+
+**Symptom.** The kitten-clipboard backend shipped earlier the same day (see
+"Ctrl+V/Alt+V image paste over SSH into headless Linux (kitten clipboard
+backend)" below) works over a plain SSH session but does nothing inside the
+real `hlxc` path, because that path always lands in a tmux session
+(`ssh -t` → `su - hermes` → `tmux new-session -A -s hermes-main hermes`).
+That entry's own "Known limitation" section already proved the cause on the
+wire: tmux's server drops a pane's unwrapped OSC 5522 request outright, and
+even with `allow-passthrough on` the kitty-side response comes back
+unwrapped and the tmux client drops it as unrecognized input. So the
+kitten backend times out after 3s inside every real hlxc session and
+silently falls through — the exact case that needed fixing was the one
+case it couldn't reach.
+
+**Root cause.** OSC 5522 is a terminal-protocol mechanism riding the tty
+byte stream, and tmux sits directly in that stream between the remote
+`hermes` process and the user's local kitty terminal. No fix inside that
+channel can survive tmux's own drop behavior (confirmed against tmux's own
+stance in tmux#4386: passthrough is not meant for request/response
+round-trips). The only way to reach the Mac's clipboard from inside tmux is
+a channel tmux cannot see or filter — i.e., not the tty at all.
+
+**Fix.** Reuses the exact transport already proven by the pre-existing
+1Password-over-hlxc bridge (see the homelab repo's
+`docs/1password-hlxc-bridge.md`) rather than inventing a new one: a
+Mac-side broker daemon (`~/bin/op-broker.py`, a local, untracked file — not
+part of either git repo, same as the 1Password bridge) listening on a Unix
+socket that the `hlxc` SSH command already reverse-forwards into
+`/run/hermes-op-broker.sock` on hermes-gw-01. That forwarding is *SSH
+channel* traffic, not tty bytes, so tmux has no visibility into it at all.
+
+- **New Linux backend in `hermes_cli/clipboard.py`:** `_bridge_save` /
+  `_bridge_has_image` / `_bridge_request` / `_bridge_sock_path`, wired
+  FIRST in both `_linux_save` and `has_clipboard_image`'s Linux chain
+  (order: bridge → kitten → WSL → Wayland → X11). Socket path comes from
+  the `OP_BROKER_SOCK` env var already established by the 1Password
+  bridge (default `/run/hermes-op-broker.sock`) — no new `HERMES_*` env
+  var, no new config knob.
+- **Protocol:** one newline-delimited JSON object per request/response
+  over the socket. A request with no `"type"` key is the existing legacy
+  1Password `op`-forwarding shape (untouched, byte-compatible). Two new
+  request types: `{"type": "clipboard_read"}` and
+  `{"type": "clipboard_has_image"}`.
+- **Tri-state return contract**, deliberately not a plain bool, because
+  "the bridge can't answer right now" and "the far-end clipboard
+  definitely has no image" require different fallback behavior:
+  `True` = success; `False` = broker answered `rc=1`, a DEFINITIVE
+  no-image-on-the-Mac-clipboard answer, safe to skip kitten entirely
+  (kitten reads the identical far-end clipboard, so it cannot know more);
+  `None` = bridge unavailable for any other reason (socket missing,
+  connect-refused, malformed/legacy response, `rc=2` internal error,
+  `rc=3` screen-locked refusal, or a socket-level timeout) — the caller
+  falls through to kitten for the no-tunnel plain-SSH case, and further
+  down the existing chain for a local desktop.
+- **`_bridge_request`** owns socket framing: connects, sends the JSON line,
+  then reads with a cumulative deadline (not a per-`recv` timeout) so a
+  peer trickling bytes can't stretch the wait past the configured total,
+  and caps the accumulated buffer so a peer that never sends a newline
+  can't grow memory unboundedly. A socket-level timeout is the ONE failure
+  mode that sets a process-lifetime negative cache
+  (`_bridge_unavailable`), mirroring how `_kitten_save` owns
+  `_kitten_unavailable`. `ECONNREFUSED` (socket present, broker not yet
+  listening) deliberately does NOT set that cache, since the tunnel can
+  come back within the process's lifetime.
+- **`~/bin/op-broker.py` (Mac-side, unchanged repo footprint):** two new
+  handlers, `_handle_clipboard_read` / `_handle_clipboard_has_image`,
+  alongside the existing legacy `op`-forwarding handler in the same
+  `socketserver.StreamRequestHandler`. Both refuse outright
+  (`returncode=3`) when the Mac's screen is locked (checked via `pgrep -x
+  ScreenSaverEngine`) before touching the clipboard at all. `clipboard_read`
+  extracts the image via `pngpaste` (preferred) with an `osascript`
+  fallback, base64-encodes it, and enforces a 24 MB cap on the PNG payload
+  (`returncode=2` if exceeded) before it ever hits the socket. The broker's
+  exception handler distinguishes clipboard requests from legacy ones so an
+  internal error always resolves to `rc=2` for clipboard calls — `rc=1` is
+  reserved exclusively for the definitive-no-image case, since the client's
+  tri-state contract depends on that distinction never blurring.
+- **Why bridge-first, not kitten-first:** when the tunnel is up, the bridge
+  is strictly better than kitten in the tmux case (no OSC 5522 dependency,
+  no 3s timeout to pay), and a definitive `False` from the bridge lets the
+  caller skip kitten's pointless timeout altogether. When the tunnel is
+  down (no hlxc session live, or transport-timed-out this process) the
+  bridge reports `None` and the existing kitten path still covers the
+  plain-SSH-no-tmux case.
+- **Gate is socket presence/reachability, not an env-var check** — same
+  reasoning as the kitten backend's gate: the real hlxc path runs
+  `su - hermes`, which strips `SSH_*`/`TMUX` env vars, so any environment-
+  based gate would be a silent no-op on the one path this exists to fix.
+  The socket only exists while an hlxc session is actively forwarding it,
+  so its reachability already is the correct gate.
+
+**Security posture (see the homelab-repo doc below for the full writeup).**
+Clipboard reads over this bridge are NOT Touch-ID-gated, unlike the
+1Password `op` reads that share the same broker process and socket — the
+only mitigations are the broker's screen-lock refusal and the 24 MB size
+cap. `StreamLocalBindMask 0111` on hermes-gw-01's sshd (needed so the
+unprivileged `hermes` user can reach a socket created by root's sshd on
+behalf of the SSH-login user) makes the forwarded socket world-accessible,
+so any local user on the box can connect to it and read the Mac's
+clipboard while an hlxc session is live. This is a real, deliberately
+accepted reduction in guarantee relative to the 1Password path, not an
+oversight — see
+`homelab` repo `docs/1password-hlxc-bridge.md`'s "Security posture:
+clipboard bridge (Layer 2)" section for the full accounting.
+
+**Verification.** `bash scripts/run_tests.sh tests/tools/test_clipboard.py`
+→ 81 passed, 1 skipped, 0 failed (was 60 passed + 1 skipped at HEAD; net
++21 bridge tests). `ruff check hermes_cli/clipboard.py
+tests/tools/test_clipboard.py` → clean.
+
+Live end-to-end proof against the real transport, run inside an actual
+tmux session on hermes-gw-01 (throwaway session `layer2-test-1788795086`,
+never the user's `hermes-main`), over a real reverse-forwarded socket
+matching `hlxc`'s command shape:
+
+```
+whoami: hermes
+TERM:   [tmux-256color]
+TMUX:   [/tmp/tmux-999/default,1478,0]      <- tmux path genuinely exercised
+tmux session_name: [layer2-test-1788795086]
+srw-rw-rw- 1 root root 0 Sep  7 15:35 /run/hermes-op-broker.sock
+bridge sock path resolved by code: /run/hermes-op-broker.sock
+has_clipboard_image()  -> True
+save_clipboard_image() -> True
+```
+
+The delivered file is byte-identical to what the Mac's own clipboard read
+produces — `sha256 36be67e5…3dc40`, 913 bytes, on both ends (`cmp` silent),
+decoding to the expected 200x120 RGB test image with its marker pixels
+verified from inside the pane. Note the generated 306-byte source PNG
+re-encodes to 913 bytes via NSPasteboard, so the correct fidelity
+reference is a local clipboard read, not the original file; the bridge
+itself alters nothing.
+
+Layer-1 non-tmux regression: with no socket forwarded, `_bridge_*` returns
+`None` in <1 ms and control falls through to `_kitten_*` then `_xclip_*`
+with no exception and no stray file written — confirmed identical (same
+dispatch sequence, same return values) against the pre-Layer-2
+`clipboard.py` extracted from git HEAD, so this is a measured comparison
+rather than an inference. Not provable headlessly: that kitten actually
+*retrieves* an image over OSC 5522, which needs a human-driven kitty
+terminal (`kitten` exits `open /dev/tty: no such device or address` under
+an automated SSH client, and `su - hermes` leaves no controlling tty).
+That path is untouched by Layer 2, but its success was not observed here.
+
+Incidental finding (not a defect in this change): hermes-gw-01's sshd has
+`streamlocalbindunlink no`, so the forwarded socket *file* can survive an
+unclean ssh exit with nothing listening. Layer 2 already handles it
+correctly — `connect()` gets `ECONNREFUSED`, which surfaces as `None`
+without setting the negative cache, so a later reconnect still works.
+
+**Files touched.** `hermes_cli/clipboard.py`, `tests/tools/test_clipboard.py`;
+Mac-local `~/bin/op-broker.py` (untracked, same as the 1Password bridge);
+homelab repo `docs/1password-hlxc-bridge.md` (Layer 2 section).
+
 ### Ctrl+V/Alt+V image paste over SSH into headless Linux (kitten clipboard backend) — 2026-09-07
 
 **Symptom.** Ctrl+V (and Alt+V, `escape,v`) did nothing — silently — when

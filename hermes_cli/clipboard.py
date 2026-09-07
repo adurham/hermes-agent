@@ -9,16 +9,20 @@ Platform support:
   macOS   — osascript (always available), pngpaste (if installed)
   Windows — PowerShell via WinForms, Get-Clipboard, file-drop fallback
   WSL2    — powershell.exe via WinForms, Get-Clipboard, file-drop fallback
-  Linux   — kitten clipboard (kitty terminal over SSH / headless),
+  Linux   — hlxc reverse-tunnel clipboard bridge (op-broker over SSH),
+            kitten clipboard (kitty terminal over SSH / headless),
             wl-paste (Wayland), xclip (X11)
 """
 
 import base64
+import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from hermes_constants import is_wsl as _is_wsl
@@ -49,8 +53,11 @@ def has_clipboard_image() -> bool:
         return _macos_has_image()
     if sys.platform == "win32":
         return _windows_has_image()
-    # Match _linux_save fallthrough order: kitten → WSL → Wayland → X11
-    if _kitten_has_image():
+    # Match _linux_save fallthrough order: bridge → kitten → WSL → Wayland → X11
+    bridge = _bridge_has_image()
+    if bridge is True:
+        return True
+    if bridge is None and _kitten_has_image():
         return True
     if _is_wsl() and _wsl_has_image():
         return True
@@ -378,8 +385,16 @@ def _windows_save(dest: Path) -> bool:
 # ── Linux ────────────────────────────────────────────────────────────────
 
 def _linux_save(dest: Path) -> bool:
-    """Try clipboard backends in priority order: kitten → WSL → Wayland → X11."""
-    if _kitten_save(dest):
+    """Try clipboard backends in priority order: bridge → kitten → WSL → Wayland → X11."""
+    bridge = _bridge_save(dest)
+    if bridge is True:
+        return True
+    # Bridge unavailable (no tunnel / transport stall): kitten may still work
+    # over a plain SSH tty (the no-tunnel case).  A DEFINITIVE no-image answer
+    # (False) means the far-end Mac clipboard is empty — kitten reads the SAME
+    # far-end clipboard via OSC 5522, so it cannot know more; skip it and fall
+    # through to the local-desktop backends, which read DIFFERENT clipboards.
+    if bridge is None and _kitten_save(dest):
         return True
 
     if _is_wsl():
@@ -544,6 +559,185 @@ def _kitten_has_image() -> bool:
     except Exception as e:
         logger.debug("kitten clipboard mime check failed: %s", e)
     return False
+
+
+# ── hlxc reverse-tunnel clipboard bridge (op-broker over SSH) ─────────────
+#
+# The user's real access path to the headless remote box (hermes-gw-01, an
+# LXC with no X11/Wayland) is `hlxc`, which always runs inside tmux.  tmux
+# provably drops the OSC 5522 round trip that the kitten backend depends on:
+# the server drops the pane's request, and even with allow-passthrough the
+# kitty unwrapped response is dropped by the tmux client.  Inside tmux,
+# `kitten clipboard -g` times out after 3s and falls through — Ctrl+V
+# silently does nothing.  The bridge exists to fix exactly that case.
+#
+# The bridge is a Mac-side broker daemon (~/bin/op-broker.py) that listens
+# on a Unix socket which hlxc's SSH connection reverse-forwards to
+# /run/hermes-op-broker.sock on the box — the same tunnel that already
+# carries the 1Password bridge (an established, working pattern).  The
+# broker reads the Mac's clipboard natively (pngpaste/osascript) and
+# returns base64 PNG.  This transport is the SSH channel, NOT the tty byte
+# stream, so tmux cannot filter it — that is the entire point.
+#
+# Why socket-presence is the gate (not a TMUX env var, not
+# is_remote_shell_session()): the real hlxc path runs `su - hermes`, which
+# strips SSH_* env vars, so an SSH/TMUX gate would be a silent no-op there
+# (the same reason Layer 1 rejected an SSH gate for kitten).  The socket
+# exists only while an hlxc session is live, so its presence/reachability
+# IS the gate, and it serves both tmux and non-tmux sessions alike.
+#
+# Why bridge-first: when the tunnel is up it is strictly better than kitten
+# (no 3s timeout, no tty dependency), and a definitive no-image answer lets
+# us skip kitten's pointless timeout entirely.  When the tunnel is down the
+# bridge reports unavailable and we fall through to kitten for the
+# plain-SSH-no-tunnel case.
+#
+# Security posture: the socket exists only while an hlxc session is live;
+# it is created by root's sshd with mask 0111, so any local user on the box
+# could connect to it while it exists.  This is the same posture as the
+# already-shipped 1Password bridge over the same socket — the broker only
+# answers clipboard reads, never secrets, and the exposure window is the
+# live session.
+#
+# Process-lifetime negative cache: _bridge_unavailable is set ONLY on a
+# socket-level timeout (transport stall — the tunnel is up but wedged, so
+# retrying in the same process is pointless).  It is NEVER set on
+# connect-refusal (ECONNREFUSED — the tunnel may come back within the
+# process lifetime) and NEVER on a definitive no-image answer.
+
+_BRIDGE_TIMEOUT_S = 15.0
+_BRIDGE_MAX_RESPONSE_BYTES = 64 * 1024 * 1024  # generous cap for a full-res screenshot PNG
+_bridge_unavailable: bool = False
+
+
+def _bridge_sock_path() -> str:
+    """Return the reverse-tunneled broker socket path.
+
+    Mirrors the existing op shim convention: the OP_BROKER_SOCK env var
+    already exists on the box side (shipped in homelab commit 326a10d) and
+    is reused here, not invented.  No new HERMES_* env vars.
+    """
+    return os.environ.get("OP_BROKER_SOCK", "/run/hermes-op-broker.sock")
+
+
+def _bridge_request(req: dict, timeout: float = _BRIDGE_TIMEOUT_S) -> dict | None:
+    """Send one JSON request to the broker socket and read the JSON reply.
+
+    Returns the parsed response dict, or None on ANY failure: OSError
+    (socket missing, connect refused), timeout, JSONDecodeError, or an
+    empty/EOF'd read.  Never raises.
+
+    The read loop tracks a cumulative deadline (not just a per-recv
+    timeout) so a peer trickling bytes can't stretch the wait past
+    *timeout* in total, and caps the accumulated buffer so a peer that
+    never sends a newline can't grow memory unboundedly — no blind
+    sleeps, purely recv-driven.
+
+    A socket-level timeout is the one failure mode that sets the
+    process-lifetime negative cache (_bridge_unavailable) — this is the
+    single call site both _bridge_save and _bridge_has_image share, so it
+    owns the cache exactly like `_kitten_save`'s own subprocess call owns
+    `_kitten_unavailable`.  Connect-refused (socket present but nothing
+    listening — tunnel down right now) is a plain OSError here and does
+    NOT set the cache, since the tunnel may come back within the process
+    lifetime.
+    """
+    global _bridge_unavailable
+    deadline = time.monotonic() + timeout
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        try:
+            sock.connect(_bridge_sock_path())
+            sock.sendall((json.dumps(req) + "\n").encode("utf-8"))
+            buf = bytearray()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("bridge read exceeded total timeout")
+                sock.settimeout(remaining)
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                if len(buf) > _BRIDGE_MAX_RESPONSE_BYTES:
+                    return None
+                if b"\n" in buf:
+                    break
+        finally:
+            sock.close()
+    except (TimeoutError, socket.timeout):
+        _bridge_unavailable = True
+        return None
+    except OSError:
+        return None
+    if not buf:
+        return None
+    try:
+        line = bytes(buf).split(b"\n", 1)[0].decode("utf-8")
+        return json.loads(line)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _bridge_save(dest: Path) -> bool | None:
+    """Read the clipboard via the reverse-tunnel bridge.
+
+    Tri-state return:
+      True  — got an image, wrote it to *dest*.
+      False — DEFINITIVE 'no image on the far-end (Mac) clipboard'
+              (broker answered rc=1).
+      None  — bridge unavailable (socket missing, connect refused, timeout
+              [sets _bridge_unavailable], malformed/legacy response, rc=2/3,
+              or any other error).
+    """
+    if _bridge_unavailable:
+        return None
+    resp = _bridge_request({"type": "clipboard_read"})
+    if resp is None:
+        return None
+    rc = resp.get("returncode")
+    if rc == 0:
+        png_b64 = resp.get("png_b64")
+        if not isinstance(png_b64, str) or not png_b64.strip():
+            dest.unlink(missing_ok=True)
+            return None
+        try:
+            image_bytes = base64.b64decode(png_b64, validate=True)
+        except (ValueError, TypeError):
+            dest.unlink(missing_ok=True)
+            return None
+        try:
+            dest.write_bytes(image_bytes)
+        except OSError:
+            dest.unlink(missing_ok=True)
+            return None
+        if dest.exists() and dest.stat().st_size > 0:
+            return True
+        dest.unlink(missing_ok=True)
+        return None
+    if rc == 1:
+        # Definitive no-image at the far end.
+        return False
+    # rc 2/3 or any other error → bridge unavailable for this attempt.
+    return None
+
+
+def _bridge_has_image() -> bool | None:
+    """Check for an image via the reverse-tunnel bridge.
+
+    Tri-state: True = has image; False = DEFINITIVE no image; None = bridge
+    unavailable (same semantics as _bridge_save).
+    """
+    if _bridge_unavailable:
+        return None
+    resp = _bridge_request({"type": "clipboard_has_image"})
+    if resp is None:
+        return None
+    if "has_image" not in resp:
+        # Legacy broker (no "type" support) or malformed response.
+        return None
+    return bool(resp["has_image"])
 
 
 # ── WSL2 (powershell.exe) ────────────────────────────────────────────────

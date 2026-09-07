@@ -8,10 +8,14 @@ Coverage:
 """
 
 import base64
+import json
 import os
 import queue
+import socket
+import socketserver
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -37,12 +41,17 @@ from hermes_cli.clipboard import (
     _kitten_save,
     _kitten_has_image,
     _kitten_preferred,
+    _bridge_save,
+    _bridge_has_image,
+    _bridge_request,
+    _bridge_sock_path,
 )
 from cli import _should_auto_attach_clipboard_image_on_paste
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 FAKE_BMP = b"BM" + b"\x00" * 100
 FAKE_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+FAKE_PNG_B64 = base64.b64encode(FAKE_PNG).decode()
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -284,77 +293,375 @@ class TestXclipSave:
 # ── Linux dispatch ──────────────────────────────────────────────────────
 
 class TestLinuxSave:
-    """Test that _linux_save dispatches correctly to kitten → WSL → Wayland → X11."""
+    """Test that _linux_save dispatches correctly to bridge → kitten → WSL → Wayland → X11."""
 
     def setup_method(self):
         import hermes_cli.clipboard as cb
         cb._wsl_detected = None
         cb._kitten_unavailable = False
+        cb._bridge_unavailable = False
 
     def teardown_method(self):
         import hermes_cli.clipboard as cb
         cb._kitten_unavailable = False
+        cb._bridge_unavailable = False
 
     def test_wsl_tried_first_when_kitten_absent(self, tmp_path):
         dest = tmp_path / "out.png"
-        with patch("hermes_cli.clipboard._kitten_save", return_value=False):
-            with patch("hermes_cli.clipboard._is_wsl", return_value=True):
-                with patch("hermes_cli.clipboard._wsl_save", return_value=True) as m:
-                    assert _linux_save(dest) is True
-                    m.assert_called_once_with(dest)
+        with patch("hermes_cli.clipboard._bridge_save", return_value=None):
+            with patch("hermes_cli.clipboard._kitten_save", return_value=False):
+                with patch("hermes_cli.clipboard._is_wsl", return_value=True):
+                    with patch("hermes_cli.clipboard._wsl_save", return_value=True) as m:
+                        assert _linux_save(dest) is True
+                        m.assert_called_once_with(dest)
 
     def test_wayland_fails_falls_through_to_xclip(self, tmp_path):
         dest = tmp_path / "out.png"
-        with patch("hermes_cli.clipboard._kitten_save", return_value=False):
-            with patch("hermes_cli.clipboard._is_wsl", return_value=False):
-                with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
-                    with patch("hermes_cli.clipboard._wayland_save", return_value=False):
-                        with patch("hermes_cli.clipboard._xclip_save", return_value=True) as m:
-                            assert _linux_save(dest) is True
-                            m.assert_called_once_with(dest)
+        with patch("hermes_cli.clipboard._bridge_save", return_value=None):
+            with patch("hermes_cli.clipboard._kitten_save", return_value=False):
+                with patch("hermes_cli.clipboard._is_wsl", return_value=False):
+                    with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+                        with patch("hermes_cli.clipboard._wayland_save", return_value=False):
+                            with patch("hermes_cli.clipboard._xclip_save", return_value=True) as m:
+                                assert _linux_save(dest) is True
+                                m.assert_called_once_with(dest)
 
     def test_kitten_tried_first_on_headless(self, tmp_path):
         """The bug case: SSH vars stripped by `su -`, no DISPLAY/WAYLAND —
-        kitten is the only backend that can reach the user's clipboard."""
+        kitten is the only backend that can reach the user's clipboard
+        when the bridge (reverse-tunnel) is unavailable."""
         dest = tmp_path / "out.png"
-        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
-            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
-                def fake_run(cmd, **kw):
-                    dest.write_bytes(FAKE_PNG)
-                    return MagicMock(returncode=0)
-                mock_run.side_effect = fake_run
-                assert _linux_save(dest) is True
+        with patch("hermes_cli.clipboard._bridge_save", return_value=None):
+            with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
+                with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                    def fake_run(cmd, **kw):
+                        dest.write_bytes(FAKE_PNG)
+                        return MagicMock(returncode=0)
+                    mock_run.side_effect = fake_run
+                    assert _linux_save(dest) is True
         assert dest.stat().st_size == len(FAKE_PNG)
         assert mock_run.call_count == 1
 
     def test_kitten_success_skips_native_backends(self, tmp_path):
         dest = tmp_path / "out.png"
-        with patch("hermes_cli.clipboard._kitten_save", return_value=True) as kitten:
-            with patch("hermes_cli.clipboard._is_wsl", return_value=True) as wsl:
-                with patch("hermes_cli.clipboard._wsl_save") as wsl_save:
-                    assert _linux_save(dest) is True
-                    kitten.assert_called_once_with(dest)
-                    wsl.assert_not_called()
-                    wsl_save.assert_not_called()
+        with patch("hermes_cli.clipboard._bridge_save", return_value=None):
+            with patch("hermes_cli.clipboard._kitten_save", return_value=True) as kitten:
+                with patch("hermes_cli.clipboard._is_wsl", return_value=True) as wsl:
+                    with patch("hermes_cli.clipboard._wsl_save") as wsl_save:
+                        assert _linux_save(dest) is True
+                        kitten.assert_called_once_with(dest)
+                        wsl.assert_not_called()
+                        wsl_save.assert_not_called()
 
     def test_kitten_timeout_falls_through_and_caches(self, tmp_path):
         """Non-kitty far-end terminal: kitten hangs → TimeoutExpired → fall
         through, and cache the negative so the next attempt skips kitten."""
         dest = tmp_path / "out.png"
         import hermes_cli.clipboard as cb
-        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
-            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
-                mock_run.side_effect = subprocess.TimeoutExpired("kitten", 3)
-                with patch("hermes_cli.clipboard._xclip_save", return_value=False):
-                    assert _linux_save(dest) is False
-        # Second call: kitten must be skipped via the negative cache
-        with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten") as find:
-            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
-                mock_run.side_effect = subprocess.TimeoutExpired("kitten", 3)
-                with patch("hermes_cli.clipboard._xclip_save", return_value=True):
-                    assert _linux_save(dest) is True
-                    find.assert_not_called()
+        with patch("hermes_cli.clipboard._bridge_save", return_value=None):
+            with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten"):
+                with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                    mock_run.side_effect = subprocess.TimeoutExpired("kitten", 3)
+                    with patch("hermes_cli.clipboard._xclip_save", return_value=False):
+                        assert _linux_save(dest) is False
+            # Second call: kitten must be skipped via the negative cache
+            with patch("hermes_cli.clipboard._find_kitten", return_value="/usr/bin/kitten") as find:
+                with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                    mock_run.side_effect = subprocess.TimeoutExpired("kitten", 3)
+                    with patch("hermes_cli.clipboard._xclip_save", return_value=True):
+                        assert _linux_save(dest) is True
+                        find.assert_not_called()
         assert cb._kitten_unavailable is True
+
+    def test_bridge_success_short_circuits(self, tmp_path):
+        """Bridge succeeds → kitten (and everything after it) is never tried."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_save", return_value=True):
+            with patch("hermes_cli.clipboard._kitten_save") as kitten:
+                assert _linux_save(dest) is True
+                kitten.assert_not_called()
+
+    def test_bridge_unavailable_falls_back_to_kitten(self, tmp_path):
+        """Bridge unavailable (None, e.g. plain SSH with no tunnel) → kitten
+        is tried and can still succeed."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_save", return_value=None):
+            with patch("hermes_cli.clipboard._kitten_save", return_value=True) as kitten:
+                assert _linux_save(dest) is True
+                kitten.assert_called_once_with(dest)
+
+    def test_bridge_definitive_no_image_skips_kitten_but_tries_wayland(self, tmp_path):
+        """Bridge answers a DEFINITIVE 'no image at the far end' (False) →
+        kitten is skipped (it would read the same far-end clipboard and just
+        burn its timeout), but the local-desktop backends (which read a
+        DIFFERENT clipboard) are still reachable."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_save", return_value=False):
+            with patch("hermes_cli.clipboard._kitten_save") as kitten:
+                with patch("hermes_cli.clipboard._is_wsl", return_value=False):
+                    with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+                        with patch("hermes_cli.clipboard._wayland_save", return_value=True) as wayland:
+                            assert _linux_save(dest) is True
+                            kitten.assert_not_called()
+                            wayland.assert_called_once_with(dest)
+
+    def test_bridge_unavailable_cache_skips_repeat_socket_attempts(self, tmp_path):
+        """Mirrors test_kitten_timeout_falls_through_and_caches: a socket
+        timeout on the first call caches _bridge_unavailable so a second
+        call in the same process skips the socket attempt entirely."""
+        dest = tmp_path / "out.png"
+        import hermes_cli.clipboard as cb
+        with patch("hermes_cli.clipboard._bridge_sock_path", return_value=str(tmp_path / "nope.sock")):
+            with patch("hermes_cli.clipboard.socket.socket") as mock_socket_cls:
+                mock_sock = MagicMock()
+                mock_sock.recv.side_effect = TimeoutError()
+                mock_socket_cls.return_value = mock_sock
+                with patch("hermes_cli.clipboard._kitten_save", return_value=False):
+                    with patch("hermes_cli.clipboard._xclip_save", return_value=False):
+                        assert _linux_save(dest) is False
+        assert cb._bridge_unavailable is True
+        # Second call: bridge socket must not be touched again
+        with patch("hermes_cli.clipboard.socket.socket") as mock_socket_cls:
+            with patch("hermes_cli.clipboard._kitten_save", return_value=True) as kitten:
+                assert _linux_save(dest) is True
+                kitten.assert_called_once_with(dest)
+                mock_socket_cls.assert_not_called()
+
+
+class TestBridgeSave:
+    """Direct tests for the reverse-tunnel clipboard bridge's save path.
+
+    Most cases mock `_bridge_request` (unit level); the socket-framing
+    itself is exercised for real in TestBridgeEndToEnd below.
+    """
+
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._bridge_unavailable = False
+
+    def teardown_method(self):
+        import hermes_cli.clipboard as cb
+        cb._bridge_unavailable = False
+
+    def test_success_writes_file(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            mock_req.return_value = {"returncode": 0, "png_b64": FAKE_PNG_B64}
+            assert _bridge_save(dest) is True
+        assert dest.read_bytes() == FAKE_PNG
+
+    def test_definitive_no_image_returns_false(self, tmp_path):
+        """rc=1 means the far-end Mac clipboard definitively has no image —
+        distinct from bridge-unavailable (None), so kitten (same far-end
+        clipboard) can be skipped by the caller."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            mock_req.return_value = {"returncode": 1, "stderr": "no image"}
+            assert _bridge_save(dest) is False
+        assert not dest.exists()
+
+    def test_screen_locked_returns_none(self, tmp_path):
+        """rc=3 (screen-locked refusal) is bridge-unavailable, not a
+        definitive no-image — the caller should still fall back to kitten."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            mock_req.return_value = {"returncode": 3, "stderr": "screen locked"}
+            assert _bridge_save(dest) is None
+        assert not dest.exists()
+
+    def test_socket_missing_returns_none_no_exception(self, tmp_path):
+        """Real (unmocked) socket connect against a nonexistent path must
+        surface as None, never raise — the bridge simply isn't reachable."""
+        dest = tmp_path / "out.png"
+        nonexistent = tmp_path / "no-such-broker.sock"
+        with patch("hermes_cli.clipboard._bridge_sock_path", return_value=str(nonexistent)):
+            assert _bridge_save(dest) is None
+        assert not dest.exists()
+
+    def test_timeout_returns_none_and_caches(self, tmp_path):
+        """A socket-level timeout (transport stall) must return None AND set
+        the process-lifetime negative cache — mirrors kitten's own timeout
+        cache.  Connect-refusal must NOT set it (see test below)."""
+        dest = tmp_path / "out.png"
+        import hermes_cli.clipboard as cb
+        with patch("hermes_cli.clipboard.socket.socket") as mock_socket_cls:
+            mock_sock = MagicMock()
+            mock_sock.recv.side_effect = TimeoutError()
+            mock_socket_cls.return_value = mock_sock
+            assert _bridge_save(dest) is None
+        assert cb._bridge_unavailable is True
+
+    def test_connect_refused_does_not_cache(self, tmp_path):
+        """ECONNREFUSED (socket present, nothing listening — e.g. broker
+        mid-restart) must NOT set the negative cache: the tunnel may come
+        back within the process lifetime."""
+        dest = tmp_path / "out.png"
+        import hermes_cli.clipboard as cb
+        with patch("hermes_cli.clipboard.socket.socket") as mock_socket_cls:
+            mock_sock = MagicMock()
+            mock_sock.connect.side_effect = ConnectionRefusedError()
+            mock_socket_cls.return_value = mock_sock
+            assert _bridge_save(dest) is None
+        assert cb._bridge_unavailable is False
+
+    def test_legacy_response_without_png_b64_returns_none(self, tmp_path):
+        """The old-broker-over-tunnel trap: a legacy broker that doesn't
+        understand 'type' answers rc=2 with stdout/stderr but no png_b64 —
+        the client must treat this as bridge-unavailable, never crash on
+        the missing field."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            mock_req.return_value = {"returncode": 2, "stdout": "", "stderr": "op-broker: empty args"}
+            assert _bridge_save(dest) is None
+        assert not dest.exists()
+
+    def test_invalid_base64_returns_none(self, tmp_path):
+        """Spec: png_b64 that fails strict base64 validation
+        (base64.b64decode(..., validate=True)) is a malformed response,
+        same bucket as any other bridge failure — None, dest not left
+        behind."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            mock_req.return_value = {"returncode": 0, "png_b64": "not-valid-base64!!!"}
+            assert _bridge_save(dest) is None
+        assert not dest.exists()
+
+    def test_rc0_empty_png_b64_not_success(self, tmp_path):
+        """rc=0 but whitespace-only png_b64 must not be treated as success
+        (mirrors the kitten rc0-but-empty-file guard)."""
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            mock_req.return_value = {"returncode": 0, "png_b64": "   "}
+            assert _bridge_save(dest) is None
+        assert not dest.exists()
+
+    def test_unavailable_cache_skips_repeat_calls(self, tmp_path):
+        dest = tmp_path / "out.png"
+        import hermes_cli.clipboard as cb
+        cb._bridge_unavailable = True
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            assert _bridge_save(dest) is None
+            mock_req.assert_not_called()
+
+
+class TestBridgeHasImage:
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._bridge_unavailable = False
+
+    def teardown_method(self):
+        import hermes_cli.clipboard as cb
+        cb._bridge_unavailable = False
+
+    def test_has_image_true(self):
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            mock_req.return_value = {"returncode": 0, "has_image": True}
+            assert _bridge_has_image() is True
+
+    def test_has_image_false(self):
+        """A definitive 'no image' — distinct from unavailable (None)."""
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            mock_req.return_value = {"returncode": 0, "has_image": False}
+            assert _bridge_has_image() is False
+
+    def test_missing_field_returns_none(self):
+        """Legacy broker response with no has_image key → unavailable."""
+        with patch("hermes_cli.clipboard._bridge_request") as mock_req:
+            mock_req.return_value = {"returncode": 2, "stdout": "", "stderr": "op-broker: empty args"}
+            assert _bridge_has_image() is None
+
+    def test_timeout_returns_none(self, tmp_path):
+        import hermes_cli.clipboard as cb
+        with patch("hermes_cli.clipboard.socket.socket") as mock_socket_cls:
+            mock_sock = MagicMock()
+            mock_sock.recv.side_effect = TimeoutError()
+            mock_socket_cls.return_value = mock_sock
+            assert _bridge_has_image() is None
+        assert cb._bridge_unavailable is True
+
+
+class TestBridgeEndToEnd:
+    """Exercises the REAL socket code path (framing/newline/JSON) against a
+    throwaway Unix socket server — catches request/response framing bugs
+    that mocking `_bridge_request` can't."""
+
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._bridge_unavailable = False
+        self._server = None
+        self._thread = None
+        # AF_UNIX paths are capped at ~104 bytes on macOS/BSD; pytest's
+        # tmp_path (deep under /private/var/folders/...) routinely exceeds
+        # that, so the throwaway socket lives directly under /tmp instead.
+        import tempfile
+        self._sock_dir = tempfile.mkdtemp(prefix="cbbridge-")
+
+    def teardown_method(self):
+        import hermes_cli.clipboard as cb
+        cb._bridge_unavailable = False
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        import shutil as _shutil
+        _shutil.rmtree(self._sock_dir, ignore_errors=True)
+
+    def _start_server(self, sock_path, response_bytes):
+        """Spin up a bounded, single-purpose Unix socket server that reads
+        one newline-terminated request and writes back *response_bytes*."""
+        received = []
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                line = self.rfile.readline()
+                received.append(line)
+                self.wfile.write(response_bytes)
+
+        class Server(socketserver.UnixStreamServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        server = Server(sock_path, Handler)
+        server.timeout = 5  # bounded — never hangs the test
+        self._server = server
+        self._thread = threading.Thread(target=server.serve_forever, daemon=True)
+        self._thread.start()
+        return received
+
+    def test_real_socket_round_trip_clipboard_read(self, tmp_path):
+        sock_path = os.path.join(self._sock_dir, "broker.sock")
+        response = (json.dumps({"returncode": 0, "png_b64": FAKE_PNG_B64}) + "\n").encode("utf-8")
+        received = self._start_server(sock_path, response)
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_sock_path", return_value=sock_path):
+            assert _bridge_save(dest) is True
+        assert dest.read_bytes() == FAKE_PNG
+        # Verify the request we actually sent was well-formed JSON + newline
+        assert len(received) == 1
+        assert json.loads(received[0].decode("utf-8")) == {"type": "clipboard_read"}
+
+    def test_real_socket_round_trip_has_image(self, tmp_path):
+        sock_path = os.path.join(self._sock_dir, "broker.sock")
+        response = (json.dumps({"returncode": 0, "has_image": True}) + "\n").encode("utf-8")
+        received = self._start_server(sock_path, response)
+        with patch("hermes_cli.clipboard._bridge_sock_path", return_value=sock_path):
+            assert _bridge_has_image() is True
+        assert json.loads(received[0].decode("utf-8")) == {"type": "clipboard_has_image"}
+
+    def test_real_socket_legacy_broker_response(self, tmp_path):
+        """A real (unmocked) socket answering the OLD broker's shape — no
+        'type' understanding, no png_b64/has_image field — must resolve to
+        None end-to-end, not raise."""
+        sock_path = os.path.join(self._sock_dir, "broker.sock")
+        response = (
+            json.dumps({"returncode": 2, "stdout": "", "stderr": "op-broker: empty args"}) + "\n"
+        ).encode("utf-8")
+        self._start_server(sock_path, response)
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._bridge_sock_path", return_value=sock_path):
+            assert _bridge_save(dest) is None
+        assert not dest.exists()
 
 
 class TestKittenSave:
