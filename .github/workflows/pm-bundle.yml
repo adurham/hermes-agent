@@ -15,9 +15,21 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Git ref to bundle (default: the triggering ref)'
+        description: 'Git ref to bundle (default: the triggering commit, github.sha)'
         required: false
         type: string
+  workflow_call:
+    inputs:
+      release:
+        description: 'Stable-release candidate run (ignored by the jobs; uniform callable surface).'
+        required: false
+        type: boolean
+        default: false
+      ref:
+        description: 'Git ref to bundle (default: the triggering commit, github.sha)'
+        required: false
+        type: string
+        default: ''
   pull_request:
     paths:
       - 'pm/**'
@@ -29,9 +41,11 @@ on:
 permissions:
   contents: read
 
+# A workflow_call run (stable release) is never cancelled: its group uses
+# github.run_id so a parent rerun cannot kill this child mid-flight.
 concurrency:
-  group: pm-bundle-${{ github.ref }}
-  cancel-in-progress: true
+  group: pm-bundle-${{ inputs.release == true && github.run_id || github.ref }}
+  cancel-in-progress: ${{ inputs.release != true }}
 
 jobs:
   bundle:
@@ -57,7 +71,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          # Default to the exact candidate commit (github.sha); inputs.ref
+          # remains an escape hatch for a focused manual reproduction.
+          ref: ${{ inputs.ref || github.sha }}
           fetch-tags: true
 
       # The host uv only bootstraps a python to run pm itself; every

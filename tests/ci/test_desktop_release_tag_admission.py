@@ -171,6 +171,9 @@ def _run_admission(clone: Path, tag: str) -> subprocess.CompletedProcess:
     env = _child_env(
         TAG=tag,
         GITHUB_OUTPUT=str(gh_output),
+        RELEASE_PHASE="" if "-canary." in tag else "candidate",
+        GITHUB_REF=f"refs/tags/{tag}",
+        GITHUB_SHA=_git("rev-parse", "HEAD", cwd=clone),
         # checkout@v6 runs run-steps with `bash -e -o pipefail`; -e/-o are on
         # the command line below, so nothing else is needed from the env.
     )

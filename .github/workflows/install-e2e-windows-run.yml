@@ -80,6 +80,10 @@ on:
       bundle-manifest-url:
         type: string
         default: ''
+      bundle-manifest-sha256:
+        description: Pinned transition manifest digest for stable acceptance
+        type: string
+        default: ''
       bundle-arch:
         type: string
         default: x64
@@ -95,6 +99,8 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
       - name: Install driver dependencies and verify helpers
         shell: pwsh
         run: |
@@ -111,6 +117,7 @@ jobs:
         shell: pwsh
         env:
           BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
+          BUNDLE_MANIFEST_SHA256: ${{ inputs.bundle-manifest-sha256 }}
           BUNDLE_ARCH: ${{ inputs.bundle-arch }}
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/windows-bundled-e2e.ps1 -ManifestUrl $env:BUNDLE_MANIFEST -Arch $env:BUNDLE_ARCH
@@ -166,6 +173,7 @@ jobs:
       # in that clone. A shallow checkout cannot serve either need.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       # One recording mechanism on every OS: the composite action installs

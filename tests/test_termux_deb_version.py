@@ -16,7 +16,7 @@ def test_canary_tag_shape_matches_canonical():
     """Invariant: the deb versioner accepts EXACTLY the canary tags the
     canonical release tooling mints. The canonical shape lives in
     hermes_cli/update_channel.py:_CANARY_TAG_RE (8-or-14-digit, 20-prefixed
-    timestamps); scripts/r2-release.mjs:channelForTag parses the same shape.
+    timestamps); scripts/releases/r2.py:channel_for_tag parses the same shape.
     A tag this module accepts but the release flow would never mint (or vice
     versa) is version-drift between the .deb channel and the feed channel.
     """

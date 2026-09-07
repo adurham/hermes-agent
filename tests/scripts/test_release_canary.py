@@ -293,6 +293,26 @@ class TestCanaryStartsItsOwnBuild:
         dispatch = next(i for i, c in enumerate(calls) if c[:3] == ["gh", "workflow", "run"])
         assert create < dispatch
 
+    def test_stable_dispatch_uses_the_tagged_full_release_gate(self, monkeypatch, tmp_path):
+        import subprocess
+
+        calls = []
+        monkeypatch.setattr(release, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(release.shutil, "which", lambda _: "gh")
+        monkeypatch.setattr(release, "_default_branch", lambda _: "main")
+        monkeypatch.setattr(release.subprocess, "run", lambda cmd, **kw: (
+            calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
+        ))
+        assert release.dispatch_desktop_build("v1.2.3", "owner/repo")
+        command = calls[0]
+        assert command[:4] == ["gh", "workflow", "run", "stable-release.yml"]
+        assert command[command.index("--ref") + 1] == "v1.2.3"
+        assert "tag=v1.2.3" in command
+        assert "upload_release=true" not in command
+        with pytest.raises(ValueError):
+            release.dispatch_desktop_build("v1.2.3/other", "owner/repo")
+        assert len(calls) == 1
+
     def test_a_failed_dispatch_does_not_sink_the_release(self, monkeypatch, tmp_path):
         """The tag and draft are already pushed by then. Report the manual
         command and leave them; raising would strand a half-made release."""

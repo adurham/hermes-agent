@@ -94,11 +94,14 @@ export async function downloadArtifact(artifact, destination) {
   }
 }
 
-export async function stageBundleInputs({ manifestUrl, platform, arch, out, expectedCommit }) {
+export async function stageBundleInputs({ manifestUrl, platform, arch, out, expectedCommit, manifestSha256 }) {
   const response = await fetch(artifactUrl(manifestUrl), { signal: AbortSignal.timeout(60_000) })
   if (!response.ok) throw new Error(`Manifest download returned HTTP ${response.status}`)
   const text = await response.text()
   if (text.length > 1024 * 1024) throw new Error('Bundle input manifest is too large')
+  if (manifestSha256 && (!SHA256.test(manifestSha256) || createHash('sha256').update(text).digest('hex') !== manifestSha256)) {
+    throw new Error('Transition manifest SHA-256 mismatch')
+  }
   const manifest = validateBundleInputs(JSON.parse(text), platform, arch)
   if (expectedCommit && manifest.new.commit !== expectedCommit) {
     throw new Error('Candidate commit must equal the tested workflow SHA')
@@ -124,5 +127,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     throw new Error('--manifest-url, --platform, --arch and --out are required')
   }
   console.log(await stageBundleInputs({ manifestUrl: values['manifest-url'], platform: values.platform, arch: values.arch, out: values.out,
-    expectedCommit: process.env.GITHUB_ACTIONS === 'true' ? process.env.GITHUB_SHA : undefined }))
+    expectedCommit: process.env.GITHUB_ACTIONS === 'true' ? process.env.GITHUB_SHA : undefined,
+    manifestSha256: process.env.BUNDLE_MANIFEST_SHA256 || undefined }))
 }

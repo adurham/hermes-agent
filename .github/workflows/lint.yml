@@ -23,8 +23,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: lint-${{ github.ref }}
-  cancel-in-progress: true
+  group: lint-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   lint-diff:

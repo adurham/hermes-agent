@@ -25,7 +25,7 @@ import sys
 
 # The canary timestamp shape MUST match the canonical _CANARY_TAG_RE in
 # hermes_cli/update_channel.py (exactly 8 or 14 digits, 20-prefixed) and
-# channelForTag in scripts/r2-release.mjs. Cross-referenced by
+# channel_for_tag in scripts/releases/r2.py. Cross-referenced by
 # tests/test_termux_deb_version.py::test_canary_tag_shape_matches_canonical.
 _TAG_RE = re.compile(
     r"^v(?P<major>0|[1-9]\d{0,2})\.(?P<minor>\d+)\.(?P<patch>\d+)"

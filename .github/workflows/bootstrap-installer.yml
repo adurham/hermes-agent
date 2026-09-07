@@ -18,8 +18,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: bootstrap-installer-${{ github.ref }}
-  cancel-in-progress: true
+  group: bootstrap-installer-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   posix:

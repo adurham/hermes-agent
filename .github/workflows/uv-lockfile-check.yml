@@ -54,8 +54,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: uv-lockfile-check-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: uv-lockfile-check-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   check:

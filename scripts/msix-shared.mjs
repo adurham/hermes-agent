@@ -25,21 +25,7 @@ export const OUT_OF_STORE_PUBLISHER =
 // Installer (it would download as octet-stream instead). Everything else
 // stays octet-stream (R2's default) unchanged. Keys match by filename suffix,
 // case-insensitively.
-const CONTENT_TYPES = {
-  '.appinstaller': 'application/appinstaller',
-  '.msixbundle': 'application/msixbundle',
-  '.msix': 'application/msix',
-  // Termux APT repo artifacts (uploaded under releases/termux/<channel>/).
-  // InRelease/Release/Packages are extensionless; match by exact basename
-  // too so apt gets text/plain instead of octet-stream.
-  '.deb': 'application/vnd.debian.binary-package',
-  '.gz': 'application/gzip',
-  '.asc': 'text/plain',
-  'release.gpg': 'application/pgp-signature',
-  inrelease: 'text/plain',
-  release: 'text/plain',
-  packages: 'text/plain'
-}
+const CONTENT_TYPES = require('./release-content-types.json')
 
 /**
  * The Content-Type to store for a staged release artifact, if any.

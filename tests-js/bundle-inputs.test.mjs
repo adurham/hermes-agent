@@ -64,7 +64,9 @@ test('staging streams actual bytes, verifies hashes and removes rejected partial
     manifest[slot].artifact.sha256 = createHash('sha256').update(bytes[slot]).digest('hex')
   }
   const out = path.join(directory, 'good')
-  const filename = await stageBundleInputs({ manifestUrl: `${base}/manifest.json`, platform: 'windows', arch: 'x64', out })
+  const manifestSha256 = createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
+  await expect(stageBundleInputs({ manifestUrl: `${base}/manifest.json`, platform: 'windows', arch: 'x64', out, manifestSha256: '0'.repeat(64) })).rejects.toThrow('manifest SHA-256')
+  const filename = await stageBundleInputs({ manifestUrl: `${base}/manifest.json`, platform: 'windows', arch: 'x64', out, manifestSha256 })
   const result = JSON.parse(await readFile(filename, 'utf8'))
   for (const slot of ['old', 'new']) expect(await readFile(result[slot].artifact.path)).toEqual(bytes[slot])
   manifest.old.artifact.sha256 = 'c'.repeat(64)

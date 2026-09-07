@@ -1,0 +1,85 @@
+# Stable release admission and promotion
+
+`Stable Release` is the release gate. A successful desktop builder alone is
+not a successful stable release. Canary builds retain their separate workflow.
+
+## Order
+
+1. Admit an exact `vMAJOR.MINOR.PATCH` tag and non-prerelease draft.
+2. Run the whole `ci.yaml` pipeline in release mode.
+3. Build and test the same Docker images as the Docker workflow.
+4. Run Nix, native PM bundles, install/update E2E, Termux and Windows live
+   process tests. Build, sign and notarize the candidate packages.
+5. Test upgrades to the actual signed Windows/macOS packages on both
+   architectures. The baseline must be a published stable release.
+6. Publish the tested Docker and bundle artifacts. Do not rebuild for publication.
+7. After every required check and artifact publication succeeds, advance the
+   Docker, App Installer, macOS and APT stable channels.
+8. Verify promotion, record the accepted package manifest, then publish the
+   GitHub release. Only this final job reports the stable release green.
+
+Versioned candidate uploads are staging, not stable promotion. Failed,
+cancelled, missing and unexpectedly skipped requirements block the gate.
+Public channel updates never run merely because one architecture built.
+
+Docker Hub, R2, APT and the Store do not support one cross-service transaction.
+All prerequisites finish before promotion starts, but a failure during final
+promotion can leave some services advanced and others unchanged. Such a run
+stays red. Inspect its per-service results before retrying; do not rebuild or
+replace the tested candidate to recover a pointer update.
+
+## Run a release
+
+Use `scripts/release.py --bump patch --publish --remote <remote>` to create
+its version commit, stable tag and draft. Stable dispatch selects
+`stable-release.yml` at that tag. The workflow rejects a different ref/SHA,
+a moved tag, a tag outside repository main, or a project-version mismatch.
+Canary dispatch still uses the default branch for its workflow/cache scope.
+
+To resume an existing draft, dispatch `Stable Release` with the exact tag as
+both the workflow ref and the `tag` input. Keep tags immutable. The local
+workflow calls and their checkouts use the tag's commit, not moving main.
+
+## Signed-package baseline
+
+The last successful stable release records
+`releases/stable/release-candidates.json` on the configured R2 public origin.
+It identifies actual Windows universal MSIX bundles, macOS ZIPs and package
+provenance. The next run combines those records with its candidate manifest
+and uses the existing native bundled-update drivers.
+
+For an existing stable release that predates this metadata, supply
+`baseline-manifest` as an HTTPS URL to an equivalent manifest of its actual
+published packages. The baseline tag must be a published stable release,
+package identities must agree, and versions must increase. Missing baseline
+artifacts are a blocker, not permission to fabricate or skip acceptance.
+See [the bundled update contract](../tests/install/BUNDLED_UPDATES.md).
+
+## Explicit exclusions and policy
+
+- Desktop Playwright E2E (`e2e-desktop.yml`) is deferred at the owner's request
+  because it is flaky. It is reported as deferred, not passed. Stabilize it
+  and prove repeatable CI runs before adding it to this gate.
+- Install/update E2E and native signed-package acceptance are **not** deferred.
+- PR-only history, label and diff review checks do not apply to a stable tag.
+  All applicable source CI jobs still run, regardless of changed paths.
+- OSV vulnerability findings retain their existing advisory policy. Required
+  scanner execution failures are failures, not advisory findings.
+- Disabled Linux desktop packaging is not claimed as shipped. Native Linux
+  PM bundles, Docker, Nix and install/update checks remain required.
+- Housekeeping, autofix, comment and skills-index/deploy workflows are not
+  release acceptance suites.
+
+## Implementation ownership
+
+Actions owns job ordering, runner selection, permissions and environments.
+Python owns shared release admission, manifests, artifact hashes, publication
+and channel promotion under `scripts/releases/` and `scripts/bundles/`.
+Electron-builder configuration/hooks and native Windows/macOS adapters remain
+in JavaScript or PowerShell. These adapters consume release facts rather than
+reimplementing the release gate. Gate jobs use only Python's standard library;
+they do not install the application or the JS workspace to report a verdict.
+
+Signing and publication credentials stay in their protected job environments.
+The source CI call does not inherit deployment secrets. Configure the existing
+release-signing and container-publish environments before running this pipeline.

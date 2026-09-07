@@ -24,7 +24,7 @@ name: Desktop Bundled Release
 #     (delete-then-replace, newest always wins). Gated on MS_STORE_PRODUCT_ID
 #     (+ MS_STORE_CANARY_FLIGHT_ID for the canary arm).
 #   publish-darwin-updater                  → macOS electron-updater feed
-#     (needs BOTH darwin legs): r2-release.mjs finalize merges the per-arch
+#     (needs BOTH darwin legs): scripts.releases.r2 finalize merges the per-arch
 #     ymls into releases/darwin/<channel>/<channel>-mac.yml — the feed
 #     pointer is written LAST, and the job's concurrency group serializes
 #     same-channel publications.
@@ -53,8 +53,8 @@ name: Desktop Bundled Release
 # R2 secrets (repo-level or the release-signing environment): the R2
 # account id + an R2 API token (S3-compatible) with read/write on the
 # release bucket; CLOUDFLARE_R2_BUCKET and CLOUDFLARE_R2_PUBLIC_URL are
-# non-secret vars. scripts/r2-release.mjs derives the S3 endpoint from
-# the account id and needs only node — no npm ci, no extra deps.
+# non-secret vars. scripts/releases/r2.py derives the S3 endpoint from
+# the account id. Upload/list operations need only Python; feed operations use PyYAML.
 #
 # Windows Store submission (publish-win32-store): MSStore CLI via
 # microsoft/microsoft-store-apppublisher. Credentials live in the
@@ -70,6 +70,24 @@ name: Desktop Bundled Release
 # ingestion (see sign-msix.mjs).
 
 on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      release-phase:
+        required: true
+        type: string
+      manifest-sha256:
+        default: ''
+        type: string
+    outputs:
+      manifest-url:
+        value: ${{ jobs.candidate-manifest.outputs.manifest-url }}
+        description: Immutable candidate manifest
+      manifest-sha256:
+        value: ${{ jobs.candidate-manifest.outputs.manifest-sha256 }}
+        description: Digest of the candidate manifest
   workflow_dispatch:
     inputs:
       tag:
@@ -99,7 +117,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: desktop-bundled-release-${{ inputs.tag }}
+  group: desktop-bundled-release-${{ inputs.tag }}-${{ inputs.release-phase || 'canary' }}
   cancel-in-progress: false
 
 jobs:
@@ -134,7 +152,17 @@ jobs:
         id: admission
         env:
           TAG: ${{ inputs.tag }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
         run: |
+          case "$RELEASE_PHASE" in
+            candidate|publish|promote)
+              [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
+              [ "$GITHUB_REF" = "refs/tags/$TAG" ] || exit 1
+              [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || exit 1
+              ;;
+            '') [[ "$TAG" == *-canary.* ]] || { echo 'Use Stable Release for stable tags' >&2; exit 1; } ;;
+            *) echo 'Unknown release phase' >&2; exit 1 ;;
+          esac
           case "$TAG" in
             v[0-9]*.[0-9]*.[0-9]*-canary.20[0-9][0-9][0-9][0-9][0-9][0-9]*)
               echo "canary tag: $TAG"
@@ -177,7 +205,7 @@ jobs:
   # Store submission) is gated on THIS job, never on mac/linux.
   build-win32:
     name: bundled ${{ matrix.target.label }}
-    if: inputs.termux_only != true
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
     needs: validate
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -449,6 +477,22 @@ jobs:
           node apps/desktop/scripts/audit-bundle-arch.mjs \
             --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
 
+      - name: Record stable Windows candidate
+        if: inputs.release-phase == 'candidate'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target.label }}
+        run: |
+          python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
+            --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --out "$RUNNER_TEMP/$TARGET.tar"
+      - name: Retain stable Windows candidate
+        if: inputs.release-phase == 'candidate'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: stable-candidate-${{ matrix.target.label }}
+          path: ${{ runner.temp }}/${{ matrix.target.label }}.tar
+          if-no-files-found: error
+
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -479,14 +523,14 @@ jobs:
             case "$f" in
               */Store-*) continue ;;  # archived by the Store loop below
             esac
-            node scripts/r2-release.mjs put \
+            python -m scripts.releases.r2 put \
               --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
           done
           # The Store-submission MSIX (built by the win legs) goes to the tag
           # archive too — hidden from the builds table and never a feed dir.
           for f in apps/desktop/release/Store-*.msix; do
             [ -f "$f" ] || continue
-            node scripts/r2-release.mjs put \
+            python -m scripts.releases.r2 put \
               --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
           done
 
@@ -503,7 +547,7 @@ jobs:
   # pointer last, whole channel green before anything publishes.
   build-darwin:
     name: bundled ${{ matrix.target.label }}
-    if: inputs.termux_only != true
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
     needs: validate
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -665,7 +709,7 @@ jobs:
       # job would publish. A non-publishing run (upload_release=false,
       # e.g. forks) builds unsigned on purpose.
       - name: Require signing credentials when publishing
-        if: inputs.upload_release == true
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
         shell: bash
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -691,7 +735,7 @@ jobs:
         # notarytool takes a FILE PATH for --key; raw .p8 content in argv
         # dies with `Invalid option: ***`. The build step must NOT re-declare
         # APPLE_API_KEY in its env: step env shadows GITHUB_ENV.
-        if: inputs.upload_release == true
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
         shell: bash
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -743,7 +787,7 @@ jobs:
         # The backstop against a silent unsigned publish: assess the packed
         # app against the real Gatekeeper policy (requires a Developer ID
         # signature AND a stapled notarization ticket to pass offline).
-        if: inputs.upload_release == true
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
         shell: bash
         run: |
           shopt -s nullglob
@@ -760,7 +804,7 @@ jobs:
           done
 
       - name: Rename the feed yml per arch
-        if: inputs.upload_release == true
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
         # electron-builder writes the channel feed yml (stable-mac.yml /
         # canary-mac.yml) with the SAME name on both legs; prefix the arch
         # so the publish job's merge-multiple download keeps both and
@@ -777,8 +821,23 @@ jobs:
           test -s "$f"
           mv "$f" "apps/desktop/release/${arch}-${channel}-mac.yml"
 
+      - name: Record stable macOS candidate
+        if: inputs.release-phase == 'candidate'
+        env:
+          TARGET: ${{ matrix.target.label }}
+        run: |
+          python3 -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
+            --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --out "$RUNNER_TEMP/$TARGET.tar"
+      - name: Retain stable macOS candidate
+        if: inputs.release-phase == 'candidate'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: stable-candidate-${{ matrix.target.label }}
+          path: ${{ runner.temp }}/${{ matrix.target.label }}.tar
+          if-no-files-found: error
+
       - name: Upload feed metadata
-        if: inputs.upload_release == true
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hermes-bundled-${{ matrix.target.label }}-${{ inputs.tag }}
@@ -788,7 +847,7 @@ jobs:
           if-no-files-found: error
 
       - name: Retain non-publishing build artifacts
-        if: inputs.upload_release != true
+        if: inputs.upload_release != true && inputs.release-phase != 'candidate'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hermes-bundled-${{ matrix.target.label }}-${{ inputs.tag }}
@@ -814,7 +873,7 @@ jobs:
             echo "::error::no darwin release artifacts found"; exit 1
           fi
           for f in "${files[@]}"; do
-            node scripts/r2-release.mjs put \
+            python -m scripts.releases.r2 put \
               --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
           done
 
@@ -837,9 +896,9 @@ jobs:
 
   # ── Windows updater channels (REAL — gated on build-win32 only) ──────────
   publish-win32-updater:
-    name: Publish the win32 App Installer feeds
+    name: Assemble Windows bundle and optionally publish canary feed
     needs: [validate, build-win32]
-    if: inputs.upload_release == true
+    if: inputs.upload_release == true || inputs.release-phase == 'candidate'
     runs-on: windows-2025
     environment: release-signing
     timeout-minutes: 45
@@ -947,6 +1006,7 @@ jobs:
       - name: Bundle + stage the MSIX feeds
         shell: bash
         env:
+          RELEASE_PHASE: ${{ inputs.release-phase }}
           AZURE_TOKEN_CREDENTIALS: prod
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
@@ -954,7 +1014,20 @@ jobs:
           # Out-of-store feed (bundled variant): universal .msixbundle +
           # .appinstaller per channel; plus re-upload the Store-submission
           # .msix to the tag archive (never a feed dir).
-          node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled
+          args=()
+          if [ "$RELEASE_PHASE" = candidate ]; then args+=(--candidate); fi
+          node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled "${args[@]}"
+          if [ "$RELEASE_PHASE" = candidate ]; then
+            node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG"
+          fi
+
+      - name: Retain stable universal bundles
+        if: inputs.release-phase == 'candidate'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: stable-candidate-universal
+          path: apps/desktop/release/*.msixbundle
+          if-no-files-found: error
 
   # ── Windows Store submission (REAL — PARALLEL with publish-win32-updater) ─
   # Bundles the two Store-*.msix into one universal Store .msixbundle and
@@ -1074,7 +1147,7 @@ jobs:
           # The per-arch Store-*.msix are already in the immutable archive
           # (uploaded by the build legs); keep the assembled universal bundle
           # there too as the record of exactly what was submitted.
-          node scripts/r2-release.mjs put \
+          python -m scripts.releases.r2 put \
             --tag "$HERMES_PAYLOAD_TAG" \
             --key "$(basename "${{ steps.storebundle.outputs.bundle }}")" \
             --file "${{ steps.storebundle.outputs.bundle }}"
@@ -1119,7 +1192,7 @@ jobs:
   # ── macOS updater channel (REAL) ───────────────────────────────────────────
   # Merges the per-arch feed ymls (arm64-stable-mac.yml / x64-stable-mac.yml
   # …) into releases/darwin/<channel>/<channel>-mac.yml via
-  # scripts/r2-release.mjs finalize. The binaries were staged by the build
+  # scripts/releases/r2.py finalize. The binaries were staged by the build
   # legs (releases/tag/<tag>/); the feed POINTER is written here, last, only
   # after BOTH darwin legs are green — a failed leg can never publish a
   # partial channel. The concurrency group is scoped to the channel so two
@@ -1149,8 +1222,10 @@ jobs:
           # Privileged job: pin to the SHA validate admitted, not the tag.
           ref: ${{ needs.validate.outputs.sha }}
 
-      - name: Install locked feed tooling
-        run: npm ci --workspaces=false --ignore-scripts --no-audit --no-fund
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.3'
+          enable-cache: false
 
       - name: Download both darwin legs' feed ymls
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -1184,12 +1259,12 @@ jobs:
         # (feed-side); the pointer upload is the last write of the run.
         shell: bash
         run: |
-          node scripts/r2-release.mjs finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
+          uv run --no-project --with PyYAML==6.0.3 python -m scripts.releases.r2 finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
 
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
     needs: [validate]
-    if: inputs.upload_release == true
+    if: inputs.upload_release == true || inputs.release-phase == 'candidate'
     runs-on: ubuntu-24.04-arm
     environment: release-signing
     timeout-minutes: 90
@@ -1455,6 +1530,7 @@ jobs:
         env:
           CHANNEL: ${{ steps.channel.outputs.channel }}
           PREVIOUS_RUN: ${{ inputs.termux_upgrade_from_run }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
           # Passphrase-protected signing keys only; unset for bare keys.
           TERMUX_APT_GPG_PASSPHRASE: ${{ secrets.TERMUX_APT_GPG_PASSPHRASE }}
         run: |
@@ -1487,15 +1563,20 @@ jobs:
               "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
           fi
 
+          if [ "$RELEASE_PHASE" = candidate ]; then
+            python3 -m scripts.bundles.release_artifacts record --platform termux --arch aarch64 \
+              --root termux-build --tag "$HERMES_PAYLOAD_TAG" --out "$RUNNER_TEMP/termux.tar"
+            exit 0
+          fi
           # --key-is-full is MANDATORY on every feed-dir upload: without it
-          # r2-release.mjs re-prefixes the key into the tag archive
+          # scripts.releases.r2 re-prefixes the key into the tag archive
           # (releases/tag/<tag>/) and the APT feed never lands at
           # releases/termux/<channel>/.
           shopt -s globstar nullglob
           # cd into the staged repo for the glob, but resolve the r2 client
           # absolutely first -- after the cd, scripts/ is no longer in the
-          # cwd and a bare `node scripts/r2-release.mjs` would ENOENT.
-          R2="$GITHUB_WORKSPACE/scripts/r2-release.mjs"
+          # cwd and a bare `python -m scripts.releases.r2` would ENOENT.
+          export PYTHONPATH="$GITHUB_WORKSPACE"
           cd termux-build/apt
           files=(pool/**/*.deb "dists/hermes-$CHANNEL"/main/binary-aarch64/by-hash/*/* key.asc
                  "dists/hermes-$CHANNEL/main/binary-aarch64/Packages"
@@ -1507,7 +1588,7 @@ jobs:
           # index and package has been uploaded and read back successfully.
           for f in "${files[@]}"; do
             test -f "$f"
-            node "$R2" put \
+            python3 -m scripts.releases.r2 put \
               --tag "$HERMES_PAYLOAD_TAG" \
               --key "releases/termux/$CHANNEL/$f" \
               --file "$f" \
@@ -1523,6 +1604,14 @@ jobs:
             -v "$GITHUB_WORKSPACE/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
             -v "$GITHUB_WORKSPACE/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
             "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version" "$public_repo"
+      - name: Retain stable Termux candidate
+        if: inputs.release-phase == 'candidate'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: stable-candidate-termux
+          path: ${{ runner.temp }}/termux.tar
+          if-no-files-found: error
+
   builds-pending:
     name: Mark the builds table as in progress
     if: inputs.upload_release == true && inputs.termux_only != true
@@ -1546,7 +1635,7 @@ jobs:
   builds-table:
     name: Render the release builds table
     needs: [validate, build-win32, build-darwin, build-linux, publish-win32-updater, publish-darwin-updater, termux-deb]
-    if: inputs.upload_release == true
+    if: inputs.upload_release == true && inputs.release-phase == ''
     runs-on: ubuntu-24.04
     environment: release-signing
     steps:
@@ -1571,6 +1660,167 @@ jobs:
           fi
           python3 scripts/render-builds-table.py \
             --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY"
+
+  candidate-manifest:
+    name: Stage verified stable candidate artifacts
+    needs: [validate, build-win32, build-darwin, publish-win32-updater, termux-deb]
+    if: inputs.release-phase == 'candidate'
+    runs-on: ubuntu-latest-32-core
+    environment: release-signing
+    timeout-minutes: 90
+    outputs:
+      manifest-url: ${{ steps.manifest.outputs.manifest-url }}
+      manifest-sha256: ${{ steps.manifest.outputs.manifest-sha256 }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: stable-candidate-*
+          path: candidates
+      - id: manifest
+        run: python -m scripts.bundles.release_artifacts assemble --root candidates --bundle-dir candidates/stable-candidate-universal --out release-candidates.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: stable-release-candidates
+          path: release-candidates.json
+          if-no-files-found: error
+
+  stable-publish:
+    name: Verify published candidate files
+    needs: validate
+    if: inputs.release-phase == 'publish'
+    runs-on: ubuntu-latest-32-core
+    environment: release-signing
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: stable-release-candidates
+      - run: python -m scripts.bundles.release_artifacts publish --manifest release-candidates.json --root verified
+
+  stable-store:
+    name: Submit the verified Store package
+    needs: [validate, stable-publish]
+    if: inputs.release-phase == 'publish'
+    runs-on: windows-2025
+    environment: release-signing
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+      MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}
+      MS_STORE_SELLER_ID: ${{ secrets.MS_STORE_SELLER_ID }}
+      MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
+      MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
+      MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: stable-release-candidates
+      - name: Retrieve the exact Store candidate
+        shell: bash
+        run: python -m scripts.bundles.release_artifacts materialize --manifest release-candidates.json --root verified --store-only
+      - uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+      - name: Submit without rebuilding
+        shell: bash
+        run: |
+          test -n "$MS_STORE_PRODUCT_ID"
+          msstore reconfigure --tenantId "$MS_STORE_TENANT_ID" --sellerId "$MS_STORE_SELLER_ID" --clientId "$MS_STORE_CLIENT_ID" --clientSecret "$MS_STORE_CLIENT_SECRET"
+          files=(verified/Store-*.msixbundle)
+          test "${#files[@]}" -eq 1
+          test -f "${files[0]}"
+          msstore publish "${files[0]}" -id "$MS_STORE_PRODUCT_ID"
+
+  stable-promote:
+    name: Promote verified stable bundle channels
+    needs: validate
+    if: inputs.release-phase == 'promote'
+    runs-on: ubuntu-latest-32-core
+    environment: release-signing
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.3'
+          enable-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: stable-release-candidates
+      - run: uv run --no-project --with PyYAML==6.0.3 python -m scripts.bundles.release_artifacts promote --manifest release-candidates.json --root verified
+      - run: python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+
+  stable-phase-result:
+    name: Stable bundle phase completed
+    if: always() && inputs.release-phase != ''
+    needs: [validate, build-win32, build-darwin, publish-win32-updater, termux-deb, candidate-manifest, stable-publish, stable-store, stable-promote]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+      - name: Require every phase job
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from scripts.releases.stable import require_success
+          phases = {
+              'candidate': ['validate', 'build-win32', 'build-darwin', 'publish-win32-updater', 'termux-deb', 'candidate-manifest'],
+              'publish': ['validate', 'stable-publish', 'stable-store'],
+              'promote': ['validate', 'stable-promote'],
+          }
+          require_success(json.loads(os.environ['RELEASE_NEEDS']), phases[os.environ['RELEASE_PHASE']])
+          PY
 
   publish-canary:
     name: Publish the canary release

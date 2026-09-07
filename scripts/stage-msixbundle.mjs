@@ -23,14 +23,13 @@
 //   node scripts/stage-msixbundle.mjs --tag vX.Y.Z [--variant bundled|light]
 // Reads HERMES_DESKTOP_VARIANT (bundled|light) from the environment; the
 // workflow runs this job once per variant.
-import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { appIdentity, buildAppInstaller, resolveWinSdkTools } from './msix-shared.mjs'
-import { publishFeedUploads } from './r2-release.mjs'
+
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -65,7 +64,9 @@ if (process.platform !== 'win32') {
   process.exit(1)
 }
 
+const candidate = args.includes('--candidate')
 const canary = /-canary\./.test(tag)
+if (!canary && !candidate) throw new Error('Stable bundles must use the staged stable-release workflow')
 const channel = canary ? 'canary' : 'stable'
 const channelDir = `releases/win32/${variant === 'light' ? 'light/' : ''}${channel}`
 
@@ -229,6 +230,12 @@ function resolveDotnetRuntimeDir() {
   return null
 }
 
+if (candidate) {
+  execFileSync(signtool, ['verify', '/pa', bundle], { stdio: 'inherit' })
+  console.log(`[stage-msixbundle] candidate ready: ${bundle}`)
+  process.exit(0)
+}
+
 // ── 2. .appinstaller + uploads ─────────────────────────────────────────────
 const baseUrl = String(process.env.CLOUDFLARE_R2_PUBLIC_URL || '').replace(/\/+$/, '')
 if (!baseUrl) {
@@ -248,32 +255,24 @@ fs.writeFileSync(path.join(releaseDir, appinstallerName), appinstaller)
 
 const upload = (key, file, keyIsFull = true) => {
   // NOTE: no fs.readFileSync here — the msixbundle can exceed Node's 2GiB
-  // buffer limit (ERR_FS_FILE_TOO_LARGE). r2-release.mjs put reads + hashes
+  // buffer limit (ERR_FS_FILE_TOO_LARGE). scripts.releases.r2 put reads + hashes
   // the file itself; log the size via stat instead.
   const { size } = fs.statSync(file)
   console.log(`[stage-msixbundle] upload ${key} (${size} bytes)`)
   // Feed-dir keys are FULL object keys (releases/win32/<ch>/…) — pass
   // --key-is-full so r2 put does NOT wrap them under releases/tag/<tag>/.
-  // r2-release.mjs put derives Content-Type from the key extension.
-  execFileSync(process.execPath, ['scripts/r2-release.mjs', 'put', '--tag', tag, '--key', key, '--file', file, ...(keyIsFull ? ['--key-is-full'] : [])], {
+  // scripts.releases.r2 put derives Content-Type from the key extension.
+  execFileSync(process.env.HERMES_PYTHON || 'python', ['-m', 'scripts.releases.r2', 'put', '--tag', tag, '--key', key, '--file', file, ...(keyIsFull ? ['--key-is-full'] : [])], {
     cwd: REPO_ROOT,
     stdio: 'inherit'
   })
 }
 
-// C22 ordering: bundle FIRST, pointer LAST. r2-release.mjs PUTs then
+// C22 ordering: bundle FIRST, pointer LAST. scripts.releases.r2 PUTs then
 // HEAD-verifies the remote content-length — a failed/short upload throws
 // and aborts this job before the pointer is written.
-publishFeedUploads(
-  {
-    channelDir,
-    appinstallerName,
-    bundleFilename: `${name}-${version}-win.msixbundle`,
-    bundleFile: bundle,
-    appinstallerFile: path.join(releaseDir, appinstallerName),
-  },
-  upload,
-)
+upload(`${channelDir}/${name}-${version}-win.msixbundle`, bundle)
+upload(`${channelDir}/${appinstallerName}`, path.join(releaseDir, appinstallerName))
 
 // The Store-submission .msix files were already uploaded to the tag archive
 // by the win legs (Store- prefix); nothing for this job to re-upload.

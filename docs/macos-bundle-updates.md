@@ -6,7 +6,8 @@ Windows App Installer and Store ownership are unchanged.
 
 ## Feed contract
 
-`apps/desktop/update-feed.cjs` defines each channel directory and filename.
+`apps/desktop/update-feed.json` defines each channel directory and filename.
+The desktop CJS adapter and Python publisher read these same facts.
 The builder writes that URL into `app-update.yml`. The client uses this file
 unless `updates.desktop_feed_base_url` supplies an explicit bucket-base URL.
 
@@ -18,7 +19,7 @@ unless `updates.desktop_feed_base_url` supplies an explicit bucket-base URL.
 The current workflow builds the bundled variant, on ARM64 and Intel runners.
 Light has separate client/feed routing but no release matrix leg in this change.
 
-`r2-release.mjs finalize` requires one metadata file for each architecture,
+`python -m scripts.releases.r2 finalize` requires one metadata file for each architecture,
 named `arm64-CHANNEL-mac.yml` and `x64-CHANNEL-mac.yml`. It rejects wrong
 versions, variants, architectures, hashes and inconsistent legacy path fields.
 Each referenced ZIP/DMG is streamed back and checked against its SHA-512 and

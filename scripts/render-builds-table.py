@@ -3,7 +3,7 @@
 
 Runs as the LAST job of desktop-bundled-release.yml, after every matrix
 leg has uploaded, and edits the GitHub release body in place. The tables
-are built from the bucket's ACTUAL object names (scripts/r2-release.mjs
+are built from the bucket's ACTUAL object names (scripts/releases/r2.py
 list --prefix releases/tag/<tag>/), filtered to the tag's exact version —
 a missing artifact shows up as a missing row, never a dead link. The
 GitHub release carries the notes only; the binaries live in the R2 bucket
@@ -128,11 +128,11 @@ def r2_object_names(tag: str) -> list[str]:
     Exact version match, never prefix: 'v0.28.0' must not pick up
     '0.28.0-canary.20260818...' objects (they live under their own tag
     directory, and the basename filter would reject them anyway). The list
-    call shells out to scripts/r2-release.mjs, which reads the R2 env vars
-    and needs only node (no npm ci in this job).
+    call shells out to scripts/releases/r2.py, which reads the R2 env vars
+    and needs only Python (no application environment).
     """
     run = subprocess.run(
-        ["node", "scripts/r2-release.mjs", "list", "--prefix", f"releases/tag/{tag}/"],
+        [sys.executable, "-m", "scripts.releases.r2", "list", "--prefix", f"releases/tag/{tag}/"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if run.returncode != 0:

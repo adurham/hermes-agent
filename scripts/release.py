@@ -2155,42 +2155,31 @@ def list_remotes() -> list[str]:
 
 
 def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
-    """Start the desktop bundled build for ``tag``. Returns True on success.
+    """Dispatch the release pipeline after its draft exists.
 
-    This is how EVERY release of either kind gets its installers. The
-    workflow takes workflow_dispatch only, because that is one of the two
-    events GITHUB_TOKEN is allowed to raise: the scheduled canary pushes
-    its tag as github-actions[bot], and a bot-pushed tag starts no
-    workflow run at all. A tag-push trigger would therefore work for a
-    hand-cut stable release and silently do nothing for the canary.
-
-    Called after the draft release exists — its body is where the
-    builds-pending / builds-table jobs splice the download tables (the
-    binaries themselves go to the R2 bucket; the release carries notes
-    only). The workflow FILE is taken from the repo's DEFAULT BRANCH (not
-    the tag): a tag-dispatched run scopes actions/cache under
-    refs/heads/refs/tags/<tag> — a mangled per-tag scope that can never be
-    restored by a later canary, so every canary rebuilt from cold. On a
-    branch ref the caches scope to refs/heads/<branch> and persist across
-    canaries. The build CODE still comes from the tag via the `tag` input
-    (the workflow checks out ${{ inputs.tag }}), so an old-tag rebuild
-    builds the old snapshot with the current workflow.
+    Stable workflows run on the tag so all reusable checks see the same
+    commit. Their gate owns artifact publication and channel promotion.
+    Canary builds keep default-branch workflow/cache scope and tagged inputs.
+    Explicit dispatch also works for tags created by GITHUB_TOKEN.
     """
-    cmd = [
-        "gh", "workflow", "run", "desktop-bundled-release.yml",
-        "--ref", "main",  # placeholder — replaced after the which-guard below
-        "-f", f"tag={tag}",
-        "-f", "upload_release=true",
-    ]
+    canary = _CANARY_TAG_RE.fullmatch(tag) is not None
+    from scripts.releases.semver import STABLE_TAG
+    if not canary and not STABLE_TAG.fullmatch(tag):
+        raise ValueError("Expected an exact stable or canary release tag")
+    workflow = "desktop-bundled-release.yml" if canary else "stable-release.yml"
+    cmd = ["gh", "workflow", "run", workflow, "--ref", "main" if canary else tag,
+           "-f", f"tag={tag}"]
+    if canary:
+        cmd += ["-f", "upload_release=true"]
     if gh_repo:
         cmd += ["--repo", gh_repo]
 
     if not shutil.which("gh"):
-        print("  ✗ Cannot start the desktop build: `gh` CLI not found.")
+        print("  ✗ Cannot start the release pipeline: `gh` CLI not found.")
         print(f"    Start it manually: {' '.join(cmd)}")
         return False
 
-    dispatch_ref = _default_branch(gh_repo) or "main"
+    dispatch_ref = (_default_branch(gh_repo) or "main") if canary else tag
     cmd[cmd.index("--ref") + 1] = dispatch_ref
 
     result = subprocess.run(
@@ -2198,11 +2187,11 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
         errors="replace", cwd=str(REPO_ROOT),
     )
     if result.returncode != 0:
-        print(f"  ✗ Could not start the desktop build: {result.stderr.strip()}")
+        print(f"  ✗ Could not start the release pipeline: {result.stderr.strip()}")
         print(f"    Start it manually: {' '.join(cmd)}")
         return False
 
-    print(f"  ✓ Desktop build started for {tag} (workflow from {dispatch_ref})")
+    print(f"  ✓ {workflow} started for {tag} (workflow from {dispatch_ref})")
     return True
 
 
@@ -3032,13 +3021,8 @@ def main():
             print("    Continue manually after fixing access:")
             print(f"    git push {push_remote} HEAD --tags")
 
-        # Create the GitHub release as a DRAFT (it carries the notes only),
-        # then start the desktop build. The build stages the installers and
-        # feed files to the R2 bucket and the finalize job publishes the
-        # feeds; the builds-table job renders the download links into this
-        # draft's body. Publishing now would expose an artifact-less
-        # release; a stable release is published by hand once the matrix
-        # is green.
+        # Keep the release hidden until the stable pipeline completes all
+        # validation, artifact publication and channel promotion.
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog, encoding="utf-8")
 
@@ -3072,10 +3056,8 @@ def main():
             print(f"  ✓ GitHub draft release created: {result.stdout.strip()}")
             dispatch_desktop_build(tag_name, gh_repo)
             print(f"\n  🎉 Release v{new_version} ({tag_name}) drafted!")
-            print("     The Desktop Bundled Release workflow stages installers to the R2 bucket.")
-            print("     Publish once it is green:")
-            repo_flag = f" --repo {gh_repo}" if gh_repo else ""
-            print(f"     gh release edit {tag_name}{repo_flag} --draft=false")
+            print("     Stable Release runs full CI, Docker and package acceptance.")
+            print("     It publishes artifacts and advances stable only after the required gates pass.")
         else:
             if result is None:
                 print("  ✗ GitHub release skipped: `gh` CLI not found.")

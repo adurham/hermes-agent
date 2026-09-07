@@ -52,6 +52,10 @@ on:
         required: false
         type: string
         default: ''
+      bundle-manifest-sha256:
+        description: Pinned transition manifest digest for stable acceptance
+        type: string
+        default: ''
       bundle-arch:
         description: 'Architecture of the bundled pair: arm64 (macos-15) or x64 (macos-15-intel).'
         required: false
@@ -101,6 +105,7 @@ jobs:
       # installer/updater talk to.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Start screen recording
@@ -184,6 +189,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
 
       - name: Install driver dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -201,6 +208,7 @@ jobs:
             --manifest-url "$BUNDLE_MANIFEST" --arch "$BUNDLE_ARCH"
         env:
           BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
+          BUNDLE_MANIFEST_SHA256: ${{ inputs.bundle-manifest-sha256 }}
           BUNDLE_ARCH: ${{ inputs.bundle-arch }}
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
@@ -211,6 +219,7 @@ jobs:
             --manifest-url "$BUNDLE_MANIFEST" --arch "$BUNDLE_ARCH"
         env:
           BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
+          BUNDLE_MANIFEST_SHA256: ${{ inputs.bundle-manifest-sha256 }}
           BUNDLE_ARCH: ${{ inputs.bundle-arch }}
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
