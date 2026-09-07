@@ -12,6 +12,7 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const feedContract = require('./update-feed.cjs')
 
 const {
   light,
@@ -57,6 +58,9 @@ const electronVersion = require('./package.json').devDependencies.electron
 if (!/^\d+\.\d+\.\d+$/.test(electronVersion)) {
   throw new Error(`invalid electron version ${electronVersion} in package.json`)
 }
+
+const macFeed = feedContract.darwinFeed(channel === 'canary' || channel === 'light-canary' ? 'canary' : 'stable', light)
+const publicUrl = process.env.CLOUDFLARE_R2_PUBLIC_URL?.replace(/\/+$/, '')
 
 /** @type {Configuration} */
 module.exports = {
@@ -119,6 +123,12 @@ module.exports = {
     unpack: ['**/*.node', '**/prebuilds/**', 'dist/**']
   },
   mac: {
+    // The afterSign hook owns notarization, including keychain-profile builds.
+    notarize: false,
+    // The packaged client reads this generated app-update.yml by default.
+    publish: publicUrl && !store
+      ? [{ provider: 'generic', url: `${publicUrl}/${macFeed.directory}/`, channel: macFeed.channel }]
+      : null,
     category: 'public.app-category.developer-tools',
     extendInfo: {
       CFBundleDisplayName: displayName,
@@ -193,7 +203,7 @@ module.exports = {
     // scripts/msix-shared.mjs). setBuildNumber makes getVersionInWeirdWindowsForm
     // use the BUILD_NUMBER env (4th component) instead of hardcoding ".0" — a
     // stable build sets no BUILD_NUMBER and stays X.Y.Z.0, a canary build sets
-    // it via build-bundled-desktop.mjs so App Installer updates over equal
+    // it via scripts/bundles/desktop.py so App Installer updates over equal
     // canary-over-canary versions instead of refusing them.
     setBuildNumber: true,
     // Floor Windows 11 22H2. Below build 18307 the manifest schema caps

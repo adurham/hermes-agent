@@ -20,8 +20,9 @@
  */
 
 import path from 'node:path'
+import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
 
-import { findPackedPayload, relativizePayloadLinks } from './materialize-payload-links.mjs'
 import { batchSignAppTree } from './batch-sign-binaries.mjs'
 import { resolveSigningIdentity, signNestedChromium } from './sign-nested-chromium.mjs'
 import { sanitizeTree } from './sanitize-pe-signatures.mjs'
@@ -29,34 +30,27 @@ import { stampExeIdentity } from './set-exe-identity.mjs'
 
 export default async function afterPack(context) {
   const platform = context.electronPlatformName
+  const resources = platform === 'darwin'
+    ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
+    : path.join(context.appOutDir, 'resources')
+  const payload = path.join(resources, 'agent-payload')
+  if (platform !== 'win32' && fs.existsSync(path.join(payload, 'manifest.json'))) {
+    execFileSync('uv', ['run', '--no-project', '--python', '3.11', 'python',
+      path.resolve(import.meta.dirname, '../../../scripts/bundles/payload.py'), 'relocate', payload], { stdio: 'inherit' })
+  }
   if (platform === 'darwin') {
-    const payload = findPackedPayload(context.appOutDir, platform)
-    if (payload) {
-      const n = relativizePayloadLinks(payload)
+    if (fs.existsSync(payload)) {
       const entitlements = path.join(import.meta.dirname, '..', 'electron', 'entitlements.mac.inherit.plist')
       const { identity, keychain } = await resolveSigningIdentity(context.packager)
       const nested = signNestedChromium(payload, { entitlements, identity, keychain })
       console.log(
-        `[after-pack] relativized ${n} payload links; repaired ${nested.repaired} framework links; signed ${nested.signed} nested chromium targets` +
+        `[after-pack] repaired ${nested.repaired} framework links; signed ${nested.signed} nested chromium targets` +
           (identity ? ` as ${identity}` : ' (no Developer ID in the builder keychain)')
       )
     }
     return
   }
   if (platform === 'linux') {
-    // Linux has no codesign, but the relocatable venv's bin/python* are
-    // ABSOLUTE symlinks onto the build runner's store interpreter, so they
-    // dangle once the unpacked tree moves (first-boot smoke, or a user
-    // installing to a different path). Rewrite them to RELATIVE symlinks
-    // (the target lives inside the payload) — a relative link survives
-    // relocation AND keeps the interpreter's real prefix resolution (a
-    // copied binary would fall back to the baked build prefix and lose its
-    // stdlib). Out-of-payload targets fail the build.
-    const payload = findPackedPayload(context.appOutDir, platform)
-    if (payload) {
-      const n = relativizePayloadLinks(payload)
-      console.log(`[after-pack] relativized ${n} payload links so the relocatable venv survives relocation`)
-    }
     return
   }
   if (platform !== 'win32') {

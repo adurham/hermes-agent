@@ -117,12 +117,19 @@ test('buildStampPayload with bundled variant stamps payload bundled, store false
   const payload = buildStampPayload(baseStamp, {
     HERMES_DESKTOP_VARIANT: 'bundled',
     HERMES_PAYLOAD_TAG: 'v0.27.1-canary.20260901072553'
-  })
+  }, 'win32')
   assert.equal(payload.payload, 'bundled')
   assert.equal(payload.store, false)
   assert.equal(payload.distribution, 'desktop-app')
   assert.equal(payload.updateMechanism, 'external')
   assert.equal(payload.tag, 'v0.27.1-canary.20260901072553')
+})
+
+test('macOS bundles and Light declare app-owned updates, never Store builds', () => {
+  for (const variant of ['bundled', 'light', 'store']) {
+    const stamp = buildStampPayload(baseStamp, { HERMES_DESKTOP_VARIANT: variant }, 'darwin')
+    assert.equal(stamp.updateMechanism, variant === 'store' ? 'external' : 'electron-updater')
+  }
 })
 
 test('buildStampPayload with store variant stamps payload bundled, store true', () => {

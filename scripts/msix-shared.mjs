@@ -48,6 +48,8 @@ const CONTENT_TYPES = {
  * filename suffix. Extensionless keys (inrelease/release/packages — the apt
  * repo metadata) match by exact basename only, so 'foo-release' or
  * 'xrelease' never collide with the apt 'Release' file.
+ * @param {string} filename
+ * @returns {string | undefined}
  */
 export function contentTypeFor(filename) {
   const lower = String(filename).toLowerCase()

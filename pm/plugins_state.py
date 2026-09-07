@@ -85,8 +85,8 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None) 
     The ACTIVE MEMORY PROVIDER joins its home's list: providers install
     via ``memory.provider`` (mnemosyne's documented path), not via
     plugins.enabled — without this, a provider's dep plugin never joins
-    the union. The provider rides LAST (newest — the bisect's
-    incumbent-wins tiebreak disables it before older plugins)."""
+    the union. Admission refuses a conflicting candidate without changing
+    the active environment or disabling an existing provider."""
     out: dict[Path, list[str]] = {}
     for home in _all_homes():
         # ONE parse per home feeds both queries (enabled + provider).
@@ -119,9 +119,10 @@ def _provider_from_config(home: Path, config: dict[str, Any]) -> Optional[str]:
 
 
 def disable_plugins(names: list[str]) -> dict[str, list[str]]:
-    """Remove names from EVERY home's enabled list (a bisect decision
-    names the plugin, not the profile — disable where it's enabled).
-    Returns per-home what was removed.
+    """Remove names from EVERY home's enabled list (an operator or
+    caller decision names the plugin, not the profile — disable where
+    it's enabled). There is NO automatic bisect in pm today; this is
+    the explicit write-back path. Returns per-home what was removed.
 
     Writes go through utils.atomic_roundtrip_yaml_update — the same
     atomic, comment-preserving round-trip writer the plugins CLI's

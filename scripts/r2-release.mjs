@@ -22,11 +22,10 @@
 //     releases/win32/<channel>/*.msixbundle           (produced by the
 //                                                     publish-win32-updater job)
 //   releases/darwin/<channel>/<channel>-mac.yml   electron-updater feed
-//     releases/darwin/<channel>/*.{dmg,zip,blockmap}
+//     dmg/zip/blockmap artifacts stay in releases/tag/<tag>/.
 // where <channel> is stable | canary (from the tag: -canary. → canary).
 // The publish-win32-updater job merges the win32 legs' staging into the
-// win32 feed; the darwin feed merge (r2 finalize) is currently DISABLED
-// (no macOS updater arm).
+// win32 feed; r2 finalize publishes the validated Darwin channel feed.
 
 import { createHash, createHmac } from 'node:crypto'
 import fs from 'node:fs'
@@ -239,121 +238,20 @@ export function feedDirFor(platform, channel) {
   return `releases/${platform}/${channel}`
 }
 
-/**
- * Merge per-leg electron-updater feed ymls (same channel + platform) into one.
- * Each leg's yml (mac: latest-mac.yml / canary-mac.yml) lists only its own
- * arch's files[]; the merged yml keeps the top-level fields of the first leg
- * (version/releaseDate) and the trailing top-level path/sha512, with the
- * files[] entries concatenated and deduped by url. Idempotent: merging an
- * already-merged yml is a no-op.
- *
- * Structure of a feed yml (electron-builder):
- *   version: ...
- *   files:
- *     - url: ...        ← entries (indented list items)
- *       sha512: ...
- *       size: ...
- *   path: ...           ← trailing top-level fields
- *   sha512: ...
- *   releaseDate: ...
- */
-export function mergeFeedYmls(ymls) {
-  if (ymls.length === 0) return ''
-  const seen = new Set()
-  const entries = []
-
-  for (const yml of ymls) {
-    // Split at the files: marker. Entries are the indented list items
-    // (lines starting with whitespace + '- url:'); the tail is everything
-    // after the last entry (top-level path/sha512/releaseDate).
-    const filesIdx = yml.indexOf('\nfiles:')
-    if (filesIdx === -1) continue
-    const body = yml.slice(filesIdx + 1) // starts right after '\nfiles:'
-    const lines = body.split('\n')
-    let i = 0
-    // Skip the 'files:' line itself.
-    if (lines[0].trim() === '') i = 1
-    // Collect entry blocks: lines starting with '- url:' plus their
-    // following indented sha512/size lines.
-    while (i < lines.length) {
-      const line = lines[i]
-      if (/^\s*-\s+url:/.test(line)) {
-        const block = [line]
-        let j = i + 1
-        while (j < lines.length && /^\s+(?:sha512|size):/.test(lines[j])) {
-          block.push(lines[j])
-          j++
-        }
-        const urlMatch = line.match(/url:\s*([^\s]+)/)
-        if (urlMatch && !seen.has(urlMatch[1])) {
-          seen.add(urlMatch[1])
-          entries.push(block.join('\n'))
-        }
-        i = j
-      } else {
-        i++
-      }
-    }
-  }
-
-  const first = ymls[0]
-  const firstFilesIdx = first.indexOf('\nfiles:')
-  const head = firstFilesIdx === -1 ? first : first.slice(0, firstFilesIdx)
-
-  // Tail: everything after the LAST entry block in the FIRST yml (the
-  // top-level path/sha512/releaseDate lines).
-  let tail = ''
-  {
-    const body = first.slice(firstFilesIdx + 1)
-    const lines = body.split('\n')
-    let lastEntryEnd = -1
-    for (let i = 0; i < lines.length; i++) {
-      if (/^\s*-\s+url:/.test(lines[i])) {
-        let j = i + 1
-        while (j < lines.length && /^\s+(?:sha512|size):/.test(lines[j])) j++
-        lastEntryEnd = j
-        i = j - 1
-      }
-    }
-    if (lastEntryEnd !== -1) {
-      tail = lines.slice(lastEntryEnd).join('\n').replace(/^\n+/, '')
-    }
-  }
-
-  const body = ['files:', ...entries].join('\n')
-  const parts = [head, body]
-  if (tail.trim() !== '') parts.push(tail)
-  return parts.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n'
-}
-
-/**
- * Rewrite a feed yml's path:/url: entries to ABSOLUTE /releases/tag/<tag>/
- * object keys. The feed manifest lives in releases/darwin/<channel>/ but the
- * binaries live once in the tag archive; both updater mechanisms resolve the
- * value against the feed host root (electron-updater: new URL(path, baseUrl)).
- * `absKey` maps a filename to its absolute key (e.g. /releases/tag/v0.28.0/x).
- * Values that already start with '/' are left alone (idempotent).
- */
-export function rewriteFeedPaths(ymlText, absKey) {
-  return ymlText.replace(/^(\s*(?:-\s+)?(?:path|url)):\s*([^\s#]+)\s*$/gm, (_m, key, value) => {
-    if (value.startsWith('/')) return _m
-    return `${key}: ${absKey(value)}`
-  })
-}
-
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
 /** APT indexes are mutable; by-hash indexes and versioned packages are not. */
 export function cacheControlFor(key) {
+  if (key.startsWith('releases/darwin/') && key.endsWith('-mac.yml')) return 'no-store'
   if (!key.startsWith('releases/termux/')) return undefined
   return key.includes('/by-hash/') || key.includes('/pool/')
     ? 'public, max-age=31536000, immutable'
     : 'no-store'
 }
 
-async function putObject(creds, base, bucket, key, payload, now, contentType) {
+async function putObject(creds, base, bucket, key, payload, now, contentType, conditions = {}) {
   // `payload` is either a small in-memory Buffer (feed manifests from
   // finalize) or a FILE PATH (binaries via `put`). The msixbundle is
   // ~2.7GB so path payloads stream from disk (fs.readFileSync throws
@@ -376,8 +274,12 @@ async function putObject(creds, base, bucket, key, payload, now, contentType) {
     // should not be disturbed").
     const body = isPath ? fs.createReadStream(payload) : payload
     const cacheControl = cacheControlFor(key)
-    const extraHeaders = cacheControl ? { 'Cache-Control': cacheControl } : undefined
+    const extraHeaders = { ...conditions, ...(cacheControl ? { 'Cache-Control': cacheControl } : {}) }
     const { res, text } = await signedFetch('PUT', url, { body, bodyHash, contentLength: size, creds, now, contentType, extraHeaders })
+    if (res.status === 412 && isPath && conditions['If-None-Match'] === '*') {
+      await verifyRemoteArtifact(url, creds, now, size, bodyHash, 'sha256', 'hex')
+      return
+    }
     if (!res.ok) throw new Error(`PUT ${key} -> ${res.status}${text ? `: ${text.slice(0, 300)}` : ''}`)
   })
   // HEAD can come back without content-length (intermediaries strip it on
@@ -411,7 +313,7 @@ async function putObject(creds, base, bucket, key, payload, now, contentType) {
   console.log(`✓ r2: ${key} (${size} bytes)`)
 }
 
-async function cmdPut({ tag, key, file, keyIsFull = false }) {
+export async function cmdPut({ tag, key, file, keyIsFull = false }) {
   const accountId = requiredEnv('CLOUDFLARE_R2_ACCOUNT_ID')
   const accessKeyId = requiredEnv('CLOUDFLARE_R2_ACCESS_KEY_ID')
   const secretKey = requiredEnv('CLOUDFLARE_R2_SECRET_ACCESS_KEY')
@@ -421,54 +323,53 @@ async function cmdPut({ tag, key, file, keyIsFull = false }) {
 
   const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
   const keyPath = keyIsFull ? key : stagingKeyFor(tag, key)
-  await putObject(creds, base, bucket, keyPath, file, now, contentTypeFor(key))
+  const immutableMac = keyPath.startsWith('releases/tag/') && /-mac-(arm64|x64)\.(zip|dmg)(\.blockmap)?$/.test(keyPath)
+  await putObject(creds, base, bucket, keyPath, file, now, contentTypeFor(key), immutableMac ? { 'If-None-Match': '*' } : {})
 }
 
-/**
- * finalize: write the per-channel feed MANIFESTS that point at the staged
- * binaries. Binaries live ONCE under releases/tag/<tag>/ (staged by the
- * matrix legs); the feed dirs carry only the manifests:
- *
- *   releases/darwin/<channel>/<channel>-mac.yml
- *     merged electron-updater feed; path:/url: entries rewritten to the
- *     absolute /releases/tag/<tag>/<file> locations (electron-updater
- *     resolves them with new URL(path, baseUrl)).
- *
- * The win32 App Installer feed (.appinstaller + .msixbundle per channel
- * dir) is produced by the msixbundle job (scripts/stage-msixbundle.mjs),
- * which uploads the manifests directly — nothing for finalize to merge.
- *
- * Expects --dir to contain the merged METADATA for ONE tag (the build
- * matrix uploads only this — the binaries go straight to R2 from each
- * leg and are never round-tripped through artifacts):
- *   *-mac.yml              the per-leg electron-updater feed files
- */
-async function cmdFinalize({ tag, dir }) {
+async function verifyRemoteArtifact(urlValue, creds, now, expectedSize, digest, algorithm = 'sha512', encoding = 'base64') {
+  const url = new URL(urlValue)
+  const headers = r2Headers('GET', url.host, url.pathname, '', EMPTY_SHA, now, creds)
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(600_000) })
+  if (!response.ok || !response.body) throw new Error(`Cannot verify ${url.pathname}: ${response.status}`)
+  const hash = createHash(algorithm)
+  let size = 0
+  for await (const chunk of response.body) { hash.update(chunk); size += chunk.length }
+  if (size !== expectedSize || hash.digest(encoding) !== digest) throw new Error(`Artifact checksum mismatch: ${url.pathname}`)
+}
+
+/** Validate both native legs, verify their bytes, then replace the feed pointer. */
+export async function cmdFinalize({ tag, dir, variant }) {
+  const { mergeMacFeeds, publishMacFeed } = await import('./darwin-feed.mjs')
+  if (variant && variant !== 'light') throw new Error('Unknown macOS variant')
   const accountId = requiredEnv('CLOUDFLARE_R2_ACCOUNT_ID')
-  const accessKeyId = requiredEnv('CLOUDFLARE_R2_ACCESS_KEY_ID')
-  const secretKey = requiredEnv('CLOUDFLARE_R2_SECRET_ACCESS_KEY')
-  const bucket = requiredEnv('CLOUDFLARE_R2_BUCKET')
-  const creds = { accessKeyId, secretKey }
-  const base = s3Endpoint(accountId)
-  const channel = channelForTag(tag)
-  const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
-
-  const files = fs.readdirSync(dir).filter((f) => fs.statSync(path.join(dir, f)).isFile())
-  // Absolute key of a staged artifact — the feed manifests reference these.
-  const absKey = (filename) => `/${stagingKeyFor(tag, filename)}`
-
-  // --- darwin: merged feed yml only (dmg/zip/blockmap stay in the tag dir) ---
-  const macYmls = files.filter((f) => f.endsWith(`-mac.yml`))
-  if (macYmls.length > 0) {
-    const darDir = feedDirFor('darwin', channel)
-    const macFeedName = `${channel}-mac.yml`
-    // Rewrite path:/url: to absolute /releases/tag/<tag>/ locations so the
-    // client fetches binaries from the archive, not the feed dir.
-    const merged = rewriteFeedPaths(mergeFeedYmls(macYmls.map((f) => fs.readFileSync(path.join(dir, f), 'utf8'))), absKey)
-    await putObject(creds, base, bucket, `${darDir}/${macFeedName}`, Buffer.from(merged, 'utf8'), now)
+  const creds = {
+    accessKeyId: requiredEnv('CLOUDFLARE_R2_ACCESS_KEY_ID'),
+    secretKey: requiredEnv('CLOUDFLARE_R2_SECRET_ACCESS_KEY')
   }
-
-  console.log(`✓ r2: finalized ${tag} → ${channel} feed manifests`)
+  const bucket = requiredEnv('CLOUDFLARE_R2_BUCKET')
+  const base = s3Endpoint(accountId)
+  const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+  const legs = Object.fromEntries(fs.readdirSync(dir).filter(name => name.endsWith('-mac.yml'))
+    .map(name => [name, fs.readFileSync(path.join(dir, name), 'utf8')]))
+  const plan = mergeMacFeeds(legs, tag, variant === 'light')
+  await publishMacFeed(plan, {
+    read: async key => {
+      const url = `${base}/${bucket}/${encodeKeyPath(key)}`
+      const { res, text } = await signedFetch('GET', url, { bodyHash: EMPTY_SHA, creds, now })
+      if (res.status === 404) return null
+      if (!res.ok) throw new Error(`GET ${key} -> ${res.status}`)
+      const etag = res.headers.get('etag')
+      if (!etag) throw new Error(`No ETag for ${key}`)
+      return { text, etag }
+    },
+    verify: async (key, file) => {
+      await verifyRemoteArtifact(`${base}/${bucket}/${encodeKeyPath(key)}`, creds, now, file.size, file.sha512)
+    },
+    write: (key, text, etag) => putObject(creds, base, bucket, key, Buffer.from(text), now,
+      'application/yaml', etag ? { 'If-Match': etag } : { 'If-None-Match': '*' })
+  })
+  console.log(`✓ r2: finalized ${tag} → ${plan.key}`)
 }
 
 /** Parse a ListObjectsV2 XML body into { keys, lastModified, truncated, nextToken }. */
@@ -624,7 +525,7 @@ export function staleFeedBundleKeys(keys, feedXmlByDir, lastModifiedMs = {}, cut
   return doomed
 }
 
-async function cmdPrune({ keepDays, dryRun }) {
+export async function cmdPrune({ keepDays, dryRun }) {
   const accountId = requiredEnv('CLOUDFLARE_R2_ACCOUNT_ID')
   const accessKeyId = requiredEnv('CLOUDFLARE_R2_ACCESS_KEY_ID')
   const secretKey = requiredEnv('CLOUDFLARE_R2_SECRET_ACCESS_KEY')
@@ -652,6 +553,12 @@ async function cmdPrune({ keepDays, dryRun }) {
     }
     ;(feedXmlByDir[dir] ??= []).push(xml)
     for (const k of feedReferencedKeys(dir, xml)) protectedKeys.add(k)
+  }
+
+  for (const key of keys.filter(key => key.startsWith('releases/darwin/') && key.endsWith('-mac.yml'))) {
+    const { macFeedReferences } = await import('./darwin-feed.mjs')
+    const text = await getObject(creds, base, bucket, key, now)
+    for (const reference of macFeedReferences(text)) protectedKeys.add(reference)
   }
 
   const doomed = [
@@ -701,7 +608,7 @@ export async function main(argv = process.argv.slice(2)) {
   const args = {}
   for (let i = 0; i < rest.length; i++) {
     const flag = rest[i]
-    if (['--tag', '--key', '--file', '--prefix', '--keep-days', '--dir'].includes(flag)) {
+    if (['--tag', '--key', '--file', '--prefix', '--keep-days', '--dir', '--variant'].includes(flag)) {
       args[flag.slice(2)] = rest[++i]
     } else if (flag === '--dry-run' || flag === '--key-is-full') {
       args[flag.slice(2)] = true
@@ -715,7 +622,7 @@ export async function main(argv = process.argv.slice(2)) {
     await cmdPut({ tag, key: args.key, file: args.file, keyIsFull: Boolean(args['key-is-full']) })
   } else if (cmd === 'finalize') {
     if (!args.tag || !args.dir) usage()
-    await cmdFinalize({ tag: args.tag, dir: args.dir })
+    await cmdFinalize({ tag: args.tag, dir: args.dir, variant: args.variant })
   } else if (cmd === 'list') {
     await cmdList({ prefix: args.prefix ?? '' })
   } else if (cmd === 'prune-canaries') {

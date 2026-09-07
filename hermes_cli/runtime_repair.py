@@ -695,6 +695,7 @@ def _stage_candidate_venv(
         ],
         cwd=project_root,
         env=sync_env,
+        stderr=subprocess.STDOUT,
         check=False,
     )
     if synced.returncode != 0:

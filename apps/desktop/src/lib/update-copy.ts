@@ -40,7 +40,7 @@ export interface ResolveUpdateCopyInput {
    * 'app-installer': the OS App Installer owns the apply (out-of-store MSIX)
    * — the body names Windows as the finisher, never commit vocabulary.
    */
-  mechanism?: 'app-installer' | 'external' | 'windows-handoff' | 'posix-handoff' | 'manual'
+  mechanism?: 'app-installer' | 'electron-updater' | 'external' | 'windows-handoff' | 'posix-handoff' | 'manual'
   copy: UpdateCopyStrings
 }
 
@@ -66,7 +66,7 @@ export function resolveUpdateCopy({
     return { title, body: latestTag ? copy.availableBodyRelease(latestTag) : copy.availableBodyAppInstaller }
   }
 
-  if (channel === 'stable') {
+  if (channel === 'stable' || mechanism === 'electron-updater') {
     // No-changelog copy would be wrong here: the absence of commit rows is
     // structural on a release feed, not a degraded install type.
     return { title, body: latestTag ? copy.availableBodyRelease(latestTag) : copy.availableBody }

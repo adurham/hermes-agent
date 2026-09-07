@@ -45,7 +45,7 @@ def test_launchers_forward_arguments_and_export_payload_environment(tmp_path):
         assert Path(env["HERMES_PYTHON"]).resolve() == Path(sys.executable).resolve()
         assert Path(env["HERMES_NODE"]) == payload / "tools/node/data/data/com.termux/files/usr/bin/node"
         assert Path(env["HERMES_RUNTIME_DIR"]) == payload / "tools"
-        assert Path(env["PYTHONPATH"]) == payload / "app"
+        assert env["PYTHONPATH"].split(os.pathsep)[0] == str(payload / "app")
         assert env["PYTHONHOME"] is None
         assert not Path(env["PYTHONPYCACHEPREFIX"]).is_relative_to(payload)
 

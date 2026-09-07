@@ -657,14 +657,14 @@ def test_check_reports_venv_drift_and_missing_tools(venv_env):
 
 
 def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):
-    from pm.cli import _bundle_package_names
+    from scripts.bundles.native import _bundle_package_names
     from pm.lock import Lockfile
 
     lock = Lockfile(tmp_path / "lock.json")
     for name in ("uv", "python", "ripgrep", "chromium", "chromium-headless-shell", "node", "npm"):
         lock.set_pin(name, "1", {"any": {"url": "x", "sha256": "0" * 64}})
     lock.save()
-    monkeypatch.setattr("pm.cli._lockfile", lambda: lock)
+    monkeypatch.setattr("scripts.bundles.native._lockfile", lambda: lock)
     names = _bundle_package_names()
     # Browsers now ship in every payload (win32-arm64 runs the x64 build
     # under emulation); nothing is excluded from the bundle.
@@ -681,7 +681,7 @@ def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):
 def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):
     """Locks the semantics split: uv is pm's install machinery and never
     ships by closure, node/npm are runtime tools and always do."""
-    from pm.cli import _bundle_package_names
+    from scripts.bundles.native import _bundle_package_names
     from pm.lock import Lockfile
     from pm.registry import get_package
 
@@ -689,7 +689,7 @@ def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):
     for name in ("uv", "node", "npm"):
         lock.set_pin(name, "1", {"any": {"url": "x", "sha256": "0" * 64}})
     lock.save()
-    monkeypatch.setattr("pm.cli._lockfile", lambda: lock)
+    monkeypatch.setattr("scripts.bundles.native._lockfile", lambda: lock)
     names = _bundle_package_names()
     # uv stays internal (off PATH, off the default install) but ships in
     # the bundle via the explicit whitelist — install machinery rides along.
@@ -703,7 +703,7 @@ def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):
 def test_arch_guard_allows_emulated_x64_on_win32_arm64(monkeypatch, tmp_path):
     """agent-browser on win32-arm64 ships the x64 PE (emulated). The guard
     must not reject it when the package declares the target emulated."""
-    import pm.cli as cli
+    from scripts.bundles import native as cli
     from pm.lock import Facts, Lockfile
     from pm.registry import get_package
 
@@ -721,9 +721,9 @@ def test_arch_guard_allows_emulated_x64_on_win32_arm64(monkeypatch, tmp_path):
     lock = Lockfile(tmp_path / "lock.json")
     lock.set_pin("agent-browser", "0.35.1", {"any": {"url": "x", "sha256": "0" * 64}})
     lock.save()
-    monkeypatch.setattr("pm.cli._lockfile", lambda: lock)
-    monkeypatch.setattr("pm.cli.current_target", lambda: "win32-arm64")
-    monkeypatch.setattr("pm.cli.get_package", lambda name: get_package(name))
+    monkeypatch.setattr("scripts.bundles.native._lockfile", lambda: lock)
+    monkeypatch.setattr("scripts.bundles.native.current_target", lambda: "win32-arm64")
+    monkeypatch.setattr("scripts.bundles.native.get_package", lambda name: get_package(name))
 
     facts = Facts(store / "facts.json")
     facts.record("agent-browser", "0.35.1", entry.name, {}, store)

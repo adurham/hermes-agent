@@ -76,6 +76,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/release.py --prune-canaries --publish --remote origin
+      - name: Install locked feed tooling
+        run: npm ci --workspaces=false --ignore-scripts --no-audit --no-fund
       - name: Prune R2 canary objects
         env:
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}

@@ -1,4 +1,4 @@
-"""Live tests for the win32 launcher mint (scripts/desktop-cli/mint-launchers.py).
+"""Live tests for the win32 launcher mint (scripts/bundles/mint_launchers.py).
 
 These RUN the real mint on the current interpreter and then execute the
 minted launcher — the strongest proof the mechanism is intact (the research
@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 _REPO = Path(__file__).resolve().parents[2]
-_MINT = _REPO / "scripts" / "desktop-cli" / "mint-launchers.py"
+_MINT = _REPO / "scripts" / "bundles" / "mint_launchers.py"
 
 pytestmark = [
     pytest.mark.platforms("windows"),
@@ -113,16 +113,8 @@ def _mint(bin_dir: Path, wrapper: Path, specs) -> list[str]:
 
 
 def _render_wrapper(tmp_path: Path) -> Path:
-    """cli-entrypoints.mjs's renderWinWrapper, replicated (the .mjs cannot
-    be imported from python) — same placeholders, same substitution."""
-    text = (_REPO / "scripts" / "desktop-cli" / "launcher-wrapper.py").read_text(encoding="utf-8")
-    for placeholder, value in {
-        "__HERMES_ENTRY_MODULE__": "hermes_cli.main",
-        "__HERMES_ENTRY_FUNC__": "main",
-        "__HERMES_REPO_REL__": "../repo",
-        "__HERMES_SITE_REL__": "../venv/Lib/site-packages",
-    }.items():
-        text = text.replace(placeholder, value)
+    from scripts.bundles.payload import render_wrapper
+    text = render_wrapper("hermes_cli.main:main", "../repo", "../venv/Lib/site-packages")
     out = tmp_path / "wrapper.py"
     out.write_text(text, encoding="utf-8")
     return out

@@ -1,0 +1,127 @@
+"""Build a complete desktop bundle with the shared Python payload tools."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.bundles.payload import plant_surfaces, relativize_links, stage_launchers
+
+
+def run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> None:
+    print("bundle: " + subprocess.list2cmdline(argv), flush=True)
+    subprocess.run(argv, cwd=cwd, env=env, check=True)
+
+
+def capture(argv: list[str], repo: Path) -> str:
+    return subprocess.check_output(argv, cwd=repo, text=True, encoding="utf-8").strip()
+
+
+def release_version(repo: Path, tag: str) -> str:
+    from scripts.termux.deb_version import channel_for_tag
+
+    channel_for_tag(tag)  # shared release tag grammar, not a second version parser
+    version = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8-sig"))["project"]["version"]
+    if "-canary." not in tag and tag != "v" + version:
+        raise ValueError(f"tag {tag} does not match project version {version}")
+    return tag[1:]
+
+
+def npm_command(node: str) -> list[str]:
+    # npm.cmd needs cmd.exe; Node's CLI accepts argv directly, including spaces.
+    npm = shutil.which("npm")
+    if not npm:
+        raise FileNotFoundError("npm is required")
+    prefix = Path(npm).resolve().parent
+    candidates = [prefix / "node_modules/npm/bin/npm-cli.js", prefix.parent / "lib/node_modules/npm/bin/npm-cli.js"]
+    for candidate in candidates:
+        if candidate.is_file():
+            return [node, str(candidate)]
+    # POSIX npm is normally a symlink to its CLI file.
+    if os.name != "nt":
+        return [node, str(Path(npm).resolve())]
+    raise FileNotFoundError(f"npm CLI missing beside {npm}")
+
+
+def build(repo: Path, tag: str, variant: str, builder_args: list[str]) -> None:
+    from pm.store import current_target
+
+    repo = repo.resolve()
+    version = release_version(repo, tag)
+    commit = capture(["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], repo)
+    if capture(["git", "rev-parse", "HEAD"], repo) != commit:
+        raise ValueError("the build checkout must be at the release tag")
+    node = shutil.which("node")
+    if not node or not shutil.which("uv"):
+        raise FileNotFoundError("Node and uv are required")
+    banner = capture(["uv", "--version"], repo)
+    if not re.search(r"[a-z0-9_]+-[a-z0-9]+-[a-z][a-z0-9-]*", banner):
+        raise ValueError(f"uv must report its build triple (official uv 0.12+): {banner}")
+    npm = npm_command(node)
+    env = {**os.environ, "CI": "true", "PYTHONUTF8": "1", "GITHUB_SHA": commit,
+           "HERMES_DESKTOP_VARIANT": variant, "HERMES_PAYLOAD_TAG": tag}
+    target = current_target()
+    node_arch = capture([node, "-p", "process.arch"], repo)
+    if node_arch != target.split("-")[1]:
+        raise ValueError(f"Node {node_arch} does not match build target {target}")
+    stamp = json.dumps({"lock": hashlib.sha256((repo / "package-lock.json").read_bytes()).hexdigest(),
+                        "node": capture([node, "--version"], repo),
+                        "npm": capture([*npm, "--version"], repo), "target": target}, sort_keys=True)
+    stamp_path = repo / "node_modules/.install-stamp"
+    if not stamp_path.is_file() or stamp_path.read_text(encoding="utf-8") != stamp:
+        stamp_path.unlink(missing_ok=True)
+        run([*npm, "ci", "--no-audit", "--no-fund", "--fetch-retries=5", "--prefer-offline"], cwd=repo, env=env)
+        stamp_path.write_text(stamp, encoding="utf-8")
+    # Use the installed semver implementation for package.json's actual grammar.
+    run([node, "-e", "const s=require('semver'),p=require('./package.json'); for(const [n,v] of [['node',process.versions.node],['npm',process.argv[1]]]) if(!s.satisfies(v,p.engines[n])) throw Error(n+' violates '+p.engines[n])", capture([*npm, "--version"], repo)], cwd=repo, env=env)
+    payload = repo / "apps/desktop/build/agent-payload"
+    if variant == "light":
+        shutil.rmtree(payload, ignore_errors=True)
+        payload.mkdir(parents=True)
+        (payload / "manifest.json").write_text('{"schema":1,"external":true}\n', encoding="utf-8")
+    else:
+        run([*npm, "run", "build", "--workspace", "ui-tui"], cwd=repo, env=env)
+        run([*npm, "run", "build", "--workspace", "web"], cwd=repo, env=env)
+        run([sys.executable, "-m", "pm.cli", "bundle", "--out", str(payload), "--ref", tag], cwd=repo, env=env)
+        manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8-sig"))
+        plant_surfaces(payload / manifest["repo"], repo)
+        relativize_links(payload)
+        stage_launchers(payload, manifest)
+    desktop = repo / "apps/desktop"
+    # Windows file-version and MSIX build-number policy remains with its packager.
+    version_args = []
+    if sys.platform == "win32":
+        script = "const w=require('./apps/desktop/scripts/windows-file-version.mjs');const m=require('./scripts/msix-shared.mjs');console.log(JSON.stringify({file:w.windowsFileVersion(process.argv[1]),build:process.argv[1].includes('-canary.')?m.canaryBuildMinutes(process.argv[1],process.cwd()):null}))"
+        metadata = json.loads(capture([node, "-e", script, tag], repo))
+        if metadata["build"] is not None:
+            env["BUILD_NUMBER"] = str(metadata["build"])
+        if metadata["file"]:
+            version_args = [f'-c.extraMetadata.shortVersion={metadata["file"]}', f'-c.extraMetadata.shortVersionWindows={metadata["file"]}']
+    targets = {"win32": ["--win", "msix"], "darwin": ["--mac", "dmg", "zip"], "linux": ["--linux", "AppImage"]}[sys.platform]
+    run([*npm, "run", "build"], cwd=desktop, env=env)
+    run([*npm, "run", "builder", "--", *targets, f"-c.extraMetadata.version={version}", *version_args, *builder_args], cwd=desktop, env=env)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tag", required=True)
+    parser.add_argument("--variant", choices=["bundled", "store", "light"], default="bundled")
+    parser.add_argument("--repo", type=Path, default=ROOT)
+    parser.add_argument("builder_args", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    build(args.repo, args.tag, args.variant, [v for v in args.builder_args if v != "--"])
+
+
+if __name__ == "__main__":
+    main()

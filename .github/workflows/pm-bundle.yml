@@ -21,6 +21,7 @@ on:
   pull_request:
     paths:
       - 'pm/**'
+      - 'scripts/bundles/**'
       - 'uv.lock'
       - 'pyproject.toml'
       - '.github/workflows/pm-bundle.yml'

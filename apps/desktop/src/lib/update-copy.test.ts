@@ -77,4 +77,9 @@ describe('resolveUpdateCopy', () => {
     const r = resolveUpdateCopy({ target: 'client', shownItems: 5, mechanism: 'windows-handoff', copy })
     expect(r.body).toBe(copy.availableBody)
   })
+
+  it('macOS feed updates name the release without Windows or commit vocabulary', () => {
+    expect(resolveUpdateCopy({ target: 'client', shownItems: 0, mechanism: 'electron-updater', latestTag: 'v0.29.0-canary.20260906000000', copy }).body)
+      .toBe(copy.availableBodyRelease('v0.29.0-canary.20260906000000'))
+  })
 })

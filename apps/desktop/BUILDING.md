@@ -30,7 +30,7 @@ cua-driver) is digest-pinned and staged at build time.
 | Platform | Artifact | Notes |
 |---|---|---|
 | Windows | MSIX `.msix` / `.msixbundle` | The shipping artifact. Signed with Azure Trusted Signing. Out-of-store installs update via the OS App Installer (.appinstaller source; the app checks + prompts, the OS applies). Store-submission builds (HERMES_DESKTOP_VARIANT=store) use the Partner Center identity and update via the Store. |
-| macOS | `.dmg` | Signed and notarized when the `APPLE_*` / `CSC_*` secrets are set. Updated via electron-updater against the `latest-mac.yml` feed. |
+| macOS | `.dmg` | Signed and notarized when the `APPLE_*` / `CSC_*` secrets are set. Updated via electron-updater against the stable/canary macOS feed. |
 | Linux | unpacked / AppImage | Unsigned. |
 
 NSIS is intentionally dead (D1 decision): Windows ships MSIX only.
@@ -40,29 +40,24 @@ NSIS is intentionally dead (D1 decision): Windows ships MSIX only.
 One script drives the whole build:
 
 ```
-node scripts/build-bundled-desktop.mjs --tag=vX.Y.Z
+uv run --no-project --python 3.11 python scripts/bundles/desktop.py --tag=vX.Y.Z
 ```
 
-The script always runs every step:
+The shared Python builder performs these steps:
 
-1. **Gate the toolchain.** The host `node` and `npm` must satisfy
-   `package.json` engines, and the toolchain pins resolve from
-   `pm/lock.json` (the "Resolve toolchain pins" CI step). The payload embeds
-   these exact pinned versions, so gate == embed.
-2. **Build the JS surfaces.** ui-tui (with hermes-ink) and the dashboard SPA.
-3. **Build the desktop app.** `npm run build` in `apps/desktop`: vite,
-   electron-main bundle, native deps, then payload staging.
-4. **Stage the agent payload** (`pm bundle`). This snapshots the repo at the
-   tag with `git archive`, copies the prebuilt JS surfaces in, installs the
-   pinned CPython and `site-packages`, stages the pinned managed tools, and
-   writes `manifest.json` plus the install stamp. Each staged binary must
-   prove the target architecture in its own version banner. A wrong-
-   architecture binary fails the build.
-5. **Package with electron-builder.** MSIX on Windows, DMG on macOS.
+1. Validate the release tag and checkout identity. Check native Node architecture.
+2. Install the locked JS workspace and validate its declared engine constraints.
+3. Build the TUI and dashboard outputs.
+4. Stage the native payload through PM, place JS assets, relocate links, and
+   generate launchers from the archived project's script declarations.
+5. Build the Electron app and package MSIX, DMG/ZIP, or AppImage.
 
-Payload staging stays dormant unless `HERMES_DESKTOP_VARIANT=bundled` is
-set. The build script sets it. A normal `npm run dev` or `npm run pack`
-without the script does not stage payloads.
+Light omits the embedded runtime by definition. Its app is built and packaged
+without staging the unused Python payload. The normal development loop remains
+separate from release bundle assembly.
+
+See [shared bundle builds](../../docs/shared-bundle-builds.md) for the modules
+shared with Termux and the target-specific boundaries.
 
 ## Code signing (Windows)
 
@@ -102,12 +97,12 @@ in sync with app-builder-lib when electron-builder bumps.
 
 ## Code signing (macOS)
 
-The macOS build signs and notarizes with electron-builder's builtin
-notarization when the `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` /
-`APPLE_TEAM_ID` secrets are present. The `sign-nested-chromium` path signs
-the payload's nested Chromium Mach-O binaries (see `sign-nested-chromium.mjs`,
-wired from `after-pack.mjs`); the outer app bundle is signed by the
-electron-builder signing pass.
+The existing after-sign hook owns notarization using `APPLE_API_KEY`,
+`APPLE_API_KEY_ID`, and `APPLE_API_ISSUER`, or a keychain profile. The workflow
+writes the key from its `APPLE_API_KEY_P8` secret. The outer app and nested
+Mach-O executables must be signed before publication. See
+[macOS bundle updates](../../docs/macos-bundle-updates.md) for the feed contract
+and publishing gates.
 
 ## Local build
 
