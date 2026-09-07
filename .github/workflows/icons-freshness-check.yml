@@ -4,8 +4,8 @@ name: Icon Assets Freshness
 # (assets/nous-girl-*.svg) and the per-platform backgrounds
 # (assets/backgrounds/*.svg). Generated outputs are NOT committed — every
 # consuming pipeline regenerates them via scripts/generate-icons.mjs — so
-# this lane runs --check, which regenerates every target in memory and
-# asserts structural invariants (sizes, transparent squircle corners,
+# this lane regenerates everything from a fresh checkout and runs --check,
+# which asserts structural invariants (sizes, transparent squircle corners,
 # container frame sets). A source change can never land broken. See
 # scripts/generate_icons.py.
 #
@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   check:
-    name: Generated icons match master
+    name: Regenerate icons + structural check
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -44,5 +44,7 @@ jobs:
       - name: Install locked deps
         run: uv sync --locked --python 3.11 --extra dev
 
-      - name: Verify generated icons are in sync with the master
-        run: uv run python scripts/generate_icons.py --check
+      - name: Regenerate every target, then verify structure
+        run: |
+          uv run python scripts/generate_icons.py
+          uv run python scripts/generate_icons.py --check
