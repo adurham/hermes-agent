@@ -64,7 +64,7 @@ case "$ARCH" in arm64|x64) ;; *) echo "error: --arch must be arm64 or x64" >&2; 
 # Native CI-only guard: this leg runs real signed bundles, real codesign
 # and real Squirrel.Mac, so it is meaningful only on a macOS CI runner.
 [ "$(uname -s)" = "Darwin" ] || { echo "error: this driver runs on macOS only" >&2; exit 1; }
-[ -n "${GITHUB_ACTIONS:-}" ] || { echo "error: this driver is CI-only (GITHUB_ACTIONS required)" >&2; exit 1; }
+[ "${GITHUB_ACTIONS:-}" = true ] || { echo "error: this driver is CI-only (GITHUB_ACTIONS required)" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASSETS="$REPO_ROOT/tests/install/e2e-assets"
@@ -191,8 +191,7 @@ phase_install() {
   [ -n "$found" ] || fail "no .app inside the OLD release zip"
   local old_app="$WORK_ROOT/apps/Hermes.app"
   mv "$found" "$old_app"
-  # curl/unzip'd files carry no quarantine attr, but belt and braces.
-  xattr -dr com.apple.quarantine "$old_app" 2>/dev/null || true
+
   local old_app_bin
   old_app_bin="$(derive_app_bin "$old_app")"
   ok "OLD bundle installed at $old_app (executable: $(basename "$old_app_bin"))"
@@ -406,7 +405,7 @@ phase_update() {
     || fail "isolated user-state marker did not survive the update"
   ok "isolated user state survived"
 
-  step "PASS: packaged $new_tag -> $new_version via the real About -> Update now route"
+  step "PASS: packaged $(manifest_side old tag) -> $new_tag via the real About -> Update now route"
 }
 
 case "$PHASE" in

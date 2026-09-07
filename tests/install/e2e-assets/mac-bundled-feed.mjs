@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createReadStream } from 'node:fs'
-import { pipeline } from 'node:stream/promises'
+
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
@@ -31,12 +31,7 @@ const { darwinFeed } = require('../../../apps/desktop/update-feed.cjs')
  * and must never be read whole into memory. */
 export async function sha512Base64(filePath) {
   const hash = createHash('sha512')
-  await pipeline(createReadStream(filePath), async function* (source) {
-    for await (const chunk of source) {
-      hash.update(chunk)
-      yield chunk
-    }
-  })
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk)
   return hash.digest('base64')
 }
 

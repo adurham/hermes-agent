@@ -43,7 +43,8 @@ describe('buildAppInstaller', () => {
 
   test('UpdateSettings keeps the OS prompt off (the in-app checker owns the prompt)', () => {
     const xml = buildAppInstaller(base)
-    assert.match(xml, /<OnLaunch HoursBetweenUpdateChecks="12" ShowPrompt="false" \/>/)
+    assert.match(xml, /<OnLaunch HoursBetweenUpdateChecks="12" \/>/)
+    assert.doesNotMatch(xml, /ShowPrompt=/)
   })
 
   test('a variant channel path with a trailing slash still resolves under the host', () => {

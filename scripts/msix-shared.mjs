@@ -173,7 +173,7 @@ export function buildAppInstaller(o) {
     `    Version="${escapeAttr(o.version)}"`,
     `    Uri="${escapeAttr(bundleUrl)}" />`,
     '  <UpdateSettings>',
-    '    <OnLaunch HoursBetweenUpdateChecks="12" ShowPrompt="false" />',
+    '    <OnLaunch HoursBetweenUpdateChecks="12" />',
     '  </UpdateSettings>',
     '</AppInstaller>',
     ''

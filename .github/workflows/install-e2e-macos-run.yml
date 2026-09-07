@@ -178,12 +178,15 @@ jobs:
   # run anywhere native coverage would be fake.
   bundled-e2e:
     name: packaged bundle (open-app-update)
-    if: inputs.bundle-manifest-url != ''
+    if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
     runs-on: ${{ inputs.bundle-arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install driver dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Start screen recording
         uses: ./.github/actions/e2e-screen-record
@@ -194,19 +197,21 @@ jobs:
       - name: Install OLD signed bundle (${{ inputs.install-ref }})
         run: |
           set -euo pipefail
-          tests/install/macos-bundled-e2e.sh --phase install \
-            --manifest-url '${{ inputs.bundle-manifest-url }}' \
-            --arch '${{ inputs.bundle-arch }}'
+          bash tests/install/macos-bundled-e2e.sh --phase install \
+            --manifest-url "$BUNDLE_MANIFEST" --arch "$BUNDLE_ARCH"
         env:
+          BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
+          BUNDLE_ARCH: ${{ inputs.bundle-arch }}
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       - name: Update to NEW via About -> Update now (${{ inputs.bundle-arch }})
         run: |
           set -euo pipefail
-          tests/install/macos-bundled-e2e.sh --phase update \
-            --manifest-url '${{ inputs.bundle-manifest-url }}' \
-            --arch '${{ inputs.bundle-arch }}'
+          bash tests/install/macos-bundled-e2e.sh --phase update \
+            --manifest-url "$BUNDLE_MANIFEST" --arch "$BUNDLE_ARCH"
         env:
+          BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
+          BUNDLE_ARCH: ${{ inputs.bundle-arch }}
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       - name: Stop screen recording
