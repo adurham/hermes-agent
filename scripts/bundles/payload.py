@@ -130,12 +130,12 @@ def posix_launcher(name: str, entry: str, *, python: str, repo: str, site: str, 
     if bionic:
         extra = '''PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PREFIX
-export LD_LIBRARY_PATH="$root/tools/python$PREFIX/lib:$root/tools/node$PREFIX/lib:$root/tools/ffmpeg$PREFIX/lib:$root/runtime-libs/lib:$PREFIX/lib"
+export LD_LIBRARY_PATH="$root/tools/python/data/data/com.termux/files/usr/lib:$root/tools/node/data/data/com.termux/files/usr/lib:$root/tools/ffmpeg/data/data/com.termux/files/usr/lib:$root/runtime-libs/lib:$PREFIX/lib"
 export HERMES_PYTHON_SRC_ROOT="$REPO"
 export HERMES_PYTHON="$PYTHON"
-export HERMES_NODE="$root/tools/node$PREFIX/bin/node"
+export HERMES_NODE="$root/tools/node/data/data/com.termux/files/usr/bin/node"
 export HERMES_RUNTIME_DIR="$root/tools"
-export PATH="$root/tools/npm/bin:$root/tools/node$PREFIX/bin:$root/tools/ffmpeg$PREFIX/bin:$root/tools/ripgrep:$PATH"
+export PATH="$root/tools/npm/bin:$root/tools/node/data/data/com.termux/files/usr/bin:$root/tools/ffmpeg/data/data/com.termux/files/usr/bin:$root/tools/ripgrep:$PATH"
 '''
     code = f"import sys; sys.argv[0]={name!r}; from {module} import {func}; sys.exit({func}())"
     return f'''{header}
@@ -178,6 +178,8 @@ def stage_launchers(root: Path, manifest: dict, *, run=subprocess.run) -> list[s
     minor = python_fact["version"].split("+")[0].rsplit(".", 1)[0]
     site = f'{manifest["venv"]}/' + ("Lib/site-packages" if windows else f"lib/python{minor}/site-packages")
     bindir = root / "bin"
+    if bindir.exists():
+        shutil.rmtree(bindir)
     bindir.mkdir(parents=True, exist_ok=True)
     relative_python = python.relative_to(root).as_posix()
     for name, entry in entries.items():

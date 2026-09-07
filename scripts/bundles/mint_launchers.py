@@ -14,8 +14,7 @@ works with NO extra dependency. A top-level distlib install is preferred
 when present. (Self-contained .\_pth interpreters were REJECTED as an
 alternative approach: they break uv venv materialization.)
 
-Layout facts arrive via env (build-bundled-desktop forbids whitespace in
-win32 argv, so argv is not an option):
+Layout facts arrive via environment from scripts/bundles/payload.py:
 
   HERMES_MINT_BIN_DIR   absolute output dir (agent-payload/bin)
   HERMES_MINT_SPECS     JSON list of {"name": exe stem, "module": dotted

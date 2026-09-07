@@ -108,9 +108,8 @@ ${aliases}`
 }
 
 /**
- * One uap5:Extension block per payload CLI launcher, each naming its own
- * Executable (the distlib-minted launcher exes under bin/) and the alias
- * that exe serves. Exported pure for tests.
+ * One uap5:Extension carries the aliases declared by the payload.
+ * Exported pure for tests.
  * @param {string[]} launchers exe stems under bin/
  */
 export function appExecutionAliasExtensions(launchers) {

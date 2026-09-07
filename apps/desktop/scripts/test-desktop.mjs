@@ -439,7 +439,7 @@ function validateBundle() {
     die(`Missing packaged app binary: ${APP.binary}`)
   }
 
-  // The payload may be the real pm bundle (staged by build-bundled-desktop /
+  // The payload may be the real pm bundle (staged by scripts/bundles/desktop.py /
   // `hermes pm bundle --out build/agent-payload`) or the external stub
   // (plain `npm run pack` in the PR/JS lane — the app fetches the runtime at
   // first launch via the stage protocol). Validate the payload only when a

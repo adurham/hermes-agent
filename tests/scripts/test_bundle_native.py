@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,11 @@ from scripts.bundles import native
 def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.0.0"\n')
+    (repo / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.0.0"\nrequires-python=">=3.11"\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    uv = shutil.which("uv")
+    assert uv, "native bundle test requires uv"
+    env = {**os.environ, "UV_OFFLINE": "1", "UV_PYTHON_DOWNLOADS": "never", "UV_CACHE_DIR": str(tmp_path / "cache")}
+    subprocess.run([uv, "lock", "--python", sys.executable], cwd=repo, env=env, check=True, capture_output=True)
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
@@ -25,7 +30,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     monkeypatch.setattr(native, "_store", lambda: SimpleNamespace(root=output / "tools", entry=lambda _: Path(sys.executable).parent))
     monkeypatch.setattr(native, "_facts", lambda: SimpleNamespace(get=lambda _: {"entry": "python"}, entries_in_use=lambda: []))
     monkeypatch.setattr(native, "get_package", lambda _: SimpleNamespace(binary=lambda *args: Path(sys.executable)))
-    monkeypatch.setattr(native, "pm_uv", lambda: (sys.executable, dict(os.environ)))
+    monkeypatch.setattr(native, "pm_uv", lambda: (uv, dict(env)))
     monkeypatch.setattr(native, "_arch_guard", lambda store: [])
     monkeypatch.setattr("scripts.bundles.payload.relativize_links", lambda root: 0)
     monkeypatch.setattr("pm.features.installed_extras", lambda *args: [])
@@ -36,9 +41,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     def child(argv, *, cwd, env):
         calls.append(argv[1])
         assert not (output / "manifest.json").exists()
-        # Execute a real child and a real venv, without network or tool-store writes.
-        command = [sys.executable, "-m", "venv", "--without-pip", str(output / "venv")] if argv[1] == "venv" else [sys.executable, "-c", "print('sync fixture complete')"]
-        return real_run(command, cwd=cwd, env=env)
+        return real_run(argv, cwd=cwd, env=env)
 
     monkeypatch.setattr(native, "_run_live", child)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "original"))
