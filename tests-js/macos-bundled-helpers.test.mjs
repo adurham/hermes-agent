@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url)
 const {
   validateBundleManifest,
   codesignTeam,
+  channelFromTag,
   stampAssertions,
 } = require('../tests/install/e2e-assets/mac-bundled-manifest.cjs')
 
@@ -16,7 +17,8 @@ const side = (over = {}) => ({
   tag: 'v0.28.0',
   version: '0.28.0',
   commit: 'a'.repeat(40),
-  identity: 'TEAM1234',
+  identity: 'com.nousresearch.hermes-bundled',
+  teamId: 'TEAM123456',
   artifact: { url: 'https://example.com/HermesBundled-0.28.0-mac-arm64.zip', sha256: 'b'.repeat(64), path: '/tmp/old.zip' },
   ...over,
 })
@@ -53,6 +55,21 @@ describe('validateBundleManifest', () => {
     expect(() => validateBundleManifest(manifest({ old: side({ commit: 'zz' }) }), want)).toThrow(/commit/)
   })
 
+  it('requires an explicit teamId on BOTH sides (10-char signing team)', () => {
+    expect(() => validateBundleManifest(manifest({ old: side({ teamId: undefined }) }), want)).toThrow(/teamId/)
+    expect(() => validateBundleManifest(manifest({ old: side({ teamId: 'tooshort' }) }), want)).toThrow(/teamId/)
+    expect(() => validateBundleManifest(manifest({ new: side({ teamId: 'OTHER99999', commit: 'c'.repeat(40) }) }), want)).toThrow(/Squirrel/)
+  })
+
+  it('treats identity as the exact CFBundleIdentifier, not a namespace', () => {
+    expect(() => validateBundleManifest(manifest({ old: side({ identity: 'TEAM123456' }) }), want)).toThrow(/CFBundleIdentifier/)
+    expect(() => validateBundleManifest(manifest({ old: side({ identity: 'com.nousresearch.hermes-bundled' }) }), want)).not.toThrow()
+    expect(() => validateBundleManifest(
+      manifest({ new: side({ identity: 'com.nousresearch.hermes-other', tag: 'v0.29.0', version: '0.29.0', commit: 'c'.repeat(40), artifact: { url: 'u', sha256: 'd'.repeat(64), path: '/tmp/n' } }) }),
+      want,
+    )).toThrow(/same application bundle/)
+  })
+
   it('requires the resolver to have downloaded the artifact', () => {
     expect(() => validateBundleManifest(
       manifest({ old: side({ artifact: { url: 'x', sha256: 'b'.repeat(64) } }) }), want,
@@ -62,25 +79,38 @@ describe('validateBundleManifest', () => {
     )).toThrow(/sha256/)
   })
 
-  it('rejects a no-op pair and a team-changing pair (Squirrel gate)', () => {
+  it('rejects a no-op pair and a channel-crossing pair', () => {
     expect(() => validateBundleManifest(manifest({ new: side() }), want)).toThrow(/no update/)
     expect(() => validateBundleManifest(
-      manifest({ new: side({ commit: 'c'.repeat(40), identity: 'OTHER999', tag: 'v0.29.0', version: '0.29.0', artifact: { url: 'u', sha256: 'd'.repeat(64), path: '/tmp/n' } }) }), want,
-    )).toThrow(/Squirrel/)
+      manifest({ new: side({ tag: 'v0.29.0-canary.20260907000000', version: '0.29.0-canary.20260907000000', commit: 'c'.repeat(40), artifact: { url: 'u', sha256: 'd'.repeat(64), path: '/tmp/n' } }) }),
+      want,
+    )).toThrow(/channel/)
+  })
+})
+
+describe('channelFromTag', () => {
+  it('maps canary tags to the canary channel, everything else to stable', () => {
+    expect(channelFromTag('v0.29.0-canary.20260907000000')).toBe('canary')
+    expect(channelFromTag('v0.29.0')).toBe('stable')
   })
 })
 
 describe('codesignTeam', () => {
-  it('parses the team from codesign -dv output', () => {
+  it('parses the team from codesign -dv STDERR output', () => {
     const out = [
-      'Executable=/tmp/Hermes.app/Contents/MacOS/Hermes',
+      'Executable=/tmp/Hermes Bundled.app/Contents/MacOS/Hermes Bundled',
       'Identifier=com.nousresearch.hermes-bundled',
-      'TeamIdentifier=TEAM1234',
+      'TeamIdentifier=TEAM123456',
     ].join('\n')
-    expect(codesignTeam(out)).toBe('TEAM1234')
+    expect(codesignTeam(out)).toBe('TEAM123456')
   })
-  it('returns null when unsigned', () => {
+  it('returns null for unsigned / ad-hoc signatures', () => {
     expect(codesignTeam('Identifier=com.x\nTeamIdentifier=not set')).toBeNull()
+    expect(codesignTeam('Identifier=com.x\nTeamIdentifier=')).toBeNull()
+    expect(codesignTeam('')).toBeNull()
+  })
+  it('never matches the word "not" as a team id', () => {
+    expect(codesignTeam('TeamIdentifier=not set\nFoo=not')).toBeNull()
   })
 })
 
@@ -114,22 +144,26 @@ describe('stampAssertions', () => {
 
 describe('mac-bundled-feed materializer', () => {
   it('emits the production update-feed contract for the real NEW zip', async () => {
-    const { materializeFeed, feedFileNames } = await import('../tests/install/e2e-assets/mac-bundled-feed.mjs')
+    const { materializeFeed, feedFileNames, sha512Base64 } = await import('../tests/install/e2e-assets/mac-bundled-feed.mjs')
     const { createHash } = await import('node:crypto')
 
     // The feed layout comes from the ONE production contract, not a copy.
     const { darwinFeed } = require('../apps/desktop/update-feed.cjs')
     expect(darwinFeed('stable').directory).toBe('releases/darwin/stable')
-    expect(feedFileNames('arm64').prefixed).toBe('arm64-stable-mac.yml')
-    expect(feedFileNames('x64').prefixed).toBe('stable-mac.yml')
+    expect(feedFileNames('arm64', 'stable').prefixed).toBe('arm64-stable-mac.yml')
+    expect(feedFileNames('x64', 'stable').prefixed).toBe('stable-mac.yml')
+    expect(feedFileNames('arm64', 'canary').directory).toBe('releases/darwin/canary')
+    expect(feedFileNames('arm64', 'canary').prefixed).toBe('arm64-canary-mac.yml')
 
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-feed-'))
     const zip = path.join(outDir, 'HermesBundled-0.29.0-mac-arm64.zip')
     const zipBytes = Buffer.from('fake signed zip for feed shape tests')
     fs.writeFileSync(zip, zipBytes)
     const expectedSha512 = createHash('sha512').update(zipBytes).digest('base64')
+    // The streamed hash matches a whole-buffer hash (streams, no full read).
+    expect(await sha512Base64(zip)).toBe(expectedSha512)
 
-    const receipt = materializeFeed({
+    const receipt = await materializeFeed({
       outDir,
       zipPath: zip,
       version: '0.29.0',
@@ -138,7 +172,8 @@ describe('mac-bundled-feed materializer', () => {
       releaseDate: '2026-09-07T00:00:00.000Z',
     })
 
-    // The artifact is served under the merged production URL shape.
+    // The channel comes from the tag, never a hard-coded 'stable'.
+    expect(receipt.channel).toBe('stable')
     expect(receipt.artifactUrlPath).toBe('/releases/tag/v0.29.0/HermesBundled-0.29.0-mac-arm64.zip')
     expect(receipt.written).toEqual([
       'releases/darwin/stable/arm64-stable-mac.yml',
@@ -154,5 +189,34 @@ describe('mac-bundled-feed materializer', () => {
     // The served artifact bytes are the real NEW zip, copied verbatim.
     expect(fs.readFileSync(path.join(outDir, 'releases/tag/v0.29.0/HermesBundled-0.29.0-mac-arm64.zip')))
       .toEqual(zipBytes)
+  })
+
+  it('serves canary tags from the canary channel directory', async () => {
+    const { materializeFeed } = await import('../tests/install/e2e-assets/mac-bundled-feed.mjs')
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-feed-canary-'))
+    const zip = path.join(outDir, 'HermesBundled-0.30.0-canary-mac-arm64.zip')
+    fs.writeFileSync(zip, 'canary zip')
+    const receipt = await materializeFeed({
+      outDir, zipPath: zip, version: '0.30.0',
+      tag: 'v0.30.0-canary.20260907000000', arch: 'x64',
+      releaseDate: '2026-09-07T00:00:00.000Z',
+    })
+    expect(receipt.channel).toBe('canary')
+    expect(receipt.feedKey).toBe('releases/darwin/canary/canary-mac.yml')
+    expect(fs.existsSync(path.join(outDir, 'releases/darwin/canary/canary-mac.yml'))).toBe(true)
+    expect(fs.existsSync(path.join(outDir, 'releases/darwin/canary/arm64-canary-mac.yml'))).toBe(false)
+  })
+})
+
+describe('mac-bundled-serve path safety', () => {
+  it('resolves in-root paths and rejects traversal outside the feed root', async () => {
+    const { safeJoin } = await import('../tests/install/e2e-assets/mac-bundled-serve.mjs')
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-serve-'))
+    expect(safeJoin(root, '/releases/darwin/stable/stable-mac.yml'))
+      .toBe(path.join(root, 'releases/darwin/stable/stable-mac.yml'))
+    // Classic traversal: the old startsWith(root) check passed these.
+    expect(safeJoin(root, '/../escape.yml')).toBeNull()
+    expect(safeJoin(root, '/%2e%2e/escape.yml')).toBeNull()
+    expect(safeJoin(root, '/..%2fescape.yml')).toBeNull()
   })
 })

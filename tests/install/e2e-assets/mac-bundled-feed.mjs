@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 'use strict'
 // mac-bundled-feed.mjs — build the loopback static update feed for the
 // macOS packaged-app -> open-app-update E2E arm from the REAL signed NEW
@@ -10,21 +11,33 @@
 //   merged url /releases/tag/<tag>/<artifact>.zip
 // A release publishes the MERGED feed (both arches merged by
 // r2-release.mjs finalize). electron-updater on arm64 requests
-// arm64-stable-mac.yml; on x64 it requests stable-mac.yml. This controlled
-// single-arch loopback feed emits the same merged shape and serves both
-// request names with identical bytes.
+// <arch>-<channel>-mac.yml; on x64 it requests <channel>-mac.yml. The
+// channel comes from the release TAG (canary tags serve canary feeds) —
+// never hard-coded — and must be identical on both manifest sides
+// (validated in mac-bundled-manifest.cjs).
 
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { createReadStream } from 'node:fs'
+import { pipeline } from 'node:stream/promises'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 // The one feed-layout contract, straight from the production source.
 const { darwinFeed } = require('../../../apps/desktop/update-feed.cjs')
 
-export function sha512Base64(filePath) {
-  return createHash('sha512').update(fs.readFileSync(filePath)).digest('base64')
+/** sha512 of a file, base64 — STREAMED: release zips are hundreds of MB
+ * and must never be read whole into memory. */
+export async function sha512Base64(filePath) {
+  const hash = createHash('sha512')
+  await pipeline(createReadStream(filePath), async function* (source) {
+    for await (const chunk of source) {
+      hash.update(chunk)
+      yield chunk
+    }
+  })
+  return hash.digest('base64')
 }
 
 /**
@@ -48,31 +61,34 @@ export function buildMacFeedText({ version, tag, zipName, sha512, size, releaseD
   return lines.join('\n')
 }
 
-/** The feed file names electron-updater asks for on this arch (and the
- *  un-prefixed name, served too so the merged-feed contract holds). */
-export function feedFileNames(arch) {
-  const feed = darwinFeed('stable')
+/** The feed file names electron-updater asks for on this arch, on this
+ * channel (and the un-prefixed name, served too so the merged-feed
+ * contract holds). */
+export function feedFileNames(arch, channel = 'stable') {
+  const feed = darwinFeed(channel)
   const prefixed = arch === 'x64' ? feed.fileName : `${arch}-${feed.fileName}`
   return { feed, prefixed, plain: feed.fileName, directory: feed.directory }
 }
 
 /**
- * Materialize the loopback feed directory:
- *   <out>/releases/darwin/stable/{arm64-,}stable-mac.yml
+ * Materialize the loopback feed directory for the channel the NEW tag
+ * publishes to:
+ *   <out>/releases/darwin/<channel>/{arm64-,}<channel>-mac.yml
  *   <out>/releases/tag/<tag>/<zipName>          (copy of the real NEW zip)
  * Returns a receipt for the driver to assert.
  */
-export function materializeFeed({ outDir, zipPath, version, tag, arch, releaseDate }) {
+export async function materializeFeed({ outDir, zipPath, version, tag, arch, releaseDate }) {
   const zipStat = fs.statSync(zipPath)
   if (zipStat.size <= 0) throw new Error(`feed: empty zip at ${zipPath}`)
   const zipName = path.basename(zipPath)
   if (!zipName.endsWith('.zip')) {
     throw new Error(`feed: expected a .zip artifact, got ${zipName}`)
   }
-  const sha512 = sha512Base64(zipPath)
+  const channel = tag.includes('-canary.') ? 'canary' : 'stable'
+  const sha512 = await sha512Base64(zipPath)
   const text = buildMacFeedText({ version, tag, zipName, sha512, size: zipStat.size, releaseDate })
 
-  const { prefixed, plain, directory } = feedFileNames(arch)
+  const { prefixed, plain, directory } = feedFileNames(arch, channel)
   const feedDir = path.join(outDir, directory)
   fs.mkdirSync(feedDir, { recursive: true })
   const written = []
@@ -88,7 +104,7 @@ export function materializeFeed({ outDir, zipPath, version, tag, arch, releaseDa
   const artifactDest = path.join(artifactDir, zipName)
   fs.copyFileSync(zipPath, artifactDest)
 
-  return { feedKey: `${directory}/${prefixed}`, written, artifactUrlPath: `/releases/tag/${tag}/${zipName}`, sha512, size: zipStat.size, version, tag }
+  return { feedKey: `${directory}/${prefixed}`, channel, written, artifactUrlPath: `/releases/tag/${tag}/${zipName}`, sha512, size: zipStat.size, version, tag }
 }
 
 // CLI entry: node mac-bundled-feed.mjs --out DIR --zip FILE --version V \
@@ -104,7 +120,7 @@ if (process.argv.length > 2 && process.argv[1].endsWith('mac-bundled-feed.mjs'))
       arch: { type: 'string' },
     },
   })
-  const receipt = materializeFeed({
+  const receipt = await materializeFeed({
     outDir: values.out,
     zipPath: values.zip,
     version: values.version,
