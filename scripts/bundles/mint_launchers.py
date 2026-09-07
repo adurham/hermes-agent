@@ -1,6 +1,6 @@
 """Mint the bundled payload's win32 CLI launchers with distlib.
 
-Run by scripts/build-bundled-desktop.mjs (step 5b) with the payload's OWN
+Run by scripts/bundles/desktop.py (step 5b) with the payload's OWN
 store python as the minting interpreter — the store python is the same
 distribution the launchers will execute, and its architecture is by
 construction the target architecture, which is exactly what distlib's
@@ -22,7 +22,7 @@ win32 argv, so argv is not an option):
                         module, "func": entry function} — mirrors
                         [project.scripts] in pyproject.toml
   HERMES_MINT_WRAPPER   path of the RENDERED launcher-wrapper.py for THIS
-                        entry (substitution is cli-entrypoints.mjs's job,
+                        entry (substitution is scripts/bundles/payload.py's job,
                         one implementation, one test)
   HERMES_MINT_PYTHON    bin-relative path of the store python, BACKslashes,
                         e.g. <launcher_dir>\..\tools\<entry>\python.exe —

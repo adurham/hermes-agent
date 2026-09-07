@@ -44,7 +44,7 @@ name: Desktop Bundled Release
 # Apple credentials, and FAIL rather than publish unsigned — forks without
 # the credentials can only build (upload_release=false), never publish.
 #
-# scripts/build-bundled-desktop.mjs is the one driver. Local and CI run
+# scripts/bundles/desktop.py is the one driver. Local and CI run
 # the same command. This workflow adds caching and upload only.
 #
 # Triggers: workflow_dispatch with an explicit tag. A tag push does not
@@ -237,7 +237,7 @@ jobs:
         shell: bash
         # The host toolchain that BUILDS the artifact comes from the same
         # pin table as the embedded runtimes (pm/lock.json), so gate == pin
-        # by construction in build-bundled-desktop.mjs's toolchain gates.
+        # by construction in bundles/desktop.py's toolchain gates.
         run: |
           python -c '
           import json
@@ -420,12 +420,12 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_TOKEN_CREDENTIALS: prod
         run: |
-          node scripts/build-bundled-desktop.mjs --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+          uv run --no-project --python 3.11 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
           # The Store-submission MSIX is the same bundled payload re-packed
           # with the Partner Center packaging identity (publish-win32-store
           # bundles these into the universal Store .msixbundle and submits it;
           # they also land in the tag archive, never a feed dir).
-          node scripts/build-bundled-desktop.mjs --tag="$HERMES_PAYLOAD_TAG" --variant=store
+          uv run --no-project --python 3.11 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
 
       - name: Audit bundle architecture
         shell: bash
@@ -476,7 +476,7 @@ jobs:
           done
 
   # ── macOS builders (REAL) ──────────────────────────────────────────────────
-  # Native per-arch darwin builds via scripts/build-bundled-desktop.mjs (the
+  # Native per-arch darwin builds via scripts/bundles/desktop.py (the
   # one driver: same `--mac dmg zip` pass a local mac build runs). Each leg
   # signs (CSC_LINK) and notarizes (afterSign notarize.mjs) when the
   # release-signing environment carries the Apple credentials; a publishing
@@ -534,7 +534,7 @@ jobs:
         shell: bash
         # The host toolchain that BUILDS the artifact comes from the same
         # pin table as the embedded runtimes (pm/lock.json), so gate == pin
-        # by construction in build-bundled-desktop.mjs's toolchain gates.
+        # by construction in bundles/desktop.py's toolchain gates.
         run: |
           python3 -c '
           import json
@@ -715,7 +715,7 @@ jobs:
           # every Mach-O) — raise the fd limit and let DEBUG show progress.
           ulimit -n 16384 2>/dev/null || true
           echo "file descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
-          node scripts/build-bundled-desktop.mjs --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+          uv run --no-project --python 3.11 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
 
       - name: Audit bundle architecture
         shell: bash
@@ -1374,9 +1374,7 @@ jobs:
         run: |
           npm ci --workspace ui-tui --include=dev --no-fund --no-audit --silent
           npm run build --workspace ui-tui
-          test -f ui-tui/dist/entry.js
-          mkdir -p termux-build/payload/app/hermes_cli/tui_dist
-          cp ui-tui/dist/entry.js termux-build/payload/app/hermes_cli/tui_dist/entry.js
+          python3 scripts/bundles/payload.py surfaces termux-build/payload --repo-dir app --tui-only
 
       - name: Assemble the .deb
         shell: bash

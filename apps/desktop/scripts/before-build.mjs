@@ -21,7 +21,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 
-import { CLI_LAUNCHER_SPECS } from '../../../scripts/desktop-cli/cli-entrypoints.mjs'
 
 const require = createRequire(import.meta.url)
 const {
@@ -73,7 +72,8 @@ function writeMsixExtensions() {
   const manifest = path.join(desktop, 'build', 'agent-payload', 'manifest.json')
   const payload = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, 'utf8')) : null
   const launchers = light || !payload || payload.external
-    ? [] : CLI_LAUNCHER_SPECS.map(spec => spec.name)
+    ? [] : payload.launchers
+  if (!Array.isArray(launchers)) throw new Error('Bundled payload has no declared launchers')
   const aliases = appExecutionAliasExtensions(launchers)
   // The uap3:AppExtension fragment that registers the app as a Windows
   // Copilot hardware key provider. The press activates hermes://copilot-key/start.
@@ -111,9 +111,9 @@ ${aliases}`
  * One uap5:Extension block per payload CLI launcher, each naming its own
  * Executable (the distlib-minted launcher exes under bin/) and the alias
  * that exe serves. Exported pure for tests.
- * @param {{ name: string }[]} [launchers] exe stems under bin/
+ * @param {string[]} launchers exe stems under bin/
  */
-export function appExecutionAliasExtensions(launchers = CLI_LAUNCHER_SPECS.map((s) => s.name)) {
+export function appExecutionAliasExtensions(launchers) {
   if (launchers.length === 0) return ''
   const bs = String.fromCharCode(92)
   const executable = (name) => ['app', 'resources', 'agent-payload', 'bin', `${name}.exe`].join(bs)

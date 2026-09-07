@@ -34,7 +34,7 @@
     "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 node scripts/run-electron-builder.mjs",
     "pack": "npm run build && npm run builder -- --dir --publish never",
     "dist": "npm run build && npm run builder",
-    "payload": "node scripts/stage-payload.mjs",
+    "payload": "uv run --no-project --python 3.11 python ../../scripts/bundles/stage.py --out build/agent-payload",
     "dist:bundled": "npm run payload && npm run dist",
     "dist:mac": "npm run build && npm run builder -- --mac",
     "dist:mac:dmg": "npm run build && npm run builder -- --mac dmg",

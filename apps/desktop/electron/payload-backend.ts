@@ -70,7 +70,7 @@ export function resolvePayload(
   const toolsDir = path.join(root, manifest.store)
   const venvDir = path.join(root, manifest.venv)
   // The CLI trampoline staged into bin/ (hermes/hermes-agent/hermes-acp —
-  // build-bundled-desktop.mjs 5b: distlib-minted launchers on win32,
+  // scripts/bundles/desktop.py 5b: distlib-minted launchers on win32,
   // $0-relative bash trampolines on POSIX). It execs the store python with
   // the payload's own PYTHONPATH, so it is the single bundled entry point.
   const shim = path.join(root, 'bin', deps.isWindows ? 'hermes.exe' : 'hermes')

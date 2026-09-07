@@ -5,42 +5,28 @@ import argparse
 from pathlib import Path
 import shlex
 import tomllib
+import sys
 
-
-_LAUNCHER = '''#!/data/data/com.termux/files/usr/bin/sh
-set -eu
-self="$0"
-while [ -L "$self" ]; do
-    target="$(readlink "$self")"
-    case "$target" in
-        /*) self="$target" ;;
-        *) self="$(dirname "$self")/$target" ;;
-    esac
-done
-root="$(cd "$(dirname "$self")/.." && pwd)"
-PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-export PREFIX
-unset PYTHONHOME
-export LD_LIBRARY_PATH="$root/tools/python/data/data/com.termux/files/usr/lib:$root/tools/node/data/data/com.termux/files/usr/lib:$root/tools/ffmpeg/data/data/com.termux/files/usr/lib:$root/runtime-libs/lib:$PREFIX/lib"
-export PYTHONPATH="$root/app"
-export HERMES_PYTHON_SRC_ROOT="$root/app"
-export HERMES_PYTHON="$root/venv/bin/python"
-export HERMES_NODE="$root/tools/node/data/data/com.termux/files/usr/bin/node"
-export HERMES_RUNTIME_DIR="$root/tools"
-export PATH="$root/tools/npm/bin:$root/tools/node/data/data/com.termux/files/usr/bin:$root/tools/ffmpeg/data/data/com.termux/files/usr/bin:$root/tools/ripgrep:$PATH"
-export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-${XDG_CACHE_HOME:-$HOME/.cache}/hermes-pycache}"
-exec "$HERMES_PYTHON" -P -c __ENTRY__ "$@"
-'''
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 def write_launchers(payload: Path, entries: dict[str, str]) -> None:
+    from scripts.bundles.payload import posix_launcher
+
+    lock = payload / "app/pm/lock.json"
+    if lock.is_file():
+        import json
+        version = json.loads(lock.read_text(encoding="utf-8-sig"))["packages"]["python"]["version"]
+        minor = version.split("+")[0].rsplit(".", 1)[0]
+    else:
+        minor = f"{sys.version_info.major}.{sys.version_info.minor}"
     bindir = payload / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
     for name, entry in entries.items():
-        module, func = entry.split(":", 1)
-        script = f"import sys; sys.argv[0] = {name!r}; from {module} import {func}; sys.exit({func}())"
+        text = posix_launcher(name, entry, python="venv/bin/python", repo="app",
+                              site=f"venv/lib/python{minor}/site-packages", target="linux-arm64-bionic")
         path = bindir / name
-        path.write_text(_LAUNCHER.replace("__ENTRY__", shlex.quote(script)), encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
         path.chmod(0o755)
 
 

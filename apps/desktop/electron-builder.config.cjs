@@ -203,7 +203,7 @@ module.exports = {
     // scripts/msix-shared.mjs). setBuildNumber makes getVersionInWeirdWindowsForm
     // use the BUILD_NUMBER env (4th component) instead of hardcoding ".0" — a
     // stable build sets no BUILD_NUMBER and stays X.Y.Z.0, a canary build sets
-    // it via build-bundled-desktop.mjs so App Installer updates over equal
+    // it via scripts/bundles/desktop.py so App Installer updates over equal
     // canary-over-canary versions instead of refusing them.
     setBuildNumber: true,
     // Floor Windows 11 22H2. Below build 18307 the manifest schema caps

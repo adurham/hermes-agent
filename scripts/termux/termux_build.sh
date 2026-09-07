@@ -189,7 +189,13 @@ mkdir -p "$WORK/tree" "$WHEELHOUSE"
 
 # [c] Stage the tag as a gitless tree.
 log "Archiving $TAG into $WORK/tree"
-git -C "$REPO_ABS" archive --format=tar "$TAG" | tar -xf - -C "$WORK/tree"
+python3 - "$REPO_ABS" "$TAG" "$WORK/tree" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from scripts.bundles.payload import snapshot
+snapshot(Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]))
+PY
 [ -f "$WORK/tree/pyproject.toml" ] || fail "archived tag tree has no pyproject.toml -- bad tag?"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 DIGEST="$(cd "$REPO_ROOT" && python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
