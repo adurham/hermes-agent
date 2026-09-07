@@ -160,6 +160,9 @@ class TestRuntimeRepair:
         calls = []
 
         def fake_run(argv, **kwargs):
+            if argv[1] == "sync":
+                import subprocess
+                assert kwargs["stderr"] == subprocess.STDOUT
             calls.append((list(argv), kwargs.get("env")))
             return MagicMock(returncode=0)
 

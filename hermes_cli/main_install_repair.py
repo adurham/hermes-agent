@@ -453,7 +453,9 @@ def _run_install_with_heartbeat(
     t = threading.Thread(target=_heartbeat, daemon=True)
     t.start()
     try:
-        subprocess.run(cmd, cwd=PROJECT_ROOT, check=True, env=env)
+        # The desktop updater drains stdout while the child runs. Merge installer
+        # progress into that stream so a full stderr pipe cannot block the install.
+        subprocess.run(cmd, cwd=PROJECT_ROOT, check=True, env=env, stderr=subprocess.STDOUT)
     finally:
         done.set()
         t.join(timeout=0.2)
