@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -117,6 +118,9 @@ def render_wrapper(entry: str, repo: str, site: str) -> str:
         if '"' in value or "\n" in value or "__" in value:
             raise ValueError(f"invalid launcher value: {key}")
         text = text.replace(f"__HERMES_{key}__", value)
+    unresolved = re.search(r"__HERMES_\w+?__", text)
+    if unresolved:
+        raise ValueError(f"unresolved launcher placeholder: {unresolved.group()}")
     return text
 
 

@@ -54,6 +54,16 @@ def test_surfaces_require_complete_outputs_and_replace_stale_files(tmp_path):
         plant_surfaces(repo, source)
 
 
+def test_wrapper_rejects_unresolved_template_fields(tmp_path, monkeypatch):
+    from scripts.bundles import payload
+
+    template = tmp_path / "launcher_wrapper.py"
+    template.write_text('entry = "__HERMES_ENTRY_MODULE__"\nmissing = "__HERMES_NEW__"\n', encoding="utf-8")
+    monkeypatch.setattr(payload, "__file__", str(tmp_path / "payload.py"))
+    with pytest.raises(ValueError, match="__HERMES_NEW__"):
+        payload.render_wrapper("entry:run", "../app", "../venv/Lib/site-packages")
+
+
 def test_launcher_stage_reads_declared_entries_and_drops_stale_names(tmp_path, monkeypatch):
     from pathlib import Path
     from types import SimpleNamespace
