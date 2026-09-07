@@ -195,25 +195,24 @@ class _Row:
     primary_model: Optional[str] = None
     started_at: float = field(default_factory=time.time)
     ended_at: Optional[float] = None
-    # Freeze point for the displayed elapsed clock once the child stops
-    # doing work and just streams the final summary to text.  The model has
-    # finished its tool-calling loop at this point, so the meaningful
-    # "work duration" is fixed; continuing to tick the clock made finished
-    # rows look like they were still iterating.  Set when status flips to
-    # "summarizing"; preserved through the eventual ``finish()`` call so the
-    # final completed row still displays the work-time, not the work-time +
-    # summary-write-time.
-    work_ended_at: Optional[float] = None
+    # NOTE: this row previously froze the displayed elapsed clock the moment
+    # status flipped to "summarizing" (a `work_ended_at` timestamp), on the
+    # theory that "work" was done and only final-answer streaming remained.
+    # Removed 2026-09-07: "summarizing" is not terminal — a child can spend
+    # many minutes of REAL extended-thinking time in that phase (observed
+    # live: 7m38s pinned, tool_count still climbing, last_note still
+    # updating with fresh reasoning text every few seconds). A timer that
+    # stops advancing while the thing it measures is still running looks
+    # broken and erodes trust in every other live counter in the TUI. The
+    # only legitimate freeze point is true completion, which already has its
+    # own mechanism: ``finish()`` sets ``ended_at`` directly, terminating the
+    # clock. Do not reintroduce a mid-run freeze keyed off a heuristic status
+    # string — if a future "work time vs streaming time" split is wanted,
+    # track and display it as a SEPARATE field, never by stopping the primary
+    # elapsed counter the user is watching tick.
 
     def elapsed(self) -> float:
-        # Precedence: terminal end (finish/failure) > work-finished freeze
-        # (summarizing onwards) > current wall clock.
-        if self.ended_at is not None and self.work_ended_at is None:
-            end = self.ended_at
-        elif self.work_ended_at is not None:
-            end = self.work_ended_at
-        else:
-            end = time.time()
+        end = self.ended_at if self.ended_at is not None else time.time()
         return max(0.0, end - self.started_at)
 
     def snapshot(self) -> RowSnapshot:
@@ -1070,33 +1069,13 @@ class SwarmBoard:
                 # already done.
                 if row.status == "queued" and status != "queued":
                     row.started_at = time.time()
-                # Freeze the elapsed clock at the moment the child enters
-                # "summarizing" — the model has stopped calling tools and
-                # is just streaming its final answer text, so the displayed
-                # time should reflect the work duration, not the streaming
-                # latency.
-                #
-                # The freeze must be provisional, not permanent: the
-                # "summarizing" transition can come from a HEURISTIC text
-                # match (TASK_THINKING's _looks_like_summary_phase — e.g. the
-                # child's reasoning starts a line with "## Summary" as an
-                # intermediate planning artifact, not the real final answer).
-                # A false positive here used to freeze the clock forever —
-                # tool_count kept climbing as the child did real work, but
-                # elapsed() stayed pinned at the false-positive timestamp
-                # (reported live: rows stuck at "4s" while clearly still
-                # iterating).  Every real tool call reports status="running"
-                # via TASK_TOOL_STARTED, which is an unambiguous "the child is
-                # actively working" signal, so treat it as the unfreeze
-                # trigger.  Terminal statuses never flow through this method
-                # (they go through finish(), a separate code path that sets
-                # ended_at directly) so they can't accidentally clear the
-                # freeze here.
-                if status == "summarizing":
-                    if row.work_ended_at is None:
-                        row.work_ended_at = time.time()
-                elif status == "running":
-                    row.work_ended_at = None
+                # NOTE: this used to freeze the elapsed clock on entering
+                # "summarizing" (row.work_ended_at). Removed 2026-09-07 —
+                # see _Row.work_ended_at's docstring-comment for why: a
+                # child can spend real, extended minutes in "summarizing"
+                # (thinking/streaming its final answer), and a heuristic
+                # status flip is not a reliable "work is done" signal. The
+                # clock now just runs until finish() sets ended_at.
                 row.status = status
             if tool_count is not None:
                 row.tool_count = tool_count

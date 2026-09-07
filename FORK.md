@@ -16139,3 +16139,52 @@ with exact `.endswith()` checks for `11m36s`/`42s`/`1m00s` and explicit
 substring checks (`"7m01s" in line`), which pass even on doubled output —
 so the bug class was genuinely uncovered before. Mutation-checked: with the
 doubling forced in, 2 tests fail showing literal `11m36ss`.
+
+## 2026-09-07 — swarm board: elapsed clock froze mid-run on entering "summarizing"
+
+The 2026-09-05 fix (repaint cadence) made the clock TICK correctly every
+second, but a separate, older bug made it look frozen anyway: user reported
+a subagent stuck at `7m38s` while `status=summarizing`, `tool_count=20` and
+still climbing, and `last_note` visibly updating with fresh reasoning text
+every few seconds — clearly alive, clock clearly not moving.
+
+**Root cause (`tools/swarm_board.py`):** `_Row` had a `work_ended_at`
+timestamp, stamped the moment a row's status flipped to `"summarizing"`
+(either a heuristic text match in `delegate_tool.py`'s
+`_looks_like_summary_phase`, or the deterministic `subagent.finalizing`
+event). `elapsed()` then reported `work_ended_at - started_at` forever
+instead of `time.time() - started_at`, on the theory that "summarizing"
+meant the model had stopped calling tools and was just streaming its final
+answer, so counting further wall-clock time would overstate "work done."
+That premise is false for extended-thinking models: a child can spend many
+real minutes in "summarizing" doing legitimate reasoning/streaming, and
+there is no bound on how long. There was already a partial patch for this
+(commit 7f89aed422 — unfreeze on the next real `status="running"` tool
+call) but a row that *stays* in "summarizing" for its whole remaining life
+(exactly this case: still thinking, not yet calling another tool) never
+hits that unfreeze path, so the clock stayed pinned indefinitely.
+
+**Fix:** removed `work_ended_at` and the freeze/unfreeze logic entirely.
+`_Row.elapsed()` is now simply `(ended_at or time.time()) - started_at` —
+the ONLY thing that stops the clock is `finish()`, which already sets
+`ended_at` on true completion (a separate, unaffected code path). A
+"summarizing" status change no longer touches the clock at all.
+
+Rejected alternative: patching the unfreeze heuristic further (e.g. also
+unfreeze on `_thinking` events). That's a mitigation, not a fix — it just
+narrows the window where the clock reads wrong instead of removing the
+wrong premise (that any non-terminal status is a legitimate freeze point).
+If work-time-vs-streaming-time ever needs to be displayed as a distinct
+metric, it should be a separate field, never achieved by stopping the
+primary elapsed counter the user is watching tick.
+
+Verified: `.venv/bin/python tests/tools/test_swarm_board.py` — 94 passed,
+including 3 rewritten regression tests replacing the now-obsolete
+freeze-behavior ones (`test_summarizing_does_not_freeze_elapsed_clock`,
+`test_elapsed_keeps_advancing_across_repeated_summarizing_updates`,
+`test_terminal_status_stops_the_clock`). Also ran
+`test_swarm_board_orchestrator_tool_count.py` (needs `.venv/bin/python`,
+not system `python3` — this repo requires 3.11+) — no regressions.
+`test_delegate.py` has 3 pre-existing unrelated failures (schema-shape
+assertions about `role`/`output_schema` advertisement) confirmed present
+on a clean `git stash` of this change too.
