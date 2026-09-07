@@ -30,6 +30,9 @@ jobs:
     # cargo builds codegen units and test binaries in parallel across the
     # cores. This lane also builds the crate from the start when Cargo.toml
     # changes.
+    # ubuntu-latest-32-core is not provisioned on forks — skip so a
+    # workflow_call from another repo's fork doesn't queue forever.
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
     defaults:

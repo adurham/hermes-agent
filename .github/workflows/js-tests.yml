@@ -14,6 +14,9 @@ jobs:
     #
     # One larger runner installs one time. vitest, tsc and eslint each size
     # their own worker pool from the core count.
+    # ubuntu-latest-32-core is not provisioned on forks — skip so a
+    # workflow_call from another repo's fork doesn't queue forever.
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
     steps:
