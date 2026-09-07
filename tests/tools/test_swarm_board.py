@@ -467,6 +467,66 @@ class TestFormatRow(unittest.TestCase):
         assert "1m00s" in line
 
 
+class TestElapsedSuffixNotDoubled(unittest.TestCase):
+    """Regression coverage for a reported ``11m36s`` -> ``11m36ss`` doubled
+    trailing-s render in the live subagent status row.
+
+    Asserting ``"7m01s" in line`` (the pre-existing style above) is
+    worthless against this bug class: a doubled-suffix string like
+    ``"...7m01ss"`` still CONTAINS the substring ``"7m01s"``, so that style
+    of assertion passes whether or not the bug is present. These tests
+    instead check the row's literal trailing characters and drive the
+    FULL on-screen render path — ``SwarmBoard`` -> ``order_rows_for_display``
+    -> ``collapse_rows_to_limit`` -> ``format_row`` -> the CLI's
+    ``_trim_status_bar_text``/``_panel_ljust`` widget layer
+    (``cli.py::get_swarm_board_text``) — not just the isolated
+    ``_format_row_elapsed`` helper, since a helper-only assertion would
+    have passed even while a doubling bug was live in a wrapper/consumer.
+    """
+
+    def _live_row_line(self, elapsed_seconds: float, *, width: int = 200) -> str:
+        """Register+update a row and render it through the exact pipeline
+        ``cli.py::get_swarm_board_text`` uses, including the CLI's
+        status-bar trim/pad helpers."""
+        import cli
+
+        board = SwarmBoard()
+        sid = "a-0-7d11d760"
+        board.register(sid, model="glm-5.3", goal="fix bug", status="starting")
+        row = board._rows[sid]
+        row.started_at = time.time() - elapsed_seconds
+        board.update(
+            sid,
+            status="summarizing",
+            tool_count=16,
+            last_tool="delegate_task",
+            last_note="some status text",
+        )
+        entries = order_rows_for_display(board.get_rows_snapshot())
+        lines = collapse_rows_to_limit(entries, DEFAULT_MAX_BOARD_ROWS)
+        assert len(lines) == 1
+        return cli.HermesCLI._trim_status_bar_text(lines[0], width)
+
+    def test_minutes_range_elapsed_has_single_trailing_s(self):
+        # 696s == 11m36s — the exact duration from the reported bug.
+        line = self._live_row_line(696.0)
+        assert line.endswith("11m36s"), line
+        assert not line.endswith("11m36ss"), line
+        assert not line.endswith("ss"), line
+
+    def test_sub_60s_elapsed_has_single_trailing_s(self):
+        line = self._live_row_line(42.0)
+        assert line.endswith("42s"), line
+        assert not line.endswith("42ss"), line
+        assert not line.endswith("ss"), line
+
+    def test_exact_60s_rollover_has_single_trailing_s(self):
+        line = self._live_row_line(60.0)
+        assert line.endswith("1m00s"), line
+        assert not line.endswith("1m00ss"), line
+        assert not line.endswith("ss"), line
+
+
 def _snap(sid, *, parent=None, depth=0, status="running"):
     """Minimal RowSnapshot for the pure ordering/collapse helpers."""
     return RowSnapshot(

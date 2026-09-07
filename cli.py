@@ -7099,6 +7099,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        # Failover marker. The DATA above is already correct — model_name is
+        # read live off the agent precisely so failover isn't stale — but a
+        # silent switch was indistinguishable from a normal run. ``⚠`` is the
+        # bar's established degraded marker (see the "⚠ YOLO" badge below).
+        #
+        # Folded into ``model_short`` itself rather than added as a new
+        # segment: the model segment is rendered from ``model_short`` at ~10
+        # sites across three width breakpoints plus the fragment builder, and
+        # threading a separate field through all of them would mean touching
+        # every branch of the width logic. Applied AFTER truncation so the
+        # model name keeps its full 26-char budget; the badge costs the same
+        # 2 columns as the existing YOLO/steer badges.
+        #
+        # Compact form ("primary→effective") is deliberately NOT used here:
+        # the bar is far tighter than a swarm-board row, and the primary is
+        # already recoverable from the fallback_* fields below.
+        _fallback_state = {"fallback_active": False, "primary_model": None,
+                           "primary_provider": None, "provider": None}
+        try:
+            from agent.failover_state import resolve_effective_model
+
+            _fallback_state = resolve_effective_model(agent)
+            if _fallback_state["fallback_active"]:
+                from agent.failover_state import FALLBACK_GLYPH
+
+                model_short = f"{FALLBACK_GLYPH} {model_short}"
+        except Exception:
+            pass
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
 
         # Effort label for the status bar — pulled from the same source the
@@ -7115,6 +7144,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            # Structured failover state alongside the glyph baked into
+            # model_short — a renderer that wants to style the degraded case
+            # (or name the primary) shouldn't have to string-match a glyph.
+            "provider": _fallback_state["provider"],
+            "fallback_active": _fallback_state["fallback_active"],
+            "primary_model": _fallback_state["primary_model"],
+            "primary_provider": _fallback_state["primary_provider"],
             "effort": effort_label,
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),

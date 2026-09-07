@@ -15984,3 +15984,105 @@ covered instead by the underlying `_format_row_elapsed`/board tests plus
 manual reasoning about the existing `_agent_running` tick branch this
 mirrors. System Python is 3.9 and can't import this repo; used the repo's
 own `.venv/bin/python3` (3.11) for all runs.
+
+
+## 2026-09-07 — subagent status surfaces show the model actually in use, not the one dispatched
+
+A subagent dispatched with `agent_type='pm'` (which resolves via
+`delegation.model_by_role.pm` to `glm-5.3`/`ollama-cloud` with a
+`claude-opus-5`/`anthropic` fallback) reported `"model": "glm-5.3"` in
+`delegate_task(action='list')` for its **entire lifetime** — while
+`~/.hermes/state.db`'s `api_calls` table showed every single call from
+`call_seq=1` onward was `provider=anthropic, model=claude-opus-5`. It had
+silently failed over on its first call and no user-facing surface said so.
+Confirmed again live during this fix: session `20260907_092434_58b00e` ran
+`ollama-cloud/glm-5.3` for `call_seq` 1-8, then `anthropic/claude-opus-5`
+from `call_seq=9` — exactly the configured `pm.fallback`.
+
+**Root cause — a stale snapshot, not missing state.**
+`agent/chat_completion_helpers.py::try_activate_fallback()` already mutates
+the live agent in place (`agent.model = fb_model`, `agent.provider =
+fb_provider`, `agent._fallback_activated = True`, ~L2770-2781), and
+`agent._primary_runtime` retains the pre-swap values. The failure was
+purely on the read side: `tools/delegate_tool.py` captured
+`getattr(child, "model", None)` **once** into the `_active_subagents`
+registry record at spawn (~L3322) and every display surface read that
+frozen string forever. The `action='list'` handler read `r.get("model")`
+three lines above a `getattr(agent, "_live_transcript_path", None)` that
+was already doing the live-read correctly — the pattern existed, `model`
+just didn't use it. `cli.py::_get_status_bar_snapshot()` had already fixed
+this exact class for the **main** session (with a comment saying so); the
+subagent surfaces never mirrored it.
+
+**Fix.** New `agent/failover_state.py` is the single source of truth:
+`resolve_effective_model(agent)` live-reads `model`/`provider`/
+`_fallback_activated`/`_primary_runtime` (totally defensive — a `None`,
+weakref-dead, or attribute-less agent returns empty fields, never raises,
+since it runs inside display paths and a lock-adjacent registry read), and
+`format_model_label()` renders it. Failover is reversible via
+`restore_primary_runtime`, so every surface resolves at *query* time and
+nothing caches the swapped value.
+
+Wired into every surface that shows a subagent's model, all of which were
+independently stale:
+- `tools/delegate_tool.py` — `action='list'` entries gain `provider`,
+  `fallback_active`, `primary_model`, `primary_provider`, `model_label`,
+  and `model` now means the *effective* model. Resolution happens before
+  `list_active_subagents()` strips the `"agent"` key. `_identity_kwargs`/
+  `_build_child_progress_callback` resolve per-event instead of baking
+  `effective_model_for_cb` once, which is what feeds both TS renderers.
+- `tools/swarm_board.py` — `_Row`/`RowSnapshot` carry the fallback state so
+  `format_row()` stays a pure, lock-free function; `update()` gained model
+  params (tri-state, so a `tool_count`-only update can't clear the marker)
+  and the delegate callers now re-sync the board on the existing progress
+  path — no new polling thread.
+- `tools/process_registry.py` + `tools/async_delegation.py` — the
+  batch/single completion notification renders the label. `async_delegation`
+  had to carry the new keys or the single-task path would have dropped them
+  and left that glyph dead.
+- `cli.py` — main-session status bar. Its data source was already live, so
+  this is glyph-only; folded into `model_short` *after* truncation to
+  preserve the 26-char budget a test pins.
+- `ui-tui/` and `apps/desktop/` — two more independent renderers with no
+  shared code. Both gained optional wire fields (an older backend that
+  omits them must not render a stray glyph), merge logic that won't clobber
+  known state on a partial event, and a per-tree label helper.
+
+Glyph matches the existing house vocabulary (`⚠` is already the
+degraded/caution marker at `cli.py:8361` "⚠ YOLO" and `cli.py:2834`):
+verbose `⚠ claude-opus-5 (fallback from glm-5.3)`, compact
+`⚠ glm-5.3→claude-opus-5` where the row is tight. Nothing changes visually
+when no failover has happened.
+
+Verified: `.venv/bin/python -m pytest` — 74 new tests pass across
+`tests/agent/test_failover_state.py`,
+`tests/tools/test_delegate_failover_visibility.py`,
+`tests/tools/test_swarm_board_fallback_indicator.py`,
+`tests/tools/test_process_registry_failover_label.py`,
+`tests/cli/test_cli_status_bar_fallback.py`; 189 passed across the
+pre-existing delegate/swarm-board suites with no regressions. Mutation-checked
+by neutering `resolve_effective_model` to return the stale snapshot — 14
+tests failed, headline `AssertionError: assert 'glm-5.3' == 'claude-opus-5'`,
+the exact production symptom — then restored to 56 passed. The five failures
+in the broader `-k "delegate or swarm or subagent"` sweep are pre-existing
+(4 `DELEGATE_TASK_SCHEMA` change-detector tests + one background-batch test),
+proven on a throwaway `git worktree` at HEAD without this change. TS side:
+17 new ui-tui + 29 new desktop tests, both trees typecheck clean, ui-tui lint
+clean; both mutation-checked the same way.
+
+**Known-unreproducible, deliberately not "fixed":** a doubled elapsed suffix
+(`11m36ss`) was reported from a live screenshot of a swarm-board row. The
+full render path was driven end-to-end on BOTH the dev clone and the live
+`~/.hermes/hermes-agent` install (the one actually serving the running
+session) with `elapsed_seconds=696` and the reporter's exact field values —
+output was `📝 [a-0-7d11d760] · glm-5.3 · summarizing · 16 tools ·
+delegate_task · … · 11m36s`, correct in every code state available. No
+`+"s"` re-suffix exists at any layer of either clone. Rather than patch a
+symptom we can't reproduce, `tests/tools/test_swarm_board.py` gained
+`TestElapsedSuffixNotDoubled`, which asserts through the **full** pipeline
+(board → ordering/collapse → `format_row` → `cli._trim_status_bar_text`)
+with exact `.endswith()` checks for `11m36s`/`42s`/`1m00s` and explicit
+`not .endswith("ss")`. This matters because the pre-existing tests used
+substring checks (`"7m01s" in line`), which pass even on doubled output —
+so the bug class was genuinely uncovered before. Mutation-checked: with the
+doubling forced in, 2 tests fail showing literal `11m36ss`.

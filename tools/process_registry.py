@@ -3265,6 +3265,26 @@ def _delegation_model_not_found_notice(results) -> "list[str] | None":
     return lines
 
 
+def _result_model_label(entry: dict) -> str:
+    """Render one completion entry's model, marking an active failover.
+
+    ``entry`` is a delegate_tool result/event dict.  It carries ``model``
+    (the EFFECTIVE model, resolved live off the child when it finished) plus
+    ``fallback_active`` / ``primary_model`` describing whether that model was
+    the one the child was dispatched with.  Entries produced before those
+    keys existed — a completion recovered from a pre-upgrade
+    ``async_delegations`` row — simply have no fallback state and render as
+    the bare slug, exactly as they did before.
+    """
+    from agent.failover_state import format_model_label
+
+    return format_model_label(
+        entry.get("model"),
+        fallback_active=entry.get("fallback_active", False),
+        primary_model=entry.get("primary_model"),
+    )
+
+
 def _format_async_delegation(evt: dict) -> str:
     """Format an async-delegation completion into a self-contained re-injection.
 
@@ -3324,8 +3344,13 @@ def _format_async_delegation(evt: dict) -> str:
         # per-task pin — explicit `model`, `agent_type` role map, or
         # auto-route — used to be invisible here and the header would
         # confidently misreport what every child ran on.
+        #
+        # Each entry also carries its failover state (delegate_tool's result
+        # build resolves it live off the child at completion), so a task that
+        # silently switched providers renders with the ⚠ marker instead of
+        # being reported as if it ran on its configured model.
         _task_models = {
-            r.get("task_index"): r.get("model")
+            r.get("task_index"): _result_model_label(r)
             for r in results
             if isinstance(r, dict) and r.get("model")
         }
@@ -3422,7 +3447,7 @@ def _format_async_delegation(evt: dict) -> str:
         lines.append(f"Context you provided: {context}")
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
-    lines.append(f"Role: {role}   Model: {model}")
+    lines.append(f"Role: {role}   Model: {_result_model_label(evt)}")
     _notice = _delegation_model_not_found_notice([evt])
     if _notice:
         lines.append("")

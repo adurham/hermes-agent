@@ -18,7 +18,18 @@ export interface SubagentProgress {
   goal: string
   /** The child's own stored session id — lets UIs open its session window. */
   sessionId?: string
+  /** The EFFECTIVE (live, post-failover) model. */
   model?: string
+  /** Effective (live, post-failover) provider. */
+  provider?: string
+  /** True when the live model/provider differs from what this subagent was dispatched with. */
+  fallbackActive?: boolean
+  /** The originally-dispatched model, when it differs from the live `model`. */
+  primaryModel?: null | string
+  /** The originally-dispatched provider, when it differs from the live `provider`. */
+  primaryProvider?: null | string
+  /** Backend-prerendered display string, e.g. "⚠ claude-opus-5 (fallback from glm-5.3)". */
+  modelLabel?: string
   status: SubagentStatus
   taskCount: number
   taskIndex: number
@@ -54,6 +65,21 @@ const isStr = (v: unknown): v is string => typeof v === 'string'
 const str = (v: unknown) => (isStr(v) ? v : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 const strList = (v: unknown) => (Array.isArray(v) ? v.filter(isStr) : [])
+// A field the wire payload omits (undefined) must keep the prior value; an
+// older/un-upgraded gateway that never sends `fallback_active` must not have
+// this collapse to false and hide an already-known fallback state.
+const bool = (v: unknown, prev: boolean | undefined) => (typeof v === 'boolean' ? v : prev)
+
+// `primary_model`/`primary_provider` are `string|null` on the wire: `null`
+// means "known, not in fallback" and must stick; only an actually-omitted
+// key falls back to the previous value.
+const nullableStr = (v: unknown, prev: null | string | undefined): null | string | undefined => {
+  if (v === undefined) {
+    return prev
+  }
+
+  return v === null ? null : isStr(v) ? v : prev
+}
 
 const asStatus = (v: unknown, terminalEvent = false): SubagentStatus => {
   if (v === 'completed' || v === 'failed' || v === 'interrupted') {
@@ -190,6 +216,11 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     goal: str(payload.goal) || prev?.goal || 'Subagent',
     sessionId: str(payload.child_session_id) || prev?.sessionId,
     model: str(payload.model) || prev?.model,
+    provider: str(payload.provider) || prev?.provider,
+    fallbackActive: bool(payload.fallback_active, prev?.fallbackActive),
+    primaryModel: nullableStr(payload.primary_model, prev?.primaryModel),
+    primaryProvider: nullableStr(payload.primary_provider, prev?.primaryProvider),
+    modelLabel: str(payload.model_label) || prev?.modelLabel,
     status,
     taskCount: num(payload.task_count) ?? prev?.taskCount ?? 1,
     taskIndex: num(payload.task_index) ?? prev?.taskIndex ?? 0,

@@ -13,9 +13,15 @@ export interface DelegateRow {
   /** Latest relayed activity, oldest → newest. The card tickers the tail. */
   activity: string[]
   durationSeconds?: number
+  /** True when the live model/provider differs from what this row was dispatched with. */
+  fallbackActive?: boolean
   goal: string
   id: string
   model?: string
+  /** Backend-prerendered display string, e.g. "⚠ claude-opus-5 (fallback from glm-5.3)". */
+  modelLabel?: string
+  /** The originally-dispatched model, when it differs from the live `model`. */
+  primaryModel?: null | string
   /** The child's own session id, when it reported one — opens its window. */
   sessionId?: string
   status: DelegateRowStatus
@@ -30,6 +36,9 @@ export interface DelegateRow {
 export type DelegateRowStatus = SubagentStatus | 'dispatched'
 
 const field = (record: Record<string, unknown>, key: string): string => firstStringField(record, [key])
+
+const boolField = (record: Record<string, unknown>, key: string): boolean | undefined =>
+  typeof record[key] === 'boolean' ? (record[key] as boolean) : undefined
 
 /** The goals a `delegate_task` call dispatched, in task order. */
 export function delegateGoals(args: unknown): string[] {
@@ -92,9 +101,12 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
     return {
       activity: summary ? [summary] : [],
       durationSeconds: entry ? (numberValue(entry.duration_seconds) ?? undefined) : undefined,
+      fallbackActive: entry ? boolField(entry, 'fallback_active') : undefined,
       goal,
       id: `${toolCallId}:${index}`,
       model: entry ? field(entry, 'model') || undefined : undefined,
+      modelLabel: entry ? field(entry, 'model_label') || undefined : undefined,
+      primaryModel: entry ? field(entry, 'primary_model') || undefined : undefined,
       status: entry ? settledRowStatus(field(entry, 'status')) : idle
     }
   })
@@ -104,9 +116,12 @@ function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: 
   return {
     activity: live.stream.map(entry => entry.text).filter(Boolean),
     durationSeconds: live.durationSeconds,
+    fallbackActive: live.fallbackActive,
     goal: live.goal || fallbackGoal,
     id: live.id || fallbackId,
     model: live.model,
+    modelLabel: live.modelLabel,
+    primaryModel: live.primaryModel,
     sessionId: live.sessionId,
     status: live.status
   }

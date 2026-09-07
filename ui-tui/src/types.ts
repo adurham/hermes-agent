@@ -27,6 +27,8 @@ export interface SubagentProgress {
   costUsd?: number
   depth: number
   durationSeconds?: number
+  /** True when this subagent's live model/provider differs from what it was dispatched with. */
+  fallbackActive?: boolean
   filesRead?: string[]
   filesWritten?: string[]
   goal: string
@@ -34,11 +36,20 @@ export interface SubagentProgress {
   index: number
   inputTokens?: number
   iteration?: number
+  /** The EFFECTIVE (live, post-failover) model. */
   model?: string
+  /** Backend-prerendered display string, e.g. "⚠ claude-opus-5 (fallback from glm-5.3)". */
+  modelLabel?: string
   notes: string[]
   outputTail?: SubagentOutputEntry[]
   outputTokens?: number
   parentId: null | string
+  /** The originally-dispatched model, when it differs from the live `model`. */
+  primaryModel?: null | string
+  /** The originally-dispatched provider, when it differs from the live `provider`. */
+  primaryProvider?: null | string
+  /** Effective (live, post-failover) provider. */
+  provider?: string
   reasoningTokens?: number
   startedAt?: number
   status: SubagentStatus

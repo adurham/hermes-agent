@@ -149,4 +149,78 @@ describe('mergeDelegateRows', () => {
 
     expect(merged.map(r => r.model)).toEqual(['m0', 'm1'])
   })
+
+  // The row a live subagent carries fallback state through unchanged — the
+  // display-side glyph composition lives in fallbackModelLabel(), not here.
+  it('carries fallbackActive/primaryModel/modelLabel through from the live subagent', () => {
+    const rows = delegateRowsFromCall({ tasks: [{ goal: 'Research Cursor' }] }, undefined, 'call-4')
+
+    const merged = mergeDelegateRows(
+      rows,
+      [
+        subagent({
+          fallbackActive: true,
+          goal: 'Research Cursor',
+          model: 'claude-opus-5',
+          modelLabel: '⚠ claude-opus-5 (fallback from glm-5.3)',
+          primaryModel: 'glm-5.3'
+        })
+      ],
+      'call-4'
+    )
+
+    expect(merged[0]).toMatchObject({
+      fallbackActive: true,
+      model: 'claude-opus-5',
+      modelLabel: '⚠ claude-opus-5 (fallback from glm-5.3)',
+      primaryModel: 'glm-5.3'
+    })
+  })
+
+  it('leaves fallback fields undefined for a row with no live match', () => {
+    const rows = delegateRowsFromCall({ tasks: [{ goal: 'Solo' }] }, undefined, 'call-5')
+    const merged = mergeDelegateRows(rows, [], 'call-5')
+
+    expect(merged[0]?.fallbackActive).toBeUndefined()
+    expect(merged[0]?.primaryModel).toBeUndefined()
+    expect(merged[0]?.modelLabel).toBeUndefined()
+  })
+})
+
+describe('delegateRowsFromCall — fallback fields from a settled result', () => {
+  it('reads fallback_active/primary_model/model_label from a settled result row', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      {
+        results: [
+          {
+            fallback_active: true,
+            model: 'claude-opus-5',
+            model_label: '⚠ claude-opus-5 (fallback from glm-5.3)',
+            primary_model: 'glm-5.3',
+            status: 'completed',
+            summary: 'done'
+          }
+        ]
+      }
+    )
+
+    expect(rows[0]).toMatchObject({
+      fallbackActive: true,
+      model: 'claude-opus-5',
+      modelLabel: '⚠ claude-opus-5 (fallback from glm-5.3)',
+      primaryModel: 'glm-5.3'
+    })
+  })
+
+  it('leaves fallback fields undefined when a settled result never sent them', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      { results: [{ model: 'gpt-5', status: 'completed', summary: 'done' }] }
+    )
+
+    expect(rows[0]?.fallbackActive).toBeUndefined()
+    expect(rows[0]?.primaryModel).toBeUndefined()
+    expect(rows[0]?.modelLabel).toBeUndefined()
+  })
 })
