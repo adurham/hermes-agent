@@ -85,12 +85,8 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None) 
     The ACTIVE MEMORY PROVIDER joins its home's list: providers install
     via ``memory.provider`` (mnemosyne's documented path), not via
     plugins.enabled — without this, a provider's dep plugin never joins
-    the union. GAP, stated honestly: pm has NO automatic bisect or
-    disable decision today — a resolver conflict fails loud and the
-    admission authority refuses the candidate; nothing disables plugins
-    on its own, so "prefer the memory provider" is not yet implemented
-    by any code path. When such a decision exists it must keep the
-    active memory provider over ordinary plugins."""
+    the union. Admission refuses a conflicting candidate without changing
+    the active environment or disabling an existing provider."""
     out: dict[Path, list[str]] = {}
     for home in _all_homes():
         # ONE parse per home feeds both queries (enabled + provider).

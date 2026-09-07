@@ -266,31 +266,20 @@ def test_retry_after_conflict_enables_resolvable_candidate(admission_env):
 # 4. Active context home propagates to wrapper subprocess launches
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(sys.platform != "win32", reason="detached respawn spec is Windows")
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):
-    """Hermes subprocess launchers must pass HERMES_HOME explicitly (the
-    context-local override never crosses a process boundary on its own).
-    The detached respawn spec exports the ACTIVE context home, and a
-    child launched with that overlay observes it."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from hermes_cli.gateway_windows import windowless_gateway_restart_spec
+    from tools.environments.local import build_subprocess_env
 
-    active = tmp_path / "profiles" / "worker"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "ambient"))
+    active = tmp_path / "custom-root/profiles/worker"
     active.mkdir(parents=True)
     token = set_hermes_home_override(active)
     try:
-        argv, _cwd, overlay = windowless_gateway_restart_spec([sys.executable, "-c", "pass"])
-        assert overlay.get("HERMES_HOME") == str(active), (
-            "the respawn overlay must export the ACTIVE context home as HERMES_HOME"
+        child_env = build_subprocess_env()
+        child = subprocess.run(
+            [sys.executable, "-c", "import os; print(os.environ['HERMES_HOME'], end='')"],
+            env=child_env, capture_output=True, text=True, check=True, timeout=60,
         )
+        assert child.stdout == str(active)
     finally:
         reset_hermes_home_override(token)
-
-    # and a real subprocess launched with that overlay sees it
-    child_env = {**os.environ, **overlay}
-    out = subprocess.run(
-        [sys.executable, "-c",
-         "import os; print(os.environ['HERMES_HOME'], end='')"],
-        env=child_env, capture_output=True, text=True, timeout=60,
-    )
-    assert out.returncode == 0 and out.stdout == str(active)
