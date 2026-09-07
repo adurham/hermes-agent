@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from pm.package import (
+    DebPackage,
     InstallError,
     Package,
     StatePackage,
@@ -117,13 +118,60 @@ class BinaryPackage(Package):
         return env_for(*self.deps)
 
 
+class _BionicDebArm:
+    """Shared bionic-arm behavior for the termux tool packages: extract as a
+    .deb on the bionic target (DebPackage's hardened ar+tar), as the binary
+    package otherwise, and never host-exec-probe a bionic binary (it cannot
+    run on the staging host)."""
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        if target == "linux-arm64-bionic":
+            DebPackage.unpack(self, archive, staged, target)
+        else:
+            BinaryPackage.unpack(self, archive, staged, target)
+
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        if target != "linux-arm64-bionic":
+            BinaryPackage.stage(self, store, staged, version, target)
+
+    def binary(self, entry: Path, target: str) -> Optional[Path]:
+        if target == "linux-arm64-bionic":
+            # File evidence, not exec: the staged .deb's main binary.
+            # Cross-target verify() never probes it; consumers (env PATH,
+            # bundle layout) need the real path.
+            return entry / self.prefix_rel / self.main_rel(target)
+        return BinaryPackage.binary(self, entry, target)
+
+    def verify(self, entry: Path, target: str) -> str:
+        # MRO order puts BinaryPackage.verify (exec-probe semantics) ahead of
+        # DebPackage.verify (file-evidence semantics); bionic needs the
+        # latter -- one dispatch here replaces the per-class copies.
+        if target == "linux-arm64-bionic":
+            return DebPackage.verify(self, entry, target)
+        return BinaryPackage.verify(self, entry, target)
+
+
 @register
-class Uv(BinaryPackage):
+class Uv(_BionicDebArm, BinaryPackage, DebPackage):
+    """astral's prebuilt tarballs for glibc/mac/win; the Termux main-repo
+    uv .deb for bionic (termux builds uv from source -- no astral bionic
+    artifact exists). The bionic arm is a runtime tool on the phone (lazy
+    plugin installs) and the wheelhouse's resolver in the build container."""
+
     name = "uv"
     internal = True
     binary_rel = {"win32": "uv.exe", "posix": "uv"}
+    # The staged .deb's main binary: DebPackage.verify checks it.
+    main_bin_rel = "bin/uv"
+
+    def main_rel(self, target: str) -> str:
+        return self.main_bin_rel
+
+    deb_package = "uv"
 
     def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return f"https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_{version}_aarch64.deb"
         triple = _RUST_TRIPLE[target]
         ext = "zip" if target.startswith("win32") else "tar.gz"
         return f"https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.{ext}"
@@ -181,7 +229,7 @@ def _macos_sign_managed_python(python: Path) -> bool:
 
 
 @register
-class Python(BinaryPackage):
+class Python(_BionicDebArm, BinaryPackage, DebPackage):
     """The payload interpreter (python-build-standalone install_only).
     Optional: dev installs use their own venv's python; bundles stage this
     and point the relocatable venv's pyvenv.cfg at it (pm adopt)."""
@@ -190,6 +238,13 @@ class Python(BinaryPackage):
     optional = True
     probe_version = False
     binary_rel = {"win32": "python.exe", "posix": "bin/python3"}
+    # The staged .deb's main binary: DebPackage.verify checks it.
+    main_bin_rel = "bin/python3.11"
+
+    def main_rel(self, target: str) -> str:
+        return self.main_bin_rel
+
+    deb_package = "python3.11"
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
@@ -205,6 +260,9 @@ class Python(BinaryPackage):
             (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
 
     def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            pyver = version.partition("+")[0]
+            return f"https://tur.kcubeterm.com/pool/tur/python3.11_{pyver}_aarch64.deb"
         # lock version is "<python>+<release tag>", e.g. "3.11.13+202****0807"
         pyver, _, tag = version.partition("+")
         if not tag:
@@ -414,17 +472,61 @@ class Venv(StatePackage):
 
 
 @register
-class Nodejs(BinaryPackage):
+class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
+    """nodejs.org tarballs for glibc/mac/win; the Termux main-repo nodejs
+    .deb for bionic (same major line, termux-built)."""
+
     name = "node"
     binary_rel = {"win32": "node.exe", "posix": "bin/node"}
+    # The staged .deb's main binary: DebPackage.verify checks it.
+    main_bin_rel = "bin/node"
+
+    def main_rel(self, target: str) -> str:
+        return self.main_bin_rel
+
+    deb_package = "nodejs"
 
     def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            # termux's deb carries a -1 revision after the upstream version
+            return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}-1_aarch64.deb"
         plat = _NODE_PLAT[target]
         ext = "zip" if target.startswith("win32") else "tar.xz"
         return f"https://nodejs.org/dist/v{version}/node-v{version}-{plat}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         return node_latest_versions()
+
+
+@register
+class TermuxDocker(Package):
+    """The termux/termux-docker container image, pinned by registry digest.
+
+    The image is never downloaded or unpacked by pm -- docker pulls it by
+    digest reference at build time. The lock row exists so the digest is
+    pinned in the single pin authority beside every other third-party
+    artifact: consumers read the digest string from the lock's url field
+    (termux/termux-docker@sha256:...). verify() is presence-shaped: this
+    package stages nothing.
+    """
+
+    name = "termux-docker"
+    optional = True
+    # Pure pin: no bytes are staged, so stage_only()/install skip the store
+    # entirely -- the digest's consumers (docker pull) verify it.
+    pin_only = True
+
+    def missing_reason(self, target: str) -> Optional[str]:
+        return None if target == "linux-arm64-bionic" else "docker image target is linux-arm64-bionic"
+
+    def fetch_url(self, version: str, target: str) -> str:
+        return f"docker://termux/termux-docker@{version}"
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        raise InstallError(self.name, "a docker image digest is a pin, not a downloadable artifact")
+
+    def verify(self, entry: Path, target: str) -> str:
+        return ""
 
 
 @register
@@ -442,6 +544,28 @@ class Npm(BinaryPackage):
         bundled npm instead. --offline pins the bytes to the verified
         tarball; --ignore-scripts + a sanitized env keep user npm/node
         config out of the staging."""
+        if target == "linux-arm64-bionic":
+            from pm.store import extract
+
+            unpacked = staged / ".unpacked"
+            extract(archive, unpacked)
+            package = unpacked / "package"
+            lib = staged / "lib/node_modules/npm"
+            lib.parent.mkdir(parents=True, exist_ok=True)
+            package.rename(lib)
+            unpacked.rmdir()
+            bindir = staged / "bin"
+            bindir.mkdir()
+            for name in ("npm", "npx"):
+                wrapper = bindir / name
+                wrapper.write_text(
+                    "#!/data/data/com.termux/files/usr/bin/sh\n"
+                    'here="$(cd "$(dirname "$0")" && pwd)"\n'
+                    f'exec node "$here/../lib/node_modules/npm/bin/{name}-cli.js" "$@"\n',
+                    encoding="utf-8",
+                )
+                wrapper.chmod(0o755)
+            return
         from pm.ensure import _installed_location, _lockfile
         from pm.registry import get_package
 
@@ -568,7 +692,7 @@ class Gh(BinaryPackage):
 
 
 @register
-class Ffmpeg(BinaryPackage):
+class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     """Static ffmpeg. GPLv3 builds; always bundled.
     optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
     it baked into the payload (post_update skips provisioning sealed
@@ -579,7 +703,12 @@ class Ffmpeg(BinaryPackage):
     no ffprobe)."""
 
     name = "ffmpeg"
+    deb_package = "ffmpeg"
     optional = False
+
+    def main_rel(self, target: str) -> str:
+        return "bin/ffmpeg"
+
     # The posix (martin-riedl) and win32 (BtbN) build streams have no shared
     # release cadence — they drift in PATCH. The lockfile version label is
     # major.minor; each target's exact patch lives in its artifact urls.
@@ -595,6 +724,8 @@ class Ffmpeg(BinaryPackage):
     probe_args = ["-version"]
 
     def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return f"https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_{version}_aarch64.deb"
         osname, arch = target.split("-")
         if osname == "win32":
             artifact = btbn_index().get(target, {}).get(version)
@@ -618,13 +749,19 @@ class Ffmpeg(BinaryPackage):
         return martin_riedl_versions(target)
 
 
-
 @register
 class Ripgrep(BinaryPackage):
     name = "ripgrep"
     binary_rel = {"win32": "rg.exe", "posix": "rg"}
 
+    def verify(self, entry: Path, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return Package.verify(self, entry, target)
+        return super().verify(entry, target)
+
     def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            target = "linux-arm64"  # This upstream artifact is a static musl executable.
         triple = _RUST_TRIPLE[target].replace("-unknown-linux-gnu", "-unknown-linux-musl")
         ext = "zip" if target.startswith("win32") else "tar.gz"
         return (

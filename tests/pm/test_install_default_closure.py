@@ -27,7 +27,7 @@ from pm.registry import get_package
 def install_spy(monkeypatch):
     calls = {"names": None, "sync_extras": None}
 
-    def fake_install_names(names):
+    def fake_install_names(names, target=None):
         calls["names"] = list(names)
         return 0
 

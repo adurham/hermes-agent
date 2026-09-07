@@ -146,7 +146,7 @@ class ModalEnvironment(BaseEnvironment):
             _get_snapshot_restore_candidate(self._task_id) if self._persistent else (None, False))
         if restored_snapshot_id:
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
-        ensure_lazy_dep("terminal.modal")
+        ensure_lazy_dep("modal")
         import modal as _modal
         cred_mounts = []
         try:

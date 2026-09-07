@@ -2182,7 +2182,10 @@ def _finalize_update_receipt(code: int, reason: str) -> None:
 def _update_preflight_handled(args) -> bool:
     """Managed-install refusal, --plan, admission gate, --check. True = nothing more to do."""
     from hermes_cli.config import is_managed, managed_error
+    from hermes_cli.update_channel import handle_metadata_args
 
+    if handle_metadata_args(args, PROJECT_ROOT):
+        sys.exit(0)
     if is_managed():
         managed_error("update Hermes Agent")
         return True
@@ -3021,7 +3024,7 @@ def _try_termux_fast_cli_launch() -> bool:
     if _wants_tui_early(argv):  # TUI fast path / full dispatch owns those
         return False
 
-    if _startup_fast.is_termux_fast_version_argv(argv):
+    if _startup_fast.is_global_fast_version_argv(argv):
         _print_version_info(check_updates=True)
         return True
 

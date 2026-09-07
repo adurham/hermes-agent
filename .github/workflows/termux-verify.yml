@@ -1,0 +1,100 @@
+name: Termux verification
+
+on:
+  push:
+    branches: [ethie/cli-bundles]
+    paths:
+      - 'scripts/termux/**'
+      - 'pm/**'
+      - 'tests/test_termux*'
+      - '.github/workflows/termux-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: termux-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Termux packaging contracts on Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.3'
+          enable-cache: false
+      - name: Install the locked test environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+          uv venv --python 3.11 .venv
+          uv export --frozen --extra dev --no-emit-project --no-hashes -o "$RUNNER_TEMP/requirements.txt"
+          uv pip install --python .venv/bin/python -r "$RUNNER_TEMP/requirements.txt"
+      - name: Run the native linker and wheel contracts
+        run: |
+          bash scripts/run_tests.sh -j 2 \
+            tests/test_termux_python_linkage.py tests/test_termux_retag_wheel.py \
+            tests/test_termux_wheelhouse_cache.py tests/test_termux_runtime_libs.py \
+            tests/test_termux_launchers.py tests/test_pm_bionic.py \
+            tests/pm/test_stage_only.py tests/pm/test_deb_safety.py tests/test_stage_apt_repo.py \
+            tests/test_run_tests_shell.py
+
+  tui:
+    name: Prebuilt TUI checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Install the locked JS workspace
+        run: npm ci --workspace ui-tui --workspace tests-js --include-workspace-root --include=dev --no-fund --no-audit
+      - name: Check and bundle the TUI
+        run: |
+          npm run check --workspace tests-js
+          npm run check --workspace ui-tui
+          npm run build --workspace ui-tui
+
+  native-runtime:
+    name: Verify bionic runtime tools
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.3'
+          enable-cache: false
+      - name: Stage the pinned bionic runtimes
+        run: |
+          bash scripts/termux/build_cpython.sh termux-build/payload
+          bash scripts/termux/build_uv.sh termux-build/payload
+          bash scripts/termux/termux_pkg_build.sh ffmpeg ffmpeg termux-build/payload
+          python3 scripts/termux/stage_runtime_libs.py termux-build/payload
+      - name: Verify ffmpeg on the bare bionic runtime
+        run: |
+          digest=$(python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')
+          docker run --rm --platform linux/arm64 --user 1000:1000 --network none \
+            -v "$PWD/termux-build/payload:/payload:ro" \
+            "termux/termux-docker@$digest" bash -c '
+              set -euo pipefail
+              export PREFIX=/data/data/com.termux/files/usr
+              export LD_LIBRARY_PATH="/payload/ffmpeg$PREFIX/lib:/payload/runtime-libs/lib:$PREFIX/lib"
+              "/payload/ffmpeg$PREFIX/bin/ffmpeg" -hide_banner \
+                -f lavfi -i anullsrc=r=16000:cl=mono -t 0.1 -f wav "$PREFIX/tmp/ffmpeg-proof.wav"
+              test -s "$PREFIX/tmp/ffmpeg-proof.wav"
+              printf "FFMPEG_BARE_RUNTIME_OK\n"
+            '

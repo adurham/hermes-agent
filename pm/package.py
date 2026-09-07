@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -165,6 +165,186 @@ class Package:
         """User-state migration on version change."""
 
 
+class DebPackage(Package):
+    """A .deb artifact staged by ar+tar extraction (never dpkg, never
+    executing package content on the host).
+
+    For cross-target interpreter/runtime .debs (Termux's bionic python):
+    the staged binaries cannot exec on the host that stages them, so
+    verify() is FILE EVIDENCE -- the control stanza carried inside the
+    .deb (Package + Version) must match the pin. Digest verification of
+    the downloaded bytes happens in the store, as for every package.
+
+    unpack() is the hardened extractor: traversal, symlink-target, and
+    member-type checks, shaped after the established safe-extract rules
+    (symlinks allowed with in-root targets; devices/fifos refused).
+    """
+
+    # The control field this package's .deb must declare as its name
+    # (defaults to the package's own name).
+    deb_package: str = ""
+    # Where the staged tree keeps the payload: Termux .debs carry the
+    # full $PREFIX path, data/data/com.termux/files/usr. Overridable.
+    prefix_rel: str = "data/data/com.termux/files/usr"
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        raw = archive.read_bytes()
+        if raw[:8] != b"!<arch>\n":
+            raise InstallError(self.name, f"not an ar archive: {archive.name}")
+        payload = None
+        offset = 8
+        while offset + 60 <= len(raw):
+            hdr = raw[offset:offset + 60]
+            member = hdr[0:16].decode("ascii", "replace").rstrip()
+            try:
+                size = int(hdr[48:58].decode("ascii", "replace").strip())
+            except ValueError:
+                raise InstallError(self.name, f"bad ar member size in {archive.name}")
+            start = offset + 60
+            data = raw[start:start + size]
+            if member.startswith("data.tar"):
+                if member.endswith((".zst", ".lzma")):
+                    raise InstallError(
+                        self.name,
+                        f"unsupported data compression {member} in {archive.name}",
+                    )
+                payload = data
+                break
+            offset = start + size + (size % 2)
+        if payload is None:
+            raise InstallError(self.name, f"no data.tar member in {archive.name}")
+        self._safe_untar(payload, staged)
+
+    def _safe_untar(self, payload: bytes, staged: Path) -> None:
+        import io
+        import posixpath
+        import shutil
+        import stat as stat_mod
+        import tarfile
+
+        real_staged = os.path.realpath(staged)
+
+        def _contained(p: Path) -> bool:
+            """True when p's REAL location (following any planted symlink
+            ancestors) stays inside the staged tree."""
+            real = os.path.realpath(p)
+            return real == real_staged or real.startswith(real_staged + os.sep)
+
+        deferred_links = []
+        with tarfile.open(fileobj=io.BytesIO(payload)) as tf:
+            for member in tf.getmembers():
+                path = PurePosixPath(member.name)
+                parts = tuple(q for q in path.parts if q not in ("", "."))
+                if path.is_absolute() or ".." in parts:
+                    raise InstallError(self.name, f"unsafe member path {member.name!r}")
+                if not parts:
+                    continue  # the "./" root member
+                target = staged.joinpath(*parts)
+                if not _contained(target):
+                    raise InstallError(self.name, f"member escapes staged tree: {member.name}")
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                if member.issym():
+                    if PurePosixPath(member.linkname).is_absolute() or Path(member.linkname).is_absolute():
+                        raise InstallError(
+                            self.name,
+                            f"absolute symlink target {member.linkname!r} "
+                            f"in {member.name}",
+                        )
+                    link_dir = "/".join(parts[:-1])
+                    resolved = posixpath.normpath(posixpath.join(link_dir, member.linkname))
+                    if resolved == ".." or resolved.startswith("../"):
+                        raise InstallError(self.name, f"symlink escapes root: {member.name}")
+                    if not _contained(target.parent / member.linkname):
+                        raise InstallError(self.name, f"symlink escapes staged tree: {member.name}")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.exists() or target.is_symlink():
+                        target.unlink()
+                    try:
+                        target.symlink_to(member.linkname)
+                    except OSError:
+                        resolved_path = staged.joinpath(*resolved.split("/"))
+                        if resolved_path.is_file():
+                            shutil.copy2(resolved_path, target)
+                        else:
+                            deferred_links.append((member.linkname, target, resolved_path))
+                    continue
+                if not member.isfile():
+                    raise InstallError(self.name, f"unsupported member type: {member.name}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not _contained(target.parent):
+                    raise InstallError(
+                        self.name,
+                        f"member {member.name} resolves outside the staged tree "
+                        "through a symlinked ancestor",
+                    )
+                extracted = tf.extractfile(member)
+                if extracted is None:
+                    raise InstallError(self.name, f"cannot read member {member.name}")
+                with extracted, open(target, "wb") as dst:
+                    shutil.copyfileobj(extracted, dst)
+                try:
+                    target.chmod(member.mode & 0o777)
+                except OSError:
+                    pass
+        while deferred_links:
+            pending = []
+            for linkname, target, resolved_path in deferred_links:
+                if not _contained(resolved_path):
+                    raise InstallError(
+                        self.name,
+                        f"symlink {target.name} resolves outside the staged tree",
+                    )
+                if target.exists() or target.is_symlink():
+                    continue
+                if resolved_path.is_file():
+                    shutil.copy2(resolved_path, target)
+                else:
+                    pending.append((linkname, target, resolved_path))
+            if len(pending) == len(deferred_links):
+                break
+            deferred_links = pending
+        # Termux debs carry owner-only modes across the whole tree (700 on
+        # binaries n libs, 600 on stdlib .py files) -- postinst would
+        # normalize on a real phone, but pm extracts without postinst, and
+        # any uid-hostile mode breaks non-owner consumers: the dynamic
+        # linker cannot read a 700 lib, the interpreter cannot read a 600
+        # encoding module. Normalize EVERYTHING: a+r on all regular files,
+        # a+X on anything that was executable. The deb's bytes are pinned
+        # by digest; modes are not part of the pin. Symlinks are skipped:
+        # chmod through one would follow it outside the staged tree.
+        for root, dirs, files in os.walk(staged):
+            dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
+            for name in files:
+                f = Path(root) / name
+                try:
+                    mode = f.lstat().st_mode
+                except OSError:
+                    continue
+                if stat_mod.S_ISLNK(mode):
+                    continue
+                if not _contained(f):
+                    continue
+                wanted = 0o644 | (0o111 if mode & 0o111 else 0)
+                try:
+                    f.chmod(wanted)
+                except OSError:
+                    pass
+
+    def verify(self, entry: Path, target: str) -> str:
+        """'' when the staged tree is plausible on target: the expected
+        main binary is present. No exec (cross-target), no arch probe --
+        the digest already proved the bytes."""
+        expected = entry / self.prefix_rel / self.main_rel(target)
+        if not expected.is_file() and not expected.is_symlink():
+            return f"{expected.relative_to(entry)} missing under {entry}"
+        return ""
+
+    def main_rel(self, target: str) -> str:
+        raise NotImplementedError
+
+
 class StatePackage(Package):
     """A package that is a STATE of this install (the python venv), not a
     store entry. Verified by comparing a stamp; made true by apply()."""
@@ -184,7 +364,7 @@ def machine_matches_binary(binary: Path, target: str) -> Optional[bool]:
     which is not a mismatch."""
     import struct
 
-    arch = target.rsplit("-", 1)[-1]
+    arch = target.split("-")[1]
     try:
         with open(binary, "rb") as f:
             head = f.read(64)

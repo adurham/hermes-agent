@@ -45,6 +45,7 @@ def routed(monkeypatch):
     monkeypatch.setattr(mp, "_dependency_importable", fake_importable)
 
     import pm
+    monkeypatch.setattr(pm, "available", lambda extra: extra in state.importable)
     def fake_sync_venv(extras=None, *, explicit=False, plugin_dirs=None):
         state.sync_calls.append((extras, explicit))
         state.materialized.extend(plugin_dirs or [])
@@ -60,6 +61,17 @@ def routed(monkeypatch):
 
 
 class TestDeclaredExtraRouting:
+    @pytest.mark.parametrize("sync_effect, status", [(True, "installed"), (False, "restart_required")])
+    def test_extra_without_legacy_pip_declarations_is_synced(self, routed, sync_effect, status):
+        routed.manifest = {"extra": "mem0"}
+        routed.sync_effect = sync_effect
+
+        rows = mp._install_memory_provider_pip_dependencies("mem0", [])
+
+        assert routed.sync_calls == [(["mem0"], True)]
+        assert rows[0]["name"] == "mem0"
+        assert rows[0]["status"] == status
+
     def test_extra_synced_explicitly_when_import_missing(self, routed):
         routed.manifest = {"extra": "mem0"}
         routed.importable = set()

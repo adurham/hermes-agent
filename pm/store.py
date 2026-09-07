@@ -20,6 +20,7 @@ ALL_TARGETS = (
     "win32-arm64",
     "linux-x64",
     "linux-arm64",
+    "linux-arm64-bionic",
     "darwin-x64",
     "darwin-arm64",
 )
@@ -64,6 +65,25 @@ def _native_machine() -> str:
     return platform.machine().lower()
 
 
+def _is_bionic_libc() -> bool:
+    """True on Android/bionic userlands (Termux and friends).
+
+    The libc flavor is part of the target triple, not a platform runtime
+    branch: a linux-arm64 glibc artifact cannot exec under bionic and vice
+    versa, so the resolver must pick the right row of the lock table. This
+    is the ONE place hermes probes for bionic; nothing downstream of
+    current_target() needs to know how it was decided.
+    """
+    if sys.platform == "android":
+        return True
+    # Termux's pre-3.13 interpreter reports Linux but records its Android
+    # build target in sysconfig. This also works in a container without
+    # the phone's /system mount or a recognizable string in libc's header.
+    import sysconfig
+
+    return bool(sysconfig.get_config_var("ANDROID_API_LEVEL"))
+
+
 def current_target() -> str:
     machine = _native_machine()
     if machine in ("arm64", "aarch64"):
@@ -76,6 +96,8 @@ def current_target() -> str:
         return f"win32-{arch}"
     if sys.platform == "darwin":
         return f"darwin-{arch}"
+    if _is_bionic_libc():
+        return f"linux-{arch}-bionic"
     return f"linux-{arch}"
 
 

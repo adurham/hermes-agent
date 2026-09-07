@@ -3,8 +3,10 @@ and hand back its composed environment."""
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
+from pathlib import Path
 from typing import Optional
 
 from pm import paths
@@ -273,6 +275,116 @@ def _install(
             LOG.info("repair: %s re-realized %s -> %s", package.name, old, new)
         if previous and previous.get("version") != version:
             package.migrate(previous["version"], version)
+
+
+def _fetch_with_retry(store, url: str, sha256: str, scratch, progress=None, attempts: int = 5):
+    """store.fetch with a bounded retry: release-asset CDNs (TUR's pool
+    302s to GitHub's) throw transient 404/403 windows at their edges --
+    observed live, the identical request green minutes later. The digest
+    still proves the bytes; a retry cannot smuggle anything past the pin.
+    """
+    import time
+    from pm.downloader import DownloadPaused, HashError
+
+    last: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return store.fetch(url, sha256, scratch, progress=progress)
+        except (HashError, DownloadPaused):
+            raise
+        except Exception as exc:  # noqa: BLE001 -- transient fetch failures retain bounded retries
+            last = exc
+            if attempt + 1 < attempts:
+                wait = 30 * (attempt + 1)
+                logging.getLogger(__name__).warning(
+                    "fetch failed (attempt %d/%d) for %s: %s; retrying in %ds",
+                    attempt + 1, attempts, url, exc, wait,
+                )
+                time.sleep(wait)
+    raise last
+
+
+def stage_only(name: str, target: str, progress=None) -> "Path":
+    """Cross-target staging: publish the pinned (package, version, target)
+    entry into the store and return its path. No facts are written and no
+    Runner is composed -- the staged binaries belong to ANOTHER machine
+    (e.g. linux-arm64-bionic .debs staged on a glibc CI host); this host's
+    installed-state must not learn about them. Idempotent: an already
+    published + verifying entry is returned as-is.
+    """
+    lockfile = _lockfile()
+    store = _store()
+    package = get_package(name)
+    version = lockfile.version(package.name)
+    if version is None:
+        raise InstallError(package.name, "not in the lockfile")
+    reason = package.missing_reason(target)
+    if reason is not None:
+        raise InstallError(package.name, f"unavailable on {target}: {reason}")
+    if getattr(package, "pin_only", False):
+        # A pure pin (e.g. the termux-docker digest): no bytes, no store
+        # entry, nothing to verify locally -- the pin IS the artifact.
+        return store.root / package.store_entry(version, target)
+    artifacts = lockfile.artifacts(package.name, target)
+    entry_name = package.store_entry(version, target)
+    # The stage pin marker (same identity shape as a fact's recorded
+    # artifacts: target + artifact digests) lets stage_only honor a
+    # same-version hash repin without any host-side facts: the entry
+    # belongs to ANOTHER machine, so the marker travels inside the entry.
+    pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
+    with store.install_lock():
+        entry = store.entry(entry_name)
+        previous_entry = store.entry(f".previous-stage-{entry_name}")
+        if previous_entry.exists():
+            # A killed publisher may have installed only part of the new tree.
+            _restore_previous_entry(store, entry, previous_entry)
+        if store.published(entry_name):
+            marker = entry / ".pm-stage-pin.json"
+            try:
+                recorded = marker.read_text(encoding="utf-8")
+            except OSError:
+                recorded = None
+            if not package.verify(entry, target) and recorded == pin:
+                return entry
+        if not artifacts:
+            raise InstallError(
+                package.name,
+                f"no artifact for {target} in the lockfile",
+                "run `hermes pm lock --bump` for this package",
+            )
+        with store.scratch() as scratch:
+            staged = scratch / "tree"
+            for index, artifact in enumerate(artifacts):
+                archive = _fetch_with_retry(
+                    store, artifact["url"], artifact["sha256"], scratch,
+                    progress=_artifact_progress(progress, index, len(artifacts)),
+                )
+                if index == 0:
+                    package.unpack(archive, staged, target)
+                else:
+                    extra = scratch / f"extra-{index}"
+                    package.unpack(archive, extra, target)
+                    merge_tree(extra, staged)
+            package.stage(store, staged, version, target)
+            reason = package.verify(staged, target)
+            if reason:
+                raise InstallError(package.name, f"staged entry failed verification: {reason}")
+            (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
+            # Keep the old pin usable until the replacement has been verified.
+            if entry.exists() or entry.is_symlink():
+                entry.rename(previous_entry)
+            try:
+                store.publish(staged, entry_name)
+                reason = package.verify(entry, target)
+                if reason:
+                    raise InstallError(package.name, f"published entry failed verification: {reason}")
+            except BaseException:
+                if previous_entry.exists():
+                    _restore_previous_entry(store, entry, previous_entry)
+                raise
+            if previous_entry.exists():
+                _remove_entry(store, previous_entry.name)
+    return store.entry(entry_name)
 
 
 def ensure(

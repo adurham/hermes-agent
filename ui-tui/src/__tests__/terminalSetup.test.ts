@@ -342,7 +342,7 @@ describe('configureTerminalKeybindings', () => {
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
         fileOps: { readFile: readMissing },
-        homeDir: '/Users/me',
+        homeDir: '/tmp/fake-home',
         platform: 'darwin'
       })
     ).resolves.toBe(true)
@@ -392,7 +392,7 @@ describe('configureTerminalKeybindings', () => {
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
         fileOps: { readFile: readComplete },
-        homeDir: '/Users/me',
+        homeDir: '/tmp/fake-home',
         platform: 'darwin'
       })
     ).resolves.toBe(false)
@@ -454,7 +454,7 @@ describe('configureTerminalKeybindings', () => {
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
         fileOps: { readFile: readLegacy },
-        homeDir: '/Users/me',
+        homeDir: '/tmp/fake-home',
         platform: 'darwin'
       })
     ).resolves.toBe(true)

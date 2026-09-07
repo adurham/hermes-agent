@@ -330,10 +330,16 @@ def _command_result(
 
 
 def _install_memory_provider_pip_dependencies(name: str, dependencies: List[str]) -> List[Dict[str, Any]]:
-    if not dependencies:
+    import pm
+
+    manifest = _memory_provider_manifest(name)
+    extra = str(manifest.get("extra") or "").strip()
+    if not dependencies and not extra:
         return []
     missing = [dep for dep in dependencies if not _dependency_importable(dep)]
-    if not missing:
+    if not missing and (not extra or pm.available(extra)):
+        if not dependencies:
+            return []
         return [_command_result(kind="pip", name=", ".join(dependencies), status="already_installed")]
     # Route through pm's venv sync — the ONE install authority (uv.lock owns the
     # pins; no pip against sys.executable, and tools.lazy_deps is deleted).
@@ -342,12 +348,9 @@ def _install_memory_provider_pip_dependencies(name: str, dependencies: List[str]
     # dependencies, it materializes the specs into a generated pyproject and
     # admits the provider dir into the workspace union BEFORE the post-config
     # selection; one sync then carries the deps.
-    target = ", ".join(missing)
-    manifest = _memory_provider_manifest(name)
+    target = ", ".join(missing) or extra
     command = "hermes pm install"
     try:
-        import pm
-
         from hermes_cli.memory_setup import _provider_extras
         from plugins.memory import find_provider_dir
 
@@ -375,7 +378,7 @@ def _install_memory_provider_pip_dependencies(name: str, dependencies: List[str]
     except Exception as exc:
         return [_command_result(kind="pip", name=target, status="failed", command=command, error=str(exc))]
     still_missing = [dep for dep in missing if not _dependency_importable(dep)]
-    if still_missing:
+    if still_missing or (extra and not pm.available(extra)):
         # The environment is selected at boot: a sync that succeeded outside
         # this interpreter's sight is NOT immediate import success — report
         # the truth instead of stamping installed without the deps visible.
