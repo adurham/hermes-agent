@@ -12,13 +12,14 @@
 //   manual          checkout with no staged updater — the user runs
 //                   `hermes update` themselves.
 //
-// The mechanism is resolved ONCE from runtime facts (payload presence,
-// platform, store flag) by resolveUpdaterMechanism — a pure function, unit
+// The mechanism is resolved from the packaged identity, platform and store
+// flag by resolveUpdaterMechanism — a pure function, unit
 // tested — and every strategy reports it on the wire so the renderer can
 // tailor copy per mechanism without probing the install shape itself.
 
 export type UpdaterMechanism =
   | 'app-installer'
+  | 'electron-updater'
   | 'external'
   | 'windows-handoff'
   | 'posix-handoff'
@@ -26,24 +27,29 @@ export type UpdaterMechanism =
 
 /** The facts the mechanism dispatch keys on. Pure data — injectable for tests. */
 export interface MechanismFacts {
-  /** A bundled payload ships inside this artifact (sealed runtime). */
-  isBundled: boolean
-  isWindows: boolean
+  isPackaged: boolean
+  platform: NodeJS.Platform
+  payload: 'bundled' | 'light' | 'bootstrap' | undefined
+  updateMechanism: 'self' | 'external' | 'electron-updater' | undefined
   /** This process is a Microsoft Store deployment. */
   isWindowsStore: boolean
 }
 
 /**
- * Resolve which mechanism owns updates for this install. Precedence mirrors
- * the historical checkUpdates/applyUpdates ladder in main.ts exactly:
- * payload-probe first, store-flag second, platform third. Behavior-preserving.
+ * The stamp names the artifact owner. A missing payload must never turn a
+ * packaged app into a checkout, and Light needs no payload to update itself.
  */
 export function resolveUpdaterMechanism(facts: MechanismFacts): UpdaterMechanism {
-  if (facts.isBundled) {
-    return facts.isWindows && !facts.isWindowsStore ? 'app-installer' : 'external'
+  if (facts.isPackaged && (facts.payload === 'bundled' || facts.payload === 'light')) {
+    if (facts.isWindowsStore) { return 'external' }
+
+    if (facts.platform === 'win32') { return 'app-installer' }
+
+    return facts.platform === 'darwin' && facts.updateMechanism === 'electron-updater'
+      ? 'electron-updater' : 'external'
   }
 
-  return facts.isWindows ? 'windows-handoff' : 'posix-handoff'
+  return facts.platform === 'win32' ? 'windows-handoff' : 'posix-handoff'
 }
 
 /** The status shape main.ts already sends over `hermes:updates:check`. */

@@ -186,7 +186,7 @@ function main() {
  * Dev/local builds (no variant) keep the old shape; installShape() then treats
  * them as checkout, which is correct for a dev run.
  */
-export function buildStampPayload(stamp, env = process.env) {
+export function buildStampPayload(stamp, env = process.env, platform = process.platform) {
   const variant = (env.HERMES_DESKTOP_VARIANT || "").trim()
   const base = {
     schemaVersion: STAMP_SCHEMA_VERSION,
@@ -203,7 +203,7 @@ export function buildStampPayload(stamp, env = process.env) {
     payload: variant === "store" ? "bundled" : variant || "bootstrap",
     store: variant === "store",
     distribution: "desktop-app",
-    updateMechanism: "external", // sealed artifact — the OS/steward owns updates
+    updateMechanism: platform === 'darwin' && ['bundled', 'light'].includes(variant) ? 'electron-updater' : 'external',
     tag: env.HERMES_PAYLOAD_TAG || null
   }
 }

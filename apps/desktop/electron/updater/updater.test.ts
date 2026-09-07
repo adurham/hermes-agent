@@ -9,31 +9,25 @@ import { consumePendingRelaunch, PENDING_RELAUNCH_FILENAME, registerUpdateRelaun
 
 import { resolveUpdaterMechanism } from './index'
 
-describe('resolveUpdaterMechanism — precedence', () => {
-  it('bundled win32 out-of-store → app-installer', () => {
-    expect(resolveUpdaterMechanism({ isBundled: true, isWindows: true, isWindowsStore: false })).toBe('app-installer')
+describe('resolveUpdaterMechanism — install ownership', () => {
+  it.each(['bundled', 'light'] as const)('macOS %s updates without probing for Python', payload => {
+    expect(resolveUpdaterMechanism({ isPackaged: true, payload, platform: 'darwin', updateMechanism: 'electron-updater', isWindowsStore: false })).toBe('electron-updater')
   })
 
-  it('bundled win32 Store → external (steward owns updates)', () => {
-    expect(resolveUpdaterMechanism({ isBundled: true, isWindows: true, isWindowsStore: true })).toBe('external')
+  it.each([
+    ['win32', false, 'app-installer'],
+    ['win32', true, 'external'],
+    ['linux', false, 'external'],
+    ['darwin', false, 'external']
+  ] as const)('preserves %s steward ownership (store=%s)', (platform, isWindowsStore, expected) => {
+    expect(resolveUpdaterMechanism({ isPackaged: true, payload: 'bundled', platform, isWindowsStore, updateMechanism: 'external' })).toBe(expected)
   })
 
-  it('bundled posix → external', () => {
-    expect(resolveUpdaterMechanism({ isBundled: true, isWindows: false, isWindowsStore: false })).toBe('external')
-  })
-
-  it('checkout win32 → windows-handoff', () => {
-    expect(resolveUpdaterMechanism({ isBundled: false, isWindows: true, isWindowsStore: false })).toBe('windows-handoff')
-  })
-
-  it('checkout posix → posix-handoff', () => {
-    expect(resolveUpdaterMechanism({ isBundled: false, isWindows: false, isWindowsStore: false })).toBe('posix-handoff')
-  })
-
-  it('store flag never downgrades a checkout (probe only fires for bundled)', () => {
-    // isWindowsStore on a checkout is meaningless; the resolver must not
-    // route a win32 checkout to external on a stray true.
-    expect(resolveUpdaterMechanism({ isBundled: false, isWindows: true, isWindowsStore: true })).toBe('windows-handoff')
+  it.each(['win32', 'darwin', 'linux'] as const)('dev and bootstrap %s retain checkout updates', platform => {
+    const facts = { isPackaged: true, platform, payload: 'bootstrap' as const, updateMechanism: 'self' as const, isWindowsStore: false }
+    const expected = platform === 'win32' ? 'windows-handoff' : 'posix-handoff'
+    expect(resolveUpdaterMechanism(facts)).toBe(expected)
+    expect(resolveUpdaterMechanism({ ...facts, isPackaged: false, payload: 'bundled' })).toBe(expected)
   })
 })
 

@@ -14,14 +14,7 @@
 // Source installs never reach this module. The callers gate on the install
 // stamp first and fall through to the git-based update path.
 //
-// NOTE: the darwin electron-updater arm (and its gate/channel/feed helpers —
-// shouldUseAppUpdater, selectUpdaterArm, resolveUpdaterChannel,
-// resolveFeedBaseUrl, feedSelection, describeFeedCheck) was ripped out in
-// wt/darwin-updater: main.ts reimplemented the gate/channel/feed inline, so
-// the module surface was test-only. To add macOS in-app updates back, restore
-// the arm from git history (this file @ the parent of that commit) together
-// with the `electron-updater` dependency and its test block — see the
-// add-back plan in the wt/darwin-updater commit message.
+// macOS packaged updates live in updater/mac.ts and updater/mac-client.ts.
 //
 // The win32 helpers are pure so vitest covers them; the impure pieces
 // (electron shell, payload python) are injected.

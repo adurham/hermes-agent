@@ -412,6 +412,7 @@ import {
   createCheckoutStrategy
 } from './updater/checkout'
 import { ExternalStrategy } from './updater/external'
+import { createMacStrategy } from './updater/mac-client'
 import { consumePendingRelaunch, registerUpdateRelaunch } from './updater/relaunch'
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
@@ -3099,18 +3100,20 @@ async function checkUpdates() {
   // mechanism once and delegate. Out-of-store MSIX asks the OS whether a
   // newer package is on the registered .appinstaller source; Store installs
   // report unsupported (the steward owns their update loop).
-  const bundledPayload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
+  let strategy: UpdaterStrategy | null = null
 
-  if (bundledPayload) {
-    const strategy = resolveBundledUpdateStrategy(bundledPayload)
+  try {
+    strategy = resolvePackagedUpdateStrategy()
 
-    return strategy.check().catch(error => ({
+    if (strategy) { return await strategy.check() }
+  } catch (error) {
+    return {
       supported: true,
-      mechanism: strategy.mechanism,
+      mechanism: strategy?.mechanism,
       error: 'check-failed',
-      message: error?.message || String(error),
+      message: error instanceof Error ? error.message : String(error),
       fetchedAt: Date.now()
-    }))
+    }
   }
 
   // Checkout install: dispatch through the strategy layer — one mechanism,
@@ -3199,21 +3202,51 @@ let updateInFlight = false
 // ── bundled / App Installer helpers ─────────────────────────────────────────
 
 /**
- * Resolve the updater strategy for a BUNDLED install (payload present).
- * Dispatch mirrors the pre-strategy ladder exactly: win32 out-of-store →
- * App Installer arm; Store / other → external (unsupported). The checkout
- * ladder below appliesUpdates' bundled branch stays in main.ts (it delegates
- * through the same mechanism resolution via the wire's `mechanism` field).
+ * Keep the native updater instance alive across check, download and install.
+ * Its identity comes from the packaged app, not its optional Python payload.
  */
-function resolveBundledUpdateStrategy(bundledPayload) {
+let packagedUpdateStrategy: UpdaterStrategy | undefined
+
+function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
   const mechanism = resolveUpdaterMechanism({
-    isBundled: true,
-    isWindows: IS_WINDOWS,
+    isPackaged: IS_PACKAGED,
+    platform: process.platform,
+    payload: INSTALL_STAMP?.payload,
+    updateMechanism: BAKED_INSTALL_STAMP?.updateMechanism,
     isWindowsStore: isWindowsStore()
   })
 
+  if (mechanism === 'windows-handoff' || mechanism === 'posix-handoff') { return null }
+
+  if (packagedUpdateStrategy) { return packagedUpdateStrategy }
+
+  if (mechanism === 'electron-updater') {
+    packagedUpdateStrategy = createMacStrategy({
+      channel: resolveUpdaterChannelFromStamp(),
+      light: isLightVariant(),
+      feedBaseUrl: resolveDesktopFeedBaseUrl(),
+      appVersion: app.getVersion(),
+      log: rememberLog,
+      emitProgress: emitUpdateProgress,
+      beforeInstall: async () => {
+        isQuittingForHandoff = true
+        await Promise.all([teardownPrimaryBackendAndWait(), stopAllPoolBackends()])
+      },
+      onInstallFailure: async () => {
+        isQuittingForHandoff = false
+        updateInFlight = false
+        await startHermes()
+      }
+    })
+
+    return packagedUpdateStrategy
+  }
+
   if (mechanism === 'app-installer') {
-    return new AppInstallerStrategy({
+    const bundledPayload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
+
+    if (!bundledPayload) { return new ExternalStrategy() }
+    packagedUpdateStrategy = new AppInstallerStrategy({
       python: bundledPayload.storePython,
       // The checker ships inside the payload's repo snapshot (git archive of
       // the committed tree): <payload>/<repo>/apps/desktop/scripts/.
@@ -3255,6 +3288,8 @@ function resolveBundledUpdateStrategy(bundledPayload) {
             })
         })
     })
+
+    return packagedUpdateStrategy
   }
 
   return new ExternalStrategy()
@@ -3986,29 +4021,17 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     throw new Error('An update is already in progress.')
   }
 
-  // A bundled install ships its whole runtime as a sealed payload — there
-  // is no checkout to pull or venv to sync. New app release IS the update.
-  if (resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })) {
-    // Delegate to the bundled strategy: out-of-store MSIX runs the graceful
-    // teardown, hands the swap to the OS App Installer, registers the
-    // one-shot relaunch marker, and quits; anything else gets the manual
-    // card (reinstall the app release).
-    const strategy = resolveBundledUpdateStrategy(
-      resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
-    )
-
-    return strategy.apply(opts)
-  }
-
-  // Checkout install: dispatch through the strategy layer. The in-flight
-  // guard stays with the public entrypoint so no body path can start a
-  // second update. The flow lives in updater/checkout.ts.
+  const strategy = resolvePackagedUpdateStrategy() ?? resolveCheckoutUpdateStrategy()
   updateInFlight = true
+  let handedOff = false
 
   try {
-    return await resolveCheckoutUpdateStrategy().apply(opts)
+    const result = await strategy.apply(opts)
+    handedOff = result.handedOff === true
+
+    return result
   } finally {
-    updateInFlight = false
+    if (!handedOff) { updateInFlight = false }
   }
 }
 

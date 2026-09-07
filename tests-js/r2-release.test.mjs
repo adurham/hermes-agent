@@ -28,12 +28,10 @@ import {
   encodeKeyPath,
   feedDirFor,
   feedReferencedKeys,
-  mergeFeedYmls,
   canaryDoomedKeys,
   publishFeedUploads,
   referencedFeedBundleFilenames,
   staleFeedBundleKeys,
-  rewriteFeedPaths,
   stagingKeyFor,
   parseListXml,
   rfc3986Encode,
@@ -230,63 +228,6 @@ test('canonicalRequest reads mixed-case header values (Content-Type)', () => {
   // The canonical line ordering + header list match what SigV4/R2 recompute.
   assert.ok(canon.includes('content-type;host;x-amz-content-sha256;x-amz-date'))
 })
-
-test('rewriteFeedPaths rewrites path:/url: to absolute /releases/tag keys, idempotent', () => {
-  const absKey = (f) => `/releases/tag/v0.28.0/${f}`
-  const yml = `version: 0.28.0
-files:
-  - url: HermesBundled-0.28.0-mac-x64.zip
-    sha512: abc
-    size: 1
-  - url: HermesBundled-0.28.0-mac-x64.dmg
-    sha512: def
-    size: 2
-path: HermesBundled-0.28.0-mac-x64.zip
-sha512: ghi
-releaseDate: '2026-08-18T00:00:00.000Z'
-`
-  const once = rewriteFeedPaths(yml, absKey)
-  assert.ok(once.includes('url: /releases/tag/v0.28.0/HermesBundled-0.28.0-mac-x64.zip'))
-  assert.ok(once.includes('url: /releases/tag/v0.28.0/HermesBundled-0.28.0-mac-x64.dmg'))
-  assert.ok(once.includes('path: /releases/tag/v0.28.0/HermesBundled-0.28.0-mac-x64.zip'))
-  assert.ok(once.includes('sha512: abc')) // artifact hashes untouched
-  // Already-absolute values are left alone (a re-finalize must not double-prefix).
-  assert.equal(rewriteFeedPaths(once, absKey), once)
-})
-
-test('mergeFeedYmls concatenates files[] lists, dedupes, keeps head', () => {
-  const x64 = `version: 0.28.0
-files:
-  - url: HermesBundled-0.28.0-mac-x64.zip
-    sha512: abc
-    size: 1
-  - url: HermesBundled-0.28.0-mac-x64.dmg
-    sha512: def
-    size: 2
-path: HermesBundled-0.28.0-mac-x64.zip
-sha512: ghi
-releaseDate: '2026-08-18T00:00:00.000Z'
-`
-  const arm64 = `version: 0.28.0
-files:
-  - url: HermesBundled-0.28.0-mac-arm64.zip
-    sha512: jkl
-    size: 3
-  - url: HermesBundled-0.28.0-mac-arm64.dmg
-    sha512: mno
-    size: 4
-path: HermesBundled-0.28.0-mac-arm64.zip
-sha512: pqr
-releaseDate: '2026-08-18T00:00:00.000Z'
-`
-  const merged = mergeFeedYmls([x64, arm64])
-  assert.ok(merged.includes('url: HermesBundled-0.28.0-mac-x64.zip'))
-  assert.ok(merged.includes('url: HermesBundled-0.28.0-mac-arm64.zip'))
-  assert.ok(merged.includes('releaseDate'))
-  // Idempotent: merging the merged output adds nothing new.
-  assert.equal(mergeFeedYmls([merged, arm64]), merged)
-})
-
 
 // ── C22: artifact first, feed pointer last ──────────────────────────────────
 

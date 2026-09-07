@@ -711,6 +711,7 @@ export interface DesktopUpdateCommit {
 
 export type UpdaterMechanismClient =
   | 'app-installer'
+  | 'electron-updater'
   | 'external'
   | 'windows-handoff'
   | 'posix-handoff'
