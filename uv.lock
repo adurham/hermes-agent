@@ -1808,7 +1808,6 @@ dev = [
     { name = "mcp" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "resvg-py" },
     { name = "ruff" },
     { name = "setuptools" },
     { name = "starlette" },
@@ -2001,6 +2000,12 @@ youtube = [
     { name = "youtube-transcript-api" },
 ]
 
+[package.dev-dependencies]
+icon-build = [
+    { name = "pillow" },
+    { name = "resvg-py" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
@@ -2125,7 +2130,6 @@ requires-dist = [
     { name = "qrcode", marker = "extra == 'feishu'", specifier = "==7.4.2" },
     { name = "qrcode", marker = "extra == 'messaging'", specifier = "==7.4.2" },
     { name = "requests", specifier = "==2.33.0" },
-    { name = "resvg-py", marker = "extra == 'dev'", specifier = "==0.4.0" },
     { name = "rich", specifier = "==14.3.3" },
     { name = "ruamel-yaml", specifier = "==0.18.17" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.10" },
@@ -2160,6 +2164,12 @@ requires-dist = [
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
 provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "wake-tflite", "google-chat", "doc-extract", "trace-upload", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+
+[package.metadata.requires-dev]
+icon-build = [
+    { name = "pillow", specifier = "==12.3.0" },
+    { name = "resvg-py", specifier = "==0.4.0" },
+]
 
 [[package]]
 name = "hf-xet"

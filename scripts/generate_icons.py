@@ -2,8 +2,8 @@
 """Generate every app icon in the repo from the nous-girl art + platform backgrounds.
 
 Usage (from repo root):
-    .venv/Scripts/python.exe scripts/generate_icons.py           # write
-    .venv/Scripts/python.exe scripts/generate_icons.py --check   # verify structure
+    node scripts/generate-icons.mjs           # write
+    node scripts/generate-icons.mjs --check   # verify structure
 
 Sources of truth — two axes, composed per target:
   Girl art (vector):  assets/nous-girl-black.svg  (black positive space)
@@ -36,9 +36,9 @@ byte-compare against.
 Rendering: resvg (resvg-py) for SVG -> PNG fidelity at every size.
 Containers: Pillow for multi-size .ico and .icns.
 
-Deps:
-    Pillow (core dependency), resvg-py (dev extra):
-    uv sync --extra dev
+Build dependencies:
+    The runner uses the locked icon-build group in an isolated environment.
+    resvg-py is not a runtime extra and does not enter production payloads.
 
 Outputs (30 files):
   assets/icon-master.svg                              generated light master
@@ -88,8 +88,8 @@ try:
     import resvg_py
 except ImportError:
     sys.exit(
-        "resvg-py is missing. Install it with:\n"
-        "  uv sync --extra dev"
+        "resvg-py is build-only. Run the isolated generator with:\n"
+        "  node scripts/generate-icons.mjs"
     )
 
 ROOT = Path(__file__).resolve().parent.parent
