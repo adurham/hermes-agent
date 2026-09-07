@@ -30,6 +30,7 @@ class ResolutionConflict(InstallError):
 _RESOLVER_MARKERS = (
     "no solution found",
     "conflicting requirements",
+    "conflicting urls",
     "because only the following versions",
     "and your pyproject depends on",
 )
