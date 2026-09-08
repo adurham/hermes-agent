@@ -252,23 +252,13 @@ voice = [
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
-# "Hey Hermes" wake word — on-device hotword detection. All engines are
-# optional; openWakeWord (ONNX) is the free default, sherpa-onnx adds
-# open-vocabulary phrases (any typed phrase, zero training), Porcupine is
-# the premium alternative. Desktop installs ([--include-desktop]) eager-install
-# [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
-# first /wake; mirrored in tools/lazy_deps.py.
+# Wake engines are optional. Bundles include the engines supported by their
+# target. PM installs the selected engine on first use for source installs.
 wake = [
-  # pyopen-wakeword (rhasspy's maintained fork of openWakeWord) — py3 wheels
-  # plus a bundled tensorflowlite_c lib. Loads the shipped hey_hermes.tflite
-  # and bundles the SAME shared feature models openwakeword's download_models()
-  # fetched at runtime (byte-identical v0.5.1 melspectrogram/embedding, verified
-  # by hash). Replaces openwakeword + onnxruntime + ai-edge-litert: upstream
-  # tflite-runtime (a hard openwakeword dep on linux) has no cp312+ wheels
-  # (caps at cp311), which is why the old requires-python ceiling existed.
-  # No win32-arm64 wheel: gate it there like sherpa-onnx; porcupine still
-  # covers wake on that target.
-  "pyopen-wakeword==1.1.0; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  # pyopen-wakeword includes the TFLite library and shared feature models.
+  # Its universal2 wheel contains an ARM64-only library, so Intel Macs cannot
+  # load it. There is no native Windows ARM64 wheel either.
+  "pyopen-wakeword==1.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
   # sherpa-onnx ships win_amd64/win32 wheels only (its kaldi-decoder C++ has
   # no win_arm64 build), so win32-arm64 would build the sdist and fail. Gate
   # it off there like faster-whisper; the other engines still ship.
@@ -293,7 +283,7 @@ audio-io = ["sounddevice==0.5.5", "numpy==2.4.3"]
 silk = ["pilk==0.2.4"]
 # Wake-engine sub-extras — lazy per-engine installs so a user who only wants
 # sherpa-onnx doesn't pull the whole [wake] bundle. Pins match [wake].
-wake-openwakeword = ["pyopen-wakeword==1.1.0; platform_machine != 'ARM64' or sys_platform != 'win32'"]
+wake-openwakeword = ["pyopen-wakeword==1.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"]
 wake-sherpa = ["sherpa-onnx==1.13.4; platform_machine != 'ARM64' or sys_platform != 'win32'"]
 wake-porcupine = ["pvporcupine==4.0.3"]
 # Google Chat service account push (gateway/platforms/google_chat) — pubsub
@@ -488,6 +478,9 @@ matrix = "sys_platform == 'linux'"
 google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 # qdrant-client → grpcio (via mem0ai) has no win_arm64 wheel.
 mem0 = "platform_machine != 'ARM64' or sys_platform != 'win32'"
+# Match the engine dependency markers so PM refuses an unsupported install.
+wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
+wake-sherpa = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 
 [tool.uv]
 override-dependencies = [

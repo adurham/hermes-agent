@@ -76,7 +76,7 @@ backend process.
 
 | Engine | Cost | API key | Notes |
 |--------|------|---------|-------|
-| **openWakeWord** (default) | Free | None | TFLite through `pyopen-wakeword`. Includes the **"hey hermes"** model. Custom models require a `.tflite` file. Not available on native Windows ARM64. |
+| **openWakeWord** (default) | Free | None | TFLite through `pyopen-wakeword`. Includes the **"hey hermes"** model. Custom models require a `.tflite` file. Not available on Intel macOS or native Windows ARM64. |
 | **sherpa** | Free | None | Open-vocabulary detection for typed phrases. Downloads an English model on first use. Not available on native Windows ARM64. |
 | **Porcupine** | Free tier / paid | `PORCUPINE_ACCESS_KEY` | Picovoice engine; built-in keywords + custom `.ppn` files |
 
@@ -89,13 +89,19 @@ wake-word detection. `security.allow_lazy_installs` controls this installation.
 A new dependency environment can require a Hermes restart before the engine loads.
 Packaged builds include the engine dependencies supported by their target.
 
+On Intel macOS, select sherpa with `hermes config set wake_word.provider sherpa`,
+or select Porcupine and configure its access key. The `pyopen-wakeword` macOS
+wheel contains an ARM64-only library despite its `universal2` label. Hermes
+excludes that engine on Intel Macs and does not change your selected provider
+automatically.
+
 On native Windows ARM64, use Porcupine with an access key. The default
 openWakeWord engine and sherpa are excluded from that target.
 
-The published `pyopen-wakeword` wheels target macOS 15 or later, glibc Linux
-2.35 or later, and Windows x64. These are engine-wheel requirements, not a
-blanket support statement for every Hermes feature. Termux's core/ACP package
-does not include this wake stack.
+The supported `pyopen-wakeword` wheels target Apple Silicon with macOS 15 or
+later, glibc Linux 2.35 or later, and Windows x64. These requirements apply to
+that engine, not every Hermes feature. Termux's core/ACP package does not
+include this wake stack.
 
 ## Quick start
 

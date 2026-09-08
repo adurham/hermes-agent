@@ -645,6 +645,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     provider = _provider(cfg)
     import pm
     from pm.ensure import lazy_installs_allowed
+    from pm.extras import extra_supported
 
     if provider == "porcupine":
         feature = "wake-porcupine"
@@ -653,6 +654,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     else:
         feature = "wake-openwakeword"
     deps_ok = pm.available(feature)
+    supported = deps_ok or extra_supported(feature)
     lazy_ok = lazy_installs_allowed()
     # The audio probe imports sounddevice + numpy — two of the very packages
     # the lazy installer would fetch — so it can only be trusted once the
@@ -670,7 +672,13 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     tts_ok = _tts_ready()
     hint = ""
 
-    if provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
+    if not supported:
+        alternatives = [name for name in ("sherpa", "porcupine")
+                        if extra_supported(_PROVIDERS[name][1])]
+        hint = f"The {provider} wake engine is not supported on this platform."
+        if alternatives:
+            hint += f" Set wake_word.provider to {' or '.join(alternatives)}."
+    elif provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
         key_ok = False
         hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
     elif not deps_ok and not lazy_ok:
@@ -697,7 +705,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
                     "build with client-capture wake support.")
 
     return {
-        "available": key_ok and stt_ok and tts_ok and mic_ok, "provider": provider,
+        "available": supported and key_ok and stt_ok and tts_ok and mic_ok, "provider": provider,
         "deps_available": deps_ok, "audio_available": audio_ok,
         "local_input_available": _local_input_device_ready() if deps_ok else False,
         "capture": capture_mode, "access_key_set": key_ok, "stt_available": stt_ok, "tts_available": tts_ok,

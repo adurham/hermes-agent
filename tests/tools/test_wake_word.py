@@ -100,6 +100,7 @@ def _voice_loop_ready(monkeypatch, stt=True, tts=True):
     test venv's installed voice stack."""
     monkeypatch.setattr(ww, "_stt_ready", lambda: stt)
     monkeypatch.setattr(ww, "_tts_ready", lambda: tts)
+    monkeypatch.setattr("pm.extras._PLATFORM_GATES", {})
 
 
 def test_requirements_openwakeword_available(monkeypatch):
@@ -171,6 +172,31 @@ def test_requirements_fresh_install_lazy_allowed(monkeypatch):
     assert r["available"] is True
     assert r["deps_available"] is False
     assert r["hint"] == ""
+
+
+@pytest.mark.parametrize("capture", ["local", "client"])
+@pytest.mark.parametrize("provider", ["openwakeword", "oww", "local"])
+def test_requirements_reject_unsupported_engine_without_attempting_install(monkeypatch, capture, provider):
+    import pm.extras as extras
+
+    _voice_loop_ready(monkeypatch)
+    monkeypatch.setattr(extras, "_PLATFORM_GATES", {"wake-openwakeword": "python_version < '0'"})
+    monkeypatch.setattr(extras, "_importable", lambda anchor: False)
+    monkeypatch.setattr(pm_ensure, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setenv("PORCUPINE_ACCESS_KEY", "test-key")
+
+    def no_install(*args, **kwargs):
+        pytest.fail("a requirements probe must not install dependencies")
+
+    monkeypatch.setattr(pm_ensure, "sync_venv", no_install)
+    result = ww.check_wake_word_requirements({"provider": provider, "capture": capture})
+    assert result["available"] is False
+    assert "not supported" in result["hint"]
+    assert "wake_word.provider" in result["hint"]
+    assert "sherpa" in result["hint"] and "porcupine" in result["hint"]
+    assert "uv sync" not in result["hint"]
+    for alternative in ("sherpa", "porcupine"):
+        assert ww.check_wake_word_requirements({"provider": alternative, "capture": capture})["available"] is True
 
 
 def test_requirements_lazy_disabled_returns_remedy_not_nameerror(monkeypatch):
