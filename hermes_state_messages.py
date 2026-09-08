@@ -303,16 +303,21 @@ class SessionMessagesMixin:
                     compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
                     turn_lease_ttl_seconds=turn_lease_ttl_seconds)
                 for start in range(0, len(messages), chunk_rows))
-        def _do(conn):
-            self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
-                turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
-            from agent.transcript_repair import resolve_and_repair_transcript_batch
-            inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
-                encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
-            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
-            self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
-            return inserted
-        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return self._execute_write(lambda conn: self._append_messages_in_transaction(
+            conn, session_id, messages, compression_lock_holder=compression_lock_holder,
+            turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds),
+            patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def _append_messages_in_transaction(self, conn, session_id, messages, *,
+            compression_lock_holder=None, turn_lease_holder=None, turn_lease_ttl_seconds=300.0):
+        self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
+            turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+        from agent.transcript_repair import resolve_and_repair_transcript_batch
+        inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
+            encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
+        inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
+        self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+        return inserted
 
     def set_latest_matching_message_display_kind(self, session_id: str, *, role: str, content: str,
                                                  display_kind: str,
