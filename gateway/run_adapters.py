@@ -1332,8 +1332,10 @@ class GatewayAdapterLifecycleMixin:
                 self._resolve_profile_home_for_source(source)
                 if getattr(source, "profile", None) else default_home
             )
-            async with _async_profile_runtime_scope(profile_home):
-                return await self._handle_message(event)
+            from gateway.session_ingress_context import native_callback
+            with native_callback(self, event, default_home):
+                async with _async_profile_runtime_scope(profile_home):
+                    return await self._handle_message(event)
 
         return _handler
 
