@@ -43,6 +43,9 @@
     "typescript-eslint": "8.64.0"
   },
   "overrides": {
+    "@electron/osx-sign": {
+      "isbinaryfile": "5.0.7"
+    },
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
