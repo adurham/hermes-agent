@@ -1802,12 +1802,9 @@ class GatewayShutdownMixin:
         logger.info("Shutdown phase: SessionDB close done at +%.2fs", ctx.elapsed())
 
     def _stop_persist_exit_state(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
-        """PID/lock release, clean-shutdown marker, restart markers, terminal runtime status."""
+        """Persist exit markers; process bootstrap releases ownership after writer drain."""
         from gateway.run import _hermes_home, _planned_restart_notification_path, _shutdown_gateway_health_export
         from utils import atomic_json_write
-        from gateway.status import remove_pid_file, release_gateway_runtime_lock
-        remove_pid_file()
-        release_gateway_runtime_lock()
         # Clean-shutdown marker skips suspend_recently_active() next boot; a timed-out drain left
         # half-finished sessions, so no marker — the next startup suspends them.
         if not ctx.timed_out:
