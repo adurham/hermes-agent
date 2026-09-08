@@ -4,8 +4,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expect, test, vi } from 'vitest'
-import { batchSignBinaries } from './batch-sign-binaries.mjs'
+import { batchSignBinaries, resolveSigntool } from './batch-sign-binaries.mjs'
 import { createPayloadSignCache, peContentHash, verifySignedPayloads } from './payload-sign-cache.mjs'
+import { readSecurityDirectory } from './sanitize-pe-signatures.mjs'
+
+// The release builder installs this SDK before it runs the native signing tests.
+const nativeSigntool = process.platform === 'win32' ? resolveSigntool() : null
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 
@@ -68,6 +72,39 @@ test.runIf(process.platform === 'win32')('native verification binds cached bytes
     expect(await verifySignedPayloads(files, publisher)).toEqual(new Set([files[0]]))
   } finally { f.cleanup() }
 }, 30000)
+
+test.runIf(process.platform === 'win32' && nativeSigntool)('catalog trust cannot mask the embedded signature', async () => {
+  const f = fixture()
+  try {
+    const source = path.join(process.env.SystemRoot, 'System32', 'kernel32.dll')
+    const publisher = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '[Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($env:NATIVE_SIGN_TEST_INPUT).Subject'
+    ], { encoding: 'utf8', windowsHide: true, env: { ...process.env, NATIVE_SIGN_TEST_INPUT: source } }).trim()
+    expect(publisher).not.toBe('')
+    const files = ['original.dll', 'renamed.exe'].map(name => path.join(f.root, name))
+    for (const file of files) fs.copyFileSync(source, file)
+    const catalog = () => JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '$s = Get-AuthenticodeSignature -LiteralPath $env:NATIVE_SIGN_TEST_INPUT; [pscustomobject]@{ Status = [string]$s.Status; Type = [string]$s.SignatureType } | ConvertTo-Json -Compress'
+    ], { encoding: 'utf8', windowsHide: true, env: { ...process.env, NATIVE_SIGN_TEST_INPUT: files[1] } }))
+    expect(catalog()).toEqual({ Status: 'Valid', Type: 'Catalog' })
+    expect(await verifySignedPayloads(files, publisher, nativeSigntool)).toEqual(new Set(files))
+    expect(await verifySignedPayloads(files, 'CN=Wrong publisher', nativeSigntool)).toEqual(new Set())
+
+    // Catalog hashes omit the certificate table. Destroy it without changing code.
+    const bytes = fs.readFileSync(files[1])
+    const { certOffset, certSize } = readSecurityDirectory(files[1])
+    expect(certSize).toBeGreaterThan(8)
+    bytes.fill(0, certOffset + 8, certOffset + certSize)
+    fs.writeFileSync(files[1], bytes)
+    expect(catalog()).toEqual({ Status: 'Valid', Type: 'Catalog' })
+    expect(await verifySignedPayloads(files, publisher, nativeSigntool)).toEqual(new Set([files[0]]))
+
+    fs.copyFileSync(source, files[1])
+    execFileSync(nativeSigntool, ['remove', '/u', files[1]], { windowsHide: true })
+    expect(catalog()).toEqual({ Status: 'Valid', Type: 'Catalog' })
+    expect(await verifySignedPayloads(files, publisher, nativeSigntool)).toEqual(new Set([files[0]]))
+  } finally { f.cleanup() }
+}, 60000)
 
 test('input bytes select entries across paths, while policy and executable content stay binding', async () => {
   const f = fixture()

@@ -33,7 +33,7 @@ export function peContentHash(file) {
   return hash.digest('hex')
 }
 
-export async function verifySignedPayloads(files, publisher) {
+export async function verifySignedPayloads(files, publisher, signtool = '') {
   if (!files.length) return new Set()
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'verify-signatures-'))
   try {
@@ -41,7 +41,8 @@ export async function verifySignedPayloads(files, publisher) {
     fs.writeFileSync(manifest, JSON.stringify(files.map(file => ({ path: file, publisher }))))
     const { stdout } = await exec('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-File',
-      path.join(import.meta.dirname, 'verify-signed-payloads.ps1'), manifest
+      path.join(import.meta.dirname, 'verify-signed-payloads.ps1'), manifest,
+      ...(signtool ? ['-SignTool', signtool] : [])
     ], { windowsHide: true, timeout: 600000, maxBuffer: 4 * 1024 * 1024 })
     const results = JSON.parse(stdout.replace(/^\uFEFF/, ''))
     if (!Array.isArray(results) || results.length !== files.length ||
@@ -91,7 +92,7 @@ export function createPayloadSignCache({ root, env, signtool, dlib, timestampUrl
           fs.rmSync(entry, { recursive: true, force: true })
         }
       }
-      const valid = await verify(candidates.map(c => c.binary), publisher)
+      const valid = await verify(candidates.map(c => c.binary), publisher, signtool)
       let restored = 0
       for (const { group, binary } of candidates) {
         if (!valid.has(binary)) {
@@ -111,7 +112,7 @@ export function createPayloadSignCache({ root, env, signtool, dlib, timestampUrl
     },
     async publish(plan) {
       const files = plan.pending.map(g => g.files[0])
-      const valid = await verify(files, publisher)
+      const valid = await verify(files, publisher, signtool)
       for (const group of plan.pending) {
         const file = group.files[0]
         if (!valid.has(file) || peContentHash(file) !== group.content) {
