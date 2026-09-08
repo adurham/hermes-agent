@@ -954,7 +954,19 @@ def cmd_sessions(args, sessions_parser=None):
         return pre(args)
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        from hermes_constants import get_hermes_home
+        path = get_hermes_home() / "state.db"
+        empty_messages = {
+            "list": "No sessions found.",
+            "stats": "Total sessions: 0\nTotal messages: 0",
+            "pinned": "[]" if getattr(args, "json", False) else
+                "No pinned sessions. Pin one with: hermes sessions pin <session_id>",
+        }
+        read_only = action in empty_messages
+        if read_only and not path.exists():
+            print(empty_messages[action])
+            return
+        db = SessionDB(db_path=path, read_only=read_only)
     except Exception as e:
         print(f"Error: Could not open session database: {e}")
         return 1
