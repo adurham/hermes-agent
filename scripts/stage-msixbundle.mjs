@@ -29,6 +29,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { appIdentity, buildAppInstaller, resolveWinSdkTools } from './msix-shared.mjs'
+import { resolveDotnetRuntimeDir, resolveTrustedSigningDlib } from '../apps/desktop/scripts/batch-sign-binaries.mjs'
 
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -158,76 +159,6 @@ if (process.env.AZURE_SIGN_ENDPOINT && process.env.AZURE_SIGN_ACCOUNT && process
   }
 } else {
   console.warn('[stage-msixbundle] AZURE_SIGN_* not set — bundle will be UNSIGNED')
-}
-
-function resolveTrustedSigningDlib() {
-  const roots = [
-    process.env.ELECTRON_BUILDER_CACHE || '',
-    path.join(process.env.LOCALAPPDATA || '', 'electron-builder', 'Cache'),
-    path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'electron-builder', 'Cache')
-  ]
-  // signtool above is always the x64 kit (resolveWinSdkTools scans x64 only),
-  // so the dlib must be the x64 one too — a 32-bit dlib cannot load in a 64-bit
-  // signtool process. The ats-bundle ships x86/ and x64/ subdirs.
-  const arch = 'x64'
-  for (const root of roots) {
-    if (!root || !fs.existsSync(root)) continue
-    const found = []
-    for (const entry of fs.readdirSync(root)) {
-      const dir = path.join(root, entry)
-      if (!fs.statSync(dir).isDirectory()) continue
-      const walk = (p) => {
-        if (!fs.existsSync(p)) return
-        if (fs.statSync(p).isDirectory()) {
-          for (const child of fs.readdirSync(p)) walk(path.join(p, child))
-        } else if (path.basename(p).toLowerCase() === 'azure.codesigning.dlib.dll') {
-          found.push(p)
-        }
-      }
-      walk(dir)
-    }
-    if (found.length > 0) {
-      const matched = found.filter(p => path.basename(path.dirname(p)).toLowerCase() === arch)
-      const pool = matched.length > 0 ? matched : found
-      pool.sort()
-      return pool[pool.length - 1]
-    }
-  }
-  return null
-}
-
-// The ATS dlib is a .NET assembly loaded via Ijwhost.dll, which finds
-// hostfxr.dll through DOTNET_ROOT — mirror app-builder-lib's
-// WindowsSignAzureManager and point it at the bundled runtime dir.
-function resolveDotnetRuntimeDir() {
-  const roots = [
-    process.env.ELECTRON_BUILDER_CACHE || '',
-    path.join(process.env.LOCALAPPDATA || '', 'electron-builder', 'Cache'),
-    path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'electron-builder', 'Cache')
-  ]
-  for (const root of roots) {
-    if (!root || !fs.existsSync(root)) continue
-    const found = []
-    const walk = (p, depth) => {
-      if (depth > 3) return
-      if (!fs.existsSync(p)) return
-      if (fs.statSync(p).isDirectory()) {
-        for (const child of fs.readdirSync(p)) {
-          const full = path.join(p, child)
-          if (/^dotnet-runtime-/.test(child)) found.push(full)
-          else walk(full, depth + 1)
-        }
-      }
-    }
-    for (const entry of fs.readdirSync(root)) {
-      walk(path.join(root, entry), 0)
-    }
-    if (found.length > 0) {
-      found.sort()
-      return found[found.length - 1]
-    }
-  }
-  return null
 }
 
 if (candidate) {

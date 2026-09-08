@@ -353,7 +353,11 @@ function fakeToolsetCache() {
     fs.mkdirSync(path.join(ats, arch), { recursive: true })
     fs.writeFileSync(path.join(ats, arch, 'Azure.CodeSigning.Dlib.dll'), 'x')
   }
-  fs.mkdirSync(path.join(cache, 'win-codesign@1.3.0', 'dotnet-runtime-win-x64-8_0_28-ghi'), { recursive: true })
+  const runtime = path.join(cache, 'win-codesign@1.3.0', 'dotnet-runtime-win-x64-8_0_28-ghi')
+  fs.mkdirSync(runtime, { recursive: true })
+  // Cache archives and state files must not become DOTNET_ROOT.
+  fs.writeFileSync(`${runtime}.state`, '{}')
+  fs.writeFileSync(path.join(path.dirname(runtime), 'dotnet-runtime-win-x64-8_0_28.zip'), 'archive')
   return { cache, kits, ats }
 }
 
