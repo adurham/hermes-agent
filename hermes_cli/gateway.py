@@ -5521,38 +5521,7 @@ def _wizard_platform_loop() -> None:
         _configure_platform(platforms[choice])
 
 
-def _wizard_install_service(backend: str) -> None:
-    """Fresh install from the wizard: ask start-now / start-on-login, install, then start."""
-    wsl_note = " (note: services may not survive WSL restarts)" if is_wsl() else ""
-    start_now = prompt_yes_no("  Start the gateway now?", True)
-    start_on_login = prompt_yes_no(
-        f"  Start the gateway automatically on login/boot as a {_WIZARD_BACKEND_LABELS[backend]} service?"
-        f"{wsl_note}",
-        True,
-    )
-    if not (start_now or start_on_login):
-        print_info("  Skipped start and auto-start setup.")
-        print_info("  You can install later: hermes gateway install")
-        if supports_systemd_services():
-            print_info("  Or as a boot-time service: sudo hermes gateway install --system")
-        print_info("  Or run in foreground:  hermes gateway run")
-        return
-    try:
-        installed_scope, did_install = None, True
-        if backend == "systemd":
-            installed_scope, did_install = install_linux_gateway_from_setup(
-                force=False, enable_on_startup=start_on_login
-            )
-        elif backend == "launchd":
-            launchd_install(force=False)
-        else:
-            _gw_windows().install(force=False)
-        print()
-        if did_install and start_now:
-            _setup_service_action("start", failed_label="Start failed", system=installed_scope == "system")
-    except subprocess.CalledProcessError as e:
-        print_error(f"  Install failed: {e}")
-        print_info("  You can try manually: hermes gateway install")
+
 
 
 def _wizard_post_setup() -> None:
@@ -5570,6 +5539,7 @@ def _wizard_post_setup() -> None:
         print()
         backend = _service_backend()
         if backend is not None:
+            from hermes_cli.gateway_setup_service import _wizard_install_service
             _wizard_install_service(backend)
             return
         if is_wsl():
