@@ -48,8 +48,15 @@ _ASSET_RE = re.compile(
     r"-(?P<os>mac|win|linux)-(?P<arch>x64|arm64)\.(?P<ext>dmg|msix|AppImage)$"
 )
 
-_OS_LABEL = {"mac": "macOS", "win": "Windows", "linux": "Linux"}
-_ARCH_LABEL = {"x64": "x64 (Intel/AMD)", "arm64": "arm64 (Apple Silicon/ARM)"}
+_OS_LABEL = {"mac": "macOS", "win": "Windows", "linux": "Linux (AppImage)"}
+_ARCH_LABEL = {
+    ("mac", "arm64"): "Apple Silicon (M-series)",
+    ("mac", "x64"): "Intel",
+    ("win", "x64"): "x86 (64-bit)",
+    ("win", "arm64"): "ARM (arm64 / aarch64)",
+    ("linux", "x64"): "x86 (64-bit)",
+    ("linux", "arm64"): "arm64",
+}
 _KIND_LABEL = {"dmg": "DMG", "msix": "MSIX", "AppImage": "AppImage"}
 _ROW_ORDER = [("mac", "arm64"), ("mac", "x64"), ("win", "x64"), ("win", "arm64"),
               ("linux", "x64"), ("linux", "arm64")]
@@ -84,7 +91,7 @@ def render_tables(assets_by_app: dict, base_url: str) -> str:
             name, ext = entry
             os_name, arch = key
             rows.append(
-                f"| {_OS_LABEL[os_name]} | {_ARCH_LABEL[arch]} "
+                f"| {_OS_LABEL[os_name]} | {_ARCH_LABEL[key]} "
                 f"| [{_KIND_LABEL[ext]}]({base}/{name}) |"
             )
         if rows:
