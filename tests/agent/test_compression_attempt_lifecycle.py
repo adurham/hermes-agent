@@ -100,7 +100,8 @@ class TestWorkerTeardownOnCeiling:
             worker=cooperative_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=2.0,
+            # Keep idle expiry outside the total-ceiling test budget.
+            idle_timeout_seconds=10.0,
             total_ceiling_seconds=4.0,
             fence=fence,
             stall_fallback=False,

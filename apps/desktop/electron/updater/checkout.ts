@@ -15,6 +15,7 @@ import {
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
+  windowsUpdatePrerequisiteError,
   wrapHandoffForDetachedConsole
 } from '../updater-process'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers, stopSafeVenvBlockers } from '../venv-blocker-scan'
@@ -362,6 +363,16 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     // Emergency backup and header verification before the update touches
     // anything.  Runs while the backend is still alive.
     deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
+
+    if (deps.isWindows && resolveUpdateScriptHandoff(updateRoot)) {
+      const message = windowsUpdatePrerequisiteError(updateRoot)
+
+      if (message) {
+        deps.emitUpdateProgress({ stage: 'error', message, percent: null })
+
+        return { ok: false, error: message }
+      }
+    }
 
     // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
     // spawn the updater. Without this the updater races a still-locked

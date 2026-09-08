@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_operations
     from tools.file_operations_common import PatchResult
 
+from tools.file_operations_common import PatchResult
+
 
 class OperationType(Enum):
     ADD = "add"
@@ -253,11 +255,10 @@ def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
         fromfile=f"a/{path}", tofile="/dev/null" if new is None else f"b/{path}"))
 
 
-def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> 'PatchResult':
+def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> PatchResult:
     """Two-phase: validate everything, then apply (atomic on validation failure). A phase-2
     failure (validate/apply race) carries a ``git diff`` note since state may be inconsistent.
     ``file_ops`` needs read_file_raw/write_file/delete_file/move_file."""
-    from tools.file_operations_common import PatchResult  # avoid circular import
 
     def _bullets(errs: List[str]) -> str:
         return "\n".join(f"  • {e}" for e in errs)

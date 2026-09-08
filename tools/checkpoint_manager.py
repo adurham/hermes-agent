@@ -417,10 +417,12 @@ def _run_git(
     allowed_returncodes = allowed_returncodes or set()
 
     try:
+        # NUL-delimited git output contains literal filenames, not text lines.
+        text_options = {} if "-z" in args else {"text": True, "encoding": "utf-8", "errors": "replace"}
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
+            **text_options,
             timeout=timeout,
             env=env,
             cwd=str(normalized_working_dir),
@@ -431,8 +433,8 @@ def _run_git(
             creationflags=windows_hide_flags(),
         )
         ok = result.returncode == 0
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
+        stdout = os.fsdecode(result.stdout) if "-z" in args else result.stdout.strip()
+        stderr = result.stderr.decode("utf-8", errors="replace").strip() if "-z" in args else result.stderr.strip()
         if not ok and result.returncode not in allowed_returncodes:
             logger.error(
                 "Git command failed: %s (rc=%d) stderr=%s",
@@ -893,7 +895,7 @@ class CheckpointManager:
         _run_git(["add", "-A"], store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
         ok, names_out, err = _run_git(
-            ["diff", "--name-only", commit_hash, "--cached"],
+            ["diff", "--name-only", "-z", commit_hash, "--cached"],
             store, abs_dir, index_file=index_file,
         )
         # Reset the index back to the project ref so it doesn't drift.
@@ -912,10 +914,7 @@ class CheckpointManager:
                     "ledger_empty": True}
         restore: List[str] = []
         skipped: List[str] = []
-        for rel in names_out.splitlines():
-            rel = rel.strip()
-            if not rel:
-                continue
+        for rel in filter(None, names_out.split("\x00")):
             abs_path = Path(abs_dir) / rel
             entry = ledger.get(str(abs_path))
             recorded = entry.get("sha256") if isinstance(entry, dict) else None
@@ -1470,8 +1469,7 @@ class CheckpointManager:
         )
         if not ok or not stdout:
             return
-        # ls-files -z output is NUL-separated. _run_git strips trailing
-        # whitespace but that leaves NULs alone; rebuild list.
+        # NUL separators preserve whitespace within each literal filename.
         paths = [p for p in stdout.split("\x00") if p]
         abs_workdir = _normalize_path(working_dir)
         # Same predicate safe restore consults, called rather than restated:

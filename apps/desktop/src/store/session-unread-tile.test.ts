@@ -1,75 +1,96 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import * as model from '@/components/pane-shell/tree/model'
-import { declareDefaultTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+// Cold transforms belong to collection, not the first unread assertion's budget.
+import * as tree from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
-import { $selectedStoredSessionId, $unreadFinishedSessionIds } from './session'
-import { publishSessionState } from './session-states'
+import * as session from './session'
+import * as states from './session-states'
 
 // The completed-unread dot is keyed on the FOCUSED session, not the selected
 // one. A tile is never $selectedStoredSessionId, so keying either half on the
 // selection left a tiled session's dot green with no way to clear it.
-//
-// Static imports on purpose: re-evaluating this module graph per test
-// (vi.resetModules) takes ~10s cold and blew the 10s hook timeout. Each test
-// only needs fresh store state, which beforeEach resets directly.
 
 describe('completed-unread dot follows the focused session', () => {
-  let finishTurn: (storedSessionId: string) => void
+  const disposers: (() => void)[] = []
 
-  beforeEach(() => {
+  afterEach(() => {
+    // Undo the registrations and store writes this file makes, so the next
+    // test starts clean without paying to rebuild the module graph.
+    while (disposers.length > 0) {
+      disposers.pop()?.()
+    }
+  })
+
+  async function setup() {
+    // `declareDefaultTree` only seeds `$layoutTree` when it is empty, so the
+    // layout has to be cleared here or the second test would adopt the first
+    // test's tree instead of the one it declares.
+    tree.$layoutTree.set(null)
+    tree.$activeTreeGroup.set(null)
+
     for (const id of ['workspace', 'session-tile:tiled']) {
-      registry.register({
-        area: 'panes',
-        data: id === 'workspace' ? { placement: 'main', uncloseable: true } : { placement: 'main' },
-        id,
-        render: () => null,
-        title: id
-      })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: id === 'workspace' ? { placement: 'main', uncloseable: true } : { placement: 'main' },
+          id,
+          render: () => null,
+          title: id
+        })
+      )
     }
 
     // The workspace holds the primary chat, a second zone holds the tile.
-    declareDefaultTree(
+    tree.declareDefaultTree(
       model.split('row', [
         model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),
         model.group(['session-tile:tiled'], { active: 'session-tile:tiled', id: 'grp-tile' })
       ])
     )
 
-    $unreadFinishedSessionIds.set([])
-    $selectedStoredSessionId.set('primary')
+    session.$unreadFinishedSessionIds.set([])
+    session.$selectedStoredSessionId.set('primary')
 
-    finishTurn = (storedSessionId: string) => {
+    const finishTurn = (storedSessionId: string) => {
       const working = { ...createClientSessionState(null), busy: true, storedSessionId }
-      publishSessionState(`rt-${storedSessionId}`, working)
-      publishSessionState(`rt-${storedSessionId}`, { ...working, busy: false })
+      states.publishSessionState(`rt-${storedSessionId}`, working)
+      states.publishSessionState(`rt-${storedSessionId}`, { ...working, busy: false })
     }
-  })
 
-  it('clears the dot when an already-open tile is fronted', () => {
-    noteActiveTreeGroup('grp-main')
+    return { finishTurn, session, tree }
+  }
+
+  it('clears the dot when an already-open tile is fronted', async () => {
+    const { finishTurn, session, tree } = await setup()
+
+    tree.noteActiveTreeGroup('grp-main')
     finishTurn('tiled')
-    expect($unreadFinishedSessionIds.get()).toEqual(['tiled'])
+    expect(session.$unreadFinishedSessionIds.get()).toEqual(['tiled'])
 
     // Fronting the tile is what a tab click does. Before the fix nothing on
     // this path cleared the marker, so the dot stayed green.
-    noteActiveTreeGroup('grp-tile')
-    expect($unreadFinishedSessionIds.get()).toEqual([])
+    tree.noteActiveTreeGroup('grp-tile')
+    expect(session.$unreadFinishedSessionIds.get()).toEqual([])
   })
 
-  it('never marks a tile that finishes while it is the focused one', () => {
-    noteActiveTreeGroup('grp-tile')
+  it('never marks a tile that finishes while it is the focused one', async () => {
+    const { finishTurn, session, tree } = await setup()
+
+    tree.noteActiveTreeGroup('grp-tile')
     finishTurn('tiled')
 
-    expect($unreadFinishedSessionIds.get()).toEqual([])
+    expect(session.$unreadFinishedSessionIds.get()).toEqual([])
   })
 
-  it('marks the primary session when a tile has focus', () => {
-    noteActiveTreeGroup('grp-tile')
+  it('marks the primary session when a tile has focus', async () => {
+    const { finishTurn, session, tree } = await setup()
+
+    tree.noteActiveTreeGroup('grp-tile')
     finishTurn('primary')
 
-    expect($unreadFinishedSessionIds.get()).toEqual(['primary'])
+    expect(session.$unreadFinishedSessionIds.get()).toEqual(['primary'])
   })
 })

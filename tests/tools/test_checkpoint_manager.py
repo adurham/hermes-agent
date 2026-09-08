@@ -762,7 +762,7 @@ class TestSecurity:
         cps = mgr.list_checkpoints(str(work_dir))
         target_hash = cps[0]["hash"]
 
-        result = mgr.restore(str(work_dir), target_hash, file_path="/etc/passwd")
+        result = mgr.restore(str(work_dir), target_hash, file_path=str(work_dir.parent / "outside_file.txt"))
         assert result["success"] is False
         assert "got absolute path" in result["error"]
 

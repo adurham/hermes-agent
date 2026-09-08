@@ -172,13 +172,14 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
     db.create_session(session_id, source="cli")
     agent = _build_agent_with_db(db, session_id)
     agent._cached_system_prompt = "sys"
+
     provider_started = threading.Event()
     release_provider = threading.Event()
     futures = _timeout_after_entry(monkeypatch, provider_started)
 
     def _blocked_provider(_kwargs):
         provider_started.set()
-        assert release_provider.wait(timeout=10)
+        assert release_provider.wait(timeout=30)
         return "late-provider-result"
 
     def _compress_with_protected_provider(msgs, **_kwargs):

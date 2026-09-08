@@ -1057,7 +1057,7 @@ class TestNodeRuntimeNpmResolution:
         # The rebuild gate requires a desktop workspace with a package.json;
         # under the fixture's tmp PROJECT_ROOT nothing exists on disk.
         desktop_dir.mkdir(parents=True, exist_ok=True)
-        (desktop_dir / "package.json").write_text("{}")
+        (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
         packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
         build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
 
