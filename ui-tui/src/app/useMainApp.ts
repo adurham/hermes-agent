@@ -11,6 +11,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { sharedControlParams } from '../canonicalGateway.js'
 import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
 import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
@@ -713,7 +714,7 @@ export function useMainApp(gw: GatewayClient) {
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
-      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
+      rpc<ClarifyRespondResponse>('clarify.respond', { answer, ...(clarify.sharedControl ? sharedControlParams(clarify) : { request_id: clarify.requestId }) }).then(r => {
         if (!r || !fresh()) {
           return
         }
@@ -1034,7 +1035,7 @@ export function useMainApp(gw: GatewayClient) {
       if (!fresh()) {
         return
       }
-      return respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
+      return respondWith('approval.respond', { choice, session_id: ui.sid, ...sharedControlParams(overlay.approval) }, () => {
         if (!fresh()) {
         return
       }

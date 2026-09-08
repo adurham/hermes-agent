@@ -95,6 +95,7 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
+  sharedControl?: import('./canonicalGateway.js').SharedControl
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
@@ -120,6 +121,7 @@ export interface ClarifyBatchQuestion {
 }
 
 export interface ClarifyReq {
+  sharedControl?: import('./canonicalGateway.js').SharedControl
   choices: string[] | null
   question: string
   requestId: string

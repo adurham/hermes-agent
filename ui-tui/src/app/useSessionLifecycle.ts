@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+import { localCreationOptions } from '../canonicalGateway.js'
 import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
@@ -138,7 +140,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const closeSession = useCallback(
     (targetSid?: null | string) =>
-      targetSid ? rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : Promise.resolve(null),
+      targetSid && !gw.isCanonical ? rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : Promise.resolve(null),
     [rpc]
   )
 
@@ -191,7 +193,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     async (msg?: string, title?: string, keepCurrent = false) => {
       const flight = ++attachmentFlight.current
       const previousSid = getUiState().sid
-      const setup = await rpc<SetupStatusResponse>('setup.status', {})
+      const setup = gw.isCanonical ? null : await rpc<SetupStatusResponse>('setup.status', {})
 
       if (flight !== attachmentFlight.current) {return null}
 
@@ -208,7 +210,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         if (flight !== attachmentFlight.current) {return null}
       }
 
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      const r = await rpc<SessionCreateResponse>('session.create', gw.isCanonical
+        ? { request_id: randomUUID(), ...localCreationOptions() } : { cols: colsRef.current })
 
       if (flight !== attachmentFlight.current) {return null}
 
@@ -228,7 +231,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchUiState({
         info,
         sid: r.session_id,
-        status: info?.version ? 'ready' : 'starting agent…',
+        status: gw.isCanonical || info?.version ? 'ready' : 'starting agent…',
         usage: usageFrom(info)
       })
 
@@ -353,7 +356,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
-      rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+      ;(gw.isCanonical ? Promise.resolve(null) : rpc<SetupStatusResponse>('setup.status', {})).then(setup => {
         if (flight !== attachmentFlight.current) {return}
 
         if (setup?.provider_configured === false) {
@@ -396,6 +399,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               status: statusFromLiveSession(r.status, running),
               usage: usageFrom(info)
             })
+            gw.hydrateSharedPrompts?.(r)
             hydrateLiveSessionInflight(r.inflight)
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)

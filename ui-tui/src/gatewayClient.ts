@@ -6,6 +6,8 @@ import { promisify } from 'node:util'
 
 import { WebSocket as UndiciWebSocket } from 'undici'
 
+import { canonicalRequest, canonicalResult, type CreationContract } from './canonicalGateway.js'
+
 import type { GatewayEvent } from './gatewayTypes.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
@@ -175,6 +177,7 @@ export class GatewayClient extends EventEmitter {
   private localStarted = false
   private localGeneration = 0
   isCanonical = false
+  private creationContract?: CreationContract
 
   constructor(private bootstrap: (start: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway) {
     super()
@@ -443,6 +446,15 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  hydrateSharedPrompts(snapshot: unknown) {
+    if (!this.isCanonical) { return }
+    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>> }
+    for (const prompt of result.prompts ?? []) {
+      this.publishLocalEvent({ type: `${prompt.kind}.request`, session_id: result.session_id,
+        payload: { ...prompt, execution_epoch: String(result.authority_epoch) } } as unknown as GatewayEvent)
+    }
+  }
+
   publishLocalEvent(ev: GatewayEvent) {
     const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: ev })
 
@@ -530,7 +542,8 @@ export class GatewayClient extends EventEmitter {
             this.clearReconnect()
             this.connectSidecarMirror()
             if (this.isCanonical) {
-              void this.requestOverWebSocket('runtime.describe').then(() => {
+              void this.requestOverWebSocket<{session_create: CreationContract}>('runtime.describe').then(description => {
+                this.creationContract = description.session_create
                 if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload: {} }) }
               }).catch(error => {
                 this.publish({ type: 'gateway.start_timeout', payload: {
@@ -652,6 +665,11 @@ export class GatewayClient extends EventEmitter {
       const ev = asGatewayEvent(msg.params)
 
       if (ev) {
+        if (this.isCanonical) {
+          const shared = ev as GatewayEvent & { authority_epoch?: number; execution_generation?: number }
+          ev.payload = { ...ev.payload, execution_epoch: String(shared.authority_epoch),
+            execution_generation: shared.execution_generation } as any
+        }
         this.publish(ev)
       }
     }
@@ -831,7 +849,8 @@ export class GatewayClient extends EventEmitter {
     if (!this.bootstrapFlight) { this.start() }
     return this.bootstrapFlight!.then(() => {
       if (this.bootstrapError) { throw this.bootstrapError }
-      return this.requestOverWebSocket<T>(method, params)
+      const request = canonicalRequest(method, params, this.creationContract)
+      return this.requestOverWebSocket<T>(request.method, request.params).then(value => canonicalResult(method, value))
     })
   }
 
