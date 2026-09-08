@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 
-import { createLocalGatewayDials, ensureLocalGateway, mintLocalGatewayTicket, runGatewayEnsure } from './local-gateway'
+import { createLocalGatewayDials, ensureLocalGateway, mintLocalGatewayTicket, nativeGatewayHttpHeaders, runGatewayEnsure } from './local-gateway'
 const localGatewayDials = createLocalGatewayDials()
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -5346,8 +5346,13 @@ function fetchJson(url, token, options: any = {}) {
   // transient transport error; POST/PUT/DELETE only when the request provably
   // never reached the server (see shouldRetryRequest) — never double-submit.
   return withRetry(
-    (requestState: any) =>
-      new Promise((resolve, reject) => {
+    async (requestState: any) => {
+      // Mint inside each retry: a grant authorizes exactly one HTTP request.
+      const nativeHeaders = options.gatewayDescriptor
+        ? await nativeGatewayHttpHeaders(options.gatewayDescriptor, url)
+        : null
+
+      return new Promise((resolve, reject) => {
         const { body, contentType } = options.upload
           ? multipartBody(options.upload)
           : {
@@ -5375,7 +5380,7 @@ function fetchJson(url, token, options: any = {}) {
               ...headersForRemoteRequest(url),
               ...(options.headers || {}),
               'Content-Type': contentType,
-              'X-Hermes-Session-Token': token,
+              ...(nativeHeaders || { 'X-Hermes-Session-Token': token }),
               // RFC 8252 native flow authenticates the gated gateway with a bearer
               // token instead of the loopback session-token header. When
               // ``options.bearer`` is set we send Authorization: Bearer <token>;
@@ -5446,7 +5451,8 @@ function fetchJson(url, token, options: any = {}) {
         }
 
         req.end()
-      }),
+      })
+    },
     { method: options.method || 'GET' }
   )
 }
@@ -11087,7 +11093,7 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
     return fetchJsonViaOauthSession(url, { ...opts, headers: conn.headers })
   }
 
-  return fetchJson(url, conn.token, { ...opts, headers: conn.headers })
+  return fetchJson(url, conn.token, { ...opts, headers: conn.headers, gatewayDescriptor: conn.gatewayEndpoint ? conn : undefined })
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -15631,7 +15637,8 @@ async function fetchJsonForBackend(
     body: opts.body,
     upload: opts.upload,
     timeoutMs: opts.timeoutMs,
-    headers: descriptor.headers
+    headers: descriptor.headers,
+    gatewayDescriptor: descriptor.gatewayEndpoint ? descriptor : undefined
   })
 }
 
@@ -16326,7 +16333,8 @@ async function handleHermesApiRequest(request) {
         method: request?.method,
         body: request?.body,
         upload: request?.upload,
-        timeoutMs
+        timeoutMs,
+        gatewayDescriptor: connection.gatewayEndpoint ? connection : undefined
       })
     }
   } catch (error) {
