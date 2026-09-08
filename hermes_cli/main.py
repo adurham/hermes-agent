@@ -1653,6 +1653,9 @@ _CHAT_PASSTHROUGH = (
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    if not _resolve_use_tui(args):
+        from hermes_cli.gateway_chat import launch_from_args
+        sys.exit(launch_from_args(args))
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
@@ -2878,15 +2881,8 @@ def _run_oneshot_from_args(args) -> None:
 
     Bypasses cli.py entirely; _run_and_exit_oneshot never returns.
     """
-    _confirm_startup_expensive_model_override(args)
-    _run_and_exit_oneshot(
-        args.oneshot,
-        model=getattr(args, "model", None),
-        provider=getattr(args, "provider", None),
-        toolsets=getattr(args, "toolsets", None),
-        skills=getattr(args, "skills", None),
-        usage_file=getattr(args, "usage_file", None),
-    )
+    from hermes_cli.gateway_chat import launch_from_args
+    sys.exit(launch_from_args(args))
 
 
 def _light_chat_parser():
