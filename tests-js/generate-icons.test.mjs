@@ -5,13 +5,13 @@ import { generateIcons } from '../scripts/generate-icons.mjs'
 test('icon builds use only the locked build group outside every application venv', () => {
   const run = vi.fn(() => ({ status: 0 }))
   const root = path.resolve('icon-build-fixture')
-  const env = { PATH: 'tools', VIRTUAL_ENV: 'runtime-venv', PYTHONPATH: 'payload-libraries', PYTHONHOME: 'payload-python' }
+  const env = { PATH: 'tools', UV_PYTHON: 'pm-locked-python', VIRTUAL_ENV: 'runtime-venv', PYTHONPATH: 'payload-libraries', PYTHONHOME: 'payload-python' }
   expect(generateIcons(['--check'], { root, run, env })).toBe(0)
   expect(run).toHaveBeenCalledExactlyOnceWith('uv', [
-    'run', '--isolated', '--locked', '--only-group', 'icon-build', '--python', '3.11',
+    'run', '--isolated', '--locked', '--only-group', 'icon-build',
     '--cache-dir', path.join(root, '.cache', 'icon-build'),
     'python', path.join(root, 'scripts', 'generate_icons.py'), '--check'
-  ], { cwd: root, stdio: 'inherit', windowsHide: true, env: { PATH: 'tools', VIRTUAL_ENV: 'runtime-venv' } })
+  ], { cwd: root, stdio: 'inherit', windowsHide: true, env: { PATH: 'tools', UV_PYTHON: env.UV_PYTHON, VIRTUAL_ENV: 'runtime-venv' } })
   expect(env.PYTHONPATH).toBe('payload-libraries')
 })
 

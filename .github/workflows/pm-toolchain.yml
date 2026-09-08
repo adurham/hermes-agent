@@ -39,3 +39,27 @@ jobs:
           prune-python-cache: true
           cache-suffix: smoke-prune-${{ github.run_id }}-${{ github.run_attempt }}
       - run: python -c 'import pytest; print(pytest.__version__)'
+  build-consumers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache-suffix: smoke-consumers-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Install the docs tools into the command environment
+        run: |
+          uv pip install --python "$HERMES_PYTHON" ascii-guard==2.3.0 pyyaml==6.0.3 httpx==0.28.1
+          python3 -c 'import yaml,httpx; print(yaml.__version__, httpx.__version__)'
+      - name: Install the locked desktop and test workspaces
+        run: npm ci --workspace apps/desktop --workspace tests-js --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+      - name: Exercise the actual after-pack relocation hook
+        run: node node_modules/vitest/vitest.mjs run --root tests-js after-pack-toolchain.test.mjs generate-icons.test.mjs setup-pm-post.test.mjs
+      - name: Exercise the payload and icon build entrypoints
+        run: |
+          npm run payload --workspace apps/desktop -- --help
+          node scripts/generate-icons.mjs
+          node scripts/generate-icons.mjs --check

@@ -39,12 +39,12 @@ jobs:
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
 
-      # ── Node ───────────────────────────────────────────────────────────
-      - name: Set up locked Node and npm
-        id: node
+      - name: Set up the locked desktop toolchain
         uses: ./.github/actions/setup-pm
         with:
-          toolchain: node
+          toolchain: all
+          extras: '["all", "dev"]'
+          prune-python-cache: true
 
       # Full npm ci (not --ignore-scripts): electron's postinstall
       # downloads the binary we launch, and node-pty's native build is
@@ -52,13 +52,6 @@ jobs:
       - uses: ./.github/actions/retry
         with:
           command: npm ci
-
-      # ── Python (for the hermes serve backend) ──────────────────────────
-      - name: Set up locked Python and backend dependencies
-        uses: ./.github/actions/setup-pm
-        with:
-          extras: '["all", "dev"]'
-          prune-python-cache: true
 
       # ── Build desktop app ─────────────────────────────────────────────
       # The Playwright step below runs `npm run build` before testing so

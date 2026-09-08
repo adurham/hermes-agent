@@ -24,7 +24,7 @@ export function generateIcons(args = [], { root = repoRoot, run = spawnSync, env
   delete childEnv.PYTHONPATH
   delete childEnv.PYTHONHOME
   const result = run('uv', [
-    'run', '--isolated', '--locked', '--only-group', 'icon-build', '--python', '3.14',
+    'run', '--isolated', '--locked', '--only-group', 'icon-build',
     // PM copies its wheel cache into payloads. Keep build wheels outside it.
     '--cache-dir', path.join(root, '.cache', 'icon-build'),
     'python', path.join(root, 'scripts', 'generate_icons.py'), ...args

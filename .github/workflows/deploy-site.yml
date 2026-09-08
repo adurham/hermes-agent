@@ -63,16 +63,11 @@ jobs:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - name: Set up locked Node and npm
-        id: node
+      - name: Set up the locked site toolchain
         uses: ./.github/actions/setup-pm
         with:
-          toolchain: node
+          toolchain: all
           node-cache-dependency-path: website/package-lock.json
-
-      - uses: ./.github/actions/setup-pm
-        with:
-          cache-python: true
 
       - name: Install PyYAML for skill extraction
         uses: ./.github/actions/retry

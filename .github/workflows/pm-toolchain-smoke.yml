@@ -79,7 +79,7 @@ jobs:
           flags=()
           if [ "$EXPECT_WARM" = true ]; then flags+=(--offline); fi
           npm ci --workspace tests-js --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund ${flags[@]+"${flags[@]}"}
-          node node_modules/vitest/vitest.mjs run --root tests-js setup-pm-post.test.mjs
+          node node_modules/vitest/vitest.mjs run --root tests-js setup-pm-post.test.mjs generate-icons.test.mjs
 
       - name: Run the PM and action contracts
         shell: bash
