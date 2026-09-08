@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, test, vi } from 'vitest'
 import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
+import { batchSignAppTree } from './batch-sign-binaries.mjs'
 
 const directories = []
 afterEach(() => {
@@ -57,13 +58,39 @@ test('both bundle modes provision pinned tools rather than search a prefilled ca
   await expect(ensureWindowsBundleTools({ load: async () => ({ ...builder, getWindowsKitsBundle: failed }), config: {}, resourcesDir })).rejects.toThrow('pinned download failed')
 })
 
-test.runIf(process.platform === 'win32')('a native cold install produces executable SDK tools and reuses them warm', { timeout: 240_000 }, async () => {
+test.runIf(process.platform === 'win32')('a cold payload signer provisions executable SDK tools and reuses them warm', { timeout: 240_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-tools-native-'))
   directories.push(root)
   const previous = process.env.ELECTRON_BUILDER_CACHE
   process.env.ELECTRON_BUILDER_CACHE = path.join(root, 'empty-cache')
   try {
+    const app = path.join(root, 'app')
+    fs.mkdirSync(app)
+    const binary = path.join(app, 'payload.exe')
+    fs.copyFileSync(process.execPath, binary)
+    const signingBoundary = new Error('signing boundary reached')
+    let requested
+    // Stop before Azure. Downloads and SDK execution below are real.
+    await expect(batchSignAppTree(app, path.join(app, 'Hermes.exe'), {
+      env: {
+        ELECTRON_BUILDER_CACHE: process.env.ELECTRON_BUILDER_CACHE,
+        LOCALAPPDATA: root, USERPROFILE: root, TEMP: root,
+        AZURE_SIGN_ENDPOINT: 'https://test.invalid',
+        AZURE_SIGN_ACCOUNT: 'account', AZURE_SIGN_PROFILE: 'profile',
+      },
+      cache: null,
+      exec: async (signtool, args, options) => {
+        expect(args[0]).toBe('sign')
+        expect(args).toContain(binary)
+        requested = {
+          signtool, dlib: args[args.indexOf('/dlib') + 1],
+          dotnetRoot: options.env.DOTNET_ROOT,
+        }
+        throw signingBoundary
+      },
+    })).rejects.toBe(signingBoundary)
     const tools = await ensureWindowsBundleTools({ signing: true })
+    expect(requested).toEqual({ signtool: tools.signtool, dlib: tools.dlib, dotnetRoot: tools.dotnetRoot })
     for (const file of [tools.makeappx, tools.signtool, tools.dlib, tools.dotnetRoot]) {
       expect(path.relative(root, file).startsWith('..')).toBe(false)
     }

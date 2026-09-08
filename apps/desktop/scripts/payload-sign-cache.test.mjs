@@ -4,12 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expect, test, vi } from 'vitest'
-import { batchSignBinaries, resolveSigntool } from './batch-sign-binaries.mjs'
+import { batchSignBinaries } from './batch-sign-binaries.mjs'
+import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
 import { createPayloadSignCache, peContentHash, verifySignedPayloads } from './payload-sign-cache.mjs'
 import { readSecurityDirectory } from './sanitize-pe-signatures.mjs'
-
-// The release builder installs this SDK before it runs the native signing tests.
-const nativeSigntool = process.platform === 'win32' ? resolveSigntool() : null
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 
@@ -73,9 +71,11 @@ test.runIf(process.platform === 'win32')('native verification binds cached bytes
   } finally { f.cleanup() }
 }, 30000)
 
-test.runIf(process.platform === 'win32' && nativeSigntool)('catalog trust cannot mask the embedded signature', async () => {
+test.runIf(process.platform === 'win32')('catalog trust cannot mask the embedded signature', async () => {
   const f = fixture()
+  vi.stubEnv('ELECTRON_BUILDER_CACHE', path.join(f.root, 'sdk-cache'))
   try {
+    const { signtool: nativeSigntool } = await ensureWindowsBundleTools()
     const source = path.join(process.env.SystemRoot, 'System32', 'kernel32.dll')
     const publisher = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       '[Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($env:NATIVE_SIGN_TEST_INPUT).Subject'
@@ -103,8 +103,11 @@ test.runIf(process.platform === 'win32' && nativeSigntool)('catalog trust cannot
     execFileSync(nativeSigntool, ['remove', '/u', files[1]], { windowsHide: true })
     expect(catalog()).toEqual({ Status: 'Valid', Type: 'Catalog' })
     expect(await verifySignedPayloads(files, publisher, nativeSigntool)).toEqual(new Set([files[0]]))
-  } finally { f.cleanup() }
-}, 60000)
+  } finally {
+    vi.unstubAllEnvs()
+    f.cleanup()
+  }
+}, 240000)
 
 test('input bytes select entries across paths, while policy and executable content stay binding', async () => {
   const f = fixture()

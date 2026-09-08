@@ -10,11 +10,7 @@ import {
   batchSignAppTree,
   chunk,
   customSign,
-  getBinaries,
-  resolveDotnetRuntimeDir,
-  resolveSigntool,
-  resolveTrustedSigningDlib,
-  signingArch
+  getBinaries
 } from './batch-sign-binaries.mjs'
 
 const tmpDirs = []
@@ -334,103 +330,32 @@ test('timestamp pass retries a flaky server before giving up', async () => {
   assert.equal(calls, 3, 'timestamp pass retried until the server succeeded')
 })
 
-// ── toolset resolution: signtool + dlib must be same-arch ───────────────────
-// The ATS bundle ships the dlib for x64/x86 only and a 32-bit signtool cannot
-// load a 64-bit dlib — resolveSigntool/resolveTrustedSigningDlib must pair the
-// HOST arch, never "whatever sorted last" (which picked x86 signtool + x64
-// dlib and broke signing with "No certificates were found"). Regression for
-// the win32-x64 release build failure.
-
-function fakeToolsetCache() {
-  const cache = path.join(tmpTree(), 'electron-builder', 'Cache')
-  const kits = path.join(cache, 'win-codesign@1.3.0', 'windows-kits-bundle-10_0_26100_0-abc')
-  for (const arch of ['arm64', 'x64', 'x86']) {
-    fs.mkdirSync(path.join(kits, arch), { recursive: true })
-    fs.writeFileSync(path.join(kits, arch, 'signtool.exe'), 'x')
-  }
-  const ats = path.join(cache, 'win-codesign@1.3.0', 'ats-bundle-1_0_95-def')
-  for (const arch of ['x64', 'x86']) {
-    fs.mkdirSync(path.join(ats, arch), { recursive: true })
-    fs.writeFileSync(path.join(ats, arch, 'Azure.CodeSigning.Dlib.dll'), 'x')
-  }
-  const runtime = path.join(cache, 'win-codesign@1.3.0', 'dotnet-runtime-win-x64-8_0_28-ghi')
-  fs.mkdirSync(runtime, { recursive: true })
-  // Cache archives and state files must not become DOTNET_ROOT.
-  fs.writeFileSync(`${runtime}.state`, '{}')
-  fs.writeFileSync(path.join(path.dirname(runtime), 'dotnet-runtime-win-x64-8_0_28.zip'), 'archive')
-  return { cache, kits, ats }
-}
-
-test('signingArch matches the host (x64 unless ia32)', () => {
-  assert.equal(signingArch(), process.arch === 'ia32' ? 'x86' : 'x64')
-})
-
-test('resolveSigntool prefers the host-arch kit over x86', () => {
-  const { cache } = fakeToolsetCache()
-  const signtool = resolveSigntool({ ELECTRON_BUILDER_CACHE: cache })
-  const expectedArch = signingArch()
-  assert.ok(signtool, 'a signtool must resolve from the fake cache')
-  assert.ok(
-    signtool.toLowerCase().includes(`\\${expectedArch}\\signtool.exe`) ||
-      signtool.toLowerCase().includes(`/${expectedArch}/signtool.exe`),
-    `expected the ${expectedArch} signtool, got ${signtool}`
-  )
-})
-
-test('resolveTrustedSigningDlib prefers the host-arch dlib over x86', () => {
-  const { cache } = fakeToolsetCache()
-  const dlib = resolveTrustedSigningDlib({ ELECTRON_BUILDER_CACHE: cache })
-  const expectedArch = signingArch()
-  assert.ok(dlib, 'a dlib must resolve from the fake cache')
-  assert.ok(
-    dlib.toLowerCase().includes(`\\${expectedArch}\\azure.codesigning.dlib.dll`) ||
-      dlib.toLowerCase().includes(`/${expectedArch}/azure.codesigning.dlib.dll`),
-    `expected the ${expectedArch} dlib, got ${dlib}`
-  )
-})
-
-test('resolveDotnetRuntimeDir finds the bundled .NET runtime dir', () => {
-  const { cache } = fakeToolsetCache()
-  const dotnet = resolveDotnetRuntimeDir({ ELECTRON_BUILDER_CACHE: cache })
-  assert.ok(dotnet, 'the dotnet-runtime bundle must resolve')
-  assert.ok(/dotnet-runtime-/.test(path.basename(dotnet)), `unexpected dotnet dir ${dotnet}`)
-})
-
-test('batchSignBinaries sets DOTNET_ROOT from the bundled runtime for the signtool child', async () => {
-  const { cache } = fakeToolsetCache()
+test('batch signing passes its paired toolchain and runtime to both child phases', async () => {
   const root = tmpTree()
-  fs.mkdirSync(path.join(root, 'tools'), { recursive: true })
-  fs.writeFileSync(path.join(root, 'tools', 'node.exe'), 'x')
-  const exe = path.join(root, 'Hermes.exe')
-
+  fs.writeFileSync(path.join(root, 'node.exe'), 'x')
+  const tools = {
+    signtool: path.join(root, 'SDK with spaces', 'signtool.exe'),
+    dlib: path.join(root, 'ATS with spaces', 'Azure.CodeSigning.Dlib.dll'),
+    dotnetRoot: path.join(root, 'dotnet'),
+  }
   const invocations = []
-  const result = await batchSignAppTree(root, exe, {
+  const result = await batchSignAppTree(root, path.join(root, 'Hermes.exe'), {
+    ...tools,
     env: {
-      ELECTRON_BUILDER_CACHE: cache,
-      AZURE_SIGN_ENDPOINT: 'https://cus.codesigning.azure.net',
-      AZURE_SIGN_ACCOUNT: 'codesign2',
-      AZURE_SIGN_PROFILE: 'hermesagent'
+      AZURE_SIGN_ENDPOINT: 'https://test.invalid',
+      AZURE_SIGN_ACCOUNT: 'account', AZURE_SIGN_PROFILE: 'profile',
+      DOTNET_ROOT: 'unrelated machine runtime', TEMP: root,
     },
-    exec: (tool, args, opts) => {
-      invocations.push({ tool, args, opts })
-      return Buffer.from('')
-    },
-    mkdtemp: () => root
+    exec: (tool, args, options) => { invocations.push({ tool, args, options }) },
+    cache: null,
   })
-
   assert.equal(result.signed, 1)
-  assert.equal(invocations.length, 2, 'one sign + one timestamp pass')
-  const signInv = invocations.find(inv => inv.args[0] === 'sign')
-  const tsInv = invocations.find(inv => inv.args[0] === 'timestamp')
-  assert.ok(signInv, 'sign pass present')
-  assert.ok(tsInv, 'timestamp pass present')
-  const opts = signInv.opts
-  assert.ok(opts && opts.env, 'exec must receive a child env')
-  assert.equal(opts.env.DOTNET_ROOT, path.join(cache, 'win-codesign@1.3.0', 'dotnet-runtime-win-x64-8_0_28-ghi'))
-  // The signtool chosen must be the host-arch one, not x86.
-  assert.match(signInv.tool, new RegExp(`[\\\\/]${signingArch()}[\\\\/]signtool\\.exe$`))
-  assert.match(tsInv.tool, new RegExp(`[\\\\/]${signingArch()}[\\\\/]signtool\\.exe$`))
-  const dlibArg = signInv.args[signInv.args.indexOf('/dlib') + 1]
-  assert.match(dlibArg, new RegExp(`[\\\\/]${signingArch()}[\\\\/]azure\\.codesigning\\.dlib\\.dll$`, 'i'))
-  assert.equal(tsInv.args.includes('/dlib'), false, 'timestamp pass has no dlib')
+  assert.deepEqual(invocations.map(call => call.args[0]), ['sign', 'timestamp'])
+  for (const call of invocations) {
+    assert.equal(call.tool, tools.signtool)
+    assert.equal(call.options.env.DOTNET_ROOT, tools.dotnetRoot)
+  }
+  const [sign, timestamp] = invocations
+  assert.equal(sign.args[sign.args.indexOf('/dlib') + 1], tools.dlib)
+  assert.equal(timestamp.args.includes('/dlib'), false)
 })

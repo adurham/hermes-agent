@@ -34,15 +34,15 @@
 // Azure Trusted Signing variables are present (the same AZURE_SIGN_* set the
 // release-signing workflow arms provide). Without them — local builds, forks,
 // unsigned canary lanes — it is a no-op with a loud warning, exactly like
-// stage-msixbundle.mjs. The dlib + signtool resolution reuses the
-// electron-builder cache walk from scripts/stage-msixbundle.mjs; nothing is
-// hardcoded to C:\Tools.
+// stage-msixbundle.mjs. The shared Windows tool provisioner supplies the
+// matching SDK, ATS dlib, and .NET runtime even when the cache is empty.
 
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { isMain } from './utils.mjs'
 import { createPayloadSignCache } from './payload-sign-cache.mjs'
+import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
 
 export const CHUNK_SIZE = 100
 // How many signtool children may run at once. Azure Trusted Signing and the
@@ -169,154 +169,6 @@ export function azureSigningConfigured(env = process.env) {
   return Boolean(env.AZURE_SIGN_ENDPOINT && env.AZURE_SIGN_ACCOUNT && env.AZURE_SIGN_PROFILE)
 }
 
-// The electron-builder toolset cache roots, in precedence order — the same
-// walk scripts/stage-msixbundle.mjs does (configured ELECTRON_BUILDER_CACHE
-// beats stray defaults).
-function cacheRoots(env) {
-  return [
-    env.ELECTRON_BUILDER_CACHE || '',
-    path.join(env.LOCALAPPDATA || '', 'electron-builder', 'Cache'),
-    path.join(env.USERPROFILE || '', 'AppData', 'Local', 'electron-builder', 'Cache')
-  ].filter(Boolean)
-}
-
-/**
- * Host arch for the signing toolset. The ATS bundle ships the dlib for
- * x64/x86 only (its arm64 dir has no dlib), and a 32-bit signtool cannot
- * load a 64-bit dlib — so the signtool + dlib pair must be same-arch. On
- * arm64 hosts use the x64 pair (x64 signtool runs under Windows-on-ARM
- * emulation). Mirrors app-builder-lib's WindowsSignAzureManager
- * (`process.arch === "ia32" ? Arch.ia32 : Arch.x64`).
- */
-export function signingArch() {
-  return process.arch === 'ia32' ? 'x86' : 'x64'
-}
-
-/**
- * True when a resolved path sits in the `<arch>/` dir (e.g. `.../x64/signtool.exe`
- * or `.../ats-bundle-.../x64/Azure.CodeSigning.Dlib.dll`), matching both the
- * modern windows-kits-bundle layout and the legacy windows-10/<arch> layout.
- */
-function archMatch(file, arch) {
-  return path.basename(path.dirname(file)).toLowerCase() === arch
-}
-
-/**
- * Find azure.codesigning.dlib.dll under the electron-builder cache, preferring
- * the one matching the host arch (x64 unless the host is ia32) so signtool can
- * load it. Returns an absolute path or null (caller decides loud-fail vs warn).
- */
-export function resolveTrustedSigningDlib(env = process.env) {
-  const arch = signingArch()
-  for (const root of cacheRoots(env)) {
-    if (!fs.existsSync(root)) continue
-    const found = []
-    const walk = (p) => {
-      let entries
-      try {
-        entries = fs.readdirSync(p, { withFileTypes: true })
-      } catch {
-        return
-      }
-      for (const entry of entries) {
-        const full = path.join(p, entry.name)
-        if (entry.isDirectory()) walk(full)
-        else if (entry.name.toLowerCase() === 'azure.codesigning.dlib.dll') found.push(full)
-      }
-    }
-    for (const entry of fs.readdirSync(root)) {
-      walk(path.join(root, entry))
-    }
-    if (found.length > 0) {
-      const matched = found.filter(f => archMatch(f, arch))
-      const pool = matched.length > 0 ? matched : found
-      pool.sort()
-      return pool[pool.length - 1]
-    }
-  }
-  return null
-}
-
-/**
- * Find a host signtool.exe under the electron-builder cache (the winCodeSign
- * toolset bundles the Windows Kits tools for arm64/x64/x86), or honor
- * SIGNTOOL_PATH. Prefers the signtool matching the host arch — a 32-bit
- * signtool cannot load the x64 ATS dlib — and among arch-matched candidates
- * the newest SDK build (sorted paths put the highest version last).
- * Returns an absolute path or null.
- */
-export function resolveSigntool(env = process.env) {
-  if (env.SIGNTOOL_PATH && fs.existsSync(env.SIGNTOOL_PATH)) return env.SIGNTOOL_PATH
-  const arch = signingArch()
-  for (const root of cacheRoots(env)) {
-    if (!fs.existsSync(root)) continue
-    const found = []
-    for (const entry of fs.readdirSync(root)) {
-      const dir = path.join(root, entry)
-      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) continue
-      const walk = (p, depth) => {
-        if (depth > 5) return
-        let entries
-        try {
-          entries = fs.readdirSync(p, { withFileTypes: true })
-        } catch {
-          return
-        }
-        for (const sub of entries) {
-          if (sub.isSymbolicLink()) continue
-          const full = path.join(p, sub.name)
-          if (sub.isDirectory()) walk(full, depth + 1)
-          else if (sub.name.toLowerCase() === 'signtool.exe') found.push(full)
-        }
-      }
-      walk(dir, 0)
-    }
-    if (found.length > 0) {
-      const matched = found.filter(f => archMatch(f, arch))
-      const pool = matched.length > 0 ? matched : found
-      pool.sort()
-      return pool[pool.length - 1]
-    }
-  }
-  return null
-}
-
-/**
- * Find the bundled .NET 8 runtime dir (win-codesign@&lt;ver&gt;/dotnet-runtime-*).
- * The ATS dlib is a .NET assembly loaded via Ijwhost.dll, which locates
- * hostfxr.dll through DOTNET_ROOT — without it the dlib cannot initialize even
- * with a same-arch signtool/dlib pair. Returns an absolute path or null.
- */
-export function resolveDotnetRuntimeDir(env = process.env) {
-  for (const root of cacheRoots(env)) {
-    if (!fs.existsSync(root)) continue
-    const found = []
-    const walk = (p, depth) => {
-      if (depth > 3) return
-      let entries
-      try {
-        entries = fs.readdirSync(p, { withFileTypes: true })
-      } catch {
-        return
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
-        const full = path.join(p, entry.name)
-        if (/^dotnet-runtime-/.test(entry.name)) found.push(full)
-        else walk(full, depth + 1)
-      }
-    }
-    for (const entry of fs.readdirSync(root)) {
-      walk(path.join(root, entry), 0)
-    }
-    if (found.length > 0) {
-      found.sort()
-      return found[found.length - 1]
-    }
-  }
-  return null
-}
-
 /**
  * Sign one chunk of binaries with a single signtool invocation (argv array,
  * never a shell string — the joined list can be long and must not interpolate
@@ -381,7 +233,7 @@ export async function timestampChunk(files, opts) {
  * passes. Identical cacheable inputs share one signing operation.
  *
  * @param {string[]} binaries file list from getBinaries
- * @param {{ env?: NodeJS.ProcessEnv, exec?: typeof execFile, chunkSize?: number, concurrency?: number, mkdtemp?: typeof fs.mkdtempSync, signtool?: string, dlib?: string, dotnetRoot?: string, timestampUrl?: string, timestampAttempts?: number, timestampRetryDelayMs?: number, cache?: ReturnType<typeof createPayloadSignCache> }} [opts]
+ * @param {{ env?: NodeJS.ProcessEnv, exec?: typeof execFile, chunkSize?: number, concurrency?: number, mkdtemp?: typeof fs.mkdtempSync, signtool?: string, dlib?: string, dotnetRoot?: string, config?: import('app-builder-lib').Configuration, resourcesDir?: string, timestampUrl?: string, timestampAttempts?: number, timestampRetryDelayMs?: number, cache?: ReturnType<typeof createPayloadSignCache> }} [opts]
  * @returns {Promise<{ signed: number, chunks: number, skipped: boolean }>}
  *   skipped=true when Azure signing is not configured (caller warns).
  */
@@ -393,14 +245,10 @@ export async function batchSignBinaries(binaries, opts = {}) {
   if (binaries.length === 0) {
     return { signed: 0, chunks: 0, skipped: false }
   }
-  const dlib = opts.dlib ?? resolveTrustedSigningDlib(env)
-  if (!dlib) {
-    throw new Error('batch-sign-binaries: azure.codesigning.dlib.dll not found under the electron-builder cache')
-  }
-  const signtool = opts.signtool ?? resolveSigntool(env)
-  if (!signtool) {
-    throw new Error('batch-sign-binaries: signtool.exe not found under the electron-builder cache (or SIGNTOOL_PATH)')
-  }
+  // afterPack runs before the per-file Azure signer downloads its tools.
+  const { signtool, dlib, dotnetRoot } = opts.signtool && opts.dlib
+    ? opts
+    : await ensureWindowsBundleTools({ signing: true, config: opts.config, resourcesDir: opts.resourcesDir })
   const started = performance.now()
   const cache = opts.cache === undefined ? createPayloadSignCache({
     root: env.ELECTRON_BUILDER_CACHE ? `${env.ELECTRON_BUILDER_CACHE}-payload-signatures` : null,
@@ -409,12 +257,8 @@ export async function batchSignBinaries(binaries, opts = {}) {
   const plan = cache ? await cache.prepare(binaries) : null
   const toSign = plan?.files ?? binaries
   console.log(`[batch-sign] ${plan?.restored ?? 0} cache hits, ${toSign.length} to sign, ${plan?.duplicates ?? 0} duplicate copies`)
-  // The ATS dlib is a .NET assembly; Ijwhost.dll finds hostfxr.dll via
-  // DOTNET_ROOT. Mirror app-builder-lib's WindowsSignAzureManager and point it
-  // at the bundled runtime so the dlib initializes (a missing runtime reads as
-  // "no certificates found"). Only merged when a runtime dir exists.
+  // Ijwhost.dll needs the runtime paired with the provisioned ATS dlib.
   const signEnv = { ...env }
-  const dotnetRoot = opts.dotnetRoot ?? resolveDotnetRuntimeDir(env)
   if (dotnetRoot) signEnv.DOTNET_ROOT = dotnetRoot
   const mkdtemp = opts.mkdtemp ?? fs.mkdtempSync
   const tmpDir = mkdtemp(path.join(env.TEMP || env.TMP || '.', 'batch-sign-'))
@@ -458,7 +302,7 @@ export async function batchSignBinaries(binaries, opts = {}) {
  *
  * @param {string} appOutDir
  * @param {string} productExePath absolute path of the main product exe
- * @param {{ env?: NodeJS.ProcessEnv, exec?: typeof execFile, chunkSize?: number, concurrency?: number, timestampUrl?: string, timestampAttempts?: number, timestampRetryDelayMs?: number }} [opts]
+ * @param {Parameters<typeof batchSignBinaries>[1]} [opts]
  */
 export async function batchSignAppTree(appOutDir, productExePath, opts = {}) {
   const env = opts.env ?? process.env
