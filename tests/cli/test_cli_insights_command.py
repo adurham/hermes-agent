@@ -45,7 +45,9 @@ def test_cli_insights_keeps_days_flag_and_source(capsys):
     assert "days=14 source=discord" in capsys.readouterr().out
 
 
-def test_subcommand_insights_closes_database_when_generation_fails(capsys):
+def test_subcommand_insights_closes_database_when_generation_fails(capsys, tmp_path, monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+    (tmp_path / "state.db").touch()
     db = MagicMock()
     with patch("hermes_state.SessionDB", return_value=db), \
          patch("agent.insights.InsightsEngine", side_effect=RuntimeError("boom")):
