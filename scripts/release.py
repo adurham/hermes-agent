@@ -2555,7 +2555,7 @@ def get_pr_number(subject: str) -> str | None:
 
 
 def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/NousResearch/hermes-agent",
-                       prev_tag=None, first_release=False):
+                       prev_tag=None, first_release=False, no_changelog=False):
     """Generate markdown changelog from categorized commits."""
     lines = []
 
@@ -2582,58 +2582,59 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
         lines.append("> for Hermes Agent. See below for everything included in this initial release.")
         lines.append("")
 
-    # Group commits by category
-    categories = defaultdict(list)
-    all_authors = set()
-    teknium_aliases = {"@teknium1"}
+    if not no_changelog:
+        # Group commits by category
+        categories = defaultdict(list)
+        all_authors = set()
+        teknium_aliases = {"@teknium1"}
 
-    for commit in commits:
-        categories[commit["category"]].append(commit)
-        author = commit["github_author"]
-        if author not in teknium_aliases:
-            all_authors.add(author)
-        for coauthor in commit.get("coauthors", []):
-            if coauthor not in teknium_aliases:
-                all_authors.add(coauthor)
-
-    # Category display order and emoji
-    category_order = [
-        ("breaking", "⚠️ Breaking Changes"),
-        ("features", "✨ Features"),
-        ("improvements", "🔧 Improvements"),
-        ("fixes", "🐛 Bug Fixes"),
-        ("docs", "📚 Documentation"),
-        ("tests", "🧪 Tests"),
-        ("chore", "🏗️ Infrastructure"),
-        ("other", "📦 Other Changes"),
-    ]
-
-    for cat_key, cat_title in category_order:
-        cat_commits = categories.get(cat_key, [])
-        if not cat_commits:
-            continue
-
-        lines.append(f"## {cat_title}")
-        lines.append("")
-
-        for commit in cat_commits:
-            subject = clean_subject(commit["subject"])
-            pr_num = get_pr_number(commit["subject"])
+        for commit in commits:
+            categories[commit["category"]].append(commit)
             author = commit["github_author"]
-
-            # Build the line
-            parts = [f"- {subject}"]
-            if pr_num:
-                parts.append(f"([#{pr_num}]({repo_url}/pull/{pr_num}))")
-            else:
-                parts.append(f"([`{commit['short_sha']}`]({repo_url}/commit/{commit['sha']}))")
-
             if author not in teknium_aliases:
-                parts.append(f"— {author}")
+                all_authors.add(author)
+            for coauthor in commit.get("coauthors", []):
+                if coauthor not in teknium_aliases:
+                    all_authors.add(coauthor)
 
-            lines.append(" ".join(parts))
+        # Category display order and emoji
+        category_order = [
+            ("breaking", "⚠️ Breaking Changes"),
+            ("features", "✨ Features"),
+            ("improvements", "🔧 Improvements"),
+            ("fixes", "🐛 Bug Fixes"),
+            ("docs", "📚 Documentation"),
+            ("tests", "🧪 Tests"),
+            ("chore", "🏗️ Infrastructure"),
+            ("other", "📦 Other Changes"),
+        ]
 
-        lines.append("")
+        for cat_key, cat_title in category_order:
+            cat_commits = categories.get(cat_key, [])
+            if not cat_commits:
+                continue
+
+            lines.append(f"## {cat_title}")
+            lines.append("")
+
+            for commit in cat_commits:
+                subject = clean_subject(commit["subject"])
+                pr_num = get_pr_number(commit["subject"])
+                author = commit["github_author"]
+
+                # Build the line
+                parts = [f"- {subject}"]
+                if pr_num:
+                    parts.append(f"([#{pr_num}]({repo_url}/pull/{pr_num}))")
+                else:
+                    parts.append(f"([`{commit['short_sha']}`]({repo_url}/commit/{commit['sha']}))")
+
+                if author not in teknium_aliases:
+                    parts.append(f"— {author}")
+
+                lines.append(" ".join(parts))
+
+            lines.append("")
 
     # Contributors section
     if all_authors:
@@ -2771,8 +2772,8 @@ def cmd_canary(args) -> None:
 
     version = tag_name.lstrip("v")
     print(f"Canary: {tag_name} ({len(commits)} commits since {since})")
-    changelog = "Bug fixes, features, and performance improvements." if args.no_changelog else generate_changelog(
-        commits, tag_name, version, prev_tag=since, first_release=False
+    changelog = generate_changelog(
+        commits, tag_name, version, prev_tag=since, first_release=False, no_changelog=args.no_changelog
     )
 
     if not args.publish:
