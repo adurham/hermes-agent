@@ -447,6 +447,17 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
 
 
 def _safe_restore_db(src: Path, dst: Path) -> bool:
+    """Restore only while holding the destination authority's maintenance reservation."""
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    try:
+        with exclusive_maintenance([dst.resolve().parent]):
+            return _restore_db_pages(src, dst)
+    except OwnershipConflict as exc:
+        logger.error("%s", exc)
+        return False
+
+
+def _restore_db_pages(src: Path, dst: Path) -> bool:
     """Restore snapshot *src* into live *dst* through the backup() API; unlink+move fallback.
 
     Writing pages into the live file preserves its inode and WAL state, so other holders (gateway,
@@ -456,13 +467,12 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     (``False``) and the caller reports the file as skipped.
     """
     try:
-        dst_conn = sqlite3.connect(str(dst))
-        # Checkpoint first so the backup starts clean rather than writing on top of a deep WAL.
-        with suppress(Exception):
-            dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        with closing(sqlite3.connect(f"file:{src}?mode=ro", uri=True)) as src_conn:
-            src_conn.backup(dst_conn)
-        dst_conn.close()
+        with closing(sqlite3.connect(str(dst))) as dst_conn:
+            # Checkpoint first so the backup starts clean rather than writing on top of a deep WAL.
+            with suppress(Exception):
+                dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            with closing(sqlite3.connect(f"file:{src}?mode=ro", uri=True)) as src_conn:
+                src_conn.backup(dst_conn)
         with suppress(Exception):
             dst.chmod(src.stat().st_mode)
         return True
@@ -789,6 +799,16 @@ def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
 
 def _import_db_member(
     zf: zipfile.ZipFile, member: str, target: Path, new_file_mode: Optional[int] = None) -> None:
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    try:
+        with exclusive_maintenance([target.resolve().parent]):
+            _import_db_member_exclusive(zf, member, target, new_file_mode)
+    except OwnershipConflict as exc:
+        raise OSError(str(exc)) from exc
+
+
+def _import_db_member_exclusive(
+    zf: zipfile.ZipFile, member: str, target: Path, new_file_mode: Optional[int] = None) -> None:
     """Publish a SQLite ``.db`` member onto *target* without replacing its inode.
 
     A rename-publish over a live database is the #65942 / #90950 corruption class: a gateway,
@@ -844,6 +864,26 @@ def _confirm_import_overwrite(hermes_root: Path) -> bool:
 
 
 def _import_members(
+    zf: zipfile.ZipFile, members: List[str], prefix: str, hermes_root: Path, file_count: int
+) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
+    """Reserve all affected profiles before publishing even the first config file."""
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    homes = {hermes_root}
+    for member in members:
+        rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
+        parts = Path(rel).parts
+        if len(parts) >= 3 and parts[0] == 'profiles':
+            home = hermes_root / parts[0] / parts[1]
+            if _is_within(home, hermes_root.resolve()):
+                homes.add(home)
+    try:
+        with exclusive_maintenance(homes):
+            return _import_members_exclusive(zf, members, prefix, hermes_root, file_count)
+    except OwnershipConflict as exc:
+        return 0, 0, [str(exc)], [], []
+
+
+def _import_members_exclusive(
     zf: zipfile.ZipFile, members: List[str], prefix: str, hermes_root: Path, file_count: int
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
     """Publish every member; return ``(restored, restored_external, errors, skipped_runtime, db_shrunk)``.
@@ -1229,8 +1269,19 @@ def list_quick_snapshots(limit: int = 20, hermes_home: Optional[Path] = None) ->
 
 
 def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None) -> bool:
-    """Restore state from a quick snapshot."""
+    """Restore the whole snapshot offline, or refuse before changing any file."""
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     home = hermes_home or get_hermes_home()
+    try:
+        with exclusive_maintenance([home]):
+            return _restore_quick_snapshot_exclusive(snapshot_id, home)
+    except OwnershipConflict as exc:
+        logger.error("%s", exc)
+        return False
+
+
+def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
+    """Restore state from a quick snapshot."""
     root = _quick_snapshot_root(home)
     # Reject ids with separators or traversal so ``root / snapshot_id`` stays inside root.
     if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in (".", ".."):
