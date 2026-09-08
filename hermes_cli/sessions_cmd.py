@@ -966,7 +966,7 @@ def cmd_sessions(args, sessions_parser=None):
         if read_only and not path.exists():
             print(empty_messages[action])
             return
-        db = SessionDB(db_path=path, read_only=read_only)
+        db = SessionDB(db_path=path, read_only=True) if read_only else SessionDB()
     except Exception as e:
         print(f"Error: Could not open session database: {e}")
         return 1
