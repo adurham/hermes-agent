@@ -1298,7 +1298,7 @@ class GatewayAdapterLifecycleMixin:
         from gateway.session_ingress_context import native_callback, register_transport_home
         register_transport_home(self, profile_name, profile_home)
 
-        async def _handler(event):
+        async def _handler(_runner, event):
             self._stamp_event_profile(event, profile_name)
             if profile_home is not None:
                 event.source._authorization_profile_home = profile_home
@@ -1306,7 +1306,7 @@ class GatewayAdapterLifecycleMixin:
                 async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
                     return await self._handle_message(event)
 
-        return _handler
+        return _handler.__get__(self)
 
     def _make_profile_busy_session_handler(self, profile_name: str):
         """Stamp an owning adapter's profile before resolving busy policy."""
@@ -1324,7 +1324,7 @@ class GatewayAdapterLifecycleMixin:
         from gateway.session_ingress_context import register_transport_home
         register_transport_home(self, None, default_home)
 
-        async def _handler(event):
+        async def _handler(_runner, event):
             source = event.source
             # In-process only (serialization ignores dynamic attrs); route ≠ admitting bot.
             source._authorization_profile_home = default_home
@@ -1344,7 +1344,7 @@ class GatewayAdapterLifecycleMixin:
                 async with _async_profile_runtime_scope(profile_home):
                     return await self._handle_message(event)
 
-        return _handler
+        return _handler.__get__(self)
 
     def _stamp_routed_profile(self, source) -> bool:
         """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected."""
@@ -1357,7 +1357,8 @@ class GatewayAdapterLifecycleMixin:
 
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
-        return self._make_default_profile_message_handler() if self._multiplex_on() else self._handle_message
+        shared = getattr(self, 'session_authority', None) is not None
+        return self._make_default_profile_message_handler() if self._multiplex_on() or shared else self._handle_message
 
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
