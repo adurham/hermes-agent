@@ -5,8 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
-import { $connection } from '@/store/session'
-import { getQueuedPrompts, $queuedPromptsBySession } from '@/store/composer-queue'
+import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { $gateway } from '@/store/gateway'
 import {
   clearAllPrompts,
@@ -15,6 +14,7 @@ import {
   setSecretRequest,
   setSudoRequest
 } from '@/store/prompts'
+import { $connection } from '@/store/session'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
@@ -154,6 +154,7 @@ describe('useComposerSubmit external request routing', () => {
     $queuedPromptsBySession.set({})
     const h = renderSubmitHook({ busy: true, text: 'keep guidance' })
     h.onSteer.mockResolvedValue(false)
+
     try {
       act(() => h.hook.result.current.steerDraft())
       await waitFor(() => expect(h.onSubmit).toHaveBeenCalledWith('keep guidance', expect.objectContaining({ fromQueue: true, sessionId: 'runtime-session', storedSessionId: 'stored-session' })))

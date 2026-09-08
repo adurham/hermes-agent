@@ -494,6 +494,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       const dropOptimistic = (sid: null | string) => {
         if (queueAdmission) { return }
+
         if (!sid) {
           if (targetIsCurrentView()) {
             scope.setMessages(current => current.filter(m => m.id !== optimisticId))
@@ -1004,6 +1005,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         if (queueAdmission) {
           notifyError(err, copy.promptFailed)
+
           return false
         }
 
