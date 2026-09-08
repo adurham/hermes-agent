@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { ensureLocalGateway, runGatewayEnsure, mintLocalGatewayTicket, createLocalGatewayDials } from './local-gateway'
+
+import { createLocalGatewayDials, ensureLocalGateway, mintLocalGatewayTicket, runGatewayEnsure } from './local-gateway'
 const localGatewayDials = createLocalGatewayDials()
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -39,7 +40,6 @@ import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } f
 import {
   type BackendOutputTail,
   claimDecision,
-  createBackendOutputTail,
   execText,
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
@@ -65,7 +65,6 @@ import {
   shouldTrustHermesOverride,
   verifyHermesCli
 } from './backend-probes'
-import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import {
@@ -274,7 +273,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
-import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
+import { createParentStartMarkerResolver } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -8344,6 +8343,7 @@ async function freshGatewayWsUrl(profile, webContentsId) {
 
   if (connection.gatewayEndpoint) {
     const ticket = await mintLocalGatewayTicket(connection.gatewayEndpoint)
+
     return localGatewayDials.prepare(connection.baseUrl, ticket, webContentsId)
   }
 
@@ -9269,7 +9269,11 @@ function installRemoteHeaderRules() {
   remoteHeaderRulesInstalled = true
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
     const nativeHeaders = localGatewayDials.headers(details)
-    if (nativeHeaders) { callback({ requestHeaders: nativeHeaders }); return }
+
+    if (nativeHeaders) { callback({ requestHeaders: nativeHeaders });
+
+ return }
+
     applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
   })
 }
@@ -12578,6 +12582,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   const backend = await ensureRuntime(resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']))
   const connection = await ensureLocalGateway(() => runGatewayEnsure(backend, resolveHermesCwd(), HERMES_HOME))
   assertPoolEntryStillOwned(poolKey, entry)
+
   return { ...connection, profile, logs: hermesLog.slice(-80), ...getWindowState() }
 }
 
@@ -12845,12 +12850,15 @@ async function startHermes() {
     setWslBridgeProfileState(primaryProfile, true)
 
     const connection = await ensureLocalGateway(() => runGatewayEnsure(setup.backend, resolveHermesCwd(), HERMES_HOME))
+
     if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
       throw new Error('Hermes backend start was superseded by a newer connection attempt.')
     }
+
     backendStartFailure = null
     updateBootProgress({ phase: 'backend.ready', message: 'Hermes gateway is ready', progress: 94, running: true, error: null })
     bootstrapRepairAttempt = 0
+
     return { ...connection, logs: hermesLog.slice(-80), ...getWindowState() }
   })().catch(async error => {
     if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
@@ -15428,10 +15436,13 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
 ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
   return gatewayWsUrlIpcResult(async () => {
     const connection = await ensureRegistryBackend(payload?.connectionId, payload?.profile)
+
     if (connection.gatewayEndpoint) {
       const ticket = await mintLocalGatewayTicket(connection.gatewayEndpoint)
+
       return localGatewayDials.prepare(connection.baseUrl, ticket, _event.sender.id)
     }
+
     return registryGatewayWsUrlHandler(payload)
   })
 })
