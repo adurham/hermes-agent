@@ -18,6 +18,7 @@ import {
   mainComposerScope,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
+import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
@@ -178,10 +179,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
 
       const guardSessionId = options?.sessionId ?? activeSessionIdRef.current
+      const serverQueue = serverOwnsComposerQueue(options?.storedSessionId ?? guardSessionId)
+      const queueAdmission = serverQueue && Boolean(options?.fromQueue || isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
 
       if (
         !hasSendable ||
-        (!options?.fromQueue && isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
+        (!serverQueue && !options?.fromQueue && isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
       ) {
         return false
       }
@@ -418,7 +421,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const releaseBusy = () => {
         releaseSubmitLock()
 
-        if (targetIsCurrentView()) {
+        if (!queueAdmission && targetIsCurrentView()) {
           setMutableRef(busyRef, false)
           scope.setBusy(false)
           scope.setAwaitingResponse(false)
@@ -428,6 +431,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
       const seedOptimistic = (sid: string) => {
+        if (queueAdmission) { return }
         // Recents jump on send — not stream start, not turn resolve.
         const activity = bubbleText.trim() ? { preview: bubbleText.trim() } : undefined
         touchSessionActivity(sid, activity)
@@ -489,6 +493,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         )
 
       const dropOptimistic = (sid: null | string) => {
+        if (queueAdmission) { return }
         if (!sid) {
           if (targetIsCurrentView()) {
             scope.setMessages(current => current.filter(m => m.id !== optimisticId))
@@ -523,7 +528,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       // Foreground-only state: a background queue drain must never write the
       // selected view's busy/awaiting flags or clear its notifications.
-      if (targetIsCurrentView()) {
+      if (!queueAdmission && targetIsCurrentView()) {
         setMutableRef(busyRef, true)
         scope.setBusy(true)
         scope.setAwaitingResponse(true)
@@ -573,7 +578,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       if (sessionId) {
         seedOptimistic(sessionId)
-      } else if (targetIsCurrentView()) {
+      } else if (!queueAdmission && targetIsCurrentView()) {
         scope.setMessages(current => [...current, buildUserMessage()])
       }
 
@@ -818,7 +823,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // the next turn untouched — without it, losing the settle race
           // (client saw idle, server still unwinding) redirects or interrupts
           // the live turn with text the user explicitly queued.
-          ...(options?.fromQueue && { queued: true })
+          ...((options?.fromQueue || queueAdmission) && { queued: true })
         })
 
         // A fresh draft had no session owner at entry. Adopt its published
@@ -994,6 +999,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // "session busy" (4009). Don't surface an error bubble/toast — the entry
         // stays queued and the composer's bounded auto-drain retries when idle.
         if (options?.fromQueue && isSessionBusyError(err)) {
+          return false
+        }
+
+        if (queueAdmission) {
+          notifyError(err, copy.promptFailed)
           return false
         }
 
