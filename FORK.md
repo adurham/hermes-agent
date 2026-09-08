@@ -3,6 +3,37 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### MCP tool calls leaked a "coroutine was never awaited" warning every time — 2026-09-08
+
+**Symptom (user-reported, screenshot):** every MCP `tools/call` printed
+
+    tools/mcp_tool.py:6701: RuntimeWarning: coroutine 'MCPServerTask._watch_stdio_children' was never awaited
+      and inspect.isawaitable(_watch_children())
+
+to stderr, noisily, on ~every tool invocation.
+
+**Root cause:** the `#81995` fast-fail machinery (`tools/mcp_tool.py::_call_tool`,
+around line 6698) needed to know whether `server._watch_stdio_children` exists
+and returns something awaitable before deciding whether to race it against the
+RPC call. The check called the factory *to test it* —
+`inspect.isawaitable(_watch_children())` — which manufactures a real coroutine
+object just to inspect its type, then discards it. If the fast-fail path was
+taken, the code called the factory a *second* time immediately after
+(`asyncio.ensure_future(_watch_children())`) to get the coroutine it actually
+scheduled. The first call's coroutine was never awaited, never closed —
+Python's GC eventually finalizes it and prints the warning.
+
+**Fix:** call `_watch_children()` exactly once, store the coroutine
+(`_watch_coro`), and reuse it in both branches. In the branch that doesn't
+use the fast-fail race (stubbed/mocked sessions, or no watcher present),
+explicitly `.close()` it if it turned out to be a real coroutine so nothing
+is silently dropped.
+
+**Tests:** `tests/tools/test_mcp_stdio_fastfail_reconnect.py` and
+`tests/tools/test_mcp_stdio_children_dead.py` (10 tests) pass with
+`-W error::RuntimeWarning`, i.e. the warning is now impossible, not just
+unlikely. Full `tests/tools/ -k mcp` suite (733 tests) green, no regressions.
+
 ### Dashboard "Recent Sessions" hid every LIVE session — 2026-09-08
 
 **Symptom (user-reported):** a `hermes` CLI session running right now on
