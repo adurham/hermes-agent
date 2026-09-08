@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 
+import type { GatewayEndpoint } from './local-gateway'
 import { createLocalGatewayDials, ensureLocalGateway, mintLocalGatewayTicket, nativeGatewayHttpHeaders, runGatewayEnsure } from './local-gateway'
 const localGatewayDials = createLocalGatewayDials()
 import crypto from 'node:crypto'
@@ -34,7 +35,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
-import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
+import { destroyKeepaliveAgents, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
@@ -189,6 +190,7 @@ import {
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
+import { downloadViaTokenToFile } from './gateway-download-transport'
 import {
   filenameFromContentDisposition,
   fsPumpDeps,
@@ -5457,64 +5459,6 @@ function fetchJson(url, token, options: any = {}) {
   )
 }
 
-// Token-auth download that streams the response body straight to a
-// user-selected destination (via finalizeGatewayDownload) instead of buffering
-// the whole file in memory. The connect timeout is cleared once headers arrive
-// so a slow save dialog or a large stream doesn't trip it. `options.bearer`
-// switches the header to Authorization (RFC 8252 native flow), matching fetchJson.
-function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
-  return new Promise((resolve, reject) => {
-    let parsed
-
-    try {
-      parsed = new URL(url)
-    } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
-
-      return
-    }
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-      return
-    }
-
-    const client = parsed.protocol === 'https:' ? https : http
-    const agent = downloadAgentFor(parsed.protocol)
-    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-    const req = client.request(
-      parsed,
-      {
-        agent,
-        method: 'GET',
-        headers: options.bearer ? { Authorization: `Bearer ${options.bearer}` } : { 'X-Hermes-Session-Token': token }
-      },
-      res => {
-        // Headers arrived — the connection phase is done. Drop the idle timeout
-        // so it can't abort mid-stream or while the save dialog is open.
-        req.setTimeout(0)
-        finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
-          ...ctx,
-          abort: () => {
-            try {
-              req.destroy()
-            } catch {
-              // already finished
-            }
-          }
-        }).then(resolve, reject)
-      }
-    )
-
-    req.on('error', reject)
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    })
-    req.end()
-  })
-}
 
 function fetchPublicJson(url, options: any = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints
@@ -8155,7 +8099,8 @@ function readGatewayErrorText(res): Promise<string> {
 }
 
 interface GatewayFileConnection extends RegistryBackendRequestScope {
-  authMode?: 'oauth' | 'token'
+  gatewayEndpoint?: GatewayEndpoint
+  authMode?: 'oauth' | 'token' | 'native'
   baseUrl: string
   token?: null | string
 }
@@ -8219,14 +8164,14 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
     const auth = await gatedFileAuth(connection)
 
     if (auth.kind === 'bearer') {
-      return await downloadViaTokenToFile(url, auth.token, ctx, { bearer: auth.token })
+      return await downloadViaTokenToFile(url, auth.token, ctx, finalizeGatewayDownload, { bearer: auth.token })
     }
 
     if (auth.kind === 'cookie') {
       return await downloadViaOauthSessionToFile(url, ctx)
     }
 
-    return await downloadViaTokenToFile(url, auth.token, ctx)
+    return await downloadViaTokenToFile(url, auth.token, ctx, finalizeGatewayDownload, { gatewayDescriptor: connection.gatewayEndpoint ? connection : undefined })
   } catch (error) {
     // Desktop and the remote gateway update independently. A gateway predating
     // /api/fs/download 404s here; fall back (ONLY on 404) to the older capped
@@ -8257,7 +8202,7 @@ async function saveGatewayFileViaDataUrl(
   } else if (auth.kind === 'cookie') {
     json = await fetchJsonViaOauthSession(url)
   } else {
-    json = await fetchJson(url, auth.token)
+    json = await fetchJson(url, auth.token, { gatewayDescriptor: connection.gatewayEndpoint ? connection : undefined })
   }
 
   const dataUrl =
