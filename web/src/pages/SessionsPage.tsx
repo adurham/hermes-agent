@@ -35,6 +35,7 @@ import {
 import { api } from "@/lib/api";
 import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
+import { selectOverviewSessions } from "@/lib/session-overview";
 import {
   importSummary,
   parseImportSessions,
@@ -1530,9 +1531,11 @@ export default function SessionsPage() {
   const platformEntries = status
     ? Object.entries(status.gateway_platforms ?? {})
     : [];
-  const recentSessions = overviewSessions
-    .filter((s) => !s.is_active)
-    .slice(0, 5);
+  // Live sessions lead the overview card instead of being filtered out of
+  // it — a running CLI/desktop/cron session is the most interesting thing
+  // this panel can show, and hiding it made active work look like it was
+  // missing from the dashboard entirely. See lib/session-overview.ts.
+  const recentSessions = selectOverviewSessions(overviewSessions, 5);
 
   const isSearching = Boolean(search.trim());
   const showOverviewTab =
@@ -2126,14 +2129,22 @@ export default function SessionsPage() {
                     className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span
-                        className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title ? "font-medium" : "text-muted-foreground italic"}`}
-                      >
-                        {s.title ??
-                          (s.preview
-                            ? s.preview.slice(0, 60)
-                            : t.common.untitled)}
-                      </span>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span
+                          className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${s.title ? "font-medium" : "text-muted-foreground italic"}`}
+                        >
+                          {s.title ??
+                            (s.preview
+                              ? s.preview.slice(0, 60)
+                              : t.common.untitled)}
+                        </span>
+                        {s.is_active && (
+                          <Badge tone="success" className="shrink-0 text-xs">
+                            <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                            {t.common.live}
+                          </Badge>
+                        )}
+                      </div>
 
                       <span className="min-w-0 break-words text-xs text-muted-foreground">
                         {s.model && (

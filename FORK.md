@@ -3,6 +3,60 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Dashboard "Recent Sessions" hid every LIVE session — 2026-09-08
+
+**Symptom (user-reported):** a `hermes` CLI session running right now on
+hermes-gw-01 (attached over `hlxc` → tmux → `hermes`) did not appear in the
+web dashboard's Sessions → Overview → "RECENT SESSIONS" card, while five
+*older* sessions from the same store did. This reads as "my session is
+missing / the dashboard is on a different profile / a different DB", and it
+is none of those things.
+
+**Verified non-causes** (checked directly on hermes-gw-01 before fixing, so
+nobody re-litigates them):
+- Same store. `hlxc` runs `hermes` with no `-p`, so it writes the base
+  `~/.hermes/state.db` with `profile_name='default'` — exactly the DB the
+  dashboard serves. Counts matched live (1990 sessions / 32283 messages vs
+  the screenshot's 1989 / 32166 seconds earlier). `profiles/dashboard/state.db`
+  holds ZERO sessions.
+- Backend is correct. `SessionDB.list_sessions_rich(...)` returns the live row
+  (`20260907_230109_309ea0`, source=`cli`, 208 msgs) as result #1 in BOTH
+  `created` and `recent` order. `GET /api/sessions` was never at fault.
+
+**Root cause:** `web/src/pages/SessionsPage.tsx` built the overview card as
+
+    const recentSessions = overviewSessions
+      .filter((s) => !s.is_active)     // ← introduced in e5d2815b41 "feat: add sidebar"
+      .slice(0, 5);
+
+`is_active` is computed server-side (`hermes_cli/web_routers/sessions.py`) as
+`ended_at IS NULL AND now - last_active < 300`. So the filter excluded
+precisely the sessions that are *running*: an attached terminal CLI, a live
+desktop chat, an in-flight cron job. A live session only became visible on the
+Overview tab after it had been idle for five full minutes. The card's whole
+purpose — "what is my agent doing" — was inverted into "what is my agent no
+longer doing."
+
+**Fix:** live sessions are now surfaced FIRST rather than dropped. Selection
+moved out of the JSX-adjacent expression into a tested pure helper,
+`web/src/lib/session-overview.ts::selectOverviewSessions(sessions, limit=5)`:
+partition into live/idle preserving server order within each group, live
+first, then `slice(limit)`. The card rows now also render the same pulsing
+`Live` badge the list view already used (`t.common.live`), so the state is
+legible and not merely ordered — no new i18n keys, the string already exists
+in all 18 locales.
+
+**Scope check:** `grep -rn '!\s*[a-zA-Z_]*\.is_active'` across the repo shows
+this was the ONLY site with the inverted filter; the desktop app never had it.
+Bug class fully covered.
+
+**Tests:** `web/src/lib/session-overview.test.ts` — 7 cases, including an
+explicit regression test that a lone live session survives selection, live-first
+ordering, stable intra-group order, limit capping with live winning the slots,
+missing-`is_active` treated as idle, empty/zero/negative limit, and input
+non-mutation. Full web suite green: 38 files / 288 tests, `tsc -p . --noEmit`
+clean, eslint clean.
+
 ### Memory-extraction cleanup now fully automatic, zero review gate — 2026-09-07 (explicit user decision)
 
 **Change:** `tools/memory_extraction/extractor.py::on_session_end()` used to
