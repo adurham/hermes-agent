@@ -86,7 +86,7 @@ export function QueuePanel({
             )}
             key={entry.id}
             trailing={
-              <>
+              !entry.serverStatus && <>
                 <Tip label={c.queueEdit}>
                   <Button
                     aria-label={c.queueEdit}

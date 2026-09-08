@@ -188,6 +188,7 @@ export interface ProjectInfo {
 }
 
 export interface SessionInfo {
+  stored_session_id?: string
   cwd?: string
   fast?: boolean
   install_warning?: string
@@ -197,6 +198,17 @@ export interface SessionInfo {
   profile_name?: string
   project?: null | ProjectInfo
   reasoning_effort?: string
+  pending_submissions?: Array<{
+    admission_id: string
+    target_session_id: string
+    target_profile_home: string
+    status: string
+    user: string
+    outcome?: string | null
+  }>
+  execution_epoch?: string
+  execution_generation?: number
+  execution_state?: string
   running?: boolean
   release_date?: string
   service_tier?: string

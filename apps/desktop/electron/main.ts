@@ -296,6 +296,7 @@ import {
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
+import { registerPreparedSubmissions } from './prepared-submissions'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
@@ -15146,6 +15147,8 @@ ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
 // --- Text size (zoom) -------------------------------------------------------
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
 // shortcuts and the View menu. Reads and writes target the asking window.
+registerPreparedSubmissions()
+
 ipcMain.handle('hermes:zoom:get', event => {
   const window = BrowserWindow.fromWebContents(event.sender)
 

@@ -2,6 +2,7 @@ import { registryBackendScopeKey } from '@hermes/shared'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { acceptExecutionEvent } from '@/lib/execution-authority'
 import {
   approvalReplaySessionId,
   resolveGatewayEventSessionId,
@@ -95,6 +96,7 @@ const HANDLERS: GatewayEventHandler[] = [
 
 /** The gateway-event dispatcher, extracted from useMessageStream. */
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
+  const executionAuthorities = useRef(new Map())
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
   const unscopedStreamSessionIdRef = useRef<string | null>(null)
@@ -170,6 +172,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       const sessionId = route.sessionId
+      const authorityKey = `${registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null)}\u0000${sessionId}`
+
+      if (sessionId && !acceptExecutionEvent(executionAuthorities.current, authorityKey, event.type, payload)) {return}
 
       // Late stragglers: an unscoped stream event attributed via the
       // active-session fallback (no pin) to a session that has no live turn

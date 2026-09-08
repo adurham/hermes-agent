@@ -26,7 +26,7 @@ import {
   type InputHandlerResult,
   type OverlayState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import { $isBlocked, $overlayState, capturePromptResponseGuard, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
@@ -219,9 +219,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (overlay.approval) {
+      const fresh = capturePromptResponseGuard('approval', overlay.approval)
+      if (!fresh()) {
+        return
+      }
       return gateway
         .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
-        .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+        .then(r => r && fresh() && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
     if (overlay.sudo || overlay.secret) {
@@ -739,7 +743,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
-      const next = cActions.dequeue()
+      const next = cActions.dequeue(true)
 
       if (next) {
         cActions.setQueueEdit(null)

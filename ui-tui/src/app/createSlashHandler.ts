@@ -8,6 +8,7 @@ import type { SlashHandlerContext } from './interfaces.js'
 import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
+import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
 
 export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => boolean {
@@ -19,10 +20,11 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
     const flight = ++ctx.slashFlightRef.current
     const ui = getUiState()
     const sid = ui.sid
+    const destination = captureDestination()
     const parsed = parseSlashCommand(cmd)
     const argTail = parsed.arg ? ` ${parsed.arg}` : ''
 
-    const stale = () => flight !== ctx.slashFlightRef.current || getUiState().sid !== sid
+    const stale = () => flight !== ctx.slashFlightRef.current || !isCurrentDestination(destination)
 
     const guarded =
       <T>(fn: (r: T) => void) =>
@@ -168,6 +170,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
       })
       .catch(() => {
+        if (stale()) {return}
         gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })
           .then((raw: unknown) => {
             if (stale()) {

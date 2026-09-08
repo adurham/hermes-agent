@@ -67,6 +67,54 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('displays generic errors without settling versioned execution', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+    patchUiState({ sid: 'owner', busy: true, status: 'running…', info: { model: 'test', tools: {}, skills: {}, execution_epoch: 'owner-epoch', execution_generation: 2 } })
+    onEvent({ type: 'error', session_id: 'owner', payload: { message: 'build failed' } } as any)
+    expect(ctx.system.sys).toHaveBeenCalledWith('error: build failed')
+    expect(getUiState()).toMatchObject({ busy: true, status: 'running…' })
+    onEvent({ type: 'error', session_id: 'owner', payload: { message: 'turn failed', execution_epoch: 'owner-epoch', execution_generation: 2 } } as any)
+    expect(ctx.system.sys).toHaveBeenCalledWith('error: turn failed')
+    expect(getUiState().busy).toBe(false)
+  })
+
+  it('fences restarted owner lifecycle events until resume establishes the new epoch', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    const info = { model: 'test', skills: {}, tools: {}, running: true,
+      execution_epoch: 'old-owner', execution_generation: 9 }
+
+    patchUiState({ sid: 'focused', info, busy: true })
+    const emit = (type: string, payload: any) => onEvent({ type, payload, session_id: 'focused' } as any)
+    emit('session.info', { execution_epoch: 'new-owner', execution_generation: 1, running: false })
+    expect(getUiState().busy).toBe(true)
+    // session.resume replaces info with the authoritative attachment snapshot.
+    patchUiState({ info: { ...info, execution_epoch: 'new-owner', execution_generation: 1 } })
+
+    for (const payload of [{}, { execution_epoch: 'old-owner', execution_generation: 99 },
+      { execution_epoch: 'new-owner', execution_generation: 0 }]) {
+      emit('message.complete', { ...payload, text: 'stale' })
+      emit('error', { ...payload, message: 'stale' })
+      emit('session.info', { ...payload, running: false })
+      expect(getUiState().busy).toBe(true)
+    }
+
+    expect(appended).toEqual([])
+    emit('message.complete', { execution_epoch: 'new-owner', execution_generation: 1, text: 'fresh' })
+    expect(getUiState().busy).toBe(false)
+    expect(appended.some(m => m.text === 'fresh')).toBe(true)
+    emit('message.start', { execution_epoch: 'new-owner', execution_generation: 2 })
+    emit('message.complete', { execution_epoch: 'new-owner', execution_generation: 1, text: 'late' })
+    expect(getUiState().busy).toBe(true)
+    expect(getUiState().info?.execution_generation).toBe(2)
+    emit('message.complete', { execution_epoch: 'new-owner', execution_generation: 4, text: 'missed start' })
+    emit('message.start', { execution_epoch: 'new-owner', execution_generation: 3 })
+    expect(getUiState().busy).toBe(false)
+    expect(getUiState().info?.execution_generation).toBe(4)
+  })
+
   it('heals missed completion and blocking prompts only from the focused authoritative idle snapshot', () => {
     patchUiState({ sid: 'focused' })
     const onEvent = createGatewayEventHandler(buildCtx([]))
@@ -90,6 +138,24 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('ready')
     expect(getOverlayState().approval).toBeNull()
     expect(getTurnState().tools).toEqual([])
+    onEvent({
+      session_id: 'focused',
+      payload: { ...snapshot, running: true, execution_generation: 2 },
+      type: 'session.info'
+    } as any)
+    onEvent({
+      session_id: 'focused',
+      payload: { running: false, execution_generation: 1 },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().busy).toBe(true)
+    onEvent({
+      session_id: 'focused',
+      payload: { running: false, execution_generation: 2 },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().busy).toBe(false)
+    expect(getUiState().info?.model).toBe('test')
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

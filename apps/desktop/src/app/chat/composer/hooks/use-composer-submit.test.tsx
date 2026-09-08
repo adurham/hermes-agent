@@ -22,6 +22,7 @@ import { useComposerSubmit } from './use-composer-submit'
 interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
+  busyInputMode?: 'interrupt' | 'queue' | 'steer' | null
   compacting?: boolean
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
@@ -37,6 +38,7 @@ let surfaceSequence = 0
 function renderSubmitHook({
   attachments = [],
   busy = false,
+  busyInputMode = 'interrupt',
   compacting = false,
   inputDisabled = false,
   scopeTarget = 'main',
@@ -97,6 +99,7 @@ function renderSubmitHook({
         activeQueueSessionKeyRef: { current: sessionKey },
         attachments,
         busy,
+        busyInputMode,
         compacting,
         clearDraft,
         disabled: false,
@@ -265,6 +268,35 @@ describe('useComposerSubmit external request routing', () => {
 })
 
 describe('useComposerSubmit busy-turn routing', () => {
+  it('honors configured busy mode while explicit steering and queueing override it on every surface', async () => {
+    for (const scopeTarget of ['main', 'tile:stored-session'] as const) {
+      for (const mode of ['interrupt', 'queue', 'steer', null] as const) {
+        const ordinary = renderSubmitHook({ busy: true, busyInputMode: mode, scopeTarget, text: 'change course' })
+        act(() => ordinary.hook.result.current.submitDraft())
+
+        if (mode === 'queue') {
+          expect(ordinary.queueCurrentDraft).toHaveBeenCalledOnce()
+          expect(ordinary.onSteer).not.toHaveBeenCalled()
+        } else if (mode === null) {
+          expect(ordinary.clearDraft).not.toHaveBeenCalled()
+          expect(ordinary.onSteer).not.toHaveBeenCalled()
+          expect(ordinary.queueCurrentDraft).not.toHaveBeenCalled()
+        } else {
+          await waitFor(() => expect(ordinary.onSteer).toHaveBeenCalledWith('change course', mode))
+          expect(ordinary.queueCurrentDraft).not.toHaveBeenCalled()
+        }
+
+        ordinary.hook.unmount()
+        const explicit = renderSubmitHook({ busy: true, busyInputMode: mode, scopeTarget, text: 'explicit guidance' })
+        act(() => explicit.hook.result.current.steerDraft('steer'))
+        await waitFor(() => expect(explicit.onSteer).toHaveBeenCalledWith('explicit guidance', 'steer'))
+        act(() => explicit.hook.result.current.queueDraft())
+        expect(explicit.queueCurrentDraft).toHaveBeenCalledOnce()
+        explicit.hook.unmount()
+      }
+    }
+  })
+
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
@@ -280,7 +312,7 @@ describe('useComposerSubmit busy-turn routing', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course', 'interrupt'))
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
@@ -437,7 +469,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course', 'interrupt'))
     expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', { request_id: 'req-runtime-session', answer: '' })
   })
 
@@ -545,7 +577,7 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course', 'interrupt'))
     expect(queueCurrentDraft).not.toHaveBeenCalled()
   })
 

@@ -1903,6 +1903,7 @@ export const ar = defineLocale({
     openDirective: 'فتح',
     queueMessage: 'إضافة الرسالة للطابور',
     steer: 'توجيه',
+    redirect: 'إعادة توجيه التشغيل الحالي',
     stop: 'إيقاف',
     send: 'إرسال',
     speaking: 'يتحدث',

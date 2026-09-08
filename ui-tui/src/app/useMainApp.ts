@@ -53,9 +53,10 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, capturePromptResponseGuard, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
+import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
@@ -88,7 +89,7 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
 }
 
 export interface PromptLiveSessionOptions {
-  dispatchSubmission: (full: string) => void
+  dispatchSubmission: (full: string, destination: SubmissionDestination) => void
   maybeWarn: (value: unknown) => void
   modelArg?: string
   newLiveSession: (msg?: string, title?: string) => Promise<null | string> | null | string | void
@@ -126,6 +127,7 @@ export async function startPromptLiveSession({
     return null
   }
 
+  const destination = Object.freeze({ ...captureDestination(), sid })
   const requestedModel = modelArg ? sessionScopedModelArg(modelArg) : ''
 
   if (requestedModel) {
@@ -137,12 +139,14 @@ export async function startPromptLiveSession({
       return sid
     }
 
-    sys(`model → ${result.value}`)
-    maybeWarn(result)
-    onModelSwitched?.(result.value, result)
+    if (isCurrentDestination(destination)) {
+      sys(`model → ${result.value}`)
+      maybeWarn(result)
+      onModelSwitched?.(result.value, result)
+    }
   }
 
-  dispatchSubmission(trimmed)
+  dispatchSubmission(trimmed, destination)
 
   return sid
 }
@@ -700,13 +704,17 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      const fresh = capturePromptResponseGuard('clarify', clarify)
+      if (!fresh()) {
+        return
+      }
       const label = toolTrailLabel('clarify')
 
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
       rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
-        if (!r) {
+        if (!r || !fresh()) {
           return
         }
 
@@ -749,12 +757,16 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      const fresh = capturePromptResponseGuard('clarify', clarify)
+      if (!fresh()) {
+        return
+      }
       rpc<ClarifyRespondResponse & { remaining?: string[] }>('clarify.respond', {
         answer,
         question_id: qid,
         request_id: clarify.requestId
       }).then(r => {
-        if (!r) {
+        if (!r || !fresh()) {
           return
         }
 
@@ -859,7 +871,7 @@ export function useMainApp(gw: GatewayClient) {
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
-        composer: { setInput: composerActions.setInput },
+        composer: { setInput: composerActions.setInput, enqueue: composerActions.enqueue },
         gateway,
         session: {
           STARTUP_RESUME_ID,
@@ -884,6 +896,7 @@ export function useMainApp(gw: GatewayClient) {
       appendMessage,
       bellOnComplete,
       bellOnPrompt,
+      composerActions.enqueue,
       composerActions.setInput,
       gateway,
       panel,
@@ -1016,13 +1029,21 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const answerApproval = useCallback(
-    (choice: string) =>
-      respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
+    (choice: string) => {
+      const fresh = capturePromptResponseGuard('approval', overlay.approval)
+      if (!fresh()) {
+        return
+      }
+      return respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
+        if (!fresh()) {
+        return
+      }
         patchOverlayState({ approval: null })
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
         patchUiState({ status: 'running…' })
-      }),
-    [respondWith, ui.sid]
+      })
+    },
+    [overlay.approval, respondWith, ui.sid]
   )
 
   const answerSudo = useCallback(
@@ -1031,6 +1052,10 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      const fresh = capturePromptResponseGuard('sudo', overlay.sudo)
+      if (!fresh()) {
+        return
+      }
       const requestId = overlay.sudo.requestId
 
       if (!pw) {
@@ -1038,6 +1063,9 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
+        if (!fresh()) {
+        return
+      }
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
@@ -1051,6 +1079,10 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      const fresh = capturePromptResponseGuard('secret', overlay.secret)
+      if (!fresh()) {
+        return
+      }
       const requestId = overlay.secret.requestId
 
       if (!value) {
@@ -1058,6 +1090,9 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       return respondWith('secret.respond', { request_id: requestId, value }, () => {
+        if (!fresh()) {
+        return
+      }
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })
@@ -1093,7 +1128,7 @@ export function useMainApp(gw: GatewayClient) {
   const newPromptSession = useCallback(
     (prompt: string, modelArg?: string) => {
       void startPromptLiveSession({
-        dispatchSubmission,
+        dispatchSubmission: (text, destination) => send(text, true, text, value => value, { destination }),
         maybeWarn,
         modelArg,
         newLiveSession: session.newLiveSession,
@@ -1107,7 +1142,7 @@ export function useMainApp(gw: GatewayClient) {
         sys
       })
     },
-    [dispatchSubmission, maybeWarn, rpc, session.newLiveSession, sys]
+    [send, maybeWarn, rpc, session.newLiveSession, sys]
   )
 
   const hasReasoning = useTurnSelector(state => Boolean(state.reasoning.trim()))

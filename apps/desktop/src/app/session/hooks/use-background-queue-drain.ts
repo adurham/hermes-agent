@@ -112,7 +112,7 @@ export function useBackgroundQueueDrain({
         .then(async () => {
           const liveEntry = getQueuedPrompts(sessionKey).find(candidate => candidate.id === entry.id)
 
-          if (!liveEntry) {
+          if (!liveEntry || liveEntry.serverStatus) {
             return true
           }
 
@@ -122,12 +122,14 @@ export function useBackgroundQueueDrain({
             submitTextRef.current(liveEntry.text, {
               attachments: liveEntry.attachments,
               fromQueue: true,
+              submission_id: liveEntry.id,
+              ...(liveEntry.displayText ? { displayText: liveEntry.displayText } : {}),
               sessionId: runtimeSessionId,
               storedSessionId: sessionKey
             })
           )
 
-          if (accepted === false) {
+          if (accepted !== true) {
             return false
           }
 
@@ -179,7 +181,7 @@ export function useBackgroundQueueDrain({
         continue
       }
 
-      const entry = entries[0]
+      const entry = entries.find(candidate => !candidate.serverStatus)
 
       if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
         continue

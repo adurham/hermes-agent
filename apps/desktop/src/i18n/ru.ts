@@ -2612,6 +2612,7 @@ export const ru = defineLocale({
     openDirective: 'Открыть',
     queueMessage: 'Вставить сообщение в очередь',
     steer: 'Направить текущий запуск',
+    redirect: 'Перенаправить текущий запуск',
     stop: 'Стоп',
     send: 'Отправить',
     speaking: 'Говорит',

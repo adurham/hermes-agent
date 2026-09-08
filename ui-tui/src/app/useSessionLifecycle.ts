@@ -17,12 +17,14 @@ import type {
   SessionTitleResponse,
   SetupStatusResponse
 } from '../gatewayTypes.js'
+import { migratePendingInputs } from '../lib/pendingInputs.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
+import { captureDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -141,6 +143,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
+  const attachmentFlight = useRef(0)
 
   const resetSession = useCallback(() => {
     cancelResumeScrollRef.current?.()
@@ -160,6 +163,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   useEffect(
     () => () => {
+      attachmentFlight.current++
       cancelResumeScrollRef.current?.()
       cancelResumeScrollRef.current = null
     },
@@ -185,7 +189,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const startNewSession = useCallback(
     async (msg?: string, title?: string, keepCurrent = false) => {
+      const flight = ++attachmentFlight.current
+      const previousSid = getUiState().sid
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
+
+      if (flight !== attachmentFlight.current) {return null}
 
       if (setup?.provider_configured === false) {
         panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
@@ -194,13 +202,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return null
       }
 
-      const previousSid = getUiState().sid
-
       if (!keepCurrent) {
         await closeSession(previousSid)
+
+        if (flight !== attachmentFlight.current) {return null}
       }
 
       const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+
+      if (flight !== attachmentFlight.current) {return null}
 
       if (!r) {
         patchUiState({ status: 'ready' })
@@ -208,7 +218,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return null
       }
 
-      const info = r.info ?? null
+      const info = r.info ? { ...r.info, stored_session_id: r.stored_session_id || r.info.stored_session_id } : null
       const requestedTitle = title?.trim() ?? ''
 
       resetSession()
@@ -286,11 +296,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const activateLiveSession = useCallback(
     (id: string) => {
+      const flight = ++attachmentFlight.current
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
 
       gw.request<SessionActivateResponse>('session.activate', { session_id: id })
         .then(raw => {
+          if (flight !== attachmentFlight.current) {return}
           const r = asRpcResult<SessionActivateResponse>(raw)
 
           if (!r) {
@@ -299,8 +311,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             return patchUiState({ status: 'ready' })
           }
 
-          const info = r.info ?? null
+          const info = r.info ? { ...r.info, stored_session_id: r.stored_session_id || r.info.stored_session_id } : null
           const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
+
+          if (info) {info.stored_session_id = r.session_key || info.stored_session_id}
 
           resetSession()
           setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
@@ -319,6 +333,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
         .catch((e: Error) => {
+          if (flight !== attachmentFlight.current) {return}
           sys(`error: ${e.message}`)
           patchUiState({ status: 'ready' })
         })
@@ -328,10 +343,19 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const resumeById = useCallback(
     (id: string) => {
+      const flight = ++attachmentFlight.current
+      const current = captureDestination()
+      const previousSid = current.sid
+
+      const destination = current.sid === id || current.storedSid === id
+        ? current : { ...current, sid: id, storedSid: id }
+
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
       rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+        if (flight !== attachmentFlight.current) {return}
+
         if (setup?.provider_configured === false) {
           panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
           patchUiState({ status: 'setup required' })
@@ -339,10 +363,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           return
         }
 
-        const previousSid = getUiState().sid
-
         gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
+            if (flight !== attachmentFlight.current) {return}
             const r = asRpcResult<SessionResumeResponse>(raw)
 
             if (!r) {
@@ -351,9 +374,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               return patchUiState({ status: 'ready' })
             }
 
-            const info = r.info ?? null
+            const info = r.info ? { ...r.info, stored_session_id: r.stored_session_id || r.info.stored_session_id } : null
             const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
+            if (info) {info.stored_session_id = r.session_key || info.stored_session_id || r.resumed}
+
+            // A successful resume authorizes the requested source → canonical
+            // successor mapping; ordinary focus changes never migrate input.
+            migratePendingInputs(destination, r.session_id, info?.stored_session_id)
             resetSession()
             setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
 
@@ -377,6 +405,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
           })
           .catch((e: Error) => {
+            if (flight !== attachmentFlight.current) {return}
             sys(`error: ${e.message}`)
             patchUiState({ status: 'ready' })
           })

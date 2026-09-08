@@ -21,6 +21,7 @@ import {
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
+import { trackPendingSubmission } from '@/store/pending-submissions'
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $sessions,
@@ -31,14 +32,21 @@ import {
   setMessages,
   touchSessionActivity
 } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import { $sessionStates, knownOwnerForSession } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 import { resolveSessionProfile } from '../use-session-actions/utils'
 
+import {
+  preparedSubmissionKey,
+  readPreparedSubmission,
+  removePreparedSubmission,
+  writePreparedSubmission
+} from './prepared-submissions'
 import { finalizeInterruptedMessages } from './rewind'
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
+import { captureSubmissionDestination } from './submission-destination'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
@@ -69,7 +77,7 @@ interface SubmitPromptDeps {
   syncAttachmentsForSubmit: (
     sessionId: string,
     attachments: ComposerAttachment[],
-    options?: { updateComposerAttachments?: boolean }
+    options?: { updateComposerAttachments?: boolean; storedSessionId?: string | null; requestGateway?: GatewayRequest }
   ) => Promise<{ attachments: ComposerAttachment[]; sessionId: string }>
   updateSessionState: (
     sessionId: string,
@@ -109,7 +117,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     getRuntimeIdForStoredSession,
     getRouteToken,
     onRuntimeRecovered,
-    requestGateway,
+    requestGateway: ambientRequestGateway,
     runtimeIdByStoredSessionIdRef,
     resumeStoredSession,
     selectedStoredSessionIdRef,
@@ -296,6 +304,38 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         targetStartedInCurrentView = true
       }
 
+      const captured =
+        options?.destination ?? captureSubmissionDestination(targetStoredSessionId ?? sessionId, ambientRequestGateway)
+
+      const retryKeyForTarget = () => preparedSubmissionKey(
+        resolveComposerSessionKey(targetStoredSessionId ?? sessionId, $sessions.get()),
+        captured, rawText, attachments, options
+      )
+
+      let startingRouteToken = getRouteToken()
+      let retained: Awaited<ReturnType<typeof readPreparedSubmission>>
+
+      try {
+        retained = await readPreparedSubmission(retryKeyForTarget())
+
+        // A legacy send has no deduplication identity. After an ambiguous ACK
+        // even an upgraded server cannot safely admit it under the saved ID.
+        if (retained?.legacyAttempted) {
+          return false
+        }
+      } catch (err) {
+        notifyError(err, copy.promptFailed)
+
+        return false
+      }
+
+      const destination = retained
+        ? captureSubmissionDestination(targetStoredSessionId ?? sessionId, ambientRequestGateway, retained)
+        : captured
+
+      const requestGateway = destination.requestGateway
+      const submissionId = retained?.id ?? options?.submission_id ?? crypto.randomUUID()
+
       let startingStoredSessionId = routedSessionNeedsResume
         ? routedStoredSessionId
         : (selectedStoredSessionId ?? routedStoredSessionId)
@@ -305,8 +345,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // the routed target: an already-stale ref is not evidence that the user
       // switched chats while this submit was in flight.
       let startingSelectedStoredSessionId = selectedStoredSessionId
-
-      let startingRouteToken = getRouteToken()
 
       // Reason string (or null) for why the session context genuinely drifted
       // under this in-flight submit. sessionContextDrift ignores the churn a
@@ -358,7 +396,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
-      const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const optimisticId = `user-${submissionId}`
 
       // What the bubble shows. A `/skill` send carries the whole expanded
       // skill body as its text — model-facing scaffolding — so the dispatcher
@@ -727,9 +765,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // first and submit's own recovery never runs — that asymmetry is why
         // plain text survived sleep/wake but images reported "session not
         // found". The attach path recovers and reports the live id back here.
-        const attachResult = await syncAttachmentsForSubmit(sessionId, attachments, {
-          updateComposerAttachments: usingComposerAttachments
-        })
+        const attachResult = retained
+          ? { sessionId, attachments: retained.attachments }
+          : await syncAttachmentsForSubmit(sessionId, attachments, {
+              updateComposerAttachments: usingComposerAttachments,
+              storedSessionId: targetStoredSessionId,
+              requestGateway
+            })
 
         const syncedAttachments = attachResult.attachments
         // Always a live string; pin it so TS narrows past the outer
@@ -751,11 +793,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // Images keep their inline bounded thumbnail — see optimisticAttachmentRef.
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(liveSessionId)
-        const text = buildContextText(syncedAttachments)
+        const text = retained?.text ?? buildContextText(syncedAttachments)
+
+        trackPendingSubmission(targetStoredSessionId ?? liveSessionId, {
+          id: submissionId,
+          text,
+          displayText: options?.displayText
+        })
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
+          submission_id: submissionId,
           ...(interrupted && { interrupted }),
           // Off-screen widget intent: the gateway types the persisted user
           // row display_kind=hidden so no client renders it as a bubble.
@@ -772,23 +821,69 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           ...(options?.fromQueue && { queued: true })
         })
 
+        // A fresh draft had no session owner at entry. Adopt its published
+        // route only if it is the SAME captured connection/profile authority.
+        const publishedDestination = captureSubmissionDestination(targetStoredSessionId, ambientRequestGateway, {
+          owner: knownOwnerForSession(targetStoredSessionId)
+        })
+
+        const prepared: NonNullable<typeof retained> = retained ?? {
+          id: submissionId,
+          owner: destination.owner ??
+            (publishedDestination.scopeKey === destination.scopeKey ? publishedDestination.owner : undefined),
+          displayText: options?.displayText,
+          attachments: syncedAttachments,
+          text,
+          params: submitParams(liveSessionId)
+        }
+
+        const retryKey = retryKeyForTarget()
+        await writePreparedSubmission(retryKey, prepared)
+
+        if (sessionDriftReason()) {return abortForSessionSwitch(liveSessionId)}
+
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. The shared
         // resolver re-registers the stored session and retries once; every
         // other session-scoped RPC (attach, /compress, rewind, interrupt) goes
         // through the same helper so one policy covers the whole bug class.
         let submitErr: unknown = null
+        let legacyAccepted = false
 
         try {
-          const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
+          const recoverStoredSessionId = targetStoredSessionId
 
-          await withSessionNotFoundResume(
+          const { result } = await withSessionNotFoundResume<{ admission_id?: string; status?: string }>(
             sessionId,
             recoverStoredSessionId,
             liveId =>
-              withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', submitParams(liveId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-              ),
+              withSessionBusyRetry(async () => {
+                const params: Record<string, unknown> = { ...prepared.params, session_id: liveId }
+
+                try {
+                  return await requestGateway<{ admission_id?: string; status?: string }>(
+                    'prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                  )
+                } catch (error) {
+                  // 4094 is an explicit PRE-admission capability refusal. Never
+                  // downgrade on a timeout, malformed ACK or an ambiguous retry.
+                  if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 4094 || prepared.legacyAttempted) {
+                    throw error
+                  }
+
+                  prepared.legacyAttempted = true
+                  await writePreparedSubmission(retryKey, prepared)
+                  const { submission_id: _id, ...legacyParams } = params
+
+                  const result = await requestGateway<{ admission_id?: string; status?: string }>(
+                    'prompt.submit', legacyParams, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                  )
+
+                  legacyAccepted = true
+
+                  return result
+                }
+              }),
             {
               requestGateway,
               driftReason: sessionDriftReason,
@@ -816,6 +911,29 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // instead of erroring out and losing the session binding.
             { alsoTimeout: true }
           )
+
+          if (
+            !legacyAccepted &&
+            (result?.admission_id !== submissionId || !['queued', 'started', 'terminal'].includes(result?.status ?? ''))
+          ) {
+            dropOptimistic(sessionId)
+            releaseBusy()
+
+            return false
+          }
+
+          if (result?.admission_id === submissionId) {
+            trackPendingSubmission(targetStoredSessionId ?? liveSessionId, {
+              id: submissionId,
+              text,
+              displayText: options?.displayText,
+              status: result.status
+            })
+
+            if (result.status === 'queued') {
+              dropOptimistic(sessionId)
+            }
+          }
         } catch (firstErr) {
           if (firstErr instanceof SessionRecoveryAborted) {
             console.warn('[submit-drift-abort]', firstErr.reason, { phase: 'post-resume-retry' })
@@ -829,6 +947,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (submitErr !== null) {
           throw submitErr
         }
+
+        await removePreparedSubmission(retryKey)
 
         if (usingComposerAttachments) {
           // A submit owns only the occurrences that actually reached the
@@ -904,7 +1024,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       getRuntimeIdForStoredSession,
       getRouteToken,
       onRuntimeRecovered,
-      requestGateway,
+      ambientRequestGateway,
       runtimeIdByStoredSessionIdRef,
       resumeStoredSession,
       scope,

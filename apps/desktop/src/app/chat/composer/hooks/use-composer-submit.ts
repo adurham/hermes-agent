@@ -3,6 +3,7 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -22,6 +23,7 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
+  busyInputMode?: BusyInputMode | null
   compacting: boolean
   clearDraft: () => void
   disabled: boolean
@@ -57,6 +59,7 @@ export function useComposerSubmit({
   activeQueueSessionKeyRef,
   attachments,
   busy,
+  busyInputMode = 'interrupt',
   compacting,
   clearDraft,
   disabled,
@@ -203,10 +206,12 @@ export function useComposerSubmit({
         clearDraft()
         dispatchSubmit(text)
       } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
-        // Cursor-style stop-and-correct: interrupt the live turn and redirect
-        // it with this text. redirect() preserves the shown reasoning/work; if
-        // the turn already ended, steerDraft re-queues so nothing is lost.
-        steerDraft()
+        // Unloaded policy must not turn an intended queue into an interrupt.
+        if (busyInputMode === 'queue') {
+          queueCurrentDraft()
+        } else if (busyInputMode !== null) {
+          steerDraft(busyInputMode)
+        }
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —
         // queue the whole payload for the next turn. Same for a turn parked on
@@ -236,7 +241,7 @@ export function useComposerSubmit({
   // Redirect the live turn with a correction. The gateway either restarts the
   // active model request with its displayed context or waits for the current
   // tool boundary. If the turn already ended, queue the words instead.
-  const steerDraft = () => {
+  const steerDraft = (mode: 'interrupt' | 'steer' = 'interrupt') => {
     const text = draftRef.current.trim()
 
     // Guard on live editor state, not the render-lagged `canSteer`: a redirect
@@ -248,7 +253,7 @@ export function useComposerSubmit({
     triggerHaptic('submit')
     clearDraft()
 
-    void Promise.resolve(onSteer(text)).then(accepted => {
+    void Promise.resolve(onSteer(text, mode)).then(accepted => {
       if (!accepted && activeQueueSessionKey) {
         enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
       }

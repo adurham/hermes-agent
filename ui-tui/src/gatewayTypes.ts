@@ -182,11 +182,14 @@ export interface SystemBatteryResponse {
 // ── Session lifecycle ────────────────────────────────────────────────
 
 export interface SessionCreateResponse {
+  stored_session_id?: string
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
 }
 
 export interface SessionResumeResponse {
+  stored_session_id?: string
+  session_key?: string
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
@@ -224,6 +227,7 @@ export interface SessionInflightTurn {
 }
 
 export interface SessionActivateResponse {
+  stored_session_id?: string
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
@@ -342,6 +346,11 @@ export interface SessionSteerResponse {
 // ── Prompt / submission ──────────────────────────────────────────────
 
 export interface PromptSubmitResponse {
+  status?: string
+  admission_id?: string
+  target_session_id?: string
+  target_profile_home?: string
+  outcome?: string | null
   ok?: boolean
   /** Set when the submitted text was a bare voice stop phrase consumed
    *  server-side to end the voice chat instead of starting a turn. */
