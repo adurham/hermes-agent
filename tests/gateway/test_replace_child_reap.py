@@ -177,6 +177,10 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
 
     class _CleanExitRunner:
         def __init__(self, config):
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -188,7 +192,7 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
             return True
 
         async def stop(self):
-            return None
+            self._session_db.close()
 
     _pid_state = {"alive": True}
     monkeypatch.setattr(

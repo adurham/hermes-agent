@@ -192,6 +192,10 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
 
     class AbortedStartupRunner:
         def __init__(self, config):
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self._draining = False
             self.config = config
             self.adapters = {}
             self._running = False
@@ -206,6 +210,9 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
 
         async def wait_for_shutdown(self):
             return None
+
+        async def stop(self):
+            self._session_db.close()
 
     def fail_if_cron_starts(*args, **kwargs):
         nonlocal cron_started
@@ -233,6 +240,10 @@ async def test_start_gateway_preserves_service_restart_fallback_after_aborted_st
 
     class AbortedStartupRunner:
         def __init__(self, config):
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self._draining = False
             self.config = config
             self.adapters = {}
             self._running = False
@@ -248,6 +259,9 @@ async def test_start_gateway_preserves_service_restart_fallback_after_aborted_st
 
         async def wait_for_shutdown(self):
             return None
+
+        async def stop(self):
+            self._session_db.close()
 
     def fail_if_cron_starts(*args, **kwargs):
         nonlocal cron_started
@@ -282,6 +296,10 @@ async def test_start_gateway_classifies_startup_signal_exit(
 
     class AbortedStartupRunner:
         def __init__(self, config):
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self._draining = False
             self.config = config
             self.adapters = {}
             self._running = False
@@ -299,6 +317,9 @@ async def test_start_gateway_classifies_startup_signal_exit(
 
         async def wait_for_shutdown(self):
             return None
+
+        async def stop(self):
+            self._session_db.close()
 
     def capture_signal_state(runner, state):
         nonlocal signal_state

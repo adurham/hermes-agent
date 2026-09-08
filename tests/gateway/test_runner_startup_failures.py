@@ -91,6 +91,10 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
 
     class _CleanExitRunner:
         def __init__(self, config):
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -102,7 +106,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
             return True
 
         async def stop(self):
-            return None
+            self._session_db.close()
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
@@ -231,6 +235,10 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
 
     class _CleanExitRunner:
         def __init__(self, config):
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -241,7 +249,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
             return True
 
         async def stop(self):
-            return None
+            self._session_db.close()
 
     _pid_state = {"alive": True}
     def _mock_get_running_pid():
@@ -439,6 +447,10 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
 
     class _FatalConfigRunner:
         def __init__(self, config):
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = "discord: Discord bot token already in use"
@@ -449,7 +461,7 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
             return True
 
         async def stop(self):
-            return None
+            self._session_db.close()
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
