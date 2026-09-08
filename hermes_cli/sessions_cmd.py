@@ -963,11 +963,17 @@ def cmd_sessions(args, sessions_parser=None):
             "pinned": "[]" if getattr(args, "json", False) else
                 "No pinned sessions. Pin one with: hermes sessions pin <session_id>",
         }
-        read_only = action in empty_messages
-        if read_only and not path.exists():
+        # Verified deletion is an explicit mutation, not a read-only export.
+        deleting_export = (
+            action == "export" and getattr(args, "delete_after_verified", False)
+            and getattr(args, "yes", False) and getattr(args, "session_id", None)
+            and getattr(args, "format", None) in ("md", "qmd")
+        )
+        read_only = action in empty_messages and not deleting_export
+        if action in empty_messages and not path.exists():
             print(empty_messages[action])
             return
-        db = SessionDB(db_path=path, read_only=True) if read_only else SessionDB()
+        db = SessionDB(db_path=path, read_only=read_only) if action in empty_messages else SessionDB()
     except Exception as e:
         print(f"Error: Could not open session database: {e}")
         return 1
