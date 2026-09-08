@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import hermes_cli.gateway_setup_service as service_setup
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +24,7 @@ def _no_real_gateway_service(monkeypatch):
     assert the wiring."""
     import hermes_cli.gateway as gateway_mod
 
-    monkeypatch.setattr(gateway_mod, "ensure_gateway_service", lambda **kw: False)
+    monkeypatch.setattr(service_setup, "ensure_gateway_service", lambda **kw: False)
     monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
 
 
@@ -419,7 +420,7 @@ class TestImport:
 
         calls = []
         monkeypatch.setattr(
-            gateway_mod, "ensure_gateway_service",
+            service_setup, "ensure_gateway_service",
             lambda **kw: calls.append(kw) or True,
         )
         monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
@@ -443,7 +444,7 @@ class TestImport:
 
         calls = []
         monkeypatch.setattr(
-            gateway_mod, "ensure_gateway_service",
+            service_setup, "ensure_gateway_service",
             lambda **kw: calls.append(kw) or True,
         )
         monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: True)
@@ -2204,7 +2205,7 @@ class TestImportHonorsHermesHomeOverride:
 
         calls = []
         monkeypatch.setattr(
-            "hermes_cli.gateway.ensure_gateway_service",
+            "hermes_cli.gateway_setup_service.ensure_gateway_service",
             lambda *a, **kw: calls.append(kw),
         )
         monkeypatch.setattr(
@@ -2238,7 +2239,7 @@ class TestImportHonorsHermesHomeOverride:
 
         calls = []
         monkeypatch.setattr(
-            "hermes_cli.gateway.ensure_gateway_service",
+            "hermes_cli.gateway_setup_service.ensure_gateway_service",
             lambda *a, **kw: calls.append(kw),
         )
         monkeypatch.setattr(

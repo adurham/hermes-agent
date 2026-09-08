@@ -1031,7 +1031,8 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
               "To start a gateway for this home, run:  hermes gateway install")
         return
     try:
-        from hermes_cli.gateway import ensure_gateway_service, _is_service_running
+        from hermes_cli.gateway import _is_service_running
+        from hermes_cli.gateway_setup_service import ensure_gateway_service
         if not _is_service_running():
             print()
             ensure_gateway_service(context="import")
