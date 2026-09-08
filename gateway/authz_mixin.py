@@ -477,6 +477,11 @@ class GatewayAuthorizationMixin:
         per-platform allow-all, adapter role auth, pairing store, env/config allowlists,
         ``GATEWAY_ALLOW_ALL_USERS``, default deny.
         """
+        from gateway.session_local import authorize_local_source
+        local_verdict = authorize_local_source(self, source)
+        if local_verdict is not None:
+            return local_verdict
+
         # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
