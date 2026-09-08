@@ -4,12 +4,7 @@
  * avoids workspace dependency graph explosions and keeps packaging
  * deterministic across environments.
  *
- * Also guarantees build/agent-payload exists: extraResources copies it on
- * every build, and electron-builder's behavior for a missing `from` varies
- * between versions. A bundled build stages the real payload there first
- * (`hermes pm bundle --out apps/desktop/build/agent-payload`); anything else
- * gets a stub manifest with external:true, which resolvePayload() treats as
- * "no payload" so the backend resolver falls through to the runtime rungs.
+ * Payload assembly belongs to scripts/bundles. This hook never creates it.
  *
  * Also stages the MSIX build-time assets (the build/appx icon set and the
  * build/msix-extensions.xml fragment the config points customExtensionsPath
@@ -35,14 +30,6 @@ export default async function beforeBuild() {
   stageMsixAssets()
   writeMsixExtensions()
   if (store) stageStoreManifest(path.join(import.meta.dirname, '..'), process.env.HERMES_PAYLOAD_TAG)
-
-  const payloadDir = path.join(import.meta.dirname, '..', 'build', 'agent-payload')
-  const manifest = path.join(payloadDir, 'manifest.json')
-
-  if (!fs.existsSync(manifest)) {
-    fs.mkdirSync(payloadDir, { recursive: true })
-    fs.writeFileSync(manifest, JSON.stringify({ schema: 1, external: true }, null, 2) + '\n')
-  }
 
   return false
 }
@@ -82,9 +69,8 @@ function writeMsixExtensions() {
   const output = path.join('build', 'msix-extensions.xml')
   const file = path.join(desktop, output)
   const manifest = path.join(desktop, 'build', 'agent-payload', 'manifest.json')
-  const payload = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, 'utf8')) : null
-  const launchers = light || !payload || payload.external
-    ? [] : payload.launchers
+  const launchers = ['bundled', 'store'].includes(process.env.HERMES_DESKTOP_VARIANT || '')
+    ? JSON.parse(fs.readFileSync(manifest, 'utf8')).launchers : []
   if (!Array.isArray(launchers)) throw new Error('Bundled payload has no declared launchers')
   const aliases = appExecutionAliasExtensions(launchers)
   // The uap3:AppExtension fragment that registers the app as a Windows

@@ -1267,7 +1267,7 @@ export interface DesktopBootstrapSetupChoice {
   platform: string
   activeRoot: string
   /** What the local card represents: 'none' = installer offer; the rest = use existing. */
-  local: 'none' | 'installed' | 'bundled' | 'bundled-damaged'
+  local: 'none' | 'installed' | 'bundled'
   /** This artifact is a bundled install (payload ships in-app). */
   bundled: boolean
 }

@@ -16,15 +16,24 @@ def test_powershell_activation_roundtrip_selected_environment(tmp_path, monkeypa
     from pm.store import current_target
     from pm.lock import Lockfile
 
-    root = repo_root()
+    source = repo_root()
+    root = tmp_path / "checkout"
+    root.mkdir()
+    shutil.copytree(source / "pm", root / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    (root / "hermes_cli").mkdir()
+    for relative in ("activate.ps1", "hermes_constants.py", "hermes_cli/__init__.py",
+                     "hermes_cli/runtime_paths.py", "hermes_cli/runtime_state.py"):
+        shutil.copyfile(source / relative, root / relative)
+    subprocess.run([sys._base_executable, "-m", "venv", "--without-pip", str(root / ".venv")],
+                   check=True, capture_output=True, timeout=60)
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
     facts = runtime_facts_path(root)
     selected = facts.parent / "environments" / "a" / "venv"
     site = selected / "Lib" / "site-packages"
     site.mkdir(parents=True)
-    (selected / "pyvenv.cfg").write_text("home = test")
-    facts.write_text(json.dumps({"packages": {"venv": {"environment": str(selected)}}}))
+    (selected / "pyvenv.cfg").write_text("home = test", encoding="utf-8")
+    facts.write_text(json.dumps({"packages": {"venv": {"environment": str(selected)}}}), encoding="utf-8")
     store = tmp_path / "tools"
     store.mkdir()
     lock = Lockfile(root / "pm" / "lock.json")
@@ -35,7 +44,7 @@ def test_powershell_activation_roundtrip_selected_environment(tmp_path, monkeypa
         "entry": entry.name, "version": lock.version("python"), "target": target,
         "artifacts": [a["sha256"] for a in lock.artifacts("python", target)],
         "env": {"HERMES_ACTIVATE_CANARY": "active"},
-    }}}))
+    }}}), encoding="utf-8")
     env = dict(os.environ, HERMES_RUNTIME_DIR=str(store), PYTHONPATH="caller-original",
                PATHEXT=".COM;.EXE;.BAT;.CMD")
     script = tmp_path / "run.ps1"

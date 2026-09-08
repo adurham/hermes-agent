@@ -3145,10 +3145,6 @@ export const zh: Translations = {
     useLocalTitle: '使用这台电脑上的 Hermes',
     useLocalDesc: '此电脑已安装 Hermes 运行时——一键启动，无需下载。',
     bundledLocalDesc: '此应用自带 Hermes 运行时——捆绑后端即本地安装。',
-    bundledDamagedTitle: '捆绑后端不可用',
-    bundledDamagedDesc:
-      '此应用捆绑的 Hermes 运行时未能加载。重新安装 Hermes Desktop 以恢复。',
-    reinstallApp: '重新安装 Hermes Desktop',
     localStartUnavailable: '无法启动本地安装。请重启 Hermes Desktop 后重试。',
     remoteSetupTitle: '连接到现有 Hermes',
     remoteSetupDesc: '输入网关 URL。Hermes Desktop 会检测需要令牌还是浏览器登录。',

@@ -7,9 +7,8 @@
 //            an update is available (via the bundled payload python's winrt),
 //            show its own prompt, run graceful teardown, then trigger
 //            the downloaded App Installer file and quit. Installations that Windows manages
-//            for us — Microsoft Store deployments (process.windowsStore) and
-//            stamps whose updateMechanism is 'external' — get NO in-app
-//            updater at all: the store/steward owns the update loop.
+//            for us declare updateMechanism 'external'. They get no in-app
+//            updater: the store or package manager owns the update loop.
 //
 // Source installs never reach this module. The callers gate on the install
 // stamp first and fall through to the git-based update path.

@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hermes_cli import update_channel  # noqa: E402
+from hermes_cli.steward import UPDATE_MECHANISMS  # noqa: E402
 
 STAMP_SCHEMA_VERSION = 2
 _REPO_ROOT = Path(__file__).parent.parent.resolve()
@@ -47,9 +48,8 @@ _REPO_ROOT = Path(__file__).parent.parent.resolve()
 #                      source checkouts).
 #   electron-updater — the in-app updater replaces the artifact (NSIS,
 #                      mac .app, AppImage).
-#   external         — something else replaces the artifact wholesale
-#                      (nix, docker, MSIX / app stores).
-UPDATE_MECHANISMS = ("self", "electron-updater", "external")
+#   app-installer    — the app hands the update to Windows App Installer.
+#   external         — a package manager or app store owns updates.
 
 # Hermes's historical tags use a four-digit calendar year as their major
 # component (for example v2026.7.20). Restrict release majors to three digits
@@ -295,7 +295,8 @@ def main() -> int:
         required=True,
         choices=UPDATE_MECHANISMS,
         help="Who applies the next update: 'self' (hermes update), "
-        "'electron-updater' (in-app updater), 'external' (nix/docker/store)",
+        "'app-installer' (Windows App Installer), 'electron-updater' (in-app updater), "
+        "'external' (nix/docker/store)",
     )
     parser.add_argument(
         "--runtime-dir",

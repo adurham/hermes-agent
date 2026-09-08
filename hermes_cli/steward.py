@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 BUILD_INFO_NAME = "install-stamp.json"
+UPDATE_MECHANISMS = ("self", "app-installer", "electron-updater", "external")
 
 STEWARD_DESKTOP = "desktop-app"
 STEWARD_DOCKER = "docker"

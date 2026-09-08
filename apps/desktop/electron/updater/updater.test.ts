@@ -3,31 +3,44 @@
 
 import { describe, expect, it } from 'vitest'
 
+import { buildStampPayload } from '../../scripts/write-build-stamp.mjs'
+
 import { appInstallerCheckToStatus, parseCheckOutput } from './app-installer'
 import { buildManualUpdateCommand } from './checkout'
 import { consumePendingRelaunch, PENDING_RELAUNCH_FILENAME, registerUpdateRelaunch, writePendingRelaunch } from './relaunch'
 
 import { resolveUpdaterMechanism } from './index'
 
-describe('resolveUpdaterMechanism — install ownership', () => {
-  it.each(['bundled', 'light'] as const)('macOS %s updates without probing for Python', payload => {
-    expect(resolveUpdaterMechanism({ isPackaged: true, payload, platform: 'darwin', updateMechanism: 'electron-updater', isWindowsStore: false })).toBe('electron-updater')
-  })
+describe('build stamp → update ownership', () => {
+  const provenance = { commit: 'a'.repeat(40), branch: 'main', dirty: false, source: 'ci' }
+
+  const runtime = {
+    repoDir: 'app', toolsDir: 'tools', storePython: 'tools/python/python',
+    sitePackages: 'deps', commands: { hermes: 'bin/hermes' }
+  }
 
   it.each([
-    ['win32', false, 'app-installer'],
-    ['win32', true, 'external'],
-    ['linux', false, 'external'],
-    ['darwin', false, 'external']
-  ] as const)('preserves %s steward ownership (store=%s)', (platform, isWindowsStore, expected) => {
-    expect(resolveUpdaterMechanism({ isPackaged: true, payload: 'bundled', platform, isWindowsStore, updateMechanism: 'external' })).toBe(expected)
+    ['win32', 'bundled', 'app-installer', 'app-installer'],
+    ['win32', 'store', 'external', 'external'],
+    ['win32', 'light', 'external', 'external'],
+    ['darwin', 'bundled', 'electron-updater', 'electron-updater'],
+    ['darwin', 'light', 'electron-updater', 'electron-updater'],
+    ['linux', 'bundled', 'external', 'external'],
+    ['linux', 'light', 'external', 'external'],
+    ['win32', '', 'self', 'windows-handoff'],
+    ['darwin', '', 'self', 'posix-handoff'],
+    ['linux', '', 'self', 'posix-handoff']
+  ] as const)('%s %s dispatches its declared owner without a Store flag', (platform, variant, declared, strategy) => {
+    const stamp = buildStampPayload(provenance, { HERMES_DESKTOP_VARIANT: variant }, platform, { runtime })
+
+    expect(stamp.updateMechanism).toBe(declared)
+    expect(stamp).not.toHaveProperty('store')
+    expect(resolveUpdaterMechanism({ platform, updateMechanism: stamp.updateMechanism })).toBe(strategy)
   })
 
-  it.each(['win32', 'darwin', 'linux'] as const)('dev and bootstrap %s retain checkout updates', platform => {
-    const facts = { isPackaged: true, platform, payload: 'bootstrap' as const, updateMechanism: 'self' as const, isWindowsStore: false }
-    const expected = platform === 'win32' ? 'windows-handoff' : 'posix-handoff'
-    expect(resolveUpdaterMechanism(facts)).toBe(expected)
-    expect(resolveUpdaterMechanism({ ...facts, isPackaged: false, payload: 'bundled' })).toBe(expected)
+  it.each(['win32', 'darwin', 'linux'] as const)('unstamped %s development uses source updates', platform => {
+    expect(resolveUpdaterMechanism({ platform, updateMechanism: undefined }))
+      .toBe(platform === 'win32' ? 'windows-handoff' : 'posix-handoff')
   })
 })
 

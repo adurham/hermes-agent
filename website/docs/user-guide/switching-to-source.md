@@ -1,117 +1,168 @@
-# Switching to a Source Install
-
-You started with the desktop app, the installer script, Docker, or Nix —
-and now you want to run from a source checkout (to develop on Hermes, use
-a branch, or escape a packaged-update issue). This page is that move,
-without losing your sessions, memory, skills, or configuration.
-
-**The one invariant: your data lives in `HERMES_HOME` (default
-`~/.hermes`), never inside the application.** A source install is just a
-new code checkout pointing at the same home. Nothing is copied; nothing
-is lost. Switching back later is the same procedure in reverse.
-
+---
+title: "Switching to a Source Install"
+description: "Run a separate source checkout without overwriting packaged files or losing track of user data"
 ---
 
-## Step 1 — back up (one command)
+# Switching to a source install
+
+A source checkout and a packaged app are separate installations. A bundled
+app continues to use its own payload; it does not adopt a nearby checkout.
+Use a source-built desktop when you want the GUI to run modified code.
+
+User data normally lives outside the application:
+
+| Host | Default data location |
+|---|---|
+| Linux, macOS, WSL, Termux | `~/.hermes/` |
+| Native Windows | `%LOCALAPPDATA%\hermes\` |
+| Official Docker container | `/opt/data/`, mapped to host storage |
+
+`HERMES_HOME` and the selected profile can override these defaults. Record the
+actual source and destination homes before changing installations.
+
+## 1. Back up and stop the old runtime
+
+From the existing installation, run:
 
 ```bash
 hermes backup
+hermes gateway status
 ```
 
-This snapshots your home (config, sessions, memory, skills, cron jobs).
-Not strictly required — the switch doesn't delete anything — but it's
-the cheap insurance before any install change.
+Keep the backup outside any directory you plan to remove. Backups can contain
+credentials, so protect them accordingly.
 
-## Step 2 — clone the checkout
+Quit the desktop and stop gateways/services that you own before the handoff.
+Desktop quit and `hermes gateway stop` are different operations: quitting the
+app does not necessarily stop an independently managed messaging gateway.
+
+The per-profile gateway lock prevents duplicate gateways. Session locks and
+SQLite concurrency are separate concerns; starting a second process does not
+itself switch SQLite journal mode. For the handoff, avoid mixed code versions
+writing the same home while either version performs migrations.
+
+## 2. Clone an independent checkout
 
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 ```
 
-For your own development: fork first, clone your fork, and add the
-upstream remote:
+For development, clone your fork instead and add the canonical repository as
+`upstream`. Select the branch or commit before preparing dependencies.
+Do not clone into a signed app package or overwrite the packaged runtime.
+
+## 3. Prepare the source runtime
+
+Read the [developer workflow](/reference/package-management#developer-workflow)
+for native build prerequisites and current bootstrap limitations. Select your
+intended `HERMES_HOME` before preparation, then use the checkout's PM bootstrap:
 
 ```bash
-git remote add upstream https://github.com/NousResearch/hermes-agent.git
+bash setup-hermes.sh
+source ./activate
+python hermes --version
 ```
 
-## Step 3 — create the venv and install
+On native Windows, use PowerShell:
+
+```powershell
+.\setup-hermes.ps1
+. .\activate.ps1
+python hermes --version
+```
+
+The bootstrap reads tool pins from `pm/lock.json` and delegates installation
+to PM. Current first-party code requires Python 3.14 (`>=3.14,<3.15`).
+The source default is the `all` extra, not the desktop bundle's `--all-extras`.
+
+Activation composes the installed tool environment. `python hermes` explicitly
+runs this checkout and avoids an older `hermes` command or MSIX alias on PATH.
+`deactivate` restores the shell environment when you finish.
+
+For test dependencies and manual environments, use the
+[development setup](/developer-guide/contributing).
+See [Package management](/reference/package-management) for selected Python
+generations and writable tool storage.
+
+## 4. Select data deliberately
+
+For normal use on the same host, select the same `HERMES_HOME` and profile as
+the previous installation. For development, a separate home is safer because
+new code can migrate stored data.
+
+POSIX example:
 
 ```bash
-uv venv
-source .venv/bin/activate    # Windows: .venv\Scripts\activate
-uv sync --extra all
+export HERMES_HOME="$HOME/hermes-source-data"
+python hermes setup
+python hermes
 ```
 
-This uses the committed `uv.lock` — the same dependency set the
-packaged builds carry, with hashes.
+PowerShell example:
 
-## Step 4 — run from source
-
-```bash
-hermes        # or: hermes gateway / hermes --tui / python -m hermes_cli.main
+```powershell
+$env:HERMES_HOME = Join-Path $HOME 'hermes-source-data'
+python hermes setup
+python hermes
 ```
 
-The CLI resolves from your checkout (the venv's `hermes` entry point
-points at the repo). Your `HERMES_HOME` is untouched — the source
-install reads the same config, sessions, and memory the packaged install
-did.
+If you change the home after preparing PM state, run the bootstrap for that
+home before relying on its selected dependencies. Do not assume that changing
+the environment variable moves data or copies runtime state.
 
-:::warning Windows App Installer / MSIX users
-The desktop app's bundled payload and a source checkout are separate
-installs that can coexist. If the desktop app is running, its backend
-keeps its own payload — stop it (`hermes gateway stop` or quit the app)
-before using the source CLI against the same home, so two writers never
-share one `state.db` (the gateway uses WAL mode; a second writer flips
-journal modes).
-:::
-
-## Step 5 — switching back
-
-Just run the packaged command again (open the desktop app, or use the
-installer script). Both installs read the same `HERMES_HOME`; the last
-one to run owns the session locks. If you stop developing, delete the
-checkout — your home survives it.
-
----
+To build a source desktop, run `python hermes desktop` from the prepared
+checkout. Opening the old packaged app still starts its packaged backend.
 
 ## Docker users
 
-A source checkout replaces the image: run the checkout's `hermes`
-directly, or build the image from the checkout
-(`docker build -t hermes-agent .`). Your data volume (`/opt/data` by
-default — the `HERMES_HOME` inside the container) is mounted, not
-copied: point the source install's `HERMES_HOME` at the same volume and
-it sees everything the container did.
+`/opt/data` is a container path, not necessarily a usable host path. For a bind
+mount, use the host-side directory as the source process's `HERMES_HOME`.
+For a named volume or Docker Desktop VM storage, stop the old gateway first.
+Then export/import a backup or copy data through a controlled mount.
+Check ownership and permissions on the destination.
 
-## Nix users
+A local `docker build -t hermes-agent .` produces another image-managed install.
+It does not turn the running container into a self-updating source checkout.
+Recreate the container to use that image. See [Docker](/user-guide/docker).
 
-Use the flake from the checkout (`nix run .` / `nix develop`). The Nix
-store paths change per checkout; your `HERMES_HOME` does not.
+## Nix and Termux users
 
-## What moves where (reference)
+A local `nix run .` still runs a Nix-owned derivation. Its package files remain
+immutable and updates stay with Nix. Use `nix develop` for a development shell,
+or the source procedure above where the host supports it.
 
-| Thing | Location | Moves? |
-|---|---|---|
-| Sessions, memory, skills, config | `HERMES_HOME` (`~/.hermes`) | **No** — both installs read it |
-| Cron jobs | `HERMES_HOME/cron` | No |
-| Logs | `HERMES_HOME/logs` | No (both install kinds write the same logs) |
-| Tool binaries (pm store) | machine-scoped tools dir | No — shared between installs |
-| Python venv | inside the checkout | New — the source venv is the source install |
-| Desktop payload | inside the app package | Untouched |
+The Termux distribution is a bionic APT package. The desktop/server source
+bootstrap is not its supported development or repair route. Use the
+[Termux guide](/getting-started/termux) for its package and build boundaries.
+
+## Switch back without assuming a downgrade is safe
+
+Stop the source runtime, leave its activation, and open the packaged app.
+Inspect which CLI command resolves before using `hermes` again:
+
+```bash
+command -v hermes
+```
+
+On Windows, use `Get-Command hermes -All`. Do not replace an unrelated command
+or execution alias without checking its owner.
+
+A newer source revision can change data formats. Returning to an older package
+is not the reverse of a schema migration. Preserve current data and restore a
+compatible pre-switch backup if the older package requires it.
+
+Deleting the source checkout does not remove the packaged app. It also does
+not automatically collect every PM tool entry or Python generation. Use PM's
+diagnostics and garbage collection rather than deleting the shared data root.
 
 ## Troubleshooting
 
-**"ModuleNotFoundError" running `hermes`** — you're outside the venv, or
-the venv was built from an old lock. Re-run `uv sync --extra all` inside
-the activated venv.
-
-**Two gateways started** — the packaged install's gateway is still
-running. `hermes gateway status` shows it; `hermes gateway stop` stops
-it. The gateway lock (`gateway.lock`) prevents silent double-runs on
-the same profile, but stop one anyway.
-
-**Different versions of the same skill** — skills live in `HERMES_HOME`,
-not the checkout; both installs share them. Bundled skills re-sync on
-first run of the newer code (the skills-sync step in boot bootstrap).
+- **Wrong version:** inspect command resolution, then use `python hermes --version`
+  from the activated checkout.
+- **Missing dependencies:** run `python -m pm.cli install` from the intended
+  source environment, then restart the affected Hermes process.
+- **Gateway already running:** inspect `python hermes gateway status` for the
+  selected profile. Stop the identified owner; do not kill unrelated processes.
+- **Different skills after first run:** newer code can sync bundled skills into
+  the data home. A source checkout is not a read-only view of that home.

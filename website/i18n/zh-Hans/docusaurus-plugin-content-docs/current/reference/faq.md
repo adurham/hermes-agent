@@ -52,11 +52,11 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 参见：
 
 - [在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
-- [浏览器自动化](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
+- [浏览器自动化](../user-guide/features/browser.md#wsl2--windows-chrome优先使用-mcp-而非-browser-connect)
 
 ### 支持 Android 吗？
 
-不支持 — Hermes 已移除 Android 和 Termux 支持。请参阅[平台支持页面](../getting-started/platform-support.md)了解支持的平台。
+aarch64 设备可使用预发布的 Termux APT 软件包。请参阅 [Termux 指南](../getting-started/termux.md)了解签名仓库、安装步骤和限制。请使用 `pkg upgrade hermes-agent` 更新，不要使用 `hermes update` 或桌面和服务器的安装脚本。
 
 ### 我的数据会被发送到哪里？
 
@@ -93,7 +93,7 @@ Hermes 会将端点、提供商和 base URL 持久化到 `config.yaml`，重启�
 :::
 
 :::tip 本地模型超时问题
-Hermes 会自动检测本地端点并放宽流式传输超时（读取超时从 120s 提升至 1800s，禁用停滞流检测）。如果在非常大的上下文下仍然超时，请在 `.env` 中设置 `HERMES_STREAM_READ_TIMEOUT=1800`。详情请参阅[本地 LLM 指南](../guides/local-llm-on-mac.md#timeouts)。
+Hermes 会自动检测本地端点并放宽流式传输超时（读取超时从 120s 提升至 1800s，禁用停滞流检测）。如果在非常大的上下文下仍然超时，请在 `.env` 中设置 `HERMES_STREAM_READ_TIMEOUT=1800`。详情请参阅[本地 LLM 指南](../guides/local-llm-on-mac.md#超时设置)。
 :::
 
 ### 费用是多少？
@@ -153,20 +153,12 @@ ls ~/.local/bin/hermes
 安装程序会将 `~/.local/bin` 添加到您的 PATH。如果您使用非标准 shell 配置，请手动添加 `export PATH="$HOME/.local/bin:$PATH"`。
 :::
 
-#### Python 版本过旧
+#### Python 版本不受支持
 
-**原因：** Hermes 需要 Python 3.11 或更新版本。
-
-**解决方案：**
-```bash
-python3 --version   # 检查当前版本
-
-# 安装更新的 Python
-sudo apt install python3.12   # Ubuntu/Debian
-brew install python@3.12      # macOS
-```
-
-安装程序会自动处理此问题 — 如果在手动安装时看到此错误，请先升级 Python。
+Hermes 要求 Python 3.14（`>=3.14,<3.15`），不是任意更新版本。
+源码安装脚本和软件包会提供相应的运行时。
+手动开发环境请按照 [开发指南](/developer-guide/contributing)准备。
+不要在签名应用或容器内部替换 Python 来修复版本错误。
 
 #### 终端命令提示 `node: command not found`（或 `nvm`、`pyenv`、`asdf` 等）
 
@@ -333,7 +325,7 @@ custom_providers:
         context_length: 32768
 ```
 
-有关自动检测的工作原理及所有覆盖选项，请参阅[上下文长度检测](../integrations/providers.md#context-length-detection)。
+有关自动检测的工作原理及所有覆盖选项，请参阅[上下文长度检测](../integrations/providers.md#上下文长度检测)。
 
 ---
 

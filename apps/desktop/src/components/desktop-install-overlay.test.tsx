@@ -617,40 +617,5 @@ describe('DesktopInstallOverlay bundled / already-installed cards', () => {
     expect(screen.queryByText(/Will install to/i)).toBeNull()
   })
 
-  it('disables the local card for a damaged bundled payload — never an install action', async () => {
-    const desktop = installDesktopMock(
-      bootstrapState({
-        setupChoice: {
-          platform: 'win32',
-          activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent',
-          local: 'bundled-damaged',
-          bundled: true
-        }
-      })
-    )
 
-    render(<DesktopInstallOverlay />)
-
-    expect(await screen.findByText('Use Hermes bundled with this app')).toBeTruthy()
-    expect(screen.getByText(/missing or damaged/i)).toBeTruthy()
-
-    const localCard = screen.getByText('Use Hermes bundled with this app').closest('button')
-    expect(localCard).toBeTruthy()
-    expect(localCard?.getAttribute('aria-disabled')).toBe('true')
-
-    // Clicking the disabled card must never fire the local bootstrap bridge.
-    fireEvent.click(screen.getByText('Use Hermes bundled with this app'))
-    expect(desktop.continueBootstrapLocal).not.toHaveBeenCalled()
-
-    // The docs "Reinstall the app" affordance is present and opens the docs
-    // site — not an installer.
-    const reinstall = screen.getByText('Reinstall the app')
-    expect(reinstall).toBeTruthy()
-    fireEvent.click(reinstall)
-    expect(desktop.openExternal).toHaveBeenCalledWith('https://hermes-agent.nousresearch.com/docs/user-guide/desktop')
-
-    // The remote card stays clickable — connecting remotely is the working path.
-    fireEvent.click(screen.getByText('Connect to existing Hermes'))
-    expect(await screen.findByText('Gateway URL')).toBeTruthy()
-  })
 })

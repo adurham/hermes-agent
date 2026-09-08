@@ -91,7 +91,7 @@ import {
   buildBrowserWindowUrl
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
-import { detectBundleSwap } from './bundle-swap'
+import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -233,7 +233,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
-import { INSTALL_STAMP as BAKED_INSTALL_STAMP } from './install-stamp'
+import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
@@ -278,7 +278,7 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { adoptPayloadVenv, installIdForRoot, isBundledInstall, type PayloadInfo, resolvePayload } from './payload-backend'
+import { bundledPayload, installIdForRoot, type PayloadInfo } from './payload-backend'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -695,75 +695,7 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding')
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
-// Build-time install stamp -- the git ref this .exe was built against.
-//
-// Written by apps/desktop/scripts/write-build-stamp.mjs during `npm run build`
-// and bundled into packaged apps via electron-builder's extraResources entry,
-// so the runtime stamp ends up at process.resourcesPath/install-stamp.json
-// after install. The bootstrap runner (Phase 1D) reads it to know which
-// commit to clone when running install.ps1 stages at first launch.
-//
-// Returns null when the file is missing (dev runs from a checkout where
-// build hasn't been invoked, or schema mismatch). Callers must handle null.
-//
-// Schema:
-//   { schemaVersion: 1, commit, branch, builtAt, dirty, source }
-const INSTALL_STAMP_SCHEMA_VERSION = 1
-
-function loadInstallStamp() {
-  // Try packaged location first (resources/install-stamp.json), then the
-  // dev/local build output (apps/desktop/build/install-stamp.json) so
-  // someone running `npm run start` after a local `npm run build` also
-  // sees a stamp without needing a packaged build.
-  const candidates = [
-    process.resourcesPath ? path.join(process.resourcesPath, 'install-stamp.json') : null,
-    path.join(APP_ROOT, 'build', 'install-stamp.json')
-  ].filter(Boolean)
-
-  for (const p of candidates) {
-    try {
-      const raw = fs.readFileSync(p, 'utf8')
-      const parsed = JSON.parse(raw)
-
-      if (parsed && typeof parsed === 'object' && typeof parsed.commit === 'string' && parsed.commit.length >= 7) {
-        if (parsed.schemaVersion !== INSTALL_STAMP_SCHEMA_VERSION) {
-          console.warn(
-            `[hermes] install-stamp.json schemaVersion ${parsed.schemaVersion} != expected ${INSTALL_STAMP_SCHEMA_VERSION}; ignoring`
-          )
-
-          continue
-        }
-
-        return Object.freeze({
-          schemaVersion: parsed.schemaVersion,
-          commit: parsed.commit,
-          branch: parsed.branch || null,
-          builtAt: parsed.builtAt || null,
-          dirty: Boolean(parsed.dirty),
-          source: parsed.source || null,
-          path: p,
-          // Bundled/light artifacts carry these; mirror them so the union
-          // with the baked stamp stays typed (tag/payload drive the App
-          // Installer channel + variant; store separates Microsoft Store
-          // deployments from App Installer sideloads).
-          tag: typeof parsed.tag === 'string' ? parsed.tag : null,
-          payload: parsed.payload === 'light' || parsed.payload === 'bundled' ? parsed.payload : 'bootstrap',
-          store: typeof parsed.store === 'boolean' ? parsed.store : undefined
-        })
-      }
-    } catch (e) {
-      console.warn(`[hermes] install-stamp.json found at ${p} , but parsing failed with ${e}`)
-      // Either ENOENT or malformed JSON; try the next candidate
-    }
-  }
-
-  return null
-}
-
-// The baked build-time constant (production bundles) wins; loadInstallStamp()
-// remains as the dev/extraResources fallback when nothing was baked.
-const INSTALL_STAMP = BAKED_INSTALL_STAMP ?? loadInstallStamp()
-
+// Runtime identity comes only from the baked artifact stamp. Dev runs have none.
 if (INSTALL_STAMP) {
   console.log(
     `[hermes] install stamp: ${INSTALL_STAMP.commit ? INSTALL_STAMP.commit.slice(0, 12) : 'no-commit'}${INSTALL_STAMP.branch ? ` (${INSTALL_STAMP.branch})` : ''}${INSTALL_STAMP.dirty ? ' [DIRTY]' : ''} from ${INSTALL_STAMP.source || 'unknown'}`
@@ -2123,7 +2055,7 @@ function promptFirstRunSetupChoice(backend) {
     platform: backend.platform || process.platform,
     activeRoot: backend.activeRoot || ACTIVE_HERMES_ROOT,
     local: backend.local || 'none',
-    bundled: isBundledInstall(process.resourcesPath, { fileExists })
+    bundled: installShape() === 'bundled'
   })
 }
 
@@ -2329,7 +2261,7 @@ function relaunchIntoSwappedBundle() {
     return false
   }
 
-  if (!detectBundleSwap(INSTALL_STAMP, loadInstallStamp())) {
+  if (!detectBundleSwap(INSTALL_STAMP, readBundleSwapStamp(process.resourcesPath))) {
     return false
   }
 
@@ -3209,11 +3141,8 @@ let packagedUpdateStrategy: UpdaterStrategy | undefined
 
 function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
   const mechanism = resolveUpdaterMechanism({
-    isPackaged: IS_PACKAGED,
     platform: process.platform,
-    payload: INSTALL_STAMP?.payload,
-    updateMechanism: BAKED_INSTALL_STAMP?.updateMechanism,
-    isWindowsStore: isWindowsStore()
+    updateMechanism: INSTALL_STAMP?.updateMechanism
   })
 
   if (mechanism === 'windows-handoff' || mechanism === 'posix-handoff') { return null }
@@ -3243,15 +3172,17 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
   }
 
   if (mechanism === 'app-installer') {
-    const bundledPayload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
+    const payload = bundledPayload(process.resourcesPath)!
 
-    if (!bundledPayload) { return new ExternalStrategy() }
     packagedUpdateStrategy = new AppInstallerStrategy({
-      python: bundledPayload.storePython,
+      python: payload.storePython,
       // The checker ships inside the payload's repo snapshot (git archive of
       // the committed tree): <payload>/<repo>/apps/desktop/scripts/.
-      script: path.join(bundledPayload.repoDir, 'apps', 'desktop', 'scripts', 'check-appinstaller-update.py'),
-      run: runPayloadPython,
+      script: path.join(payload.repoDir, 'apps', 'desktop', 'scripts', 'check-appinstaller-update.py'),
+      run: (python, script) => runAppInstallerChecker(python, script, {
+        env: { ...process.env, PYTHONPATH: payload.sitePackages },
+        onStderr: stderr => console.error(`[app-installer] checker stderr: ${stderr.slice(0, 400)}`)
+      }),
       channel: resolveUpdaterChannelFromStamp(),
       light: isLightVariant(),
       feedBaseUrl: resolveDesktopFeedBaseUrl(),
@@ -3279,7 +3210,7 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
               processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
               identityName: PRODUCT_IDENTITY.msixAppIdWithOrg,
               scriptPath: path.join(
-                bundledPayload.repoDir,
+                payload.repoDir,
                 'apps',
                 'desktop',
                 'scripts',
@@ -3337,21 +3268,6 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
   })
 }
 
-/** True when this process is a Microsoft Store deployment. */
-function isWindowsStore(): boolean {
-  // process.windowsStore is true for ANY MSIX package — App Installer
-  // sideloads included — not just Microsoft Store deployments (electron.d.ts:
-  // "If the app is running as an MSIX package ... this property is true").
-  // The store-vs-sideload distinction is a BUILD-TIME fact baked into the
-  // stamp (HERMES_DESKTOP_VARIANT=store vs bundled); trust it when present
-  // and fall back to the Electron flag only for dev runs / legacy stamps.
-  if (INSTALL_STAMP && typeof INSTALL_STAMP.store === 'boolean') {
-    return INSTALL_STAMP.store
-  }
-
-  return Boolean((process as any).windowsStore)
-}
-
 /**
  * The App Installer feed base URL for a bundled MSIX install: config.yaml's
  * `updates.desktop_feed_base_url`, then HERMES_DESKTOP_FEED_BASE_URL, then
@@ -3394,28 +3310,6 @@ function resolveUpdaterChannelFromStamp(): 'stable' | 'canary' {
 /** True when this artifact is the light (remote-only) variant. */
 function isLightVariant(): boolean {
   return INSTALL_STAMP?.payload === 'light'
-}
-
-/**
- * Run a bundled payload python script (the App Installer update checker).
- * The payload python needs the payload venv's site-packages on PYTHONPATH to
- * import the winrt module — the same way the bundled CLI launcher sets it.
- * Bounded via runAppInstallerChecker: a wedged child is killed at the
- * deadline and reported as an unknown, and the deadline resolves even if the
- * child never emits close (see appinstaller-checker.ts).
- */
-async function runPayloadPython(python: string, script: string): Promise<{ code: number; stdout: string }> {
-  const payload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
-  const env = { ...process.env }
-
-  if (payload?.sitePackages) {
-    env.PYTHONPATH = payload.sitePackages
-  }
-
-  return runAppInstallerChecker(python, script, {
-    env,
-    onStderr: stderr => console.error(`[app-installer] checker stderr: ${stderr.slice(0, 400)}`)
-  })
 }
 
 /**
@@ -4045,7 +3939,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // runtime; recovery means reinstalling the app, not spawning the
   // updater. (ensureRuntime's bundled guard also short-circuits before
   // this call; this is the belt-and-suspenders check.)
-  if (isBundledInstall(process.resourcesPath, { fileExists })) {
+  if (installShape() === 'bundled') {
     rememberLog('[bootstrap] refusing updater recovery hand-off on a bundled install; reinstall the app')
 
     return false
@@ -4656,7 +4550,7 @@ function createActiveBackend(backendArgs) {
  * NOT get this: the AppExecutionAlias is the mechanism there.
  */
 function provisionPosixCliOnPath(payload: PayloadInfo): void {
-  const names = ['hermes', 'hermes-agent', 'hermes-acp']
+  const names = Object.keys(payload.commands)
 
   try {
     const binDir = path.join(os.homedir(), '.local', 'bin')
@@ -4664,7 +4558,7 @@ function provisionPosixCliOnPath(payload: PayloadInfo): void {
     let linked = 0
 
     for (const name of names) {
-      const source = path.join(payload.root, 'bin', name)
+      const source = payload.commands[name]
       const target = path.join(binDir, name)
 
       // lstat, not exists: a DANGLING symlink from a previous install (the
@@ -4686,79 +4580,23 @@ function provisionPosixCliOnPath(payload: PayloadInfo): void {
 }
 
 function resolveHermesBackend(backendArgs) {
-  // 0. Shipped payload — a bundled install carries the whole runtime under
-  //    resources/agent-payload (staged by `hermes pm bundle`). The venv's
-  //    interpreter self-locates: adoptPayloadVenv() verifies the store
-  //    python + site-packages resolve (no pyvenv.cfg write — read-only
-  //    MSIX-safe), and HERMES_RUNTIME_DIR aims pm at the payload store.
-  //    Nothing installs on the user machine.
-  const payload = resolvePayload(process.resourcesPath, {
-    fileExists,
-    directoryExists,
-    isWindows: IS_WINDOWS
-  })
+  const payload = bundledPayload(process.resourcesPath)
 
-  if (payload && adoptPayloadVenv(payload, { isWindows: IS_WINDOWS, log: rememberLog })) {
-    if (bootstrapRepairRequested) {
-      // A bundled payload is immutable — repair means "reinstall the app".
-      rememberLog('[payload] repair requested on a bundled install; the payload is read-only — ignoring')
-    }
-
-    // POSIX-only, silent best-effort: symlink the CLI trampolines out to
-    // ~/.local/bin (the ExecutionAlias covers this on Windows).
+  if (payload) {
     if (!IS_WINDOWS) {
       provisionPosixCliOnPath(payload)
     }
 
-    // Bundled builds run the STORE python via the self-relative CLI
-    // launcher (bin/hermes.exe on win32, bin/hermes on POSIX — works on
-    // read-only MSIX, no pyvenv.cfg write). The launcher sets PYTHONPATH
-    // to the payload's repo + venv site-packages itself, so the backend
-    // needs only the managed-tools dir from us.
     return {
       kind: 'python',
       label: `bundled payload at ${payload.root}`,
       command: payload.shim,
       args: [...backendArgs],
-      env: {
-        ...buildDesktopBackendEnv(),
-        HERMES_RUNTIME_DIR: payload.toolsDir
-      },
+      env: { ...buildDesktopBackendEnv(), HERMES_RUNTIME_DIR: payload.toolsDir },
       root: payload.repoDir,
       bootstrap: false,
       shell: false,
       local: 'bundled'
-    }
-  }
-
-  // A bundled artifact that failed to resolve must NEVER fall through the
-  // ladder to bootstrap-needed: the payload IS the local Hermes, it is
-  // immutable (sealed at build time, often read-only MSIX), and running
-  // install.ps1 would download and install a SECOND, separate Hermes into
-  // the user's machine on top of one the app already carries. Skip ALL
-  // remaining local rungs — explicit dev overrides included; a developer
-  // who wants a checkout should run a non-bundled build
-  // (HERMES_DESKTOP_VARIANT unset → external stub → not bundled). The
-  // payload-healthy path above returns before this guard, so a working
-  // bundle is unaffected.
-  if (isBundledInstall(process.resourcesPath, { fileExists })) {
-    rememberLog(
-      '[bootstrap] bundled payload missing or damaged; REFUSING to run the installer — reinstall the app to restore the runtime'
-    )
-
-    return {
-      kind: 'bundled-unusable',
-      label: 'The Hermes runtime bundled with this app is missing or damaged; reinstall the app',
-      command: null,
-      args: backendArgs,
-      bootstrap: false,
-      env: {},
-      shell: false,
-      activeRoot: ACTIVE_HERMES_ROOT,
-      installStamp: INSTALL_STAMP,
-      isPackaged: IS_PACKAGED,
-      platform: process.platform,
-      local: 'bundled-damaged'
     }
   }
 
@@ -4904,28 +4742,9 @@ async function ensureRuntime(backend) {
   // will rewire startup to spawn the window first and route bootstrap events
   // to a renderer-side install overlay.
   //
-  // Defense in depth: a bundled artifact must NEVER reach this branch. The
-  // resolver's bundled-unusable sentinel is the primary guard; this check
-  // covers any future path that produces bootstrap-needed on a bundled
-  // install (e.g. a stale repair flag racing the resolver).
-  if (backend.kind === 'bootstrap-needed' && isBundledInstall(process.resourcesPath, { fileExists })) {
+  // The artifact kind forbids bootstrap even when a caller requests repair.
+  if (backend.kind === 'bootstrap-needed' && installShape() === 'bundled') {
     rememberLog('[bootstrap] REFUSING installer on a bundled install; payload missing or damaged — reinstall the app')
-
-    const bundledError: Error & { isBootstrapFailure?: boolean } = new Error(
-      'This app bundles its own Hermes runtime, but the runtime files are missing or damaged. Reinstall Hermes Desktop to restore it.'
-    )
-
-    bundledError.isBootstrapFailure = true
-    bootstrapFailure = bundledError
-    throw bundledError
-  }
-
-  // A bundled install whose payload failed to resolve. The payload is the
-  // ONLY local runtime a bundle has (immutable, sealed at build time), so
-  // there is nothing to install or repair here — reinstall the app. The
-  // setup gate still lets the user connect to a REMOTE Hermes.
-  if (backend.kind === 'bundled-unusable') {
-    rememberLog('[bootstrap] bundled payload is unusable; no installer path exists — reinstall the app')
 
     const bundledError: Error & { isBootstrapFailure?: boolean } = new Error(
       'This app bundles its own Hermes runtime, but the runtime files are missing or damaged. Reinstall Hermes Desktop to restore it.'
@@ -12553,7 +12372,7 @@ function reapInstallRootedStragglers(excludePids: number[]): void {
     return
   }
 
-  const payloadRoot = isBundledInstall(process.resourcesPath, { fileExists }) ? process.resourcesPath : null
+  const payloadRoot = installShape() === 'bundled' ? process.resourcesPath : null
 
   try {
     reapPackageRootedProcesses({
@@ -14982,7 +14801,7 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // %LOCALAPPDATA%\hermes tree the app doesn't own. The only repair for a
   // damaged bundle is reinstalling the app itself. Refuse without touching
   // bootstrapRepairRequested so a stale renderer can't drive an install.
-  if (isBundledInstall(process.resourcesPath, { fileExists })) {
+  if (installShape() === 'bundled') {
     rememberLog('[bootstrap] repair refused on a bundled install; repair means reinstalling the app')
 
     return { ok: false, error: 'bundled-immutable' }
@@ -17532,7 +17351,7 @@ ipcMain.handle('hermes:version', async () => {
     // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
     // under a running `npm start`, which is a rebuild the developer asked for,
     // not a torn install to offer a restart for.
-    bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, loadInstallStamp())
+    bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, readBundleSwapStamp(process.resourcesPath))
   }
 })
 

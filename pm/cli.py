@@ -10,7 +10,6 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
 
 from pm.ensure import _facts, _lockfile, _store, ensure, stage_only
 from pm.ensure import uv as pm_uv
@@ -192,118 +191,6 @@ def cmd_doctor(args) -> int:
             continue
         print(f"✓ {name} {fact['version']}")
     return 1 if bad else 0
-
-
-def _venv_site_packages(venv_dir: Path, win: bool) -> Optional[Path]:
-    """The site-packages dir uv sync fills inside the venv (the venv stays
-    a dependency target; it is never where `python` resolves)."""
-    if win:
-        candidate = venv_dir / "Lib" / "site-packages"
-        return candidate if candidate.is_dir() else None
-    for candidate in sorted(venv_dir.glob("lib/python3.*/site-packages")):
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
-def _develop_env(names: list[str]) -> Optional[dict]:
-    """The `pm develop` subshell environment. `python` resolves to the pm
-    STORE python (its bin dir first on PATH); imports come from
-    PYTHONPATH=<repo>;<venv>/site-packages (repo first — the venv stays a
-    dependency target only). VIRTUAL_ENV and the venv bin dir are
-    deliberately absent: nothing in the devshell boots through the venv
-    (pm work item 3; pyvenv.cfg is inert dead config). Returns None when
-    the store interpreter has not been materialized (`hermes pm install`)."""
-    import os
-
-    from pm import paths
-    from pm.ensure import env_for
-
-    facts = _facts()
-    python_fact = facts.get("python")
-    target = current_target()
-    if not python_fact or "entry" not in python_fact:
-        return None
-    python_bin = get_package("python").binary(
-        _store().entry(python_fact["entry"]), target
-    )
-    if python_bin is None or not python_bin.is_file():
-        return None
-
-    env = env_for(*names, base_env=dict(os.environ))
-    repo = paths.repo_root()
-    venv_dir = repo / (".venv" if (repo / ".venv").is_dir() else "venv")
-    win = target.startswith("win32")
-    venv_bin = venv_dir / ("Scripts" if win else "bin")
-    env.pop("VIRTUAL_ENV", None)
-    env.pop("PYTHONHOME", None)
-    # The venv bin dir must never be where `python` resolves.
-    path_entries = [
-        p for p in env.get("PATH", "").split(os.pathsep) if p and Path(p) != venv_bin
-    ]
-    env["PATH"] = os.pathsep.join([str(python_bin.parent), *path_entries])
-    site = _venv_site_packages(venv_dir, win)
-    ours = str(repo) + (os.pathsep + str(site) if site else "")
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = ours + (os.pathsep + existing if existing else "")
-    return env
-
-
-def cmd_develop(args) -> int:
-    """Install everything, sync the venv, then activate: spawn a subshell
-    with every tool's env composed in and the pm STORE python resolving
-    `python` (PYTHONPATH=repo;venv-site-packages for imports — never the
-    venv interpreter). The devshell equivalent of nix develop. --print
-    emits eval-able exports for the current shell."""
-    import os
-    import subprocess
-
-    from pm.ensure import sync_venv
-
-    install_names = [
-        n for n in _lockfile().names()
-        if not get_package(n).optional
-        and get_package(n).missing_reason(current_target()) is None
-    ]
-    # The devshell boots the STORE python — make sure it is materialized.
-    if (
-        "python" not in install_names
-        and get_package("python").missing_reason(current_target()) is None
-    ):
-        install_names.append("python")
-    failed = _install_names(install_names)
-    try:
-        sync_venv(explicit=True)
-        print("✓ venv")
-    except InstallError as e:
-        print(f"✗ {e}")
-        failed += 1
-    if failed:
-        return 1
-
-    env = _develop_env(_lockfile().names())
-    if env is None:
-        print("✗ develop: no pm store interpreter — run 'hermes pm install' first")
-        return 1
-
-    from pm import paths
-
-    win = current_target().startswith("win32")
-    if args.print_env:
-        changed = {k: v for k, v in env.items() if os.environ.get(k) != v}
-        for key, value in sorted(changed.items()):
-            if win and os.environ.get("SHELL") is None:
-                print(f'$env:{key} = "{value}"')
-            else:
-                escaped = value.replace("'", "'\\''")
-                print(f"export {key}='{escaped}'")
-        return 0
-
-    shell = os.environ.get("SHELL") or os.environ.get("COMSPEC") or (
-        "cmd.exe" if win else "/bin/sh"
-    )
-    print(f"pm develop: entering {shell} (exit to leave)")
-    return subprocess.call([shell], env=env, cwd=paths.repo_root())
 
 
 def _gc_store(store, facts) -> tuple[int, int]:
@@ -577,11 +464,6 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("doctor", help="check installed state against the lockfile")
     p.set_defaults(func=cmd_doctor)
-
-    p = sub.add_parser("develop", help="install + sync, then activate a devshell with the composed env")
-    p.add_argument("--print", dest="print_env", action="store_true",
-                   help="print eval-able exports instead of spawning a shell")
-    p.set_defaults(func=cmd_develop)
 
     p = sub.add_parser("gc", help="remove store entries nothing references")
     p.set_defaults(func=cmd_gc)

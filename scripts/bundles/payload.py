@@ -204,7 +204,18 @@ def stage_launchers(root: Path, manifest: dict, *, run=subprocess.run) -> list[s
             output = bindir / name
             output.write_text(script, encoding="utf-8")
             output.chmod(0o755)
+    # Consumers receive a completed launch contract, not a Python-layout puzzle.
+    if not (root / site).is_dir():
+        raise FileNotFoundError(f"payload dependency tree missing: {site}")
+    commands = {name: f"bin/{name}{'.exe' if windows else ''}" for name in entries}
+    for command in commands.values():
+        if not (root / command).is_file():
+            raise FileNotFoundError(f"payload launcher missing: {command}")
     manifest["launchers"] = list(entries)
+    manifest["runtime"] = {
+        "repoDir": manifest["repo"], "toolsDir": manifest["store"],
+        "storePython": relative_python, "sitePackages": site, "commands": commands,
+    }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return list(entries)
 

@@ -63,7 +63,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes config` | 显示、编辑、迁移和查询配置文件。 |
 | `hermes pairing` | 审批或撤销消息配对码。 |
 | `hermes skills` | 浏览、安装、发布、审计和配置 skill。 |
-| `hermes bundles` | 将多个 skill 归组到单个 `/<name>` 斜杠命令下。参见 [Skill Bundles](../user-guide/features/skills.md#skill-bundles)。 |
+| `hermes bundles` | 将多个 skill 归组到单个 `/<name>` 斜杠命令下。参见 [Skill Bundles](../user-guide/features/skills.md#skill-捆绑包)。 |
 | `hermes curator` | 后台 skill 维护——状态、运行、暂停、固定。参见 [Curator](../user-guide/features/curator.md)。 |
 | `hermes memory` | 配置外部 memory provider。当对应 provider 激活时，特定于 plugin 的子命令（如 `hermes honcho`）会自动注册。 |
 | `hermes acp` | 将 Hermes 作为 ACP 服务器运行，用于编辑器集成。 |
@@ -209,7 +209,7 @@ hermes gateway <subcommand>
 
 | 子命令 | 说明 |
 |------------|-------------|
-| `run` | 在前台运行 gateway。推荐用于 WSL 和 Docker。 |
+| `run` | 在前台运行 gateway。推荐用于 WSL、Docker 和 Termux。 |
 | `start` | 启动已安装的 systemd/launchd 后台服务。 |
 | `stop` | 停止服务（或前台进程）。 |
 | `restart` | 重启服务。 |
@@ -227,7 +227,7 @@ hermes gateway <subcommand>
 | `--no-supervise` | 在 `run` 时：在 s6-overlay Docker 镜像内部，跳过 s6 自动监管，退回到 pre-s6 前台语义——gateway 作为容器主进程运行，无自动重启。在 s6 镜像之外为空操作。等同于设置 `HERMES_GATEWAY_NO_SUPERVISE=1`。 |
 
 :::tip WSL 用户
-使用 `hermes gateway run` 而非 `hermes gateway start`——WSL 的 systemd 支持不稳定。用 tmux 包裹以保持持久运行：`tmux new -s hermes 'hermes gateway run'`。详见 [WSL FAQ](/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails)。
+使用 `hermes gateway run` 而非 `hermes gateway start`——WSL 的 systemd 支持不稳定。用 tmux 包裹以保持持久运行：`tmux new -s hermes 'hermes gateway run'`。详见 [WSL FAQ](/reference/faq#wsl网关持续断开连接或-hermes-gateway-start-失败)。
 :::
 
 ## `hermes lsp`
@@ -843,7 +843,7 @@ hermes skills reset google-workspace --restore --yes
 hermes bundles <subcommand>
 ```
 
-Skill bundle 将多个 skill 归组到一个 `/<bundle-name>` 斜杠命令下。调用 bundle 会将每个引用的 skill 加载到单个合并的用户消息中。存储位置：`~/.hermes/skill-bundles/<slug>.yaml`。YAML schema 和行为请参阅 [Skill Bundles](../user-guide/features/skills.md#skill-bundles)。
+Skill bundle 将多个 skill 归组到一个 `/<bundle-name>` 斜杠命令下。调用 bundle 会将每个引用的 skill 加载到单个合并的用户消息中。存储位置：`~/.hermes/skill-bundles/<slug>.yaml`。YAML schema 和行为请参阅 [Skill Bundles](../user-guide/features/skills.md#skill-捆绑包)。
 
 子命令：
 
@@ -998,7 +998,7 @@ hermes mcp <subcommand>
 | `configure <name>`（别名：`config`） | 切换服务器的工具选择。 |
 | `login <name>` | 强制重新认证基于 OAuth 的 MCP 服务器。 |
 
-参见 [MCP 配置参考](./mcp-config-reference.md)、[在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md) 和 [MCP 服务器模式](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server)。
+参见 [MCP 配置参考](./mcp-config-reference.md)、[在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md) 和 [MCP 服务器模式](../user-guide/features/mcp.md#将-hermes-作为-mcp-服务器运行)。
 
 ## `hermes plugins`
 
@@ -1221,6 +1221,13 @@ hermes completion zsh >> ~/.zshrc
 # Fish
 hermes completion fish > ~/.config/fish/completions/hermes.fish
 ```
+
+## `hermes pm`
+
+PM 管理工具和 Python 依赖，不负责替换应用发布包。
+源码开发先运行一次 setup 脚本，然后用 Bash `source ./activate` 或 PowerShell `. .\activate.ps1` 激活已有环境。
+使用 `deactivate` 恢复激活前的环境。
+详见[PM 开发工作流](/reference/package-management#developer-workflow)，包括依赖更新和测试环境。
 
 ## `hermes update`
 

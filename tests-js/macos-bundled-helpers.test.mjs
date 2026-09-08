@@ -121,7 +121,6 @@ describe('stampAssertions', () => {
     commit: 'a'.repeat(40),
     branch: 'main',
     payload: 'bundled',
-    store: false,
     distribution: 'desktop-app',
     updateMechanism: 'electron-updater',
     tag: 'v0.28.0',
@@ -138,7 +137,7 @@ describe('stampAssertions', () => {
   })
   it('rejects non-objects and store submissions', () => {
     expect(stampAssertions(null, sideArg)).toHaveLength(1)
-    expect(stampAssertions({ ...good, store: true }, sideArg).join(' ')).toMatch(/store/)
+    expect(stampAssertions({ ...good, updateMechanism: 'external' }, sideArg).join(' ')).toMatch(/updateMechanism/)
   })
 })
 

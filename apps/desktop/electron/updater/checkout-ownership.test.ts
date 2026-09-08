@@ -36,8 +36,9 @@ function dependencies(): CheckoutStrategyDeps {
 }
 
 describe('checkout update admission', () => {
-  it('refuses steward-owned code without fetching or stopping the backend', async () => {
+  it.each(['external', 'app-installer', 'electron-updater'])('refuses %s-owned code without fetching or stopping the backend', async updateMechanism => {
     const deps = dependencies()
+    deps.readCanonicalInstallStamp = () => ({ updateMechanism })
     const strategy = createCheckoutStrategy(deps)
     const result = await strategy.check()
 

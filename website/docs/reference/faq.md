@@ -144,20 +144,16 @@ ls ~/.local/bin/hermes
 The installer adds `~/.local/bin` to your PATH. If you use a non-standard shell config, add `export PATH="$HOME/.local/bin:$PATH"` manually.
 :::
 
-#### Python version too old
+#### Unsupported Python version
 
-**Cause:** Hermes requires Python 3.14 or newer.
+Hermes requires **Python 3.14** (`>=3.14,<3.15`), not an arbitrary newer version.
+The installer and packaged distributions provide their pinned interpreter.
 
-**Solution:**
-```bash
-python3 --version   # Check current version
-
-# Install a newer Python
-sudo apt install python3.12   # Ubuntu/Debian
-brew install python@3.12      # macOS
-```
-
-The installer handles this automatically — if you see this error during manual installation, upgrade Python first.
+For a manual source environment, use the
+[development setup](../developer-guide/contributing.md#development-setup).
+Do not replace the interpreter inside an installed app or container.
+For a managed-install error, run `hermes doctor` and use that installation's
+[update method](../getting-started/updating.md).
 
 #### Terminal commands say `node: command not found` (or `nvm`, `pyenv`, `asdf`, …)
 

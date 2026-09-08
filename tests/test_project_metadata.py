@@ -17,6 +17,26 @@ def _load_package_data():
     return tool["setuptools"]["package-data"]
 
 
+def test_direct_overrides_preserve_the_declared_exact_version():
+    from packaging.requirements import Requirement
+
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    locked = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8-sig"))
+    direct = {req.name: req for spec in metadata["project"]["dependencies"]
+              if (req := Requirement(spec)).specifier}
+    for spec in metadata["tool"]["uv"].get("override-dependencies", []):
+        override = Requirement(spec)
+        requirement = direct.get(override.name)
+        if requirement is None or not any(s.operator == "==" for s in requirement.specifier):
+            continue
+        assert override.specifier == requirement.specifier, (
+            f"{override.name}: override {override.specifier} contradicts exact requirement {requirement.specifier}"
+        )
+        versions = {row["version"] for row in locked["package"] if row["name"] == override.name}
+        assert versions and all(version in requirement.specifier for version in versions)
+
+
 def test_matrix_extra_not_in_all():
     """The [matrix] extra pulls `mautrix[encryption]` -> `python-olm`,
     which has Linux-only wheels and no native build path on Windows or
@@ -158,7 +178,7 @@ def _uv_lock_versions(package: str) -> set[str]:
     import re
 
     lock_path = Path(__file__).resolve().parents[1] / "uv.lock"
-    lock = lock_path.read_text(encoding="utf-8")
+    lock = lock_path.read_text(encoding="utf-8-sig")
     return {
         m.group(1)
         for m in re.finditer(

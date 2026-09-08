@@ -14,6 +14,17 @@ sizes, GPU layers, or quantization. You pick a model; Hermes does the rest.
 Nothing leaves your computer: no account, no API key, and no network access
 after a model is downloaded.
 
+## Desktop availability and downloads
+
+The desktop Local Models interface is enabled for canary builds. Other desktop
+builds require the `--local` launch flag. A runtime can already be bundled;
+its absence triggers the managed-tool install path, not an arbitrary latest
+llama.cpp download.
+
+Model downloads support pause and resume. Partial downloads use PM's writable
+`cache/partials` area, outside a signed app package. Model weights and managed
+engine binaries are separate downloads.
+
 ## Getting started
 
 1. Open **Settings → Providers → Local Models** (or choose **Run models

@@ -55,8 +55,13 @@ The Darwin publish job waits for both native builds and serializes channel write
 
 ## Verification limits
 
-Local tests exercise the strategy, native-event ordering, feed validation,
-conditional publication and retention with injected OS/network boundaries.
-The desktop TypeScript and JavaScript build run on the development host.
-These checks are not proof of a signed macOS install or an actual app replacement.
-No E2E work, release dispatch or public feed publication is included here.
+Helper tests exercise the strategy, native-event ordering, feed validation,
+conditional publication, and retention. They are not proof of a signed install
+or actual app replacement.
+
+Native macOS packaged-update drivers are part of the existing
+[install/update family](../tests/install/BUNDLED_UPDATES.md). The stable gate
+requires signed-package transitions on both architectures. Each acceptance
+claim needs a successful native run for the exact old/new package pair.
+Workflow definitions and historical helper results do not establish acceptance
+of the current head. See [PM audit status](pm-audit-status.md) for scoped receipts.

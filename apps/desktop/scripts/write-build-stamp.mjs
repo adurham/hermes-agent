@@ -1,38 +1,12 @@
 /**
- * Writes apps/desktop/build/install-stamp.json with the git ref the desktop
- * .exe should pin to at first-launch bootstrap time.  This file ships inside
- * the packaged app via electron-builder's extraResources entry and is read
- * by electron/main.ts to drive the install.ps1 stage bootstrap flow.
- *
- * Schema (subject to bump via STAMP_SCHEMA_VERSION):
- *   {
- *     "schemaVersion":    1,
- *     "commit":           "<40-char SHA>",
- *     "branch":           "<branch name>",
- *     "builtAt":          "<ISO 8601 UTC timestamp>",
- *     "dirty":            true|false,
- *     "source":           "ci" | "local" | "fallback",
- *     // Staged desktop builds only (HERMES_DESKTOP_VARIANT set):
- *     "payload":          "bundled" | "light" | "bootstrap",
- *     "store":            true|false,
- *     "distribution":     "desktop-app",
- *     "updateMechanism":  "external",
- *     "tag":              "<release tag>"
- *   }
- *
- * Source preference order:
- *   1. CI env vars ($GITHUB_SHA / $GITHUB_REF_NAME) -- avoid edge cases with
- *      shallow clones, detached HEADs, etc. in CI.
- *   2. Local `git rev-parse` against the parent repo (../..).
- *   3. Fallback stamp for local/personal builds from non-git source trees
- *      (ZIP extract, interrupted clone with no HEAD, etc.).
- *
- * Dev / out-of-repo builds without git produce an explicit fallback stamp
- * rather than aborting the whole build.  Bootstrap treats the all-zero
- * commit as unpinned and follows the branch instead of fetching a fake SHA.
+ * Write the desktop artifact stamp for source, bundled and Light builds.
+ * bundle-electron-main.mjs bakes it into the running code. The packaged
+ * sidecar exists only to detect replacement of that artifact by an update.
+ * PM's bundle builder supplies relative launch paths for bundled artifacts.
+ * Provenance comes from CI, local git, or an explicit unknown-source stamp.
  */
 
-import { mkdirSync, writeFileSync } from "fs"
+import { mkdirSync, readFileSync, writeFileSync } from "fs"
 import { resolve, join, relative } from "path"
 import { execSync } from "child_process"
 
@@ -155,8 +129,13 @@ function main() {
     )
   }
 
+  const bundled = ['bundled', 'store'].includes(process.env.HERMES_DESKTOP_VARIANT)
+  const payload = bundled
+    ? JSON.parse(readFileSync(join(OUT_DIR, 'agent-payload', 'manifest.json'), 'utf8'))
+    : null
+  const built = buildStampPayload(stamp, process.env, process.platform, payload)
   mkdirSync(OUT_DIR, { recursive: true })
-  writeFileSync(OUT_FILE, JSON.stringify(buildStampPayload(stamp, process.env), null, 2) + "\n", "utf8")
+  writeFileSync(OUT_FILE, JSON.stringify(built, null, 2) + "\n", "utf8")
   console.log(
     "[write-build-stamp] wrote " +
       relative(REPO_ROOT, OUT_FILE) +
@@ -168,25 +147,10 @@ function main() {
   )
 }
 
-/**
- * Build the install-stamp.json payload. The legacy 5-field shape (schemaVersion
- * 1: commit/branch/builtAt/dirty/source) is always present; when the desktop
- * build is staged (HERMES_DESKTOP_VARIANT set), the full-schema fields the
- * updater mechanism resolution reads are added: payload, distribution,
- * updateMechanism, tag, and the store-submission flag. The variant is a
- * BUILD-TIME fact — process.windowsStore cannot tell a Microsoft Store
- * deployment from an App Installer sideload (Electron sets it true for any
- * MSIX package), so the resolver must read it from the baked stamp.
- *
- * Mirrors scripts/write_install_stamp.py::build_stamp's variant handling:
- *   store -> payload 'bundled' (steward-owned, no in-app updater)
- *   bundled -> payload 'bundled'
- *   light -> payload 'light'
- *   '' / bootstrap -> payload 'bootstrap'
- * Dev/local builds (no variant) keep the old shape; installShape() then treats
- * them as checkout, which is correct for a dev run.
+/** One artifact schema for source, bundled and Light builds.
+ * The PM bundle builder supplies launch paths only for bundled artifacts.
  */
-export function buildStampPayload(stamp, env = process.env, platform = process.platform) {
+export function buildStampPayload(stamp, env = process.env, platform = process.platform, payload = null) {
   const variant = (env.HERMES_DESKTOP_VARIANT || "").trim()
   const base = {
     schemaVersion: STAMP_SCHEMA_VERSION,
@@ -194,17 +158,32 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
     branch: stamp.branch,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
-    source: stamp.source
+    source: stamp.source,
+    commitDate: stamp.commitDate ?? null,
+    baseVersion: stamp.baseVersion ?? null,
+    displayVersion: stamp.displayVersion ?? null,
+    distance: stamp.distance ?? null
   }
-  if (!variant) return base
 
+  const updateMechanism = {
+    '': 'self',
+    bootstrap: 'self',
+    store: 'external',
+    bundled: { win32: 'app-installer', darwin: 'electron-updater' }[platform] || 'external',
+    light: platform === 'darwin' ? 'electron-updater' : 'external'
+  }[variant]
+  if (!updateMechanism) throw new Error(`Unknown desktop variant: ${variant}`)
+  const bundled = variant === 'bundled' || variant === 'store'
+  if (bundled && !payload?.runtime?.commands?.hermes) {
+    throw new Error('PM payload has no completed launch contract; stage the bundle before packaging')
+  }
   return {
     ...base,
     payload: variant === "store" ? "bundled" : variant || "bootstrap",
-    store: variant === "store",
     distribution: "desktop-app",
-    updateMechanism: platform === 'darwin' && ['bundled', 'light'].includes(variant) ? 'electron-updater' : 'external',
-    tag: env.HERMES_PAYLOAD_TAG || null
+    updateMechanism,
+    tag: env.HERMES_PAYLOAD_TAG || null,
+    ...(bundled ? { runtime: payload.runtime } : {})
   }
 }
 

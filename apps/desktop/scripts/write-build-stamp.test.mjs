@@ -97,48 +97,51 @@ const baseStamp = {
   source: 'ci'
 }
 
-test('buildStampPayload without a variant keeps the legacy 5-field shape', () => {
-  const payload = buildStampPayload(baseStamp, {})
-  assert.deepEqual(payload, {
-    schemaVersion: 1,
-    commit: baseStamp.commit,
-    branch: 'main',
-    builtAt: payload.builtAt, // stamped at write time, not the fixture's
-    dirty: false,
-    source: 'ci'
-  })
-  assert.equal(typeof payload.builtAt, 'string')
-  assert.ok(!('payload' in payload))
-  assert.ok(!('store' in payload))
-  assert.ok(!('tag' in payload))
+const runtime = {
+  repoDir: 'app', toolsDir: 'tools', storePython: 'tools/python/bin/python3',
+  sitePackages: 'venv/lib/python3.14/site-packages', commands: { hermes: 'bin/hermes' }
+}
+
+test('bundled stamp carries the builder contract and refuses an unstaged payload', () => {
+  const env = { HERMES_DESKTOP_VARIANT: 'bundled' }
+  assert.throws(() => buildStampPayload(baseStamp, env, 'darwin'), /payload/)
+  assert.deepEqual(buildStampPayload(baseStamp, env, 'darwin', { runtime }).runtime, runtime)
+  assert.equal(buildStampPayload(baseStamp, { HERMES_DESKTOP_VARIANT: 'light' }, 'darwin', { runtime }).runtime, undefined)
 })
 
-test('buildStampPayload with bundled variant stamps payload bundled, store false', () => {
+test('source builds declare the same artifact schema, without a payload', () => {
+  const stamp = buildStampPayload(baseStamp, {})
+  assert.equal(stamp.payload, 'bootstrap')
+  assert.equal(stamp.distribution, 'desktop-app')
+  assert.equal(stamp.runtime, undefined)
+  assert.equal(stamp.tag, null)
+  assert.equal(stamp.commit, baseStamp.commit)
+})
+
+test('buildStampPayload with bundled variant declares the App Installer owner', () => {
   const payload = buildStampPayload(baseStamp, {
     HERMES_DESKTOP_VARIANT: 'bundled',
     HERMES_PAYLOAD_TAG: 'v0.27.1-canary.20260901072553'
-  }, 'win32')
+  }, 'win32', { runtime })
   assert.equal(payload.payload, 'bundled')
-  assert.equal(payload.store, false)
   assert.equal(payload.distribution, 'desktop-app')
-  assert.equal(payload.updateMechanism, 'external')
+  assert.equal(payload.updateMechanism, 'app-installer')
   assert.equal(payload.tag, 'v0.27.1-canary.20260901072553')
 })
 
 test('macOS bundles and Light declare app-owned updates, never Store builds', () => {
   for (const variant of ['bundled', 'light', 'store']) {
-    const stamp = buildStampPayload(baseStamp, { HERMES_DESKTOP_VARIANT: variant }, 'darwin')
+    const stamp = buildStampPayload(baseStamp, { HERMES_DESKTOP_VARIANT: variant }, 'darwin', { runtime })
     assert.equal(stamp.updateMechanism, variant === 'store' ? 'external' : 'electron-updater')
   }
 })
 
-test('buildStampPayload with store variant stamps payload bundled, store true', () => {
+test('buildStampPayload with store variant declares external ownership', () => {
   const payload = buildStampPayload(baseStamp, {
     HERMES_DESKTOP_VARIANT: 'store',
     HERMES_PAYLOAD_TAG: 'v0.27.1'
-  })
+  }, 'win32', { runtime })
   assert.equal(payload.payload, 'bundled')
-  assert.equal(payload.store, true)
 })
 
 test('buildStampPayload with light variant stamps payload light', () => {
@@ -147,13 +150,12 @@ test('buildStampPayload with light variant stamps payload light', () => {
     HERMES_PAYLOAD_TAG: 'v0.27.1'
   })
   assert.equal(payload.payload, 'light')
-  assert.equal(payload.store, false)
 })
 
 test('buildStampPayload keeps schemaVersion + provenance in the staged shape', () => {
   const payload = buildStampPayload(baseStamp, {
     HERMES_DESKTOP_VARIANT: 'bundled'
-  })
+  }, 'win32', { runtime })
   assert.equal(payload.schemaVersion, 1)
   assert.equal(payload.commit, baseStamp.commit)
   assert.equal(payload.source, 'ci')

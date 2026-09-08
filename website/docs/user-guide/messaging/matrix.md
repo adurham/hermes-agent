@@ -722,7 +722,10 @@ history, so other clients trust it immediately.
 
 ## Proxy Mode (E2EE on macOS)
 
-Matrix E2EE requires `libolm`, which doesn't compile on macOS ARM64 (Apple Silicon). The `hermes-agent[matrix]` extra is gated to Linux only. If you're on macOS, proxy mode lets you run E2EE in a Docker container on a Linux VM while the actual agent runs natively on macOS with full access to your local files, memory, and skills.
+The `matrix` extra is gated to Linux. On macOS or Windows, run the Matrix
+adapter and encryption dependencies in a Linux container and forward requests
+to the native agent. The example below uses a macOS host; the same separation
+applies to Windows with the corresponding host address and authentication.
 
 ### How It Works
 

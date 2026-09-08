@@ -823,6 +823,7 @@ const sidebars: SidebarsConfig = {
           label: 'Command Reference',
           items: [
             'reference/cli-commands',
+            'reference/package-management',
             'reference/slash-commands',
             'reference/profile-commands',
           ],

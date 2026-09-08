@@ -262,16 +262,19 @@ def _receipt_name(data: dict[str, Any]) -> str:
 
 
 def _write_rotated(data: dict[str, Any]) -> Path:
-    """Atomic + durable publication: temp file + fsync + rename for both
-    the stamped receipt and latest.json (utils.atomic_json_write)."""
-    import utils
+    """Use the same stdlib-only atomic writer as PM's installed facts."""
+    from hermes_cli.runtime_state import _lock
+    from pm.lock import _write
 
     d = _receipt_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = d / _receipt_name(data)
-    utils.atomic_json_write(path, data)
-    utils.atomic_json_write(d / "latest.json", data)
-    _rotate(d)
+    # Concurrent completions share latest.json; serialize its replacement.
+    with (d / ".pm-write.lock").open("a+b") as lock:
+        _lock(lock.fileno(), wait=True)
+        _write(path, data)
+        _write(d / "latest.json", data)
+        _rotate(d)
     return path
 
 

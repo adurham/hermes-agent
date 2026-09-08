@@ -57,12 +57,49 @@ def test_begin_record_finalize_roundtrip(homed):
     path = receipt.finalize("bisected")
     assert path is not None and path.is_file()
 
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     assert data["kind"] == "sync"
     assert data["outcome"] == "bisected"
     assert data["venv_rebuild"] == {"ok": True, "reason": ""}
     assert data["plugin_bisect"][0]["plugin"] == "bad"
     assert data["feature_list"] == ["web", "acp"]
+
+
+def test_bare_python_can_report_a_failed_bootstrap(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    repo = Path(__file__).resolve().parents[2]
+    code = """
+import json
+from pm import receipt
+from pm.package import InstallError
+try:
+    token = receipt.begin('sync')
+    try:
+        raise InstallError('venv', 'original dependency failure')
+    except InstallError as exc:
+        receipt.record_step('dependency-sync', False, str(exc))
+        raise
+    finally:
+        receipt.finalize('failed', 1, token=token)
+except InstallError as exc:
+    assert 'original dependency failure' in str(exc)
+row = receipt.latest()
+assert row['outcome'] == 'failed' and row['exit_code'] == 1
+assert 'original dependency failure' in row['steps'][0]['detail']
+print(json.dumps(row))
+"""
+    child = subprocess.run(
+        [sys.executable, "-S", "-c", code], cwd=repo, env=dict(os.environ),
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    assert child.returncode == 0, child.stdout + child.stderr
+    row = json.loads(child.stdout)
+    assert row["steps"][0]["ok"] is False
 
 
 def test_latest_points_at_newest(homed):
@@ -360,7 +397,7 @@ def test_nested_update_syncs_do_not_displace_each_other(homed, monkeypatch):
     assert receipt.last_for_update(inner_id) is None
     path = ur.finalize_update_receipt("success")
     assert receipt.last_for_update(outer_id) is None
-    assert json.loads(path.read_text())["pm_steps"][0]["name"] == "outer-sync"
+    assert json.loads(path.read_text(encoding="utf-8-sig"))["pm_steps"][0]["name"] == "outer-sync"
 
 
 def test_last_for_update_returns_a_copy(homed):
@@ -403,7 +440,7 @@ def test_record_refusal_names_the_policy_conflict(homed):
     receipt.begin("sync")
     receipt.record_refusal("lazy-install", "venv out of sync")
     path = receipt.finalize("failed", 1)
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     assert data["outcome"] == "failed"
     assert data["refusal"]["code"] == "lazy-install"
     assert data["refusal"]["detail"] == "venv out of sync"

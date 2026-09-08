@@ -12,10 +12,10 @@
 //   manual          checkout with no staged updater — the user runs
 //                   `hermes update` themselves.
 //
-// The mechanism is resolved from the packaged identity, platform and store
-// flag by resolveUpdaterMechanism — a pure function, unit
-// tested — and every strategy reports it on the wire so the renderer can
-// tailor copy per mechanism without probing the install shape itself.
+// The build stamp declares the owner. Runtime dispatch needs no payload probe
+// or Store inference; the strategy reports its mechanism to the renderer.
+
+import type { InstallStamp } from '../install-stamp'
 
 export type UpdaterMechanism =
   | 'app-installer'
@@ -27,12 +27,8 @@ export type UpdaterMechanism =
 
 /** The facts the mechanism dispatch keys on. Pure data — injectable for tests. */
 export interface MechanismFacts {
-  isPackaged: boolean
   platform: NodeJS.Platform
-  payload: 'bundled' | 'light' | 'bootstrap' | undefined
-  updateMechanism: 'self' | 'external' | 'electron-updater' | undefined
-  /** This process is a Microsoft Store deployment. */
-  isWindowsStore: boolean
+  updateMechanism: InstallStamp['updateMechanism'] | undefined
 }
 
 /**
@@ -40,13 +36,8 @@ export interface MechanismFacts {
  * packaged app into a checkout, and Light needs no payload to update itself.
  */
 export function resolveUpdaterMechanism(facts: MechanismFacts): UpdaterMechanism {
-  if (facts.isPackaged && (facts.payload === 'bundled' || facts.payload === 'light')) {
-    if (facts.isWindowsStore) { return 'external' }
-
-    if (facts.platform === 'win32') { return 'app-installer' }
-
-    return facts.platform === 'darwin' && facts.updateMechanism === 'electron-updater'
-      ? 'electron-updater' : 'external'
+  if (facts.updateMechanism && facts.updateMechanism !== 'self') {
+    return facts.updateMechanism
   }
 
   return facts.platform === 'win32' ? 'windows-handoff' : 'posix-handoff'

@@ -99,7 +99,8 @@ class TestResolve:
         assert resolve_update_channel({}, source) == CHANNEL_MAIN
         assert resolve_update_channel({}, bundle) == CHANNEL_STABLE
 
-    def test_canary_artifact_defaults_to_its_own_feed(self, tmp_path):
+    @pytest.mark.parametrize("mechanism", ["electron-updater", "app-installer"])
+    def test_canary_artifact_defaults_to_its_own_feed(self, tmp_path, mechanism):
         """A canary bundle with no per-install record tracks canary.
 
         The artifact publishes to canary.yml (product-identity.cjs keys the
@@ -108,7 +109,7 @@ class TestResolve:
         leaves a fresh canary install unable to update at all.
         """
         root = tmp_path / "canary-bundle"
-        _stamp(root, "electron-updater", tag="v0.28.0-canary.20260819171926")
+        _stamp(root, mechanism, tag="v0.28.0-canary.20260819171926")
         assert default_channel(root) == CHANNEL_CANARY
         assert resolve_update_channel({}, root) == CHANNEL_CANARY
 
@@ -226,10 +227,11 @@ class TestSetChannel:
         assert written["model"] == {"provider": "nous"}
         assert written["update"]["installs"][install_id(root)]["channel"] == "stable"
 
-    def test_external_mechanism_refuses(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("mechanism", ["external", "app-installer"])
+    def test_os_owned_mechanism_refuses_channel_writes(self, tmp_path, monkeypatch, mechanism):
         self._home(tmp_path, monkeypatch)
-        root = tmp_path / "nix-tree"
-        _stamp(root, "external")
+        root = tmp_path / "os-owned-tree"
+        _stamp(root, mechanism)
         with pytest.raises(ValueError, match="owned by"):
             set_install_channel("stable", root)
 

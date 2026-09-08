@@ -2553,9 +2553,6 @@ export interface Translations {
     useLocalTitle: string
     useLocalDesc: string
     bundledLocalDesc: string
-    bundledDamagedTitle: string
-    bundledDamagedDesc: string
-    reinstallApp: string
     localStartUnavailable: string
     remoteSetupTitle: string
     remoteSetupDesc: string

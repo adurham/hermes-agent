@@ -1,14 +1,12 @@
 // updater/external.ts — the steward-owned strategy.
 //
-// Store deployments (process.windowsStore) and stamps whose updateMechanism
-// is 'external': the steward (Microsoft Store / App Installer on-launch
-// re-check) owns the update loop. The app does not check, does not apply —
-// it only tells the user updates happen outside the app.
+// The stamp declares 'external' when the package owner handles updates
+// without an in-app check or apply action.
 
 import type { UpdaterApplyResultWire, UpdaterStatusWire } from './index'
 
 export const EXTERNAL_UNSUPPORTED_MESSAGE =
-  'bundled install: updates are applied by the installer (Microsoft Store or App Installer).'
+  'Updates are managed by the package owner outside this app.'
 
 export class ExternalStrategy {
   readonly mechanism = 'external' as const

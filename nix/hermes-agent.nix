@@ -9,7 +9,6 @@
   stdenv,
   makeWrapper,
   callPackage,
-  python312,
   electron,
   ripgrep,
   git,
@@ -42,6 +41,11 @@
   extraDependencyGroups ? [ ],
 }:
 let
+  # One owner (pythonLock.nix) reads pm/lock.json and selects the matching
+  # nixpkgs interpreter. Everything Python-shaped below derives from it.
+  pythonLock = callPackage ./pythonLock.nix { };
+  python = pythonLock.interpreter;
+
   version = (fromTOML (builtins.readFile ../pyproject.toml)).project.version;
   versionModule = builtins.readFile ../hermes_cli/__init__.py;
   releaseRevCountLine = lib.findFirst (line: lib.hasPrefix "__release_rev_count__" line) null (
@@ -66,6 +70,23 @@ let
       "${version}+?"
     else
       version;
+
+  # CLI and Electron consume the same provenance and update owner.
+  installStampFile = builtins.toFile "hermes-install-stamp.json" (builtins.toJSON {
+    schemaVersion = 2;
+    commit = rev;
+    commitDate = lastModified;
+    inherit branch dirty;
+    builtAt = null;
+    baseVersion = version;
+    displayVersion = stampDisplayVersion;
+    distance = stampDistance;
+    source = "nix";
+    distribution = "nix";
+    updateMechanism = "external";
+    payload = "bootstrap";
+    tag = null;
+  });
 
   mkHermesVenv =
     extraDependencyGroups:
@@ -138,12 +159,12 @@ let
 
   runtimePath = lib.makeBinPath runtimeDeps;
 
-  sitePackagesPath = python312.sitePackages;
+  sitePackagesPath = python.sitePackages;
 
   # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
   # Without this, a plugin listing e.g. requests as a dep would fail at runtime
   # if requests isn't already in the sealed uv2nix venv.
-  allExtraPythonPackages = python312.pkgs.requiredPythonModules extraPythonPackages;
+  allExtraPythonPackages = python.pkgs.requiredPythonModules extraPythonPackages;
 
   pythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
 
@@ -210,14 +231,7 @@ stdenv.mkDerivation (finalAttrs: {
     ln -s ${hermesWeb} $out/share/hermes-agent/web_dist
     ln -s ${hermesTui}/lib/hermes-tui $out/ui-tui
 
-    # Write the canonical install stamp. version_info.py resolves it
-    # through HERMES_INSTALL_ROOT (set by the wrapper below) — one file,
-    # one resolution path for the Python runtime (CLI, TUI), no .git
-    # probing and no stamp-specific env channel. updateMechanism is
-    # `external`: the nix store path is replaced by nix, never by hermes.
-    cat > $out/share/hermes-agent/install-stamp.json <<STAMP
-    {"schemaVersion":2,"commit":${builtins.toJSON rev},"commitDate":${builtins.toJSON lastModified},"branch":${builtins.toJSON branch},"baseVersion":"${version}","displayVersion":"${stampDisplayVersion}","distance":${builtins.toJSON stampDistance},"dirty":${if dirty then "true" else "false"},"source":"nix","distribution":"nix","updateMechanism":"external"}
-    STAMP
+    cp ${installStampFile} $out/share/hermes-agent/install-stamp.json
 
     ${lib.concatMapStringsSep "\n"
       (name: ''
@@ -275,6 +289,7 @@ stdenv.mkDerivation (finalAttrs: {
         hermesWeb
         hermesNpmLib
         hermesVenv
+        python
         ;
 
       # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
@@ -285,7 +300,8 @@ stdenv.mkDerivation (finalAttrs: {
       # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
       # of the agent resolution in the desktop wrapper.
       hermesDesktop = callPackage ./desktop.nix {
-        inherit hermesNpmLib electron;
+        inherit hermesNpmLib electron installStampFile;
+        python3 = python;
         hermesAgent = finalAttrs.finalPackage;
       };
 

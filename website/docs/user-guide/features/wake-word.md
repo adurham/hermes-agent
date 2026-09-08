@@ -76,21 +76,26 @@ backend process.
 
 | Engine | Cost | API key | Notes |
 |--------|------|---------|-------|
-| **openWakeWord** (default) | Free | None | Local ONNX models. Ships a bundled **"hey hermes"** model (default); also supports `hey_jarvis`, `alexa`, `hey_mycroft`, … and custom models |
-| **sherpa** | Free | None | **Open vocabulary** — detects ANY typed phrase with zero training. Small English model auto-downloads on first use (~13 MB) |
+| **openWakeWord** (default) | Free | None | TFLite through `pyopen-wakeword`. Includes the **"hey hermes"** model. Custom models require a `.tflite` file. Not available on native Windows ARM64. |
+| **sherpa** | Free | None | Open-vocabulary detection for typed phrases. Downloads an English model on first use. Not available on native Windows ARM64. |
 | **Porcupine** | Free tier / paid | `PORCUPINE_ACCESS_KEY` | Picovoice engine; built-in keywords + custom `.ppn` files |
 
-By default the phrase is **"hey hermes"** — a model for it ships with Hermes, so
-it works out of the box with no training. (On first use, openWakeWord downloads
-its shared feature-extraction models — a small one-time fetch.)
+The default phrase is **"hey hermes"**. Hermes includes its trained TFLite model.
+The `pyopen-wakeword` package includes the shared feature-extraction models, so
+this engine does not download models when it starts.
 
-Both are lazy-installed the first time you enable the wake word (desktop
-installs made with `--include-desktop` pre-install them, so the ear works
-instantly). To install ahead of time:
+If the selected engine is missing, Hermes requests its PM extra when you enable
+wake-word detection. `security.allow_lazy_installs` controls this installation.
+A new dependency environment can require a Hermes restart before the engine loads.
+Packaged builds include the engine dependencies supported by their target.
 
-```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[wake]"
-```
+On native Windows ARM64, use Porcupine with an access key. The default
+openWakeWord engine and sherpa are excluded from that target.
+
+The published `pyopen-wakeword` wheels target macOS 15 or later, glibc Linux
+2.35 or later, and Windows x64. These are engine-wheel requirements, not a
+blanket support statement for every Hermes feature. Termux's core/ACP package
+does not include this wake stack.
 
 ## Quick start
 
@@ -126,13 +131,14 @@ wake_word:
   confirmation_frames: 3      # openWakeWord only — consecutive over-threshold frames required to fire
   start_new_session: true     # start a fresh session on wake vs. continue the current one
   openwakeword:
-    model: hey_hermes         # bundled default; OR a built-in name OR a path to a custom .tflite
+    model: hey_hermes         # bundled default, or an absolute path to a custom .tflite
   porcupine:
     keyword: jarvis           # built-in keyword OR path to a custom .ppn
 ```
 
-`sensitivity`, `phrase`, and `start_new_session` apply to both engines. The
-`openwakeword` and `porcupine` blocks select the actual detection model.
+`sensitivity` and `start_new_session` apply to all three engines. For sherpa,
+`phrase` selects the detection phrase. For openWakeWord and Porcupine, `phrase`
+is a display label; their model or keyword selects the detection phrase.
 
 `input_device` is passed directly to the wake listener's PortAudio
 (`sounddevice`) stream. Use either a numeric device index or an unambiguous
@@ -164,12 +170,11 @@ The `sherpa` and `porcupine` engines decode the whole phrase internally, so they
 don't have the single-frame-spike problem and ignore `confirmation_frames`
 (but they still honor `sensitivity`).
 
-The `openwakeword` engine is [pyopen-wakeword](https://github.com/rhasspy/pyopen-wakeword)
-(rhasspy's maintained fork of openWakeWord): it runs TFLite via a library
-bundled in its wheel and ships the same shared feature models openWakeWord
-downloaded at runtime (byte-identical, verified by hash), so the shipped
-`hey_hermes.tflite` scores exactly as before — with no runtime download and no
-backend to pick. There is no `inference_framework` setting anymore.
+The `openwakeword` provider name now selects
+[pyopen-wakeword](https://github.com/rhasspy/pyopen-wakeword). Its wheel includes
+the TFLite library and shared feature models. Hermes uses the bundled
+`hey_hermes.tflite` model by default. ONNX wake models and the
+`inference_framework` setting are no longer supported.
 
 ### Surfaces (CLI, TUI, GUI)
 
@@ -237,9 +242,9 @@ degrade accuracy — tune per-profile `sensitivity` if needed.
 
 ### Option B — openWakeWord (free, trained model)
 
-Name a built-in model (`hey_jarvis`, `alexa`, `hey_mycroft`, …), or train a
-custom model (≈75–90 min on a free/Colab GPU) for maximum robustness, drop
-the `.onnx` file somewhere, and reference it:
+For a different phrase, obtain or train a compatible openWakeWord TFLite model.
+Set its absolute path in the configuration. Hermes does not resolve built-in
+names such as `hey_jarvis` or download their models for you.
 
 ```yaml
 wake_word:
@@ -247,7 +252,7 @@ wake_word:
   provider: openwakeword
   phrase: "computer"
   openwakeword:
-    model: ~/.hermes/wakewords/computer.onnx   # or a built-in name like hey_jarvis
+    model: /absolute/path/to/computer.tflite
 ```
 
 Training references:

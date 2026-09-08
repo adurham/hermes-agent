@@ -5,10 +5,9 @@
 # Sets up the pm-managed development environment from a fresh clone:
 #   1. Stage the pinned uv from pm/lock.json (sha256-verified, into the pm
 #      store slot) — pm needs uv to bootstrap, so it cannot stage uv itself.
-#   2. Provision Python + the venv + hash-verified dependency sync by running
-#      `python -m pm.cli install` through that uv (the same code path
-#      `hermes pm install` uses). pyproject.toml + uv.lock are the single
-#      authority for pins (see tests/test_project_metadata.py).
+#   2. Use uv to install and locate bootstrap Python, then let uv exit.
+#      Run `python -m pm.cli install` directly so PM can safely replace uv.
+#      PM owns the final interpreter, tool store, and dependency generation.
 #   3. Point you at `source ./activate` — the venv-style way to put the pm
 #      env (PATH + tool vars) into your current shell.
 # There is no pip fallback tier here on purpose.
@@ -125,7 +124,11 @@ fi
 
 echo -e "${CYAN}→${NC} Installing python + tools + dependencies via pm (hash-verified via uv.lock)..."
 echo -e "${CYAN}→${NC} (first run on a fresh checkout can take 1-5 minutes)"
-if ! "$uv" run --no-project --python "${py_version:-3.11}" python -m pm.cli install; then
+# PM can replace its uv entry only after the bootstrap uv has exited.
+"$uv" python install --no-bin "$py_version"
+boot_py="$("$uv" python find --managed-python "$py_version")"
+boot_py="${boot_py%$'\r'}"
+if ! "$boot_py" -m pm.cli install; then
     echo -e "${RED}✗${NC} pm install failed — see output above."
     exit 1
 fi

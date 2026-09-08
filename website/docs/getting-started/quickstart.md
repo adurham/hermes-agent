@@ -53,6 +53,8 @@ To easily install the command-line and desktop applications, [download the Herme
 ### Without Hermes Desktop:
 For a command-line only install without Hermes Desktop, run:
 
+For aarch64 Android devices, use the separate [Termux APT guide](./termux.md).
+
 #### Linux / macOS / WSL2
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
@@ -279,15 +281,10 @@ For Docker sandboxes, you can also enable the **egress credential-injection prox
 
 ### Voice mode
 
-```bash
-# From the Hermes install directory (the curl installer placed it at
-# ~/.hermes/hermes-agent on Linux/macOS or %LOCALAPPDATA%\hermes\hermes-agent on Windows):
-cd ~/.hermes/hermes-agent
-uv pip install --python ./venv/bin/python -e ".[voice]"
-# Includes faster-whisper for free local speech-to-text
-```
-
-Then in the CLI: `/voice on`. Press `Ctrl+B` to record. See [Voice Mode](../user-guide/features/voice-mode.md).
+Run `hermes tools` and configure the Voice providers. Then enable `/voice on`
+in the CLI and press `Ctrl+B` to record. PM handles missing supported
+requirements; a dependency change can require a restart. Local Faster-Whisper
+is not available on every architecture. See [Voice Mode](../user-guide/features/voice-mode.md).
 
 ### Skills
 

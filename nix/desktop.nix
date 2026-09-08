@@ -14,6 +14,7 @@
   hermesNpmLib,
   electron,
   hermesAgent,
+  installStampFile,
   python3,
   # Environment to bake into the launcher. A GUI launcher reads none of the
   # shell profile, so a variable that an interactive shell exports does not
@@ -77,6 +78,7 @@ let
       runHook preBuild
 
       mkdir -p apps/desktop/build
+      cp ${installStampFile} apps/desktop/build/install-stamp.json
 
       patchShebangs .
 
@@ -147,7 +149,7 @@ let
       # before the cd.
       cp -rn apps/desktop/dist $out/
 
-      echo '{"schemaVersion":1,"commit":"nix-dummy-commit","branch":"nix","dirty":false,"source":"nix"}' > $out/install-stamp.json
+      cp ${installStampFile} $out/install-stamp.json
 
       cp -n apps/desktop/package.json $out/
       runHook postInstall

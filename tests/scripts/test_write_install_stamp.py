@@ -79,7 +79,8 @@ def test_distribution_defaults_to_null():
     assert stamp["distribution"] is None
 
 
-def test_cli_accepts_desktop_app_distribution(tmp_path):
+@pytest.mark.parametrize("mechanism", ["electron-updater", "app-installer", "external"])
+def test_cli_stamp_is_accepted_by_runtime_readers(tmp_path, monkeypatch, mechanism):
     import json
     import subprocess
     import sys
@@ -94,10 +95,19 @@ def test_cli_accepts_desktop_app_distribution(tmp_path):
             "--output", str(out),
             "--commit", "d" * 40,
             "--distribution", "desktop-app",
-            "--update-mechanism", "electron-updater",
+            "--update-mechanism", mechanism,
         ],
         capture_output=True, text=True,
     )
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(out.read_text(encoding="utf-8-sig"))["distribution"] == "desktop-app"
+    data = json.loads(out.read_text(encoding="utf-8-sig"))
+    assert data["distribution"] == "desktop-app"
+    assert data["updateMechanism"] == mechanism
+    from hermes_cli.version_info import _stamp_version_info
+    from hermes_cli.venv_sync import _is_sealed
+
+    out.rename(tmp_path / "install-stamp.json")
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path))
+    assert _stamp_version_info() is not None
+    assert _is_sealed(tmp_path)

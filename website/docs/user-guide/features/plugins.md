@@ -327,7 +327,7 @@ services.hermes-agent = {
   # Directory plugin (source tree with plugin.yaml)
   extraPlugins = [ (pkgs.fetchFromGitHub { ... }) ];
   # Entry-point plugin (pip package)
-  extraPythonPackages = [ (pkgs.python312Packages.buildPythonPackage { ... }) ];
+  extraPythonPackages = [ (config.services.hermes-agent.package.python.pkgs.buildPythonPackage { ... }) ];
   # Enable in config
   settings.plugins.enabled = [ "my-plugin" ];
 };
@@ -343,7 +343,7 @@ hermes plugins list                          # table: enabled / disabled / not e
 hermes plugins search <term>                 # search the community plugin index
 hermes plugins install <name>                # install by index name (resolved to repo @ pinned ref)
 hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
-hermes plugins install user/repo --enable    # install AND enable (no prompt)
+hermes plugins install user/repo --enable    # request enable; dependency consent still applies
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
 hermes plugins remove my-plugin              # uninstall
@@ -357,29 +357,45 @@ hermes plugins trust-update-url my-plugin    # confirm a changed update_url afte
 
 ### Update checks and provenance
 
-Hermes records where every `hermes plugins install` came from (the git
-source and exact revision, in `.install-metadata.json`), and
-`hermes plugins check-updates` uses that provenance to answer "is it
-outdated?" without touching your working tree: git-installed plugins are
-compared against their remote's HEAD via `git ls-remote`, and plugins
-whose manifest declares an `update_url` (a small update-feed file) are
-checked against that feed — the standard way for non-github-hosted
-plugins to be update-checkable. Plugins you cloned yourself (no install
-record) are offered `hermes plugins adopt` to become tracked installs.
+Hermes records Git install source and revision in `.install-metadata.json`.
+Unpinned tracked installs compare the saved source's remote HEAD, or a matching
+saved `update_url` feed. Pinned installs remain pinned. Self-cloned directories
+need `hermes plugins adopt NAME` before they become tracked installations.
+Manually copied or provenance-drifted directories receive diagnostic guidance.
+Pip entry-point plugins can report an owning distribution's available version;
+that check does not turn them into Git-managed installs.
 
-The check is read-only; applying updates stays explicit via
-`hermes plugins update`, which re-runs the security scan on the pulled
-code. A background check runs at most once a day (config key
-`plugins.auto_update_check_hours`, default 24, `0` disables) and writes
-its results where the desktop and `hermes pm status` read them; set
-`plugins.auto_apply: true` to also apply git-plugin updates
-unattended — the security scan still gates every apply.
+`hermes plugins check-updates` leaves plugin files unchanged. A scheduled gateway
+check runs when `plugins.auto_update_check_hours` is due: default 24 hours,
+`0` disables it. Its receipt is available through `hermes pm status` and the
+desktop sync-status view. This is not a hard once-per-day limit if you configure
+a different interval.
 
-If a plugin's manifest changes its `update_url` after install (visible
-as a *needs fixing* warning in check-updates and `hermes doctor`),
-Hermes refuses to fetch from the new address until you confirm it with
-`hermes plugins trust-update-url` — an update can never silently
-redirect where its code comes from.
+By default, updates require `hermes plugins update NAME`. Setting
+`plugins.auto_apply: true` opts tracked Git plugins into unattended updates.
+Both routes use the update security scan. Auto-apply does not manage pinned,
+manual, drifted, or pip-distribution rows.
+
+If a manifest changes or introduces `update_url`, Hermes refuses the new address
+until you approve it with `hermes plugins trust-update-url NAME`. This is a
+feed-source check, not a sandbox against already trusted plugin code.
+
+### Dependency preparation and preservation
+
+Python dependency installation has a separate consent/admission step.
+`plugins install --enable` does not bypass that step. A declined or
+non-interactive dependency install can leave the plugin installed but disabled.
+Node sidecar dependencies have a separate prompt and remain plugin-local.
+
+PM prepares Python dependencies with core and the enabled plugin set before
+publishing the new environment and configuration. A resolution failure preserves
+the previous selection. Restart Hermes when a new selected environment is not
+yet active in the running process.
+
+Ordinary Hermes application updates preserve user plugin directories, including
+wrapper files and external sidecar links. Explicit plugin updates or removals
+can change those files. See [Package management](../../reference/package-management.md)
+and the [plugin authoring guide](../../developer-guide/plugins/index.md#lazy-install-optional-python-dependencies).
 
 ### One-click install links (Desktop)
 

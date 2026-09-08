@@ -32,23 +32,14 @@ test('a self-managed checkout is updatable', () => {
   assert.equal(result.message, null)
 })
 
-test('a checkout owned by the external steward is refused with a git pull pointer', () => {
-  const result = classifyUpdateRoot({ isGitTree: true, updateMechanism: 'external' })
+test.each(['external', 'electron-updater', 'app-installer'] as const)('a %s-owned checkout is never git-updated by the desktop', updateMechanism => {
+  const result = classifyUpdateRoot({ isGitTree: true, updateMechanism })
 
   assert.equal(result.updatable, false)
   assert.equal(result.verdict, 'steward-owned-git-tree')
   assert.equal(result.provenance, 'steward-owned')
   assert.equal(result.advice, 'git pull')
-  assert.ok(result.message?.includes('external'))
-})
-
-test('a checkout owned by electron-updater is refused the same way', () => {
-  const result = classifyUpdateRoot({ isGitTree: true, updateMechanism: 'electron-updater' })
-
-  assert.equal(result.updatable, false)
-  assert.equal(result.verdict, 'steward-owned-git-tree')
-  assert.equal(result.advice, 'git pull')
-  assert.ok(result.message?.includes('electron-updater'))
+  assert.ok(result.message?.includes(updateMechanism))
 })
 
 test('an unstamped git tree (dev checkout) stays updatable with unknown provenance', () => {

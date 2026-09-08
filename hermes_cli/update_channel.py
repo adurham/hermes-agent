@@ -123,8 +123,8 @@ def default_channel(project_root: Optional[Path] = None) -> str:
     """The channel an unconfigured install tracks.
 
     ``self`` source installs follow main (historical behavior).
-    ``electron-updater`` bundles follow the channel their own artifact was
-    published to: a canary artifact tracks canary, every other bundle
+    ``electron-updater`` and ``app-installer`` bundles report their artifact
+    channel: a canary artifact tracks canary, every other bundle
     tracks stable. The stamp's ``tag`` is the authority, the same fact
     apps/desktop/product-identity.cjs keys the published feed name on — so
     the feed a canary artifact asks for and the feed it was published to
@@ -135,7 +135,7 @@ def default_channel(project_root: Optional[Path] = None) -> str:
     """
     root = Path(project_root) if project_root is not None else _default_root()
     stamp = _read_stamp(root)
-    if stamp.get("updateMechanism") != "electron-updater":
+    if stamp.get("updateMechanism") not in ("electron-updater", "app-installer"):
         return CHANNEL_MAIN
     return CHANNEL_CANARY if is_canary_tag(stamp.get("tag")) else CHANNEL_STABLE
 
@@ -148,7 +148,7 @@ def resolve_update_channel(
 
     Resolution: the per-install record (``update.installs.<sha16>.channel``)
     when valid; otherwise the mechanism default (main for self-source,
-    stable/canary for electron-updater bundles by artifact tag). Source
+    stable/canary for release bundles by artifact tag). Source
     installs asking for canary normalize to main — canary builds are
     release artifacts, and a git checkout tracks branches; callers print
     the note.
@@ -161,7 +161,7 @@ def resolve_update_channel(
 
     if channel == CHANNEL_CANARY:
         root = Path(project_root) if project_root is not None else _default_root()
-        if _read_stamp(root).get("updateMechanism") != "electron-updater":
+        if _read_stamp(root).get("updateMechanism") not in ("electron-updater", "app-installer"):
             # canary→main normalization for source installs.
             return CHANNEL_MAIN
     return channel
@@ -181,9 +181,9 @@ def set_install_channel(
 ) -> str:
     """Persist ``channel`` for THIS install in config.yaml. Returns the id.
 
-    Refuses on ``external`` mechanism — those installs have no channel;
-    the steward owns updates. Raises ``ValueError`` for both bad channel
-    values and external installs; the CLI surfaces the message.
+    Refuses on ``external`` and ``app-installer`` mechanisms: their update
+    source belongs to the OS or package owner, not this configuration.
+    Raises ``ValueError`` for an invalid channel or an OS-owned install.
     """
     channel = (channel or "").strip().lower()
     if channel not in VALID_CHANNELS:
@@ -193,7 +193,7 @@ def set_install_channel(
 
     root = Path(project_root) if project_root is not None else _default_root()
     stamp = _read_stamp(root)
-    if stamp.get("updateMechanism") == "external":
+    if stamp.get("updateMechanism") in ("external", "app-installer"):
         distribution = stamp.get("distribution") or "an external steward"
         raise ValueError(
             f"channels don't apply here; updates are owned by {distribution}"
@@ -279,7 +279,7 @@ def _stamp_channel_hint(stamp: dict) -> Optional[str]:
     is restored before the shape check, so validation stays with the single
     canary authority). Switch text only; resolution stays with
     :func:`resolve_update_channel`."""
-    if stamp.get("updateMechanism") != "electron-updater":
+    if stamp.get("updateMechanism") not in ("electron-updater", "app-installer"):
         return None
     version = str(stamp.get("tag") or stamp.get("displayVersion") or "")
     if not version:

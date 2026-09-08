@@ -11,6 +11,10 @@
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
 
+      # Same lock-derived interpreter the packages use (nix/pythonLock.nix
+      # owns the pm/lock.json -> family -> nixpkgs selection).
+      pythonLock = pkgs.callPackage ./pythonLock.nix { };
+
       # ── How the checks evaluate the modules ───────────────────────────
       # The checks evaluate both modules for real. The NixOS module goes
       # through lib.evalModules with the NixOS module list. The Home Manager
@@ -1175,7 +1179,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
         # Verify extraPythonPackages PYTHONPATH injection
         extra-python-packages = let
-          testPkg = pkgs.python312Packages.pyfiglet;
+          # Built with the lock-derived interpreter, so this check fails
+          # loudly if the package set and the lock drift apart.
+          testPkg = pythonLock.interpreter.pkgs.pyfiglet;
           hermesWithExtra = hermes-agent.override {
             extraPythonPackages = [ testPkg ];
           };
@@ -1198,6 +1204,41 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: base package clean"
 
           echo "=== All extraPythonPackages checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Exercise the actual uv2nix environment, not only the selector.
+        python-lock-derived = pkgs.runCommand "hermes-python-lock-derived" { } ''
+          set -e
+          echo "=== Checking Nix Python derives from pm/lock.json ==="
+          family=${pythonLock.family}
+          echo "locked family: $family"
+          if [ "$family" != "$(${hermesVenv}/bin/python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" ]; then
+            echo "FAIL: selected interpreter major.minor does not match pm/lock.json"; exit 1
+          fi
+          echo "PASS: interpreter matches lock"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Selection must reject a package set without the locked family.
+        python-lock-no-fallback = let
+          inherit (pythonLock) selectPython;
+          lockedFamily = pythonLock.family;
+          # Fake package sets as data: matching family -> selected; absent
+          # family -> throw (never silently pick another interpreter).
+          matching = { "python${builtins.replaceStrings [ "." ] [ "" ] lockedFamily}" = "fake-python-matching"; };
+          missing = { };
+          selected = selectPython lockedFamily matching;
+          threw = !(builtins.tryEval (selectPython lockedFamily missing)).success;
+        in pkgs.runCommand "hermes-python-lock-no-fallback" { } ''
+          set -e
+          echo "=== Checking python selector has no silent fallback ==="
+          if [ "${toString (selected == "fake-python-matching")}" != "1" ] || [ "${toString threw}" != "1" ]; then
+            echo "FAIL: selector behavior wrong (selected=${toString selected} threw=${toString threw})"; exit 1
+          fi
+          echo "PASS: selector picks locked family, throws on missing family"
           mkdir -p $out
           echo "ok" > $out/result
         '';

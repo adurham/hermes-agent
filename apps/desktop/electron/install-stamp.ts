@@ -1,6 +1,6 @@
 // install-stamp.ts — the typed build-time install stamp.
 //
-// scripts/write_install_stamp.py writes build/install-stamp.json during
+// scripts/write-build-stamp.mjs writes build/install-stamp.json during
 // `npm run build`.
 // bundle-electron-main.mjs bakes that file into the
 // production bundle by defining the __HERMES_INSTALL_STAMP__ global as
@@ -20,7 +20,16 @@
  */
 export type ArtifactKind = 'bootstrap' | 'bundled' | 'light'
 
-/** Mirrors the dict scripts/write_install_stamp.py::build_stamp returns. */
+/** Relative paths declared by the PM bundle builder, below agent-payload. */
+export interface PayloadRuntime {
+  repoDir: string
+  toolsDir: string
+  storePython: string
+  sitePackages: string
+  commands: Record<string, string>
+}
+
+/** Mirrors the build stamp with the PM builder's completed launch contract. */
 export interface InstallStamp {
   schemaVersion: number
   commit: string | null
@@ -33,18 +42,18 @@ export interface InstallStamp {
   /** The steward of a sealed tree ('desktop-app' | 'docker' | 'nix'), when packaged. */
   distribution: string | null
   /** Who applies the next update. Required in every stamp. */
-  updateMechanism: 'self' | 'electron-updater' | 'external'
+  updateMechanism: 'self' | 'app-installer' | 'electron-updater' | 'external'
   baseVersion: string | null
   displayVersion: string | null
   distance: number | null
   payload: ArtifactKind
-  /** True for the Store-submission build (HERMES_DESKTOP_VARIANT=store). */
-  store?: boolean
+  /** Present on bundled artifacts. Validated at build time, never discovered at boot. */
+  runtime?: PayloadRuntime
   /** The pinned release tag. Always set for 'bundled' and 'light', never for 'bootstrap'. */
   tag: string | null
 }
 
-declare const __HERMES_INSTALL_STAMP__: InstallStamp | undefined
+declare const __HERMES_INSTALL_STAMP__: InstallStamp
 
 /** The baked stamp of this artifact, or null on dev bundles. */
 export const INSTALL_STAMP: Readonly<InstallStamp> | null =
@@ -61,9 +70,8 @@ export const INSTALL_STAMP: Readonly<InstallStamp> | null =
  *
  * Derived from the stamp CONSTANT, never from filesystem probes: a
  * payload/venv/marker probe answers "is this artifact intact?", not
- * "which shape am I?" — those probes remain only as integrity checks
- * inside an already-chosen shape (a bundled stamp with a damaged
- * payload throws; it must not quietly become a checkout). Dev runs
+ * "which shape am I?". PM and the bundle builder own payload integrity.
+ * A backend launch failure must not quietly turn a bundle into a checkout. Dev runs
  * (null stamp) and bootstrap artifacts are 'checkout': their runtime
  * is a local install the app bootstraps and maintains.
  */

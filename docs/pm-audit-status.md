@@ -1,8 +1,46 @@
 # PM audit remediation status
 
+This is a historical audit record, not a current-head release status page.
+Counts and native receipts below apply only to the revisions they name.
+Subsequent work adds shared bundle assembly, signed-package E2E, the stable
+release gate, Termux APT distribution, and Python 3.14. Those changes do not
+retroactively extend earlier test receipts.
+
+For current implementation contracts, use [Package management](../website/docs/reference/package-management.md),
+[shared bundle builds](shared-bundle-builds.md), [stable releases](stable-releases.md),
+and [bundled update acceptance](../tests/install/BUNDLED_UPDATES.md).
+
 This change integrates repairs from the aggregate branch audit. It is not a
 release certificate. The audit compared `49945b14029e09fef608db9ede899377cdb54e11`
 with merge base `433f7196760e5d76f77ea6d5464ee7f1b602a4ee`.
+
+## Runtime repairs after the documentation audit
+
+The audit found a Python-layout mismatch in Electron, a fixed Python family in
+Nix, contradictory cryptography requirements, and failures in clean Windows setup.
+The follow-up changes the owning implementations:
+
+- The bundle builder checks the completed payload and publishes its launch paths.
+  Electron consumes that contract without payload probes, adoption, or creation.
+- Nix selects Python’s major/minor from `pm/lock.json`. The uv2nix environment,
+  package overrides, extra packages, and developer shell use that family.
+  Real Nix evaluation and build acceptance remain CI gates.
+- The direct cryptography requirement and security override match the patched
+  version in `uv.lock`. The override still bypasses the vendor SDK’s stale cap.
+- The bootstrap waits for uv to finish, then runs PM through Python directly.
+  PM can replace its uv entry without the bootstrap holding its executable.
+- PM receipt publication uses stdlib-only atomic JSON writes under a shared lock.
+  Failure reporting no longer imports PyYAML through `utils`.
+- The unused development-shell command is removed. Setup plus activation and
+  `deactivate` is the single PM developer path.
+
+A native Windows check started with an empty tool store in a disposable home.
+Setup completed, PM published a dependency generation, and PowerShell activation
+ran the store interpreter and source CLI. A separate PM installation passed
+its real dependency check. These checks do not prove signed-package installation,
+updates, or Nix builds. The broader PM plugin/config YAML coupling remains unchanged.
+The [developer workflow](../website/docs/reference/package-management.md#developer-workflow)
+distinguishes runtime activation from independent test and editor environments.
 
 ## Implemented repairs
 
@@ -166,5 +204,5 @@ branch. Earlier GitHub graph failures reported
 
 The external audit directory contains original findings, exact test selections,
 per-run logs, source snapshots, and review adjudication. Host application,
-certificate trust, and production services remain unchanged. No release has
-been published.
+certificate trust, and production services remained unchanged during that audit.
+That audit did not publish a release; this is not a statement about later runs.

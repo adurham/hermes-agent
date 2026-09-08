@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 title: "Android / Termux"
-description: "Install Hermes Agent on Android with the signed Termux package"
+description: "Install Hermes Agent on Android from its signed Termux APT repository"
 ---
 
 # Hermes on Android with Termux
@@ -11,13 +11,18 @@ This package is in prerelease testing.
 
 The package includes Python, Node.js, npm, uv, ripgrep, ffmpeg, and their runtime libraries.
 CI builds the native Python wheels and the TUI before it creates the package.
-The device does not compile dependencies or assemble a Python environment during installation.
+The device does not compile core dependencies or assemble its base Python
+environment during installation. The package uses Python 3.14 with the bionic
+interpreter pin; it does not require the same patch version as desktop CPython.
+The wheel closure is core plus `acp`, not all desktop extras.
 
 ## Install
 
 Use the standard [Termux](https://termux.dev/) application.
 The package requires its standard prefix, `/data/data/com.termux/files/usr`.
 Other architectures and renamed Termux application packages are not supported.
+The wheels target Android API 24 (`android_24_arm64_v8a`).
+Do not use the desktop/server `install.sh` or a glibc Linux archive on this target.
 
 1. Install the tools for repository setup:
 
@@ -84,6 +89,7 @@ They do not require Termux's `python` or `nodejs` packages.
 Update through APT:
 
 ```bash
+pkg update
 pkg upgrade hermes-agent
 ```
 
@@ -93,7 +99,8 @@ Canary versions contain `~canary.<timestamp>` and sort before the corresponding 
 
 ## Gateway
 
-Termux has no system service manager. Run the gateway in a Termux session:
+This APT installation does not use systemd, launchd, or Windows Scheduled Tasks.
+Run the gateway in a Termux session:
 
 ```bash
 hermes gateway run
@@ -113,9 +120,20 @@ Battery optimization exemptions and `termux-wake-lock` can help, but do not guar
 
 ## Limits
 
-The package does not include the `nemo-relay` exporter because its build does not support this target.
-Optional integrations can require additional dependencies or services.
-A prebuilt core runtime does not guarantee that every third-party plugin supports Android.
+The package does not include the `nemo-relay` exporter. Its vendored build
+toolchain does not support this target.
+
+The package does not include Electron, local Chromium, or desktop computer-use
+tools. A local Docker daemon is not part of the Termux environment. Remote
+services have their own requirements and connectivity limits.
+
+Phone-native Termux:API microphone and clipboard adapters are not provided by
+this package path. The prebuilt CLI/TUI is not proof of local voice or wake-word
+support. Optional integrations and third-party plugins can require dependencies
+that do not support Android.
+
+Python 3.14 on this target reports `sys.platform == "android"`. A dependency
+or skill gated only to `linux` is not automatically available on Android.
 
 ## Uninstall
 

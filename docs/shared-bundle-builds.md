@@ -16,12 +16,19 @@ second package manager.
 Build a desktop bundle from a checkout at its release tag:
 
 ```sh
-uv run --no-project --python 3.11 python scripts/bundles/desktop.py --tag=vX.Y.Z
+uv run --no-project --python 3.14 python scripts/bundles/desktop.py --tag=vX.Y.Z
 ```
 
 The builder derives console entrypoints from the archived `pyproject.toml`.
-It records launcher names in the payload manifest. The MSIX hook reads those
-names rather than carrying a second entrypoint list. POSIX launchers follow
+It checks the interpreter, dependency tree, and generated launchers before
+publishing their relative paths in the payload manifest. The desktop build
+bakes this launch contract into its stamp. Electron uses the declared paths
+without payload probes, adoption, or repair. Non-bundled builds carry no
+placeholder payload. The stamp also declares the update mechanism. Store
+packages use `external`, and sideload bundles use `app-installer`. The runtime
+has no separate Store probe or compatibility fallback.
+The MSIX hook reads the declared launcher names
+rather than carrying a second entrypoint list. POSIX launchers follow
 links to the installed payload and call each declared function directly.
 Windows launchers are minted by the payload's own Python, preserving native
 architecture and relocation behavior.
@@ -41,6 +48,36 @@ maintaining its own link rewrite algorithm.
 Ordinary bundle staging does not scan user plugin trees. Runtime plugin
 admission is a separate PM transaction. Build output cleanup is confined to
 its payload store; it must not prune the machine-wide downloader partials.
+
+## Target boundaries
+
+Desktop stages on the target OS and architecture. Its dependency step uses
+`uv sync --frozen --all-extras --active` on the staged interpreter.
+The complete desktop builder, not `pm bundle` alone, adds prebuilt JS surfaces
+and invokes Electron packaging.
+
+Termux's host scripts run on Linux ARM64. `build_cpython.sh` and `build_node.sh`
+stage pinned bionic packages; `stage_runtime_libs.py` supplies their native
+library closure. `termux_build.sh` exports the tag's core plus `acp` requirements,
+builds the required native wheels in the pinned bionic container, and records
+wheelhouse inputs. `build_deb.sh` assembles the environment offline, creates the
+APT package, and validates it in a fresh container without network access.
+Those container checks do not substitute for Android device acceptance.
+
+The installed Termux root is `$PREFIX/lib/hermes-agent/`. It contains `app`,
+`tools`, `runtime-libs`, `venv`, `bin`, and the PM manifest/facts. Maintainer
+hooks manage only the package's CLI symlinks under `$PREFIX/bin` and refuse
+foreign launcher conflicts. They do not compile dependencies on install.
+
+`stage_apt_repo.py` owns repository metadata and signatures. Stable and canary
+suites are `hermes-stable` and `hermes-canary`; package files publish before
+signed metadata. Runtime and repository pins are distinct from the native
+build-toolchain packages used only inside CI.
+
+Docker and Nix consume PM pins but do not run this desktop payload assembly.
+Docker has its own curated extras and image lifecycle. Nix uses uv2nix and
+separate derivations. [Stable release admission](stable-releases.md) coordinates
+their acceptance and publication with desktop and Termux packages.
 
 ## Verification boundary
 

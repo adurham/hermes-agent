@@ -109,10 +109,9 @@ module.exports = {
       from: 'build/install-stamp.json',
       to: 'install-stamp.json'
     },
-    {
-      from: 'build/agent-payload',
-      to: 'agent-payload'
-    },
+    ...(['bundled', 'store'].includes(process.env.HERMES_DESKTOP_VARIANT || '')
+      ? [{ from: 'build/agent-payload', to: 'agent-payload' }]
+      : []),
     {
       from: 'assets/icon.ico',
       to: 'icon.ico'

@@ -23,7 +23,7 @@
 // is unit-testable without booting Electron, and every caller gets the same
 // answer from one authority.
 
-export type UpdateMechanism = 'self' | 'electron-updater' | 'external'
+import type { InstallStamp } from './install-stamp'
 
 export type UpdateRootProvenance = 'managed-self' | 'steward-owned' | 'unknown' | 'not-a-checkout'
 
@@ -43,7 +43,7 @@ export interface UpdateRootFacts {
   /** True when the resolved update root contains a `.git` entry. */
   isGitTree: boolean
   /** The install stamp's updateMechanism, or null when there is no stamp. */
-  updateMechanism: UpdateMechanism | null
+  updateMechanism: InstallStamp['updateMechanism'] | null
 }
 
 /**
@@ -71,7 +71,7 @@ export function classifyUpdateRoot(facts: UpdateRootFacts): UpdateRootClassifica
     }
   }
 
-  if (facts.updateMechanism === 'external' || facts.updateMechanism === 'electron-updater') {
+  if (facts.updateMechanism !== null) {
     return {
       updatable: false,
       verdict: 'steward-owned-git-tree',

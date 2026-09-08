@@ -370,7 +370,7 @@ MATRIX_ALLOWED_ROOMS="!abc123def456:matrix.example.org,!opsroom789:matrix.exampl
 - 非空 → 房间 ID 必须在列表中。该检查在所有其他门控（提及要求、发送者白名单等）**之前**运行。
 - 使用房间的**内部 ID**（`!abc...:server`），而非别名（`#room:server`）。你可以在 Element 中通过 房间 → 设置 → 高级 找到房间的内部 ID。
 
-另请参阅：[管理员/用户斜杠命令分离](../../reference/slash-commands.md#permissions-and-adminuser-split)。
+另请参阅：[管理员/用户斜杠命令分离](../../reference/slash-commands.md#权限与管理员用户分级)。
 
 :::tip
 查找房间 ID：在 Element 中，进入房间 → **设置** → **高级** → **内部房间 ID**（以 `!` 开头）。

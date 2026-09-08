@@ -79,7 +79,7 @@ def build(repo: Path, tag: str, variant: str, builder_args: list[str]) -> None:
                         "node": capture([node, "--version"], repo),
                         "npm": capture([*npm, "--version"], repo), "target": target}, sort_keys=True)
     stamp_path = repo / "node_modules/.install-stamp"
-    if not stamp_path.is_file() or stamp_path.read_text(encoding="utf-8") != stamp:
+    if not stamp_path.is_file() or stamp_path.read_text(encoding="utf-8-sig") != stamp:
         stamp_path.unlink(missing_ok=True)
         run([*npm, "ci", "--no-audit", "--no-fund", "--fetch-retries=5", "--prefer-offline"], cwd=repo, env=env)
         stamp_path.write_text(stamp, encoding="utf-8")
@@ -88,8 +88,6 @@ def build(repo: Path, tag: str, variant: str, builder_args: list[str]) -> None:
     payload = repo / "apps/desktop/build/agent-payload"
     if variant == "light":
         shutil.rmtree(payload, ignore_errors=True)
-        payload.mkdir(parents=True)
-        (payload / "manifest.json").write_text('{"schema":1,"external":true}\n', encoding="utf-8")
     else:
         run([*npm, "run", "build", "--workspace", "ui-tui"], cwd=repo, env=env)
         run([*npm, "run", "build", "--workspace", "web"], cwd=repo, env=env)

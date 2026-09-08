@@ -12,11 +12,12 @@ required to say "hey hermes".
   TTS-generated speech), which produces the `.tflite` artifact. Redistribution
   is permitted under the openWakeWord license.
 - **Label:** the model registers as `hey_hermes` (matches the filename).
-- **Runtime:** the shared feature-extraction models (melspectrogram +
-  embedding) are bundled inside the `pyopen-wakeword` wheel — byte-identical
-  to the official openWakeWord v0.5.1 files, so scores match the original
-  engine exactly.
+- **Runtime:** the `pyopen-wakeword` wheel includes the shared
+  melspectrogram and embedding models. Starting this engine requires no
+  model download. Identical model files alone do not establish identical
+  scores across inference engines or platforms.
 
-To use a different phrase, train your own model and point
-`wake_word.openwakeword.model` at its `.tflite` path. See the wake-word docs
-for the training guide.
+To use a different phrase, point `wake_word.openwakeword.model` at an
+absolute path to a compatible `.tflite` model. Hermes does not download
+models by name, and this engine does not load `.onnx` files. See the
+wake-word docs for the training guide and platform limits.

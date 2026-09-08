@@ -150,9 +150,6 @@ function stampAssertions(stamp, side) {
   if (stamp.tag !== side.tag) {
     problems.push(`stamp.tag ${JSON.stringify(stamp.tag)} != ${side.tag}`)
   }
-  if (stamp.store === true) {
-    problems.push('stamp.store must not be true for a release bundle')
-  }
   return problems
 }
 

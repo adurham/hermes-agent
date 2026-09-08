@@ -277,12 +277,8 @@ stage_venv() {
     (cd "$INSTALL_DIR" && "$UV_CMD" venv --allow-existing venv) || fail "uv venv failed"
 }
 
-# Delegate the whole python+venv+tools install to pm: stage the pinned uv,
-# let uv run pm.cli, and pm provisions the interpreter, the venv (default
-# extras = [all], so it matches what `hermes update` force-syncs), and the
-# tool store — all hash-verified against pm/lock.json + uv.lock. install.sh
-# no longer runs `uv sync` directly; pm is the single install authority
-# (the run_locked_uv_sync contract moved into pm/packages.py::uv_env).
+# uv installs and locates bootstrap Python, then exits before PM starts.
+# PM owns the final interpreter, tool store, and selected dependency generation.
 bootstrap_pm() {
     ensure_uv
     local _py
@@ -291,8 +287,12 @@ bootstrap_pm() {
         "$INSTALL_DIR/pm/lock.json" | cut -d+ -f1 | cut -d. -f1,2)"
     [ -n "$_py" ] || _py="3.14"
     log "delegating python + venv + tools to pm (hash-verified via uv.lock)"
-    (cd "$INSTALL_DIR" && "$UV_CMD" run --no-project --python "$_py" python -m pm.cli install) \
-        || fail "pm install failed"
+    # Finish bootstrap uv before PM replaces or cleans its store entry.
+    "$UV_CMD" python install --no-bin "$_py" || fail "bootstrap Python installation failed"
+    local boot_py
+    boot_py="$("$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
+    boot_py="${boot_py%$'\r'}"
+    (cd "$INSTALL_DIR" && "$boot_py" -m pm.cli install) || fail "pm install failed"
 }
 
 stage_python_deps() {

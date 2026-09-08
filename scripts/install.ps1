@@ -496,8 +496,8 @@ function Stage-Venv {
 }
 
 # Delegate the whole python+venv+tools install to pm: stage the pinned uv,
-# let uv run pm.cli, and pm provisions the interpreter, the venv (default
-# extras = [all], so it matches what `hermes update` force-syncs), and the
+# let uv locate Python and exit before PM starts. PM provisions the interpreter,
+# the venv (default extras = [all], matching `hermes update`), and the
 # tool store — all hash-verified against pm/lock.json + uv.lock. install.ps1
 # no longer runs `uv sync` directly; pm is the single install authority
 # (the run_locked_uv_sync contract moved into pm/packages.py::uv_env).
@@ -509,7 +509,12 @@ function Invoke-BootstrapPm {
     Log "delegating python + venv + tools to pm (hash-verified via uv.lock)"
     Push-Location $InstallDir
     try {
-        & $uv run --no-project --python $pyVersion python -m pm.cli install
+        # Finish bootstrap uv before PM replaces or cleans its store entry.
+        & $uv python install --no-bin $pyVersion
+        if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
+        $bootPy = (& $uv python find --managed-python $pyVersion) -join "`n"
+        if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
+        & $bootPy.Trim() -m pm.cli install
         if ($LASTEXITCODE) { Fail "pm install failed" }
     } finally {
         Pop-Location

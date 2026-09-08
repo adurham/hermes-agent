@@ -2988,10 +2988,6 @@ export const en: Translations = {
     useLocalTitle: 'Use Hermes on this computer',
     useLocalDesc: 'A Hermes runtime is already installed here — start it with one click. Nothing downloads.',
     bundledLocalDesc: 'Use the Hermes runtime included with this app — the bundled backend is the local install.',
-    bundledDamagedTitle: 'Use Hermes bundled with this app',
-    bundledDamagedDesc:
-      "The Hermes backend bundled with this app is missing or damaged — reinstall the app to restore it.",
-    reinstallApp: 'Reinstall the app',
     localStartUnavailable: 'Local installation could not start. Restart Hermes Desktop and try again.',
     remoteSetupTitle: 'Connect to existing Hermes',
     remoteSetupDesc: 'Enter your gateway URL. Hermes Desktop will detect whether it needs a token or browser sign-in.',

@@ -47,11 +47,5 @@ describe('installShape', () => {
     expect(installShape(null)).toBe('checkout')
   })
 
-  test('the shape comes from the stamp alone — no probe can change it', () => {
-    // Same stamp, any filesystem state: the answer is a pure function of
-    // the constant. (The probes live INSIDE the chosen shape as integrity
-    // checks; see resolveHermesBackend.)
-    const bundled = stamp({ payload: 'bundled' })
-    expect(installShape(bundled)).toBe(installShape(bundled))
-  })
+
 })

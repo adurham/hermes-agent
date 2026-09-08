@@ -84,9 +84,9 @@ run_conversation():
 
 ### Testing
 
-Use the canonical runner — it enforces CI-parity (hermetic `env -i`, unset
-credentials, TZ=UTC, per-file subprocess isolation via
-`scripts/run_tests.sh` — pytest-xdist, `--dist loadfile`, worker count = CPU count):
+Use `scripts/run_tests.sh` for CI parity. It clears credentials, sets
+`TZ=UTC`, and runs each test file in a separate subprocess through
+`scripts/run_tests_parallel.py` on every platform. It does not use xdist.
 
 ```bash
 scripts/run_tests.sh                          # full suite

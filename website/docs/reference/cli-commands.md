@@ -243,7 +243,7 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `run` | Run the gateway in the foreground. Recommended for WSL and Docker. |
+| `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
@@ -1774,18 +1774,47 @@ hermes completion zsh >> ~/.zshrc
 hermes completion fish > ~/.config/fish/completions/hermes.fish
 ```
 
+## `hermes pm`
+
+Manage pinned tools, Python dependency environments, and their diagnostics.
+This command does not update the Hermes application itself.
+
+```bash
+hermes pm --help
+hermes pm doctor
+hermes pm status
+hermes pm install
+hermes pm install chromium
+```
+
+For source development, run the setup script once, then activate the installed
+environment with `source ./activate` or PowerShell `. .\activate.ps1`.
+Use `deactivate` to restore the previous shell environment. See the
+[developer workflow](/reference/package-management#developer-workflow) for preparation,
+daily commands, dependency refresh, and test environments.
+
+See [Package management](./package-management.md) for every subcommand,
+source-versus-bundle behavior, lazy-install policy, and maintainer commands.
+
 ## `hermes update`
 
 ```bash
 hermes update [--gateway] [--check] [--plan] [--no-backup] [--backup] [--yes]
 ```
 
-Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install. Use `--check` to see whether your checkout is behind `origin/main` without installing.
+Updates an admitted source checkout and prepares dependencies through PM.
+Use `--check` to compare with its configured source target without applying
+the update. Desktop bundles, Docker, Nix, and Termux packages retain their
+external update owner. See [Updating & Uninstalling](../getting-started/updating.md).
 
 `hermes update` pulls the configured update branch (default: `main`). If your checkout is on another branch, Hermes may check out the update branch before pulling. Commit branch work before updating when you want to keep it outside the update autostash flow.
 
 | Option | Description |
 |--------|-------------|
+| `--install-id` | Print this installation's identity and path, then exit. |
+| `--set-channel CHANNEL` | Persist `main`, `stable`, or `canary` for this installation without applying an update. External owners can refuse the change. |
+| `--channel CHANNEL` | Select a source channel for this invocation only. |
+| `--branch NAME` | Select a source branch for this invocation; takes precedence over source channel selection. |
 | `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. |
 | `--check` | Check whether an update is available without pulling, installing dependencies, or restarting anything. |
 | `--plan` | Print the update plan and exit without changing anything: install kind (git/Docker/Nix/apt), every running Hermes service across all profiles with its supervisor and running code version, and how each will be restarted. On image- or package-managed installs, reports the correct external update command instead. Read-only. |
@@ -1811,7 +1840,7 @@ Additional behavior:
 | `hermes --version` | Print version information. |
 | `hermes update` | Pull latest changes and reinstall dependencies. |
 
-| `hermes uninstall [--full] [--gui] [--dry-run] [--yes]` | Remove Hermes, optionally deleting all config/data. `--gui` removes only the desktop Chat GUI, leaving the agent intact; `--full` also deletes config/data; `--dry-run` prints what would be removed without changing anything; `--yes` skips prompts. |
+| `hermes uninstall [--full] [--gui] [--data] [--dry-run] [--yes]` | Remove owned source-install files. `--gui` selects source-built desktop removal; `--full` also removes data. `--data` removes user data without deleting package-owned code. Sealed installs use their package owner for application removal. `--dry-run` previews the scope; `--yes` skips confirmation. |
 
 ## See also
 

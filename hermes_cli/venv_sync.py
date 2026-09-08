@@ -48,6 +48,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_cli.steward import UPDATE_MECHANISMS
+
 STAMP_NAME = "venv-sync.json"
 STAMP_SCHEMA = 1
 
@@ -125,10 +127,10 @@ def _is_sealed(project_root: Path) -> bool:
         return False
     if not (isinstance(data, dict) and bool(data)):
         return False
-    if data.get("updateMechanism") not in ("self", "electron-updater", "external"):
+    if data.get("updateMechanism") not in UPDATE_MECHANISMS:
         raise RuntimeError(
             f"install-stamp.json at {project_root} is missing a valid "
-            "'updateMechanism' (one of self, electron-updater, external). The "
+            f"'updateMechanism' (one of {', '.join(UPDATE_MECHANISMS)}). The "
             "build lane that wrote this stamp must pass --update-mechanism to "
             "scripts/write_install_stamp.py."
         )

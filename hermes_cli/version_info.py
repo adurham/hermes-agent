@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from hermes_cli import __release_date__, __version__
+from hermes_cli.steward import UPDATE_MECHANISMS
 
 
 @dataclass(frozen=True)
@@ -114,10 +115,10 @@ def _stamp_version_info() -> VersionInfo | None:
 
     # updateMechanism is required in every stamp. A stamp without it means
     # the writing build lane must be fixed, not tolerated.
-    if data.get("updateMechanism") not in ("self", "electron-updater", "external"):
+    if data.get("updateMechanism") not in UPDATE_MECHANISMS:
         raise RuntimeError(
             f"install-stamp.json at {stamp_file} is missing a valid "
-            "'updateMechanism' (one of self, electron-updater, external). The "
+            f"'updateMechanism' (one of {', '.join(UPDATE_MECHANISMS)}). The "
             "build lane that wrote this stamp must pass --update-mechanism to "
             "scripts/write_install_stamp.py (or bake the field directly)."
         )

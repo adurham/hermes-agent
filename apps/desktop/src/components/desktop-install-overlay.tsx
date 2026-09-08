@@ -15,7 +15,6 @@ import type {
   DesktopBootstrapState
 } from '@/global'
 import { useI18n } from '@/i18n'
-import { DESKTOP_DOCS_URL } from '@/lib/docs'
 import { AlertCircle, ChevronDown, ChevronRight, Globe, iconSize, Loader2, Monitor } from '@/lib/icons'
 import { capitalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -403,10 +402,6 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   }
 
   if (state.setupChoice) {
-    // The local card's copy + behavior derive from what the backend found on
-    // this machine: 'none' is an install offer, the rest say "use what's
-    // already here" — and 'bundled-damaged' disables the card entirely
-    // (there is no install to fire; reinstall the app instead).
     const localState = state.setupChoice.local
     const localPres = localCardPresentation(localState)
 
@@ -437,9 +432,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             </button>
 
             <button
-              aria-disabled={localPres.disabled}
               className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={localStarting || localPres.disabled}
+              disabled={localStarting}
               onClick={async () => {
                 setLocalStart({ root: activeRoot, starting: true, error: null })
 
@@ -468,19 +462,6 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy[localPres.desc]}</p>
             </button>
           </div>
-
-          {localPres.disabled ? (
-            <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
-              <AlertCircle className="size-4 shrink-0" />
-              <button
-                className="text-(--ui-text-secondary) underline underline-offset-2 hover:text-foreground"
-                onClick={() => window.hermesDesktop?.openExternal?.(DESKTOP_DOCS_URL)}
-                type="button"
-              >
-                {copy.reinstallApp}
-              </button>
-            </div>
-          ) : null}
 
           {localStartError ? (
             <div className="mt-4 flex items-start gap-2 text-sm text-destructive">
