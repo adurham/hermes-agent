@@ -68,7 +68,7 @@ export function deriveUpdateStatus({
   if (status?.error) {
     return {
       applying,
-      error: status.message,
+      error: [status.message, status.error].filter(l => !!l).join('\n'),
       line: u.cantReach,
       supported,
       tone: 'error',

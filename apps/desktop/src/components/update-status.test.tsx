@@ -58,12 +58,18 @@ describe('deriveUpdateStatus', () => {
     expect(view.supported).toBe(false)
   })
 
-  it('check error surfaces the tone and the transport message separately', () => {
+  it('check error includes both the transport message and the underlying error', () => {
     const view = derive({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
 
     expect(view.tone).toBe('error')
     expect(view.line).toBe(en.updates.cantReach)
-    expect(view.error).toBe('ECONNREFUSED')
+    expect(view.error).toBe('ECONNREFUSED\ncheck-failed')
+  })
+
+  it.each([undefined, ''])('keeps the error when the transport message is %s', message => {
+    const view = derive({ supported: true, error: 'check-failed', message })
+
+    expect(view.error).toBe('check-failed')
   })
 
   it('applying beats available so the card cannot offer a second install', () => {
