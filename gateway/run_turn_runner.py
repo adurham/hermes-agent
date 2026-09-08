@@ -282,6 +282,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             logger.warning("%s boundary timed out or failed: %s", reason, err)
             return False
 
+    async def _send_shared_clarify(self, entry, **kwargs):
+        result = await self._ctx._status_adapter.send_clarify(**kwargs)
+        if self._approval_owner is not None and result.success:
+            authority, session_id, generation = self._approval_owner
+            authority.register_clarify(session_id, generation, entry)
+        return result
+
     def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False) -> str:
         """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):
         schedule send_clarify on the gateway loop, block on the primitive's threading.Event with a
@@ -295,7 +302,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
-        clarify_mod.register(
+        entry = clarify_mod.register(
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
             multi_select=bool(multi_select),
         )
@@ -316,7 +323,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         except Exception:
             logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=True)
         fut = self._schedule(
-            ctx._status_adapter.send_clarify(
+            self._send_shared_clarify(entry,
                 chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
                 session_key=session_key, metadata=ctx._status_thread_metadata,
             ),
@@ -326,6 +333,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # have posted with a late ack. Only a definitive failure tears down the registration;
         # ambiguous falls through to the bounded wait so a late reply resolves.
         response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+        if self._approval_owner is not None:
+            authority, session_id, generation = self._approval_owner
+            authority.sessions[session_id].controls.snapshot(session_id, generation)
         # Only re-arm typing when the user actually answered — the undeliverable sentinel and the
         # timeout/cancellation strings start with '[' and must pass through untouched.
         if not (isinstance(response, str) and response.startswith("[")):
