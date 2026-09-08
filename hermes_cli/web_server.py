@@ -7572,11 +7572,33 @@ def _dashboard_code_skew_guard() -> Optional[str]:
     if not skew:
         return None
     boot_rev, disk_rev = skew
+    # Scope-correct guidance: this dashboard process may be running as
+    # either a systemd --user unit or a --system unit (e.g. a shared
+    # deployment box running as a dedicated service account with no --user
+    # systemd instance at all). A hardcoded ``systemctl --user restart
+    # hermes-dashboard`` is flatly wrong on the latter and sends the operator
+    # down a dead end (#91142). Prefer the in-dashboard restart control —
+    # it resolves scope itself via ``hermes gateway restart`` — and only
+    # fall back to a literal systemctl command when we can actually tell
+    # which scope applies.
+    restart_hint = "use the dashboard's Restart Gateway control"
+    try:
+        from hermes_cli.gateway import _select_systemd_scope
+
+        system_scope = _select_systemd_scope(False)
+        scope_flag = " --system" if system_scope else ""
+        restart_hint = (
+            f"use the dashboard's Restart Gateway control, or run "
+            f"`sudo hermes gateway restart{scope_flag}`" if system_scope
+            else f"use the dashboard's Restart Gateway control, or run "
+            f"`hermes gateway restart{scope_flag}`"
+        )
+    except Exception:
+        pass
     return (
         f"This dashboard is running code from {boot_rev} but the checkout on "
         f"disk is now {disk_rev}. The model picker would risk a stale-module "
-        f"crash — restart the dashboard to load the new code "
-        f"(systemctl --user restart hermes-dashboard, or hermes dashboard --port <port>)"
+        f"crash — restart the dashboard to load the new code ({restart_hint})"
     )
 
 
