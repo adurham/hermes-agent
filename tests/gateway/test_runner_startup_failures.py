@@ -109,6 +109,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
             return True
 
         async def stop(self):
+            self.session_store.close_all_db_handles()
             self._session_db.close()
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -255,6 +256,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
             return True
 
         async def stop(self):
+            self.session_store.close_all_db_handles()
             self._session_db.close()
 
     _pid_state = {"alive": True}
@@ -470,6 +472,7 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
             return True
 
         async def stop(self):
+            self.session_store.close_all_db_handles()
             self._session_db.close()
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
