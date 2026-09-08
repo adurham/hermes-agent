@@ -670,6 +670,98 @@ class TestDeleteProfile:
         assert profile_dir.is_dir()
         assert get_active_profile() == "default"
 
+    def test_blocks_delete_when_system_scope_unit_references_profile(
+        self, profile_env, monkeypatch
+    ):
+        """Regression for the 2026-09-08 incident: a profile deleted while a
+        SYSTEM-scope systemd unit (/etc/systemd/system/, not the user-scope
+        path the old check alone looked at) still points at it via a
+        drop-in override left the unit crash-looping with no warning —
+        because it backed the very dashboard process serving the delete
+        request, that also took down the UI. delete_profile must refuse
+        outright, even with yes=True.
+        """
+        profile_dir = create_profile("dashboard", no_alias=True)
+
+        # Simulate a real deployment: the unit's own name has nothing to do
+        # with the profile (hermes-serve.service), and it references the
+        # profile only via a systemd drop-in override — the exact shape
+        # that let this slip through _cleanup_gateway_service's old
+        # single-path user-scope-only check.
+        fake_system_dir = profile_env / "etc-systemd-system"
+        (fake_system_dir / "hermes-serve.service.d").mkdir(parents=True)
+        (fake_system_dir / "hermes-serve.service.d" / "override.conf").write_text(
+            f'[Service]\nEnvironment="HERMES_HOME={profile_dir}"\n'
+            f"EnvironmentFile={profile_dir}/.env\n"
+        )
+        monkeypatch.setattr(
+            profiles, "_find_systemd_units_referencing_profile",
+            lambda pd: (
+                ["hermes-serve.service"]
+                if str(pd.resolve()) == str(profile_dir.resolve())
+                else []
+            ),
+        )
+
+        with pytest.raises(ValueError, match="hermes-serve.service"):
+            delete_profile("dashboard", yes=True)
+
+        # Nothing was touched — the guard fires before any cleanup step.
+        assert profile_dir.is_dir()
+
+    def test_find_systemd_units_matches_system_scope_dropin(
+        self, profile_env, monkeypatch, tmp_path
+    ):
+        """_find_systemd_units_referencing_profile itself: must find a
+        SYSTEM-scope (/etc/systemd/system) unit whose drop-in override
+        references the profile dir, not just a same-name user-scope unit.
+        """
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        profile_dir = create_profile("dashboard", no_alias=True)
+
+        fake_etc_systemd = tmp_path / "fake-etc-systemd-system"
+        dropin_dir = fake_etc_systemd / "hermes-gateway-dashboard.service.d"
+        dropin_dir.mkdir(parents=True)
+        (dropin_dir / "override.conf").write_text(
+            f'[Service]\nEnvironmentFile={profile_dir}/.env\n'
+        )
+        # Also plant an unrelated unit that must NOT be matched.
+        (fake_etc_systemd / "unrelated.service").write_text(
+            "[Service]\nExecStart=/usr/bin/true\n"
+        )
+
+        found = profiles._find_systemd_units_referencing_profile(
+            profile_dir, search_dirs=[fake_etc_systemd]
+        )
+
+        assert found == ["hermes-gateway-dashboard.service"]
+
+    def test_find_systemd_units_matches_user_scope_bare_unit(
+        self, profile_env, monkeypatch, tmp_path
+    ):
+        """User-scope path, no drop-in — plain unit file with the profile
+        path directly in its body (e.g. an Environment= line)."""
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        profile_dir = create_profile("coder", no_alias=True)
+
+        fake_user_dir = tmp_path / "fake-user-systemd"
+        fake_user_dir.mkdir(parents=True)
+        (fake_user_dir / "hermes-gateway-coder.service").write_text(
+            f'[Service]\nEnvironment="HERMES_HOME={profile_dir}"\n'
+        )
+
+        found = profiles._find_systemd_units_referencing_profile(
+            profile_dir, search_dirs=[fake_user_dir]
+        )
+
+        assert found == ["hermes-gateway-coder.service"]
+
+    def test_find_systemd_units_returns_empty_when_nothing_references(
+        self, profile_env, monkeypatch
+    ):
+        profile_dir = create_profile("coder", no_alias=True)
+        found = profiles._find_systemd_units_referencing_profile(profile_dir)
+        assert found == []
 
 
     def test_backend_scan_only_matches_this_profile(self, profile_env, monkeypatch):
