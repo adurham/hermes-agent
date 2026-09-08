@@ -1784,6 +1784,86 @@ def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
         raise last_exc
 
 
+def _find_systemd_units_referencing_profile(
+    profile_dir: Path, *, search_dirs: list[Path] | None = None
+) -> list[str]:
+    """Return names of systemd units whose unit file or drop-in references
+    this profile's directory, checking BOTH scopes and BOTH mechanisms.
+
+    ``_cleanup_gateway_service`` only ever checked a single path derived from
+    ``get_service_name()`` under the USER-scope unit dir
+    (``~/.config/systemd/user/<name>.service``). That misses two real
+    deployment shapes:
+
+    1. SYSTEM-scope units (``/etc/systemd/system/``) — e.g. a profile
+       installed via ``hermes gateway install --system``.
+    2. A unit whose OWN name has nothing to do with the profile, because a
+       systemd drop-in override (``<unit>.service.d/override.conf``)
+       retargets its ``Environment=HERMES_HOME=...`` / ``EnvironmentFile=``
+       / ``ExecStart=`` at this profile. This is a normal, supported
+       pattern (see e.g. hermes-serve.service, hermes-gateway-dashboard
+       .service in typical multi-profile deployments) and is exactly the
+       shape that slipped past the old check: deleting a profile referenced
+       only via drop-in left the unit crash-looping
+       (``EnvironmentFile: No such file or directory``) with zero warning
+       (2026-09-08 incident — the deleted profile backed the very
+       dashboard process the delete request came through).
+
+    Detection is content-based (grep every unit file + drop-in ``.conf``
+    for this profile's absolute path) rather than name-based, so it catches
+    both shapes uniformly regardless of unit naming convention.
+
+    ``search_dirs`` overrides the two real scope roots — test-only hook so
+    the scan logic is exercised without touching the real filesystem's
+    /etc/systemd/system (which the test process normally can't write to
+    anyway).
+
+    Best-effort / Linux-only (systemd). Returns ``[]`` on any error, missing
+    directories, or non-Linux platforms — never raises.
+    """
+    import platform as _platform
+
+    if _platform.system() != "Linux":
+        return []
+
+    try:
+        profile_str = str(profile_dir.resolve())
+    except OSError:
+        return []
+
+    if search_dirs is None:
+        search_dirs = [
+            Path("/etc/systemd/system"),
+            Path.home() / ".config" / "systemd" / "user",
+        ]
+    referencing: set[str] = set()
+    for base in search_dirs:
+        if not base.is_dir():
+            continue
+        try:
+            candidates = list(base.glob("*.service")) + list(
+                base.glob("*.service.d/*.conf")
+            )
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if profile_str not in text:
+                continue
+            if path.suffix == ".conf":
+                # <unit>.service.d/override.conf -> <unit>.service
+                unit_name = path.parent.name
+                if unit_name.endswith(".d"):
+                    unit_name = unit_name[:-2]
+            else:
+                unit_name = path.name
+            referencing.add(unit_name)
+    return sorted(referencing)
+
+
 def delete_profile(name: str, yes: bool = False) -> Path:
     """Delete a profile, its wrapper script, and its gateway service.
 
@@ -1804,6 +1884,34 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     profile_dir = get_profile_dir(canon)
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"Profile '{canon}' does not exist.")
+
+    # Block deletion outright when a live systemd unit (any scope, any
+    # name — see _find_systemd_units_referencing_profile) depends on this
+    # profile. Without this, delete proceeds, the unit's next restart hits
+    # "EnvironmentFile: No such file or directory" and crash-loops (or, for
+    # a unit that hadn't restarted yet, silently keeps running against a
+    # directory that no longer exists until its next restart kills it) —
+    # with zero warning to whoever ran the delete (2026-09-08 incident:
+    # this exact path deleted the profile backing the dashboard process
+    # serving the delete request itself). ``yes=True`` (the dashboard's
+    # confirm-then-delete flow) does NOT bypass this — a typed confirmation
+    # of profile name is not informed consent to breaking an unrelated
+    # system service the user may not know exists.
+    referencing_units = _find_systemd_units_referencing_profile(profile_dir)
+    if referencing_units:
+        units_str = ", ".join(referencing_units)
+        raise ValueError(
+            f"Cannot delete profile '{canon}': it is still referenced by "
+            f"the systemd unit(s) {units_str}.\n"
+            f"Deleting it now would leave that service crash-looping "
+            f"(missing EnvironmentFile/working directory) with no warning.\n"
+            f"Remove or retarget the unit(s) first, e.g.:\n"
+            f"  sudo systemctl disable --now {referencing_units[0]}\n"
+            f"  sudo rm -f /etc/systemd/system/{referencing_units[0]} "
+            f"/etc/systemd/system/{referencing_units[0]}.d/override.conf\n"
+            f"  sudo systemctl daemon-reload\n"
+            f"then re-run the delete."
+        )
 
     # Show what will be deleted
     model, provider = _read_config_model(profile_dir)
