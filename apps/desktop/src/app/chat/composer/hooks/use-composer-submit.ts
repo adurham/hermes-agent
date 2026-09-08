@@ -7,7 +7,7 @@ import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
-import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import { enqueueQueuedPrompt, serverOwnsComposerQueue, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
@@ -86,8 +86,8 @@ export function useComposerSubmit({
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
-  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
-    const submittedScope = activeQueueSessionKeyRef.current
+  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden', target?: Parameters<ChatBarProps['onSubmit']>[1]) => {
+    const submittedScope = target?.storedSessionId ?? activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
 
     const restore = () => {
@@ -100,9 +100,7 @@ export function useComposerSubmit({
     }
 
     void Promise.resolve(
-      attachments
-        ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
-        : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+      onSubmit(text, { ...target, ...(attachments ? { attachments } : {}), composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
     )
       .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
       .catch(restore)
@@ -253,9 +251,14 @@ export function useComposerSubmit({
     triggerHaptic('submit')
     clearDraft()
 
+    const canonical = serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)
     void Promise.resolve(onSteer(text, mode)).then(accepted => {
       if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+        if (canonical) {
+          dispatchSubmit(text, [], undefined, { fromQueue: true, sessionId: sessionId ?? null, storedSessionId: activeQueueSessionKey })
+        } else {
+          enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+        }
       }
     })
   }

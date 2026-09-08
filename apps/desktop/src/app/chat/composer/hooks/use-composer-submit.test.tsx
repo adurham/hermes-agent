@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
+import { $connection } from '@/store/session'
+import { getQueuedPrompts, $queuedPromptsBySession } from '@/store/composer-queue'
 import { $gateway } from '@/store/gateway'
 import {
   clearAllPrompts,
@@ -145,6 +147,18 @@ describe('useComposerSubmit external request routing', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+  })
+
+  it('routes a refused native steer through canonical queue admission', async () => {
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
+    $queuedPromptsBySession.set({})
+    const h = renderSubmitHook({ busy: true, text: 'keep guidance' })
+    h.onSteer.mockResolvedValue(false)
+    try {
+      act(() => h.hook.result.current.steerDraft())
+      await waitFor(() => expect(h.onSubmit).toHaveBeenCalledWith('keep guidance', expect.objectContaining({ fromQueue: true, sessionId: 'runtime-session', storedSessionId: 'stored-session' })))
+      expect(getQueuedPrompts('stored-session')).toEqual([])
+    } finally { $connection.set(null); $queuedPromptsBySession.set({}) }
   })
 
   it('does not fan out a main ship across keep-alives or other projects', async () => {
