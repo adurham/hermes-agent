@@ -382,6 +382,7 @@ export function useSessionActions({
   const { t } = useI18n()
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
+  const createIntentRef = useRef<string | null>(null)
   const branchCreateFlightsRef = useRef(new Map<string, Promise<SessionCreateResponse>>())
 
   // Follow auto-compression's stored-id rotation only while the exact runtime,
@@ -448,6 +449,7 @@ export function useSessionActions({
     (options: boolean | FreshSessionDraftOptions = false) => {
       const draftOptions = typeof options === 'boolean' ? { replaceRoute: options } : options
       const preserveRoute = draftOptions.preserveRoute ?? false
+      createIntentRef.current = null
       const replaceRoute = draftOptions.replaceRoute ?? false
 
       const hasWorkspaceTarget =
@@ -534,6 +536,7 @@ export function useSessionActions({
     async (preview: string | null = null): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
+      const createIntent = createIntentRef.current ??= crypto.randomUUID()
 
       creatingSessionRef.current = true
 
@@ -562,6 +565,7 @@ export function useSessionActions({
         // different socket than the one that minted the runtime.
         const capturedRoute = resolveNewChatOwnerRoute()
         const params = await desktopSessionCreateParams(cwd, capturedRoute)
+        params.request_id = createIntent
 
         // Lease the owner socket for the whole create → owner-publication
         // sequence (#93602 primitive). The per-request lease inside
@@ -646,6 +650,8 @@ export function useSessionActions({
         }
 
         resetViewSync()
+
+        if (createIntentRef.current === createIntent) { createIntentRef.current = null }
         activeSessionIdRef.current = created.session_id
         selectedStoredSessionIdRef.current = stored
         ensureSessionState(created.session_id, stored)
@@ -760,6 +766,7 @@ export function useSessionActions({
 
         const params = {
           ...(await desktopSessionCreateParams(cwd, capturedRoute)),
+          request_id: crypto.randomUUID(),
           ...(workspaceScope.workspaceMode === 'bots' ? { hidden: true } : {})
         }
 
