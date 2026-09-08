@@ -6,6 +6,10 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
+import threading
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,3 +59,64 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     assert native.stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 1
     assert not (output / "manifest.json").exists()
     assert os.environ["HERMES_RUNTIME_DIR"] == str(tmp_path / "original")
+
+
+def test_staged_cache_installs_built_wheel_without_unsigned_zip(tmp_path):
+    uv = shutil.which("uv")
+    assert uv, "native bundle test requires uv"
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "pyproject.toml").write_text(
+        '[project]\nname="cache-proof"\nversion="1.0.0"\n'
+        '[build-system]\nrequires=["setuptools"]\nbuild-backend="setuptools.build_meta"\n',
+        encoding="utf-8",
+    )
+    (package / "cache_proof.py").write_text("VALUE = 'installed from cached wheel'\n", encoding="utf-8")
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    archive = dist / "cache_proof-1.0.0.tar.gz"
+    with tarfile.open(archive, "w:gz") as source:
+        source.add(package, arcname="cache_proof-1.0.0")
+    cache = tmp_path / "build-cache"
+    env = {**os.environ, "UV_CACHE_DIR": str(cache), "UV_NO_CONFIG": "1", "UV_PYTHON_DOWNLOADS": "never"}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(dist)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/{archive.name}"
+    try:
+        subprocess.run(
+            [uv, "pip", "install", "--python", sys.executable, "--target", str(tmp_path / "first"),
+             "--no-build-isolation", "--no-deps", url],
+            env=env, cwd=tmp_path, capture_output=True, text=True, check=True, timeout=60,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert list(cache.rglob("*.whl")), "the actual uv build must create the redundant ZIP"
+    shipped = tmp_path / "payload/uv-cache"
+    native.stage_uv_cache(cache, shipped)
+    assert not list(shipped.rglob("*.whl"))
+    assert list(cache.rglob("*.whl")), "the build machine's cache must not change"
+
+    # The stopped server and absent source trees make a fallback build impossible.
+    shutil.rmtree(dist)
+    shutil.rmtree(package)
+    shutil.rmtree(cache)
+    for source in (shipped / "sdists-v9").rglob("src"):
+        if source.is_dir():
+            shutil.rmtree(source)
+    installed = tmp_path / "installed"
+    result = subprocess.run(
+        [uv, "pip", "install", "--python", sys.executable, "--target", str(installed),
+         "--no-deps", "--offline", url],
+        env={**env, "UV_CACHE_DIR": str(shipped)}, cwd=tmp_path,
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    assert "Building" not in result.stderr
+    probe = subprocess.run(
+        [sys.executable, "-c", "import cache_proof; print(cache_proof.VALUE)"],
+        cwd=tmp_path, env={**env, "PYTHONPATH": str(installed)},
+        capture_output=True, text=True, check=True, timeout=30,
+    )
+    assert probe.stdout.strip() == "installed from cached wheel"

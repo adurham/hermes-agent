@@ -48,6 +48,19 @@ def _arch_guard(store_dir: Path) -> list[str]:
 
 
 
+def stage_uv_cache(source: Path, destination: Path) -> None:
+    """Keep extracted wheels for offline installs, not unsigned build ZIPs.
+
+    The macOS signer reaches extracted native code, but not code inside ZIPs.
+    uv installs built wheels from their extracted cache entries.
+    """
+    shutil.copytree(source, destination)
+    for bucket in destination.glob("sdists-v*"):
+        for wheel in bucket.rglob("*.whl"):
+            if wheel.is_file():
+                wheel.unlink()
+
+
 def stage_native(args) -> int:
     previous = os.environ.get("HERMES_RUNTIME_DIR")
     try:
@@ -164,7 +177,7 @@ def _stage_native(args) -> int:
     src_cache = bundle_uv_cache_dir()
     if src_cache.is_dir():
         print(f"  uv-cache: copying {src_cache} → payload...", flush=True)
-        shutil.copytree(src_cache, payload_cache)
+        stage_uv_cache(src_cache, payload_cache)
         print("✓ uv-cache (staged — warm rebuilds for the mutable venv)")
     else:
         print("  uv-cache: none warm (first bundle on this machine?)")
