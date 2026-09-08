@@ -301,14 +301,15 @@ export function useSubmission(opts: UseSubmissionOptions) {
         const queued =
           parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
 
+        // Attachment commands capture the cleared composer's revision.
+        composerActions.clearIn()
+
         if (queued) {
           composerActions.enqueue(queued.text, queued.display)
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
           slashRef.current(slash.command)
         }
-
-        composerActions.clearIn()
 
         return
       }
