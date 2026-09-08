@@ -781,6 +781,7 @@ export class GatewayClient extends EventEmitter {
 
     if (!this.ws || this.ws.readyState === WS_CLOSED || this.ws.readyState === WS_CLOSING) {
       this.start()
+      if (!resolveGatewayAttachUrl()) { await this.bootstrapFlight }
     }
 
     if (this.ws?.readyState === WS_CONNECTING) {
@@ -850,7 +851,7 @@ export class GatewayClient extends EventEmitter {
     return this.bootstrapFlight!.then(() => {
       if (this.bootstrapError) { throw this.bootstrapError }
       const request = canonicalRequest(method, params, this.creationContract)
-      return this.requestOverWebSocket<T>(request.method, request.params).then(value => canonicalResult(method, value))
+      return this.requestOverWebSocket<T>(request.method, request.params).then(value => canonicalResult(method, value, request.params))
     })
   }
 
