@@ -76,10 +76,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/release.py --prune-canaries --publish --remote origin
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: ./.github/actions/setup-pm
         with:
-          version: '0.12.3'
-          enable-cache: false
+          cache-python: false
       - name: Prune R2 canary objects
         env:
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}

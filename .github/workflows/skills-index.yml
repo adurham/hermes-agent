@@ -32,14 +32,14 @@ jobs:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: "3.14"
+          cache-python: true
 
       - name: Install dependencies
         uses: ./.github/actions/retry
         with:
-          command: pip install httpx==0.28.1 pyyaml==6.0.2
+          command: uv pip install --python "$HERMES_PYTHON" httpx==0.28.1 pyyaml==6.0.2
 
       - name: Build skills index
         env:

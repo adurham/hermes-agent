@@ -68,35 +68,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
         with:
-          # Pinned for the same reason as the Linux lane: unpinned, setup-uv
-          # resolves "latest" by fetching a manifest on every job and a
-          # transient fetch failure fails the whole job.
-          version: "0.9.28"
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
-
-      - name: Set up Python 3.14
-        uses: ./.github/actions/retry
-        with:
-          command: uv python install 3.14
-
-      - name: Install dependencies
-        # Same extras as the Linux test lane so an OS-marked test can import
-        # anything its Linux siblings can. ``[all]`` is deliberately
-        # Windows/macOS-installable (see the policy comment on the extra in
-        # pyproject.toml — matrix/python-olm was removed from it precisely
-        # because it could not build here).
-        uses: ./.github/actions/retry
-        with:
-          command: uv sync --locked --python 3.14 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
-
-      - name: Minimize uv cache
-        run: uv cache prune --ci
+          extras: '["all", "dev", "anthropic", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
+          prune-python-cache: true
 
       - name: Run ${{ matrix.marker }} tests
         # scripts/run_tests.sh — the canonical runner, same as every other
@@ -128,7 +104,7 @@ jobs:
 
           # Process substitution would hide the helper's exit status, so write
           # to a file and check it explicitly.
-          if ! uv run --no-sync python scripts/ci/list_os_marked_tests.py \
+          if ! python scripts/ci/list_os_marked_tests.py \
                  "${{ matrix.marker }}" > "$LIST"; then
             echo "::error::could not enumerate ${{ matrix.marker }} test files"
             exit 1
@@ -161,7 +137,7 @@ jobs:
           # Any non-zero exit propagates red: real test failures, or the
           # runner's own zero-run guard (every file filtered to empty by
           # ``-m`` — "must never pass without running its OS's tests").
-          SEPARATOR="$(uv run --no-sync python -c 'import os, sys; sys.stdout.write(os.pathsep)')"
+          SEPARATOR="$(python -c 'import os, sys; sys.stdout.write(os.pathsep)')"
           FILES="$(tr -d '\r' < "$LIST" | paste -sd "$SEPARATOR" -)"
           scripts/run_tests.sh --files "$FILES" -- \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \

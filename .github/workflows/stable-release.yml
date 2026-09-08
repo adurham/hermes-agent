@@ -32,9 +32,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: '3.11'
+          cache-python: false
       - id: admit
         run: python -m scripts.releases.stable admit
         env:
@@ -128,9 +128,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: '3.11'
+          cache-python: false
       - id: plan
         run: python -m scripts.releases.stable transitions
         env:
@@ -186,9 +186,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: '3.11'
+          cache-python: false
       - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates transitions windows-packaged macos-packaged
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
@@ -224,9 +224,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: '3.11'
+          cache-python: false
       - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
@@ -266,9 +266,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: '3.11'
+          cache-python: false
       - run: python -m scripts.releases.stable gate admit ci docker acceptance candidates publication promote-docker promote-bundles
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}

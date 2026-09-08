@@ -260,19 +260,12 @@ jobs:
           ref: ${{ needs.validate.outputs.sha }}
           fetch-tags: true
 
-      - name: Resolve toolchain pins from pm/lock.json
-        id: pins
-        shell: bash
-        # The host toolchain that BUILDS the artifact comes from the same
-        # pin table as the embedded runtimes (pm/lock.json), so gate == pin
-        # by construction in bundles/desktop.py's toolchain gates.
-        run: |
-          python -c '
-          import json
-          pkgs = json.load(open("pm/lock.json"))["packages"]
-          for tool in ("node", "npm", "uv"):
-              print(tool + "=" + pkgs[tool]["version"])
-          ' >> "$GITHUB_OUTPUT"
+      - name: Set up the locked build toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache-python: false
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -286,22 +279,6 @@ jobs:
             console.log(`electron=${el}`)
             console.log(`builder=${eb}`)
           ' >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-node@v7.0.0 # immutable release. safe to pin.
-        with:
-          node-version: ${{ steps.pins.outputs.node }}
-          cache: npm
-
-      - name: Install pinned npm
-        shell: bash
-        env:
-          NPM_PIN: ${{ steps.pins.outputs.npm }}
-        run: npm --version | grep -qx "$NPM_PIN" || npm i -g "npm@$NPM_PIN"
-
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # 9.0.0
-        with:
-          version: ${{ steps.pins.outputs.uv }}
-          enable-cache: false
 
       - name: Cache verified payload signatures
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -389,7 +366,7 @@ jobs:
             ui-tui/packages/*/node_modules
             web/node_modules
             tests-js/node_modules
-          key: node-modules-${{ matrix.target.label }}-node${{ steps.pins.outputs.node }}-npm${{ steps.pins.outputs.npm }}-${{ hashFiles('package-lock.json') }}
+          key: node-modules-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json') }}
           # npm ci rm -rf's node_modules before installing, so a restore is
           # never shipped stale — but a restore-key hit still makes the
           # reinstall incremental (postinstall outputs like node-pty's
@@ -397,7 +374,7 @@ jobs:
           # The build-bundled install-stamp gate (lock sha + node + npm +
           # target) is the real guard against stale trees shipping.
           restore-keys: |
-            node-modules-${{ matrix.target.label }}-node${{ steps.pins.outputs.node }}-npm${{ steps.pins.outputs.npm }}-
+            node-modules-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-
 
       - name: Cache node-pty prebuilds (postinstall output, emulated-gyp tax on arm64)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -458,12 +435,12 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_TOKEN_CREDENTIALS: prod
         run: |
-          uv run --no-project --python 3.14 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+          python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
           # The Store-submission MSIX is the same bundled payload re-packed
           # with the Partner Center packaging identity (publish-win32-store
           # bundles these into the universal Store .msixbundle and submits it;
           # they also land in the tag archive, never a feed dir).
-          uv run --no-project --python 3.14 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
+          python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
 
       - name: Verify native signature cache contracts
         shell: bash
@@ -588,19 +565,12 @@ jobs:
           fetch-tags: true
           fetch-depth: 0
 
-      - name: Resolve toolchain pins from pm/lock.json
-        id: pins
-        shell: bash
-        # The host toolchain that BUILDS the artifact comes from the same
-        # pin table as the embedded runtimes (pm/lock.json), so gate == pin
-        # by construction in bundles/desktop.py's toolchain gates.
-        run: |
-          python3 -c '
-          import json
-          pkgs = json.load(open("pm/lock.json"))["packages"]
-          for tool in ("node", "npm", "uv"):
-              print(tool + "=" + pkgs[tool]["version"])
-          ' >> "$GITHUB_OUTPUT"
+      - name: Set up the locked build toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache-python: false
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -614,22 +584,6 @@ jobs:
             console.log(`electron=${el}`)
             console.log(`builder=${eb}`)
           ' >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ steps.pins.outputs.node }}
-          cache: npm
-
-      - name: Install pinned npm
-        shell: bash
-        env:
-          NPM_PIN: ${{ steps.pins.outputs.npm }}
-        run: npm --version | grep -qx "$NPM_PIN" || npm i -g "npm@$NPM_PIN"
-
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # 9.0.0
-        with:
-          version: ${{ steps.pins.outputs.uv }}
-          enable-cache: false
 
       - name: Cache pm store
         # Tag-dispatched runs (every canary) scope actions/cache under the
@@ -683,7 +637,7 @@ jobs:
             ui-tui/packages/*/node_modules
             web/node_modules
             tests-js/node_modules
-          key: node-modules-${{ matrix.target.label }}-node${{ steps.pins.outputs.node }}-npm${{ steps.pins.outputs.npm }}-${{ hashFiles('package-lock.json') }}
+          key: node-modules-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json') }}
           # npm ci rm -rf's node_modules before installing, so a restore is
           # never shipped stale — but a restore-key hit still makes the
           # reinstall incremental (postinstall outputs like node-pty's
@@ -691,7 +645,7 @@ jobs:
           # The build-bundled install-stamp gate (lock sha + node + npm +
           # target) is the real guard against stale trees shipping.
           restore-keys: |
-            node-modules-${{ matrix.target.label }}-node${{ steps.pins.outputs.node }}-npm${{ steps.pins.outputs.npm }}-
+            node-modules-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-
 
       - name: Cache node-pty prebuilds (postinstall output)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -774,7 +728,7 @@ jobs:
           # every Mach-O) — raise the fd limit and let DEBUG show progress.
           ulimit -n 16384 2>/dev/null || true
           echo "file descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
-          uv run --no-project --python 3.14 python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+          python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
 
       - name: Audit bundle architecture
         shell: bash
@@ -925,16 +879,12 @@ jobs:
           # minutes-since-the-last-stable from git tags — must see them.
           fetch-tags: true
 
-      - name: Resolve toolchain pins from pm/lock.json
-        id: pins
-        shell: bash
-        run: |
-          python -c '
-          import json
-          pkgs = json.load(open("pm/lock.json"))["packages"]
-          for tool in ("node", "npm", "uv"):
-              print(tool + "=" + pkgs[tool]["version"])
-          ' >> "$GITHUB_OUTPUT"
+      - name: Set up the locked build toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+          cache-node: false
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -1074,16 +1024,12 @@ jobs:
           ref: ${{ needs.validate.outputs.sha }}
           fetch-tags: true
 
-      - name: Resolve toolchain pins from pm/lock.json
-        id: pins
-        shell: bash
-        run: |
-          python -c '
-          import json
-          pkgs = json.load(open("pm/lock.json"))["packages"]
-          for tool in ("node", "npm", "uv"):
-              print(tool + "=" + pkgs[tool]["version"])
-          ' >> "$GITHUB_OUTPUT"
+      - name: Set up the locked build toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+          cache-node: false
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -1097,10 +1043,6 @@ jobs:
             console.log(`electron=${el}`)
             console.log(`builder=${eb}`)
           ' >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-node@v7.0.0 # immutable release. safe to pin.
-        with:
-          node-version: ${{ steps.pins.outputs.node }}
 
       # makeappx for the Store bundle lives in the same winCodeSign toolset
       # the win32 legs downloaded — restore the identical eb2 cache.
@@ -1222,10 +1164,9 @@ jobs:
           # Privileged job: pin to the SHA validate admitted, not the tag.
           ref: ${{ needs.validate.outputs.sha }}
 
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: ./.github/actions/setup-pm
         with:
-          version: '0.12.3'
-          enable-cache: false
+          cache-python: false
 
       - name: Download both darwin legs' feed ymls
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -1287,23 +1228,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Resolve toolchain pins from pm/lock.json
-        id: toolchain_pins
-        shell: bash
-        # Same pin table as the desktop legs: the uv that drives the
-        # wheelhouse resolution is the pinned toolchain uv, not whatever
-        # happens to be on the runner image.
-        run: |
-          python -c '
-          import json
-          pkgs = json.load(open("pm/lock.json"))["packages"]
-          print("uv=" + pkgs["uv"]["version"])
-          ' >> "$GITHUB_OUTPUT"
-
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # 9.0.0
+      - name: Set up the locked build toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
         with:
-          version: ${{ steps.toolchain_pins.outputs.uv }}
-          enable-cache: false
+          toolchain: python
+          cache-python: false
 
       - name: Derive the channel from the tag
         id: channel
@@ -1682,9 +1612,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: '3.11'
+          cache-python: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: stable-candidate-*
@@ -1716,9 +1646,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: '3.11'
+          cache-python: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: stable-release-candidates
@@ -1744,9 +1674,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: '3.11'
+          cache-python: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: stable-release-candidates
@@ -1784,13 +1714,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: ./.github/actions/setup-pm
         with:
-          python-version: '3.11'
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          version: '0.12.3'
-          enable-cache: false
+          cache-python: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: stable-release-candidates

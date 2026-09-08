@@ -1,0 +1,41 @@
+name: PM Toolchain
+on:
+  push:
+    branches: [ci/pm-toolchain]
+  pull_request:
+    paths:
+      - '.github/actions/setup-pm/**'
+      - '.github/workflows/pm-toolchain*.yml'
+      - 'scripts/ci/*toolchain.py'
+      - 'tests/scripts/test_setup_toolchain.py'
+      - 'tests-js/setup-pm-post.test.mjs'
+      - 'pm/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pm-toolchain-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  cold:
+    uses: ./.github/workflows/pm-toolchain-smoke.yml
+    with:
+      warm: false
+  warm:
+    needs: cold
+    uses: ./.github/workflows/pm-toolchain-smoke.yml
+    with:
+      warm: true
+  prune:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pm
+        with:
+          extras: '["dev"]'
+          prune-python-cache: true
+          cache-suffix: smoke-prune-${{ github.run_id }}-${{ github.run_attempt }}
+      - run: python -c 'import pytest; print(pytest.__version__)'
