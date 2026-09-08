@@ -5466,7 +5466,6 @@ _WIZARD_BANNER = (
     "│  Press Ctrl+C at any time to exit.                     │",
     "└─────────────────────────────────────────────────────────┘",
 )
-_WIZARD_BACKEND_LABELS = {"systemd": "systemd", "launchd": "launchd", "windows": "Scheduled Task"}
 # Post-setup guidance when no service backend applies, keyed by the fallthrough reason.
 _WIZARD_NO_SERVICE_LINES = {
     "wsl": (
