@@ -241,6 +241,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
     authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
     peer, transport = _ws_peer_label(ws), None
+    authority_connection = None
     messages = parse_errors = dispatch_crashes = send_failures = 0
     disconnect_reason = "not_connected"
 
@@ -264,6 +265,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
+        authority = getattr(getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
+        if authority is not None:
+            from gateway.session_controls import AuthorityConnection
+            authority_connection = AuthorityConnection(authority, transport, auth_identity or {})
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
@@ -330,7 +335,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # writes the response itself via transport.write (a separate thread, so that is the safe
             # path). Inline handlers return the response dict, written here from the loop.
             try:
-                resp = await asyncio.to_thread(server.dispatch, req, transport)
+                if authority_connection is not None:
+                    resp = await authority_connection.dispatch(req)
+                else:
+                    resp = await asyncio.to_thread(server.dispatch, req, transport)
             except Exception:
                 dispatch_crashes += 1
                 _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
@@ -343,6 +351,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     except _SendFailed:
         pass
     finally:
+        if authority_connection is not None:
+            await authority_connection.close()
         reaped_sessions = detached_sessions = 0
         if transport is not None:
             server.unregister_live_transport(transport)
