@@ -6,8 +6,8 @@
 // (Store-<name>-<fileVersion>-win-<arch>.msix, built with
 // HERMES_DESKTOP_VARIANT=store / the Partner Center identity). This script
 // bundles the x64 + arm64 packages into ONE universal Store .msixbundle for
-// the Windows Store submission, and prints the bundle's absolute path on
-// stdout (the workflow captures it for `msstore publish`).
+// the Windows Store submission. --output-file writes its absolute path for
+// callers, independently of the installer's download/progress logs.
 //
 // The bundle is deliberately left UNSIGNED: the Store re-signs the package
 // with the Microsoft Store certificate on ingestion (same posture as the
@@ -20,7 +20,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { appIdentity, resolveWinSdkTools } from './msix-shared.mjs'
+import { appIdentity } from './msix-shared.mjs'
+import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle-tools.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -73,12 +74,14 @@ fs.copyFileSync(x64, path.join(staging, path.basename(x64)))
 fs.copyFileSync(arm64, path.join(staging, path.basename(arm64)))
 
 const bundle = path.join(releaseDir, `Store-${name}-${version}-win.msixbundle`)
-const makeappx = path.join(resolveWinSdkTools(), 'makeappx.exe')
+const { makeappx } = await ensureWindowsBundleTools()
 if (fs.existsSync(bundle)) fs.rmSync(bundle, { force: true })
 execFileSync(makeappx, ['bundle', '/o', '/bv', version, '/d', staging, '/p', bundle], {
-  stdio: ['ignore', 'ignore', 'inherit'] // stdout stays clean: the path is the machine-readable result
+  stdio: 'inherit'
 })
 fs.rmSync(staging, { recursive: true, force: true })
 
-// stdout = the absolute bundle path, the ONLY thing the workflow reads back.
+// Download logs can share stdout. The explicit output file is the machine contract.
+const outputFile = flagValue('--output-file')
+if (outputFile) fs.writeFileSync(outputFile, bundle, 'utf8')
 console.log(bundle)

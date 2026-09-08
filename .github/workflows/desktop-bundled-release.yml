@@ -880,11 +880,16 @@ jobs:
           fetch-tags: true
 
       - name: Set up the locked build toolchain
-        id: pm
         uses: ./.github/actions/setup-pm
         with:
-          toolchain: node
-          cache-node: false
+          toolchain: all
+          cache-python: false
+
+      - name: Install the locked Windows bundle tooling
+        uses: ./.github/actions/retry
+        with:
+          # No Electron/native postinstalls: only the builder's SDK downloader.
+          command: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -899,13 +904,9 @@ jobs:
             console.log(`builder=${eb}`)
           ' >> "$GITHUB_OUTPUT"
 
-      # makeappx + signtool live in the winCodeSign toolset that
-      # electron-builder downloads into its cache during the build legs; the
-      # publish jobs run on a fresh runner, so restore the same eb2 cache
-      # the win32 legs saved. The path list MUST match the build legs'
-      # byte-for-byte — actions/cache derives the version hash from the paths
-      # input, so a shorter list computes a different version and the restore
-      # misses ("Cache not found") even with the identical key.
+      # Cache reuse is optional. Bundle scripts provision the pinned SDK
+      # and signing dependencies through electron-builder on a cache miss.
+      # Keep the path list identical to the build legs for warm reuse.
       - name: Resolve electron's default download cache path
         shell: bash
         run: |
@@ -1025,11 +1026,16 @@ jobs:
           fetch-tags: true
 
       - name: Set up the locked build toolchain
-        id: pm
         uses: ./.github/actions/setup-pm
         with:
-          toolchain: node
-          cache-node: false
+          toolchain: all
+          cache-python: false
+
+      - name: Install the locked Windows bundle tooling
+        uses: ./.github/actions/retry
+        with:
+          # No Electron/native postinstalls: only the builder's SDK downloader.
+          command: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -1044,8 +1050,8 @@ jobs:
             console.log(`builder=${eb}`)
           ' >> "$GITHUB_OUTPUT"
 
-      # makeappx for the Store bundle lives in the same winCodeSign toolset
-      # the win32 legs downloaded — restore the identical eb2 cache.
+      # Reuse the build cache when available. The bundle script also works
+      # cold by provisioning the same SDK through the pinned builder.
       - name: Resolve electron's default download cache path
         shell: bash
         run: |
@@ -1077,9 +1083,11 @@ jobs:
         id: storebundle
         shell: bash
         run: |
-          # Prints the absolute bundle path on stdout (the machine-readable
-          # result); logs go to stderr.
-          bundle="$(node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG")"
+          # The SDK downloader logs to stdout; the path has its own output.
+          result="$RUNNER_TEMP/store-bundle-path"
+          node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --output-file "$result"
+          bundle="$(< "$result")"
+          test -f "$bundle"
           echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
           echo "Store bundle: $bundle"
 

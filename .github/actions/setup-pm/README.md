@@ -72,4 +72,7 @@ Use the version outputs in installed-tree cache keys instead of repeating pins.
 
 `.github/workflows/pm-toolchain.yml` exercises cold setup and a separate warm
 runner for Linux, macOS and Windows on both architectures. Its optional cache
-suffix keeps that proof isolated from ordinary build caches.
+suffix isolates cache lookup, not the repository's storage budget. The trusted
+`pm-toolchain-cache-cleanup.yml` completion workflow deletes only that run's
+smoke keys after all cache saves finish, including failed or cancelled runs.
+It must be on the default branch for GitHub to run it.

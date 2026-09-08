@@ -28,8 +28,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { appIdentity, buildAppInstaller, resolveWinSdkTools } from './msix-shared.mjs'
-import { resolveDotnetRuntimeDir, resolveTrustedSigningDlib } from '../apps/desktop/scripts/batch-sign-binaries.mjs'
+import { appIdentity, buildAppInstaller } from './msix-shared.mjs'
+import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle-tools.mjs'
 
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -86,9 +86,8 @@ function bundleFile() {
   return path.join(releaseDir, `${name}-${version}-win.msixbundle`)
 }
 
-const winSdk = resolveWinSdkTools()
-const makeappx = path.join(winSdk, 'makeappx.exe')
-const signtool = path.join(winSdk, 'signtool.exe')
+const signing = Boolean(process.env.AZURE_SIGN_ENDPOINT && process.env.AZURE_SIGN_ACCOUNT && process.env.AZURE_SIGN_PROFILE)
+const { makeappx, signtool, dlib, dotnetRoot } = await ensureWindowsBundleTools({ signing })
 
 // ── 1. bundle ──────────────────────────────────────────────────────────────
 const x64 = msixFile('x64')
@@ -112,51 +111,45 @@ fs.copyFileSync(arm64, path.join(bundleStaging, path.basename(arm64)))
 if (fs.existsSync(bundle)) fs.rmSync(bundle, { force: true })
 execFileSync(makeappx, ['bundle', '/o', '/bv', version, '/d', bundleStaging, '/p', bundle], { stdio: 'inherit' })
 
-// Sign ONLY the bundle envelope; the inner .msix keep their build-leg
-// signatures. Runs only when the Azure vars are present (fork without them
-// ships unsigned — same posture as the build legs).
-if (process.env.AZURE_SIGN_ENDPOINT && process.env.AZURE_SIGN_ACCOUNT && process.env.AZURE_SIGN_PROFILE) {
-  const dlib = resolveTrustedSigningDlib()
-  if (dlib) {
-    const metaPath = path.join(releaseDir, 'msixbundle-sign.json')
-    fs.writeFileSync(metaPath, JSON.stringify({
-      Endpoint: process.env.AZURE_SIGN_ENDPOINT,
-      CodeSigningAccountName: process.env.AZURE_SIGN_ACCOUNT,
-      CertificateProfileName: process.env.AZURE_SIGN_PROFILE
-    }))
-    const signEnv = { ...process.env }
-    const dotnetRoot = resolveDotnetRuntimeDir()
-    if (dotnetRoot) signEnv.DOTNET_ROOT = dotnetRoot
-    // MSIX/appx packages REQUIRE a timestamp — signtool silently exits 3 on
-    // a .msixbundle sign without /tr (untimestamped appx is invalid). And
-    // the /tr URL must be one the ATS dlib can speak: the dlib handles the
-    // RFC3161 exchange itself (@url: form) and cannot parse a third-party
-    // server's response ("no content extracted" with digicert). The only
-    // known-working timestamp server for the dlib is Microsoft's own
-    // timestamp.acs.microsoft.com (electron-builder's default, and what the
-    // build legs' .msix sign uses). acs is intermittently flaky, so retry
-    // the whole sign — a retried sign beats a failed bundle, and signtool
-    // replaces the signature on re-sign so a retry is safe.
-    const sign = () =>
-      execFileSync(signtool, [
-        'sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', 'http://timestamp.acs.microsoft.com',
-        '/dlib', dlib, '/dmdf', metaPath, bundle
-      ], { stdio: 'inherit', env: signEnv })
-    let attempt = 0
-    for (;;) {
-      try {
-        sign()
-        break
-      } catch (err) {
-        attempt += 1
-        if (attempt >= 3) throw err
-        console.warn(`[stage-msixbundle] sign attempt ${attempt} failed, retrying…`)
-      }
+// Signtool signs the bundle and refreshes its inner package signatures.
+// The source .msix files stay unchanged. Without Azure configuration this
+// remains an unsigned local build, as on the build legs.
+if (signing) {
+  const metaPath = path.join(releaseDir, 'msixbundle-sign.json')
+  fs.writeFileSync(metaPath, JSON.stringify({
+    Endpoint: process.env.AZURE_SIGN_ENDPOINT,
+    CodeSigningAccountName: process.env.AZURE_SIGN_ACCOUNT,
+    CertificateProfileName: process.env.AZURE_SIGN_PROFILE
+  }))
+  const signEnv = { ...process.env }
+  if (dotnetRoot) signEnv.DOTNET_ROOT = dotnetRoot
+  // MSIX/appx packages REQUIRE a timestamp — signtool silently exits 3 on
+  // a .msixbundle sign without /tr (untimestamped appx is invalid). And
+  // the /tr URL must be one the ATS dlib can speak: the dlib handles the
+  // RFC3161 exchange itself (@url: form) and cannot parse a third-party
+  // server's response ("no content extracted" with digicert). The only
+  // known-working timestamp server for the dlib is Microsoft's own
+  // timestamp.acs.microsoft.com (electron-builder's default, and what the
+  // build legs' .msix sign uses). acs is intermittently flaky, so retry
+  // the whole sign — a retried sign beats a failed bundle, and signtool
+  // replaces the signature on re-sign so a retry is safe.
+  const sign = () =>
+    execFileSync(signtool, [
+      'sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', 'http://timestamp.acs.microsoft.com',
+      '/dlib', dlib, '/dmdf', metaPath, bundle
+    ], { stdio: 'inherit', env: signEnv })
+  let attempt = 0
+  for (;;) {
+    try {
+      sign()
+      break
+    } catch (err) {
+      attempt += 1
+      if (attempt >= 3) throw err
+      console.warn(`[stage-msixbundle] sign attempt ${attempt} failed, retrying…`)
     }
-    execFileSync(signtool, ['verify', '/pa', bundle], { stdio: 'inherit' })
-  } else {
-    console.warn('[stage-msixbundle] Azure Trusted Signing dlib not found — bundle will be UNSIGNED')
   }
+  execFileSync(signtool, ['verify', '/pa', bundle], { stdio: 'inherit' })
 } else {
   console.warn('[stage-msixbundle] AZURE_SIGN_* not set — bundle will be UNSIGNED')
 }
