@@ -3083,6 +3083,99 @@ def _journalctl_cmd(system: bool = False) -> list[str]:
     return ["journalctl"] if system else ["journalctl", "--user"]
 
 
+# Cache of (action, unit) -> whether `sudo -n systemctl <action> <unit>` needs
+# no password, keyed for the life of the process. Sudoers doesn't change
+# mid-run, and probing costs a subprocess spawn (~10ms) we don't want to pay
+# on every _run_systemctl call once the answer is known for a given argv.
+_SYSTEMCTL_SUDO_PROBE_CACHE: dict[tuple, bool] = {}
+
+
+def _sudo_normalized_systemctl_args(args: list[str]) -> list[str]:
+    """Return ``args`` with any bare unit name suffixed ``.service``.
+
+    ``sudo -l``/sudoers does exact argv matching (unlike systemctl itself,
+    which accepts a bare unit name and implies the ``.service`` type). A
+    NOPASSWD grant written with the full ``foo.service`` name — the only
+    form worth writing, since it's unambiguous — silently never matches a
+    probe/exec built from ``get_service_name()``'s bare ``foo`` unless this
+    normalization happens first.
+    """
+    normalized = []
+    for arg in args:
+        if arg and not arg.startswith("-") and "." not in arg and arg not in (
+            "start",
+            "stop",
+            "restart",
+            "reload",
+            "status",
+            "enable",
+            "disable",
+            "reset-failed",
+            "daemon-reload",
+            "show",
+            "is-active",
+            "is-enabled",
+            "is-failed",
+        ):
+            normalized.append(f"{arg}.service")
+        else:
+            normalized.append(arg)
+    return normalized
+
+
+def _can_passwordless_sudo_systemctl(args: list[str]) -> bool:
+    """Probe (and cache) whether ``sudo -n systemctl <args>`` needs no password.
+
+    Used to let a non-root user transparently use a scoped NOPASSWD sudoers
+    grant (e.g. ``hermes ALL=(root) NOPASSWD: /usr/bin/systemctl restart
+    hermes-serve.service``) instead of hard-failing with "requires root" —
+    while never silently attempting a sudo call the operator hasn't granted
+    (a denied ``sudo -n`` exec would otherwise just fail with its own opaque
+    "a password is required" error rather than our clear guidance).
+    """
+    key = tuple(args)
+    cached = _SYSTEMCTL_SUDO_PROBE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    sudo_path = shutil.which("sudo")
+    if not sudo_path:
+        _SYSTEMCTL_SUDO_PROBE_CACHE[key] = False
+        return False
+    try:
+        probe = subprocess.run(
+            [sudo_path, "-n", "-l", "systemctl", *args],
+            capture_output=True,
+            timeout=10,
+        )
+        result = probe.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        result = False
+    _SYSTEMCTL_SUDO_PROBE_CACHE[key] = result
+    return result
+
+
+# Systemctl verbs that never require privilege against a system-scope unit —
+# querying state is world-readable regardless of who owns the unit file.
+# Skipping the sudo probe entirely for these avoids an unnecessary subprocess
+# spawn on the hot read path (status polling, is-active checks) and — more
+# importantly — avoids ever prefixing a read with ``sudo -n``, which a
+# sudoers grant scoped to a mutating action (e.g. ``restart`` only, per this
+# codebase's own deployment convention) would correctly reject, turning a
+# should-just-work status check into a spurious auth failure.
+_SYSTEMCTL_READONLY_VERBS = frozenset(
+    {
+        "status",
+        "is-active",
+        "is-enabled",
+        "is-failed",
+        "show",
+        "cat",
+        "list-units",
+        "list-unit-files",
+    }
+)
+
+
 def _run_systemctl(
     args: list[str], *, system: bool = False, **kwargs
 ) -> subprocess.CompletedProcess:
@@ -3091,9 +3184,26 @@ def _run_systemctl(
     Defense-in-depth: callers are gated by ``supports_systemd_services()``,
     but this ensures any future caller that bypasses the gate still gets a
     clear error instead of a raw ``FileNotFoundError`` traceback.
+
+    System-scope MUTATING calls (anything not in ``_SYSTEMCTL_READONLY_VERBS``)
+    from a non-root user transparently try ``sudo -n`` first when — and only
+    when — a passwordless grant exists for that exact action+unit (see
+    ``_can_passwordless_sudo_systemctl``). Actions with no grant (e.g.
+    ``daemon-reload``, ``reset-failed`` on most deployments) fall straight
+    through to the plain systemctl call, same as before this existed — most
+    such calls are already ``check=False`` best-effort steps. Read-only verbs
+    never probe/sudo at all: querying system-unit state needs no privilege on
+    any systemd version, and prefixing a read with ``sudo -n`` would wrongly
+    fail it against a restart-only grant.
     """
+    argv = _systemctl_cmd(system) + args
+    if system and os.geteuid() != 0 and args and args[0] not in _SYSTEMCTL_READONLY_VERBS:
+        sudo_args = _sudo_normalized_systemctl_args(args)
+        if _can_passwordless_sudo_systemctl(sudo_args):
+            sudo_path = shutil.which("sudo") or "sudo"
+            argv = [sudo_path, "-n", "systemctl", *sudo_args]
     try:
-        return subprocess.run(_systemctl_cmd(system) + args, **kwargs)
+        return subprocess.run(argv, **kwargs)
     except FileNotFoundError:
         raise RuntimeError("systemctl is not available on this system") from None
 
@@ -3330,12 +3440,31 @@ def print_systemd_scope_conflict_warning() -> None:
     print_info("    sudo hermes gateway uninstall --system")
 
 
-def _require_root_for_system_service(action: str) -> None:
-    if os.geteuid() != 0:  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
-        raise SystemScopeRequiresRootError(
-            f"System gateway {action} requires root. Re-run with sudo.",
-            action,
-        )
+def _require_root_for_system_service(action: str, *, unit: str | None = None) -> None:
+    """Raise unless this process can perform ``action`` on the system unit.
+
+    Root always qualifies. When ``unit`` is given, a non-root caller also
+    qualifies if a passwordless ``sudo -n systemctl <action> <unit>`` grant
+    exists (see ``_can_passwordless_sudo_systemctl`` in ``_run_systemctl`` —
+    that's the same check ``_run_systemctl`` itself uses to decide whether to
+    prefix its call with ``sudo -n``, so a caller that passes this gate is
+    guaranteed the mutating ``_run_systemctl`` calls after it will succeed
+    the same way, not just get further before failing).
+
+    ``unit`` is omitted entirely for actions nothing is ever scoped to grant
+    (install/uninstall write unit files as root; start/stop have no sudoers
+    entry on any deployment today) — those stay strictly root-only.
+    """
+    if os.geteuid() == 0:  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+        return
+    if unit and _can_passwordless_sudo_systemctl(
+        _sudo_normalized_systemctl_args([action, unit])
+    ):
+        return
+    raise SystemScopeRequiresRootError(
+        f"System gateway {action} requires root. Re-run with sudo.",
+        action,
+    )
 
 
 def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str]:
@@ -4316,6 +4445,18 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
+    # System-scope units live in /etc/systemd/system, root-owned. A non-root
+    # caller with only a scoped restart sudoers grant (see
+    # ``_run_systemctl``) can't write here or run an unscoped daemon-reload —
+    # and that's fine: "can't refresh the unit definition" is not fatal, the
+    # existing installed unit is still used as-is. Treat it exactly like the
+    # other early-returns above (skip, don't crash) rather than propagating
+    # a raw PermissionError/CalledProcessError up through systemd_restart's
+    # graceful-SIGUSR1 path, which no longer gates on root before reaching
+    # here.
+    if system and os.geteuid() != 0:
+        return False
+
     unit_path.write_text(new_unit, encoding="utf-8")
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(
@@ -4639,9 +4780,17 @@ def systemd_stop(system: bool = False):
 
 def systemd_restart(system: bool = False):
     system = _select_systemd_scope(system)
-    if system:
-        _require_root_for_system_service("restart")
-    else:
+    # System scope: no upfront root/sudo gate here. The graceful SIGUSR1
+    # self-restart below needs zero privilege (same-uid signal) and is the
+    # common, healthy-path case — it must not be blocked by a check it
+    # doesn't need. Each actual systemctl mutation further down gates
+    # itself individually, against the specific action it's about to run
+    # (see the ``_require_root_for_system_service(..., unit=...)`` calls
+    # below). A non-root caller with a scoped passwordless sudoers grant
+    # (e.g. ``sudo systemctl restart <unit>`` only, no start/stop) can
+    # therefore restart cleanly without ever being told "requires root" for
+    # the SIGUSR1 path it didn't need root for anyway.
+    if not system:
         _preflight_user_systemd()
     _require_service_installed("restart", system=system)
     # HERMES_HOME sync happens inside refresh_systemd_unit_if_needed's
@@ -4666,6 +4815,8 @@ def systemd_restart(system: bool = False):
         )
         _escalate_wedged_gateway(pid)
         svc = get_service_name()
+        if system:
+            _require_root_for_system_service("restart", unit=svc)
         _run_systemctl(["reset-failed", svc], system=system, check=False, timeout=30)
         _run_systemctl(["restart", svc], system=system, check=False, timeout=90)
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
@@ -4721,6 +4872,12 @@ def systemd_restart(system: bool = False):
                 "forcing a service restart..."
             )
 
+        if system:
+            # Gated on the actual action about to run — a sudoers grant
+            # scoped to ``restart`` only (the common case) correctly does
+            # NOT cover the rare ``start`` sub-branch above; that's a real
+            # "requires root" rather than a silent CalledProcessError.
+            _require_root_for_system_service(service_action, unit=svc)
         _run_systemctl(
             ["reset-failed", svc],
             system=system,
@@ -4751,6 +4908,8 @@ def systemd_restart(system: bool = False):
     if _recover_pending_systemd_restart(system=system, previous_pid=pid):
         return
 
+    if system:
+        _require_root_for_system_service("restart", unit=get_service_name())
     _run_systemctl(
         ["reset-failed", get_service_name()],
         system=system,

@@ -1396,7 +1396,7 @@ class TestSystemUnitRefreshSyncsHermesHome:
         for entry in ("systemd_start", "systemd_restart"):
             calls = []
             monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
-            monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
+            monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action, unit=None: None)
             monkeypatch.setattr(
                 gateway_cli, "_require_service_installed", lambda action, system=False: None
             )
@@ -2215,6 +2215,164 @@ class TestSystemScopeRequiresRootError:
         assert isinstance(err, RuntimeError)
         assert isinstance(err, Exception)
         assert not isinstance(err, SystemExit)
+
+
+class TestScopedSudoRestartFallback:
+    """A non-root ``hermes`` service account with a scoped passwordless
+    sudoers grant (``sudo systemctl restart <unit>`` only — see
+    ``roles/hermes_gateway/tasks/main.yml`` in the homelab deploy repo) must
+    be able to restart its own system-scope unit without ``sys.exit``'ing
+    with "requires root", and WITHOUT that transparent sudo use leaking into
+    actions nothing granted (start/stop/reset-failed/daemon-reload) or into
+    read-only queries (status/is-active), which must never be prefixed with
+    ``sudo -n`` even when unprivileged — a sudoers grant scoped to `restart`
+    would wrongly reject a read routed through it.
+
+    Regression for the 2026-09-08 incident: the dashboard's "Restart
+    Gateway" button unconditionally raised SystemScopeRequiresRootError
+    before attempting anything, even though the healthy-path restart
+    (SIGUSR1 self-signal) needs zero privilege and the sudoers grant existed
+    specifically to cover the systemctl fallback.
+    """
+
+    def test_require_root_passes_when_unit_has_passwordless_restart_grant(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+        monkeypatch.setattr(
+            gateway_cli, "_can_passwordless_sudo_systemctl", lambda args: True
+        )
+        # Must not raise.
+        gateway_cli._require_root_for_system_service(
+            "restart", unit="hermes-serve.service"
+        )
+
+    def test_require_root_still_raises_when_no_grant_for_action(self, monkeypatch):
+        """A grant for `restart` must not authorize `start` (or anything else)."""
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+        monkeypatch.setattr(
+            gateway_cli, "_can_passwordless_sudo_systemctl", lambda args: False
+        )
+
+        with pytest.raises(gateway_cli.SystemScopeRequiresRootError):
+            gateway_cli._require_root_for_system_service(
+                "start", unit="hermes-serve.service"
+            )
+
+    def test_require_root_raises_without_unit_even_if_geteuid_stubbed_sudo_capable(
+        self, monkeypatch
+    ):
+        """Actions nothing is ever scoped to grant (install/uninstall) must
+        stay strictly root-only — callers simply never pass ``unit=`` for
+        those, and the function must not consult sudo eligibility at all in
+        that case."""
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+        probed = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_can_passwordless_sudo_systemctl",
+            lambda args: probed.append(args) or True,
+        )
+
+        with pytest.raises(gateway_cli.SystemScopeRequiresRootError):
+            gateway_cli._require_root_for_system_service("install")
+
+        assert probed == [], "must not probe sudo eligibility when unit= is omitted"
+
+    def test_sudo_normalize_appends_service_suffix_to_bare_unit(self):
+        """sudoers does exact argv matching — get_service_name() returns a
+        bare name (e.g. 'hermes-serve'), but a sane NOPASSWD grant is always
+        written with the unambiguous '.service' suffix. Without this
+        normalization, a real deployment's sudoers probe silently never
+        matches (verified empirically against a live sudoers.d grant,
+        2026-09-08)."""
+        result = gateway_cli._sudo_normalized_systemctl_args(
+            ["restart", "hermes-serve"]
+        )
+        assert result == ["restart", "hermes-serve.service"]
+
+    def test_sudo_normalize_leaves_already_suffixed_unit_alone(self):
+        result = gateway_cli._sudo_normalized_systemctl_args(
+            ["restart", "hermes-serve.service"]
+        )
+        assert result == ["restart", "hermes-serve.service"]
+
+    def test_run_systemctl_prefixes_sudo_for_eligible_mutating_call(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/usr/bin/sudo")
+        monkeypatch.setattr(
+            gateway_cli, "_can_passwordless_sudo_systemctl", lambda args: True
+        )
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._run_systemctl(
+            ["restart", "hermes-serve.service"], system=True, check=False
+        )
+
+        assert captured["argv"] == [
+            "/usr/bin/sudo",
+            "-n",
+            "systemctl",
+            "restart",
+            "hermes-serve.service",
+        ]
+
+    def test_run_systemctl_never_sudo_prefixes_readonly_verbs(self, monkeypatch):
+        """A restart-only sudoers grant must not be consulted (let alone
+        block) a plain status/is-active read — regression for the
+        _is_service_running() breakage this exact change caused before the
+        read-only-verb allowlist was added (2026-09-08)."""
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+        probed = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_can_passwordless_sudo_systemctl",
+            lambda args: probed.append(args) or True,
+        )
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._run_systemctl(
+            ["is-active", "hermes-serve.service"], system=True, check=False
+        )
+
+        assert probed == [], "read-only verbs must never probe sudo eligibility"
+        assert captured["argv"] == ["systemctl", "is-active", "hermes-serve.service"]
+
+    def test_run_systemctl_falls_through_plain_when_action_ungranted(
+        self, monkeypatch
+    ):
+        """daemon-reload / reset-failed have no sudoers grant on any real
+        deployment today — must fall straight through unchanged, same as
+        before this feature existed."""
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+        monkeypatch.setattr(
+            gateway_cli, "_can_passwordless_sudo_systemctl", lambda args: False
+        )
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._run_systemctl(
+            ["daemon-reload"], system=True, check=False
+        )
+
+        assert captured["argv"] == ["systemctl", "daemon-reload"]
 
 
 class TestSystemScopeWizardPreCheck:
