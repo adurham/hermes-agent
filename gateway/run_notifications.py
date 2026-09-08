@@ -971,6 +971,8 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            if evt.get('_automation_identities'):
+                metadata['automation_identities'] = evt['_automation_identities']
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
@@ -1209,6 +1211,11 @@ class GatewayNotificationsMixin:
             claim = await self._preflight_completion_delivery(evt)
             if not claim.proceed:
                 return claim.early_result
+            if getattr(self, 'session_authority', None) is not None:
+                from gateway.session_automation import completion_admission
+                if completion_admission(self, evt) is not None:
+                    accepted = True  # Lost ACK: finish durable claims, never infer again.
+                    return True
             if identity is not None:
                 if self._completion_identity_seen(identity, claim=True):
                     return None
@@ -1291,11 +1298,23 @@ class GatewayNotificationsMixin:
                 self._completion_notification_batch_tasks.pop(key, None)
             if not entries:
                 return
-            synth_text = entries[0][0] if len(entries) == 1 else self._format_coalesced_process_completions(entries)
+            if getattr(self, 'session_authority', None) is not None:
+                from gateway.session_automation import completion_admission, producer_identity
+                entries_to_deliver = [item for item in entries if completion_admission(self, item[1]) is None]
+                if not entries_to_deliver:
+                    delivered = True
+                    return
+            else:
+                entries_to_deliver = entries
+            synth_text = (entries_to_deliver[0][0] if len(entries_to_deliver) == 1
+                          else self._format_coalesced_process_completions(entries_to_deliver))
             # A duplicate primary returns None from the dedupe seam; try the next identity so a fresh
             # sibling is never discarded with it.
             delivered = None
-            for _text, candidate_evt, _future in entries:
+            for _text, candidate_evt, _future in entries_to_deliver:
+                if getattr(self, 'session_authority', None) is not None:
+                    candidate_evt = dict(candidate_evt, _automation_identities=[
+                        producer_identity(self, evt) for _text, evt, _future in entries_to_deliver])
                 delivered = await self._deliver_completion_notification(synth_text, candidate_evt)
                 if delivered is not None:
                     break
@@ -1393,16 +1412,22 @@ class GatewayNotificationsMixin:
         from gateway.run import _format_gateway_process_notification
         from tools.process_registry import process_registry as _pr
         deliverable: list[tuple[dict, str]] = []
+        acknowledged = False
         for evt in group:
             synth_text = _format_gateway_process_notification(evt)
             if not synth_text:
                 continue
+            if getattr(self, 'session_authority', None) is not None:
+                from gateway.session_automation import completion_admission
+                if completion_admission(self, evt) is not None:
+                    acknowledged = await self._deliver_completion_notification(synth_text, evt) is True or acknowledged
+                    continue
             identity = self._completion_delivery_identity(evt)
             if identity is not None and self._completion_identity_seen(identity):
                 continue
             deliverable.append((evt, synth_text))
         if not deliverable:
-            return None
+            return True if acknowledged else None
         if len(deliverable) == 1:
             evt, synth_text = deliverable[0]
             return await self._deliver_completion_notification(synth_text, evt)
@@ -1431,6 +1456,10 @@ class GatewayNotificationsMixin:
             "response. If a result does not change the current conclusion, absorb it silently.]"
         )
         consolidated = "\n\n".join([header, *blocks])
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.session_automation import producer_identity
+            primary_evt = dict(primary_evt, _automation_identities=[
+                producer_identity(self, event) for event in [primary_evt, *(e for e, _ in siblings)]])
         delivered = await self._deliver_completion_notification(
             consolidated, primary_evt, sibling_claims=siblings,
         )
