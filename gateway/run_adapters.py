@@ -1295,11 +1295,16 @@ class GatewayAdapterLifecycleMixin:
         (auth runs BEFORE the agent-turn scope, so the profile's ``.env`` must be visible here)."""
         from gateway.run import _async_profile_runtime_scope
         profile_home = self._profile_home_or_none(profile_name)
+        from gateway.session_ingress_context import native_callback, register_transport_home
+        register_transport_home(self, profile_name, profile_home)
 
         async def _handler(event):
             self._stamp_event_profile(event, profile_name)
-            async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
-                return await self._handle_message(event)
+            if profile_home is not None:
+                event.source._authorization_profile_home = profile_home
+            with native_callback(self, event, profile_home, profile_name):
+                async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
+                    return await self._handle_message(event)
 
         return _handler
 
@@ -1316,6 +1321,8 @@ class GatewayAdapterLifecycleMixin:
         with the transport profile (a routed profile may have no credential/allowlist)."""
         from gateway.run import _async_profile_runtime_scope, get_hermes_home
         default_home = Path(get_hermes_home())
+        from gateway.session_ingress_context import register_transport_home
+        register_transport_home(self, None, default_home)
 
         async def _handler(event):
             source = event.source
