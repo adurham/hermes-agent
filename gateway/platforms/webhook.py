@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from datetime import datetime, timezone
 from contextlib import nullcontext, suppress
 from typing import Any, Deque, Dict, List, Optional
 
@@ -182,6 +183,12 @@ class WebhookAdapter(BasePlatformAdapter):
         self._max_body_bytes: int = int(extra.get("max_body_bytes", 1_048_576))  # 1MB
         self._script_timeout_seconds: int = int(extra.get("script_timeout_seconds", DEFAULT_SCRIPT_TIMEOUT_SECONDS))
         self._route_processor = WebhookRouteProcessor(script_timeout_seconds=self._script_timeout_seconds)
+
+    @property
+    def token(self):
+        # Bind native replay to the currently configured signing credentials.
+        return json.dumps([self._global_secret, {name: route.get("secret", self._global_secret)
+                           for name, route in self._routes.items()}], sort_keys=True)
 
     # --- Lifecycle ---
 
@@ -552,17 +559,17 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
-        if not self._record_delivery_id(delivery_id, now):
+        if route_config.get("deliver_only") and not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id)
-        return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
+        return await self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
                                         delivery_id, now)
 
-    def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
+    async def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
                             event_type: str, delivery_id: str, now: float) -> "web.Response":
-        """Record delivery info, spawn the agent run, and return 202 immediately."""
+        """Acknowledge only after the authority commits the immutable delivery."""
         # delivery_id in the session key → concurrent webhooks on one route get independent runs.
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
         self._delivery_info[session_chat_id] = {
@@ -576,14 +583,15 @@ class WebhookAdapter(BasePlatformAdapter):
         if profile and isinstance(profile, str):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
-                             message_id=delivery_id)
+                             message_id=delivery_id, timestamp=datetime.fromtimestamp(0, timezone.utc))
         logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type, route_name,
                     len(prompt), delivery_id)
-        # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
-        # (``handle_message`` is fire-and-forget, so nothing can be closed here).
-        task = asyncio.create_task(self.handle_message(event))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        from gateway.platforms.webhook_ingress import admit_producer
+        try:
+            await admit_producer(self, event)
+        except Exception:
+            logger.exception("[webhook] Durable admission failed for %s", delivery_id)
+            return _json_error("Admission unavailable; retry this delivery", 503)
         return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
                                   "delivery_id": delivery_id}, status=202)
 
