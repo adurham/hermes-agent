@@ -528,7 +528,7 @@ jobs:
     needs: validate
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
-    timeout-minutes: 180
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -709,7 +709,7 @@ jobs:
 
       - name: Build and package
         shell: bash
-        timeout-minutes: 160
+        timeout-minutes: 330
         env:
           GITHUB_SHA: ${{ needs.validate.outputs.sha }}
           GITHUB_REF_NAME: ${{ inputs.tag }}

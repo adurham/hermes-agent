@@ -51,16 +51,38 @@ function resolveApiKeyPath(rawValue) {
   }
 }
 
-async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log }) {
+async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log, now }) {
   log(`[notarize] submitting ${zipPath}. Waiting for Apple's decision.`)
+  const deadline = now() + 4 * 60 * 60 * 1000
+  const waitDelays = [15000, 30000, 60000]
+  let resumeId
   let result
   let submitError
-  try {
-    result = await run('xcrun', ['notarytool', 'submit', zipPath, ...auth, '--wait', '--output-format', 'json'])
-  } catch (error) {
-    // A rejected submission can still return a JSON result and a log ID.
-    result = error
-    submitError = error
+  for (let attempt = 0; ; attempt++) {
+    const remaining = Math.ceil(deadline - now())
+    if (remaining <= 0) {
+      throw new Error(`Notarization ${resumeId ?? zipPath} exceeded the wait budget`, { cause: submitError })
+    }
+    const action = resumeId ? ['wait', resumeId] : ['submit', zipPath, '--wait']
+    try {
+      result = await run('xcrun', [
+        'notarytool', ...action, ...auth, '--timeout', `${Math.ceil(remaining / 1000)}s`, '--output-format', 'json'
+      ], { timeout: remaining + 60000 })
+      submitError = undefined
+      break
+    } catch (error) {
+      // A rejected submission can still return a JSON result and a log ID.
+      result = error
+      submitError = error
+      const output = `${error.stdout ?? ''}\n${error.stderr ?? ''}\n${error.message}`
+      if (!/NSURLErrorDomain\s+Code=-1001\b/.test(output)) break
+      // The status-request URL identifies the uploaded app, unlike other UUIDs in the error.
+      resumeId ??= output.match(/https:\/\/appstoreconnect\.apple\.com\/notary\/v2\/submissions\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=[?\s,}]|$)/i)?.[1]
+      const delay = waitDelays[attempt]
+      if (!resumeId || delay === undefined || now() + delay >= deadline) break
+      log(`[notarize] request timed out for ${resumeId}. Resuming wait in ${delay / 1000}s.`)
+      await sleep(delay)
+    }
   }
   let submission
   try {
@@ -71,6 +93,9 @@ async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log }) {
   const { id, status } = submission ?? {}
   if (typeof id !== 'string' || !id || typeof status !== 'string') {
     throw submitError ?? new Error(`Incomplete notarytool response: ${result.stdout}`)
+  }
+  if (resumeId && id !== resumeId) {
+    throw new Error(`notarytool returned submission ${id} while waiting for ${resumeId}`)
   }
   log(`[notarize] submission ${id}: ${status}`)
   if (submitError || status !== 'Accepted') {
@@ -103,7 +128,7 @@ async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log }) {
 }
 
 export default async function notarize(context, {
-  run = runCommand, env = process.env, sleep = setTimeout, log = console.log
+  run = runCommand, env = process.env, sleep = setTimeout, log = console.log, now = () => performance.now()
 } = {}) {
   const { electronPlatformName, appOutDir, packager } = context
   if (electronPlatformName !== 'darwin') return
@@ -137,7 +162,7 @@ export default async function notarize(context, {
   const zipPath = path.join(appOutDir, `${appName}.zip`)
   try {
     await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath])
-    await submitAndStaple(zipPath, appPath, auth, { run, sleep, log })
+    await submitAndStaple(zipPath, appPath, auth, { run, sleep, log, now })
   } finally {
     try {
       fs.rmSync(zipPath, { force: true })
