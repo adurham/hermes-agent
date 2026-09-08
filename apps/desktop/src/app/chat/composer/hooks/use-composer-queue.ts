@@ -18,6 +18,7 @@ import {
   type QueuedPromptEntry,
   removeQueuedPrompt,
   shouldAutoDrain,
+  serverOwnsComposerQueue,
   unparkQueuedPrompts,
   updateQueuedPrompt
 } from '@/store/composer-queue'
@@ -186,6 +187,17 @@ export function useComposerQueue({
       return false
     }
 
+    if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
+      return Promise.resolve(onSubmit(text, {
+        attachments: cloneAttachments(attachments), fromQueue: true,
+        sessionId: sessionId ?? null, storedSessionId: activeQueueSessionKey
+      })).then(accepted => {
+        if (accepted !== true) { return false }
+        if (draftRef.current === text) { clearDraft(); scope.attachments.clear() }
+        return true
+      }).catch(() => false)
+    }
+
     if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
       return false
     }
@@ -195,7 +207,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, sessionId])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.

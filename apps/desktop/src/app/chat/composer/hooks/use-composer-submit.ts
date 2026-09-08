@@ -37,7 +37,7 @@ interface UseComposerSubmitArgs {
   onCancel: ChatBarProps['onCancel']
   onSteer: ChatBarProps['onSteer']
   onSubmit: ChatBarProps['onSubmit']
-  queueCurrentDraft: () => boolean
+  queueCurrentDraft: () => boolean | Promise<boolean>
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
