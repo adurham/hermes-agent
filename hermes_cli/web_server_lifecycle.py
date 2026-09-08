@@ -171,8 +171,8 @@ def _eager_reconcile_own_session_db() -> None:
     """One writable open of this process's own state.db at startup.
 
     ``SessionDB.__init__`` runs ``_init_schema`` → ``_reconcile_columns`` with
-    open-time lock patience. Never raises: an unfixable store still gets the
-    per-poll read-probe heal in :func:`_open_session_db_at_path`.
+    open-time lock patience. Never raises: unavailable stores are reported by
+    read-only browsing until their owner initializes or repairs them.
     """
     try:
         from hermes_state import _default_db_path
@@ -183,7 +183,7 @@ def _eager_reconcile_own_session_db() -> None:
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "
-            "reads will retry the heal per poll", exc,
+            "reads will report the store unavailable until owner recovery", exc,
         )
 
 
