@@ -795,7 +795,13 @@ class SessionSessionsMixin:
     def _set_lineage_column(self, column: str, session_id: str, value: Any) -> bool:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
         forward to their tip, so updating only the tip would let the root resurrect it on refresh."""
-        return self._write_rowcount(
+        return bool(self._execute_write(
+            lambda conn: self._set_lineage_column_in_transaction(conn, column, session_id, value)
+        ))
+
+    def _set_lineage_column_in_transaction(self, conn, column: str, session_id: str, value: Any):
+        """Return affected IDs so authority revisions share this exact lineage selector."""
+        return [row[0] for row in conn.execute(
             f"""
             WITH RECURSIVE
               ancestors(id) AS (
@@ -824,9 +830,10 @@ class SessionSessionsMixin:
             UPDATE sessions
             SET {column} = ?
             WHERE id IN (SELECT id FROM lineage)
+            RETURNING id
             """,
             (session_id, session_id, value),
-        ) > 0
+        ).fetchall()]
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
         """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
