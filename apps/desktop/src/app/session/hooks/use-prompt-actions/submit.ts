@@ -853,7 +853,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         try {
           const recoverStoredSessionId = targetStoredSessionId
 
-          const { result, sessionId: receiptSessionId } = await withSessionNotFoundResume<{ admission_id?: string; status?: string }>(
+          const { result, sessionId: receiptSessionId } = await withSessionNotFoundResume<{ admission_id?: string; submission_id?: string; session_id?: string; status?: string }>(
             sessionId,
             recoverStoredSessionId,
             liveId =>
@@ -867,7 +867,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 const params: Record<string, unknown> = { ...prepared.params, session_id: liveId }
 
                 try {
-                  return await requestGateway<{ admission_id?: string; status?: string }>(
+                  return await requestGateway<{ admission_id?: string; submission_id?: string; session_id?: string; status?: string }>(
                     'prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
                   )
                 } catch (error) {
@@ -881,7 +881,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   await writePreparedSubmission(retryKey, prepared)
                   const { submission_id: _id, ...legacyParams } = params
 
-                  const result = await requestGateway<{ admission_id?: string; status?: string }>(
+                  const result = await requestGateway<{ admission_id?: string; submission_id?: string; session_id?: string; status?: string }>(
                     'prompt.submit', legacyParams, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
                   )
 
@@ -920,7 +920,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           if (
             !legacyAccepted &&
-            (result?.admission_id !== submissionId || !['queued', 'started', 'terminal'].includes(result?.status ?? ''))
+            ((result?.submission_id ?? result?.admission_id) !== submissionId ||
+              (result?.session_id !== undefined && result.session_id !== receiptSessionId) ||
+              !['queued', 'started', 'terminal'].includes(result?.status ?? ''))
           ) {
             dropOptimistic(sessionId)
             releaseBusy()
@@ -928,7 +930,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             return false
           }
 
-          if (result?.admission_id === submissionId) {
+          if ((result?.submission_id ?? result?.admission_id) === submissionId) {
             trackPendingSubmission(targetStoredSessionId ?? liveSessionId, {
               id: submissionId,
               text,

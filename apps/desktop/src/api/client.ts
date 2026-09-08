@@ -2,6 +2,8 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
 
+import { CanonicalDesktopProtocol } from './canonical-protocol'
+
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
 // profile-heavy or remote install these can each take tens of seconds — e.g.
@@ -26,6 +28,23 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
 export class HermesGateway extends JsonRpcGatewayClient {
+  private canonical = false
+  private readonly protocol = new CanonicalDesktopProtocol()
+
+  override async connect(wsUrl: string): Promise<void> {
+    this.canonical = new URL(wsUrl).searchParams.has('native_dial')
+
+    return super.connect(wsUrl)
+  }
+
+  override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
+    if (!this.canonical) { return super.request<T>(method, params, timeoutMs, signal) }
+    const prepared = this.protocol.prepare(method, params)
+    const result = await super.request<T>(method, prepared, timeoutMs, signal)
+
+    return this.protocol.result(method, prepared, result) as T
+  }
+
   constructor() {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
@@ -45,6 +64,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
         return new WebSocket(parsed.toString(), ['hermes-gateway-v1', `hermes-gateway-ticket.${ticket}`])
       }
     })
+    this.onEvent(event => { if (this.canonical) { this.protocol.event(event) } })
   }
 }
 
