@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { expect, test } from 'vitest'
-import afterPack from '../apps/desktop/scripts/after-pack.mjs'
+import afterPack from './after-pack.mjs'
 
 // This is the Linux afterPack path on a real Linux host, not a fake host flag.
 // macOS adds Developer ID signing; its native release lane owns that proof.

@@ -18,13 +18,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Set up locked Node and npm
+      - name: Set up the locked JS build toolchain
         id: node
         uses: ./.github/actions/setup-pm
         with:
-          toolchain: node
+          # Desktop checks also run Python payload and icon build helpers.
+          toolchain: all
 
-      # setup-pm caches npm downloads, not the installed workspace tree. The job then extracts the full workspace node_modules
+      # setup-pm caches npm downloads, not the installed workspace tree.
+      # The job then extracts the full workspace node_modules
       # again and runs the postinstalls again, which includes the Electron
       # binary fetch. This caches the installed tree itself, keyed on the
       # lockfile, and skips ``npm ci`` on an exact hit. There are no

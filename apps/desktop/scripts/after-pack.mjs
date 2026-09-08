@@ -35,7 +35,7 @@ export default async function afterPack(context) {
     : path.join(context.appOutDir, 'resources')
   const payload = path.join(resources, 'agent-payload')
   if (platform !== 'win32' && fs.existsSync(path.join(payload, 'manifest.json'))) {
-    execFileSync('uv', ['run', '--no-project', '--python', '3.11', 'python',
+    execFileSync('uv', ['run', '--no-project', 'python',
       path.resolve(import.meta.dirname, '../../../scripts/bundles/payload.py'), 'relocate', payload], { stdio: 'inherit' })
   }
   if (platform === 'darwin') {
