@@ -584,6 +584,7 @@ class OpenAICompatRoutesMixin:
         ``((result, usage), None)`` or ``(None, 500 response)``."""
         from gateway.platforms.api_server import (
             _error_response, _idem_cache, _make_request_fingerprint)
+        from hermes_state_runtime import RuntimeStoreError
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
             if idempotency_key and getattr(self.gateway_runner, 'session_authority', None) is None:
@@ -592,6 +593,9 @@ class OpenAICompatRoutesMixin:
             else:
                 result, usage = await compute()
             return (result, usage), None
+        except RuntimeStoreError as exc:
+            from gateway.platforms.api_server import _openai_error
+            return None, web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
         except Exception as e:
             logger.error("Error running agent for %s: %s", log_label, e, exc_info=True)
             return None, _error_response(f"Internal server error: {e}", 500, err_type="server_error")
