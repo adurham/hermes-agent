@@ -446,8 +446,7 @@ export const zh: Translations = {
         '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
       agent: {
         title: 'Agent 插件',
-        movedToCapabilities:
-          'Agent 插件按配置在「能力」页管理 — 已安装列表、开关和插件目录都在那里。',
+        movedToCapabilities: 'Agent 插件按配置在「能力」页管理 — 已安装列表、开关和插件目录都在那里。',
         openCapabilities: '打开 能力 → 插件'
       },
       installModal: {
@@ -2603,6 +2602,7 @@ export const zh: Translations = {
     projects: {
       sectionLabel: '项目',
       home: '主页',
+      autoDiscovered: '自动发现',
       newButton: '新建项目',
       createTitle: '新建项目',
       createDesc: '为工作区命名并添加一个或多个文件夹。',
@@ -3720,6 +3720,7 @@ export const zh: Translations = {
         streaming: '流式连接错误'
       },
       errorRetry: '重试',
+      errorStartNewSession: '开始新会话',
       errorSwitchProvider: '切换服务商',
       errorOpenLogs: '打开日志',
       errorOpenLogsFailed: '无法打开日志文件夹',

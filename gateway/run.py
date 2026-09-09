@@ -953,7 +953,7 @@ def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize first-turn prerequisites (executor thread); returns the schema count.
 
     Covers the lazy init seen in skeleton turns: ``run_agent`` import graph, tool schemas (+ ``check_fn``
-    TTL cache), context files."""
+    TTL cache), context files, the local Python toolchain probe (#106064)."""
     import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
     import model_tools
 
@@ -964,6 +964,15 @@ def _warm_turn_machinery_sync() -> int:
         build_context_files_prompt()
     except Exception:
         logger.debug("context-file warm-up failed (non-fatal)", exc_info=True)
+    from hermes_cli.config import load_config_readonly
+
+    agent_cfg = load_config_readonly().get("agent")
+    if not isinstance(agent_cfg, dict) or agent_cfg.get("environment_probe", True):
+        # The resolver owns remote-backend omission, the single worker, its cache and the bounded
+        # wait; calling it here is what the first prompt build would otherwise do on the hot path.
+        from tools.env_probe import get_environment_probe_line
+
+        get_environment_probe_line()
     return len(tool_defs)
 
 
@@ -3881,6 +3890,11 @@ class GatewayRunner(
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
         _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        # #98619: an admitted API turn carries its session-id provenance in the admission settings;
+        # every other platform leaves it undeclared (= not wake-capable).
+        from gateway.session_api_turn import api_execution
+        _api = api_execution.get()
+        _history_delivery = (_api["settings"].get("session_history_delivery") or "") if _api else None
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -3896,7 +3910,7 @@ class GatewayRunner(
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
-            cron_session="")
+            cron_session="", session_history_delivery=_history_delivery)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""
