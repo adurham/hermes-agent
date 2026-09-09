@@ -496,7 +496,7 @@ error. A delivery failure does not count toward the job's `failure_streak`
 - `bot-chat:<profile>` targets another profile **on the same machine**. Names are validated against `hermes profile list` when the job is created; profiles on other gateways or machines can never be targeted, so same-named profiles across machines are unambiguous.
 - Each delivery costs the target bot one full agent turn — mind the schedule frequency.
 - Composes with other targets (`bot-chat,telegram`) but is never included in `all`.
-- If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. Without a live mailbox owner, the existing `hermes chat -c "Bot Chat" --create-if-missing` lane remains available (normal session ownership checks still apply).
+- If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. If the target profile's gateway is not running, the delivery is recorded as unverified and retried on the next run; cron never starts its own Bot Chat turn.
 - **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative; cron's historical status is not automatically refreshed.
 - Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
 
@@ -725,17 +725,9 @@ cron:
 
 Or set the `HERMES_CRON_MEDIA_SEND_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 300s default. A timed-out attachment is recorded in the job's run status as a partial delivery failure (the text still delivers).
 
-## Bot Chat delivery timeout
+## Bot Chat delivery completion
 
-A `bot-chat` delivery runs a full agent turn in the target bot's chat, so its bound is minutes, not seconds — 600s by default:
-
-```yaml
-# ~/.hermes/config.yaml
-cron:
-  bot_chat_delivery_timeout_seconds: 900
-```
-
-A timed-out delivery is recorded in `last_delivery_error`; the bot's turn may still complete on its own.
+A `bot-chat` delivery is admitted to the target profile's running gateway and executed there as a full agent turn. The job's run status records the admission receipt (`delivery_outcome=queued`) until the target's durable receipt settles; a retry of the same run reuses the same receipt and never re-admits. If the target profile's gateway is not running, the delivery is recorded as unverified and no local fallback turn is run.
 
 ## No-agent mode (script-only jobs)
 
