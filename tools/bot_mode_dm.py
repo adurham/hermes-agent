@@ -413,7 +413,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str) -> dict | None:
         assert profile_home is not None
         owner = find_canonical_live_owner(profile_home)
         if owner is None:
-            return None
+            raise ValueError("canonical Bot Chat target is unavailable; no local fallback")
         intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8"),
                       delivery_id=hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest())
         try:
@@ -428,7 +428,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str) -> dict | None:
             _fsync_dir(intent_path.parent)
     home = intent["owner"]["profile_home"]
     record = read_delivery_result(home, intent["delivery_id"])
-    if record is None:
+    if record is None or intent["owner"].get("canonical"):
         record = deliver_to_live_owner(home, intent["owner"], intent["message"],
                                        delivery_id=intent["delivery_id"])
     return record
