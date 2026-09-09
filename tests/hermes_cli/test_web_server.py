@@ -252,6 +252,25 @@ class TestSessionTokenInjection:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def mutation_owner(monkeypatch, _isolate_hermes_home):
+    from gateway.session_authority import SessionAuthority
+    from hermes_constants import get_hermes_home
+    from hermes_cli.web_server import app
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    home = get_hermes_home()
+    db = SessionDB(db_path=home / 'state.db')
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(home),
+        instance_id='test-owner', db=db, epoch=begin_runtime_epoch(db, instance_id='test-owner'))
+    monkeypatch.setattr(app.state, 'session_authority', authority, raising=False)
+    try:
+        yield authority
+    finally:
+        db.close()
+
+
 class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 
@@ -1082,7 +1101,7 @@ class TestWebServerEndpoints:
 
 
 
-    def test_import_sessions_endpoint_imports_exported_json(self):
+    def test_import_sessions_endpoint_imports_exported_json(self, mutation_owner):
         from hermes_state import SessionDB
 
         payload = {
@@ -1098,7 +1117,7 @@ class TestWebServerEndpoints:
             ],
         }
 
-        resp = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        resp = self.client.post("/api/sessions/import", json={"sessions": [payload], "request_id": "import-first", "expected_revision": 0})
         assert resp.status_code == 200
         data = resp.json()
         assert data["imported"] == 1
@@ -1116,7 +1135,7 @@ class TestWebServerEndpoints:
         finally:
             db.close()
 
-        duplicate = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        duplicate = self.client.post("/api/sessions/import", json={"sessions": [payload], "request_id": "import-second", "expected_revision": data["revision"]})
         assert duplicate.status_code == 200
         assert duplicate.json()["skipped_ids"] == ["imported-web-session"]
 
@@ -3996,13 +4015,19 @@ class TestDeleteSessionEndpoint:
             db.close()
 
 
-    def test_delete_absent_session_is_idempotent(self):
-        # PREMISE / regression: deleting a row that no longer exists must NOT
-        # 404 — the desktop would resurrect the ghost row and show
-        # "session not found". DELETE's contract is "ensure it's gone".
-        resp = self.auth_client.delete("/api/sessions/never_existed")
-        assert resp.status_code == 200
-        assert resp.json().get("ok") is True
+    def test_delete_absent_session_is_idempotent(self, mutation_owner):
+        from gateway.session_authority import LiveSession
+        self._seed(['delete-retry'])
+        mutation_owner.sessions['delete-retry'] = LiveSession(None, 'route')
+        row = mutation_owner.db.get_session('delete-retry')
+        params = dict(request_id='delete-once', expected_revision=row['runtime_revision'],
+                      expected_generation=row['runtime_generation'])
+        first = self.auth_client.delete('/api/sessions/delete-retry', params=params)
+        assert first.status_code == 200, first.text
+        assert not self._exists('delete-retry')
+        retry = self.auth_client.delete('/api/sessions/delete-retry', params=params)
+        assert retry.status_code == 200, retry.text
+        assert retry.json() == first.json()
 
 
 class TestBulkDeleteSessionsEndpoint:
@@ -5258,7 +5283,7 @@ class TestSessionPatchUnread:
     read/unread, and GET /api/sessions surfaces the derived flag."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, mutation_owner):
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -5272,6 +5297,7 @@ class TestSessionPatchUnread:
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
         )
 
+        self.owner = mutation_owner
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -5286,8 +5312,17 @@ class TestSessionPatchUnread:
         finally:
             db.close()
 
+    def _patch(self, payload):
+        from uuid import uuid4
+        from gateway.session_authority import LiveSession
+        self.owner.sessions.setdefault('s1', LiveSession(None, 'route'))
+        row = self.owner.db.get_session('s1')
+        return self.auth_client.patch('/api/sessions/s1', json={
+            **payload, 'request_id': uuid4().hex, 'expected_revision': row['runtime_revision'],
+            'expected_generation': row['runtime_generation']})
+
     def test_patch_unread_true_marks_row_unread(self):
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        resp = self._patch({"unread": True})
         assert resp.status_code == 200
         assert resp.json()["unread"] is True
 
@@ -5295,8 +5330,8 @@ class TestSessionPatchUnread:
         assert next(s for s in rows if s["id"] == "s1")["unread"] is True
 
     def test_patch_unread_false_marks_row_read(self):
-        self.auth_client.patch("/api/sessions/s1", json={"unread": True})
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": False})
+        self._patch({"unread": True})
+        resp = self._patch({"unread": False})
         assert resp.status_code == 200
         assert resp.json()["unread"] is False
 
@@ -5305,32 +5340,32 @@ class TestSessionPatchUnread:
 
     def test_patch_unread_alone_is_accepted(self):
         # The route's "Nothing to update" guard must not reject a bare unread.
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        resp = self._patch({"unread": True})
         assert resp.status_code == 200
 
     def test_patch_unread_rejects_non_bool(self):
         # NB: pydantic v2 coerces "yes"/"no"/"1"/"0"/"on"/"off" to bool, so use
         # a string outside the accepted set to prove validation rejects it.
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": "maybe"})
+        resp = self._patch({"unread": "maybe"})
         assert resp.status_code == 422  # pydantic validation
 
     def test_patch_hidden_updates_persisted_session_without_live_runtime(self):
-        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        resp = self._patch({"hidden": True})
         assert resp.status_code == 200
         assert resp.json()["hidden"] is True
 
         rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
         assert all(s["id"] != "s1" for s in rows)
 
-        restored = self.auth_client.patch(
-            "/api/sessions/s1", json={"hidden": False}
+        restored = self._patch(
+            {"hidden": False}
         )
         assert restored.status_code == 200
         rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
         assert bool(next(s for s in rows if s["id"] == "s1")["hidden"]) is False
 
     def test_patch_hidden_alone_is_accepted(self):
-        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        resp = self._patch({"hidden": True})
         assert resp.status_code == 200
 
 
