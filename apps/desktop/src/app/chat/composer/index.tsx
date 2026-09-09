@@ -21,6 +21,7 @@ import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
+import { notifyError } from '@/store/notifications'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { sessionBlockingPrompt } from '@/store/prompts'
@@ -1223,6 +1224,14 @@ export function ChatBar({
                       exitQueuedEdit('cancel')
                     }
                   }}
+                  onDiscardLost={gateway ? id => {
+                    // Server-owned row: the authority's pending fanout retires it
+                    // from the queue once the acknowledgement commits. Canonical
+                    // local sessions key the queue by their own session id, so the
+                    // stored key stands in when the runtime id is not bound yet.
+                    gateway.request('prompt.resolve_unknown', { session_id: sessionId ?? activeQueueSessionKey, admission_id: id })
+                      .catch((error: unknown) => notifyError(error, t.composer.queueLostDiscard))
+                  } : undefined}
                   onEdit={beginQueuedEdit}
                   onResume={() => {
                     unparkQueuedPrompts(activeQueueSessionKey)
