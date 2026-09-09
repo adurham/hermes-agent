@@ -97,7 +97,7 @@ def test_real_uv_builds_separate_environment_before_selection(tmp_path, monkeypa
     monkeypatch.setattr("pm.workspace.enabled_member_dirs", lambda: [])
     ensure = importlib.import_module("pm.ensure")
     from pm.packages import uv_env
-    monkeypatch.setattr(ensure, "uv", lambda **kw: (uv, uv_env()))
+    monkeypatch.setattr(ensure, "uv", lambda **kw: (uv, {**uv_env(kw.get("base_env")), "UV_PYTHON": sys.executable}))
     prepared = Venv().apply([])
     assert selected_venv(core) == base
     candidate = prepared["environment"]

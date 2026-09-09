@@ -20,9 +20,7 @@ import pm.workspace as ws
 
 
 def _site_packages(venv: Path) -> Path:
-    """site-packages of the venv uv actually created — the running
-    interpreter's layout (pm pins UV_PYTHON to sys.executable), not a
-    per-OS hardcoded one."""
+    """The fixture supplies this interpreter as the PM toolchain."""
     import sysconfig
 
     return Path(sysconfig.get_paths(vars={"base": str(venv)})["purelib"])
@@ -62,8 +60,13 @@ def mini_workspace(tmp_path, monkeypatch):
     store.mkdir()
     venv = tmp_path / "venv"
 
+    import importlib
+    import shutil
     import pm.paths
+    from pm.packages import uv_env
 
+    monkeypatch.setattr(importlib.import_module("pm.ensure"), "uv",
+                        lambda **kwargs: (shutil.which("uv"), {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable}))
     monkeypatch.setattr(pm.paths, "repo_root", lambda: core)
     monkeypatch.setattr(pm.paths, "store_root", lambda: store)
     monkeypatch.setattr(ws.paths, "repo_root", lambda: core)

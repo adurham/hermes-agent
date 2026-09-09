@@ -239,25 +239,12 @@ def _managed_bin_dir() -> str:
 
 
 def _pinned_uvx() -> Optional[str]:
-    """The pinned uvx from pm's store, or None when pm can't provide it.
-
-    uvx ships inside uv's own store entry, beside the uv binary — the pin
-    that governs uv governs it. Resolved from pm's uv fact rather than by
-    probing directories: pm names the binary, so nobody goes fishing with
-    ``shutil.which`` on a dir (a PATH probe could resolve a system uvx of
-    unknown version). Pure lookup (``realize=False``) — this is a probe,
-    not the converging ``install_cli()`` path.
-    """
+    """Read-only lookup of PM's uvx executable."""
     try:
         import pm
 
-        uv_bin, _env = pm.uv(realize=False)
-        if not uv_bin:
-            return None
-        uvx = str(Path(uv_bin).with_name("uvx.exe" if os.name == "nt" else "uvx"))
-        if os.path.isfile(uvx) and os.access(uvx, os.X_OK):
-            return uvx
-        return None
+        uvx, _env = pm.uv("uvx", realize=False)
+        return uvx
     except Exception as e:  # pragma: no cover — defensive
         logger.debug("Could not resolve pinned uvx: %s", e)
         return None
@@ -303,8 +290,7 @@ def _find_cli() -> Optional[List[str]]:
 def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
     """Install the browser-use CLI persistently via ``uv tool install``.
 
-    Resolution order for uv: Hermes' managed uv (realized on demand via
-    ``pm.uv``) → uv on PATH. The binary is linked
+    PM supplies both uv and its base Python. The binary is linked
     into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()``
     resolves it for every profile without touching the user's PATH.
 
@@ -320,23 +306,14 @@ def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
     if managed:
         return True, f"browser-use CLI already installed ({managed})"
 
-    uv_bin: Optional[str] = None
-    env = dict(os.environ)
     try:
         import pm
 
-        uv_bin, pm_env = pm.uv()
-        if uv_bin:
-            env = pm_env
+        uv_bin, env = pm.uv()
     except Exception as e:
-        logger.debug("Managed uv unavailable: %s", e)
+        return False, f"PM's uv/Python toolchain is unavailable: {e}"
     if not uv_bin:
-        uv_bin = shutil.which("uv")
-    if not uv_bin:
-        return False, (
-            "uv is not available and could not be bootstrapped. Install uv "
-            "(https://docs.astral.sh/uv/) and run `uv tool install browser-use`."
-        )
+        return False, "PM's uv/Python toolchain is unavailable; run `hermes pm install`."
 
     env["UV_NO_CONFIG"] = "1"
     if bin_dir:
@@ -601,6 +578,16 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                           "then run `browser-use --doctor` to verify the setup.")
 
     env = _base_subprocess_env()
+    if len(cmd) > 1:
+        try:
+            import pm
+
+            uvx, env = pm.uv("uvx", base_env=env)
+            if not uvx:
+                return tool_error("PM's uv/Python toolchain is unavailable; run `hermes pm install`.")
+            cmd = [uvx, *cmd[1:]]
+        except Exception as e:
+            return tool_error(f"PM's uv/Python toolchain is unavailable: {e}")
     if session:
         if not _SESSION_RE.match(session):
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "

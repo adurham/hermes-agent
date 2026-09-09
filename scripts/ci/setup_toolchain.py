@@ -174,7 +174,6 @@ def dependencies(args) -> None:
         raise ValueError(f"unknown project extras: {sorted(unknown)}")
     uv_bin, environment = uv()
     environment.pop("UV_NO_CONFIG", None)  # keep project indexes and exclude-newer
-    environment["UV_PYTHON"] = sys.executable
     # PM's frozen sync must not turn a stale project lock into a green job.
     subprocess.run([uv_bin, "lock", "--check"], cwd=project, env=environment, check=True, timeout=1800)
     sync_venv(args.extras, explicit=True, plugin_dirs=[])

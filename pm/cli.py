@@ -1,4 +1,4 @@
-"""hermes pm: lock / install / env / doctor / gc / bundle."""
+"""hermes pm: lock / install / repair / env / doctor / gc / bundle."""
 
 from __future__ import annotations
 
@@ -425,6 +425,16 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_repair(args) -> int:
+    from hermes_cli._early_recovery import recover_if_needed
+    from pm.paths import repo_root
+
+    if not recover_if_needed(repo_root(), explicit=True):
+        return 1
+    print("Restart Hermes to use the repaired dependency environment.")
+    return 0
+
+
 def cmd_bundle(args) -> int:
     from scripts.bundles.native import stage_native
     return stage_native(args)
@@ -464,6 +474,9 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("doctor", help="check installed state against the lockfile")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("repair", help="rebuild the recorded dependency environment without changing its graph")
+    p.set_defaults(func=cmd_repair)
 
     p = sub.add_parser("gc", help="remove store entries nothing references")
     p.set_defaults(func=cmd_gc)

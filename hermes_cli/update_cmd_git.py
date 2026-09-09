@@ -398,7 +398,7 @@ def _portable_git_candidates() -> list:
     profile-scoped HERMES_HOME (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must look
     there (monerostar review, #87876).
     """
-    from hermes_cli.update_cmd import get_default_hermes_root, get_hermes_home
+    from hermes_constants import get_default_hermes_root, get_hermes_home
     candidates = []
     with suppress(Exception):
         candidates += [root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe" for root in (get_default_hermes_root(), Path(get_hermes_home()))]

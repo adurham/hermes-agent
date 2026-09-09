@@ -35,24 +35,6 @@ if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 from hermes_cli import _startup_fast  # noqa: E402
 
-# Early venv self-heal — MUST run before any third-party import below. A prior
-# ``hermes update`` may have left a recovery marker with a core package wiped;
-# the hermes_cli.config/env_loader imports further down would then crash before
-# main() reaches _recover_from_interrupted_install(). ``_early_recovery`` is
-# stdlib-only (safe on a corrupted venv) and repairs just enough to finish this
-# import; the marker lifecycle stays with the full recovery path. Its own
-# import is unguarded on purpose: same package dir, so if IT can't import
-# nothing in hermes_cli can.
-# It is also the canonical home of the probe/repair tables reused by the full recovery path below. See
-# #57828.
-from hermes_cli import _early_recovery as _early_recovery_mod
-
-try:
-    _early_recovery_mod.recover_if_needed()
-except Exception:
-    pass
-
-
 # Startup-liveness watchdog: for gateway runs, arm BEFORE the heavy import
 # graph below — an import-time deadlock (native-extension init, contended
 # import lock) is exactly the "wedged before the event loop, no logs, live
@@ -545,6 +527,12 @@ def _apply_profile_override() -> None:
 
 _apply_profile_override()
 
+# PM runs after profile resolution but before application dependency imports.
+if sys.argv[1:2] == ["pm"]:
+    from pm.cli import main as _pm_main
+
+    raise SystemExit(_pm_main(sys.argv[2:]))
+
 # Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
 # console script staged into the managed bin dir (outside the checkout, since
 # ``hermes update``'s autostash once swept ``<checkout>\bin`` copies off disk;
@@ -710,33 +698,22 @@ from hermes_cli.main_provider_setup import (
     _prompt_provider_choice,
     _remove_custom_provider,
 )
-from hermes_cli.main_install_repair import (
-    _cleanup_quarantined_exes,
-    _recover_from_interrupted_install,
-)
+from hermes_cli.main_install_repair import _cleanup_quarantined_exes
 from hermes_cli.main_install_repair import (  # frozen updater surface: update_cmd*.py resolve these via _m()
-    ShimQuarantineError,
     _UPDATE_REEXEC_ENV,
     _clear_lazy_refresh_incomplete_marker,
     _clear_marker_file,
     _clear_update_incomplete_marker,
-    _install_python_dependencies_with_optional_fallback,
     _is_termux_env,
     _is_windows,
     _is_windows_npm_path,
     _lazy_refresh_marker_path,
     _pytest_owns_live_checkout,
     _reexec_dependency_sync_off_windows_shim,
-    _repair_venv_via_import_probes,
-    _resolve_install_target_python,
     _resolve_node_runtime_npm,
     _resolve_update_branch,
-    _run_install_with_heartbeat,
-    _run_package_only_install,
     _update_marker_path,
     _venv_scripts_dir,
-    _verify_console_scripts_installed,
-    _verify_core_dependencies_installed,
 )
 from hermes_cli.main_desktop import (
     cmd_gui,
@@ -2637,21 +2614,10 @@ def _first_positional_argv() -> str | None:
     Not a full argparse simulation: an unknown ``--foo bar`` may classify
     ``bar`` as positional, which at worst forces a one-time plugin discovery.
     """
-    from hermes_cli._parser import top_level_value_flag_sets
+    from hermes_cli._parser import command_argv
 
-    required_value_flags, optional_value_flags = top_level_value_flag_sets()
-    value_flags = required_value_flags | optional_value_flags
-    argv = sys.argv[1:]
-    i = 0
-    while i < len(argv):
-        tok = argv[i]
-        if tok == "--":  # everything after is positional
-            return argv[i + 1] if i + 1 < len(argv) else None
-        if not tok.startswith("-"):
-            return tok
-        # ``--flag=value`` is a single token; a known value flag consumes the next.
-        i += 2 if ("=" not in tok and tok in value_flags and i + 1 < len(argv)) else 1
-    return None
+    args = command_argv(sys.argv[1:])
+    return args[0] if args else None
 
 
 def _plugin_cli_discovery_needed() -> bool:
@@ -3346,7 +3312,7 @@ def main():
         pass
 
     # Sweep stale ``hermes.exe.old.*`` quarantine files from previous Windows
-    # updates (see ``_quarantine_running_hermes_exe``). No-op elsewhere.
+    # updates. No-op elsewhere.
     try:
         _cleanup_quarantined_exes()
     except Exception:
@@ -3356,19 +3322,9 @@ def main():
     # process resolves fresh source against old bytecode. Never raises.
     _sweep_stale_bytecode_if_checkout_changed()
 
-    # Self-heal a venv left half-built by an interrupted ``hermes update``, and
-    # hint (never restart) about a fleet the interrupted update never
-    # restarted. Both skipped while the user is *running* update — that flow
-    # owns its marker and a recovery install must not race the real one. The
-    # substring match is deliberately loose: over-matching (``hermes skills
-    # install update``) only defers recovery one launch; under-matching
-    # (``hermes -p work update``) would race. Never raises.
-    # See #95294.
+    # Dependency recovery already ran before imports. Report any fleet restart
+    # still owed by a previous update without restarting services here.
     if "update" not in sys.argv[1:]:
-        try:
-            _recover_from_interrupted_install()
-        except Exception:
-            pass
         try:
             from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
 
@@ -3388,12 +3344,6 @@ def main():
         return
     if _try_fast_chat_launch():
         return
-
-    # pm owns its own tiny argparse tree; dispatch before the heavy parser.
-    if sys.argv[1:2] == ["pm"]:
-        from pm.cli import main as pm_main
-
-        sys.exit(pm_main(sys.argv[2:]))
 
     # The startup check: O(1) stamp comparisons, no network, no installs.
     # One loud line when the install is damaged; never blocks the command.

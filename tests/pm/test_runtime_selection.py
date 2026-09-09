@@ -64,7 +64,8 @@ def test_boot_uses_one_selected_dependency_tree_in_fresh_process(tmp_path, monke
     assert process.stdout.splitlines() == ["new", "True"]
 
 
-@pytest.mark.parametrize("command,allowed", [(["pm", "install", "--help"], True), (["pm", "doctor"], True), (["chat"], False), (["chat", "pm", "install"], False)])
+@pytest.mark.parametrize("command,allowed", [(["pm", "install", "--help"], True), (["pm", "doctor"], True),
+    (["-p", "default", "pm", "repair"], True), (["chat"], False), (["chat", "pm", "install"], False)])
 def test_broken_environment_keeps_explicit_repair_entry_reachable(tmp_path, monkeypatch, command, allowed):
     import os
     import subprocess
@@ -81,8 +82,32 @@ def test_broken_environment_keeps_explicit_repair_entry_reachable(tmp_path, monk
                             capture_output=True, text=True, timeout=30)
     assert (result.returncode == 0) is allowed, result.stderr
     if not allowed:
-        assert "hermes pm install" in result.stderr
+        assert "hermes pm repair" in result.stderr
         assert "Traceback" not in result.stderr
+
+
+def test_manual_repair_bypasses_damaged_generation_activation(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+    from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, site_packages
+
+    repo = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    generation = install_state_dir(repo) / "environments" / "damaged"
+    environment = generation / "venv"
+    site_packages(environment).mkdir(parents=True)
+    (environment / "pyvenv.cfg").write_text("home = test", encoding="utf-8")
+    (generation / ".lease-managed").touch()
+    (generation / ".leases").write_text("not a directory", encoding="utf-8")
+    runtime_facts_path(repo).write_text(json.dumps({"schema": 1, "packages": {"venv": {
+        "environment": str(environment), "extras": [], "stamp": "old",
+    }}}), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(repo)}
+    result = subprocess.run([sys.executable, "-S", "-m", "hermes_cli.main", "pm", "repair", "--help"],
+                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "hermes pm repair" in result.stdout
 
 
 @pytest.mark.parametrize("data", [[], {"packages": []}, {"packages": {"venv": []}}])

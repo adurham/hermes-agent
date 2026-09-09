@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import shutil
-import sys
 from pathlib import Path
 from tools import tool_backend_helpers
 from hermes_cli import nous_subscription
@@ -97,20 +96,6 @@ def _existing_secret_keeps(env_var: str, label: str, question: str) -> bool:
         return False
     _setup.print_info(f"  {label}: already configured")
     return not _setup.prompt_yes_no(question, False)
-
-
-def _pip_install_vercel(package):
-    """uv when Hermes has one ($HERMES_HOME/bin is never on PATH, so which() misses it and
-    bootstrapping mid-wizard is fine), else pip — a `uv venv` venv may not even have pip."""
-    import subprocess
-
-    from pm.ensure import uv as pm_uv
-
-    # Missing uv can be provisioned by PM during setup.
-    uv_bin, _ = pm_uv(realize=True)
-    cmd = ([uv_bin, "pip", "install", "--python", sys.executable, package] if uv_bin
-           else [sys.executable, "-m", "pip", "install", package])
-    return subprocess.run(cmd, **_RUN_KW)
 
 
 def _ensure_sdk(package: str, manual_hint: str, *, show_stderr: bool = False, install=None) -> None:
@@ -227,7 +212,7 @@ def _setup_backend_vercel(config: dict) -> None:
     _setup.print_success("Terminal backend: Vercel Sandbox")
     _setup._info("Cloud microVM sandboxes with snapshot-backed filesystem persistence.",
                  "Requires the optional SDK: pip install 'hermes-agent[vercel]'")
-    _ensure_sdk("vercel", "pip install 'hermes-agent[vercel]'", show_stderr=True, install=_pip_install_vercel)
+    _ensure_sdk("vercel", "pip install 'hermes-agent[vercel]'", show_stderr=True)
     _prompt_vercel_sandbox_settings(config)
 
 

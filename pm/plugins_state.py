@@ -28,14 +28,17 @@ def _read_home_config(home: Path) -> Optional[dict[str, Any]]:
     memory.provider) derives from this one read — config.yaml is parsed
     once per home, not once per question.
     """
-    try:
-        import utils
+    config_path = home / "config.yaml"
+    if not config_path.is_file():
+        return None
+    # Missing YAML support is a broken runtime, not an empty plugin selection.
+    import utils
 
-        config_path = home / "config.yaml"
-        if not config_path.is_file():
-            return None
+    try:
         config = utils.fast_safe_load(config_path.read_text(encoding="utf-8-sig"))
         return config if isinstance(config, dict) else None
+    except ImportError:
+        raise
     except Exception:
         return None
 

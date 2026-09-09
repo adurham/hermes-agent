@@ -16,7 +16,6 @@ from pm.package import (
     Package,
     StatePackage,
     _entry_listing,
-    _missing_reason,
     _probe_reason,
 )
 from pm.registry import register
@@ -159,6 +158,7 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
     plugin installs) and the wheelhouse's resolver in the build container."""
 
     name = "uv"
+    deps = ("python",)
     internal = True
     binary_rel = {"win32": "uv.exe", "posix": "uv"}
     # The staged .deb's main binary: DebPackage.verify checks it.
@@ -230,9 +230,10 @@ def _macos_sign_managed_python(python: Path) -> bool:
 
 @register
 class Python(_BionicDebArm, BinaryPackage, DebPackage):
-    """The payload interpreter (python-build-standalone install_only).
-    Optional: dev installs use their own venv's python; bundles stage this
-    and point the relocatable venv's pyvenv.cfg at it (pm adopt)."""
+    """The pinned interpreter for launchers and every PM-managed uv command.
+
+    Optional when provisioning unrelated tools; required by uv's closure.
+    """
 
     name = "python"
     optional = True
@@ -419,12 +420,19 @@ class Venv(StatePackage):
 
     def expected_stamp(self, extras: list[str], *, plugin_dirs=None) -> str:
         import hashlib
-        import sys
+        import json
+        from pm.lock import Lockfile
+        from pm.paths import lockfile_path
+        from pm.store import current_target
 
+        lock = Lockfile(lockfile_path())
+        target = current_target()
+        python = (lock.version("python"), target,
+                  [artifact["sha256"] for artifact in lock.artifacts("python", target)])
         h = hashlib.sha256()
         h.update(_uv_lock_digest(self.project_root() / "uv.lock"))
         h.update(",".join(sorted(extras)).encode())
-        h.update(f"{sys.version_info.major}.{sys.version_info.minor}".encode())
+        h.update(json.dumps(python).encode())
         # Plugin members union into the venv — a changed member set must
         # re-sync even when extras and core lock are unchanged.
         from pm.workspace import enabled_member_dirs, members_stamp
@@ -432,9 +440,8 @@ class Venv(StatePackage):
         h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
-    def apply(self, extras: list[str], *, plugin_dirs=None) -> dict:
+    def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False) -> dict:
         """Prepare one complete environment; the caller commits its selection."""
-        import sys
         import uuid
         from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
         from pm.ensure import uv as pm_uv
@@ -444,26 +451,37 @@ class Venv(StatePackage):
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
         candidate = generation / "venv"
-        uv_bin, env = pm_uv()
+        uv_bin, env = pm_uv(explicit=repair)
         if uv_bin is None:
             raise InstallError(self.name, "uv is not installed")
         env["UV_PROJECT_ENVIRONMENT"] = str(candidate)
         env.pop("UV_NO_CONFIG", None)  # project indexes/sources belong to the project
-        members = enabled_member_dirs() if plugin_dirs is None else plugin_dirs
+        members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()
             create = subprocess.run(
-                [uv_bin, "venv", "--relocatable", "--python", sys.executable, str(candidate)],
+                [uv_bin, "venv", "--relocatable", str(candidate)],
                 env=env, capture_output=True, text=True, timeout=120,
             )
             if create.returncode:
                 raise InstallError(self.name, f"uv venv failed: {create.stderr[-600:]}")
-            prior = Facts(runtime_facts_path(project)).get("venv") or {}
+            prior = Facts(runtime_facts_path(project), strict=repair).get("venv") or {}
+            replay = None
+            if repair and ("environment" in prior or "resolved_lock" in prior):
+                if not all(isinstance(prior.get(key), str) and prior[key] for key in ("environment", "resolved_lock")):
+                    raise InstallError(self.name, "recorded dependency paths are incomplete; refusing to drop plugins")
+                recorded = Path(prior["resolved_lock"]).resolve()
+                previous = Path(prior["environment"]).resolve().parent
+                generations = install_state_dir(project) / "environments"
+                if (previous.parent != generations.resolve() or recorded != previous / "workspace" / "uv.lock"
+                        or not recorded.is_file()):
+                    raise InstallError(self.name, "recorded dependency lock is missing; refusing to drop plugins")
+                replay = recorded.parent
             seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
                     else project / "uv.lock")
             lock_and_sync(members, extras, venv_dir=candidate, root=generation / "workspace",
-                          seed_lock=seed, frozen=not members, env=env)
+                          seed_lock=seed, frozen=repair or not members, env=env, replay=replay)
             resolved_lock = generation / "workspace" / "uv.lock"
             python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
             checked = subprocess.run(
@@ -472,6 +490,9 @@ class Venv(StatePackage):
             )
             if checked.returncode:
                 raise InstallError(self.name, f"dependency validation failed: {checked.stderr[-600:]}")
+            if repair:
+                from pm.recovery import validate_environment
+                validate_environment(python, env=env, cwd=resolved_lock.parent)
         except BaseException:
             shutil.rmtree(generation, ignore_errors=True)
             raise

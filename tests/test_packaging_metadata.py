@@ -33,8 +33,7 @@ def test_packaging_declared_as_core_dependency():
     hermes_cli/main.py) yet was undeclared, so it only reached users
     transitively. The slim Docker image shipped without it, silently
     disabling Hindsight append-mode and version-constraint checks. It must
-    be a declared core dependency so it installs everywhere and the
-    update-repair step (``_verify_core_dependencies_installed``) guards it.
+    be a declared core dependency so PM includes it in dependency generations.
     """
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     core = data["project"]["dependencies"]

@@ -325,8 +325,7 @@ def install_node_sidecar(
     the declared sidecar install (plugin-deps plan §B item 2; wired here).
 
     Plugin-local (never a global npm prefix), pm's pinned npm when the
-    store has one (ambient PATH npm otherwise — same store-first,
-    PATH-second precedence as _uv_binary), gated by the lazy-install
+    store has one (ambient PATH npm otherwise), gated by the lazy-install
     policy, receipt-noted. Returns None on success, else why not.
     """
     package_json = plugin_dir / "package.json"
@@ -392,6 +391,7 @@ def lock_and_sync(
     env: Optional[dict] = None,
     seed_lock: Optional[Path] = None,
     frozen: bool = False,
+    replay: Optional[Path] = None,
 ) -> None:
     """Build the root, then `uv lock` + `uv sync --frozen --extra ...`.
 
@@ -401,32 +401,37 @@ def lock_and_sync(
     existing lock seeds the extension (default: the root's current
     extended lock, else the committed core lock). ``env`` replaces the
     ambient base environment when supplied; either way the subprocess
-    gets a COPY — the live process environment is never mutated.
+    gets a COPY — the live process environment is never mutated. ``replay``
+    copies a recorded sibling workspace and uses its lock without resolution
+    or plugin discovery; it is reserved for restoring an existing selection.
 
     Raises a CLASSIFIED InstallError on failure: ResolutionConflict only
     for a confirmed resolver conflict; network, build and tool failures
     stay generic InstallError — they are not evidence of a dependency
     conflict and must not disable plugins.
     """
-    from pm.packages import uv_env
+    from pm.ensure import uv as pm_uv
 
-    generated, changed = _generate_pyproject(plugin_dirs, root)
-    if changed:
-        _seed_lock(generated, seed_lock)
+    if replay is None:
+        generated, changed = _generate_pyproject(plugin_dirs, root)
+        if changed:
+            _seed_lock(generated, seed_lock)
+    else:
+        import shutil
 
-    uv_bin = _uv_binary()
+        if root is None or not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
+            raise InstallError("venv", f"recorded workspace is missing: {replay}")
+        # Generation workspaces are siblings at the same depth. External
+        # member paths still resolve. Generated members move with the copy.
+        shutil.copytree(replay, root, ignore=shutil.ignore_patterns("__pycache__", ".venv", "build", "*.egg-info"))
+        generated = root
+        frozen = True
+
+    uv_bin, run_env = pm_uv(base_env=env)
     if uv_bin is None:
-        raise InstallError("venv", "uv is not installed (pm ensure uv)")
-
-    # uv_env SANITIZES the base: when the parent staged an env it is the
-    # base (ambient VIRTUAL_ENV/UV_* leakage stripped); otherwise the live
-    # environment is sanitized. Either way this is a fresh COPY — the live
-    # process environment is never mutated.
-    run_env = uv_env(env)
+        raise InstallError("venv", "PM's uv and Python are required; run `hermes pm install`")
     run_env.pop("UV_NO_CONFIG", None)
     run_env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
-    import sys
-    run_env["UV_PYTHON"] = sys.executable
 
     import subprocess
 
@@ -454,17 +459,3 @@ def lock_and_sync(
         raise classify_uv_failure(
             "sync", sync.returncode, sync.stderr or sync.stdout
         )
-
-
-def _uv_binary() -> Optional[str]:
-    """Store uv first (pinned), PATH uv second (dev machines, test envs).
-    A dev machine with uv on PATH but no provisioned store is the normal
-    pre-`pm install` state — 'uv is not installed' there is a lie."""
-    from pm.ensure import uv as pm_uv
-
-    uv_bin, _env = pm_uv(realize=False)
-    if uv_bin:
-        return uv_bin
-    import shutil
-
-    return shutil.which("uv")

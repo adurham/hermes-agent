@@ -21,17 +21,20 @@ any machine by substitution.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 SCHEMA = 1
 STORE_TOKEN = "{{store}}"
 
 
-def _read(path: Path) -> dict:
+def _read(path: Path, *, strict: bool = False) -> dict:
     try:
         text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return {"schema": SCHEMA, "packages": {}}
     except OSError:
+        if strict:
+            raise
         return {"schema": SCHEMA, "packages": {}}
     try:
         data = json.loads(text)
@@ -39,6 +42,8 @@ def _read(path: Path) -> dict:
             return data
     except ValueError:
         pass
+    if strict:
+        raise ValueError(f"cannot read recorded package state: {path}")
     if text.strip():
         # An unparsable-but-nonempty state file is evidence, not garbage:
         # the next _write would silently discard every installed-state
@@ -106,9 +111,9 @@ def termux_docker_digest() -> str:
 class Facts:
     """The installed-state file. Written only by pm."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, strict: bool = False):
         self.path = path
-        self._packages = _read(path)["packages"]
+        self._packages = _read(path, strict=strict)["packages"]
 
     def reload(self) -> None:
         self._packages = _read(self.path)["packages"]

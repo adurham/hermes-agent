@@ -50,6 +50,18 @@ def test_enabled_plugins_ordered_reads_all_homes(homes):
     assert by_root.get(profile_home / "plugins") == ["c-plug"]
 
 
+def test_missing_config_parser_is_not_an_empty_plugin_selection(homes, monkeypatch):
+    import sys
+
+    default_home, _ = homes
+    _write_config(default_home, ["keep-plug"])
+    before = (default_home / "config.yaml").read_bytes()
+    monkeypatch.setitem(sys.modules, "utils", None)
+    with pytest.raises(ImportError):
+        pstate.enabled_plugins_ordered()
+    assert (default_home / "config.yaml").read_bytes() == before
+
+
 def test_enabled_list_preserves_config_order(homes):
     default_home, _ = homes
     # NOT alphabetical: recency order must survive the read

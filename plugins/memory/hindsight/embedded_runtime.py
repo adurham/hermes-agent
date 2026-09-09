@@ -7,7 +7,6 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -141,11 +140,6 @@ def _uv_bridge(venv: Path) -> tuple[str, dict[str, str]]:
 
 
 def _run_uv(uv_bin: str, env: dict[str, str], args: list[str], timeout: float) -> None:
-    # Pin the interpreter explicitly: pm's sanitized env strips UV_PYTHON, and
-    # without a pin uv's chooser can pick a different (e.g. PBS 3.14) runtime.
-    # sys.executable is the Hermes venv python — the side venv is fully
-    # isolated (own site-packages); this only fixes the BASE interpreter.
-    env = {**env, "UV_PYTHON": sys.executable}
     result = subprocess.run(  # noqa: S603 — fixed argv, no shell
         [uv_bin, *args], env=env, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=timeout,

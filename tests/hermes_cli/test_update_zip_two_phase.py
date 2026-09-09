@@ -286,23 +286,6 @@ def test_venv_helpers_honour_an_explicit_platform_verdict():
         )
 
 
-def test_patched_is_windows_reaches_the_venv_path_derivation():
-    """End-to-end: patching the module predicate must change the derived path."""
-    from unittest.mock import patch
-
-    from hermes_cli import main as hermes_main
-
-    with patch.object(hermes_main, "_is_windows", return_value=True):
-        got = hermes_main._resolve_install_target_python(
-            ["uv", "pip"], env={"VIRTUAL_ENV": "/nope/venv"}
-        )
-    # The path doesn't exist so we get None, but the *derivation* must have
-    # used the Windows layout -- assert that directly.
-    assert got is None
-    assert (
-        venv_python_path("/nope/venv", windows=True).as_posix()
-        == "/nope/venv/Scripts/python.exe"
-    )
 
 
 # ---------------------------------------------------------------------------

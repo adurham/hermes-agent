@@ -1139,9 +1139,6 @@ class TestNodeRuntimeNpmResolution:
         monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *_args: 0)
         monkeypatch.setattr(hm, "_record_bytecode_fingerprint", lambda: None)
         monkeypatch.setattr(hm, "_refresh_bootstrap_cache_scripts", lambda _branch: None)
-        monkeypatch.setattr(
-            hm, "_install_python_dependencies_with_optional_fallback", lambda *_args, **_kwargs: None
-        )
         monkeypatch.setattr(hm, "_refresh_active_memory_provider_dependencies", lambda: None)
         monkeypatch.setattr(hm, "_build_web_ui", lambda *_args: None)
         monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *_args: None)
@@ -1558,15 +1555,16 @@ class TestGitTrampolineSelfHeal:
         # PortableGit tree lives under the SHARED root (monerostar review on
         # #88136). The candidate list must check get_default_hermes_root()
         # before the profile home.
-        from hermes_cli import update_cmd
+        import hermes_constants
+        from hermes_cli.update_cmd_git import _portable_git_candidates
 
         root = tmp_path / "root"
         profile_home = root / "profiles" / "foo"
 
-        monkeypatch.setattr(update_cmd, "get_default_hermes_root", lambda: root)
-        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: profile_home)
+        monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: profile_home)
 
-        candidates = update_cmd._portable_git_candidates()
+        candidates = _portable_git_candidates()
         assert candidates[0] == (
             root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
         )

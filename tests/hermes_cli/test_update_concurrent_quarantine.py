@@ -142,52 +142,6 @@ def test_detect_concurrent_parents_call_robust_to_one_bad_hop(_winp, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _quarantine_running_hermes_exe — retry, then report
-# ---------------------------------------------------------------------------
-
-
-@patch.object(main_install_repair, "_is_windows", return_value=True)
-def test_quarantine_succeeds_first_attempt(_winp, tmp_path):
-    """When the rename works immediately, no warning, single rename pair returned."""
-    shim = tmp_path / "hermes.exe"
-    shim.write_bytes(b"old")
-
-    pairs = main_install_repair._quarantine_running_hermes_exe(tmp_path)
-
-    assert len(pairs) == 1
-    orig, quarantine = pairs[0]
-    assert orig == shim
-    assert quarantine.name.startswith("hermes.exe.old.")
-    assert quarantine.exists()
-    assert not shim.exists()
-
-
-@patch.object(main_install_repair, "_is_windows", return_value=True)
-def test_quarantine_reports_a_lock_it_cannot_break(_winp, tmp_path, capsys, monkeypatch):
-    """Every retry failed: name the likely culprits, queue nothing for reboot."""
-    shim = tmp_path / "hermes.exe"
-    shim.write_bytes(b"locked")
-
-    def always_fails(self, target):
-        raise OSError(32, "The process cannot access the file (simulated lock)")
-
-    monkeypatch.setattr(main_install_repair, "_hermes_exe_shims", lambda d: [shim])
-    with patch.object(Path, "rename", always_fails), patch(
-        "time.sleep", lambda *_a, **_k: None
-    ):
-        pairs = main_install_repair._quarantine_running_hermes_exe(tmp_path)
-
-    captured = capsys.readouterr().out.lower()
-
-    assert pairs == []
-    # A clear message, not raw [WinError 32], and no reboot promise we can't keep.
-    assert "could not quarantine" in captured
-    assert "reboot" not in captured
-
-
-
-
-# ---------------------------------------------------------------------------
 # Windows gateway pause/resume before update mutation
 # ---------------------------------------------------------------------------
 

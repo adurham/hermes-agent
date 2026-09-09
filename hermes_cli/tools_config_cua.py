@@ -146,22 +146,31 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
     """Install Python packages: ``uv pip install`` (needs no pip in the venv), then ``python -m
     pip``, then ``ensurepip --upgrade`` + retry — the Windows installer creates the venv via
     ``uv venv``, which does NOT seed pip, so bare ``-m pip`` failed on fresh installs."""
-    venv_root = Path(sys.executable).parent.parent
+    from hermes_constants import venv_python_path
+    from hermes_cli.runtime_paths import selected_venv
+    from pm.paths import repo_root
+
+    venv_root = selected_venv(repo_root())
+    python = str(venv_python_path(venv_root))
     install_flags = _post_setup_no_window_flags(streams_to_console=not capture_output)
 
     # Resolve uv and its target environment through PM, not ambient PATH.
     from pm.ensure import uv as pm_uv
+    from pm.package import InstallError
 
-    uv_bin, uv_env = pm_uv(realize=True, venv=venv_root)
+    try:
+        uv_bin, uv_env = pm_uv(realize=True, venv=venv_root)
+    except InstallError as exc:
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr=str(exc))
     try:  # a failed uv run falls through to pip — it may have failed for a reason pip can handle
-        result = uv_bin and _run_text([uv_bin, "pip", "install", *args], timeout=timeout,
+        result = uv_bin and _run_text([uv_bin, "pip", "install", "--python", str(venv_root), *args], timeout=timeout,
                                       capture_output=capture_output, creationflags=install_flags,
                                       env=uv_env)
         if result and result.returncode == 0:
             return result
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
-    pip_cmd = [sys.executable, "-m", "pip"]
+    pip_cmd = [python, "-m", "pip"]
     try:
         # Probe for pip; bootstrap via ensurepip if missing (uv venv lacks it).
         probe = _run_text(pip_cmd + ["--version"], timeout=15,
@@ -170,7 +179,7 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
             raise FileNotFoundError("pip not in venv")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         try:
-            _run_text([sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+            _run_text([python, "-m", "ensurepip", "--upgrade", "--default-pip"],
                       timeout=120, check=True, creationflags=_post_setup_no_window_flags())
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             # Synthesize a result so callers see a clean failure path.

@@ -265,16 +265,35 @@ class TestFindCli:
         )
         assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/browser-use"]
 
-    def test_falls_back_to_uvx(self, monkeypatch):
-        """The zero-install fallback resolves pm's PINNED uvx — never a
-        bare PATH probe (pm names the binary; a PATH uvx is an unknown
-        version)."""
-        monkeypatch.setattr(bu_cli, "_pinned_uvx", lambda: "/store/uvx")
-        monkeypatch.setattr(
-            bu_cli.shutil, "which",
-            lambda name, path=None: None,
-        )
-        assert bu_cli._find_cli_unpatched() == ["/store/uvx", "browser-use"]
+    def test_falls_back_to_uvx(self, monkeypatch, tmp_path):
+        """PM owns the executable spelling and the interpreter environment."""
+        import pm
+        import subprocess
+
+        executable = str(tmp_path / "chosen-by-pm.bin")
+        calls = []
+        def managed(command="uv", *, realize=True, base_env=None):
+            calls.append((command, realize))
+            return executable, {**(base_env or {}), "UV_PYTHON": "pm-python"}
+        monkeypatch.setattr(pm, "uv", managed)
+        monkeypatch.setattr(bu_cli.shutil, "which", lambda name, path=None: None)
+        assert bu_cli._find_cli_unpatched() == [executable, "browser-use"]
+        assert calls == [("uvx", False)]
+        monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
+        monkeypatch.setattr(bu_cli, "_base_subprocess_env", lambda: {"BROWSER_SETTING": "preserved"})
+        monkeypatch.setattr(bu_cli, "_route_backend", lambda *args: None)
+        seen = {}
+        def run(cmd, **kwargs):
+            seen.update(cmd=cmd, env=kwargs["env"], input=kwargs["input"])
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        monkeypatch.setattr(bu_cli.subprocess, "run", run)
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+        assert result["success"] is True
+        assert calls[-1] == ("uvx", True)
+        assert seen["cmd"] == [executable, "browser-use"]
+        assert seen["env"]["UV_PYTHON"] == "pm-python"
+        assert seen["env"]["BROWSER_SETTING"] == "preserved"
+        assert seen["input"] == "print(1)"
 
     def test_bare_path_uvx_not_consulted(self, monkeypatch):
         """Kill the PATH probe: a uvx reachable only via bare PATH is not

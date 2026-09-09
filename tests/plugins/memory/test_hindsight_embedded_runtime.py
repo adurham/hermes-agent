@@ -48,14 +48,14 @@ def test_ensure_sideenv_builds_and_publishes_generation(side_root, monkeypatch):
 
     def fake_bridge(venv):
         calls.append(("bridge", venv))
-        return "uv-bin", {"VIRTUAL_ENV": str(venv)}
+        return "uv-bin", {"VIRTUAL_ENV": str(venv), "UV_PYTHON": "pm-python"}
 
-    def fake_run(uv_bin, env, args, timeout):
-        calls.append(("run", [uv_bin, *args], env))
+    def fake_run(cmd, **kwargs):
+        calls.append(("run", cmd, kwargs["env"]))
         return _fake_completed()
 
     monkeypatch.setattr(rt, "_uv_bridge", fake_bridge)
-    monkeypatch.setattr(rt, "_run_uv", fake_run)
+    monkeypatch.setattr(rt.subprocess, "run", fake_run)
 
     gen = rt.ensure_sideenv()
 
@@ -70,6 +70,7 @@ def test_ensure_sideenv_builds_and_publishes_generation(side_root, monkeypatch):
     runs = [c for c in calls if c[0] == "run"]
     assert [c[1][1] for c in runs] == ["lock", "sync"]
     assert all(c[2]["VIRTUAL_ENV"].endswith(".venv") for c in runs)
+    assert all(c[2]["UV_PYTHON"] == "pm-python" for c in runs)
     assert calls[0][1] == gen / ".venv"
 
 

@@ -10,6 +10,7 @@ core + plugin deps into ONE lock; conflict = loud refusal.
 
 from __future__ import annotations
 
+import importlib
 import os
 import subprocess
 from pathlib import Path
@@ -267,8 +268,8 @@ def test_sync_failure_is_never_a_conflict(tmp_path, monkeypatch):
         stdout = ""
 
     monkeypatch.setattr(ws, "_generate_pyproject", lambda *a, **k: (Path("/x/ws"), False))
-    monkeypatch.setattr(ws, "_uv_binary", lambda: "uv")
-    monkeypatch.setattr("pm.packages.uv_env", lambda env=None: {"UV_CACHE_DIR": "/x/cache"})
+    monkeypatch.setattr(importlib.import_module("pm.ensure"), "uv",
+                        lambda **kwargs: ("uv", {"UV_CACHE_DIR": "/x/cache", "UV_PYTHON": "pm-python"}))
 
     captured = {}
 
@@ -302,10 +303,10 @@ def test_staging_root_and_env_are_honored_without_live_mutation(monkeypatch, tmp
         return FakeProc()
 
     monkeypatch.setattr(ws, "_generate_pyproject", lambda *a, **k: (staging, False))
-    monkeypatch.setattr(ws, "_uv_binary", lambda: "uv")
     monkeypatch.setattr(
-        "pm.packages.uv_env",
-        lambda env=None: {**(env or {}), "UV_CACHE_DIR": "/x/cache"},
+        importlib.import_module("pm.ensure"), "uv",
+        lambda **kwargs: ("uv", {**(kwargs.get("base_env") or {}),
+                                "UV_CACHE_DIR": "/x/cache", "UV_PYTHON": "pm-python"}),
     )
     monkeypatch.setattr(ws.subprocess, "run", fake_run)
 
@@ -321,6 +322,7 @@ def test_staging_root_and_env_are_honored_without_live_mutation(monkeypatch, tmp
         assert seen["env"][live_key] == "staged"          # staged env wins
         assert seen["env"]["UV_CACHE_DIR"] == "/x/cache"  # uv_env layered on top
         assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "staging-venv")
+        assert seen["env"]["UV_PYTHON"] == "pm-python"
         assert os.environ[live_key] == "live"             # live env untouched
     finally:
         del os.environ[live_key]
@@ -340,7 +342,8 @@ def test_changed_root_seeds_from_committed_lock_unchanged_keeps_extended(
         stderr = ""
         stdout = ""
 
-    monkeypatch.setattr(ws, "_uv_binary", lambda: "uv")
+    monkeypatch.setattr(importlib.import_module("pm.ensure"), "uv",
+                        lambda **kwargs: ("uv", {"UV_PYTHON": "pm-python"}))
     monkeypatch.setattr(ws.subprocess, "run", lambda cmd, **k: FakeProc())
 
     root = ws.workspace_root()

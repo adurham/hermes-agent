@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from pm import workspace
+from pm.packages import uv_env
 
 
 def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
@@ -31,7 +32,8 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     root, venv = tmp_path / "staging", tmp_path / "venv"
     uv = shutil.which("uv")
     assert uv is not None
-    monkeypatch.setattr(workspace, "_uv_binary", lambda: uv)
+    monkeypatch.setattr(importlib.import_module("pm.ensure"), "uv",
+                        lambda **kwargs: (uv, {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable}))
     workspace.lock_and_sync([], [], root=root, venv_dir=venv)
     python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     probe = subprocess.run([str(python), "-c", "import buildable_core; print(buildable_core.VALUE)"],
@@ -114,7 +116,8 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
     uv = shutil.which("uv")
     assert uv
     monkeypatch.setattr(workspace.paths, "repo_root", lambda: core)
-    monkeypatch.setattr(workspace, "_uv_binary", lambda: uv)
+    monkeypatch.setattr(importlib.import_module("pm.ensure"), "uv",
+                        lambda **kwargs: (uv, {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable}))
     baseline, first_env = tmp_path / "baseline", tmp_path / "first-env"
     workspace.lock_and_sync([], [], root=baseline, venv_dir=first_env)
     first_lock = (baseline / "uv.lock").read_bytes()

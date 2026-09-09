@@ -294,6 +294,7 @@ hermes pm install chromium
 | `pm install [names...]` | Install named packages. With no names, provision required tools plus Python and sync the `all` extra. |
 | `pm env [names...]` | Print the composed environment of installed packages as JSON. It does not install missing packages. |
 | `pm doctor` | Check installed tool identities, files, and digests against the lock. |
+| `pm repair` | Rebuild the recorded Python dependency set in a new generation, validate it, then select it. Does not update pins, features, or plugin configuration. |
 | `pm status` | Print the latest sync/update receipt as JSON, or report that no receipt exists. |
 | `pm gc` | Remove unreferenced tool-store entries, eligible download partials, and unused lease-managed Python generations. |
 
@@ -324,5 +325,7 @@ launchers, and invokes native packaging. Maintainers can read
 - **Missing or outdated tool:** read `hermes pm doctor`, then use an explicit PM install on a writable installation.
 - **New environment requires restart:** restart the affected Hermes process. Do not add a second site-packages tree to its live imports.
 - **Dependency conflict:** read `hermes pm status`. Correct the plugin requirements before retrying admission.
-- **Damaged packaged base:** repair or reinstall through the package owner. Do not alter signed files to suppress the diagnostic.
+- **Damaged Python dependencies:** run `hermes pm repair`, then restart Hermes. Repair replays the selected generation's saved workspace and lock without parsing plugin configuration. An unreadable record or missing saved lock fails without selecting a reduced dependency set. Before a generation exists, repair uses the shipped or committed lock and recorded feature set.
+- **Interrupted dependency install:** startup requests the same PM repair before dependency activation. Automatic attempts are bounded; `pm repair` retries explicitly. A failed repair preserves the previous selection and its retry marker.
+- **Damaged Python executable or application source:** repair or reinstall through the package owner. PM cannot run without those files. Signed payload files are never modified by dependency repair.
 - **Unknown package or extra:** use the declared name. `pm install` takes package names, not Python extra names or pip specifications.

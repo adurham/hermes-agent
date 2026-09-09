@@ -1787,6 +1787,7 @@ This command does not update the Hermes application itself.
 hermes pm --help
 hermes pm doctor
 hermes pm status
+hermes pm repair
 hermes pm install
 hermes pm install chromium
 ```

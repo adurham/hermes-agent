@@ -349,48 +349,6 @@ def _format_update_failure_stage(exc: subprocess.CalledProcessError) -> str:
     return "Update step failed"
 
 
-def _shim_quarantine_error_type() -> "type[BaseException]":
-    """The strict-quarantine refusal type, resolved lazily through ``_m()``.
-
-    Falls back to a never-raised private type when main.py lacks it (torn
-    mid-update tree), so the ``except`` clause stays valid.
-    """
-    cls = getattr(_m(), "ShimQuarantineError", None)
-    if isinstance(cls, type) and issubclass(cls, BaseException):
-        return cls
-
-    class _Never(Exception):
-        pass
-
-    return _Never
-
-
-def _refuse_update_for_contended_shims(exc: BaseException) -> None:
-    """Refuse the dependency sync when live shims could not be quarantined.
-
-    #87331 fail-closed half: a shim rename that failed every retry proves a
-    process holds the venv without FILE_SHARE_DELETE — running the installer
-    anyway is exactly how the venv ends up stranded between versions. The
-    code swap (when one happened) is already committed; only the dependency
-    install is deferred, via the update-incomplete marker, to the next fresh
-    launch after the holder exits. Exits 2 (refused) so the command-boundary
-    receipt net records it as a refusal, not a failure.
-    """
-    print("✗ Cannot continue the update: live Hermes launcher(s) could not be")
-    print("  moved aside:")
-    for name in getattr(exc, "failed_shims", []) or ["hermes.exe"]:
-        print(f"    {name}")
-    print("  Another process is holding this install's venv — typically Hermes")
-    print("  Desktop, a gateway, or another hermes REPL — and mutating the venv")
-    print("  now would strand it half-updated.")
-    print("  The dependency install has been deferred: close the process(es)")
-    print("  above, then run any `hermes` command to finish it automatically.")
-    # Idempotent: the git path already dropped the marker before the sync;
-    # this covers the ZIP/repair paths so the deferral is never silent.
-    _write_update_incomplete_marker()
-    sys.exit(2)
-
-
 def _should_zip_fallback_on_update_error(exc: BaseException) -> bool:
     """ZIP fallback is for Windows git file-I/O breakage, not later stages.
 
@@ -1033,8 +991,11 @@ def _repair_venv_on_current_checkout(
     import pm
 
     try:
+        # A matching stamp cannot certify missing files. Restore the recorded
+        # graph first, then refresh it against the current checkout's inputs.
+        pm.sync_venv(repair=True)
         pm.sync_venv(["all"] + list(active_lazy_features or []), explicit=True)
-    except pm.InstallError as _sync_err:
+    except (pm.InstallError, OSError, ValueError) as _sync_err:
         print(f"  ✗ {_sync_err}")
         return False
     healthy_after, detail_after = _venv_core_imports_healthy()
@@ -1806,10 +1767,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
             _windows_gateway_resume=_windows_gateway_resume)
-    except _shim_quarantine_error_type() as e:
-        # Strict quarantine refused BEFORE any installer ran — defer via marker, exit 2, no ZIP.
-        # See #87331.
-        _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
         _handle_update_called_process_error(e, args, gateway_mode, had_desktop_app_before_update)
 

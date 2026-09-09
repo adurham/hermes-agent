@@ -168,10 +168,11 @@ def admission_env(tmp_path, monkeypatch):
     monkeypatch.setattr(ws.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
-    # pm's store uv realization is a package-manager concern; the store
-    # is empty under tmp, so pin the resolution to the PATH uv (same
-    # precedence _uv_binary applies on dev machines).
-    monkeypatch.setattr(ensure, "uv", lambda *a, **k: (shutil.which("uv"), os.environ.copy()))
+    # Keep the real dependency transaction. Substitute only tool provisioning.
+    from pm.packages import uv_env
+    monkeypatch.setattr(ensure, "uv", lambda **kwargs: (
+        shutil.which("uv"), {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable},
+    ))
     return tmp_path, home
 
 

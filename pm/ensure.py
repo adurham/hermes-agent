@@ -448,9 +448,11 @@ def _runtime_state_matches(fact: dict, stamp: str) -> bool:
     return isinstance(environment, str) and (Path(environment) / "pyvenv.cfg").is_file()
 
 
-def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, before_publish=None) -> None:
+def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, before_publish=None, repair: bool = False) -> None:
     """Make the venv match uv.lock + the enabled extras. Extras union into
     the installed state (one ledger); no-op when the stamp already matches.
+    ``repair`` restores the recorded dependency graph into a fresh generation,
+    bypassing both that shortcut and config discovery. It cannot add features.
     ``explicit`` marks a deliberate install command (`hermes pm install`,
     `hermes update`) — those are the remedy the lazy-install policy points
     at, so the policy does not apply to them.
@@ -477,7 +479,9 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
     token = receipt.begin("sync")
     outcome = "failed"
     try:
-        frozen = read_features() if not lazy_installs_allowed() else None
+        if repair and (extras is not None or plugin_dirs is not None or before_publish is not None):
+            raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
+        frozen = read_features() if repair or not lazy_installs_allowed() else None
         if frozen is not None and extras:
             outside = sorted(set(extras) - set(frozen))
             if outside:
@@ -493,13 +497,22 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
             recover_publication(paths.repo_root())
             members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
             inputs = {} if members is None else {"plugin_dirs": members}
-            facts = Facts(paths.runtime_facts_path())
+            facts = Facts(paths.runtime_facts_path(), strict=repair)
             fact = facts.get("venv") or _facts().get("venv") or {}
-            enabled = sorted(set(fact.get("extras", [])) | set(extras or []))
-            stamp = package.expected_stamp(enabled, **inputs)
-            if not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
+            if repair:
+                if fact and (not isinstance(fact.get("extras"), list)
+                             or any(not isinstance(extra, str) for extra in fact["extras"])
+                             or not isinstance(fact.get("stamp"), str) or not fact["stamp"]):
+                    raise InstallError("venv", "recorded dependency selection is incomplete; refusing to change its graph")
+                enabled = list(fact.get("extras", frozen if frozen is not None else ["all"]))
+                stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
+                inputs = {"repair": True}
+            else:
+                enabled = sorted(set(fact.get("extras", [])) | set(extras or []))
+                stamp = package.expected_stamp(enabled, **inputs)
+            if not repair and not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
                 raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
-            if _runtime_state_matches(fact, stamp):
+            if not repair and _runtime_state_matches(fact, stamp):
                 if before_publish is not None:
                     publication = before_publish()
                     if hasattr(publication, "finish"):
@@ -644,7 +657,6 @@ def _store_path_dirs() -> list[str]:
     packages, deps-first, deduped. Includes optional packages that are
     *installed* (facts say so) — an installed git/gh must be on PATH even
     though it's not in the root closure. Never installs."""
-    import os
 
     lockfile = _lockfile()
     target = current_target()
@@ -700,40 +712,41 @@ def activate() -> None:
 
 
 
-def uv(*, venv=None, realize: bool = True):
-    """TRANSITIONAL: (uv path, sanitized env) for call sites that still
-    drive uv themselves. Two classes remain: update/repair sites (die with
-    the update collapse, plan step 4) and side-venv installs — browser-use
-    tool venvs (tools_config, browser_use_cli) and hindsight's
-    local_embedded daemon — which survive until pm grows the side-venv
-    package kind (plan step 5's remaining half). Must not spread."""
+def uv(command: str = "uv", *, venv=None, realize: bool = True, explicit: bool = False, base_env=None):
+    """Return uv or uvx with its native suffix and PM's pinned Python.
+
+    Probes never install. A command with missing prerequisites realizes the
+    package closure or raises; it must not fall back to host Python discovery.
+    ``venv`` selects the active project environment. ``uv pip`` callers must
+    still pass their destination interpreter explicitly.
+    """
     from pm.packages import uv_env
 
-    env = uv_env()
+    if command not in ("uv", "uvx"):
+        raise ValueError(f"unknown uv executable: {command}")
+    env = uv_env(base_env)
     if venv is not None:
         env["VIRTUAL_ENV"] = str(venv)
         env.pop("UV_NO_CONFIG", None)
+    if realize:
+        ensure("uv", explicit=explicit)
 
     lockfile = _lockfile()
-    package = get_package("uv")
-    location = _installed_location(package, lockfile, current_target())
-    if location is None:
-        if not realize or not lazy_installs_allowed():
+    target = current_target()
+    binaries = {}
+    for name in ("uv", "python"):
+        package = get_package(name)
+        location = _installed_location(package, lockfile, target)
+        if location is None:
             return None, env
-        store = Store(paths.writable_store_root())
-        facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
-        try:
-            _install(package, lockfile, facts, store, current_target())
-            facts.reload()
-        except Exception:
-            LOG.debug("pm.uv: install failed", exc_info=True)
-            return None, env
-    else:
         facts, store = location
-    fact = facts.get("uv")
-    if fact is None:
-        return None, env
-    binary = package.binary(store.entry(fact["entry"]), current_target())
-    if binary is None or not binary.is_file():
-        return None, env
-    return str(binary), env
+        binary = package.binary(store.entry(facts.get(name)["entry"]), target)
+        if name == "uv" and binary is not None:
+            binary = binary.with_name(command + binary.suffix)
+        if binary is None or not binary.is_file():
+            if not realize:
+                return None, env
+            raise InstallError(name, "installed binary is missing", "run `hermes pm install`")
+        binaries[name] = str(binary)
+    env["UV_PYTHON"] = binaries["python"]
+    return binaries["uv"], env
