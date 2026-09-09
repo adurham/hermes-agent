@@ -2232,6 +2232,13 @@ def init_agent(
       skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
         load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        skip_context_files = skip_memory = skip_background_review = True
+        load_soul_identity = False
+        prefill_messages = []
+        fallback_model = {}
     _install_safe_stdio()
 
     _params = locals()
