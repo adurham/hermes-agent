@@ -117,8 +117,11 @@ def _ensure_extracted(work: Path, name: str, row: dict) -> Path:
         except OSError:
             archive_ok = False
     if not archive_ok:
-        Download([Source(row["url"], archive, row["sha256"])],
-                 partials_dir=scratch).run()
+        try:
+            Download([Source(row["url"], archive, row["sha256"])],
+                     partials_dir=scratch).run()
+        except Exception as exc:
+            raise StageError(f"{name} {row['version']}: download failed from {row['url']}: {exc}") from exc
     if extract.exists():
         shutil.rmtree(extract)
     extract.mkdir(parents=True, exist_ok=True)
@@ -176,7 +179,7 @@ def stage(payload: Path, table: dict, licenses: dict | None = None) -> Path:
             target = payload / "runtime-libs/share/doc"
             shutil.copytree(notices, target, dirs_exist_ok=True, symlinks=True)
         merged += n
-        print(f"  {name} {row['version']}: {n} new .so* -> runtime-libs/lib")
+        print(f"  {name} {row['version']}: {n} new .so* -> runtime-libs/lib", flush=True)
 
     if not any(out.glob("*.so*")):
         raise StageError("no shared objects staged")

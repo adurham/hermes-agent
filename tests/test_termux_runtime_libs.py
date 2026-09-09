@@ -217,6 +217,19 @@ def test_rebuild_removes_superseded_license_files(tmp_path, lib_source):
     assert (out / "liba.so").is_file()
 
 
+def test_failed_download_identifies_the_pin_without_publishing(tmp_path, lib_source):
+    _, table = lib_source
+    (tmp_path / "debs/libb.deb").unlink()
+    payload = tmp_path / "payload"
+    with pytest.raises(srl.StageError) as caught:
+        srl.stage(payload, table)
+    message = str(caught.value)
+    assert "libb" in message and table["libb"]["version"] in message
+    assert table["libb"]["url"] in message
+    assert "404" in message
+    assert not (payload / "runtime-libs/manifest.json").exists()
+
+
 def test_stale_scratch_cannot_poison_a_rebuilt_cache(tmp_path, lib_source):
     _, table = lib_source
     out = _stage(tmp_path, table)

@@ -142,9 +142,9 @@
       "version": "2.8.4"
     },
     "libffi": {
-      "sha256": "8c8c1d6ffb049d8496a21c1202d9b4dc9145140886fdbb45716684565f4ed3f5",
-      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libf/libffi/libffi_3.5.2_aarch64.deb",
-      "version": "3.5.2"
+      "sha256": "4f255badf74cd31f6a2801c17fa1444199c84c834b517b7c843e2fe9ebe91d77",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libf/libffi/libffi_3.8.0_aarch64.deb",
+      "version": "3.8.0"
     },
     "libgraphite": {
       "sha256": "15ac85737a35150cecb9e46ecb32567ae2a4fc28071cdf58fb95e1b77d7889d9",

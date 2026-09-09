@@ -64,9 +64,8 @@ def _assert_pinned_bionic_row(lock, pkg, url_suffix_re):
 
 
 def test_python_bionic_row_matches_supplier(lock):
-    """The python bionic row is an explicit pin of the TUR .deb; the row and
-    Python.fetch_url(bionic arm) must agree on the same pinned artifact."""
-    _assert_pinned_bionic_row(lock, "python", r"python3\.11_(?P<ver>[0-9.]+)_aarch64\.deb$")
+    """The Python package definition and lock must agree on the termux-main artifact."""
+    _assert_pinned_bionic_row(lock, "python", r"/p/python/python_(?P<ver>[0-9.]+(?:-[0-9]+)?)_aarch64\.deb$")
 def test_node_bionic_row_matches_supplier(lock):
     """The node bionic row is an explicit pin of the termux-main nodejs .deb;
     the row and Nodejs.fetch_url(bionic arm) must agree."""
@@ -79,18 +78,13 @@ def test_termux_docker_row_pins_digest(lock):
     assert row["url"] == f"docker://termux/termux-docker@{version}"
 
 
-def test_bionic_fetch_urls_resolve():
+def test_python_bionic_pin_is_independent_of_desktop_build_version(lock):
     from pm.registry import get_package
 
     py = get_package("python")
-    version = "3.11.15+20260807"
-    assert py.fetch_url(version, "linux-arm64-bionic").endswith(
-        "python3.11_3.11.15_aarch64.deb"
-    )
-    nd = get_package("node")
-    assert nd.fetch_url("26.4.0", "linux-arm64-bionic").endswith(
-        "nodejs_26.4.0-1_aarch64.deb"
-    )
+    package = lock["packages"]["python"]
+    assert py.fetch_url(package["version"], "linux-arm64-bionic") == package["artifacts"]["linux-arm64-bionic"]["url"]
+    assert py.deb_package == "python"
 
 
 def test_uv_bionic_row_matches_supplier(lock):
@@ -164,7 +158,7 @@ def test_python_bionic_verify_is_file_evidence(tmp_path: Path):
     from pm.registry import get_package
 
     py = get_package("python")
-    bin_rel = Path("data/data/com.termux/files/usr/bin/python3.11")
+    bin_rel = Path(py.prefix_rel) / py.main_rel("linux-arm64-bionic")
     entry = tmp_path / "entry"
     (entry / bin_rel).parent.mkdir(parents=True)
     (entry / bin_rel).write_bytes(b"bionic-elf-bytes")
