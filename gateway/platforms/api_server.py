@@ -3632,7 +3632,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
-        confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False) -> tuple:
+        confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
+        request_id: Optional[str] = None, history_from_session: bool = False) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3647,7 +3648,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 requested_model=requested_model, requested_provider=requested_provider, model_options=model_options,
                 route=route, session_model=session_model, requested_runtime=requested_runtime,
                 route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock,
-                bind_declared_conversation=bind_declared_conversation)
+                bind_declared_conversation=bind_declared_conversation, request_id=request_id,
+                history_from_session=history_from_session)
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()

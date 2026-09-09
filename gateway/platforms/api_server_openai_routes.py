@@ -495,6 +495,10 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route)
+        if getattr(self.gateway_runner, 'session_authority', None) is not None:
+            key = request.headers.get('Idempotency-Key')
+            run_kwargs.update(request_id=('chat:' + key) if key else None,
+                              history_from_session=bool(provided_session_id))
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -582,7 +586,7 @@ class OpenAICompatRoutesMixin:
             _error_response, _idem_cache, _make_request_fingerprint)
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
-            if idempotency_key:
+            if idempotency_key and getattr(self.gateway_runner, 'session_authority', None) is None:
                 fp = _make_request_fingerprint(body, keys=fingerprint_keys)
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, compute)
             else:
@@ -826,6 +830,15 @@ class OpenAICompatRoutesMixin:
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
             **agent_overrides, route=route)
+        if getattr(self.gateway_runner, 'session_authority', None) is not None:
+            key = request.headers.get('Idempotency-Key')
+            if key:
+                import hashlib
+                # A fresh responses request must recover its target before admission.
+                if not stored_session_id and not gateway_session_key:
+                    session_id = 'response-' + hashlib.sha256(key.encode()).hexdigest()
+                    run_kwargs['session_id'] = session_id
+                run_kwargs['request_id'] = 'responses:' + key
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
