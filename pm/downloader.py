@@ -21,6 +21,7 @@ The progress callback reports the whole job AND the per-dest bitmap:
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import shutil
 import logging
@@ -30,6 +31,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
+
+from pm.network import is_transient, retry_network
 
 # GitHub's release-asset CDN (release-assets.githubusercontent.com, which
 # TUR's pool 302s to) 403s unknown tool UAs from CI runner IP ranges --
@@ -259,10 +262,21 @@ class Download:
                     progress(done_base + sum(b - a for a, b in written),
                              overall_total, ranges)
 
-            if total and supported:
-                self._fetch_ranged(source, total, tick)
-            else:
-                self._fetch_single(source, total, tick)
+            def fetch():
+                if self._paused.is_set():
+                    raise DownloadPaused(source.url)
+                if total and supported:
+                    return self._fetch_ranged(source, total, tick)
+                return self._fetch_single(source, total, tick)
+
+            connections = self.connections
+            try:
+                part, side = retry_network(fetch, wait=self._wait_retry)
+            except http.client.IncompleteRead as exc:
+                raise DownloadError(f"download incomplete: {exc}") from exc
+            finally:
+                self.connections = connections
+            self._finalize(source, part, side)
             done_base += total
             completed[source.dest.name] = [(0, total)]
             moved.append(source.dest)
@@ -270,13 +284,18 @@ class Download:
 
     # ── internals ─────────────────────────────────────────────
 
-    @staticmethod
-    def _probe(url: str) -> tuple[int, bool]:
+    def _wait_retry(self, delay: float) -> None:
+        if self._paused.wait(delay):
+            raise DownloadPaused("download paused during retry backoff")
+
+    def _probe(self, url: str) -> tuple[int, bool]:
         """(total bytes, range_supported). A server that ignores Range
         reports its Content-Length instead; 0 means unknown (the
         single-stream fallback judges completeness by the body)."""
-        req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
-        try:
+        def request():
+            if self._paused.is_set():
+                raise DownloadPaused(url)
+            req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
             with _OPENER.open(req, timeout=60) as r:
                 if r.status == 206:
                     content_range = r.headers.get("Content-Range", "")
@@ -285,6 +304,9 @@ class Download:
                     return 0, False
                 length = int(r.headers.get("Content-Length") or 0)
                 return length, False
+
+        try:
+            return retry_network(request, wait=self._wait_retry)
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
                 raise DownloadError(
@@ -292,7 +314,7 @@ class Download:
                     "This is a catalog problem, not yours — please report it."
                 ) from exc
             raise
-        except Exception:  # noqa: BLE001 - unknown length, fall back
+        except ValueError:
             return 0, False
 
     def _key(self, url: str) -> str:
@@ -311,7 +333,7 @@ class Download:
         side.parent.mkdir(parents=True, exist_ok=True)
         side.write_text(json.dumps(covered), encoding="utf-8")
 
-    def _fetch_ranged(self, source: Source, total: int, tick) -> None:
+    def _fetch_ranged(self, source: Source, total: int, tick) -> tuple[Path, Path]:
         key = self._key(source.url)
         part = self.partials_dir / f"{key}.part"
         side = self.partials_dir / f"{key}.ranges"
@@ -360,6 +382,8 @@ class Download:
                             written[0] += len(chunk)
                         tick(list(covered))
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, urllib.error.HTTPError):
+                    exc.close()
                 with lock:
                     errors.append(exc)
                 stop.set()
@@ -369,42 +393,41 @@ class Download:
                              name=f"dl-{key[:8]}-{i}")
             for i, b in enumerate(ranges)
         ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        if self.connections == 1:
+            for bounds in ranges:
+                if self._paused.is_set() or stop.is_set():
+                    break
+                worker(*bounds)
+        else:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
 
         if self._paused.is_set():
             self._write_sidecar(side, covered)
             raise DownloadPaused(source.url)
         if errors:
             self._write_sidecar(side, covered)
-            # Parallel ranged GETs trip edge/CDN rate limits that a single
-            # connection does not (observed live: every single-request probe
-            # green while the 4-thread fetch 404ed, same runner, same URL).
-            # Retry once single-stream; the digest check still proves the
-            # bytes. A partial from the failed attempt is kept (covered is
-            # persisted above), so the retry only fetches the gaps.
-            if self.connections > 1:
+            # Some CDNs reject parallel ranges after accepting the probe.
+            # Retry these refusals once with serial requests for the gaps.
+            if self.connections > 1 and all(
+                isinstance(exc, urllib.error.HTTPError) and exc.code in (403, 404)
+                for exc in errors
+            ):
                 logging.getLogger(__name__).warning(
                     "parallel ranged fetch failed for %s (%s); retrying single-stream",
                     source.url, errors[0],
                 )
-                saved = self.connections
-                try:
-                    self.connections = 1
-                    self._fetch_ranged(source, total, tick)
-                finally:
-                    self.connections = saved
-                return
-            raise errors[0]
+                self.connections = 1
+                return self._fetch_ranged(source, total, tick)
+            raise next((exc for exc in errors if not is_transient(exc)), errors[0])
         if written[0] != total:
             self._write_sidecar(side, covered)
-            raise DownloadError(
-                f"download incomplete ({written[0]} of {total} bytes)")
-        self._finalize(source, part, side)
+            raise http.client.IncompleteRead(b"", total - written[0])
+        return part, side
 
-    def _fetch_single(self, source: Source, total: int, tick) -> None:
+    def _fetch_single(self, source: Source, total: int, tick) -> tuple[Path, Path]:
         """No-Range fallback: one stream. A server without Range support
         cannot resume, so each run restarts the file."""
         key = self._key(source.url)
@@ -430,20 +453,15 @@ class Download:
                 if self._paused.is_set():
                     self._write_sidecar(side, covered)
                     raise DownloadPaused(source.url)
-                if declared and pos != declared:
-                    raise DownloadError(
-                        f"download ended at {pos:,} bytes but the server "
-                        f"said {declared:,} — connection dropped?")
+                if pos < (declared or total):
+                    raise http.client.IncompleteRead(b"", (declared or total) - pos)
                 if total and pos != total:
                     raise DownloadError(
                         f"download incomplete ({pos} of {total} bytes)")
-        except DownloadError:
-            self._write_sidecar(side, covered)
-            raise
         except Exception:
             self._write_sidecar(side, covered)
             raise
-        self._finalize(source, part, side)
+        return part, side
 
     def _finalize(self, source: Source, part: Path, side: Path) -> None:
         if source.sha256:

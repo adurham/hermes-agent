@@ -32,6 +32,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
+from pm.network import retry_network
 from pm.registry import get_package
 
 # ---------------------------------------------------------------------------
@@ -176,20 +177,27 @@ def _github_headers() -> dict:
 
 
 def _get_json(url: str) -> dict | list:
-    with urllib.request.urlopen(
-        urllib.request.Request(url, headers=_github_headers()), timeout=60
-    ) as resp:
-        return json.load(resp)
+    def request():
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=_github_headers()), timeout=60
+        ) as resp:
+            return json.load(resp)
+
+    return retry_network(request)
 
 
 def _get_text(url: str, headers: Optional[dict] = None) -> str:
     hdrs = dict(_UA)
     if headers:
         hdrs.update(headers)
-    with urllib.request.urlopen(
-        urllib.request.Request(url, headers=hdrs), timeout=60
-    ) as resp:
-        return resp.read().decode("utf-8", "replace")
+
+    def request():
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=hdrs), timeout=60
+        ) as resp:
+            return resp.read().decode("utf-8", "replace")
+
+    return retry_network(request)
 
 
 # ── llama.app installer bucket (ggml-org/install.sh) ──────────────────────

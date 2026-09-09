@@ -358,32 +358,16 @@ def test_pause_mid_plan_resumes_to_completion(dl_server, tmp_path):
     _Handler.payloads["/b"] = p_b
     da, db = tmp_path / "a.bin", tmp_path / "b.bin"
     partials = tmp_path / "partials"
-    _Handler.slow_per_chunk = 0.01
-
     dl = Download([Source(_url(dl_server, "/a"), da, _sha(p_a)),
                    Source(_url(dl_server, "/b"), db, _sha(p_b))],
                   partials_dir=partials)
-    result: dict = {}
 
-    def run_it():
-        try:
-            dl.run()
-            result["ok"] = True
-        except DownloadPaused:
-            result["paused"] = True
-        except Exception as exc:  # noqa: BLE001
-            result["err"] = exc
+    def pause_second_source(done, total, ranges):
+        if ranges.get(db.name):
+            dl.pause()
 
-    thread = threading.Thread(target=run_it)
-    thread.start()
-    for _ in range(400):
-        if da.exists():
-            break
-        time.sleep(0.05)
-    assert da.exists(), "source 1 never completed"
-    dl.pause()
-    thread.join(timeout=20)
-    assert result.get("paused"), result.get("err")
+    with pytest.raises(DownloadPaused):
+        dl.run(progress=pause_second_source)
     assert da.read_bytes() == p_a  # source 1 moved despite the pause
     assert not db.exists()
     names = {p.name for p in partials.iterdir()}
