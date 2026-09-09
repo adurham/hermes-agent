@@ -8,14 +8,13 @@ import os
 import plistlib
 import re
 import subprocess
-import tarfile
 import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-from scripts.releases.stable import validate_candidates
+from scripts.releases.stable import read_manifest, require_stable_identity, validate_candidates
 
 
 def sha256_file(file: Path) -> str:
@@ -50,7 +49,6 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
             raise ValueError("MSIX architecture differs from release target")
         row.update(identity=identity.attrib["Name"], publisher=identity.attrib["Publisher"],
                    applicationId=application.attrib["Id"], version=identity.attrib["Version"])
-        files = list(root.glob(f"*-win-{arch}.msix"))
     elif platform == "macos":
         package = single(root.glob(f"*-mac-{arch}.zip"))
         app = single(root.glob("mac*/*.app"))
@@ -66,12 +64,11 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         row.update(identity=info["CFBundleIdentifier"], teamId=team.group(1), version=info["CFBundleShortVersionString"], filename=package.name)
         if row["version"] != tag[1:]:
             raise ValueError("App version differs from release tag")
-        files = [p for p in root.iterdir() if p.is_file() and (f"-mac-{arch}." in p.name or p.name == f"{arch}-stable-mac.yml")]
     elif platform == "termux":
         package = single((root / "deb").glob("*.deb"))
         fields = subprocess.check_output(["dpkg-deb", "--field", str(package), "Package", "Version", "Architecture"], text=True, encoding="utf-8")
         parsed = dict(line.split(": ", 1) for line in fields.splitlines())
-        row.update(identity=parsed["Package"], version=parsed["Version"], filename=package.name)
+        row.update(identity=parsed["Package"], version=parsed["Version"], filename=package.relative_to(root).as_posix())
         if parsed["Architecture"] != "aarch64":
             raise ValueError("Wrong Termux package architecture")
         with tempfile.TemporaryDirectory() as temp:
@@ -79,75 +76,67 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
             stamps = list(Path(temp).rglob("install-stamp.json"))
             if not any((data := json.loads(p.read_text(encoding="utf-8"))).get("commit") == commit and data.get("tag") == tag for p in stamps):
                 raise ValueError("Termux package has no matching provenance")
-        files = [package]
     else:
         raise ValueError("Unknown platform")
     out.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(out, "w") as archive:
-        for file in files:
-            archive.add(file, arcname=file.name)
-        if platform == "termux":
-            archive.add(root / "apt", arcname="apt")
-        with tempfile.TemporaryDirectory() as temp:
-            metadata = Path(temp) / f"metadata-{platform}-{arch}.json"
-            metadata.write_text(json.dumps(row), encoding="utf-8")
-            archive.add(metadata, arcname=metadata.name)
+    out.write_text(json.dumps(row, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
-def unpack(directory: Path, target: Path) -> None:
-    target.mkdir(parents=True, exist_ok=True)
-    for file in directory.rglob("*.tar"):
-        with tarfile.open(file) as archive:
-            archive.extractall(target, filter="data")
+def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path) -> dict:
+    """Bind the native metadata to files already staged by their build jobs."""
+    from scripts.releases.handoff import receipt_name, validate_receipt
+    from scripts.releases.r2 import put, staging_key_for
 
-
-def assemble(directory: Path, bundle: Path, tag: str, commit: str, public_base: str, out: Path) -> dict:
-    """Collect native outputs and retain hashes of every file publication will use."""
-    from scripts.releases.r2 import put
-
-    with tempfile.TemporaryDirectory() as temp:
-        root = Path(temp)
-        unpack(directory, root)
-        rows = [json.loads(p.read_text(encoding="utf-8")) for p in root.glob("metadata-*.json")]
-        for item in bundle.iterdir():
-            if item.is_file() and item.suffix == ".msixbundle":
-                import shutil
-                shutil.copy2(item, root / item.name)
-        universal = single(p for p in root.glob("*.msixbundle") if not p.name.startswith("Store-"))
-        windows = [r for r in rows if r["platform"] == "windows"]
-        if sorted(r["arch"] for r in windows) != ["arm64", "x64"]:
-            raise ValueError("Windows metadata must include both architectures")
-        for field in ("identity", "publisher", "version", "applicationId"):
-            if len({r[field] for r in windows}) != 1:
-                raise ValueError(f"Windows packages disagree on {field}")
-        with zipfile.ZipFile(universal) as archive:
-            manifest = ET.fromstring(archive.read("AppxMetadata/AppxBundleManifest.xml"))
-            identity = manifest.find("{*}Identity")
-            for attr, field in (("Name", "identity"), ("Publisher", "publisher"), ("Version", "version")):
-                if identity.attrib[attr] != windows[0][field]:
-                    raise ValueError("Universal bundle identity does not match its packages")
-        files = []
-        for file in sorted(root.rglob("*")):
-            if not file.is_file() or file.name.startswith("metadata-"):
-                continue
-            relative = file.relative_to(root).as_posix()
-            key = f"releases/tag/{tag}/{relative}"
-            put(tag=tag, key=key, file=file, key_is_full=True, immutable=True)
-            files.append({"path": relative, "sha256": sha256_file(file), "url": f"{public_base.rstrip('/')}/{key}"})
-        by_name = {item["path"]: item for item in files}
-        packages = []
-        for row in rows:
-            stamp_matches(row, tag, commit)
-            filename = universal.name if row["platform"] == "windows" else row["filename"]
-            item = by_name[filename]
-            packages.append({k: v for k, v in {**row, "artifact": {"url": item["url"], "sha256": item["sha256"]}}.items() if k != "filename"})
-        result = {"schema": 1, "tag": tag, "commit": commit, "packages": packages, "files": files}
-        validate_candidates(result, tag, commit, public_base)
-        if not any(row["platform"] == "termux" for row in packages):
-            raise ValueError("Missing Termux candidate")
-        out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-        put(tag=tag, key="release-candidates.json", file=out, immutable=True)
-        return result
+    expected = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
+    by_name = {}
+    for name in expected:
+        file = root / receipt_name(name)
+        if not file.is_file():
+            raise ValueError(f"Missing candidate handoff: {name}")
+        receipt = json.loads(file.read_text(encoding="utf-8"))
+        for row in validate_receipt(receipt, tag, commit, name):
+            prior = by_name.get(row["path"])
+            if prior is not None and prior != row:
+                raise ValueError("Candidate handoffs disagree on file receipts")
+            by_name[row["path"]] = row
+    rows = []
+    for name, receipt in sorted(by_name.items()):
+        if name.startswith("metadata-") or name.endswith(".msixbundle"):
+            file = root / name
+            if not file.is_file() or sha256_file(file) != receipt["sha256"]:
+                raise ValueError(f"Candidate local digest mismatch: {name}")
+            if name.startswith("metadata-"):
+                rows.append(json.loads(file.read_text(encoding="utf-8")))
+    universal_name = single(name for name in by_name if name.endswith(".msixbundle") and not name.startswith("Store-"))
+    single(name for name in by_name if name.endswith(".msixbundle") and name.startswith("Store-"))
+    windows = [r for r in rows if r["platform"] == "windows"]
+    if sorted(r["arch"] for r in windows) != ["arm64", "x64"]:
+        raise ValueError("Windows metadata must include both architectures")
+    for field in ("identity", "publisher", "version", "applicationId"):
+        if len({r[field] for r in windows}) != 1:
+            raise ValueError(f"Windows packages disagree on {field}")
+    with zipfile.ZipFile(root / universal_name) as archive:
+        manifest = ET.fromstring(archive.read("AppxMetadata/AppxBundleManifest.xml"))
+        identity = manifest.find("{*}Identity")
+        for attr, field in (("Name", "identity"), ("Publisher", "publisher"), ("Version", "version")):
+            if identity.attrib[attr] != windows[0][field]:
+                raise ValueError("Universal bundle identity does not match its packages")
+    files = [{**row, "url": f"{public_base.rstrip('/')}/{staging_key_for(tag, name)}"}
+             for name, row in sorted(by_name.items()) if not name.startswith("metadata-")]
+    by_name = {item["path"]: item for item in files}
+    packages = []
+    for row in rows:
+        stamp_matches(row, tag, commit)
+        filename = universal_name if row["platform"] == "windows" else row["filename"]
+        item = by_name[filename]
+        packages.append({k: v for k, v in {**row, "artifact": {"url": item["url"], "sha256": item["sha256"]}}.items() if k != "filename"})
+    result = {"schema": 1, "tag": tag, "commit": commit, "packages": packages, "files": files}
+    validate_candidates(result, tag, commit, public_base)
+    if not any(row["platform"] == "termux" for row in packages):
+        raise ValueError("Missing Termux candidate")
+    out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    put(tag=tag, key="release-candidates.json", file=out, immutable=True)
+    return result
 
 
 def materialize(manifest: dict, root: Path, *, public_base: str, store_only: bool = False) -> None:
@@ -227,32 +216,34 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
         publish_pointer(f"releases/termux/stable/{file.relative_to(apt).as_posix()}", file)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["record", "assemble", "publish", "promote", "materialize"])
     parser.add_argument("--platform", choices=["windows", "macos", "termux"])
     parser.add_argument("--arch")
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--bundle-dir", type=Path)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--tag", default=os.environ.get("RELEASE_TAG"))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
     parser.add_argument("--public-base", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL"))
-    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--store-only", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.command == "record":
         record(args.platform, args.arch, args.root, args.tag, args.commit, args.out)
     elif args.command == "assemble":
-        assemble(args.root, args.bundle_dir, args.tag, args.commit, args.public_base, args.out)
+        assemble(args.root, args.tag, args.commit, args.public_base, args.out)
         if os.environ.get("GITHUB_OUTPUT"):
             with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as file:
                 file.write(f"manifest-url={args.public_base.rstrip('/')}/releases/tag/{args.tag}/release-candidates.json\nmanifest-sha256={sha256_file(args.out)}\n")
     else:
         expected_digest = os.environ.get("CANDIDATE_MANIFEST_SHA256", "")
-        if not re.fullmatch(r"[a-f0-9]{64}", expected_digest) or sha256_file(args.manifest) != expected_digest:
-            raise ValueError("Candidate manifest differs from accepted candidate")
-        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        if not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
+            raise ValueError("Pinned candidate manifest digest is required")
+        require_stable_identity(args.tag, args.commit, f"refs/tags/{args.tag}")
+        manifest = read_manifest(
+            f"{args.public_base.rstrip('/')}/releases/tag/{args.tag}/release-candidates.json",
+            expected_digest, expected_origin=args.public_base,
+        )
         validate_candidates(manifest, args.tag, args.commit, args.public_base)
         if args.command == "materialize":
             materialize(manifest, args.root, public_base=args.public_base, store_only=args.store_only)

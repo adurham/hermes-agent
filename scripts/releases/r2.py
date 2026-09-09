@@ -318,6 +318,53 @@ def verify_remote_artifact(
         raise ValueError(f"Artifact checksum mismatch: {urlparse(url).path}")
 
 
+def download_object(
+    creds: dict[str, str], base: str, bucket: str, key: str, file: Path, now: str,
+    *, expected_size: int, expected_sha256: str,
+) -> None:
+    """Publish a download locally only after its exact receipt matches."""
+    import tempfile
+
+    if type(expected_size) is not int or expected_size < 0 or not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+        raise ValueError("Invalid artifact size or SHA256")
+    file = Path(file)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    url = f"{base}/{bucket}/{encode_key_path(key)}"
+    parsed = urlparse(url)
+    for attempt in range(1, 4):
+        headers = r2_headers("GET", parsed.netloc, parsed.path, "", EMPTY_SHA,
+                             now if attempt == 1 else amz_timestamp(), creds)
+        conn = _connection(url, timeout=600.0)
+        temporary = None
+        try:
+            conn.request("GET", parsed.path, headers=headers)
+            response = conn.getresponse()
+            if response.status != 200:
+                raise R2RequestError("GET", parsed.path, response.status)
+            digest, size = hashlib.sha256(), 0
+            with tempfile.NamedTemporaryFile(dir=file.parent, prefix=f".{file.name}.", delete=False) as output:
+                temporary = Path(output.name)
+                while chunk := response.read(1024 * 1024):
+                    digest.update(chunk)
+                    size += len(chunk)
+                    output.write(chunk)
+            if size != expected_size or digest.hexdigest() != expected_sha256:
+                raise ValueError(f"Artifact checksum mismatch: {key}")
+            temporary.replace(file)
+            return
+        except R2RequestError as error:
+            if error.status not in _RETRYABLE_STATUSES or attempt == 3:
+                raise
+        except (OSError, http.client.HTTPException):
+            if attempt == 3:
+                raise
+        finally:
+            conn.close()
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        time.sleep(float(attempt))
+
+
 def _stream_and_hash(url: str, creds: dict[str, str], now: str, algorithm: str):
     """True streaming GET: hash + count bytes as chunks arrive off the
     socket, never materializing the body in memory."""

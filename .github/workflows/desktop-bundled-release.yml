@@ -4,15 +4,15 @@ name: Desktop Bundled Release
 #
 #   tag admission (shape + pyproject lockstep + ancestry on origin/main,
 #   resolved to an IMMUTABLE full SHA) → per-OS builder jobs → stage
-#   artifacts to R2 (releases/tag/<tag>/) → per-OS publish jobs write the
-#   feeds → builds table.
+#   files + receipts to R2 (releases/tag/<tag>/) → gated publish jobs write
+#   feeds → builds table. Stable candidates stop before feed publication.
 #
 # Per-OS topology (MSIX work is gated on the WINDOWS build only — mac/linux
 # legs never block the win32 feed or Store submission):
 #
-#   build-win32 (win32-x64 + win32-arm64)   → stage to R2 + upload *.msix
+#   build-win32 (win32-x64 + win32-arm64)   → stage packages + receipts to R2
 #   build-darwin (darwin-arm64 + darwin-x64) → sign + notarize + stage
-#     dmg/zip/blockmap to R2; per-arch feed ymls as artifacts
+#     dmg/zip/blockmap + per-arch feed inputs to the R2 tag archive
 #   build-linux                              → DISABLED for now (dummy skips)
 #   publish-win32-updater                   → App Installer feed
 #     (needs build-win32): releases/win32/<stable|canary>/*.appinstaller +
@@ -36,7 +36,10 @@ name: Desktop Bundled Release
 #     (dmg/zip live once in releases/tag/<tag>/; the merged feed points at
 #     them with absolute object keys)
 # The publish jobs write the feeds ONCE after their whole build matrix is
-# green, so a failed leg can never publish a partial channel.
+# green, so a failed leg can never publish a partial channel. Stable candidate
+# jobs only stage tag-scoped objects; stable-release.yml gates feed promotion
+# on package acceptance and artifact publication. No GitHub job artifacts
+# carry release files. Non-publishing builds leave output on the runner only.
 #
 # Payload staging is `hermes pm bundle` on the native runner. There is
 # no cross-target staging. The darwin legs sign (CSC_LINK) and notarize
@@ -99,8 +102,8 @@ on:
         required: false
         type: boolean
         default: false
-      termux_upgrade_from_run:
-        description: 'Successful Termux run whose package must upgrade to this build'
+      termux_upgrade_from_tag:
+        description: 'Published release tag whose R2 Termux package must upgrade to this build'
         required: false
         type: string
         default: ''
@@ -265,7 +268,8 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          cache-python: false
+          # The payload tools cache does not include uv's built wheels.
+          cache-python: true
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -454,62 +458,25 @@ jobs:
           node apps/desktop/scripts/audit-bundle-arch.mjs \
             --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
 
-      - name: Record stable Windows candidate
-        if: inputs.release-phase == 'candidate'
+      - name: Stage Windows packages to R2
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
         shell: bash
         env:
           TARGET: ${{ matrix.target.label }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        # The tag archive is the handoff, never an update feed. The receipt
+        # appears only after both normal and Store packages are uploaded.
         run: |
-          python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
-            --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --out "$RUNNER_TEMP/$TARGET.tar"
-      - name: Retain stable Windows candidate
-        if: inputs.release-phase == 'candidate'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: stable-candidate-${{ matrix.target.label }}
-          path: ${{ runner.temp }}/${{ matrix.target.label }}.tar
-          if-no-files-found: error
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          # The win32 legs' actual .msix binaries: publish-win32-updater bundles
-          # the per-arch .msix for the App Installer feed.
-          name: hermes-bundled-${{ matrix.target.label }}-${{ inputs.tag }}
-          path: |
-            apps/desktop/release/*.msix
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Stage to Cloudflare R2
-        if: inputs.upload_release == true
-        shell: bash
-        # Every artifact goes to releases/tag/<tag>/ (immutable staging).
-        # publish-win32-updater consumes the per-arch .msix to build the App
-        # Installer feed; publish-win32-store bundles the Store-*.msix — never
-        # from a leg, so a failed leg cannot publish a partial feed.
-        run: |
-          shopt -s nullglob
-          # Store-*.msix are archived by the dedicated loop below — exclude
-          # them here so they are not uploaded twice.
-          files=(apps/desktop/release/*.msix)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::no release artifacts found"; exit 1
+          args=(--include '*.msix')
+          if [ "$RELEASE_PHASE" = candidate ]; then
+            python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
+              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
+            args+=(--include 'metadata-*.json')
           fi
-          for f in "${files[@]}"; do
-            case "$f" in
-              */Store-*) continue ;;  # archived by the Store loop below
-            esac
-            python -m scripts.releases.r2 put \
-              --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
-          done
-          # The Store-submission MSIX (built by the win legs) goes to the tag
-          # archive too — hidden from the builds table and never a feed dir.
-          for f in apps/desktop/release/Store-*.msix; do
-            [ -f "$f" ] || continue
-            python -m scripts.releases.r2 put \
-              --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
-          done
+          python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name "$TARGET" --root apps/desktop/release "${args[@]}"
 
   # ── macOS builders (REAL) ──────────────────────────────────────────────────
   # Native per-arch darwin builds via scripts/bundles/desktop.py (the
@@ -570,7 +537,8 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          cache-python: false
+          # The payload tools cache does not include uv's built wheels.
+          cache-python: true
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -761,8 +729,8 @@ jobs:
         if: inputs.upload_release == true || inputs.release-phase == 'candidate'
         # electron-builder writes the channel feed yml (stable-mac.yml /
         # canary-mac.yml) with the SAME name on both legs; prefix the arch
-        # so the publish job's merge-multiple download keeps both and
-        # r2-release finalize can merge them into <channel>-mac.yml. The
+        # so the R2 tag archive keeps both and finalize can merge them
+        # into <channel>-mac.yml after both native legs pass. The
         # channel token is preserved verbatim in the staged name
         # (arm64-stable-mac.yml / x64-canary-mac.yml …).
         shell: bash
@@ -775,61 +743,24 @@ jobs:
           test -s "$f"
           mv "$f" "apps/desktop/release/${arch}-${channel}-mac.yml"
 
-      - name: Record stable macOS candidate
-        if: inputs.release-phase == 'candidate'
+      - name: Stage macOS packages and feed inputs to R2
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+        shell: bash
         env:
           TARGET: ${{ matrix.target.label }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        # Per-arch feed inputs stay in the tag archive until both legs pass.
         run: |
-          python3 -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
-            --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --out "$RUNNER_TEMP/$TARGET.tar"
-      - name: Retain stable macOS candidate
-        if: inputs.release-phase == 'candidate'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: stable-candidate-${{ matrix.target.label }}
-          path: ${{ runner.temp }}/${{ matrix.target.label }}.tar
-          if-no-files-found: error
-
-      - name: Upload feed metadata
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: hermes-bundled-${{ matrix.target.label }}-${{ inputs.tag }}
-          path: |
-            apps/desktop/release/*-mac.yml
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Retain non-publishing build artifacts
-        if: inputs.upload_release != true && inputs.release-phase != 'candidate'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: hermes-bundled-${{ matrix.target.label }}-${{ inputs.tag }}
-          path: |
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*.zip
-            apps/desktop/release/*.blockmap
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Stage to Cloudflare R2
-        if: inputs.upload_release == true
-        shell: bash
-        # Every artifact goes to releases/tag/<tag>/ (immutable staging).
-        # publish-darwin-updater merges the per-arch ymls into the channel
-        # feed AFTER both legs are green — never from a leg, so a failed
-        # leg cannot publish a partial channel.
-        run: |
-          shopt -s nullglob
-          files=(apps/desktop/release/*.dmg apps/desktop/release/*.zip \
-                 apps/desktop/release/*.blockmap)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::no darwin release artifacts found"; exit 1
+          args=(--include '*.dmg' --include '*.zip' --include '*.blockmap' --include '*-mac.yml')
+          if [ "$RELEASE_PHASE" = candidate ]; then
+            python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
+              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --out "apps/desktop/release/metadata-macos-${TARGET##*-}.json"
+            args+=(--include 'metadata-*.json')
           fi
-          for f in "${files[@]}"; do
-            python -m scripts.releases.r2 put \
-              --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
-          done
+          python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name "$TARGET" --root apps/desktop/release "${args[@]}"
 
   # ── Linux builders (DISABLED for now) ─────────────────────────────────────
   build-linux:
@@ -927,12 +858,13 @@ jobs:
           restore-keys: |
             eb2-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Download win legs' MSIX
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: hermes-bundled-win32-*-${{ inputs.tag }}
-          path: apps/desktop/release
-          merge-multiple: true
+      - name: Retrieve Windows packages from R2
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
 
       - name: Azure login (OIDC)
         uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
@@ -962,9 +894,8 @@ jobs:
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
         run: |
-          # Out-of-store feed (bundled variant): universal .msixbundle +
-          # .appinstaller per channel; plus re-upload the Store-submission
-          # .msix to the tag archive (never a feed dir).
+          # Candidate mode builds the bundles without writing a feed.
+          # Canary mode publishes the App Installer bundle and pointer.
           args=()
           if [ "$RELEASE_PHASE" = candidate ]; then args+=(--candidate); fi
           node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled "${args[@]}"
@@ -972,13 +903,14 @@ jobs:
             node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG"
           fi
 
-      - name: Retain stable universal bundles
+      - name: Stage stable universal bundles to R2
         if: inputs.release-phase == 'candidate'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: stable-candidate-universal
-          path: apps/desktop/release/*.msixbundle
-          if-no-files-found: error
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name windows-universal --root apps/desktop/release --include '*.msixbundle'
 
   # ── Windows Store submission (REAL — PARALLEL with publish-win32-updater) ─
   # Bundles the two Store-*.msix into one universal Store .msixbundle and
@@ -1072,12 +1004,13 @@ jobs:
           restore-keys: |
             eb2-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Download win legs' MSIX (incl. Store-*.msix)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: hermes-bundled-win32-*-${{ inputs.tag }}
-          path: apps/desktop/release
-          merge-multiple: true
+      - name: Retrieve Store packages from R2
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name win32-x64 --name win32-arm64 --root apps/desktop/release --include 'Store-*.msix'
 
       - name: Bundle the Store submission MSIX
         id: storebundle
@@ -1176,12 +1109,13 @@ jobs:
         with:
           cache-python: false
 
-      - name: Download both darwin legs' feed ymls
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: hermes-bundled-darwin-*-${{ inputs.tag }}
-          path: staged
-          merge-multiple: true
+      - name: Retrieve macOS feed inputs from R2
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name darwin-x64 --name darwin-arm64 --root staged --include '*-mac.yml'
 
       - name: Assert the per-arch feeds are present
         shell: bash
@@ -1418,39 +1352,28 @@ jobs:
             --payload termux-build/payload \
             --out termux-build/deb
 
-      - name: Upload the .deb as a workflow artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          # Matches the publish jobs' download pattern hermes-bundled-* so
-          # the release leg's artifact sweep sees it.
-          name: hermes-bundled-termux-${{ inputs.tag }}
-          path: termux-build/deb/*.deb
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Verify the previous Termux run
-        if: inputs.termux_upgrade_from_run != ''
+      - name: Retrieve the previous published Termux package from R2
+        if: inputs.termux_upgrade_from_tag != ''
         env:
-          PREVIOUS_RUN: ${{ inputs.termux_upgrade_from_run }}
+          PREVIOUS_TAG: ${{ inputs.termux_upgrade_from_tag }}
         run: |
-          [[ "$PREVIOUS_RUN" =~ ^[0-9]+$ ]]
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN" > "$RUNNER_TEMP/termux-previous-run.json"
-          python3 - "$RUNNER_TEMP/termux-previous-run.json" <<'PY'
-          import json, subprocess, sys
-          run = json.load(open(sys.argv[1], encoding="utf-8"))
-          assert run["conclusion"] == "success", "previous run did not succeed"
-          assert run["path"] == ".github/workflows/desktop-bundled-release.yml", "wrong artifact producer"
-          subprocess.run(["git", "merge-base", "--is-ancestor", run["head_sha"], "origin/main"], check=True)
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          from scripts.releases.handoff import fetch
+          from scripts.releases.semver import is_valid_version
+          tag = os.environ['PREVIOUS_TAG']
+          if not tag.startswith('v') or not is_valid_version(tag[1:]):
+              raise ValueError('Invalid previous release tag')
+          release = json.loads(subprocess.check_output([
+              'gh', 'release', 'view', tag, '--repo', os.environ['GITHUB_REPOSITORY'],
+              '--json', 'tagName,isDraft'], text=True))
+          if release['tagName'] != tag or release['isDraft']:
+              raise ValueError('Previous package must come from a published release')
+          commit = subprocess.check_output(['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'], text=True).strip()
+          subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
+          fetch(tag, commit, ['termux'], Path('termux-build/previous'), ['deb/*.deb'])
           PY
-      - name: Download the previous Termux package
-        if: inputs.termux_upgrade_from_run != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.termux_upgrade_from_run }}
-          pattern: hermes-bundled-termux-*
-          merge-multiple: true
-          path: termux-build/previous
 
       - name: Write the APT signing key
         shell: bash
@@ -1467,8 +1390,9 @@ jobs:
         shell: bash
         env:
           CHANNEL: ${{ steps.channel.outputs.channel }}
-          PREVIOUS_RUN: ${{ inputs.termux_upgrade_from_run }}
+          PREVIOUS_TAG: ${{ inputs.termux_upgrade_from_tag }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
           # Passphrase-protected signing keys only; unset for bare keys.
           TERMUX_APT_GPG_PASSPHRASE: ${{ secrets.TERMUX_APT_GPG_PASSPHRASE }}
         run: |
@@ -1490,8 +1414,8 @@ jobs:
             -v "$PWD/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
             -v "$PWD/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
             "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
-          if [ -n "$PREVIOUS_RUN" ]; then
-            previous=(termux-build/previous/*.deb)
+          if [ -n "$PREVIOUS_TAG" ]; then
+            previous=(termux-build/previous/deb/*.deb)
             test "${#previous[@]}" -eq 1
             docker run --rm --platform linux/arm64 --user 1000:1000 --network none \
               -v "$PWD/termux-build/apt:/apt:ro" \
@@ -1501,11 +1425,16 @@ jobs:
               "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
           fi
 
+          args=(--include 'deb/*.deb' --include 'apt/**/*')
           if [ "$RELEASE_PHASE" = candidate ]; then
-            python3 -m scripts.bundles.release_artifacts record --platform termux --arch aarch64 \
-              --root termux-build --tag "$HERMES_PAYLOAD_TAG" --out "$RUNNER_TEMP/termux.tar"
-            exit 0
+            python -m scripts.bundles.release_artifacts record --platform termux --arch aarch64 \
+              --root termux-build --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --out termux-build/metadata-termux-aarch64.json
+            args+=(--include 'metadata-*.json')
           fi
+          python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name termux --root termux-build "${args[@]}"
+          if [ "$RELEASE_PHASE" = candidate ]; then exit 0; fi
           # --key-is-full is MANDATORY on every feed-dir upload: without it
           # scripts.releases.r2 re-prefixes the key into the tag archive
           # (releases/tag/<tag>/) and the APT feed never lands at
@@ -1542,13 +1471,6 @@ jobs:
             -v "$GITHUB_WORKSPACE/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
             -v "$GITHUB_WORKSPACE/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
             "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version" "$public_repo"
-      - name: Retain stable Termux candidate
-        if: inputs.release-phase == 'candidate'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: stable-candidate-termux
-          path: ${{ runner.temp }}/termux.tar
-          if-no-files-found: error
 
   builds-pending:
     name: Mark the builds table as in progress
@@ -1623,17 +1545,16 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: stable-candidate-*
-          path: candidates
+      - name: Retrieve candidate receipts and native metadata from R2
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          python -m scripts.releases.handoff fetch --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" \
+            --name win32-x64 --name win32-arm64 --name darwin-x64 --name darwin-arm64 \
+            --name termux --name windows-universal --root candidates \
+            --include 'metadata-*.json' --include '*.msixbundle'
       - id: manifest
-        run: python -m scripts.bundles.release_artifacts assemble --root candidates --bundle-dir candidates/stable-candidate-universal --out release-candidates.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: stable-release-candidates
-          path: release-candidates.json
-          if-no-files-found: error
+        run: python -m scripts.bundles.release_artifacts assemble --root candidates --out release-candidates.json
 
   stable-publish:
     name: Verify published candidate files
@@ -1657,10 +1578,7 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: stable-release-candidates
-      - run: python -m scripts.bundles.release_artifacts publish --manifest release-candidates.json --root verified
+      - run: python -m scripts.bundles.release_artifacts publish --root verified
 
   stable-store:
     name: Submit the verified Store package
@@ -1685,12 +1603,9 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: stable-release-candidates
       - name: Retrieve the exact Store candidate
         shell: bash
-        run: python -m scripts.bundles.release_artifacts materialize --manifest release-candidates.json --root verified --store-only
+        run: python -m scripts.bundles.release_artifacts materialize --root verified --store-only
       - uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
       - name: Submit without rebuilding
         shell: bash
@@ -1725,10 +1640,7 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: stable-release-candidates
-      - run: uv run --no-project --with PyYAML==6.0.3 python -m scripts.bundles.release_artifacts promote --manifest release-candidates.json --root verified
+      - run: uv run --no-project --with PyYAML==6.0.3 python -m scripts.bundles.release_artifacts promote --root verified
       - run: python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
 
   stable-phase-result:

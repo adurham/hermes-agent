@@ -42,13 +42,30 @@ The local workflow calls and their checkouts use the tag's commit, not moving
 main.
 
 For a failed publication or promotion, retry the failed jobs in the original
-run while its candidate artifacts remain available. Cross-phase artifact
-handoff is scoped to that run. Immutable uploads accept an existing object
-only after verifying that its bytes match; different bytes fail. Do not delete
-archive objects or rebuild signed candidates under the same tag to bypass a
-conflict. A fresh dispatch starts the build phases again and is not a
-promotion-only retry. If the original artifacts are unavailable, stop recovery
-rather than replace the accepted candidate.
+run. Desktop and Termux handoffs live in the immutable R2 tag archive, not
+expiring GitHub job artifacts. Each producer uploads its files, then writes a
+`handoff-<target>.json` receipt containing the tag, commit, paths, sizes and
+SHA256 digests. Consumers validate that identity and verify streamed downloads
+before using them. Candidate assembly publishes only `release-candidates.json`;
+it does not upload the packages again.
+
+Windows, macOS and Termux candidate jobs stage packages, native metadata and
+APT inputs under `releases/tag/<tag>/` before acceptance. No stable feed is
+written at this stage. Publication and promotion read the candidate manifest
+from R2 and require the digest passed by the accepted candidate job. The
+existing acceptance and publication gates still control every stable channel.
+
+Immutable uploads accept an existing object only after verifying that its bytes
+match; different bytes fail. Do not delete archive objects or rebuild signed
+candidates under the same tag to bypass a conflict. A fresh dispatch starts the
+build phases again and is not a promotion-only retry. If the original objects
+are unavailable, stop recovery rather than replace the accepted candidate.
+
+The desktop workflow's optional Termux upgrade input is
+`termux_upgrade_from_tag`: an exact published release tag with a Termux R2
+handoff. It no longer selects packages by a GitHub workflow run. Explicit
+non-publishing desktop builds retain no downloadable job artifacts. Unrelated
+CI diagnostics and tested Docker image handoffs keep their existing storage.
 
 ## Signed-package baseline
 

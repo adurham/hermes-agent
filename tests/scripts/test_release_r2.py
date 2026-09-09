@@ -673,6 +673,64 @@ def test_verify_remote_artifact_streams_without_buffering(r2_server):
         )
 
 
+def test_download_streams_verified_bytes_and_preserves_destination_on_failure(r2_server, tmp_path, monkeypatch):
+    import hashlib
+    import http.client
+
+    payload = os.urandom(3 * 1024 * 1024 + 7)
+    key = "releases/tag/v1.2.3/package.msix"
+    r2_server.store[key] = (payload, '"e"')
+    target = tmp_path / "downloads" / "package.msix"
+    target.parent.mkdir()
+    target.write_bytes(b"previous complete file")
+    real_read = http.client.HTTPResponse.read
+    reads = []
+
+    def bounded_read(response, amount=None):
+        assert amount is not None and amount <= 1024 * 1024
+        reads.append(amount)
+        return real_read(response, amount)
+
+    monkeypatch.setattr(http.client.HTTPResponse, "read", bounded_read)
+    args = dict(creds={"access_key_id": AKID, "secret_key": SECRET},
+                base=f"http://127.0.0.1:{r2_server.server_port}", bucket="hermes-releases",
+                key=key, file=target, now=NOW, expected_size=len(payload),
+                expected_sha256=hashlib.sha256(payload).hexdigest())
+    r2.download_object(**args)
+    assert target.read_bytes() == payload
+    assert len(reads) > 1
+    assert all("authorization" in headers for _, _, headers in r2_server.requests)
+
+    original_get = _R2StubHandler.do_GET
+    request_times = []
+    refreshed = "20150830T125600Z"
+
+    def transient_get(handler):
+        request_times.append(handler.headers['x-amz-date'])
+        if len(request_times) == 1:
+            handler._send(503, b"retry")
+        else:
+            original_get(handler)
+
+    monkeypatch.setattr(_R2StubHandler, 'do_GET', transient_get)
+    monkeypatch.setattr(r2, 'amz_timestamp', lambda: refreshed)
+    monkeypatch.setattr(r2.time, 'sleep', lambda _: None)
+    r2.download_object(**args)
+    assert request_times == [NOW, refreshed]
+    monkeypatch.setattr(_R2StubHandler, 'do_GET', original_get)
+
+    r2_server.store[key] = (b"corrupt replacement", '"e"')
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        r2.download_object(**args)
+    assert target.read_bytes() == payload
+    assert list(target.parent.iterdir()) == [target]
+    del r2_server.store[key]
+    with pytest.raises(r2.R2RequestError):
+        r2.download_object(**args)
+    assert target.read_bytes() == payload
+    assert list(target.parent.iterdir()) == [target]
+
+
 def test_put_accepts_pathlib_paths(r2_server):
     import pathlib
     import tempfile
