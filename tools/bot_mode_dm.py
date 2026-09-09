@@ -355,50 +355,6 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
-def _run_local_turn(argv: list[str], dm_file: str) -> int:
-    """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
-    the transport's streams and returns its exit code. Transient failures re-run the
-    same session; a context_overflow re-run lets the retried turn's pre-API compaction
-    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
-
-    def _turn():
-        return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True)
-
-    proc = _turn()
-    if proc.returncode != 0:
-        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action
-
-        if retry_action(classify_agent_error((proc.stderr or proc.stdout or "").strip()[-500:])) != RETRY_NONE:
-            proc = _turn()
-    stderr_text = proc.stderr or ""
-    reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
-                   for line in stderr_text.splitlines()
-                   if line.startswith("hermes-refusal-reason: ")), None)
-    # A code wins over prose, including unknown codes from newer CLIs.
-    # Only older CLIs without a marker need the historical wording fallback.
-    refused_not_owned = (reason == "SESSION_NOT_OWNED" if reason is not None
-                         else "already has a live owner" in stderr_text)
-    if proc.returncode != 0 and refused_not_owned:
-        # The target's Bot Chat is held live by another surface (Desktop); the turn
-        # never ran — tell the sender plainly instead of leaking a raw lease error.
-        # See #100523.
-        who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
-        print(json.dumps({
-            "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
-                     "surface right now, so your message was NOT delivered. Try again later.",
-            "reason": "target_busy",
-        }))
-        return 1
-    # Re-emit the transport's streams: stdout is the reply text the
-    # completion notification carries back to the sending agent.
-    for stream, text in ((sys.stdout, proc.stdout), (sys.stderr, proc.stderr)):
-        if text:
-            stream.write(text)
-            stream.flush()
-    return proc.returncode
-
-
 def _admit_live_dm(profile_home: Path | None, dm_file: str) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
     from tools.bot_live_delivery import (

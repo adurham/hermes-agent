@@ -148,73 +148,19 @@ def deliver_to_live_owner(
     state. Reusing an id with a different payload is an error, never an overwrite.
     """
     pinned = _owner(profile_home, owner)
-    if owner.get("canonical"):
-        home = Path(profile_home).resolve()
-        return authority_delivery(home, dict(id=_delivery_id(delivery_id or uuid.uuid4().hex),
-            profile=home.name if home.parent.name == "profiles" else "default",
-            message=message, session_id=pinned["session_id"]))
-    if not isinstance(message, str):
-        raise ValueError("message must be a string")
-    key = _delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex)
-    with _locked(profile_home) as root:
-        path = root / f"{key}.json"
-        existing = _read(path)
-        if existing is not None:
-            if existing["owner"] != pinned or existing["message"] != message:
-                raise ValueError("delivery id already belongs to a different payload")
-            return existing
-        # Wall time can roll back. Permanent receipts retain the admission
-        # high-water mark, allocated while holding the cross-process lock.
-        sequence = max((record.get("sequence", record["created_at"])
-                        for candidate in root.glob("*.json")
-                        if (record := _read(candidate)) is not None), default=0) + 1
-        record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
-                      message=message, status="queued", created_at=time.time_ns(),
-                      sequence=sequence)
-        _write(path, record)
-        return record
+    home = Path(profile_home).resolve()
+    return authority_delivery(home, dict(id=_delivery_id(delivery_id or uuid.uuid4().hex),
+        profile=home.name if home.parent.name == "profiles" else "default",
+        message=message, session_id=pinned["session_id"]))
 
 
-def _matches(home: Path | str, record: dict, owner: dict) -> bool:
-    pinned = record["owner"]
-    if any(pinned[key] != owner[key] for key in ("profile_home", "lease_id", "live_session_id")):
-        return False
-    if pinned["session_id"] == owner["session_id"]:
-        return True
-    from hermes_state import SessionDB
+def claim_pending_delivery(profile_home, owner):
+    """Retired UI poller: only session_bot may migrate and admit queued records.
 
-    db = SessionDB(db_path=Path(home) / "state.db", read_only=True)
-    try:
-        return db.get_compression_tip(pinned["session_id"]) == owner["session_id"]
-    finally:
-        db.close()
-
-
-def claim_pending_delivery(
-    profile_home: Path | str, owner: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Claim oldest matching input exactly once; caller supplies its current lease.
-
-    A lease transfer across compression is accepted only along the original
-    stored session's compression chain. A new lease/live session cannot steal it.
-    Caller must hold its normal turn-admission guard before invoking this.
+    Keep this refusal until the legacy notification poller's call site is removed.
+    A previously claimed record can still publish its terminal receipt below.
     """
-    current = _owner(profile_home, owner)
-    if not _root(profile_home).is_dir():
-        return None
-    with _locked(profile_home) as root:
-        pending = []
-        for path in root.glob("*.json"):
-            record = _read(path)
-            if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
-                pending.append(record)
-        if not pending:
-            return None
-        record = min(pending, key=lambda item: (
-            item.get("sequence", item["created_at"]), item["delivery_id"]))
-        record.update(status="claimed", claimed_at=time.time_ns())
-        _write(root / f"{record['delivery_id']}.json", record)
-        return record
+    return None
 
 
 def complete_delivery(
