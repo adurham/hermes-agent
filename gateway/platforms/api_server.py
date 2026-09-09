@@ -3637,6 +3637,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
         provider/model must match or the turn fails; ``runtime`` metadata is attached."""
+        if getattr(self.gateway_runner, "session_authority", None) is not None:
+            from gateway.session_api_turn import run_api_turn
+            return await run_api_turn(self, user_message=user_message, conversation_history=conversation_history,
+                ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
+                stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
+                tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
+                agent_ref=agent_ref, active_run_id=active_run_id, gateway_session_key=gateway_session_key,
+                requested_model=requested_model, requested_provider=requested_provider, model_options=model_options,
+                route=route, session_model=session_model, requested_runtime=requested_runtime,
+                route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock,
+                bind_declared_conversation=bind_declared_conversation)
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
