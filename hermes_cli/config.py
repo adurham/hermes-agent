@@ -1883,6 +1883,11 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
 
 
 def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    snapshot = worker_config_snapshot()
+    if snapshot is not None:
+        return snapshot
     with _CONFIG_LOCK:
         try:
             config_path = get_config_path()
@@ -2176,6 +2181,11 @@ def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], An
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    snapshot = worker_config_snapshot()
+    if snapshot is not None:
+        return _deep_merge(copy.deepcopy(DEFAULT_CONFIG), snapshot)
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()
