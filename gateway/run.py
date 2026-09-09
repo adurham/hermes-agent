@@ -2007,7 +2007,12 @@ def _bridge_config_to_env(_cfg: dict) -> None:
 def _load_bridge_config(config_path: Path) -> dict:
     """Raw config read for the presence-sensitive env bridge, with the managed overlay applied. Raw (not
     defaults-merged) so only keys the user wrote are bridged, else all of DEFAULT_CONFIG would be
-    exported; the overlay applies BEFORE bridging so pinned values win in env too."""
+    exported; the overlay applies BEFORE bridging so pinned values win in env too. A bypass worker
+    bridges its frozen explicit snapshot instead: the profile file is exactly what it must not read."""
+    from agent.safe_worker_policy import worker_config_snapshot
+    snapshot = worker_config_snapshot()
+    if snapshot is not None:
+        return snapshot
     from hermes_cli.config import _expand_env_vars, read_user_config_raw
     cfg = _expand_env_vars(read_user_config_raw(config_path))
     if not isinstance(cfg, dict):
