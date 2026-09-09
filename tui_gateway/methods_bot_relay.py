@@ -21,9 +21,8 @@ def _relay_root() -> Path:
     return home.parent.parent if home.parent.name == "profiles" else home
 
 
-# Per-attempt turn timeout and attempt ceiling for bot_relay.deliver. The Desktop client mirrors
-# both (apps/desktop/src/plugins/hermes-bots/relay.ts: RELAY_TURN_ATTEMPT_MS / RELAY_TURN_MAX_ATTEMPTS)
-# and its relay-deliver-budget test reads these two lines, so a change here must be deliberate (#93911).
+# Historical Desktop deadline mirrors; no subprocess retry is performed here.
+# Remove with the renderer relay deadline/receipt migration.
 TURN_ATTEMPT_TIMEOUT_SECONDS = 600
 TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
 
