@@ -913,6 +913,11 @@ class GatewayStartupMixin:
             recovered = process_registry.recover_from_checkpoint()
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
+        # The gateway owns delegation state: replay durable completions the previous
+        # process never delivered. Explicit here, never at tools import (clients).
+        with _log_suppressed(logging.WARNING, "Could not restore async delegation completions: %s"):
+            from tools.async_delegation import restore_undelivered_completions
+            restore_undelivered_completions(process_registry.completion_queue)
         # Recover sessions active at last exit (exact turn markers + 120s recency fallback for
         # marker-less older turns). SKIP after a clean exit — the previous process already drained.
         _clean_marker = _hermes_home / ".clean_shutdown"
