@@ -92,9 +92,12 @@ if (args.includes('--win') && process.env.AZURE_SIGN_ENDPOINT && process.env.AZU
 // exhausts the macOS table: EMFILE on a random .py. Raising ulimit only
 // moves the ceiling. --require, not an import: isbinaryfile captures
 // promisify(fs.open) at its own load.
-const preload = path.join(import.meta.dirname, 'fs-open-limit.cjs')
+const preloads = ['--require', path.join(import.meta.dirname, 'fs-open-limit.cjs')]
+if (process.platform === 'darwin') {
+  preloads.push('--require', path.join(import.meta.dirname, 'dmgbuild-diagnostics.cjs'))
+}
 
-const result = spawnSync(process.execPath, ['--require', preload, electronBuilderCli(), ...args], {
+const result = spawnSync(process.execPath, [...preloads, electronBuilderCli(), ...args], {
   stdio: 'inherit'
 })
 if (result.error) {

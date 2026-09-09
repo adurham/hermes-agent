@@ -158,6 +158,19 @@ the update artifact, not an optional duplicate of the download DMG.
 See [macOS bundle updates](../../docs/macos-bundle-updates.md) for feed validation
 and native-event ordering.
 
+### DMG detach diagnostics
+
+The builder wrapper reports `[dmg-detach]` snapshots when dmgbuild cannot detach
+its staging image. It runs `lsof` before the supplier retries or performs forced
+cleanup. The snapshot identifies the mounted filesystem, backing image and
+devices, then lists process names, PIDs, parent PIDs, users, descriptors and paths.
+
+The queries use noninteractive `sudo` when available. Permission failures and
+query timeouts are reported explicitly. Empty output does not prove that the
+image has no holder. The shim does not stop processes or change detach results,
+retry settings, signing or notarization. Explicit `CUSTOM_DMGBUILD_PATH`
+overrides bypass the shim because their interpreter layout is not known.
+
 ## Development, assets, and verification
 
 Prepare and activate the [PM developer environment](../../website/docs/reference/package-management.md#developer-workflow)
