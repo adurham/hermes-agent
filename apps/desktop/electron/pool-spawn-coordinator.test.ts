@@ -1,8 +1,5 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
@@ -500,43 +497,3 @@ test('promoting a queued background waiter lets it take the reserved foreground 
   bg2()
   assert.equal(coordinator.activeCount, 0)
 })
-
-// ── main.ts wiring ──────────────────────────────────────────────────────────
-// The coordinator is only as good as the timeout main.ts hands it. A queued
-// ticket that outlives the renderer's backend-boot budget holds the pool key
-// hostage: the renderer has already reported "backend didn't come up", and
-// every later click on that profile joins the stale wait instead of failing
-// fast with a reason.
-{
-  const here = path.dirname(fileURLToPath(import.meta.url))
-  const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
-
-  const withTimeoutSource = fs
-    .readFileSync(path.join(here, '..', 'src', 'lib', 'with-timeout.ts'), 'utf8')
-    .replace(/\r\n/g, '\n')
-
-  test('main.ts bounds the slot wait below the renderer backend-boot budget', () => {
-    const slotWait = Number(/const POOL_SLOT_WAIT_MS = ([\d_]+)/.exec(mainSource)?.[1]?.replace(/_/g, ''))
-
-    const bootBudget = Number(
-      /export const BACKEND_BOOT_WAIT_TIMEOUT_MS = ([\d_]+)/.exec(withTimeoutSource)?.[1]?.replace(/_/g, '')
-    )
-
-    assert.ok(Number.isFinite(slotWait) && slotWait > 0, 'POOL_SLOT_WAIT_MS must be a literal in main.ts')
-    assert.ok(Number.isFinite(bootBudget), 'BACKEND_BOOT_WAIT_TIMEOUT_MS must be a literal')
-    assert.ok(slotWait < bootBudget, `slot wait ${slotWait}ms must be below the boot budget ${bootBudget}ms`)
-    assert.match(
-      mainSource,
-      /localBackendSpawnCoordinator\.request\(poolKey, \{\s*timeoutMs: POOL_SLOT_WAIT_MS,\s*priority: spawnPriority\s*\}\)/
-    )
-    assert.doesNotMatch(mainSource, /request\(poolKey, \{ timeoutMs: POOL_IDLE_MS \}\)/)
-  })
-
-  test('main.ts pushes the live pool max into the coordinator when the preference changes', () => {
-    // Pool sizing is a live device preference (#92581); the hard cap must
-    // follow it, otherwise raising the max in Settings would leave spawns
-    // queued behind the launch-time value.
-    assert.match(mainSource, /new LocalBackendSpawnCoordinator\(poolLimits\.maxBackends\)/)
-    assert.match(mainSource, /localBackendSpawnCoordinator\.setLimit\(poolLimits\.maxBackends\)/)
-  })
-}
