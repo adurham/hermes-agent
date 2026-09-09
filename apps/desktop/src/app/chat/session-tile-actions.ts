@@ -432,6 +432,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           if (mode === 'interrupt') {
             moveOptimisticMessageToEnd()
           }
+
           triggerHaptic('submit')
 
           return true
