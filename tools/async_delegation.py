@@ -127,7 +127,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # origin_session_id: raw api_server session id of the ORIGINATING request
     # (wake target); without it restart-recovered completions are unroutable there.
     for name, sql_type in (("owner_pid", "INTEGER"), ("owner_started_at", "INTEGER"), ("task_json", "TEXT"),
-                           ("delivery_claim", "TEXT"), ("delivery_claimed_at", "REAL"), ("origin_session_id", "TEXT")):
+                           ("delivery_claim", "TEXT"), ("delivery_claimed_at", "REAL"), ("origin_session_id", "TEXT"),
+                           ("owner_execution_id", "TEXT")):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
 
