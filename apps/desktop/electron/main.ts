@@ -50,6 +50,7 @@ import {
 } from './backend-claim'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
+import { assertDescriptorStillOwned, forgetFailedDescriptor } from './backend-descriptor-cache'
 import { BackendDialClaims } from './backend-dial-claim'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import {
@@ -287,10 +288,6 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-import { selectPoolEvictions } from './pool-eviction'
-import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
-import { createPoolStopper } from './pool-stop'
-import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
 import { registerPreparedSubmissions } from './prepared-submissions'
 import { capturePreviewContents } from './preview-capture'
@@ -1413,76 +1410,22 @@ const backendDialClaims = new BackendDialClaims()
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
-// Additional per-profile backends, keyed by profile name. The PRIMARY backend
-// (the desktop's launch profile) stays managed by backendConnectionState +
-// startHermes(); this pool only holds EXTRA profile
-// backends spawned lazily when a session belongs to a different profile. A user
-// with no named profiles never populates this map, so their experience is
-// byte-for-byte the single-backend behavior.
-const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
+// Cached connection DESCRIPTORS for every non-primary (connectionId, profile)
+// scope the app has dialed: canonical local gateways reached through
+// `hermes gateway ensure`, registry remotes, per-profile remote overrides.
+// Never a process — the gateway owns its own lifetime; forgetting an entry only
+// forces the next ensure*() to re-dial. A user with no named profiles never
+// populates this map.
+const backendPool = new Map() // scope key -> { connectionPromise, remoteBaseUrl }
 const profileDeletionGate = new ProfileDeletionGate()
-// Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
-// idle ones. A user idles at exactly the primary backend; pool backends only
-// exist while a non-primary profile is actively being chatted through.
-// Pool sizing is a device preference (Settings → Advanced → pool rows), not a
-// launch constant: mutable at runtime, persisted in userData, applied live.
-// The legacy HERMES_DESKTOP_POOL_* env vars remain the initial-value fallback
-// for scripted/headless setups; after launch the stored preference wins.
-const POOL_LIMITS_PATH = path.join(app.getPath('userData'), 'pool-limits.json')
 
-function readPersistedPoolLimits() {
-  try {
-    const limits = parsePoolLimits(fs.readFileSync(POOL_LIMITS_PATH, 'utf8'))
-    rememberLog(
-      `[pool-limits] loaded from ${POOL_LIMITS_PATH}: maxBackends=${limits.maxBackends}, idleMs=${limits.idleMs}`
-    )
-
-    return limits
-  } catch {
-    // No persisted file yet — fall back to the legacy env vars so scripted
-    // setups keep working. Log which source won: a silently-ignored env var
-    // here costs a scripted-setup user a debugging session.
-    const fromEnv = clampPoolLimits({
-      maxBackends: Number(process.env.HERMES_DESKTOP_POOL_MAX) || undefined,
-      idleMs: Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || undefined
-    })
-
-    if (fromEnv.maxBackends !== POOL_LIMITS_DEFAULTS.maxBackends || fromEnv.idleMs !== POOL_LIMITS_DEFAULTS.idleMs) {
-      rememberLog(
-        `[pool-limits] no saved file; using env-var overrides: maxBackends=${fromEnv.maxBackends}, idleMs=${fromEnv.idleMs}`
-      )
-    } else {
-      rememberLog('[pool-limits] no saved file and no env overrides; using defaults')
-    }
-
-    return fromEnv
-  }
-}
-
-function persistPoolLimits(limits) {
-  try {
-    fs.mkdirSync(path.dirname(POOL_LIMITS_PATH), { recursive: true })
-    // Atomic write: write to a temp file in the same directory, then rename.
-    // A crash mid-write would otherwise leave truncated JSON and silently
-    // lose the user's saved sizing.
-    const tmpPath = `${POOL_LIMITS_PATH}.tmp`
-    fs.writeFileSync(tmpPath, JSON.stringify(limits, null, 2), 'utf8')
-    fs.renameSync(tmpPath, POOL_LIMITS_PATH)
-  } catch (error) {
-    rememberLog(`[pool-limits] write failed: ${error.message}`)
-  }
-}
-
-// rememberLog() state. Declared here, before the top-level
-// readPersistedPoolLimits() call below, because that call logs during module
-// evaluation; declaring these later crashed launch with `undefined.push` in
-// the packaged build (esbuild lowers the TDZ to undefined instead of throwing).
+// rememberLog() state. Declared before any top-level caller that logs during
+// module evaluation; declaring these later crashed launch with `undefined.push`
+// in the packaged build (esbuild lowers the TDZ to undefined instead of throwing).
 const hermesLog = []
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
-
-let poolLimits = readPersistedPoolLimits()
 
 // Land a spawn failure in desktop.log.
 function logPoolSpawnFailure(label: string, error: unknown): void {
@@ -1491,56 +1434,6 @@ function logPoolSpawnFailure(label: string, error: unknown): void {
   )
 }
 
-function poolMaxBackends() {
-  return poolLimits.maxBackends
-}
-
-function poolIdleMs() {
-  return poolLimits.idleMs
-}
-
-/**
- * Apply new limits live: persist, then converge the running pool — evict
- * LRU backends down to the new max, and let the (already running) idle
- * reaper handle a shortened idle window on its next tick. Returns the
- * limits actually in force (post-clamp).
- */
-function setPoolLimits(raw) {
-  poolLimits = clampPoolLimits(raw)
-  persistPoolLimits(poolLimits)
-  evictLruPoolBackends(poolMaxBackends())
-  startPoolIdleReaper()
-
-  return { ...poolLimits }
-}
-
-// A backend touched within this window has a live renderer socket (the keepalive
-// pings every 60s for every open profile). LRU eviction must spare these — a
-// concurrent multi-profile session keeps several backends "fresh" at once, and
-// killing one to honor the soft cap would abort a running agent.
-//
-// The window is intentionally MUCH wider than the 60s ping cadence:
-//   * 1 missed ping    = +60s of apparent silence
-//   * WSL2 IPC stall  = the renderer's `hermes:backend:touch` roundtrips
-//                       through 9p; a single brief 9p hiccup can stretch a
-//                       ping to ~30s of observed silence (#95189: gateways
-//                       exited every ~2 min on WSL2 because the previous
-//                       90s window left no headroom — one delayed ping
-//                       pushed a live backend past the threshold and the
-//                       cap-driven eviction killed the active profile's
-//                       backend mid-session, re-minting runtime ids and
-//                       re-allocating pooled gateway secondaries ~700×/day).
-//   * 3× ping + 60s headroom = ~4 min, comfortable margin for two missed
-//     pings + WSL2 IPC stall. The hard ceiling for the cap-eligible set is
-//     pool idle window above (default 10 min) — this constant only governs the
-//     "is this backend plausibly still alive" question for LRU eviction,
-//     not when the idle reaper definitively tears a backend down.
-const POOL_KEEPALIVE_FRESH_MS = Math.max(
-  120_000,
-  Number(process.env.HERMES_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 4 * 60_000
-)
-
-let poolIdleReaper = null
 let backendOrphanReapPromise = null
 // Auto-reload budget for renderer crashes, shared by EVERY window (primary,
 // secondary session, instance) so a crash loop anywhere is suppressed after
@@ -3703,20 +3596,6 @@ async function claimBackendChild(child, command, profile, nonce, outputTail: Bac
   }
 }
 
-function releaseBackendChild(child) {
-  const identity = child?.hermesBackendIdentity
-
-  if (!identity) {
-    return
-  }
-
-  try {
-    backendOwnership.release(identity)
-  } catch (error) {
-    rememberLog(`Could not release backend ownership for PID ${identity.pid}: ${error.message}`)
-  }
-}
-
 function reapOrphanedBackendsOnce() {
   if (!backendOrphanReapPromise) {
     backendOrphanReapPromise = backendOwnership
@@ -3772,22 +3651,16 @@ async function releaseBackendLock(updateRoot, tag) {
 
   const hermesProcess = backendConnectionState.getProcess()
 
-  // Seed the release gate with every PID we are about to signal: the
-  // supervised primary backend and all pool backends. The gate waits for
-  // these to actually LEAVE the process table, not just for the shim to
-  // unlock — the shim probe only covers venv\Scripts\hermes.exe, but the
-  // backend is `python.exe -m hermes_cli.main serve`, which need not hold
-  // the shim at all (#74805 first-attempt race).
+  // Seed the release gate with every PID we are about to signal (the
+  // supervised primary backend, when one exists). The gate waits for these to
+  // actually LEAVE the process table, not just for the shim to unlock — the
+  // shim probe only covers venv\Scripts\hermes.exe, but the backend is
+  // `python.exe -m hermes_cli.main serve`, which need not hold the shim at all
+  // (#74805 first-attempt race).
   const initialPids = []
 
   if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
     initialPids.push(hermesProcess.pid)
-  }
-
-  for (const entry of backendPool.values()) {
-    if (entry.process && Number.isInteger(entry.process.pid)) {
-      initialPids.push(entry.process.pid)
-    }
   }
 
   stopBackendTreesForUpdate(hermesProcess, {
@@ -3830,12 +3703,6 @@ async function releaseBackendLock(updateRoot, tag) {
 
         if (currentHermesProcess && Number.isInteger(currentHermesProcess.pid)) {
           stragglers.push(currentHermesProcess.pid)
-        }
-
-        for (const entry of backendPool.values()) {
-          if (entry.process && Number.isInteger(entry.process.pid)) {
-            stragglers.push(entry.process.pid)
-          }
         }
 
         return stragglers
@@ -11291,7 +11158,7 @@ function sendConnectionApplied() {
 // every window must tear down (and, for edits, re-dial) its secondary sockets
 // scoped to that connection. Without this, a removed remote/cloud source keeps
 // its renderer WebSocket open and streaming as a ghost, and an edited one
-// keeps talking to the OLD endpoint until idle-reap.
+// keeps talking to the OLD endpoint indefinitely.
 function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) {
   for (const win of BrowserWindow.getAllWindows()) {
     const { webContents } = win
@@ -11403,10 +11270,7 @@ async function forgetLocalGatewayDescriptor(profile) {
     return
   }
 
-  const entry = backendPool.get(key)
-
-  if (entry && !entry.process) {
-    backendPool.delete(key)
+  if (backendPool.delete(key)) {
     rememberLog(`[gateway] forgot stale canonical endpoint for profile "${key}"; re-ensuring`)
   }
 }
@@ -11431,48 +11295,26 @@ async function ensureBackend(profile) {
       : connection
   }
 
-  // A backend for this key may still be dying (idle reap, LRU eviction, a
-  // just-finished delete). Wait for its bounded exit before reusing or
-  // spawning, so two children never share one profile's HERMES_HOME.
-  const stopping = poolStopper.inFlight(key)
-
-  if (stopping) {
-    await stopping
-  }
-
   const existing = backendPool.get(key)
 
   if (existing) {
-    existing.lastActiveAt = Date.now()
-
     const connection = await existing.connectionPromise
     setWslBridgeProfileState(key, connection.mode !== 'remote')
 
     return connection
   }
 
-  evictLruPoolBackends(poolMaxBackends() - 1)
+  const entry = newPoolEntry()
 
-  const entry = {
-    process: null,
-    port: null,
-    token: null,
-    connectionPromise: null,
-    lastActiveAt: Date.now(),
-    remoteBaseUrl: null
-  }
-
-  entry.connectionPromise = spawnPoolBackend(key, entry).catch(async error => {
-    // Land the failure in desktop.log: without this a spawn that dies before
-    // its child exists (guard rejection, runtime resolution) leaves no trace
+  entry.connectionPromise = dialPoolBackend(key, entry).catch(error => {
+    // Land the failure in desktop.log: without this a dial that fails before
+    // the gateway answers (guard rejection, runtime resolution) leaves no trace
     // beyond renderer-side rejections users never see in a bundle.
     logPoolSpawnFailure(`"${key}"`, error)
-
-    await teardownFailedLocalBackend(key, entry)
+    forgetFailedPoolEntry(key, entry)
     throw error
   })
   backendPool.set(key, entry)
-  startPoolIdleReaper()
 
   const connection = await entry.connectionPromise
   setWslBridgeProfileState(key, connection.mode !== 'remote')
@@ -11484,9 +11326,9 @@ async function ensureBackend(profile) {
 // Resolve a backend for (connectionId, profile) against the v2 registry.
 // The LOCAL connection routes through ensureBackend() when the v1 route is
 // itself local (so every single-source path stays byte-identical), and forces
-// a genuinely-local child when the v1 mode says remote; non-local connections
-// pool under the composite key from backendScopeKey() and reuse the same pool
-// entry lifecycle (LRU, idle reaper, touch) as per-profile local backends.
+// a genuinely-local dial when the v1 mode says remote; non-local connections
+// cache under the composite key from backendScopeKey() with the same entry
+// lifecycle as per-profile local descriptors.
 async function ensureRegistryBackend(
   connectionId,
   profile,
@@ -11602,44 +11444,25 @@ async function ensureRegistryBackend(
       return ensureBackend(profile)
     }
 
-    const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
-
-    if (stoppingLocal) {
-      await stoppingLocal
-    }
-
     const existingLocal = backendPool.get(localRoute.poolKey)
 
     if (existingLocal) {
-      existingLocal.lastActiveAt = Date.now()
-
       return existingLocal.connectionPromise
     }
 
-    evictLruPoolBackends(poolMaxBackends() - 1)
+    const localEntry = newPoolEntry()
 
-    const localEntry = {
-      process: null,
-      port: null,
-      token: null,
-      connectionPromise: null,
-      lastActiveAt: Date.now(),
-      remoteBaseUrl: null
-    }
-
-    localEntry.connectionPromise = spawnPoolBackend(profileKey, localEntry, {
+    localEntry.connectionPromise = dialPoolBackend(profileKey, localEntry, {
       forceLocal: true,
       poolKey: localRoute.poolKey
-    }).catch(async error => {
-      // Same trace rule as the v1 pool path: a forced-local child whose spawn
-      // rejects before the child exists must still land in desktop.log.
+    }).catch(error => {
+      // Same trace rule as the v1 path: a forced-local dial that rejects must
+      // still land in desktop.log.
       logPoolSpawnFailure(`"${profileKey}" (forced-local)`, error)
-
-      await teardownFailedLocalBackend(localRoute.poolKey, localEntry)
+      forgetFailedPoolEntry(localRoute.poolKey, localEntry)
       throw error
     })
     backendPool.set(localRoute.poolKey, localEntry)
-    startPoolIdleReaper()
 
     return localEntry.connectionPromise
   }
@@ -11648,7 +11471,6 @@ async function ensureRegistryBackend(
   const existing = backendPool.get(key)
 
   if (existing) {
-    existing.lastActiveAt = Date.now()
     const connectionPromise = existing.connectionPromise
 
     // A remote process can die while its local SSH forward stays LISTENing.
@@ -11682,16 +11504,7 @@ async function ensureRegistryBackend(
     )
   }
 
-  evictLruPoolBackends(poolMaxBackends() - 1)
-
-  const entry = {
-    process: null,
-    port: null,
-    token: null,
-    connectionPromise: null,
-    lastActiveAt: Date.now(),
-    remoteBaseUrl: null
-  }
+  const entry = newPoolEntry()
 
   entry.connectionPromise = connectRegistryBackend(
     source,
@@ -11702,21 +11515,15 @@ async function ensureRegistryBackend(
     source.kind === 'ssh' ? resolveRegistryEffectiveFingerprint() : null,
     managedUpdateCorrelation
   ).catch(error => {
-    if (backendPool.get(key) === entry) {
-      backendPool.delete(key)
-    }
-
+    forgetFailedPoolEntry(key, entry)
     throw error
   })
   backendPool.set(key, entry)
-  startPoolIdleReaper()
 
   return entry.connectionPromise
 }
 
-// Dial a non-local registry connection for one profile. Never spawns a local
-// child (entry.process stays null — stopPoolBackend/evict already tolerate
-// that shape from remote per-profile overrides).
+// Dial a non-local registry connection for one profile.
 async function connectRegistryBackend(
   source,
   profile,
@@ -11813,19 +11620,10 @@ async function ensureManagedSshBackendAtKey(source, profile, key, correlationId,
   const existing = backendPool.get(key)
 
   if (existing) {
-    existing.lastActiveAt = Date.now()
-
     return existing.connectionPromise
   }
 
-  const entry = {
-    process: null,
-    port: null,
-    token: null,
-    connectionPromise: null,
-    lastActiveAt: Date.now(),
-    remoteBaseUrl: null
-  }
+  const entry = newPoolEntry()
 
   entry.connectionPromise = connectRegistryBackend(
     source,
@@ -11837,14 +11635,10 @@ async function ensureManagedSshBackendAtKey(source, profile, key, correlationId,
     correlationId,
     tokenPersistenceSource
   ).catch(error => {
-    if (backendPool.get(key) === entry) {
-      backendPool.delete(key)
-    }
-
+    forgetFailedPoolEntry(key, entry)
     throw error
   })
   backendPool.set(key, entry)
-  startPoolIdleReaper()
 
   return entry.connectionPromise
 }
@@ -12308,113 +12102,28 @@ async function stopRegistryConnectionBackends(connectionId) {
   )
 }
 
-// Mark a pool profile as recently used so the idle reaper spares it. The
-// renderer calls this when it opens a profile's chat WS and periodically while
-// streaming, since the main process can't see the direct renderer↔backend WS.
-function touchPoolBackend(profile) {
-  for (const key of poolTouchKeys(profile)) {
-    const entry = backendPool.get(key)
-
-    if (entry) {
-      entry.lastActiveAt = Date.now()
-
-      return
-    }
-  }
+function newPoolEntry() {
+  return { connectionPromise: null, remoteBaseUrl: null }
 }
 
-// Evict least-recently-used SPAWNED pool backends until at most `keep` remain —
-// but only ever evict backends without a live renderer socket (stale beyond the
-// keepalive window). When every backend is actively kept alive we let the pool
-// exceed the soft cap rather than kill a running session. Process-less
-// descriptor entries (remote/cloud registry sources, per-profile remote
-// overrides — `entry.process === null`) are excluded from the cap entirely:
-// they hold no local process, so counting them used to let a roster refresh
-// across N registered remote connections LRU-evict a REAL local backend that
-// was merely idle past the keepalive window. Descriptors are still reclaimed
-// by the idle reaper.
-function evictLruPoolBackends(keep) {
-  const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
-
-  for (const profile of evictions) {
-    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
-    stopPoolBackend(profile)
-  }
-}
-
-function startPoolIdleReaper() {
-  if (poolIdleReaper) {
-    return
-  }
-
-  poolIdleReaper = setInterval(() => {
-    const now = Date.now()
-
-    for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
-        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(poolIdleMs() / 1000)}s)`)
-        stopPoolBackend(profile)
-      }
-    }
-
-    if (backendPool.size === 0 && poolIdleReaper) {
-      clearInterval(poolIdleReaper)
-      poolIdleReaper = null
-    }
-  }, 60_000)
-
-  if (typeof poolIdleReaper.unref === 'function') {
-    poolIdleReaper.unref()
-  }
+function forgetFailedPoolEntry(poolKey: string, entry: any) {
+  forgetFailedDescriptor(backendPool, poolKey, entry)
 }
 
 function assertPoolEntryStillOwned(poolKey: string, entry: any) {
-  if (backendPool.get(poolKey) !== entry) {
-    throw new Error(`Profile backend start for "${poolKey}" was cancelled before spawn.`)
-  }
+  assertDescriptorStillOwned(backendPool, poolKey, entry)
 }
 
-const failedLocalBackendTeardowns = new WeakMap<object, Promise<void>>()
-
-function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> {
-  const existing = failedLocalBackendTeardowns.get(entry)
-
-  if (existing) {
-    return existing
-  }
-
-  if (backendPool.get(poolKey) === entry) {
-    backendPool.delete(poolKey)
-  }
-
-  const child = entry.process
-
-  const teardown = (async () => {
-    stopBackendChild(child)
-    await waitForBackendExit(child)
-
-    if (child && child.exitCode === null && child.signalCode === null) {
-      throw new Error(`Profile backend for "${poolKey}" did not exit.`)
-    }
-
-    releaseBackendChild(child)
-  })()
-
-  // Keep the settled promise in the WeakMap for the lifetime of this entry.
-  // Error + exit + outer catch may all request cleanup; none may run it twice.
-  failedLocalBackendTeardowns.set(entry, teardown)
-
-  return teardown
-}
-
-// Spawn an additional dashboard backend pinned to a named profile. Mirrors the
-// local-spawn portion of startHermes() but without the boot-progress UI,
-// bootstrap, or remote handling (those belong to the primary backend only).
-// `opts.forceLocal` skips remote resolution entirely (the registry 'local'
-// entry means THIS machine regardless of the v1 routing table); `opts.poolKey`
-// is the backendPool key when it differs from the profile name (composite
-// registry scopes) so the exit/error cleanup evicts the right entry.
-async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
+// Resolve the connection descriptor for a named profile that is not the
+// primary: attach to (or start) its canonical local gateway via
+// `hermes gateway ensure`, or verify and describe its remote. Mirrors the local
+// portion of startHermes() without the boot-progress UI, bootstrap, or
+// first-run handling (those belong to the primary only). `opts.forceLocal`
+// skips remote resolution entirely (the registry 'local' entry means THIS
+// machine regardless of the v1 routing table); `opts.poolKey` is the
+// backendPool key when it differs from the profile name (composite registry
+// scopes) so failure cleanup forgets the right entry.
+async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
   const poolKey = opts.poolKey || profile
 
   await reapOrphanedBackendsOnce()
@@ -12422,10 +12131,8 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 
   // A profile may point at its OWN remote backend (connection.json
   // `profiles[name]`), or inherit the app-wide remote (env / global settings).
-  // In either case there is no local child to spawn — we just verify the
-  // remote is reachable and hand back its connection descriptor. The pool
-  // entry keeps `entry.process === null`, which stopPoolBackend/evict already
-  // tolerate.
+  // In either case we just verify the remote is reachable and hand back its
+  // connection descriptor.
   const remote = opts.forceLocal ? null : await resolveRemoteBackend(profile, { poolKey })
   profileDeletionGate.assertCanStart(profile)
 
@@ -12466,20 +12173,13 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   return { ...connection, profile, logs: hermesLog.slice(-80), ...getWindowState() }
 }
 
-// Bounded, deduplicated pool teardown (see pool-stop.ts): every stop path —
-// idle reaper, LRU eviction, profile delete/rename, quit — shares one
-// in-flight stop per key and retains the process handle until the bounded
-// SIGTERM -> SIGKILL escalation in waitForBackendExit() resolves. Previously
-// SIGTERM + immediate entry delete dropped the handle and a slow child
-// survived detached under PID 1.
-const poolStopper = createPoolStopper({
-  pool: backendPool,
-  stopChild: child => stopBackendChild(child),
-  waitForExit: child => waitForBackendExit(child)
-})
-
+// Forget a cached descriptor. Nothing is killed: the gateway behind it owns its
+// own lifetime (`hermes gateway ensure` attach semantics), so the next
+// ensure*() for this key simply re-dials. Every retire path — dispatch probe
+// failure, resume revalidation, registry removal, profile delete/rename, quit —
+// funnels through here so the verb stays in one place.
 async function stopPoolBackend(profile: string) {
-  await poolStopper.stop(profile)
+  backendPool.delete(profile)
 }
 
 async function teardownPoolBackendAndWait(profile) {
@@ -12487,21 +12187,14 @@ async function teardownPoolBackendAndWait(profile) {
 }
 
 async function stopAllPoolBackends() {
-  await poolStopper.stopAll()
+  backendPool.clear()
 }
 
 const backendShutdown = createBackendShutdownCoordinator(async () => {
   const primary = backendConnectionState.invalidate()
 
   stopBackendChild(primary)
-  const pooledStops = stopAllPoolBackends()
-
-  if (poolIdleReaper) {
-    clearInterval(poolIdleReaper)
-    poolIdleReaper = null
-  }
-
-  await Promise.all([waitForBackendExit(primary), pooledStops])
+  await Promise.all([waitForBackendExit(primary), stopAllPoolBackends()])
 })
 
 async function exitAfterBackendShutdown(code) {
@@ -14424,8 +14117,8 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
 })
 
 // Pooled remote descriptors get the same treatment as the primary: they have no
-// child process to signal their host's death, and the renderer's keepalive touch
-// spares them from the idle reaper, so nothing else can retire a dead one.
+// child process to signal their host's death, so nothing else can retire a dead
+// one.
 function revalidatePool() {
   return revalidatePooledRemoteBackends({
     entries: backendPool.entries(),
@@ -14480,23 +14173,6 @@ function revalidateSuspectPoolAfterResume() {
   )
 }
 
-ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
-  touchPoolBackend(profile)
-
-  return { ok: true }
-})
-// Pool sizing (Settings → Advanced): device-local, live-applied. Main is
-// authoritative (it owns the pool and the persisted copy); the returned
-// limits are what actually took effect post-clamp.
-ipcMain.handle('hermes:pool-limits:get', async () => ({ ...poolLimits }))
-ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
-  const next = setPoolLimits({
-    maxBackends: typeof raw?.maxBackends === 'number' ? raw.maxBackends : poolLimits.maxBackends,
-    idleMs: typeof raw?.idleMs === 'number' ? raw.idleMs : poolLimits.idleMs
-  })
-
-  return { ok: true, limits: next }
-})
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile, _event.sender.id))
 })
@@ -16083,7 +15759,7 @@ function registryConnectionKind(connectionId) {
 async function teardownConnectionScopedProfileBackend(connectionId, profile) {
   const key = backendScopeKey(connectionId, profile)
   await Promise.all([
-    poolStopper.stop(key),
+    stopPoolBackend(key),
     sshBootstrapCoordinator.cancelAndWait(key).then(() => teardownSshConnection(key))
   ])
 }
