@@ -706,9 +706,11 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       const fresh = capturePromptResponseGuard('clarify', clarify)
+
       if (!fresh()) {
         return
       }
+
       const label = toolTrailLabel('clarify')
 
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
@@ -759,9 +761,11 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       const fresh = capturePromptResponseGuard('clarify', clarify)
+
       if (!fresh()) {
         return
       }
+
       rpc<ClarifyRespondResponse & { remaining?: string[] }>('clarify.respond', {
         answer,
         question_id: qid,
@@ -1032,13 +1036,16 @@ export function useMainApp(gw: GatewayClient) {
   const answerApproval = useCallback(
     (choice: string) => {
       const fresh = capturePromptResponseGuard('approval', overlay.approval)
+
       if (!fresh()) {
         return
       }
+
       return respondWith('approval.respond', { choice, session_id: ui.sid, ...sharedControlParams(overlay.approval) }, () => {
         if (!fresh()) {
         return
       }
+
         patchOverlayState({ approval: null })
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
         patchUiState({ status: 'running…' })
@@ -1054,9 +1061,11 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       const fresh = capturePromptResponseGuard('sudo', overlay.sudo)
+
       if (!fresh()) {
         return
       }
+
       const requestId = overlay.sudo.requestId
 
       if (!pw) {
@@ -1067,6 +1076,7 @@ export function useMainApp(gw: GatewayClient) {
         if (!fresh()) {
         return
       }
+
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
@@ -1081,9 +1091,11 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       const fresh = capturePromptResponseGuard('secret', overlay.secret)
+
       if (!fresh()) {
         return
       }
+
       const requestId = overlay.secret.requestId
 
       if (!value) {
@@ -1094,6 +1106,7 @@ export function useMainApp(gw: GatewayClient) {
         if (!fresh()) {
         return
       }
+
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })

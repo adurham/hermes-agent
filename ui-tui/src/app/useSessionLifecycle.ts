@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { localCreationOptions } from '../canonicalGateway.js'
 import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
+import { localCreationOptions } from '../canonicalGateway.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'

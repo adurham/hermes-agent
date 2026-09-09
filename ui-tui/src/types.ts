@@ -1,3 +1,5 @@
+import type { SharedControl } from './canonicalGateway.js'
+
 export interface ActiveTool {
   context?: string
   id: string
@@ -95,7 +97,7 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
-  sharedControl?: import('./canonicalGateway.js').SharedControl
+  sharedControl?: SharedControl
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
@@ -121,7 +123,7 @@ export interface ClarifyBatchQuestion {
 }
 
 export interface ClarifyReq {
-  sharedControl?: import('./canonicalGateway.js').SharedControl
+  sharedControl?: SharedControl
   choices: string[] | null
   question: string
   requestId: string
