@@ -800,6 +800,15 @@ variables are ignored. Cached agents may be released to reclaim resources withou
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
+**`/new` moves only the view that ran it.** One session can be open in several
+places at once — a Desktop window, the TUI, a `hermes chat --resume` terminal, an
+ACP editor, a Telegram topic — all attached to the same live conversation on the
+gateway. Running `/new` (or `/reset`) in one of them creates a fresh session and
+rebinds *that* window or chat route to it. The other viewers stay on the original
+session, its history is untouched, and a turn already running there keeps running.
+Ending or clearing the shared conversation is a separate, explicit action (Stop, then
+`/new`; or a delete, which is refused while a turn is live).
+
 
 ### Continuity After Crashes and Restarts
 
