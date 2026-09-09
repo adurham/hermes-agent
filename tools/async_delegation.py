@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 from hermes_constants import get_hermes_home
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
+from tools.async_delegation_worker import worker_ledger, require_ledger_owner
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,8 @@ def _capture_routing_origin() -> Dict[str, Any]:
 
 
 def _persist_dispatch(record: Dict[str, Any]) -> None:
+    if remote := worker_ledger():
+        return remote.dispatch(record)
     now = time.time()
     try:
         from gateway.status import get_process_start_time
@@ -189,6 +192,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
 
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
+    require_ledger_owner()
     cutoff = time.time() - _DURABLE_RETENTION_SECONDS
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
@@ -213,6 +217,8 @@ def _prune_durable_records() -> None:
 
 
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+    if remote := worker_ledger():
+        return remote.complete(event, result)
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
@@ -227,6 +233,8 @@ def record_unit_child(delegation_id: str, entry: Dict[str, Any]) -> None:
     the unit joins loses only the children that had not finished. Stored in ``result_json`` (overwritten by the real
     result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
     fidelity, never the live result."""
+    if remote := worker_ledger():
+        return remote.child(delegation_id, entry)
     try:
         with _DB_LOCK, _transaction() as conn:
             row = conn.execute("SELECT result_json FROM async_delegations WHERE delegation_id=? AND state='running'",
@@ -255,6 +263,7 @@ def _recovered_results(task: Dict[str, Any], result_json: Optional[str], error: 
 def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
     recorded (``record_unit_child``) are replayed with their real results."""
+    require_ledger_owner()
     try:
         from gateway.status import _pid_exists, get_process_start_time
     except Exception:
@@ -348,6 +357,7 @@ def _update_delivery(sql: str, params: tuple) -> bool:
 
 def mark_completion_delivered(delegation_id: str) -> bool:
     """Atomically acknowledge successful injection of a durable completion."""
+    require_ledger_owner()
     now = time.time()
     return _update_delivery(
         """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
@@ -356,6 +366,8 @@ def mark_completion_delivered(delegation_id: str) -> bool:
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
+    if remote := worker_ledger():
+        return remote.claim(delegation_id, claim_id)
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         row = conn.execute(
@@ -392,6 +404,8 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Release a failed delivery claim so another consumer may retry. Attempts are
     counted at claim time; once the budget is exhausted the row converges to
     terminal ``dropped`` (only pending rows replay on restart)."""
+    if remote := worker_ledger():
+        return remote.release(delegation_id, claim_id)
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         capped = conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
@@ -413,6 +427,8 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 
 def defer_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Return an unadmitted completion to pending without spending a delivery attempt."""
+    if remote := worker_ledger():
+        return remote.defer(delegation_id, claim_id)
     return _update_delivery("""UPDATE async_delegations SET delivery_claim=NULL,
                   delivery_claimed_at=NULL, delivery_attempts=MAX(0, delivery_attempts-1),
                   updated_at=?
@@ -425,6 +441,8 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     spawning session ended at an explicit user boundary such as /new or reset).
     ``dropped`` — not ``delivered`` — keeps the ack honest; not ``pending`` keeps
     restart recovery from replaying it into a fail-closed drop forever."""
+    if remote := worker_ledger():
+        return remote.drop(delegation_id, claim_id)
     return _update_delivery("""UPDATE async_delegations SET delivery_state='dropped',
                   updated_at=?, delivery_claim=NULL,
                   delivery_claimed_at=NULL
@@ -434,6 +452,8 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Acknowledge acceptance for the consumer holding this claim."""
+    if remote := worker_ledger():
+        return remote.ack(delegation_id, claim_id)
     now = time.time()
     return _update_delivery("""UPDATE async_delegations SET delivery_state='delivered',
                   delivered_at=?, updated_at=?, delivery_claim=NULL,
@@ -456,6 +476,8 @@ def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> None:
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
+    if remote := worker_ledger():
+        return remote.read(delegation_id)
     with _DB_LOCK, _transaction() as conn:
         row = conn.execute("""SELECT origin_session, state, dispatched_at, completed_at,
                       result_json, delivery_state, delivery_attempts,
@@ -574,6 +596,7 @@ def _dispatch(
     can't pile up unbounded background work. ``slot_key`` names the pool slot the unit occupies
     (default: its own id); the units of one delegate_task call share the first unit's id so
     splitting a call into per-group completions never consumes more capacity than the call did."""
+    worker_ledger()  # refuse unbound workers before publishing a live record
     is_batch = goals is not None
     label = " batch" if is_batch else ""
     classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
@@ -626,8 +649,11 @@ def _dispatch(
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         with _records_lock:
             _records.pop(delegation_id, None)
-        with _DB_LOCK, _transaction() as conn:
-            conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+        if remote := worker_ledger():
+            remote.unscheduled(delegation_id)
+        else:
+            with _DB_LOCK, _transaction() as conn:
+                conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
         return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
     if progress_fn is not None:
         _ensure_stale_monitor()
