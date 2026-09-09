@@ -1561,9 +1561,14 @@ def _live_system_guard(request, monkeypatch):
         # suffix), restarts the live gateway, and the survivors squat the
         # webhook port. 2026-09-03: 39 such orphans lived 6 days after a
         # sibling refactor moved the spawn seam and left tests patching the
-        # facade. The canonical matcher, never an argv substring.
+        # facade. The canonical matcher, never an argv substring. Commands addressed to a
+        # container (``docker exec … <cmd>``) run inside that container: a gateway
+        # started there cannot reach the host's unit, home or ports, and the Docker
+        # harness reaps the container. Only host-side spawns are the hazard.
         from gateway.status import _gateway_command_subcommand
-        if not lookalike_ok and _gateway_command_subcommand(cmd_str) in ("run", "start", "restart"):
+        argv = cmd if isinstance(cmd, (list, tuple)) else _shlex.split(cmd_str)
+        in_container = len(argv) > 1 and str(argv[0]).rsplit("/", 1)[-1] == "docker" and argv[1] == "exec"
+        if not lookalike_ok and not in_container and _gateway_command_subcommand(cmd_str) in ("run", "start", "restart"):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — this would spawn a REAL "
