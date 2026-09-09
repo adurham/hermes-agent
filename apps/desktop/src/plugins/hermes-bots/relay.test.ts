@@ -486,7 +486,7 @@ describe('the drain loop wires drain → deliver → reply', () => {
       }
 
       if (call.method === 'bot_relay.deliver') {
-        return { reply: 'all green' }
+        return { status: 'settled', delivery_id: envelope.id, admission_id: 'admission-1', reply: 'all green' }
       }
 
       return {}
@@ -499,7 +499,7 @@ describe('the drain loop wires drain → deliver → reply', () => {
 
     expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
       connectionId: 'b',
-      params: { message: 'status?', profile: 'ops' }
+      params: { id: envelope.id, message: 'status?', profile: 'ops' }
     })
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',
@@ -508,6 +508,37 @@ describe('the drain loop wires drain → deliver → reply', () => {
     // A delivered background DM is this bot's "good turn".
     expect(clearBotAttentionMock).toHaveBeenCalledWith('b::ops')
 
+    stopBotRelay()
+  })
+
+  it('retries the same envelope after pending or lost ACK without replying early', async () => {
+    let attempts = 0
+    let drained = false
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        if (call.connectionId !== 'a' || drained) return { envelopes: [] }
+        drained = true
+        return { envelopes: [envelope] }
+      }
+      if (call.method === 'bot_relay.deliver') {
+        attempts += 1
+        if (attempts === 1) throw new Error('socket lost after commit')
+        return { status: attempts === 2 ? 'queued' : 'settled', delivery_id: envelope.id,
+          admission_id: 'exact-admission', reply: attempts === 2 ? '' : 'exact reply' }
+      }
+      return {}
+    })
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await pushAndSettle()
+    expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
+    await pushAndSettle()
+    expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
+    await pushAndSettle()
+    const deliveries = calls.filter(call => call.method === 'bot_relay.deliver')
+    expect(deliveries).toHaveLength(3)
+    expect(deliveries.every(call => call.params.id === envelope.id)).toBe(true)
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toEqual({id: envelope.id, reply: 'exact reply'})
     stopBotRelay()
   })
 

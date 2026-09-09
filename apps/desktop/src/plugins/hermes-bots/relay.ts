@@ -101,6 +101,9 @@ const relay: RelayLifecycle = {
 // leases. Local routes get a no-op release inside the host (idle-reaper
 // exemption). stopBotRelay releases everything.
 const relayRouteRetentions = new Map<string, () => void>()
+// Claimed envelopes remain pinned to their sender until terminal reply ACK.
+// The sender's durable claimed directory restores these after renderer restart.
+const pendingRelays = new Map<string, Map<string, RelayEnvelope>>()
 
 /** One reachable gateway plus a representative route onto it. The route comes
  *  from `host.profileRoutes()`, which carries identity only — the optional
@@ -357,7 +360,13 @@ async function drainRelayOutboxes() {
         continue
       }
 
+      const senderKey = JSON.stringify(sender.route)
+      const pending = pendingRelays.get(senderKey) || new Map<string, RelayEnvelope>()
+      pendingRelays.set(senderKey, pending)
       for (const envelope of envelopes) {
+        if (envelope.id && !pending.has(envelope.id)) pending.set(envelope.id, structuredClone(envelope))
+      }
+      for (const envelope of pending.values()) {
         if (relay.disposed) {
           return
         }
@@ -371,6 +380,7 @@ async function drainRelayOutboxes() {
               id: envelopeId,
               ...payload
             })
+            pending.delete(envelopeId)
           } catch {
             // Sender gateway unreachable — its waiter times out with guidance.
           }
@@ -393,16 +403,30 @@ async function drainRelayOutboxes() {
         const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
         try {
-          const res = await host.requestProfile<{ reply?: string }>(
+          const res = await host.requestProfile<{ status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string }>(
             target.route,
             'bot_relay.deliver',
             {
+              id: envelopeId,
               profile: String(envelope?.target_profile || ''),
               message: String(envelope?.message || '')
             },
             RELAY_DELIVER_TIMEOUT_MS
           )
 
+          if (res.delivery_id !== envelopeId || !res.admission_id) {
+            noteBotAttention(attentionKey, 'Delivery identity unavailable; retained for recovery')
+            continue
+          }
+          if (res.status !== 'settled' && res.status !== 'failed') {
+            if (res.status === 'ambiguous') noteBotAttention(attentionKey, 'unknown_execution')
+            continue
+          }
+          if (res.status === 'failed') {
+            noteBotAttention(attentionKey, res.reason || res.error || 'delivery failed')
+            await postReply({ error: res.error || res.reply || 'delivery failed', reason: res.reason })
+            continue
+          }
           clearBotAttention(attentionKey)
           await postReply({
             reply: String(res?.reply || '')
@@ -415,6 +439,8 @@ async function drainRelayOutboxes() {
           // classified codes beat free-text re-parsing.
           const reason = String(error?.data?.reason || '').trim()
           noteBotAttention(attentionKey, reason || error?.message || error)
+          // A transport exception can follow a committed admission; never settle it as failure.
+          if (!reason || reason === 'runtime_unavailable') continue
           await postReply({
             error: String(error?.message || error || 'delivery failed'),
             ...(reason
