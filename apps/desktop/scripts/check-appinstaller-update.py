@@ -11,9 +11,9 @@ Run with the BUNDLED payload python (the winrt package ships there):
     <payload>/tools/<python-entry>/python.exe scripts/check-appinstaller-update.py
 
 Exit codes:
-  0  no update available (or no App Installer source — nothing to do)
+  0  no update available, or this process has no package identity
   2  update available (the caller decides whether to prompt/teardown)
-  1  error (update availability unknown; the caller reports it honestly)
+  1  error, including a missing registered App Installer update source
 
 API shape (pywinrt projection, verified against the installed winrt 3.2.1):
 ``Package.current`` is a static PROPERTY; the update check is the instance
@@ -63,7 +63,14 @@ def main() -> int:
 
     try:
         source = package.get_app_installer_info()
-        source_uri = source.uri.absolute_uri if source is not None else None
+        if source is None:
+            print(json.dumps({
+                "available": None,
+                "reason": "no-app-installer-source",
+                "error": "No App Installer update source is registered. Install Hermes through its .appinstaller file to enable updates.",
+            }))
+            return 1
+        source_uri = source.uri.absolute_uri
         result = package.check_update_availability_async().get()
         availability = PackageUpdateAvailability(result.availability)
     except Exception as exc:  # noqa: BLE001

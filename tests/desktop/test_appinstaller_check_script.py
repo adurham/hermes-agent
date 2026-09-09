@@ -1,6 +1,7 @@
-"""Tests: apps/desktop/scripts/check-appinstaller-update.py speaks the REAL
-pywinrt projection (subprocess-level, stub winrt on PYTHONPATH — no packaged
-process, no network, no OS update call).
+"""App Installer checker output contracts and native WinRT dependency coverage.
+
+Stubbed subprocess checks cover OS outcomes without a packaged process.
+The native Windows test checks the URI and async projection types.
 
 Root causes pinned here (audit C08):
 - ``Package.current`` is a PROPERTY, not a callable.
@@ -18,6 +19,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 HERMES_PYTHON = sys.executable
@@ -122,6 +125,25 @@ def _run(root: Path) -> tuple[int, dict]:
     return proc.returncode, json.loads(proc.stdout.strip().splitlines()[-1])
 
 
+@pytest.mark.platforms("windows")
+def test_installed_winrt_projects_checker_uri_and_async_types(tmp_path):
+    # A dev process has no package identity, so exercise the types that the
+    # packaged update call projects only after Package.current succeeds.
+    probe = subprocess.run(
+        [HERMES_PYTHON, "-I", "-c",
+         "import runpy; "
+         "from winrt.windows.foundation import IAsyncOperation, Uri; "
+         "uri = Uri('https://example.invalid/updates.appinstaller'); "
+         "assert uri.absolute_uri == 'https://example.invalid/updates.appinstaller'; "
+         "assert callable(IAsyncOperation.get); "
+         f"runpy.run_path({str(SCRIPT)!r})['_load_projection'](); "
+         "print('WINRT_CHECKER_TYPES_OK')"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == "WINRT_CHECKER_TYPES_OK"
+
+
 def test_not_packaged_is_reported_as_not_packaged(tmp_path):
     root = _stub_winrt(tmp_path, _stub_module(identity_error=True, availability=None, check_raises=False))
     code, payload = _run(root)
@@ -161,6 +183,19 @@ def test_error_availability_is_not_no_update(tmp_path):
     assert code == 1
     assert payload["available"] is None
     assert "error" in payload
+
+
+def test_missing_appinstaller_source_explains_the_remedy(tmp_path):
+    module = _stub_module(identity_error=False, availability="unknown", check_raises=False).replace(
+        "return SimpleNamespace(uri=SimpleNamespace(absolute_uri='https://registered.example/updates.appinstaller'))",
+        "return None",
+    )
+    root = _stub_winrt(tmp_path, module)
+    code, payload = _run(root)
+    assert code == 1
+    assert payload["available"] is None
+    assert payload["reason"] == "no-app-installer-source"
+    assert ".appinstaller" in payload["error"]
 
 
 def test_check_failure_is_unknown_not_no_update(tmp_path):
