@@ -4856,13 +4856,34 @@ def run_conversation(
                     # MoA note: use the pre-fold aggregator usage — the folded
                     # canonical figure adds advisor fan-out tokens that were
                     # never part of THIS conversation's prompt.
-                    _new_anchor = capture_usage_anchor(
-                        aggregator_usage.prompt_tokens,
-                        aggregator_usage.output_tokens,
-                        messages,
-                    )
-                    if _new_anchor is not None:
-                        agent._usage_anchor = _new_anchor
+                    #
+                    # Skip when this reading is inflated by folded Anthropic
+                    # server-tool passes (web_search/web_fetch) — mirrors the
+                    # identical guard on last_real_prompt_tokens in
+                    # ContextCompressor.update_from_response() and the
+                    # last_server_tool_requests check in the post-tool-call
+                    # fallback below (#12026/#14695 class). Anchoring on an
+                    # inflated prompt_tokens (e.g. real ~400K read as ~800K-
+                    # 1.2M with 1-2 folded search passes) poisons every
+                    # subsequent anchored_context_tokens() call until the next
+                    # clean reading overwrites it — each one computes
+                    # inflated_anchor + small_delta, which can spuriously
+                    # cross the compression threshold on a session that
+                    # hasn't meaningfully grown (live: session 20260910_
+                    # 004217_246abf call #117 in=800044 w/ server_tool_
+                    # passes=1 vs call #116 in=395153 clean; session
+                    # 20260910_114733_8fc610 call #393 in=1231826 w/
+                    # server_tool_passes=2 vs call #392 in=403827 clean and
+                    # call #394 in=417807 clean immediately after — both
+                    # triggered an unnecessary Pre-API compression pass).
+                    if not usage_dict.get("server_tool_requests"):
+                        _new_anchor = capture_usage_anchor(
+                            aggregator_usage.prompt_tokens,
+                            aggregator_usage.output_tokens,
+                            messages,
+                        )
+                        if _new_anchor is not None:
+                            agent._usage_anchor = _new_anchor
                     _compression_threshold = int(
                         getattr(agent.context_compressor, "threshold_tokens", 0)
                         or 0

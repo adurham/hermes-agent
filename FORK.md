@@ -16343,3 +16343,71 @@ not system `python3` — this repo requires 3.11+) — no regressions.
 `test_delegate.py` has 3 pre-existing unrelated failures (schema-shape
 assertions about `role`/`output_schema` advertisement) confirmed present
 on a clean `git stash` of this change too.
+
+### Fork-only fix — 2026-09-10 (usage anchor poisoned by folded Anthropic server-tool passes, causing premature/unnecessary Pre-API compression)
+
+**Symptom:** user-reported live, twice in one day, in two different
+sessions. The context status bar and the "Pre-API compression: ~N tokens
+>= threshold" log line both jumped far above the real conversation size
+right after a turn that used Anthropic's native `web_search` tool, then
+triggered an unwanted (and slow — 120-250s) compaction pass on a session
+that had not meaningfully grown. Confirmed from `agent.log`:
+session `20260910_004217_246abf` call #116 `in=395153` (clean) -> call
+#117 `in=800044 server_tool_passes=1` -> "Pre-API compression: ~801,731
+request tokens >= 800,000 threshold" fired immediately after; session
+`20260910_114733_8fc610` call #392 `in=403827` (clean) -> call #393
+`in=1231826 server_tool_passes=2` -> "Pre-API compression: ~1,232,996
+request tokens >= 800,000 threshold" fired, and the very next call, #394,
+reported `in=417807` (clean) — proving the real context was nowhere near
+800K-1.2M and the compaction pass was pure waste.
+
+**Root cause:** Anthropic folds every internal server-tool inference pass
+(web_search/web_fetch) into ONE cumulative `prompt_tokens` figure with no
+other marker, so a turn with N passes can report ~(N+1)x the real
+next-request context size. This class of bug was already root-caused and
+fixed 2026-07-24 (session `20260723_211736_99ee22`) at two sites: the
+post-tool-call tail-check gate (`conversation_loop.py` ~line 8584, guarded
+by `last_server_tool_requests`) and `ContextCompressor.
+update_from_response()`'s guard on `last_real_prompt_tokens`. Both already
+skip trusting an inflated reading. The USAGE ANCHOR capture site
+(`conversation_loop.py` ~line 4859, `capture_usage_anchor()` fed straight
+from `aggregator_usage.prompt_tokens`) was missed — it had no equivalent
+guard. This anchor is exactly what `_midturn_request_pressure_tokens()` ->
+`anchored_context_tokens()` uses to compute the figure the mid-turn
+pre-API compression guard compares against `threshold_tokens`
+(`conversation_loop.py` ~line 2977). Once an inflated reading overwrote
+the anchor, EVERY subsequent turn until the next clean reading computed
+`inflated_anchor + small_delta_since`, which can spuriously cross the
+compression threshold turn after turn even though the real context barely
+grew — a fourth, previously-unguarded consumer of the same
+server-tool-inflation hazard.
+
+**Fix:** `agent/conversation_loop.py`, the `capture_usage_anchor()` call
+site (~line 4859): gate the capture on `not usage_dict.get(
+"server_tool_requests")`, the same field the two 2026-07-24 fixes already
+check, so an inflated reading is skipped entirely and the anchor is left
+at its last trustworthy (or absent) value — exactly the "leave it at its
+last trustworthy value" pattern `ContextCompressor.update_from_response()`
+already uses for `last_real_prompt_tokens`.
+
+**Files:** `agent/conversation_loop.py` (the `capture_usage_anchor()` call
+site), `tests/run_agent/test_usage_anchor_excludes_server_tool_inflation.py`
+(new — mirrors `test_compression_trigger_excludes_server_tool_inflation.py`'s
+standalone-replica pattern for the anchor-capture gate specifically).
+
+**Verification:** 3 new regression tests, all passing:
+`test_inflated_reading_does_not_overwrite_anchor`,
+`test_clean_reading_still_updates_anchor`,
+`test_stale_anchor_survives_an_inflated_turn`. Also ran the sibling
+suites unmodified: `tests/run_agent/
+test_compression_trigger_excludes_server_tool_inflation.py` (4 passed),
+`tests/agent/test_usage_anchor.py` (12 passed),
+`tests/agent/test_context_compressor.py` (147 passed),
+`tests/run_agent/test_413_compression.py`,
+`tests/agent/test_native_preflight_estimate.py` — 196 passed total across
+those three, zero regressions. `python -c "import agent.conversation_loop"`
+confirms no syntax/import breakage.
+
+**Merge note:** pure fork-local fix — upstream hermes-agent has no
+`agent/fork/anthropic_native_web_search.py` (the trigger) and no
+`server_tool_requests`/usage-anchor machinery for this to apply to.
