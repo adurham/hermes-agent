@@ -136,19 +136,46 @@ def _run(script, clock, monkeypatch, **kwargs):
     )
 
 
-def test_keepalive_only_stream_dies_on_the_no_progress_window(monkeypatch):
-    """A ping-only zombie must die at the progress window, NOT run forever.
+def test_long_thinking_silence_before_first_content_is_not_a_stall(monkeypatch):
+    """REGRESSION (found live 2026-09-10): pre-content silence must NOT be killed.
 
-    This is the case the httpx read timeout can never catch: every ping is a
-    successful read that re-arms it.
+    ``thinking.display`` defaults to "omitted", so a model reasoning at max
+    effort emits nothing but keepalives for minutes before any content. An
+    earlier version of this fix armed the 60s content window from stream open
+    and killed a healthy claude-fable-5-1 consult at 253.6s mid-thought.
     """
     clock = _Clock()
-    script = [_ping(20.0) for _ in range(60)]  # 20 minutes of pure keepalive
+    # ~5 minutes of pure thinking keepalives, THEN real content, then done.
+    script = [_ping(20.0) for _ in range(15)] + [_text(5.0) for _ in range(4)]
+    result = _run(script, clock, monkeypatch, no_progress_timeout=60.0, total_ceiling=2400.0)
+    assert result == "done"
+    assert clock.t - 1000.0 > 300.0, "test must actually cross a long silent phase"
+
+
+def test_content_that_starts_then_stalls_is_caught(monkeypatch):
+    """Once content flows, a stall IS real and must trip the window."""
+    clock = _Clock()
+    script = [_text(1.0), _text(1.0)] + [_ping(20.0) for _ in range(40)]
+    with pytest.raises(TimeoutError) as exc:
+        _run(script, clock, monkeypatch, no_progress_timeout=60.0, total_ceiling=2400.0)
+    assert "content stopped" in str(exc.value)
+    # Caught on the stall window, not the far-away ceiling.
+    assert clock.t - 1000.0 < 200.0
+
+
+def test_keepalive_only_stream_dies_on_the_total_ceiling(monkeypatch):
+    """A ping-only zombie must still terminate — via the ceiling.
+
+    This is the case the httpx read timeout can never catch: every ping is a
+    successful read that re-arms it. It cannot be caught by the content window
+    (that would be indistinguishable from legitimate thinking silence), so the
+    ceiling is what bounds it.
+    """
+    clock = _Clock()
+    script = [_ping(20.0) for _ in range(120)]
     with pytest.raises(TimeoutError) as exc:
         _run(script, clock, monkeypatch, no_progress_timeout=60.0, total_ceiling=600.0)
-    assert "no-progress timeout" in str(exc.value)
-    # Died on silence (~60s), not on the 600s ceiling and not at 420s.
-    assert clock.t - 1000.0 < 120.0
+    assert "total ceiling" in str(exc.value)
 
 
 def test_slow_but_generating_stream_is_allowed_to_finish(monkeypatch):

@@ -4319,23 +4319,29 @@ def create_anthropic_message(
 
     ``total_ceiling``: optional absolute wall-clock backstop (seconds) on the
     streamed event loop. ``no_progress_timeout`` + ``is_progress_event``:
-    optional forward-progress deadline — the stream must produce its first
-    substantive payload, and then a further one every window, or it is
-    abandoned.
+    optional STALL deadline, armed only once the stream has produced its first
+    substantive payload.
 
-    All three exist because the SDK/httpx ``timeout`` is a per-READ (idle)
-    timeout, NOT a total budget, and Anthropic emits content-free ``ping``
-    keepalives every ~10-25s during a long extended-thinking turn. Every ping
-    is a successful read, so the configured timeout is re-armed forever: a
-    keepalive-only zombie stream never dies, and a genuinely slow stream runs
-    unbounded past its configured budget. This mirrors the three-regime model
-    the Codex Responses adapter already uses (see ``_CodexCompletionsAdapter``
-    in ``agent/auxiliary_client.py``):
+    These exist because the SDK/httpx ``timeout`` is a per-READ (idle) timeout,
+    NOT a total budget, and Anthropic emits content-free ``ping`` keepalives
+    every ~10-25s during a long extended-thinking turn. Every ping is a
+    successful read, so the configured timeout is re-armed forever and a
+    stream that will never finish is never killed.
 
-      1. First payload must arrive within ``no_progress_timeout``.
-      2. Every substantive event re-arms that window; keepalive/lifecycle
-         frames do NOT. A live stream is never killed for being slow.
-      3. ``total_ceiling`` bounds the pathological one-token-per-window drip.
+    The two bounds deliberately cover different phases, because on this wire
+    "no content" does not mean "no progress":
+
+      1. BEFORE the first substantive payload, bounded ONLY by
+         ``total_ceiling``. ``thinking.display`` defaults to "omitted" on
+         adaptive-thinking models, so a model reasoning at high/max effort
+         legitimately emits nothing but keepalives for MINUTES. Verified the
+         hard way 2026-09-10: a 60s content-based window applied from the
+         start killed a healthy claude-fable-5-1 call at 253.6s mid-thought.
+         Silence here is the expected shape of the request, not a stall.
+      2. AFTER the first substantive payload, ``no_progress_timeout`` arms and
+         each further substantive event re-arms it; keepalive/lifecycle frames
+         do NOT. Content that starts flowing and then stops IS a real stall,
+         and this catches it without waiting for the ceiling.
 
     Both raise ``TimeoutError``, phrased with "timed out" so the auxiliary
     client's ``_is_timeout_error()`` classification treats them exactly like a
@@ -4375,9 +4381,10 @@ def create_anthropic_message(
             _idle_window = _coerce_positive_seconds(no_progress_timeout)
             _bounded = _ceiling is not None or _idle_window is not None
             _stream_started = time.monotonic()
-            _progress_deadline = (
-                _stream_started + _idle_window if _idle_window is not None else None
-            )
+            # Armed lazily: stays None until the first substantive payload, so
+            # pre-content thinking silence is bounded only by _ceiling. See the
+            # two-phase rationale in the docstring.
+            _progress_deadline = None
             with stream_fn(**stream_kwargs) as stream:
                 if callable(on_response):
                     try:
@@ -4428,11 +4435,10 @@ def create_anthropic_message(
                                 f"{_now - _stream_started:.1f}s without completing "
                                 f"(total ceiling {_ceiling:.1f}s)"
                             )
-                        if _idle_window is None or _progress_deadline is None:
+                        if _idle_window is None:
                             continue
-                        # Only substantive payloads re-arm the window;
-                        # keepalive/lifecycle frames deliberately do not, so a
-                        # ping-only zombie stream still dies on schedule.
+                        # Only substantive payloads arm/re-arm the window;
+                        # keepalive and lifecycle frames deliberately do not.
                         _is_progress = True
                         if callable(is_progress_event):
                             try:
@@ -4445,12 +4451,14 @@ def create_anthropic_message(
                                 )
                                 _is_progress = True
                         if _is_progress:
+                            # First content also ARMS the window; before this
+                            # point silence is extended thinking, not a stall.
                             _progress_deadline = _now + _idle_window
-                        elif _now >= _progress_deadline:
+                        elif _progress_deadline is not None and _now >= _progress_deadline:
                             raise TimeoutError(
-                                f"{log_prefix}Anthropic stream timed out: no "
-                                f"substantive payload within {_idle_window:.1f}s "
-                                f"(no-progress timeout, "
+                                f"{log_prefix}Anthropic stream timed out: "
+                                f"content stopped for {_idle_window:.1f}s after "
+                                f"starting (no-progress timeout, "
                                 f"{_now - _stream_started:.1f}s elapsed)"
                             )
                 return stream.get_final_message()
