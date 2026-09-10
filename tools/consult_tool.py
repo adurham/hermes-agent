@@ -26,7 +26,7 @@ Design notes:
 
 import difflib
 import json
-from typing import Optional
+from typing import Any, Optional
 
 
 # Hard caps so a runaway question/context can't blow the aux call's context
@@ -436,6 +436,37 @@ CONSULT_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
+def _consult_owns_own_deadline(args: dict, parent_agent: Any = None) -> bool:
+    """Registry hook: consult's whole runtime is one bounded auxiliary call.
+
+    A consult call does nothing but ``call_llm(task="consult")`` — no local
+    work, no supervised children — so the auxiliary client's own progress
+    window + stream ceiling ARE this tool's deadline. Applying the executor's
+    generic per-call bound on top of them just pre-empts the tighter, more
+    capable layer: the executor cannot cancel the in-flight request, so the
+    provider call keeps running detached, and the configured
+    ``auxiliary.consult.fallback`` (which lives inside the aux client) never
+    gets a chance to run.
+
+    Observed 2026-09-06 through 2026-09-10: five consult calls to
+    claude-fable-5-1 at ``reasoning_effort: max`` died at exactly 420.0s with
+    "Error executing tool 'consult': timed out after 420.0s". A sixth,
+    identical call completed normally in 364.8s — the model simply needs
+    ~5-7 minutes at max effort, and the generic bound was amputating it
+    mid-thought rather than any real hang occurring.
+
+    Delegates the decision so the two layers can't silently invert again:
+    returns True only while consult's own in-band ceiling actually exceeds
+    the generic deadline, and fails CLOSED if that can't be determined.
+    """
+    try:
+        from agent.auxiliary_client import aux_backed_tool_owns_own_deadline
+
+        return aux_backed_tool_owns_own_deadline("consult")
+    except Exception:
+        return False
+
+
 registry.register(
     name="consult",
     toolset="consult",
@@ -448,5 +479,6 @@ registry.register(
         effort=args.get("effort"),
     ),
     check_fn=check_consult_requirements,
+    owns_own_deadline=_consult_owns_own_deadline,
     emoji="🧭",
 )
