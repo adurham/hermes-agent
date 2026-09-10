@@ -2448,6 +2448,26 @@ class _AnthropicCompletionsAdapter:
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
+            # Progress-aware stream deadlines, matching the Codex Responses
+            # adapter's three regimes. The per-call ``timeout`` forwarded
+            # above is an httpx per-READ (idle) timeout, not a total budget,
+            # and Anthropic emits content-free ``ping`` keepalives every
+            # ~10-25s during a long extended-thinking turn — each one is a
+            # successful read that re-arms it, so before these bounds a
+            # keepalive-only zombie never died and a slow reasoning call
+            # (consult -> claude-fable-5-1 at reasoning_effort: max) ran
+            # unbounded past ``auxiliary.consult.timeout``. The only thing
+            # stopping it was the tool executor's generic 420s per-call
+            # deadline firing from OUTSIDE, which abandons the worker without
+            # cancelling the HTTP request, hands the model "timed out after
+            # 420.0s", and never runs the configured provider fallback.
+            # Raising TimeoutError in-band here keeps the failure inside
+            # _is_timeout_error() classification and the normal fallback chain.
+            total_ceiling=_aux_stream_total_ceiling(kwargs.get("timeout")),
+            no_progress_timeout=_anthropic_no_progress_timeout(
+                kwargs.get("timeout")
+            ),
+            is_progress_event=_anthropic_event_has_content,
             # Per streamed event: record provider-response timing always, but
             # tick the forward-progress hook (hosts watching liveness —
             # gateway session hygiene / the compression commit fence) only
@@ -2501,6 +2521,88 @@ class _AnthropicCompletionsAdapter:
             model=model,
             usage=usage,
         )
+
+
+def _anthropic_no_progress_timeout(
+    effective_timeout: Optional[float],
+) -> float:
+    """Forward-progress window for a streamed Anthropic auxiliary call.
+
+    Same shape as the Codex Responses adapter's regime 1/2 bound: the default
+    no-progress window, clamped down to the configured timeout when that is
+    shorter (a task that only budgeted 30s should not wait 60s for a first
+    token). Deliberately NOT clamped up — the window measures silence, not
+    total runtime; a long-but-generating reasoning stream is bounded by
+    ``_aux_stream_total_ceiling`` instead.
+    """
+    window = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
+    try:
+        if effective_timeout is not None and float(effective_timeout) > 0:
+            window = min(window, float(effective_timeout))
+    except (TypeError, ValueError):
+        pass
+    return window
+
+
+def aux_backed_tool_owns_own_deadline(task: str) -> bool:
+    """Whether a tool whose whole runtime is ONE ``call_llm(task=...)`` should
+    bypass the executor's generic per-call deadline.
+
+    True when this task's own in-band worst case can exceed that deadline —
+    i.e. whenever the generic bound would fire FIRST and pre-empt the tool's
+    own machinery. That is the normal case, not an edge case: the aux stream
+    ceiling floor (``_AUX_STREAM_CEILING_FLOOR_SECONDS``, 600s) sits above the
+    executor's default (``tools.concurrent_batch``, 420s), so for every
+    realistic ``auxiliary.<task>.timeout`` the two layers are inverted.
+
+    Pre-emption is not a safe fallback here, it is a strictly worse outcome:
+
+      * The executor cannot cancel the in-flight HTTP request. It abandons the
+        worker, so the provider call keeps running and burning budget while
+        detached from any consumer of its result.
+      * The configured fallback chain (``auxiliary.<task>.fallback``) lives
+        INSIDE the aux client. Killing the call from outside means the
+        fallback model is never tried — the user configured a recovery path
+        that can never execute.
+      * The model is told "timed out after 420.0s", which reads as a hard
+        failure rather than "the reference model is still thinking".
+
+    Bypassing does NOT make the tool unbounded — it hands bounding to the
+    layer that can actually do it. The aux path applies a no-progress window
+    (default 60s) plus an absolute ceiling, so a dead or keepalive-only stream
+    now dies in ~60s, roughly SEVEN TIMES faster than the generic deadline it
+    replaces, while a slow-but-generating reasoning stream is allowed to
+    finish. Tighter on the failure that matters, looser only on success.
+
+    Only for tools whose ENTIRE runtime is the bounded aux call (``consult``).
+    A tool that merely uses an aux call as one step inside otherwise unbounded
+    work (``mcp``, whose runtime is an arbitrary MCP server round-trip) must
+    keep the generic deadline.
+    """
+    try:
+        ceiling = _aux_stream_total_ceiling(_get_task_timeout(task))
+    except Exception:
+        # Fail CLOSED, matching the registry hook: if we cannot prove the
+        # in-band bound is the tighter one, keep the generic deadline.
+        logger.debug(
+            "aux deadline-ownership check failed for task %s; keeping the "
+            "generic tool deadline", task, exc_info=True,
+        )
+        return False
+    try:
+        from agent.tool_executor import _resolve_sequential_tool_timeout
+
+        generic = _resolve_sequential_tool_timeout()
+    except Exception:
+        logger.debug(
+            "could not resolve the generic tool deadline for task %s; "
+            "keeping it", task, exc_info=True,
+        )
+        return False
+    # Generic bound disabled (0/None) => nothing to pre-empt, nothing to skip.
+    if generic is None:
+        return False
+    return ceiling > generic
 
 
 class _AnthropicChatShim:

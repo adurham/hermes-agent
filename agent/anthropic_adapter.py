@@ -31,6 +31,7 @@ import secrets
 import socket
 import stat
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
@@ -4266,6 +4267,21 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
     return False
 
 
+def _coerce_positive_seconds(raw: Any) -> Optional[float]:
+    """Coerce a seconds value to a positive float, or ``None``.
+
+    ``None``, non-numeric, and non-positive values all mean "no bound" — a
+    deadline is only ever applied when the caller passed a usable one.
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def create_anthropic_message(
     client: Any,
     api_kwargs: dict,
@@ -4274,6 +4290,9 @@ def create_anthropic_message(
     prefer_stream: bool = True,
     on_stream_event=None,
     on_response=None,
+    total_ceiling: Optional[float] = None,
+    no_progress_timeout: Optional[float] = None,
+    is_progress_event=None,
 ) -> Any:
     """Create an Anthropic message, aggregating via stream when available.
 
@@ -4297,6 +4316,32 @@ def create_anthropic_message(
     parsed ``Message`` drops — Nous Portal's ``x-nous-credits-*`` balance family
     in particular. Only fires on the streaming path, which is the one the main
     turn loop takes.
+
+    ``total_ceiling``: optional absolute wall-clock backstop (seconds) on the
+    streamed event loop. ``no_progress_timeout`` + ``is_progress_event``:
+    optional forward-progress deadline — the stream must produce its first
+    substantive payload, and then a further one every window, or it is
+    abandoned.
+
+    All three exist because the SDK/httpx ``timeout`` is a per-READ (idle)
+    timeout, NOT a total budget, and Anthropic emits content-free ``ping``
+    keepalives every ~10-25s during a long extended-thinking turn. Every ping
+    is a successful read, so the configured timeout is re-armed forever: a
+    keepalive-only zombie stream never dies, and a genuinely slow stream runs
+    unbounded past its configured budget. This mirrors the three-regime model
+    the Codex Responses adapter already uses (see ``_CodexCompletionsAdapter``
+    in ``agent/auxiliary_client.py``):
+
+      1. First payload must arrive within ``no_progress_timeout``.
+      2. Every substantive event re-arms that window; keepalive/lifecycle
+         frames do NOT. A live stream is never killed for being slow.
+      3. ``total_ceiling`` bounds the pathological one-token-per-window drip.
+
+    Both raise ``TimeoutError``, phrased with "timed out" so the auxiliary
+    client's ``_is_timeout_error()`` classification treats them exactly like a
+    request timeout and runs the normal provider fallback chain. Leaving both
+    at ``None`` (the default) preserves the historical unbounded behavior for
+    callers that manage their own liveness, e.g. the main turn loop.
     """
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
@@ -4326,6 +4371,13 @@ def create_anthropic_message(
         stream_kwargs = dict(api_kwargs)
         stream_kwargs.pop("stream", None)
         try:
+            _ceiling = _coerce_positive_seconds(total_ceiling)
+            _idle_window = _coerce_positive_seconds(no_progress_timeout)
+            _bounded = _ceiling is not None or _idle_window is not None
+            _stream_started = time.monotonic()
+            _progress_deadline = (
+                _stream_started + _idle_window if _idle_window is not None else None
+            )
             with stream_fn(**stream_kwargs) as stream:
                 if callable(on_response):
                     try:
@@ -4335,19 +4387,75 @@ def create_anthropic_message(
                             "%son_response callback failed",
                             log_prefix, exc_info=True,
                         )
-                if callable(on_stream_event):
+                if callable(on_stream_event) or _bounded:
                     # Consume the event stream manually so each event can
                     # tick the caller's progress callback; get_final_message
-                    # then returns the accumulated snapshot.
+                    # then returns the accumulated snapshot. This loop is
+                    # also the only place the deadlines below can be
+                    # enforced — the per-read idle timeout inside the SDK is
+                    # re-armed by every keepalive ping and so never fires.
+                    #
+                    # Not every stream object supports iteration: the SDK's
+                    # MessageStream does, but Anthropic-compatible shims and
+                    # restricted backends may expose only get_final_message().
+                    # Those cannot carry per-event deadlines by construction,
+                    # so fall through to the aggregate call rather than
+                    # raising TypeError on a path that used to work.
+                    _iter_fn = getattr(stream, "__iter__", None)
+                    if not callable(_iter_fn):
+                        logger.debug(
+                            "%sAnthropic stream object is not iterable; "
+                            "per-event progress/deadline enforcement "
+                            "unavailable for this client",
+                            log_prefix,
+                        )
+                        return stream.get_final_message()
                     for _event in stream:
-                        try:
-                            on_stream_event(_event)
-                        except Exception:
-                            logger.debug(
-                                "%son_stream_event callback failed",
-                                log_prefix, exc_info=True,
+                        if callable(on_stream_event):
+                            try:
+                                on_stream_event(_event)
+                            except Exception:
+                                logger.debug(
+                                    "%son_stream_event callback failed",
+                                    log_prefix, exc_info=True,
+                                )
+                        if not _bounded:
+                            continue
+                        _now = time.monotonic()
+                        if _ceiling is not None and _now - _stream_started >= _ceiling:
+                            raise TimeoutError(
+                                f"{log_prefix}Anthropic stream timed out after "
+                                f"{_now - _stream_started:.1f}s without completing "
+                                f"(total ceiling {_ceiling:.1f}s)"
+                            )
+                        if _idle_window is None or _progress_deadline is None:
+                            continue
+                        # Only substantive payloads re-arm the window;
+                        # keepalive/lifecycle frames deliberately do not, so a
+                        # ping-only zombie stream still dies on schedule.
+                        _is_progress = True
+                        if callable(is_progress_event):
+                            try:
+                                _is_progress = bool(is_progress_event(_event))
+                            except Exception:
+                                logger.debug(
+                                    "%sis_progress_event callback failed; "
+                                    "treating event as progress",
+                                    log_prefix, exc_info=True,
+                                )
+                                _is_progress = True
+                        if _is_progress:
+                            _progress_deadline = _now + _idle_window
+                        elif _now >= _progress_deadline:
+                            raise TimeoutError(
+                                f"{log_prefix}Anthropic stream timed out: no "
+                                f"substantive payload within {_idle_window:.1f}s "
+                                f"(no-progress timeout, "
+                                f"{_now - _stream_started:.1f}s elapsed)"
                             )
                 return stream.get_final_message()
+        except TimeoutError:
+            raise
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):
                 raise

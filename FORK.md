@@ -3,6 +3,76 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### `consult` failed at exactly 420.0s, repeatedly — 2026-09-10
+
+**Symptom (user-reported, screenshot):** `consult 420.0s [error]` in the CLI.
+Five occurrences 2026-09-06 → 2026-09-10, always the same number to the
+centisecond:
+
+    WARNING agent.tool_executor: sequential tool consult timed out after 420.0s
+    WARNING agent.tool_executor: Tool consult returned error (420.01s): ...
+
+An identical consult on the same model completed fine in **364.8s**, which is
+the tell: nothing was hung. `claude-fable-5-1` at `reasoning_effort: max`
+legitimately needs ~5–7 minutes, and 420s was amputating it mid-thought.
+
+**Root cause — two stacked defects:**
+
+1. **The Anthropic auxiliary streaming path had no forward-progress bound at
+   all.** `auxiliary.consult.timeout: 180` is forwarded to the SDK, but that is
+   an httpx *per-READ (idle)* timeout, **not** a total budget. Anthropic emits
+   content-free `ping` keepalives every ~10–25s during a long extended-thinking
+   turn; every ping is a successful read that re-arms the timer. So the
+   configured timeout could never fire, and a keepalive-only zombie stream
+   could never die. The Codex Responses adapter in the same file already had a
+   three-regime model for exactly this; the Anthropic adapter had none.
+
+2. **Layering inversion — the generic executor deadline always won.** The aux
+   stream ceiling *floor* (`_AUX_STREAM_CEILING_FLOOR_SECONDS` = 600s) sits
+   structurally **above** the executor's generic per-call deadline
+   (`_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S` = 420s). For every realistic config
+   the in-band bound could never fire first. That is strictly worse than it
+   sounds: the executor **cannot cancel the in-flight HTTP request** — it
+   abandons the worker, so the call keeps running and burning budget while
+   detached from any consumer — and `auxiliary.consult.fallback` lives *inside*
+   the aux client, so the fallback model the user configured was **never tried
+   even once**.
+
+**Fix:**
+
+* `agent/anthropic_adapter.py::create_anthropic_message` gains
+  `total_ceiling`, `no_progress_timeout`, and `is_progress_event`. Keepalive
+  and lifecycle frames deliberately do **not** re-arm the progress window, so
+  a ping-only zombie still dies on schedule. Both raise `TimeoutError` phrased
+  with "timed out" so the aux client's existing `_is_timeout_error()`
+  classification runs the normal provider-fallback chain. All three default to
+  `None` → historical behavior preserved for the main turn loop.
+* `agent/auxiliary_client.py` wires them from the per-call timeout, reusing the
+  existing `_anthropic_event_has_content` as the keepalive discriminator.
+* `tools/consult_tool.py` registers `owns_own_deadline`, delegating to the new
+  `aux_backed_tool_owns_own_deadline("consult")`, which returns True only while
+  the in-band ceiling genuinely exceeds the generic bound and **fails CLOSED**
+  otherwise — so the two layers cannot silently invert again.
+
+**This makes failure detection ~7× faster, not slower.** A dead or zombie
+stream now dies on the 60s no-progress window instead of the 420s generic
+deadline. Only the *success* path got longer, which is the point.
+
+**Verification:** new `tests/agent/test_anthropic_aux_stream_deadlines.py`
+(10 tests) drives the real `create_anthropic_message` and the real
+`registry.tool_owns_own_deadline` hook the executor actually calls — zombie
+dies on silence, slow-but-generating stream crosses 420s and completes,
+pathological drip still hits the ceiling, siblings (`mcp`, `vision_analyze`,
+`web_extract`, `delegate_task`) keep the generic deadline. Regression sweep of
+440 anthropic/auxiliary/consult tests green; the broader keyword sweep went
+from 58 baseline failures to 50 with these changes, i.e. **zero new failures**
+(baseline captured via `git stash`). Live end-to-end consult through the public
+tool entry point returned real generated text.
+
+**Gotcha found while testing:** not every Anthropic stream object is iterable —
+compat shims can expose only `get_final_message()`. The per-event loop must
+`__iter__`-guard or it `TypeError`s on a path that previously worked.
+
 ### MCP tool calls leaked a "coroutine was never awaited" warning every time — 2026-09-08
 
 **Symptom (user-reported, screenshot):** every MCP `tools/call` printed
