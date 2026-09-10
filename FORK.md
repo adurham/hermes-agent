@@ -41,12 +41,17 @@ legitimately needs ~5–7 minutes, and 420s was amputating it mid-thought.
 **Fix:**
 
 * `agent/anthropic_adapter.py::create_anthropic_message` gains
-  `total_ceiling`, `no_progress_timeout`, and `is_progress_event`. Keepalive
-  and lifecycle frames deliberately do **not** re-arm the progress window, so
-  a ping-only zombie still dies on schedule. Both raise `TimeoutError` phrased
-  with "timed out" so the aux client's existing `_is_timeout_error()`
-  classification runs the normal provider-fallback chain. All three default to
-  `None` → historical behavior preserved for the main turn loop.
+  `total_ceiling`, `no_progress_timeout`, and `is_progress_event`. The two
+  bounds cover different phases, because on this wire **"no content" does not
+  mean "no progress"**: `thinking.display` defaults to `omitted`, so a model
+  reasoning at max effort legitimately emits nothing but keepalives for
+  minutes. Before the first substantive payload the stream is bounded ONLY by
+  `total_ceiling`; the stall window arms on first content and is re-armed by
+  each further substantive event (keepalives never re-arm it). Both raise
+  `TimeoutError` phrased with "timed out" so the aux client's existing
+  `_is_timeout_error()` classification runs the normal provider-fallback
+  chain. All three default to `None` → historical behavior preserved for the
+  main turn loop.
 * `agent/auxiliary_client.py` wires them from the per-call timeout, reusing the
   existing `_anthropic_event_has_content` as the keepalive discriminator.
 * `tools/consult_tool.py` registers `owns_own_deadline`, delegating to the new
@@ -54,20 +59,24 @@ legitimately needs ~5–7 minutes, and 420s was amputating it mid-thought.
   the in-band ceiling genuinely exceeds the generic bound and **fails CLOSED**
   otherwise — so the two layers cannot silently invert again.
 
-**This makes failure detection ~7× faster, not slower.** A dead or zombie
-stream now dies on the 60s no-progress window instead of the 420s generic
-deadline. Only the *success* path got longer, which is the point.
+**Caught by live testing, worth recording:** the first version of this fix
+armed the content window from stream open. That is wrong on this wire and it
+killed a *healthy* `claude-fable-5-1` consult at 253.6s mid-thought — replacing
+a 420s bug with a 253s one. Pre-content silence is the expected shape of an
+extended-thinking request, not a stall. Only a unit test with a fake clock plus
+a **real** long consult catches this; the mock-only version passed happily.
 
 **Verification:** new `tests/agent/test_anthropic_aux_stream_deadlines.py`
-(10 tests) drives the real `create_anthropic_message` and the real
-`registry.tool_owns_own_deadline` hook the executor actually calls — zombie
-dies on silence, slow-but-generating stream crosses 420s and completes,
-pathological drip still hits the ceiling, siblings (`mcp`, `vision_analyze`,
-`web_extract`, `delegate_task`) keep the generic deadline. Regression sweep of
-440 anthropic/auxiliary/consult tests green; the broader keyword sweep went
-from 58 baseline failures to 50 with these changes, i.e. **zero new failures**
-(baseline captured via `git stash`). Live end-to-end consult through the public
-tool entry point returned real generated text.
+(12 tests) drives the real `create_anthropic_message` and the real
+`registry.tool_owns_own_deadline` hook the executor actually calls — long
+pre-content thinking silence survives, content-then-stall is caught on the
+window, ping-only zombie hits the ceiling, slow-but-generating stream crosses
+420s and completes, siblings (`mcp`, `vision_analyze`, `web_extract`,
+`delegate_task`) keep the generic deadline. 432 anthropic/auxiliary/consult
+tests green; broader keyword sweep went 58 baseline failures → 50, i.e. **zero
+new failures** (baseline captured via `git stash`). **Live end-to-end:** a real
+consult that previously died at 420.0s now runs **331.3s and returns 10,544
+chars** of genuine reference-model output, no fallback engaged.
 
 **Gotcha found while testing:** not every Anthropic stream object is iterable —
 compat shims can expose only `get_final_message()`. The per-event loop must
