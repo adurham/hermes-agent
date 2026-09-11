@@ -2159,7 +2159,8 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     return final_response
 
 
-def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_session_id: str) -> None:
+def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_session_id: str,
+                           workdir: Optional[str] = None) -> None:
     """Title, classify, end and release the cron session after the agent turn has returned."""
     # Bound every DB op so storage failure cannot hold the dispatch guard.
     _session_db = _BoundedCronSessionDB(session_db, job_id)
@@ -2229,6 +2230,16 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
                 job_id, _lifecycle, _end_reason)
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': session lifecycle classification failed: %s", job_id, e)
+    # Stamp the job's workdir on the row BEFORE end_session (same before-close ordering as the
+    # title write, #50536): the sidebar groups sessions by cwd prefix, and a NULL cwd filed every
+    # cron run under __no_project__ even when the job ran inside a repo (#108205). The workdir is
+    # the session's authoritative cwd — _launch_cwd_for_session records none for cron source, so
+    # nothing else writes one. Best-effort like every finalize step.
+    if workdir:
+        try:
+            _session_db.update_session_cwd(_final_cron_session_id, workdir)
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to stamp workdir on session row: %s", job_id, e)
     try:
         _session_db.end_session(_final_cron_session_id, _end_reason)
         # The scheduler owns cron-session finalization. AIAgent.close() also
@@ -2682,10 +2693,12 @@ def run_job(
     finally:
         from cron.scheduler_detached_worker import defer_teardown_to_running_worker
         _worker_teardown_deferred = defer_teardown_to_running_worker(
-            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id)
+            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id,
+            workdir=scope.workdir)
         scope.exit()
         if _session_db and not _worker_teardown_deferred:
-            _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id)
+            _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id,
+                                   workdir=scope.workdir)
         # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
         # teardown, hand the live agent back: delivery needs a live async client.
         # Release subprocesses, terminal sandboxes, browser daemons, and the main OpenAI/httpx client held
