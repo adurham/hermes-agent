@@ -3,8 +3,8 @@ deleted (verify() returns '' on success), and stage_only must honor a
 same-version hash repin (the entry marker design, like facts' identity).
 
 Everything runs inside a temp HERMES_RUNTIME_DIR sandbox: the store and
-facts live under tmp_path, and the lockfile + package registry are faked,
-so no network and no real install state is touched.
+facts live under tmp_path. Most tests use fake package definitions. The
+Node tests use the real package with local archives, without network access.
 """
 
 from __future__ import annotations
@@ -84,6 +84,84 @@ def _arm_lock(monkeypatch, artifacts: list[dict]):
 
 TARGET = "linux-arm64-bionic"
 ENTRY = "stage-test-1.0-linux-arm64-bionic"
+
+
+@pytest.mark.platforms("linux", arch="x86_64")
+def test_real_node_foreign_stage_checks_bytes_without_exec(tmp_path, monkeypatch):
+    import io
+    import zipfile
+
+    from pm import paths
+    from pm.package import machine_matches_binary
+    from pm.registry import get_package
+    from pm.store import current_target
+
+    assert current_target() == "linux-x64"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    store = Store(paths.store_root())
+    # Real Node package/unpacker/verifier, with a hash-verified offline archive.
+    elf = bytearray(b"\x7fELF" + b"\0" * 60)
+    elf[4:7] = b"\x02\x01\x01"  # ELF64, little endian, current ELF version
+    elf[18:20] = (0xB7).to_bytes(2, "little")  # AArch64
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("node-v1.0-linux-arm64/bin/node", elf)
+    data = archive.getvalue()
+    _arm_lock(monkeypatch, [{"url": "https://example.test/node.zip", "sha256": _sha(data)}])
+    cached = store.entry(f"fetch-{_sha(data)}")
+    cached.mkdir(parents=True)
+    (cached / "node.zip").write_bytes(data)
+
+    def refuse_exec(*args, **kwargs):
+        pytest.fail(f"cross-target stage attempted execution: {args}")
+
+    monkeypatch.setattr("pm.packages.subprocess.run", refuse_exec)
+    entry = ensure_mod.stage_only("node", "linux-arm64")
+    node = entry / "bin/node"
+    assert node.read_bytes() == elf
+    assert machine_matches_binary(node, "linux-arm64") is True
+    assert ensure_mod.stage_only("node", "linux-arm64") == entry
+    assert not paths.facts_path().exists()
+    assert not cached.exists()
+
+    # The no-exec path must still diagnose wrong-architecture and missing bytes.
+    elf[18:20] = (0x3E).to_bytes(2, "little")  # x86-64
+    node.write_bytes(elf)
+    assert "not a linux-arm64 binary" in get_package("node").verify(entry, "linux-arm64")
+    node.unlink()
+    assert get_package("node").verify(entry, "linux-arm64")
+
+
+@pytest.mark.platforms("posix")
+def test_real_node_native_install_keeps_smoke_validation(tmp_path, sandbox, monkeypatch):
+    import io
+    import tarfile
+
+    from pm.packages import Nodejs
+    from pm.store import current_target
+
+    # An executable fixture makes native verification observable without a Node download.
+    probe = tmp_path / "native-probes"
+    script = f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{probe}"\nexit 0\n'.encode()
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as payload:
+        member = tarfile.TarInfo("node-v1.0/bin/node")
+        member.mode = 0o755
+        member.size = len(script)
+        payload.addfile(member, io.BytesIO(script))
+    data = archive.getvalue()
+    _arm_lock(monkeypatch, [{"url": "https://example.test/node.tar.gz", "sha256": _sha(data)}])
+    cached = sandbox.entry(f"fetch-{_sha(data)}")
+    cached.mkdir(parents=True)
+    (cached / "node.tar.gz").write_bytes(data)
+    package, facts = Nodejs(), ensure_mod._facts()
+    entry = ensure_mod._install(package, ensure_mod._lockfile(), facts, sandbox, current_target())
+    assert probe.read_text().splitlines() == ["--version", "--version"]
+    assert facts.get("node")["entry"] == entry.name
+    (entry / "bin/node").write_text("#!/bin/sh\nexit 23\n")
+    assert "23" in package.verify(entry, current_target())
 
 
 def test_stage_only_keeps_valid_entry(tmp_path, sandbox, monkeypatch):

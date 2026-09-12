@@ -19,7 +19,7 @@ from pm.package import (
     _probe_reason,
 )
 from pm.registry import register
-from pm.store import ALL_TARGETS, Store, flatten_single_dir, merge_tree
+from pm.store import ALL_TARGETS, Store, current_target, flatten_single_dir, merge_tree
 from pm.update import (
     btbn_index,
     btbn_versions,
@@ -80,16 +80,15 @@ class BinaryPackage(Package):
         return entry / rel if rel else None
 
     def verify(self, entry: Path, target: str) -> str:
-        """Return '' when the entry is usable on target, else why not:
-        a missing binary, a wrong-arch binary, or a --version probe that
-        fails to exec, times out, or exits nonzero."""
+        """Check file/architecture evidence for every target, plus a smoke
+        probe only on the native target. Never execute cross-staged bytes."""
         binary = self.binary(entry, target)
         if binary is None:
             return "no binary_rel for this target"
         reason = self._binary_reason(binary, entry, target)
         if reason:
             return reason
-        if not self.probe_version:
+        if not self.probe_version or target != current_target():
             return ""
         try:
             proc = subprocess.run(

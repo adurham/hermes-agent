@@ -152,20 +152,25 @@ def test_debpackage_unpack_hardened(tmp_path: Path):
         _P().unpack(evil, tmp_path / "staged2", "linux-arm64-bionic")
 
 
-def test_python_bionic_verify_is_file_evidence(tmp_path: Path):
+@pytest.mark.parametrize("name", ["python", "uv", "node"])
+def test_bionic_verify_is_file_evidence(tmp_path: Path, monkeypatch, name):
     """bionic verify never executes the staged binary; presence is the
     contract (the digest already proved the bytes)."""
     from pm.registry import get_package
 
-    py = get_package("python")
-    bin_rel = Path(py.prefix_rel) / py.main_rel("linux-arm64-bionic")
+    def refuse_exec(*args, **kwargs):
+        pytest.fail(f"bionic verification attempted execution: {args}")
+
+    monkeypatch.setattr("pm.packages.subprocess.run", refuse_exec)
+    package = get_package(name)
+    bin_rel = Path(package.prefix_rel) / package.main_rel("linux-arm64-bionic")
     entry = tmp_path / "entry"
     (entry / bin_rel).parent.mkdir(parents=True)
     (entry / bin_rel).write_bytes(b"bionic-elf-bytes")
-    assert py.verify(entry, "linux-arm64-bionic") == ""
+    assert package.verify(entry, "linux-arm64-bionic") == ""
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert "missing" in py.verify(empty, "linux-arm64-bionic")
+    assert "missing" in package.verify(empty, "linux-arm64-bionic")
 
 
 def test_bionic_binary_and_env_contract(tmp_path: Path):

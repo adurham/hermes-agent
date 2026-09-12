@@ -331,7 +331,7 @@ def lock_and_sync(
     """Prepare a fresh generation using explicit inputs and a prepared engine.
 
     The caller selects the seed; uv retains its compatible versions. Repair
-    copies the recorded workspace verbatim and never reads current manifests.
+    copies the recorded build inputs and never reads current manifests.
     Resolver conflicts remain distinct from download/build failures.
     """
     if root.exists() or root.is_symlink():
@@ -345,7 +345,8 @@ def lock_and_sync(
             raise InstallError("venv", f"recorded workspace is missing: {replay}")
         # Sibling generations keep external relative paths at the same depth;
         # snapshotted members and their exact lock travel with the workspace.
-        shutil.copytree(replay, root, ignore=shutil.ignore_patterns("__pycache__", ".venv", "build", "*.egg-info"))
+        # Use the snapshot's exclusions: build/ may hold an in-tree backend.
+        shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
         frozen = True
 
     environment.sync(root, extras=extras, frozen=frozen)

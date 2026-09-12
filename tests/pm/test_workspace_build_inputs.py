@@ -49,6 +49,90 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     assert not (core / "uv.lock").exists()
 
 
+def test_repair_replays_saved_in_tree_build_backend(tmp_path):
+    import os
+    import tomllib
+
+    from pm.environment import PythonEnvironment
+
+    core, plugin = tmp_path / "core", tmp_path / "plugin"
+    core.mkdir()
+    (plugin / "build").mkdir(parents=True)
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="replay-core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.uv]\npackage=false\nno-index=true\n', encoding="utf-8",
+    )
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="replay-plugin"\nversion="1.0"\nrequires-python=">=3.11"\n'
+        '[build-system]\nrequires=[]\nbuild-backend="backend"\nbackend-path=["build"]\n',
+        encoding="utf-8",
+    )
+    (plugin / "plugin.yaml").write_text("name: replay-plugin\n", encoding="utf-8")
+    (plugin / "replay_plugin.py").write_text("VALUE = 'recorded plugin bytes'\n", encoding="utf-8")
+    # A real, dependency-free PEP 517/660 backend. Its directory is source, not output.
+    (plugin / "build/backend.py").write_text('''
+from pathlib import Path
+from zipfile import ZipFile
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    name = "replay_plugin-1.0-py3-none-any.whl"
+    dist = "replay_plugin-1.0.dist-info"
+    entries = {
+        "replay_plugin.py": Path("replay_plugin.py").read_bytes(),
+        dist + "/METADATA": "Metadata-Version: 2.1\\nName: replay-plugin\\nVersion: 1.0\\n",
+        dist + "/WHEEL": "Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
+    }
+    entries[dist + "/RECORD"] = "".join(path + ",,\\n" for path in entries)
+    with ZipFile(Path(wheel_directory) / name, "w") as wheel:
+        for path, body in entries.items():
+            wheel.writestr(path, body)
+    return name
+
+build_editable = build_wheel
+''', encoding="utf-8")
+    inputs = {p.relative_to(plugin): p.read_bytes() for p in plugin.rglob("*") if p.is_file()}
+    uv = shutil.which("uv")
+    assert uv, "saved backend replay test requires real uv"
+    saved, repaired = tmp_path / "saved", tmp_path / "repaired"
+    initial = PythonEnvironment(
+        uv=Path(uv), python=Path(sys.executable), destination=tmp_path / "initial-env",
+        cache=tmp_path / "initial-cache", env=dict(os.environ), offline=True,
+    )
+    workspace.lock_and_sync([plugin], [], root=saved, source=core, seed_lock=None,
+                            environment=initial)
+    [relative] = tomllib.loads((saved / "pyproject.toml").read_text())["tool"]["uv"]["workspace"]["members"]
+    assert all((saved / relative / path).read_bytes() == data for path, data in inputs.items())
+    saved_lock = (saved / "uv.lock").read_bytes()
+
+    # Neither live manifests nor the live backend can provide repair's build inputs.
+    (core / "pyproject.toml").write_text("damaged [", encoding="utf-8")
+    (plugin / "pyproject.toml").write_text("damaged [", encoding="utf-8")
+    (plugin / "plugin.yaml").write_text("damaged [", encoding="utf-8")
+    (plugin / "build/backend.py").unlink()
+    (plugin / "replay_plugin.py").write_text("raise RuntimeError('damaged live source')\n", encoding="utf-8")
+    repair = PythonEnvironment(
+        uv=Path(uv), python=Path(sys.executable), destination=tmp_path / "repair-env",
+        # A fresh cache forces uv to invoke the saved backend again, not reuse a wheel.
+        cache=tmp_path / "repair-cache", env=dict(os.environ), offline=True,
+    )
+    workspace.lock_and_sync([plugin], [], root=repaired, source=core, seed_lock=None,
+                            replay=saved, environment=repair)
+    assert (repaired / "uv.lock").read_bytes() == saved_lock
+    assert (saved / "uv.lock").read_bytes() == saved_lock
+    for root in (saved, repaired):
+        assert all((root / relative / path).read_bytes() == data for path, data in inputs.items())
+    for environment in (initial, repair):
+        probe = subprocess.run(
+            [str(environment.executable), "-I", "-c", "import replay_plugin; print(replay_plugin.VALUE)"],
+            cwd=tmp_path, text=True, capture_output=True, check=True, timeout=30,
+        )
+        assert probe.stdout.strip() == "recorded plugin bytes"
+    assert (core / "pyproject.toml").read_text() == "damaged ["
+    assert (plugin / "pyproject.toml").read_text() == "damaged ["
+    assert (plugin / "plugin.yaml").read_text() == "damaged ["
+    assert not (plugin / "build/backend.py").exists()
+
+
 def test_source_refresh_does_not_need_metadata_change_and_refuses_live_root(tmp_path, monkeypatch):
     core = tmp_path / "core"
     core.mkdir()
