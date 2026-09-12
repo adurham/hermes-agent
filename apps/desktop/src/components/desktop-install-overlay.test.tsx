@@ -518,6 +518,39 @@ describe('DesktopInstallOverlay first-run setup', () => {
     })
   })
 
+  it('does not authorize a new URL with an old login result or save before Apply', async () => {
+    const desktop = installDesktopMock(bootstrapState({
+      setupChoice: { platform: 'linux', activeRoot: '/tmp/hermes', local: 'none', bundled: false }
+    }))
+
+    const saveConnectionConfig = vi.fn()
+    Object.assign(desktop, { saveConnectionConfig })
+    desktop.probeConnectionConfig.mockResolvedValue({
+      authMode: 'oauth', baseUrl: 'https://a.example', reachable: true, providers: [], error: null, version: null
+    })
+    let finishLogin!: (value: { connected: boolean }) => void
+    desktop.oauthLoginConnectionConfig.mockReturnValueOnce(new Promise<{ connected: boolean }>(resolve => {
+      finishLogin = resolve
+    }))
+    render(<DesktopInstallOverlay />)
+    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
+    const url = screen.getByPlaceholderText('https://gateway.example.com/hermes')
+    fireEvent.change(url, { target: { value: 'https://a.example' } })
+    fireEvent.click(await screen.findByRole('button', { name: /Sign in with/ }))
+    await waitFor(() => expect(desktop.oauthLoginConnectionConfig).toHaveBeenCalledWith('https://a.example'))
+    fireEvent.change(url, { target: { value: 'https://b.example' } })
+    await waitFor(() => expect(desktop.probeConnectionConfig).toHaveBeenCalledWith('https://b.example'))
+    await act(async () => finishLogin({ connected: true }))
+    fireEvent.click(screen.getByText('Test connection'))
+    expect(desktop.testConnectionConfig).not.toHaveBeenCalled()
+    expect(saveConnectionConfig).not.toHaveBeenCalled()
+    expect(desktop.applyConnectionConfig).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('Back'))
+    fireEvent.click(await screen.findByText('Install Hermes locally'))
+    expect(desktop.continueBootstrapLocal).toHaveBeenCalledTimes(1)
+    expect(saveConnectionConfig).not.toHaveBeenCalled()
+  })
+
   it('offers remote connection from the unsupported packaged install screen', async () => {
     const desktop = installDesktopMock(
       bootstrapState({

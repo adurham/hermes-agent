@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Collect the component graph before the behavioral test deadline starts.
@@ -57,6 +57,178 @@ afterEach(() => {
 })
 
 describe('GatewaySettings', () => {
+  it('releases a pending save after a late probe invalidates its response', async () => {
+    const saved = { ...localConnection, mode: 'remote', remoteUrl: 'https://a.example', remoteTokenSet: true }
+    getConnectionConfig.mockResolvedValue(saved)
+    let finishSave!: (value: typeof saved) => void
+    let finishProbe!: (value: { reachable: boolean; authMode: string; providers: never[] }) => void
+    saveConnectionConfig.mockReturnValueOnce(
+      new Promise<typeof saved>(resolve => {
+        finishSave = resolve
+      })
+    )
+
+    const probeConnectionConfig = vi.fn(
+      () =>
+        new Promise<{ reachable: boolean; authMode: string; providers: never[] }>(resolve => {
+          finishProbe = resolve
+        })
+    )
+
+    Object.assign(window.hermesDesktop, { probeConnectionConfig })
+    render(<GatewaySettings />)
+    const saveButton = (await screen.findByRole('button', { name: 'Save for next restart' })) as HTMLButtonElement
+    await waitFor(() => expect(probeConnectionConfig).toHaveBeenCalledWith('https://a.example'))
+    fireEvent.click(saveButton)
+    expect(saveConnectionConfig).toHaveBeenCalledExactlyOnceWith({
+      mode: 'remote',
+      remoteUrl: 'https://a.example',
+      remoteAuthMode: 'token',
+      remoteToken: undefined
+    })
+    expect(saveButton.disabled).toBe(true)
+    await act(async () => finishProbe({ reachable: true, authMode: 'oauth', providers: [] }))
+    await act(async () => finishSave(saved))
+    expect(saveButton.disabled).toBe(false)
+    expect(screen.getByRole('button', { name: /Sign in with/ })).toBeTruthy()
+    expect(screen.queryByPlaceholderText('Existing token saved')).toBeNull()
+  })
+
+  it('pre-saves OAuth before login and applies the resolved auth mode without requiring a test', async () => {
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'remote', remoteUrl: 'https://login.example' })
+    let finishSave!: () => void
+    saveConnectionConfig.mockReturnValueOnce(
+      new Promise<void>(resolve => {
+        finishSave = resolve
+      })
+    )
+    const oauthLoginConnectionConfig = vi.fn().mockResolvedValue({ connected: true })
+    const applyConnectionConfig = vi.fn().mockResolvedValue(localConnection)
+    const testConnectionConfig = vi.fn()
+    Object.assign(window.hermesDesktop, {
+      oauthLoginConnectionConfig,
+      applyConnectionConfig,
+      testConnectionConfig,
+      probeConnectionConfig: vi.fn().mockResolvedValue({
+        reachable: true,
+        authMode: 'oauth',
+        providers: [{ name: 'password', displayName: 'Username & Password', supportsPassword: true }]
+      })
+    })
+    render(<GatewaySettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }))
+    expect(saveConnectionConfig).toHaveBeenCalledExactlyOnceWith({
+      mode: 'remote',
+      remoteAuthMode: 'oauth',
+      remoteUrl: 'https://login.example'
+    })
+    expect(oauthLoginConnectionConfig).not.toHaveBeenCalled()
+    await act(async () => finishSave())
+    await screen.findByText('Signed in')
+    expect(oauthLoginConnectionConfig).toHaveBeenCalledExactlyOnceWith('https://login.example')
+    fireEvent.click(screen.getByRole('button', { name: 'Save and reconnect' }))
+    await waitFor(() =>
+      expect(applyConnectionConfig).toHaveBeenCalledExactlyOnceWith({
+        mode: 'remote',
+        remoteAuthMode: 'oauth',
+        remoteUrl: 'https://login.example',
+        remoteToken: undefined
+      })
+    )
+    expect(testConnectionConfig).not.toHaveBeenCalled()
+  })
+
+  it('keeps a saved token when blank and requires consent before replacing it in plaintext', async () => {
+    const saved = {
+      ...localConnection,
+      mode: 'remote',
+      remoteUrl: 'https://a.example',
+      remoteTokenSet: true,
+      remoteTokenPreview: 'saved-preview',
+      secureTokenStorage: false,
+      remoteTokenPlainText: true
+    }
+
+    getConnectionConfig.mockResolvedValue(saved)
+    saveConnectionConfig.mockResolvedValue(saved)
+    let finishSave!: (value: typeof saved) => void
+    saveConnectionConfig.mockReturnValueOnce(
+      new Promise<typeof saved>(resolve => {
+        finishSave = resolve
+      })
+    )
+    Object.assign(window.hermesDesktop, {
+      probeConnectionConfig: vi.fn().mockResolvedValue({ reachable: true, authMode: 'token', providers: [] })
+    })
+    render(<GatewaySettings />)
+    await screen.findByPlaceholderText('Existing token saved-preview')
+    fireEvent.click(screen.getByRole('button', { name: 'Save for next restart' }))
+    await waitFor(() =>
+      expect(saveConnectionConfig).toHaveBeenCalledExactlyOnceWith({
+        mode: 'remote',
+        remoteUrl: 'https://a.example',
+        remoteAuthMode: 'token',
+        remoteToken: undefined
+      })
+    )
+    // Flush the save's reset and probe effects before acquiring the replacement field.
+    await act(async () => finishSave(saved))
+    const tokenInput = await screen.findByPlaceholderText('Existing token saved-preview')
+    expect(tokenInput.isConnected, 'saved credential control must survive the refresh probe').toBe(true)
+    fireEvent.change(tokenInput, { target: { value: 'replacement' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save for next restart' }))
+    await screen.findByText('Store the gateway token in plain text?')
+    expect(saveConnectionConfig).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Save as plain text' }))
+    await waitFor(() =>
+      expect(saveConnectionConfig).toHaveBeenLastCalledWith({
+        mode: 'remote',
+        remoteUrl: 'https://a.example',
+        remoteAuthMode: 'token',
+        remoteToken: 'replacement',
+        allowPlainTextToken: true
+      })
+    )
+  })
+
+  it('discards an old token test while saving the current credential-ready payload', async () => {
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'remote', remoteUrl: 'https://a.example' })
+    const probeConnectionConfig = vi.fn().mockResolvedValue({ reachable: true, authMode: 'token', providers: [] })
+    let finishTest!: (value: { ok: boolean; baseUrl: string }) => void
+
+    const testConnectionConfig = vi.fn().mockReturnValue(
+      new Promise<{ ok: boolean; baseUrl: string }>(resolve => {
+        finishTest = resolve
+      })
+    )
+
+    Object.assign(window.hermesDesktop, { probeConnectionConfig, testConnectionConfig })
+    render(<GatewaySettings />)
+    const token = await screen.findByPlaceholderText('Paste session token')
+    fireEvent.change(token, { target: { value: 'old-token' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Test remote' }))
+    expect(testConnectionConfig).toHaveBeenCalledWith({
+      mode: 'remote',
+      remoteUrl: 'https://a.example',
+      remoteAuthMode: 'token',
+      remoteToken: 'old-token'
+    })
+    fireEvent.change(token, { target: { value: 'new-token' } })
+    await act(async () => finishTest({ ok: true, baseUrl: 'https://a.example' }))
+    expect(screen.queryByText('Connected to https://a.example')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Save for next restart' }))
+    await waitFor(() =>
+      expect(saveConnectionConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'remote',
+          remoteUrl: 'https://a.example',
+          remoteAuthMode: 'token',
+          remoteToken: 'new-token'
+        })
+      )
+    )
+  })
+
   it('keeps saved Cloud instances usable without discovery and marks the live source, not the default', async () => {
     getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud', remoteUrl: 'https://a.example' })
     registry.value = {
