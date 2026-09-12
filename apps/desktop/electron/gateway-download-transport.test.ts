@@ -112,7 +112,7 @@ test('a body that stalls mid-stream is destroyed after the idle deadline, but th
 }, 3_000)
 
 test.skipIf(process.platform === 'win32')('download retries mint a new private grant for every wire attempt and preserve remote auth', async () => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'download-auth-'))
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'download-auth-')))
   const grants: string[] = []
   const wire: http.IncomingHttpHeaders[] = []
   const controls: any[] = []
