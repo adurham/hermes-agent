@@ -109,7 +109,10 @@ legacy `pip_dependencies` or `python_dependencies` lists in `plugin.yaml`.
 PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
-The generated workspace and extended lock remain outside shipped source.
+Each candidate gets a fresh workspace with explicit source, lock seed, and
+prepared environment inputs. The generated workspace and extended lock remain
+outside shipped source. Repair copies the recorded workspace and lock, including
+plugin build inputs, rather than resolving against edited live manifests.
 
 A failed candidate does not replace the selected environment or silently
 disable other plugins. If preparation succeeds, a restart can still be required
