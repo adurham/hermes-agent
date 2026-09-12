@@ -164,19 +164,12 @@ def test_currency_probe_preserves_union_and_candidate_inputs(client, tmp_path, m
     if route != "direct":
         engine = importlib.import_module("pm.ensure")
         monkeypatch.setattr(engine, "venv_is_current", lambda **kw: pytest.fail("probe ran in caller"))
-    callbacks = []
-
-    def select():
-        callbacks.append("selected")
-        return members
-
     def snapshot():
         return {path.relative_to(tmp_path): (path.read_bytes() if path.is_file() else None)
                 for path in tmp_path.rglob("*")}
 
     before = snapshot()
-    assert client.venv_is_current(extras=["provider-extra"], plugin_dirs=select, **root_args)
-    assert callbacks == ["selected"]
+    assert client.venv_is_current(extras=["provider-extra"], plugin_dirs=members, **root_args)
     assert client.venv_is_current(extras=[], plugin_dirs=members, **root_args)
     assert not client.venv_is_current(extras=["new-extra"], plugin_dirs=members, **root_args)
     assert not client.venv_is_current(extras=recorded, plugin_dirs=[], **root_args)
@@ -185,7 +178,7 @@ def test_currency_probe_preserves_union_and_candidate_inputs(client, tmp_path, m
 
     manifest.write_text('name: candidate\npython_dependencies: ["candidate-dep==2"]\n')
     changed = snapshot()
-    assert not client.venv_is_current(extras=["provider-extra"], plugin_dirs=select, **root_args)
+    assert not client.venv_is_current(extras=["provider-extra"], plugin_dirs=members, **root_args)
     assert snapshot() == changed
     assert selected_venv(repo) == environment
     # Corruption must not be mistaken for a missing or current environment.
@@ -207,34 +200,35 @@ def _assert_worker_holds_lock(repo):
 
 
 @pytest.mark.parametrize("explicit", [True, False])
-def test_sync_callbacks_preserve_member_mapping_and_lock(client, tmp_path, monkeypatch, explicit):
-    identity, staged = tmp_path / "installed", tmp_path / "staged"
-    staged.mkdir()
-    (staged / "plugin.yaml").write_text("name: test\n")
-    members = {identity: staged}
-    repo = _current_environment(tmp_path, monkeypatch, members)
-    events = []
+def test_sync_discovers_profile_members_after_worker_acquires_lock(client, tmp_path, monkeypatch, isolated_python, explicit):
+    from concurrent.futures import ThreadPoolExecutor
+    import time
+    from hermes_cli.runtime_state import runtime_lock
+    from tests.pm.test_worker_publication import worker_toolchain
 
-    def select():
-        _assert_worker_holds_lock(repo)
-        events.append("members")
-        return members
-
-    class Publication:
-        def __call__(self):
-            pytest.fail("successful no-op publication was undone")
-
-        def finish(self):
-            _assert_worker_holds_lock(repo)
-            events.append("finish")
-
-    def before_publish():
-        _assert_worker_holds_lock(repo)
-        events.append("publish")
-        return Publication()
-
-    client.sync_venv([], explicit=explicit, plugin_dirs=select, before_publish=before_publish)
-    assert events == ["members", "publish", "finish"]
+    sibling = tmp_path / "home/profiles/sibling/plugins/dependency"
+    sibling.mkdir(parents=True)
+    (sibling / "plugin.yaml").write_text("name: dependency\npython_dependencies: []\n")
+    repo = _current_environment(tmp_path, monkeypatch, [sibling])
+    ready = tmp_path / "waiting-for-lock"
+    worker_toolchain(client, monkeypatch, isolated_python,
+        "from contextlib import contextmanager\nimport hermes_cli.runtime_state as state\n"
+        "original = state.runtime_lock\n@contextmanager\ndef lock(project):\n"
+        f"    Path({str(ready)!r}).touch()\n"
+        "    with original(project):\n        yield\nstate.runtime_lock = lock\n")
+    with ThreadPoolExecutor() as executor:
+        with runtime_lock(repo):
+            future = executor.submit(client.sync_venv, explicit=explicit, selection={
+                "home": str(tmp_path / "home"), "enabled": ["plain"], "disabled": [],
+            })
+            deadline = time.monotonic() + 15
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), "worker never reached the install lock"
+            assert not future.done(), "worker ignored the install lock"
+            (sibling.parent.parent / "config.yaml").write_text("plugins:\n  enabled: [dependency]\n")
+        future.result(timeout=30)
+    assert client.venv_is_current()
 
 
 @pytest.mark.parametrize("current", [True, False])
@@ -262,19 +256,11 @@ def test_lazy_disabled_sync_does_not_bootstrap_tools(client, tmp_path, monkeypat
     monkeypatch.setattr(_uv, "_toolchain", toolchain)
     monkeypatch.setattr("pm.runtime_stage.stage_runtime",
                         lambda *a, **kw: pytest.fail("lazy-disabled sync prepared PM runtime"))
-    selections = []
-
-    def select():
-        _assert_worker_holds_lock(repo)
-        selections.append("selected")
-        return []
-
     with receipt.worker_context("lazy-disabled-sync"):
         with pytest.raises(InstallError, match="lazy installs are disabled") as caught:
-            client.sync_venv([], plugin_dirs=select)
+            client.sync_venv([], plugin_dirs=[])
         result = receipt.last_for_update("lazy-disabled-sync", consume=True)
     assert caught.value.package == "pm-runtime"
-    assert selections == []
     assert result is not None
     assert result["outcome"] == "failed"
     receipts = list((tmp_path / "home" / "logs" / "update_receipts").glob("pm_*.json"))
@@ -283,22 +269,17 @@ def test_lazy_disabled_sync_does_not_bootstrap_tools(client, tmp_path, monkeypat
     assert not paths.facts_path().exists()
 
 
-def test_callback_exception_waits_for_failed_receipt_and_lock_release(client, tmp_path, monkeypatch):
+def test_invalid_selection_waits_for_failed_receipt_and_lock_release(client, tmp_path, monkeypatch):
     import json
     from hermes_cli.runtime_paths import install_state_dir
     from hermes_cli.runtime_state import _lock
 
     repo = _current_environment(tmp_path, monkeypatch, [])
-    error = LookupError("selection disappeared")
-
-    def fail():
-        _assert_worker_holds_lock(repo)
-        raise error
-
-    with pytest.raises(LookupError) as caught:
-        client.sync_venv([], explicit=True, plugin_dirs=fail)
-    assert caught.value is error
-    receipts = list((tmp_path / "home" / "logs" / "update_receipts").glob("pm_*.json"))
+    home = tmp_path / "home"
+    (home / "config.yaml").write_text("plugins: []\n")
+    with pytest.raises(ValueError, match="plugins must be a mapping"):
+        client.sync_venv([], explicit=True, selection={"home": str(home), "enabled": [], "disabled": []})
+    receipts = list((home / "logs" / "update_receipts").glob("pm_*.json"))
     assert len(receipts) == 1
     assert json.loads(receipts[0].read_text())["outcome"] == "failed"
     with (install_state_dir(repo) / ".install.lock").open("a+b") as lock:
@@ -483,33 +464,28 @@ def test_resolution_conflict_survives_worker_and_receipt(client, tmp_path, monke
     assert "engine stdout" in capfd.readouterr().err
 
 
-def test_failed_finish_runs_undo_before_propagating_callback_exception(client, tmp_path, monkeypatch, isolated_python):
+def test_failed_facts_write_restores_exact_config_before_reporting(client, tmp_path, monkeypatch, isolated_python):
+    from tests.pm.test_worker_publication import worker_toolchain
+    from hermes_cli.runtime_paths import install_state_dir
+
     repo = _current_environment(tmp_path, monkeypatch, [])
+    home = tmp_path / "home"
+    config = home / "config.yaml"
+    config.write_text("# preserve me\nplugins: {enabled: [old]}\n")
+    previous = config.read_bytes()
+    facts = (install_state_dir(repo) / "facts.json").read_bytes()
     (repo / "uv.lock").write_text("version = 2\n")
-    _patch_worker_apply(client, monkeypatch, isolated_python, "return {}")
-    events = []
-    error = LookupError("finish failed")
-
-    class Publication:
-        def __call__(self):
-            _assert_worker_holds_lock(repo)
-            events.append("undo")
-            return object()  # Return values of effect-only callbacks are ignored.
-
-        def finish(self):
-            _assert_worker_holds_lock(repo)
-            events.append("finish")
-            raise error
-
-    def publish():
-        _assert_worker_holds_lock(repo)
-        events.append("publish")
-        return Publication()
-
-    with pytest.raises(LookupError) as caught:
-        client.sync_venv([], explicit=True, plugin_dirs=[], before_publish=publish)
-    assert caught.value is error
-    assert events == ["publish", "finish", "undo"]
+    worker_toolchain(client, monkeypatch, isolated_python,
+        "from pm.packages import Venv\nfrom pm.lock import Facts\n"
+        "Venv.apply = lambda *args, **kwargs: {}\n"
+        "def fail(*args, **kwargs):\n"
+        f"    assert b'new' in Path({str(config)!r}).read_bytes()\n"
+        "    raise OSError('facts disk full')\nFacts.record_state = fail\n")
+    with pytest.raises(OSError, match="facts disk full"):
+        client.sync_venv(explicit=True, selection={"home": str(home), "enabled": ["new"], "disabled": []})
+    assert config.read_bytes() == previous
+    assert (install_state_dir(repo) / "facts.json").read_bytes() == facts
+    assert not (install_state_dir(repo) / "publication.json").exists()
 
 
 def test_invalid_arguments_keep_the_engine_exception_type(client):

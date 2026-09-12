@@ -114,6 +114,13 @@ prepared environment inputs. The generated workspace and extended lock remain
 outside shipped source. Repair copies the recorded workspace and lock, including
 plugin build inputs, rather than resolving against edited live manifests.
 
+Plugin enablement and staged code updates are submitted as data to the isolated
+PM worker. Under the installation lock, it discovers the proposed dependency
+union, validates the candidate, and publishes configuration or plugin files and
+metadata with the environment selection. It rejects inputs changed during
+preparation. A durable journal permits recovery before application imports,
+including code-only updates that do not require a new environment.
+
 A failed candidate does not replace the selected environment or silently
 disable other plugins. If preparation succeeds, a restart can still be required
 to activate the new environment in a running Hermes process.

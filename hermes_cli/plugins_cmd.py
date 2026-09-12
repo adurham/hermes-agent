@@ -852,6 +852,7 @@ def cmd_install(
     if should_enable:
         from hermes_cli.plugins_admission import AdmissionRefused
 
+        expected_config = _plugin_selection_version()
         enabled = _get_enabled_set()
         disabled = _get_disabled_set()
         enabled.add(installed_name)
@@ -862,7 +863,7 @@ def cmd_install(
                 disabled,
                 extra_dirs=[target],
                 console=console,
-                action=f"Enable '{installed_name}'",
+                action=f"Enable '{installed_name}'", expected_config=expected_config,
             )
         except AdmissionRefused:
             console.print(
@@ -1012,19 +1013,23 @@ def _save_enabled_set(enabled: set) -> None:
     _write_config_value("plugins", "enabled", sorted(enabled))
 
 
-def _save_plugin_sets(enabled: set, disabled: set) -> None:
+def _plugin_selection_version() -> str:
+    from hermes_cli.runtime_state import _digest
+    return _digest(get_hermes_home() / "config.yaml") or "missing"
+
+
+def _save_plugin_sets(enabled: set, disabled: set, *, expected_config: str | None = None) -> None:
     from hermes_cli.plugins_admission import admit_plugin_set_change
 
-    admit_plugin_set_change(enabled, disabled, active_plugins_dir=_plugins_dir())
+    admit_plugin_set_change(enabled, disabled, active_plugins_dir=_plugins_dir(), expected_config=expected_config)
 
 
 def _admit_and_save_plugin_sets(
-    enabled: set, disabled: set, *, extra_dirs=(), console=None, action: str = "enable"
+    enabled: set, disabled: set, *, extra_dirs=(), console=None, action: str = "enable", expected_config=None
 ) -> None:
     """ONE admission authority for proposed enabled/disabled sets (C13):
     the candidate union is resolved against the ACTIVE environment and
-    the config commits inside the same locked pm transaction (sync's
-    ``before_publish`` hook) — a refusal or a config-write failure
+    the config commits inside the same worker-owned PM transaction — a refusal or a config-write failure
     publishes nothing: previous config bytes AND previous environment
     stay exactly in place. Raises :class:`AdmissionRefused` (UI callers
     catch and surface it — admission never auto-disables to fit)."""
@@ -1032,7 +1037,7 @@ def _admit_and_save_plugin_sets(
 
     try:
         admit_plugin_set_change(
-            enabled, disabled, active_plugins_dir=_plugins_dir(), extra_dirs=extra_dirs
+            enabled, disabled, active_plugins_dir=_plugins_dir(), extra_dirs=extra_dirs, expected_config=expected_config
         )
     except AdmissionRefused as exc:
         if console is not None:
@@ -1071,11 +1076,12 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
 
 def _set_plugin_enabled(name: str, *, enable: bool) -> None:
     """Persist the proposed selection through the same dependency transaction."""
+    expected_config = _plugin_selection_version()
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
     (enabled.add if enable else enabled.discard)(name)
     (disabled.discard if enable else disabled.add)(name)
-    _save_plugin_sets(enabled, disabled)
+    _save_plugin_sets(enabled, disabled, expected_config=expected_config)
 
 
 def _resolve_plugin_key(name: str) -> Optional[str]:
@@ -1134,6 +1140,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     key, source = resolved
     _refuse_legacy_relay(key)
 
+    expected_config = _plugin_selection_version()
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
     if key in enabled and key not in disabled:
@@ -1147,7 +1154,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         manifest_name = next((e[0] for e in _discover_all_plugins() if e[5] == key), None)
         if manifest_name is not None:
             disabled.discard(manifest_name)
-        _admit_and_save_plugin_sets(enabled, disabled, console=console, action=f"Enable '{key}'")
+        _admit_and_save_plugin_sets(enabled, disabled, console=console, action=f"Enable '{key}'", expected_config=expected_config)
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
 
     # Built-in tool override is a privileged grant; bundled plugins are trusted.
@@ -1313,6 +1320,7 @@ def cmd_disable(name: str) -> None:
     key = _resolve_plugin_key(name)
     if key is None:
         _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+    expected_config = _plugin_selection_version()
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
     if key not in enabled and key in disabled:
@@ -1321,7 +1329,7 @@ def cmd_disable(name: str) -> None:
     # Also drop a stale legacy bare-name entry so it can't keep a nested plugin loading.
     _discard_key_and_leaf(enabled, key)
     disabled.add(key)
-    _save_plugin_sets(enabled, disabled)
+    _save_plugin_sets(enabled, disabled, expected_config=expected_config)
     console.print(
         f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
 
@@ -1759,6 +1767,7 @@ def cmd_toggle() -> None:
     """Interactive composite UI — general plugins + provider plugin categories."""
     console = _console()
     entries = _discover_all_plugins()
+    expected_config = _plugin_selection_version()
     enabled_set = _get_enabled_set()
     disabled_set = _get_disabled_set()
 
@@ -1783,12 +1792,12 @@ def cmd_toggle() -> None:
         return
     try:
         import curses
-        _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled_set, categories, console)
+        _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled_set, categories, console, expected_config=expected_config)
     except ImportError:
-        _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disabled_set, categories, console)
+        _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disabled_set, categories, console, expected_config=expected_config)
 
 
-def _persist_plugin_selection(plugin_keys, chosen, disabled) -> tuple[bool, set]:
+def _persist_plugin_selection(plugin_keys, chosen, disabled, *, expected_config=None) -> tuple[bool, set]:
     """Save the composite UI's checkbox state; returns ``(changed, new_enabled)``.
 
     Unchecked plugins go to the disabled-list (so they stay off even if something auto-enables
@@ -1798,6 +1807,8 @@ def _persist_plugin_selection(plugin_keys, chosen, disabled) -> tuple[bool, set]
     # See #40190.
     # Persist by canonical key only — never the bare manifest name — so the disabled-list stays aligned with
     # cmd_enable / PluginManager (#40190).
+    if expected_config is None:
+        expected_config = _plugin_selection_version()
     new_enabled: set = set()
     new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
     for i, key in enumerate(plugin_keys):
@@ -1812,11 +1823,11 @@ def _persist_plugin_selection(plugin_keys, chosen, disabled) -> tuple[bool, set]
         # C13: the composite UI's candidate goes through the ONE admission
         # authority — refusal raises AdmissionRefused BEFORE any config
         # write; the caller surfaces it and the selection stays unsaved.
-        _admit_and_save_plugin_sets(new_enabled, new_disabled, action="Save plugin selection")
+        _admit_and_save_plugin_sets(new_enabled, new_disabled, action="Save plugin selection", expected_config=expected_config)
     return changed, new_enabled
 
 
-def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled, categories, console):
+def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled, categories, console, *, expected_config=None):
     """Custom curses screen with checkboxes + category action rows."""
     from hermes_cli.curses_ui import _addnstr, flush_stdin
     chosen = set(plugin_selected)
@@ -1929,7 +1940,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
     from hermes_cli.plugins_admission import AdmissionRefused
 
     try:
-        changed, new_enabled = _persist_plugin_selection(plugin_keys, chosen, disabled)
+        changed, new_enabled = _persist_plugin_selection(plugin_keys, chosen, disabled, expected_config=expected_config)
     except AdmissionRefused as exc:
         console.print(f"[red]✗[/red] Plugin selection refused, not saved: {exc}")
         console.print(
@@ -1952,7 +1963,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
     console.print()
 
 
-def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disabled, categories, console):
+def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disabled, categories, console, *, expected_config=None):
     """Text-based fallback for the composite plugins UI."""
     from hermes_cli.colors import Colors, color
     print(color("\n  Plugins", Colors.YELLOW))
@@ -1998,7 +2009,7 @@ def _save_plugin_selection_fallback(plugin_keys, chosen, disabled) -> None:
     from hermes_cli.plugins_admission import AdmissionRefused
 
     try:
-        _persist_plugin_selection(plugin_keys, chosen, disabled)
+        _persist_plugin_selection(plugin_keys, chosen, disabled, expected_config=expected_config)
     except AdmissionRefused as exc:
         print(f"  Plugin selection refused, not saved: {exc}")
         print("  config.yaml and the active environment are unchanged.")

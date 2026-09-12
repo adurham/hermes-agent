@@ -102,7 +102,7 @@ def _all_homes() -> list[Path]:
     return homes
 
 
-def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None) -> dict[Path, list[str]]:
+def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None, installing: Path | None = None) -> dict[Path, list[str]]:
     """plugins_dir → ordered enabled list, per home. Keyed by the
     PLUGINS DIR (where the member dirs live), not the home itself.
 
@@ -119,7 +119,7 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None) 
         if proposed_home is not None and home.resolve() == Path(proposed_home).resolve():
             config = {**config, "plugins": {"enabled": list(enabled or ()), "disabled": list(disabled or ())}}
         names = _enabled_from_config(config)
-        provider = _provider_from_config(home, config)
+        provider = _provider_from_config(home, config, installing=installing)
         if provider and provider not in names:
             names.append(provider)
         if names:
@@ -127,11 +127,12 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None) 
     return out
 
 
-def _provider_from_config(home: Path, config: dict[str, Any]) -> Optional[str]:
+def _provider_from_config(home: Path, config: dict[str, Any], *, installing: Path | None = None) -> Optional[str]:
     """The ``memory.provider`` key of an already-parsed config, when its
     plugin dir exists (no dir = not a member)."""
     provider = (config.get("memory") or {}).get("provider")
     if not provider or not provider.strip():
         return None
     name = provider.strip()
-    return name if _is_directory(home / "plugins" / name) else None
+    return name if (_is_directory(home / "plugins" / name) or
+                    (installing is not None and (home / "plugins" / name).resolve() == installing.resolve())) else None

@@ -83,6 +83,38 @@ def _atomic_bytes(path: Path, data: bytes):
         Path(temporary).unlink(missing_ok=True)
 
 
+def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
+    from hermes_cli.fs_utils import rmtree_force
+
+    target, backup, metadata = (Path(row[key]) for key in ("target", "backup", "metadata"))
+    home = dependency_home_root().resolve()
+    if (not target.resolve().is_relative_to(home) or target.parent.name != "plugins"
+            or backup.parent != target.parent or not backup.name.startswith(".previous-")
+            or metadata != target.parent / ".install-metadata.json"):
+        raise ValueError("plugin publication paths escape their home")
+    committed = row.get("committed") or _digest(runtime_facts_path(project)) != row["facts_before"]
+    if committed:
+        if backup.exists():
+            rmtree_force(backup)
+    else:
+        old = base64.b64decode(row["metadata_before"], validate=True) if row["metadata_before"] is not None else None
+        current = _bytes(metadata)
+        new = base64.b64decode(row["metadata_after"], validate=True)
+        if current not in (old, new):
+            raise ValueError("plugin metadata changed after publication; preserve it for manual recovery")
+        if backup.exists():
+            if target.exists():
+                rmtree_force(target)
+            os.replace(backup, target)
+        elif not row["target_existed"] and target.exists():
+            rmtree_force(target)
+        if old is None:
+            metadata.unlink(missing_ok=True)
+        else:
+            _atomic_bytes(metadata, old)
+    journal.unlink()
+
+
 def recover_publication(project: Path) -> None:
     """Recover while holding runtime_lock, before activation or another write."""
     journal = install_state_dir(project) / "publication.json"
@@ -92,15 +124,13 @@ def recover_publication(project: Path) -> None:
     try:
         row = json.loads(data)
         if row.get("kind") == "plugin":
-            from hermes_cli.plugins_transaction import recover_plugin_publication
-
-            recover_plugin_publication(project, row, journal)
+            _recover_plugin_publication(project, row, journal)
             return
         config = Path(row["config"])
         if config.name != "config.yaml" or not config.resolve().is_relative_to(dependency_home_root().resolve()):
             raise ValueError("config path is outside Hermes state")
         previous = base64.b64decode(row["previous"], validate=True) if row["previous"] is not None else None
-        if _digest(runtime_facts_path(project)) == row["facts_before"]:
+        if not row.get("committed") and _digest(runtime_facts_path(project)) == row["facts_before"]:
             current = _digest(config)
             prior = hashlib.sha256(previous).hexdigest() if previous is not None else None
             if current not in (prior, row.get("config_after")):
@@ -115,26 +145,13 @@ def recover_publication(project: Path) -> None:
         raise RuntimeError(f"cannot recover dependency publication: {journal}: {exc}") from exc
 
 
-class Publication:
-    def __init__(self, project: Path, config: Path, proposed: bytes | None = None):
-        self.project = project
-        self.journal = install_state_dir(project) / "publication.json"
-        previous = _bytes(config)
-        row = {"config": str(config.resolve()), "previous": base64.b64encode(previous).decode() if previous is not None else None,
-               "facts_before": _digest(runtime_facts_path(project)),
-               "config_after": hashlib.sha256(proposed).hexdigest() if proposed is not None else None}
-        _atomic_bytes(self.journal, json.dumps(row).encode())
-
-    def __call__(self) -> None:
-        recover_publication(self.project)
-
-    def finish(self) -> None:
-        self.journal.unlink(missing_ok=True)
-
-
-def begin_publication(project: Path, config: Path, proposed: bytes | None = None) -> Publication:
+def finish_publication(project: Path) -> None:
+    """Persist a commit even when code/config changed without a new generation."""
+    journal = install_state_dir(project) / "publication.json"
+    row = json.loads(journal.read_bytes())
+    row["committed"] = True
+    _atomic_bytes(journal, json.dumps(row).encode())
     recover_publication(project)
-    return Publication(project, config, proposed)
 
 
 def lease_generation(environment: Path) -> None:

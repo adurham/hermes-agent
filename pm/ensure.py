@@ -444,7 +444,7 @@ def _runtime_state_matches(fact: dict, stamp: str, *, project_root: Path | None 
     return (environment / "pyvenv.cfg").is_file()
 
 
-def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None,
+def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None, extra_plugin_dirs=(),
                     project_root: Path | None = None) -> bool:
     """Probe the requested union without changing recorded dependency state."""
     from hermes_cli.runtime_paths import runtime_facts_path
@@ -462,13 +462,16 @@ def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None,
             or any(not isinstance(extra, str) for extra in fact["extras"])):
         raise ValueError("invalid recorded dependency state")
     enabled = sorted(set(fact["extras"]) | set(extras or []))
-    members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
+    from pm.publication import candidate_members
+    if extra_plugin_dirs and plugin_dirs is not None:
+        raise ValueError("additional candidates require member discovery")
+    members = candidate_members(extra_plugin_dirs) if extra_plugin_dirs else plugin_dirs
     inputs = {} if members is None else {"plugin_dirs": members}
     stamp = package.expected_stamp(enabled, **inputs)
     return _runtime_state_matches(fact, stamp, project_root=root)
 
 
-def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, before_publish=None, repair: bool = False) -> None:
+def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, extra_plugin_dirs=(), selection=None, staged_plugin=None, repair: bool = False) -> None:
     """Make the venv match uv.lock + the enabled extras. Extras union into
     the installed state (one ledger); no-op when the stamp already matches.
     ``repair`` restores the recorded dependency graph into a fresh generation,
@@ -487,19 +490,15 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
     BEFORE the frozen/lazy refusals (a refusal is a recorded ``failed``
     outcome, not a silent raise); finalize runs in FINALLY — no-op syncs
     ("ok" with ``venv_rebuild`` false) and refusals ("failed") both get
-    a receipt. ``before_publish`` is the concrete selection hook: called
-    while the install lock is held, AFTER the environment staged and
-    BEFORE the facts write — it returns an undo callable that runs if
-    the facts write then fails, so a selection committed here is rolled
-    back atomically instead of drifting from the surviving environment.
-    No module globals, no callback framework — one hook, one consumer."""
+    a receipt. Plugin selection data is discovered and published by the worker
+    under this lock; no executable transaction phases cross the process boundary."""
     from pm import receipt
     from pm.features import read_features
 
     token = receipt.begin("sync")
     outcome = "failed"
     try:
-        if repair and (extras is not None or plugin_dirs is not None or before_publish is not None):
+        if repair and (extras is not None or plugin_dirs is not None or selection is not None or staged_plugin is not None or extra_plugin_dirs):
             raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
         if extras:
             from pm.extras import extra_supported
@@ -519,10 +518,26 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                 )
 
         package = get_package("venv")
-        from hermes_cli.runtime_state import runtime_lock, recover_publication
+        from hermes_cli.runtime_state import runtime_lock, recover_publication, finish_publication
+        from pm.publication import PluginSelection, StagedPlugin, candidate_members
         with runtime_lock(paths.repo_root()):
             recover_publication(paths.repo_root())
-            members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
+            if sum(value is not None for value in (selection, staged_plugin, plugin_dirs)) + bool(extra_plugin_dirs) > 1:
+                raise ValueError("publication owns plugin member discovery")
+            change = (PluginSelection(selection) if selection is not None else
+                      StagedPlugin(staged_plugin) if staged_plugin is not None else None)
+            if isinstance(change, StagedPlugin) and not change.active:
+                try:
+                    change.publish(paths.repo_root())
+                    finish_publication(paths.repo_root())
+                except BaseException:
+                    recover_publication(paths.repo_root())
+                    raise
+                receipt.record_venv_rebuild(False, "inactive plugin")
+                outcome = "ok"
+                return
+            members = (change.members if change is not None else
+                       candidate_members(extra_plugin_dirs) if extra_plugin_dirs else plugin_dirs)
             inputs = {} if members is None else {"plugin_dirs": members}
             facts = Facts(paths.runtime_facts_path(), strict=repair)
             fact = facts.get("venv") or _facts().get("venv") or {}
@@ -539,30 +554,21 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                 stamp = package.expected_stamp(enabled, **inputs)
             if not repair and not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
                 raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
-            if not repair and _runtime_state_matches(fact, stamp):
-                if before_publish is not None:
-                    publication = before_publish()
-                    if hasattr(publication, "finish"):
-                        publication.finish()
-                receipt.record_venv_rebuild(False, "already in sync")
-                outcome = "ok"
-                return
+            current = not repair and _runtime_state_matches(fact, stamp)
             receipt.record_feature_list(enabled)
-            undo = None
             try:
-                result = package.apply(enabled, **inputs) or {}
-                if before_publish is not None:
-                    undo = before_publish()
-                facts.record_state("venv", stamp, enabled, **result)
-                if hasattr(undo, "finish"):
-                    undo.finish()
-                receipt.record_venv_rebuild(True)
+                result = {} if current else (package.apply(enabled, explicit=explicit, **inputs) or {})
+                if not repair and package.expected_stamp(enabled, **inputs) != stamp:
+                    raise ValueError("Dependency inputs changed while preparing publication; retry.")
+                if change is not None:
+                    change.publish(paths.repo_root())
+                if not current:
+                    facts.record_state("venv", stamp, enabled, **result)
+                if change is not None:
+                    finish_publication(paths.repo_root())
+                receipt.record_venv_rebuild(not current, "already in sync" if current else "")
             except BaseException:
-                if undo is not None:
-                    try:
-                        undo()
-                    except Exception:
-                        LOG.exception("pm sync: publish undo failed; config may drift")
+                recover_publication(paths.repo_root())
                 raise
         outcome = "ok"
     except BaseException as exc:

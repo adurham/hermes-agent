@@ -138,12 +138,16 @@ def test_langfuse_setup_uses_plugin_admission_and_preserves_config_on_refusal(
 
     def resolve_candidate(**kwargs):
         assert kwargs["explicit"] is True
-        kwargs["plugin_dirs"]()
+        assert kwargs["selection"]["enabled"]
         if failure == "admission":
             raise pm.InstallError("venv", "candidate refused")
         # The real admission publisher must commit both lists, not a second UI writer.
-        publication = kwargs["before_publish"]()
-        publication.finish()
+        from pm.publication import PluginSelection
+        from pm.paths import repo_root
+        from hermes_cli.runtime_state import runtime_lock, finish_publication
+        with runtime_lock(repo_root()):
+            PluginSelection(kwargs["selection"]).publish(repo_root())
+            finish_publication(repo_root())
 
     with (
         patch("pm.sync_venv", side_effect=pm.InstallError("venv", "SDK refused") if failure == "sdk" else None) as sdk,

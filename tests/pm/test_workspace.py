@@ -207,7 +207,7 @@ def test_enabled_member_dirs_finds_enabled_dep_plugins(tmp_path, monkeypatch):
     # newest LAST) — discovery preserves the configured order.
     monkeypatch.setattr(
         "pm.plugins_state.enabled_plugins_ordered",
-        lambda: {plugins: ["legacy-plug", "modern-plug", "plain-plug"]},
+        lambda **kwargs: {plugins: ["legacy-plug", "modern-plug", "plain-plug"]},
     )
     found = ws.enabled_member_dirs()
     names = [p.name for p in found]
@@ -223,7 +223,7 @@ def test_enabled_member_dirs_empty_when_nothing_enabled(tmp_path, monkeypatch):
     (member / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        "pm.plugins_state.enabled_plugins_ordered", lambda: {}
+        "pm.plugins_state.enabled_plugins_ordered", lambda **kwargs: {}
     )
     assert ws.enabled_member_dirs() == []
 

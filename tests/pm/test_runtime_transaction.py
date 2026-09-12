@@ -49,7 +49,7 @@ def test_sync_commits_only_a_successful_candidate(tmp_path, monkeypatch, failure
         def expected_stamp(self, extras):
             return "new"
 
-        def apply(self, extras):
+        def apply(self, extras, *, explicit=False):
             if failure != "missing":
                 assert selected_venv(root) == previous
             assert extras == ["base", "new-extra"]

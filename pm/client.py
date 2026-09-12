@@ -122,10 +122,8 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
                     break
                 name = response["callback"]
                 try:
-                    value = callbacks[name](*response.get("args", []))
-                    if name not in ("plugin_dirs", "before_publish"):
-                        value = None
-                    send({"type": "callback_result", "call": response["call"], "result": value})
+                    callbacks[name](*response.get("args", []))
+                    send({"type": "callback_result", "call": response["call"], "result": None})
                 except BaseException as exc:
                     if callback_error is None:
                         callback_error = exc
@@ -187,30 +185,19 @@ def ensure(name, *, base_env=None, explicit=False, progress=None, pause_event=No
     return Runner(name, env_for(name, base_env=base_env))
 
 
-def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, before_publish=None, repair=False,
+def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, extra_plugin_dirs=(), selection=None, staged_plugin=None, repair=False,
               project_root: Path | None = None) -> None:
+    if selection is not None and "expected_config" not in selection:
+        from hermes_cli.runtime_state import _digest
+        selection = {**selection, "expected_config": _digest(Path(selection["home"]) / "config.yaml") or "missing"}
     foreign = project_root is not None and Path(project_root).resolve() != paths.repo_root().resolve()
     if is_runtime() and not foreign:
         from pm.ensure import sync_venv as direct
         return direct(extras, explicit=explicit, plugin_dirs=plugin_dirs,
-                      before_publish=before_publish, repair=repair)
-    callbacks = {}
-    if callable(plugin_dirs):
-        callbacks["plugin_dirs"] = lambda: _members(plugin_dirs())
-        members = None
-    else:
-        members = _members(plugin_dirs)
-    if before_publish is not None:
-        def publish():
-            publication = before_publish()
-            if publication is not None:
-                callbacks["undo"] = publication
-            if hasattr(publication, "finish"):
-                callbacks["finish"] = publication.finish
-            return {"undo": publication is not None, "finish": hasattr(publication, "finish")}
-        callbacks["before_publish"] = publish
+                      selection=selection, staged_plugin=staged_plugin, extra_plugin_dirs=extra_plugin_dirs, repair=repair)
     _request("sync_venv", {"extras": extras, "explicit": explicit, "repair": repair,
-                          "plugin_dirs": members}, callbacks=callbacks, project_root=project_root)
+                          "plugin_dirs": _members(plugin_dirs), "selection": selection, "staged_plugin": staged_plugin,
+                          "extra_plugin_dirs": [str(Path(p).absolute()) for p in extra_plugin_dirs]}, project_root=project_root)
 
 
 def stage_only(name, target, *, progress=None) -> Path:
@@ -302,15 +289,16 @@ def ensure_python_tool(
     }))
 
 
-def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None,
+def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None, extra_plugin_dirs=(),
                     project_root: Path | None = None) -> bool:
     """Check through a ready PM, never bootstrap dependencies for a probe."""
     if is_runtime() and (project_root is None or Path(project_root).resolve() == paths.repo_root().resolve()):
         from pm.ensure import venv_is_current as direct
-        return direct(extras=extras, plugin_dirs=plugin_dirs, project_root=project_root)
-    members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
+        return direct(extras=extras, plugin_dirs=plugin_dirs, extra_plugin_dirs=extra_plugin_dirs, project_root=project_root)
+    members = plugin_dirs
     try:
-        return bool(_request("venv_is_current", {"extras": extras, "plugin_dirs": _members(members)},
+        return bool(_request("venv_is_current", {"extras": extras, "plugin_dirs": _members(members),
+                            "extra_plugin_dirs": [str(Path(p).absolute()) for p in extra_plugin_dirs]},
                              project_root=project_root))
     except InstallError as exc:
         if exc.package == "pm-runtime":

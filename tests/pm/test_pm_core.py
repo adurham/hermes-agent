@@ -608,7 +608,7 @@ class FakeVenv(StatePackage):
         h.update(",".join(sorted(extras)).encode())
         return h.hexdigest()
 
-    def apply(self, extras):
+    def apply(self, extras, *, explicit=False):
         self.applied.append(list(extras))
         from hermes_cli.runtime_paths import install_state_dir
 

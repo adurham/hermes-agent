@@ -35,13 +35,13 @@ def test_admission_reads_other_profiles_after_taking_lock(tmp_path, monkeypatch)
     def members(*args, **kwargs):
         return list(state["members"])
 
-    def apply(extras, *, plugin_dirs):
+    def apply(extras, *, plugin_dirs, explicit=False):
         assert state["inside"]
         assert plugin_dirs == [sibling]
         return {}
 
     monkeypatch.setattr(runtime_state, "runtime_lock", after_competing_publication)
-    monkeypatch.setattr(admission, "candidate_member_dirs", members)
+    monkeypatch.setattr("pm.publication.candidate_members", members)
     monkeypatch.setattr(ensure, "get_package", lambda _: SimpleNamespace(
         expected_stamp=lambda *args, **kwargs: "new", apply=apply,
     ))

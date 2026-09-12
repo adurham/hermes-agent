@@ -1,7 +1,7 @@
 """C13 enable admission: every UI path's proposed enabled/disabled sets go
 through ONE authority — the candidate union resolves against the active
 environment and the config commits inside pm's single locked transaction
-(sync's before_publish hook). Refusal (dep conflict OR config-write
+(worker-owned publication). Refusal (dep conflict OR config-write
 failure) publishes nothing: previous config bytes and previous environment
 stay exactly in place. Real temp HERMES_HOME — no live user writes."""
 
@@ -54,11 +54,15 @@ def sync_calls(monkeypatch):
     from pm import client
     calls = []
 
-    def _sync(extras=None, *, explicit=False, plugin_dirs=None, before_publish=None):
-        members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
-        calls.append(list(members or []))
-        if before_publish is not None:
-            before_publish()  # same contract: config commits under the sync
+    def _sync(extras=None, *, explicit=False, selection=None):
+        from pm.publication import PluginSelection
+        from pm.paths import repo_root
+        from hermes_cli.runtime_state import runtime_lock, finish_publication
+        with runtime_lock(repo_root()):
+            change = PluginSelection(selection)
+            calls.append(list(change.members))
+            change.publish(repo_root())
+            finish_publication(repo_root())
 
     monkeypatch.setattr(client, "sync_venv", _sync)
     return calls
@@ -157,7 +161,7 @@ def test_dashboard_enable_refusal_reports_not_ok(plugin_home, monkeypatch, sync_
     assert _enabled_set(plugin_home) == set()
 
 
-# ── the before_publish hook: config commits under the lock, undo on facts failure ─
+# ── worker-owned publication: exact rollback on facts failure ─
 
 
 def test_config_commit_undo_restores_previous_bytes(plugin_home):
@@ -165,14 +169,17 @@ def test_config_commit_undo_restores_previous_bytes(plugin_home):
     config_path = plugin_home / "config.yaml"
     previous = config_path.read_bytes()
 
-    undo = adm._config_commit({"dep-plug"}, set())
+    from pm.publication import PluginSelection
+    from pm.paths import repo_root
+    from hermes_cli.runtime_state import recover_publication
+    PluginSelection({"home": str(plugin_home), "enabled": ["dep-plug"], "disabled": []}).publish(repo_root())
     assert _enabled_set(plugin_home) == {"dep-plug"}  # committed exactly once
-    undo()  # facts write failed afterwards → restore
+    recover_publication(repo_root())  # facts write failed afterwards → restore
     assert config_path.read_bytes() == previous
 
 
 def test_facts_failure_triggers_undo_inside_one_transaction(plugin_home, monkeypatch):
-    """Real sync_venv: apply stages → before_publish commits config → facts
+    """Real sync_venv: apply stages → worker commits config → facts
     write fails → undo restores the previous config bytes atomically; the
     receipt records the failure."""
     import importlib
@@ -199,10 +206,6 @@ def test_facts_failure_triggers_undo_inside_one_transaction(plugin_home, monkeyp
 
     order = []
 
-    def before_publish():
-        order.append("before_publish")
-        return adm._config_commit({"dep-plug"}, set())
-
     facts_path = plugin_home / "runtime" / "facts.json"
     ensure.Facts(facts_path).record_state("venv", "previous-stamp", [])
     previous_facts = facts_path.read_bytes()
@@ -210,13 +213,14 @@ def test_facts_failure_triggers_undo_inside_one_transaction(plugin_home, monkeyp
     monkeypatch.setattr(ensure.paths, "repo_root", lambda: plugin_home / "runtime")
 
     def fail_publication(self, *args, **kwargs):
+        assert _enabled_set(plugin_home) == {"dep-plug"}
         order.append("record_state")
         raise OSError("facts disk full")
 
     monkeypatch.setattr(ensure.Facts, "record_state", fail_publication)
     with pytest.raises(OSError, match="facts disk full"):
-        ensure.sync_venv(explicit=True, plugin_dirs=[plug], before_publish=before_publish)
-    assert order == ["before_publish", "record_state"]  # config committed under the lock first
+        ensure.sync_venv(explicit=True, selection={"home": str(plugin_home), "enabled": ["dep-plug"], "disabled": []})
+    assert order == ["record_state"]  # config committed under the lock first
     assert (plugin_home / "config.yaml").read_bytes() == previous  # undone atomically
     assert facts_path.read_bytes() == previous_facts
     latest = json.loads((rdir / "latest.json").read_text(encoding="utf-8-sig"))
@@ -254,9 +258,8 @@ def test_noop_sync_writes_ok_receipt_rebuild_false(plugin_home, monkeypatch):
     rdir = plugin_home / "receipts"
     monkeypatch.setattr("pm.receipt._receipt_dir", lambda: rdir)
     monkeypatch.setattr(ensure, "_runtime_state_matches", lambda fact, stamp: True)
-    committed = []
-    ensure.sync_venv(extras=[], before_publish=lambda: committed.append(True))
-    assert committed == [True], "unchanged dependencies must still commit a plugin selection"
+    ensure.sync_venv(extras=[], selection={"home": str(plugin_home), "enabled": ["plain"], "disabled": []})
+    assert _enabled_set(plugin_home) == {"plain"}, "unchanged dependencies must still commit a plugin selection"
     latest = json.loads((rdir / "latest.json").read_text(encoding="utf-8-sig"))
     assert latest["outcome"] == "ok"
     assert latest["venv_rebuild"]["ok"] is False

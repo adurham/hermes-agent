@@ -397,7 +397,7 @@ class Venv(StatePackage):
         h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
-    def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False) -> dict:
+    def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False) -> dict:
         """Prepare one complete environment; the caller commits its selection."""
         import uuid
         from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
@@ -408,7 +408,7 @@ class Venv(StatePackage):
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
         candidate = generation / "venv"
-        environment = managed_environment(candidate, explicit=repair)
+        environment = managed_environment(candidate, explicit=explicit or repair)
         members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
         try:
             generation.mkdir(parents=True)

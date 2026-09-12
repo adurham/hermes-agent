@@ -179,12 +179,12 @@ def _is_member_candidate(plugin_dir: Path) -> bool:
     return False
 
 
-def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
+def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None, installing: Path | None = None) -> list[Path]:
     """Resolve the effective plugin selection without filtering dependency declarations."""
     from pm.plugins_state import _is_directory, enabled_plugins_ordered
 
-    selection = enabled_plugins_ordered() if proposed_home is None else enabled_plugins_ordered(
-        proposed_home=proposed_home, enabled=enabled, disabled=disabled,
+    selection = enabled_plugins_ordered(
+        proposed_home=proposed_home, enabled=enabled, disabled=disabled, installing=installing,
     )
     members = []
     for plugins_dir, names in selection.items():
@@ -193,9 +193,10 @@ def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
             if relative.is_absolute() or ".." in relative.parts:
                 raise InstallError("venv", f"invalid plugin key: {name}")
             plugin_dir = plugins_dir / relative
-            if not _is_directory(plugin_dir):
+            proposed = installing is not None and plugin_dir.resolve() == installing.resolve()
+            if not proposed and not _is_directory(plugin_dir):
                 plugin_dir = paths.repo_root() / "plugins" / relative
-            if _is_directory(plugin_dir):
+            if proposed or _is_directory(plugin_dir):
                 members.append(plugin_dir)
     return list(dict.fromkeys(members))
 

@@ -13,7 +13,7 @@ def test_public_mutations_delegate_but_environment_reads_stay_local(tmp_path, mo
     monkeypatch.setattr(engine, "ensure", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("inline install")))
     monkeypatch.setattr(engine, "sync_venv", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("inline sync")))
     monkeypatch.setattr(client, "is_runtime", lambda: False, raising=False)
-    pm.sync_venv(["all"], explicit=True, plugin_dirs=lambda: (_ for _ in ()).throw(AssertionError("inline sync")))
+    pm.sync_venv(["all"], explicit=True, plugin_dirs=[])
     pm.ensure("node", explicit=True)
     assert calls == ["sync_venv", "ensure"]
     assert pm.env_for is engine.env_for
