@@ -5,7 +5,6 @@ still resolves/monkeypatches. Origin helpers are imported lazily per function (n
 test patches on ``update_cmd`` stay effective).
 """
 
-import importlib
 import logging
 from contextlib import suppress
 import os
@@ -24,37 +23,10 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 
 
 def _prepare_updated_checkout(project_root: Path, *, desktop: bool) -> None:
-    """PM publishes dependencies before the shared builders consume the checkout."""
-    import pm
+    """Historical updater hook: never complete inside the pre-swap interpreter."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
-    pm.sync_venv(explicit=True, project_root=project_root)
-    from hermes_cli.venv_sync import publish_launchers
-
-    publish_launchers(project_root)
-    from hermes_cli.runtime_paths import activation_environment, selected_venv
-
-    # The updater still holds pre-pull imports. Build only in the newly selected Python.
-    command = [str(venv_python_path(selected_venv(project_root))),
-               "-m", "hermes_cli.source_build", "--source", str(project_root)]
-    if desktop:
-        command.append("--desktop")
-    subprocess.run(command, cwd=project_root, env=activation_environment(project_root), check=True)
-
-
-#: Package prefixes whose cached modules go stale when the checkout changes under this
-#: process; purged (not reloaded) so any LATER import chain resolves against fresh source.
-_STALE_PURGE_PREFIXES = "hermes_cli", "gateway", "tools", "tui_gateway", "agent"
-
-#: Modules EXECUTING the update survive the purge: evicting them buys nothing (running frames
-#: keep them alive) and reloading them mid-flight is the one genuinely unsafe move.
-_STALE_PURGE_PROTECTED = frozenset({"hermes_cli", "hermes_cli.main", "hermes_cli.hermes_logging"})
-
-#: The updater's own module family (``update_cmd*``, ``update_receipt``, ``update_inventory``,
-#: ``update_lock``, ...) is protected as a prefix: these hold per-run state — the open receipt
-#: singleton, the pre-update plan's ``RuntimeRecord`` class identity, the lock — and evicting
-#: one swaps in a fresh module whose ``_current`` is None (receipt silently never written) or
-#: whose dataclass fails every ``isinstance`` against the plan built before the purge.
-_STALE_PURGE_PROTECTED_PREFIX = "hermes_cli.update_"
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
 
@@ -73,41 +45,10 @@ def _load_updates_cfg() -> dict:
     return updates if isinstance(updates, dict) else {}
 
 
-def _reload_modules(names, *, modules, log) -> None:
-    """``importlib.reload`` each module of *names* cached in *modules*; failures go to *log*."""
-    importlib.invalidate_caches()
-    for module_name in names:
-        module = modules.get(module_name)
-        if module is None:
-            continue
-        try:
-            importlib.reload(module)
-        except Exception as exc:
-            log(module_name, exc)
-
-
 def _purge_stale_hermes_modules() -> None:
-    """Evict every cached Hermes module after the checkout changed in-place. Never raises.
-
-    The update runs in the pre-pull process; later phases lazily import NEW source into an OLD
-    ``sys.modules`` world and die when new code references a symbol missing from a cached
-    module. Purging (unlike reload) only drops the ``sys.modules`` entry — running frames keep
-    their module objects — so later imports rebuild a self-consistent graph from the new tree.
-    """
-    from hermes_cli.update_cmd import _m
-    with _best_effort('Could not purge stale Hermes modules: %s'):
-        importlib.invalidate_caches()
-        modules = _m().sys.modules
-        purged = [
-            name for name in list(modules)
-            if name not in _STALE_PURGE_PROTECTED
-            and not name.startswith(_STALE_PURGE_PROTECTED_PREFIX)
-            # Root-package check: startswith() alone also matches unrelated ``gateway_foo``.
-            and name.split(".", 1)[0] in _STALE_PURGE_PREFIXES
-            and modules.pop(name, None) is not None
-        ]
-        if purged:
-            logger.debug("Purged %d stale Hermes module(s) after checkout update", len(purged))
+    """Historical updater hook; module-graph surgery cannot complete an update."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 def _reload_updated_runtime_modules() -> None:
@@ -296,25 +237,9 @@ def _format_time_ago(iso_ts: str) -> str:
 
 
 def _reload_process_scan_modules() -> None:
-    """Reload the process-scan modules, dependency-first, so ``dashboard_procs`` binds against a
-    fresh ``_subprocess_compat``: cleanup runs in the PRE-update process and a symbol the update
-    added would otherwise ImportError after the code update succeeded. Called from the cleanup
-    entry point so every caller (git path, ZIP fallback) is covered.
-
-    ``_refresh_dashboard_after_update`` runs in the PRE-update Python process, but
-    ``_scan_dashboard_processes`` does a function-level ``from hermes_cli._subprocess_compat import
-    bounded_probe_run``. If the update added a new symbol to ``_subprocess_compat`` (as #87134 did with
-    ``bounded_probe_run``), the cached OLD module object doesn't have it and the cleanup step crashes with
-    ImportError — after the code update itself already succeeded.
-    """
-    _reload_modules(
-        ("hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"),
-        modules=sys.modules,
-        # warning, not debug: a failed reload surfaces as ImportError seconds later.
-        log=lambda name, exc: logger.warning(
-            "Could not reload %s for post-update cleanup: %s", name, exc
-        ),
-    )
+    """Historical updater hook; scans now run only in fresh completion Python."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 def _finish_dashboard_update_cleanup(
@@ -334,8 +259,7 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
 
     See #83595.
     """
-    from hermes_cli.update_cmd import _m, _reload_process_scan_modules
-    _reload_process_scan_modules()
+    from hermes_cli.update_cmd import _m
 
     stop_result = _m()._kill_stale_dashboard_processes(
         restart_managed=True, already_restarted_units=already_restarted_units
@@ -393,12 +317,9 @@ def _update_complete_message(pre_version: str | None) -> str:
 
 def _post_update_sqlite_runtime_status():
     """Return whether the interpreter used after update has safe SQLite."""
-    from hermes_cli.update_cmd import _m
-    from hermes_constants import project_venv_dir
     from hermes_cli.sqlite_runtime import probe_sqlite_runtime
-    venv_dir = project_venv_dir(_m().PROJECT_ROOT)
-    python = (venv_python_path(venv_dir, windows=_m()._is_windows()) if venv_dir is not None else Path(sys.executable))
-    info = probe_sqlite_runtime(python)
+    # Completion already runs on PM's selected Python, not the obsolete repo venv.
+    info = probe_sqlite_runtime(Path(sys.executable))
     return info is not None and not info.wal_reset_vulnerable, info
 
 
@@ -628,43 +549,10 @@ def _ensure_fhs_path_guard() -> None:
 
 
 def _ensure_acp_launcher() -> None:
-    r"""Self-heal a ``hermes-acp`` launcher next to ``hermes`` (mirrors install.sh): ACP hosts
-    resolve it on the login-shell PATH but the console script lives in the venv. The shim
-    delegates to the sibling ``hermes acp``, correct for every layout.
-
-    No-op on Windows (install.ps1 stages launchers into ``$HermesHome\bin``, never
-    ``venv\Scripts`` which would shadow the user's python; launcher repair lives in
-    _install_repair) and where it already exists. Unwritable dirs are skipped. Idempotent.
-
-    ``/usr/local/bin`` as non-root) are skipped silently. See #83797.
-    """
+    """Historical export; launcher policy belongs to the launcher owner."""
+    from hermes_cli import _launchers
     from hermes_cli.update_cmd import _m
-    if _m().sys.platform == "win32":
-        return
-    for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
-        hermes_cmd = bin_dir / "hermes"
-        acp_cmd = bin_dir / "hermes-acp"
-        try:
-            if not (hermes_cmd.is_file() or hermes_cmd.is_symlink()):
-                continue
-            # is_symlink() catches broken symlinks exists() misses; never follow-and-overwrite.
-            # Already present — a console script (pip/pipx install), an earlier shim, or a symlink.
-            # is_symlink() catches broken symlinks that exists() would miss; never follow-and-overwrite (the
-            # #21454 failure mode).
-            if acp_cmd.exists() or acp_cmd.is_symlink():
-                continue
-            shim = (
-                "#!/usr/bin/env bash\n"
-                "# Hermes Agent — ACP launcher (written by `hermes update`).\n"
-                "# ACP hosts (Zed, JetBrains, Buzz) resolve the agent by this\n"
-                "# command name on the login-shell PATH.\n"
-                f'exec "{hermes_cmd}" acp "$@"\n'
-            )
-            acp_cmd.write_text(shim, encoding="utf-8")
-            acp_cmd.chmod(acp_cmd.stat().st_mode | 0o755)
-        except OSError:
-            continue
-        print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
+    _launchers.expose_cli(_m().PROJECT_ROOT)
 
 
 _BACKUP_MODE_ALIASES = {
@@ -934,6 +822,7 @@ def _print_post_update_notices_and_self_heals() -> None:
     """Best-effort notices (FTS optimize, curator) and self-heals (FHS PATH, ACP launcher,
     Windows bin launchers, cua-driver refresh) that run after the summary."""
     from hermes_cli.update_cmd import _m, _print_curator_first_run_notice, _print_curator_recent_run_notice
+    from hermes_cli import _launchers
 
     def _migrate_windows_bin_path() -> None:
         # Windows launchers into the managed bin dir: in-checkout launchers were swept by the
@@ -947,7 +836,7 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('Curator first-run notice failed: %s', _print_curator_first_run_notice),
         ('Curator recent-run notice failed: %s', _print_curator_recent_run_notice),
         ('FHS PATH guard check failed: %s', _ensure_fhs_path_guard),
-        ('hermes-acp launcher self-heal failed: %s', _ensure_acp_launcher),
+        ('CLI launcher exposure failed: %s', lambda: _launchers.expose_cli(_m().PROJECT_ROOT)),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
@@ -958,7 +847,7 @@ def _print_post_update_notices_and_self_heals() -> None:
 
 def _run_post_update_maintenance(
     *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update,
-    pre_update_version,
+    pre_update_version, completion_message=None,
 ) -> bool:
     """Post-build housekeeping and completion, returning the SQLite runtime verdict.
 
@@ -1011,7 +900,7 @@ def _run_post_update_maintenance(
     )
 
     print()
-    update_complete = _print_verified_update_completion(_update_complete_message(pre_update_version))
+    update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))
 
     _print_post_update_notices_and_self_heals()
     return update_complete

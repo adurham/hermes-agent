@@ -239,128 +239,13 @@ def _needs_sudo(scope: str) -> bool:
     )
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
-    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
-    answered = set()
-    for scope, scope_cmd, result in listings:
-        answered.add(scope)
-        if result.returncode != 0:
-            failed.append(f"systemd-{scope} (listing failed)")
-            continue
 
-        def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
-            manage_cmd = list(_cmd) + ["--no-ask-password"]
-            if _needs_sudo(_scope):
-                manage_cmd = ["sudo", "-n"] + manage_cmd
-            result = _systemctl_reset_and_restart(manage_cmd, svc_name, scope_cmd=_cmd)
-            if result.returncode != 0 or not _wait_for_service_active(_cmd, svc_name):
-                failed.append(svc_name)
-
-        _for_each_systemd_gateway_unit(
-            result.stdout,
-            process_unit=process_unit,
-            on_unit_timeout=lambda svc_name, exc: failed.append(svc_name),
-        )
-    # A timeout or missing executable is not an empty scope.
-    failed.extend(f"systemd-{scope} (listing unavailable)" for scope, _ in _SYSTEMD_SCOPES if scope not in answered)
 
 
 def _run_pending_fleet_restart() -> bool:
-    """Catch-up restart for gateways left on pre-update code. Never raises.
-
-    True when all discovered targets recovered (or none exist); False if incomplete.
-
-    See #95294.
-    """
-    from hermes_cli.update_cmd import _m
-    print("→ Restarting gateways left on pre-update code...")
-    with suppress(Exception):
-        _m()._purge_stale_hermes_modules()
-    # Warn if legacy Hermes gateway unit files are still installed. When both hermes.service (from a
-    # pre-rename install) and the current hermes-gateway.service are enabled, they SIGTERM-fight for the
-    # same bot token (see PR #11909). Flagging here means every `hermes update` surfaces the issue until the
-    # user migrates.
-    try:
-        from hermes_cli.gateway import (
-            find_gateway_pids, is_macos, is_windows, kill_gateway_processes, supports_systemd_services,
-            _wait_for_gateway_exit,
-        )
-    except Exception as exc:
-        _warn_gateway_restart_phase_aborted(exc, None)
-        return False
-
-    try:
-        pids = list(find_gateway_pids(all_profiles=True))
-    except Exception as exc:
-        logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
-        pids = None
-
-    failed: list = []
-    try:
-        # Snapshot before stopping: Restart=no units can disappear from list-units on a clean exit.
-        systemd_listings = list(_systemd_gateway_unit_listings()) if supports_systemd_services() else None
-        # Stop old processes before supervisor recovery, never its freshly verified workers.
-        if pids != []:
-            try:
-                leftover = list(find_gateway_pids(all_profiles=True))
-            except Exception:
-                leftover = list(pids or [])
-            if leftover:
-                with _best_effort('Pending fleet restart: PID stop failed: %s'):
-                    kill_gateway_processes(all_profiles=True)
-                    _wait_for_gateway_exit(timeout=5.0, force_after=None)
-        # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
-        # hermes-serve* units (the Desktop app's backend, #83438).
-        if systemd_listings is not None:
-            _restart_systemd_gateway_units_best_effort(failed, systemd_listings)
-        # --- Launchd services (macOS) --- Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
-        # invoking profile's — parity with the systemd branch above (#41403). Per-label TimeoutExpired
-        # isolation happens inside.
-        if is_macos():
-            try:
-                _restart_macos_launchd_gateways([], failed, 45.0, require_supervision=True)
-            except Exception as exc:
-                logger.debug("Pending fleet restart: launchd failed: %s", exc)
-                failed.append("launchd")
-        if is_windows():
-            try:
-                from hermes_cli import gateway_windows
-                if gateway_windows.is_installed():
-                    gateway_windows.restart()
-            except Exception as exc:
-                logger.debug("Pending fleet restart: Windows failed: %s", exc)
-                failed.append("windows-gateway")
-        if failed:
-            _warn_incomplete_gateway_fleet_restart(failed)
-            return False
-        print("  ✓ Pending fleet restart completed.")
-        return True
-    except Exception as exc:
-        try:
-            surviving = list(find_gateway_pids(all_profiles=True))
-        except Exception:
-            surviving = pids
-        _warn_gateway_restart_phase_aborted(exc, surviving)
-        return False
-
-
-def _apply_pending_fleet_restart_catchup() -> None:
-    """On an already-up-to-date ``hermes update``, finish a skipped restart.
-
-    No-op when nothing is pending; exits 1 on incomplete catch-up so automation
-    does not treat the fleet as healthy.
-    """
-    from hermes_cli.update_cmd import _run_pending_fleet_restart
-    if not _pending_fleet_restart_needed():
-        return
-    print()
-    _warn_pending_fleet_restart()
-    print("→ Running the pending fleet restart...")
-    if _run_pending_fleet_restart():
-        _clear_fleet_restart_pending_marker()
-        return
-    print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
-    sys.exit(1)
+    """Historical retry hook; new retries use the ordinary completion owner."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 def _systemctl(cmd: list, *, timeout: float):
@@ -1182,10 +1067,6 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     # already-restarted units to ``_refresh_dashboard_after_update`` (review on #83595).
     restarted_scoped_units: set = set()
 
-    # Purge stale cached Hermes modules FIRST: the import below loads new gateway
-    # source into this pre-update interpreter, and a cached sibling missing a
-    # symbol the new source expects would ImportError and abort the whole phase.
-    _m()._purge_stale_hermes_modules()
     try:
         # Every gateway helper the phase needs is imported up front so a broken gateway
         # module aborts into recovery BEFORE any unit is touched.

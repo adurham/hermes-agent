@@ -20,6 +20,10 @@ from typing import NoReturn
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli.update_cmd_common import _best_effort
+# Captured BEFORE a checkout swap: parent transport/lifecycle never imports new code.
+from hermes_cli.update_completion import run_completion
+from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
+from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
 from hermes_cli._old_updater import stop_for_relaunch
 from hermes_constants import venv_python_path
 
@@ -43,14 +47,14 @@ from hermes_cli.update_cmd_windows import (  # noqa: F401
     _wait_for_windows_update_gateway_exit, _write_update_planned_stop_marker)
 from hermes_cli.update_cmd_fleet import (  # noqa: F401
     _FLEET_RESTART_PENDING_NAME, _FRESH_RESTART_SUPERVISORS, _GatewayRestartOutcome,
-    _apply_pending_fleet_restart_catchup, _clear_fleet_restart_pending_marker,
+    _clear_fleet_restart_pending_marker,
     _current_checkout_sha, _drain_or_signal_gateway_for_update, _fleet_probe_expected_runtimes,
     _fleet_restart_pending_marker_path, _for_each_systemd_gateway_unit,
     _gateway_recovery_partition, _gateway_service_matches_profile, _pending_fleet_restart_needed,
     _receipt_looks_unfinished, _receipt_reports_stale_runtime, _resolve_manage_cmd,
     _restart_gateway_fleet_after_update, _restart_launchd_gateway_after_update,
     _restart_macos_launchd_gateways, _restart_phase_failure_is_incomplete,
-    _restart_systemd_gateway_units, _restart_systemd_gateway_units_best_effort,
+    _restart_systemd_gateway_units,
     _run_pending_fleet_restart, _service_restart_sec,
     _service_unit_supports_graceful_sigusr1_restart, _surviving_gateway_pids_after_failed_restart,
     _systemctl, _systemctl_reset_and_restart, _verify_fleet_after_update,
@@ -93,8 +97,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
-    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _STALE_PURGE_PREFIXES,
-    _STALE_PURGE_PROTECTED, _clear_stale_sqlite_sidecars,
+    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _clear_stale_sqlite_sidecars,
     _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
@@ -788,18 +791,45 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
-def _repair_current_checkout(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id,
-    had_desktop_app_before_update, upstream_checked) -> bool:
-    """A retry completes the same products as a newly pulled checkout."""
-    _prepare_updated_checkout(
-        _m().PROJECT_ROOT, desktop=had_desktop_app_before_update)
-    _check_and_apply_config_migration(
-        assume_yes=assume_yes, gateway_mode=gateway_mode,
-        pre_update_snapshot_id=pre_update_snapshot_id)
-    return _print_verified_update_completion(
-        "✓ Already up to date!" if upstream_checked
-        else "✓ Up to date with your fork (official repo not checked).")
+def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop, gateway_mode) -> dict:
+    """Freeze data before mutation; no pre-swap module objects cross the seam."""
+    from copy import deepcopy
+    current = _completion_receipt._current.get()
+    if current is None:
+        _completion_receipt.begin_update_receipt()
+        current = _completion_receipt._current.get()
+    return {
+        "schema": 1, "source": str(_m().PROJECT_ROOT.resolve()),
+        "home": str(get_hermes_home()), "branch": "main", "desktop": desktop,
+        "assume_yes": opts.assume_yes, "gateway_mode": gateway_mode,
+        "pre_update_version": opts.pre_update_version, "snapshot_id": snapshot_id,
+        "sibling_snapshots": deepcopy(_completion_config._LAST_SIBLING_SNAPSHOTS),
+        "plan": plan.to_dict() if plan is not None else None,
+        "receipt": deepcopy(current.data), "windows_resume": windows_resume,
+    }
+
+
+def _complete_source_update(request: dict | None) -> None:
+    if request is None:
+        stop_for_relaunch(incomplete=True)
+    from copy import deepcopy
+    current = _completion_receipt._current.get()
+    if current is not None:
+        request["receipt"] = deepcopy(current.data)
+    _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or "")
+    result = run_completion(request)
+    _accept_completion_pm_receipt(result.get("pm_receipt"), request["receipt"]["update_id"])
+    token = request["windows_resume"]
+    if token is not None and result.get("windows_resume") is not None:
+        resumed = dict(result["windows_resume"])
+        token.clear()
+        token.update(resumed)
+    if result.get("receipt") is not None:
+        current = _completion_receipt._current.get()
+        if current is not None:
+            _completion_receipt._current.reset(current.current_token)
+    if result["exit_code"]:
+        raise SystemExit(result["exit_code"])
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:
@@ -1230,7 +1260,7 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 
 def _handle_update_called_process_error(
     e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
-    *, target_sha: str | None = None, target_repository: str | None = None) -> None:
+    *, target_sha: str | None = None, target_repository: str | None = None, completion_request=None) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
     stage = _format_update_failure_stage(e)
     if _should_zip_fallback_on_update_error(e):
@@ -1239,12 +1269,9 @@ def _handle_update_called_process_error(
         print()
         update_complete = _update_via_zip(
             args, had_desktop_app_before_update=had_desktop_app_before_update,
-            target_sha=target_sha,
+            target_sha=target_sha, completion_request=completion_request,
             **({"target_repository": target_repository} if target_repository else {}))
-        if gateway_mode:
-            _write_gateway_update_exit_code(update_complete)
-        if not update_complete:
-            sys.exit(1)
+
     else:
         print(f"✗ {stage}: {e}")
         _print_called_process_error_tail(e)
@@ -1269,12 +1296,9 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 
 def _finish_already_up_to_date(
-    git_cmd, branch: str, current_branch: str, _plan, *, assume_yes: bool, gateway_mode: bool,
-    gw_input_fn, pre_update_snapshot_id, had_desktop_app_before_update: bool,
-    _windows_gateway_resume) -> None:
+    git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
-
     # Restore stash and switch back if we moved. EXCEPTION: a parked branch verified clean +
     # fully merged stays on the target — re-parking on the stale branch recreates the incident.
     if _plan.auto_stash_ref is not None:
@@ -1292,69 +1316,27 @@ def _finish_already_up_to_date(
     elif current_branch not in {branch, "HEAD"}:
         _git_run(git_cmd, ["checkout", current_branch])
 
-    current_checkout_complete = _repair_current_checkout(
-        assume_yes=assume_yes, gateway_mode=gateway_mode,
-        pre_update_snapshot_id=pre_update_snapshot_id,
-        had_desktop_app_before_update=had_desktop_app_before_update,
-        upstream_checked=_plan.upstream_checked)
-    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-    # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
-    # gate so a partial outcome can't strand the fleet on stale code.
-    # Catch up even on the "Already up to date" path — that early return is what left the gateway on stale
-    # code for two days. Runs BEFORE the runtime-verification exit gate below: a vulnerable SQLite runtime
-    # demotes the outcome to partial, but must not strand the fleet on stale code (#91277 fleet contract —
-    # the pending-restart check always executes).
-    _apply_pending_fleet_restart_catchup()
-    if not current_checkout_complete:
-        if gateway_mode:
-            _write_gateway_update_exit_code(False)
-        _finalize_receipt("partial", 'Update receipt finalize (current checkout) failed: %s')
-        sys.exit(1)
+    if completion_request is not None:
+        completion_request["completion_message"] = (
+            "✓ Already up to date!" if _plan.upstream_checked
+            else "✓ Up to date with your fork (official repo not checked).")
+    _complete_source_update(completion_request)
 
 
 def _apply_pulled_update(
-    git_cmd, branch, pre_pull_sha, _plan, opts, *, gateway_mode, is_fork, desktop_dir,
-    had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume) -> None:
+    git_cmd, branch, pre_pull_sha, _plan, opts, *, is_fork,
+    _windows_gateway_resume, completion_request: dict) -> None:
     """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
     post_pull_sha = _verify_head_after_pull(
         git_cmd, branch, pre_pull_sha, in_place_update=_plan.in_place_update,
         _windows_gateway_resume=_windows_gateway_resume)
 
-    # Gateways still serve pre-pull modules until the restart phase; an interrupt before a
-    # completed restart leaves this marker so the next update catches up even when git is
-    # current. Distinct from ``.update-incomplete`` (venv/install repair).
-    # See #95294.
-    _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "")
-    # Stale .pyc would ImportError on gateway restart when new source references new names.
-    _sweep_bytecode_after_update(branch)
-
     if is_fork and branch == "main":
         _m()._sync_with_upstream_if_needed(
             git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
-
-    _prepare_updated_checkout(_m().PROJECT_ROOT, desktop=had_desktop_app_before_update)
-
-    print()
-    print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
-
-    update_complete = _run_post_update_maintenance(
-        assume_yes=opts.assume_yes, gateway_mode=gateway_mode,
-        pre_update_snapshot_id=pre_update_snapshot_id,
-        had_desktop_app_before_update=had_desktop_app_before_update,
-        pre_update_version=opts.pre_update_version)
-
-    # Exit code *before* the restart: under --gateway this process lives in the gateway's
-    # systemd cgroup and the systemctl-restart fallback SIGKILLs it (KillMode=mixed), so
-    # the marker would never land and the new gateway's watcher would time out spuriously.
-    if gateway_mode:
-        _write_gateway_update_exit_code(update_complete)
-
-    _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)
-    _resume_windows_gateways_and_merge_outcome(_restart, _windows_gateway_resume, gateway_mode)
-    _verify_fleet_after_update(
-        _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
-        update_complete=update_complete)
+    if completion_request is not None:
+        completion_request["expected_sha"] = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or post_pull_sha
+    _complete_source_update(completion_request)
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -1369,6 +1351,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
     # the post-update cron-jobs safety net.
+    _completion_config._LAST_SIBLING_SNAPSHOTS = {}
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     _record_update_step(
         "pre_update_backup", pre_update_snapshot_id is not None,
@@ -1387,7 +1370,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     use_zip_update, git_cmd, is_fork = _prepare_git_command()
 
+    completion_request = _source_completion_request(
+        opts, _pre_update_plan, pre_update_snapshot_id, _windows_gateway_resume,
+        had_desktop_app_before_update, gateway_mode)
     branch = _m()._resolve_update_branch(args)
+    completion_request["branch"] = branch
     target_ref = f"origin/{branch}"
     release_tag, release_sha = None, None
     target_repository = None
@@ -1419,14 +1406,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         try:
             update_complete = _update_via_zip(
                 args, had_desktop_app_before_update=had_desktop_app_before_update,
-                target_sha=release_sha,
+                target_sha=release_sha, completion_request=completion_request,
                 **({"target_repository": target_repository} if target_repository else {}))
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-        if gateway_mode:
-            _write_gateway_update_exit_code(update_complete)
-        if not update_complete:
-            sys.exit(1)
+
         return
 
     try:
@@ -1482,11 +1466,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         if commit_count == 0:
             _finish_already_up_to_date(
-                git_cmd, branch, current_branch, _plan, assume_yes=assume_yes,
-                gateway_mode=gateway_mode, gw_input_fn=gw_input_fn,
-                pre_update_snapshot_id=pre_update_snapshot_id,
-                had_desktop_app_before_update=had_desktop_app_before_update,
-                _windows_gateway_resume=_windows_gateway_resume)
+                git_cmd, branch, current_branch, _plan, gw_input_fn=gw_input_fn,
+                completion_request=completion_request)
             return
 
         if release_tag:
@@ -1503,16 +1484,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
             keep_stash=opts.keep_stash, target_ref=target_ref)
         _apply_pulled_update(
-            git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
-            is_fork=is_fork and not release_tag, desktop_dir=desktop_dir,
-            had_desktop_app_before_update=had_desktop_app_before_update,
-            pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
-            _windows_gateway_resume=_windows_gateway_resume)
+            git_cmd, branch, pre_pull_sha, _plan, opts, is_fork=is_fork and not release_tag,
+            _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
     except subprocess.CalledProcessError as e:
         try:
             _handle_update_called_process_error(
                 e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
-                target_repository=target_repository)
+                target_repository=target_repository, completion_request=completion_request)
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 

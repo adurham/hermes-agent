@@ -39,12 +39,17 @@ entry shims stop the old updater cleanly and ask for a relaunch instead of invok
 PM or falling back to pip. Completion belongs to the new launcher, not that mixed
 old-code/new-files process.
 
-Current source updates use one PM sync for the recorded extras and enabled
-plugins, then build frontend products in a fresh process on the selected
-Python. A retry on an already-current checkout follows the same path.
-Dependency or build failures stop completion; the updater does not retry
-through pip, reinstall providers separately, or create incomplete markers.
-Use `hermes pm repair` for damaged dependency files.
+Current source updates hand the selected checkout to a fresh completion owner.
+Its bootstrap Python disables site-package initialization before asking PM to
+sync the recorded extras and enabled plugins. The selected Python then owns
+frontend builds, profile/configuration maintenance, gateway restarts and runtime
+verification. Git, already-current retries and ZIP fallback use this same path.
+The original command keeps the update lock while waiting; a missing or failed
+completion result cannot report success. Correlated PM failures remain in the
+update receipt, and interrupted restarts retain their fleet obligation.
+Dependency or build failures never retry through pip or a source re-download.
+Use `hermes pm repair` for damaged dependency files. See the developer
+[source completion ownership note](https://github.com/NousResearch/hermes-agent/blob/main/docs/source-update-completion.md).
 
 ## Source installs and packaged builds
 

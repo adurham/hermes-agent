@@ -18,10 +18,6 @@ def _isolate_venv_holders(monkeypatch):
     monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
 
 
-@pytest.fixture(autouse=True)
-def _isolate_product_preparation(monkeypatch):
-    """These tests exercise update orchestration, not PM installs or npm builds."""
-    monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -182,7 +178,7 @@ class TestCmdUpdateBranchFallback:
         assert exit_info.value.code == 1
         runtime_check.assert_called_once_with()
         write_gateway_exit.assert_called_once_with(False)
-        finalize_receipt.assert_called_once_with("partial")
+        assert finalize_receipt.call_args.args[0] == "partial"
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -216,7 +212,7 @@ class TestCmdUpdateBranchFallback:
             hm, "_sync_with_upstream_if_needed"
         ), patch.object(
             update_cmd,
-            "_run_post_update_maintenance",
+            "_complete_source_update",
             # Unlike product preparation, this phase only runs after a pull.
             # Stop before skills sync and fleet restart; the regression took
             # the current-checkout path instead and never reached this phase.
@@ -242,9 +238,9 @@ class TestCmdUpdateBranchFallback:
         ), patch(
             "hermes_cli.update_cmd._reload_config_modules"
         ), patch(
-            "hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2)
+            "hermes_cli.config.check_config_version", return_value=(1, 2)
         ), patch(
-            "hermes_cli.update_cmd._run_migrate_config_fresh",
+            "hermes_cli.config.migrate_config",
             return_value={"env_added": [], "config_added": ["new.option"]},
         ) as migrate_config, patch("hermes_cli.main.sys") as mock_sys:
             mock_sys.stdin.isatty.return_value = False
@@ -285,9 +281,9 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.update_cmd._reload_config_modules"
         ), patch(
-            "hermes_cli.update_cmd._run_config_check_fresh", return_value=(5, 24)
+            "hermes_cli.config.check_config_version", return_value=(5, 24)
         ), patch(
-            "hermes_cli.update_cmd._run_migrate_config_fresh",
+            "hermes_cli.config.migrate_config",
             return_value={"env_added": [], "config_added": [], "warnings": []},
         ) as mock_migrate:
             mock_run.side_effect = _make_run_side_effect(
@@ -324,9 +320,9 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.update_cmd._reload_config_modules"
         ), patch(
-            "hermes_cli.update_cmd._run_config_check_fresh", return_value=(33, 34)
+            "hermes_cli.config.check_config_version", return_value=(33, 34)
         ), patch(
-            "hermes_cli.update_cmd._run_migrate_config_fresh",
+            "hermes_cli.config.migrate_config",
             return_value={
                 "env_added": [],
                 "config_added": ["display.personality=none (one-time reset)"],
@@ -366,9 +362,9 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.update_cmd._reload_config_modules"
         ), patch(
-            "hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 24)
+            "hermes_cli.config.check_config_version", return_value=(1, 24)
         ), patch(
-            "hermes_cli.update_cmd._run_migrate_config_fresh",
+            "hermes_cli.config.migrate_config",
             return_value={"env_added": [], "config_added": [], "warnings": []},
         ), patch("hermes_cli.main.sys") as mock_sys:
             mock_sys.stdin.isatty.return_value = True
@@ -386,35 +382,6 @@ class TestCmdUpdateMigrationPrompt:
             assert "display.new_widget" in out
 
 
-class TestConfigVersionCheckUsesFreshModules:
-    """Regression: config migration must use freshly-reloaded modules, not the
-    sys.modules cache from before git pull.
-
-    Before the fix, ``hermes update`` ran in the PRE-pull Python process.
-    After ``git pull`` updated the source on disk, function-level imports
-    returned the OLD cached ``hermes_cli.config`` module — so
-    ``DEFAULT_CONFIG["_config_version"]`` was stale and
-    ``check_config_version()`` reported ``(33, 33)`` "up to date" even though
-    the freshly-pulled code had v34 with a migration to run. The personality
-    reset migration (#81946) was silently skipped this way.
-    """
-
-    def test_run_config_check_fresh_reloads_modules(self):
-        """_run_config_check_fresh must call _reload_config_modules which
-        force-reloads the config modules from disk.
-
-        Regression: config migration was silently skipped because
-        sys.modules held the OLD hermes_cli.config with the OLD
-        DEFAULT_CONFIG["_config_version"] after git pull.
-        """
-        from unittest.mock import patch
-
-        import hermes_cli.update_cmd as update_cmd
-
-        with patch.object(update_cmd, "_reload_config_modules") as mock_reload:
-            update_cmd._run_config_check_fresh()
-
-        mock_reload.assert_called_once()
 
 
 class TestCmdUpdateProfileSkillSync:
@@ -720,7 +687,7 @@ class TestCmdUpdateZipBranchRefusal:
 
         args = SimpleNamespace(branch="bb/gui")
         with pytest.raises(SystemExit) as exc_info:
-            _update_via_zip(args)
+            _update_via_zip(args, completion_request={})
         assert exc_info.value.code == 1
 
         out = capsys.readouterr().out
@@ -738,6 +705,7 @@ class TestZipDesktopPreservation:
         pre-update desktop selection (#70337/#87331).
         """
         import zipfile
+        from pathlib import Path
 
         from hermes_cli import main as hm
         from hermes_cli import update_cmd
@@ -761,8 +729,8 @@ class TestZipDesktopPreservation:
 
         preparations = []
 
-        def prepare_checkout(root, *, desktop):
-            preparations.append((root, desktop, packaged_exe.read_bytes()))
+        def prepare_checkout(request):
+            preparations.append((Path(request["source"]), request["desktop"], packaged_exe.read_bytes()))
 
         monkeypatch.setattr(hm, "PROJECT_ROOT", project_root)
         monkeypatch.setattr(hm, "_is_windows", lambda: True)
@@ -775,7 +743,7 @@ class TestZipDesktopPreservation:
             lambda _desktop_dir: packaged_exe if packaged_exe.exists() else None,
         )
         monkeypatch.setattr(hm, "_desktop_dist_exists", lambda _desktop_dir: False)
-        monkeypatch.setattr(update_cmd_maint, "_prepare_updated_checkout", prepare_checkout)
+        monkeypatch.setattr(update_cmd, "_complete_source_update", prepare_checkout)
         monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *_args: 0)
         monkeypatch.setattr(hm, "_record_bytecode_fingerprint", lambda: None)
         monkeypatch.setattr(hm, "_refresh_bootstrap_cache_scripts", lambda _branch: None)

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+from hermes_cli import config as update_config
 from unittest.mock import patch
 
 import hermes_cli.update_cmd as update_cmd
@@ -39,9 +40,9 @@ def _run(current: int, latest: int):
     ), patch(
         "hermes_cli.config.get_missing_config_fields", return_value=[]
     ), patch.object(
-        update_cmd, "_run_config_check_fresh", return_value=(current, latest)
+        update_config, "check_config_version", return_value=(current, latest)
     ), patch.object(
-        update_cmd, "_run_migrate_config_fresh", side_effect=_fake_migrate
+        update_config, "migrate_config", side_effect=_fake_migrate
     ), patch.object(
         update_cmd, "_migrate_sibling_profile_configs", return_value=[]
     ):
@@ -88,9 +89,9 @@ def test_surfaces_migration_warnings():
     ), patch(
         "hermes_cli.config.get_missing_config_fields", return_value=[]
     ), patch.object(
-        update_cmd, "_run_config_check_fresh", return_value=(37, 38)
+        update_config, "check_config_version", return_value=(37, 38)
     ), patch.object(
-        update_cmd, "_run_migrate_config_fresh", side_effect=_fake_migrate
+        update_config, "migrate_config", side_effect=_fake_migrate
     ), patch.object(
         update_cmd, "_migrate_sibling_profile_configs", return_value=[]
     ):
@@ -109,9 +110,9 @@ def test_check_failure_does_not_break_repair_path():
     ), patch(
         "hermes_cli.config.get_missing_config_fields", return_value=[]
     ), patch.object(
-        update_cmd, "_run_config_check_fresh", side_effect=RuntimeError("boom")
+        update_config, "check_config_version", side_effect=RuntimeError("boom")
     ), patch.object(
-        update_cmd, "_run_migrate_config_fresh", return_value={}
+        update_config, "migrate_config", return_value={}
     ) as mig:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

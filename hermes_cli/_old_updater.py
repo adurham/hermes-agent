@@ -4,11 +4,12 @@ import sys
 from typing import NoReturn
 
 
-def stop_for_relaunch() -> NoReturn:
+def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
     """Do not return: old callers would fall back to pip or claim completion."""
+    command = "hermes update" if incomplete else "hermes"
     print(
         "You're updating from an older version of Hermes Agent. "
-        "To complete this update, run `hermes` again.",
+        f"To complete this update, run `{command}` again.",
         file=sys.stderr,
     )
-    raise SystemExit(0)
+    raise SystemExit(1 if incomplete else 0)

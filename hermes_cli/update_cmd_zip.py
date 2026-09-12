@@ -319,24 +319,13 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
 
 
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
-                   target_sha: str | None = None, target_repository: str | None = None) -> bool:
+                   target_sha: str | None = None, target_repository: str | None = None,
+                   completion_request=None) -> bool:
     """Update via ZIP when Windows git file I/O fails; dependency/build failures propagate.
 
     A supplied commit keeps the archive on the target selected before Git failed.
     """
-    from hermes_cli.update_cmd import (
-        _m,
-        _print_curator_first_run_notice,
-        _print_curator_recent_run_notice,
-        _read_project_version,
-        _verify_and_restore_state_dbs_post_update,
-    )
-    from hermes_cli.update_cmd_maint import (
-        _prepare_updated_checkout, _refresh_dashboard_after_update,
-        _print_verified_update_completion, _update_complete_message)
-    from hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
-    from hermes_cli.update_cmd_maint import _sweep_bytecode_after_update
-    pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
+    from hermes_cli.update_cmd import _m, _complete_source_update
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
@@ -350,6 +339,10 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
+    # Older callers lack the snapshot/receipt/lifecycle handoff. Refuse before swap.
+    if completion_request is None:
+        from hermes_cli._old_updater import stop_for_relaunch
+        stop_for_relaunch(incomplete=True)
     if target_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", target_sha):
         raise ValueError("ZIP update requires an exact full commit SHA")
     ref = target_sha if target_sha is not None else f"refs/heads/{branch}"
@@ -358,27 +351,6 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
             or any(part in (".", "..") for part in repository.split("/"))):
         raise ValueError("ZIP update requires a GitHub owner/repository")
     _download_and_swap_zip(branch, f"https://github.com/{repository}/archive/{ref}.zip")
-    _sweep_bytecode_after_update(branch)
-    _prepare_updated_checkout(_m().PROJECT_ROOT, desktop=had_desktop_app_before_update)
-    with suppress(Exception):
-        print("→ Syncing bundled skills...")
-        _print_bundled_skills_sync_report()
-    # Seed the model-catalog disk cache from the fresh checkout (same rationale as _cmd_update_impl). Non-fatal.
-    with _best_effort('Model catalog seed during zip update failed: %s'):
-        from hermes_cli.model_catalog import seed_cache_from_checkout
-        if seed_cache_from_checkout(_m().PROJECT_ROOT):
-            print("  ✓ Model catalog cache refreshed from checkout")
-    # state.db integrity guard: root home AND every sibling profile, each auto-restored from its own snapshot.
-    with _best_effort('Post-update state.db integrity check (zip path) failed: %s'):
-        # See #97994.
-        _verify_and_restore_state_dbs_post_update()
-    update_complete = _print_verified_update_completion(_update_complete_message(pre_update_version))
-    with _best_effort('Curator first-run notice failed: %s'):
-        _print_curator_first_run_notice()
-    with _best_effort('Curator recent-run notice failed: %s'):
-        _print_curator_recent_run_notice()
-    _refresh_dashboard_after_update()
-    with _best_effort('Update receipt finalize (zip path) failed: %s'):
-        from hermes_cli.update_receipt import finalize_update_receipt
-        finalize_update_receipt("success" if update_complete else "partial")
-    return update_complete
+    completion_request["expected_sha"] = target_sha
+    _complete_source_update(completion_request)
+    return True

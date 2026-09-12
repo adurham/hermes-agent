@@ -29,6 +29,8 @@ import hermes_cli.update_cmd_fleet as update_cmd_fleet
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
 
+pytestmark = pytest.mark.usefixtures("isolated_source_completion")
+
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""
@@ -374,19 +376,6 @@ def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
     assert update_cmd._pending_fleet_restart_needed() is True
 
 
-def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "hermes_cli.gateway.find_gateway_pids", lambda **k: []
-    )
-    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
-
-    # An empty PID scan is insufficient; both supervisor scopes must answer empty.
-    monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [
-        (scope, cmd, SimpleNamespace(returncode=0, stdout=""))
-        for scope, cmd in update_cmd_fleet._SYSTEMD_SCOPES
-    ])
-    assert update_cmd._run_pending_fleet_restart() is True
-    assert "Pending fleet restart completed" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -536,19 +525,19 @@ def test_already_up_to_date_runs_pending_restart_when_marker_present(
 
     seen = {"ran": False}
 
-    def _restart():
+    original = update_cmd._restart_gateway_fleet_after_update
+    def _restart(*args):
         seen["ran"] = True
-        return True
+        return original(*args)
 
-    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", _restart)
-    monkeypatch.setattr(update_cmd_fleet, "_run_pending_fleet_restart", _restart)
+    monkeypatch.setattr(update_cmd, "_restart_gateway_fleet_after_update", _restart)
 
     hermes_main.cmd_update(args)
 
     assert seen["ran"] is True
     assert not update_cmd._fleet_restart_pending_marker_path().exists()
     out = capsys.readouterr().out
-    assert "did not restart running gateways" in out
+    assert "Already up to date!" in out
 
 
 def test_already_up_to_date_runs_pending_restart_when_receipt_skewed(
@@ -585,46 +574,19 @@ def test_already_up_to_date_runs_pending_restart_when_receipt_skewed(
     )
 
     seen = {"ran": False}
-    monkeypatch.setattr(
-        update_cmd,
-        "_run_pending_fleet_restart",
-        lambda: seen.__setitem__("ran", True) or True,
-    )
-    monkeypatch.setattr(
-        update_cmd_fleet,
-        "_run_pending_fleet_restart",
-        lambda: seen.__setitem__("ran", True) or True,
-    )
+    original = update_cmd._restart_gateway_fleet_after_update
+    def restart(*args):
+        seen["ran"] = True
+        return original(*args)
+    monkeypatch.setattr(update_cmd, "_restart_gateway_fleet_after_update", restart)
 
     hermes_main.cmd_update(args)
 
     assert seen["ran"] is True
     out = capsys.readouterr().out
-    assert "did not restart running gateways" in out
+    assert "Already up to date!" in out
 
 
-def test_already_up_to_date_skips_restart_when_nothing_pending(
-    monkeypatch, tmp_path, capsys
-):
-    args = _update_args()
-    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
-
-    seen = {"ran": False}
-    monkeypatch.setattr(
-        update_cmd,
-        "_run_pending_fleet_restart",
-        lambda: seen.__setitem__("ran", True) or True,
-    )
-    monkeypatch.setattr(
-        update_cmd_fleet,
-        "_run_pending_fleet_restart",
-        lambda: seen.__setitem__("ran", True) or True,
-    )
-
-    hermes_main.cmd_update(args)
-
-    assert seen["ran"] is False
-    assert "did not restart running gateways" not in capsys.readouterr().out
 
 
 def test_startup_warn_prints_when_marker_present(capsys):

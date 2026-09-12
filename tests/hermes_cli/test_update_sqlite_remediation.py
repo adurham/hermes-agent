@@ -25,6 +25,17 @@ def test_runtime_status_probes_running_venv_outside_checkout(tmp_path, monkeypat
     assert info is vulnerable
 
 
+def test_runtime_status_uses_selected_python_not_legacy_repo_venv(tmp_path, monkeypatch):
+    selected = tmp_path / "selected/bin/python"
+    monkeypatch.setattr("hermes_constants.project_venv_dir", lambda root: tmp_path / "obsolete-venv")
+    monkeypatch.setattr(update_cmd.sys, "executable", str(selected))
+    observed = []
+    safe = SimpleNamespace(wal_reset_vulnerable=False)
+    monkeypatch.setattr("hermes_cli.sqlite_runtime.probe_sqlite_runtime", lambda python: observed.append(Path(python)) or safe)
+    assert update_cmd._post_update_sqlite_runtime_status() == (True, safe)
+    assert observed == [selected]
+
+
 def test_summary_withholds_success_when_sqlite_remediation_failed(capsys, monkeypatch):
     monkeypatch.setattr(
         update_cmd,
@@ -80,22 +91,3 @@ def test_current_checkout_completion_is_verified_before_success(capsys, monkeypa
     assert complete is False
     assert "Already up to date" not in out
     assert "SQLite 3.46.1" in out
-
-
-def test_current_checkout_repair_returns_verified_completion_result(monkeypatch):
-    monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_check_and_apply_config_migration", lambda **k: None)
-    monkeypatch.setattr(
-        update_cmd,
-        "_print_verified_update_completion",
-        lambda _message: False,
-    )
-    complete = update_cmd._repair_current_checkout(
-        assume_yes=True,
-        gateway_mode=False,
-        pre_update_snapshot_id=None,
-        had_desktop_app_before_update=False,
-        upstream_checked=True,
-    )
-
-    assert complete is False
