@@ -97,6 +97,27 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   expect(files(input.source).some(([name]) => name.includes('.vite') || name.endsWith('tsbuildinfo'))).toBe(false)
 }, 60000)
 
+test('desktop output cannot overlap a source directory symlinked outside the checkout', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const root = mkdtempSync(join(tmpdir(), 'desktop symlinked source-'))
+  roots.push(root)
+  const source = join(root, 'source')
+  const externalSource = join(root, 'external-source')
+  mkdirSync(join(source, 'apps/desktop'), { recursive: true })
+  put(join(externalSource, 'index.js'), 'source must not change')
+  symlinkSync(externalSource, join(source, 'apps/desktop/src'), 'junction')
+  const out = join(externalSource, 'product')
+  const before = files(root)
+
+  // Missing prepared inputs must not hide a failure to reject source overlap.
+  await expect(buildDesktop({ source, out,
+    icons: join(root, 'icons'), stamp: join(root, 'stamp.json'), nativeDeps: join(root, 'native'),
+  })).rejects.toThrow(/Output must not overlap build inputs/)
+  expect(files(root)).toEqual(before)
+  expect(readdirSync(externalSource)).toEqual(['index.js'])
+  expect(existsSync(out)).toBe(false)
+})
+
 test('in-tree desktop products rebuild after build exists without replacing prepared inputs', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const { productCurrent } = await import('../scripts/build/freshness.mjs')
