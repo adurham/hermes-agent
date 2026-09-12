@@ -174,9 +174,8 @@ def test_bionic_verify_is_file_evidence(tmp_path: Path, monkeypatch, name):
 
 
 def test_bionic_binary_and_env_contract(tmp_path: Path):
-    """On bionic, _BionicDebArm.binary() must return the staged deb's main
-    binary path (file evidence, no exec), so the base Package.env contract
-    exposes the tool through PATH like every other pm package."""
+    """Bionic binaries retain their staged paths, but only on_path packages
+    expose them in the environment; internal uv stays private to PM."""
     from pm.registry import get_package
 
     for name in ("uv", "python", "node"):
@@ -190,9 +189,12 @@ def test_bionic_binary_and_env_contract(tmp_path: Path):
         assert binary == main, f"{name}.binary() on bionic: {binary}"
 
         env = pkg.env(entry, "linux-arm64-bionic")
-        assert env.get("PATH") == [str(main.parent)], (
-            f"{name}.env() on bionic does not follow the Package.env PATH contract"
+        expected_path = [str(main.parent)] if pkg.on_path else None
+        assert env.get("PATH") == expected_path, (
+            f"{name}.env() on bionic does not follow its on_path declaration"
         )
+        if pkg.internal:
+            assert "PATH" not in env, f"internal {name} must not leak into public PATH"
 
 
 def test_stage_only_does_not_record_host_facts(tmp_path, monkeypatch):
