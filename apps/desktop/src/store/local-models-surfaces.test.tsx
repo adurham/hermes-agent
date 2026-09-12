@@ -40,6 +40,7 @@ import {
   checkLocalRuntimeUpdate,
   localModelsKey,
   localModelsOwner,
+  refreshLocalModels,
   useLocalModelsOwner,
   useLocalRuntimeJobs,
   watchLocalRuntimeJobs
@@ -334,6 +335,10 @@ it('discards late legacy completions and update notices without invalidating the
   releaseStatus({ ...status, update_available: true })
   await update
   await tick()
+  expect(queryClient.getQueryData<readonly LocalRuntimeJob[]>(localModelsKey(owner, 'jobs'))).toEqual([running])
+  expect(queryClient.getQueryData(localModelsKey(owner, 'status'))).toBeUndefined()
+  // Mutation acknowledgments can refresh directly, without a jobs response.
+  refreshLocalModels(owner)
   expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false)
   expect(notify).not.toHaveBeenCalled()
 })
