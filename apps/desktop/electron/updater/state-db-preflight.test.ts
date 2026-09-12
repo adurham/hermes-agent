@@ -86,3 +86,23 @@ with sqlite3.connect(sys.argv[1]) as c:
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('an older selected checkout without the snapshot helper refuses before backend stop', (): void => {
+  const oldRoot: string = fs.mkdtempSync(path.join(os.tmpdir(), 'old-preflight-'))
+  let stopped = false
+
+  try {
+    assert.throws((): void => {
+      preflightStateDb({
+        python: process.env.HERMES_PYTHON || 'python3',
+        script: path.join(oldRoot, 'hermes_cli', 'backup_sqlite.py'),
+        home: oldRoot,
+        log: (): void => {}
+      })
+      stopped = true
+    }, /snapshot|pre-flight/)
+    assert.equal(stopped, false)
+  } finally {
+    fs.rmSync(oldRoot, { recursive: true, force: true })
+  }
+})

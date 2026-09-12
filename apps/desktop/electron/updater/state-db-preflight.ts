@@ -11,13 +11,11 @@ interface StateDbPreflight {
 
 // Synchronous by design: the caller must not stop the backend before the snapshot.
 export function preflightStateDb({ python, script, home, log }: StateDbPreflight): void {
-  if (!python) {
-    log('[updates] state.db pre-flight unavailable: Python not found')
-
-    return
-  }
-
   try {
+    if (!python) {
+      throw new Error('Python not found')
+    }
+
     const result: string = execFileSync(
       python,
       ['-I', '-S', script, home],
@@ -26,6 +24,11 @@ export function preflightStateDb({ python, script, home, log }: StateDbPreflight
 
     log(`[updates] state.db pre-flight: ${result.trim()}`)
   } catch (error: unknown) {
-    log(`[updates] state.db pre-flight failed: ${error instanceof Error ? error.message : String(error)}`)
+    const message =
+      `state.db pre-flight failed: ${error instanceof Error ? error.message : String(error)}. ` +
+      'Update cancelled before backend shutdown. Update the selected installation with its hermes update command, then retry.'
+
+    log(`[updates] ${message}`)
+    throw new Error(message, { cause: error })
   }
 }

@@ -310,10 +310,11 @@ import {
 import { selectPoolEvictions } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import {
+  assertPoolEntryStillOwned,
   isBackgroundSlotWaitTimeout,
   LocalBackendSpawnCoordinator,
   type LocalBackendSpawnPriority,
-  type LocalBackendSpawnRequest,
+  releaseLocalBackendSlot,
   releaseLocalBackendSlotAfterExit
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
@@ -11742,31 +11743,6 @@ function startPoolIdleReaper() {
   }
 }
 
-function releaseLocalBackendSlot(entry: any) {
-  if (!entry) {
-    return
-  }
-
-  const release = entry.releaseLocalBackendSlot
-  const request = entry.localBackendSpawnRequest as LocalBackendSpawnRequest | null
-  entry.releaseLocalBackendSlot = null
-  entry.localBackendSlotKey = null
-  entry.localBackendSpawnRequest = null
-
-  if (release) {
-    release()
-  } else {
-    request?.cancel()
-  }
-}
-
-function assertPoolEntryStillOwned(poolKey: string, entry: any): void {
-  if (localBackendLifecycle.signal.aborted || backendPool.get(poolKey) !== entry) {
-    releaseLocalBackendSlot(entry)
-    throw new Error(`Profile backend start for "${poolKey}" was cancelled before spawn.`)
-  }
-}
-
 const failedLocalBackendTeardowns = new WeakMap<object, Promise<void>>()
 
 function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> {
@@ -11805,7 +11781,11 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
 // entry means THIS machine regardless of the v1 routing table); `opts.poolKey`
 // is the backendPool key when it differs from the profile name (composite
 // registry scopes) so the exit/error cleanup evicts the right entry.
-async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
+async function spawnPoolBackend(
+  profile: string,
+  entry: any,
+  opts: { forceLocal?: boolean; poolKey?: string } = {}
+): Promise<Awaited<ReturnType<typeof backendConnectionState.getPromise>>> {
   const poolKey = opts.poolKey || profile
 
   await reapOrphanedBackendsOnce()
@@ -11848,7 +11828,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 
   const spawnPriority: LocalBackendSpawnPriority = spawnPriorityFrom(entry.spawnPriority)
 
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   const spawnRequest = localBackendSpawnCoordinator.request(poolKey, {
     timeoutMs: POOL_SLOT_WAIT_MS,
@@ -11877,7 +11857,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     entry.localBackendSpawnRequest = null
   }
 
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   const token = crypto.randomBytes(32).toString('base64url')
 
@@ -11929,7 +11909,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   const parentStartMarker = await desktopParentStartMarker()
   const backendNonce = crypto.randomBytes(16).toString('hex')
   const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   const child = spawnOwnedBackend(
     backend.command,
@@ -11984,7 +11964,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // surface as an unhandled rejection before the Promise.race below attaches.
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   child.stdout.on('data', rememberLog)
   child.stderr.on('data', rememberLog)
