@@ -58,11 +58,10 @@ def _fake_mautrix_types():
     return mod
 
 
-@pytest.fixture
-def fresh_dependency_boundary(monkeypatch):
-    """Simulate a fresh install: ``missing()`` reports a gap, the install is a
-    no-op success, and ``from mautrix.types import ...`` resolves against a fake."""
-    monkeypatch.setattr(pm_extras, "missing", lambda extra: ("asyncpg",))
+@pytest.fixture(params=[(), ("asyncpg",)], ids=["installed", "fresh"])
+def fresh_dependency_boundary(monkeypatch, request):
+    """Installed and fresh dependencies both bind through PM's single operation."""
+    monkeypatch.setattr(pm_extras, "missing", lambda extra: request.param)
     monkeypatch.setattr(pm_extras, "ensure_import", lambda *a, **kw: None)
     monkeypatch.delenv("MATRIX_E2EE_MODE", raising=False)
     monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
@@ -94,3 +93,20 @@ def test_failed_install_returns_false_with_hint_and_never_raises(
         with caplog.at_level("WARNING", logger="plugins.platforms.matrix.adapter"):
             assert matrix_adapter.ensure_matrix_deps() is False
     assert any("required packages not installed" in r.message for r in caplog.records)
+
+
+def test_interactive_setup_explicitly_syncs_matrix(tmp_path, monkeypatch):
+    import pm
+    from hermes_cli import cli_output, config
+
+    answers = iter(["https://matrix.example.test", "test-token", "@bot:example.test", "@owner:example.test", "!home:example.test"])
+    monkeypatch.setattr(cli_output, "prompt", lambda *args, **kwargs: next(answers))
+    monkeypatch.setattr(cli_output, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr(config, "get_env_value", lambda key: None)
+    monkeypatch.setattr(config, "save_env_value", lambda *args: None)
+    calls = []
+    monkeypatch.setattr(pm, "sync_venv", lambda extras, **kwargs: calls.append((extras, kwargs)))
+    monkeypatch.setattr(pm, "ensure_import", lambda *args: pytest.fail("setup used implicit installation"))
+    monkeypatch.setattr(pm_extras, "missing", lambda extra: ("asyncpg",))
+    matrix_adapter.interactive_setup()
+    assert calls == [(["matrix"], {"explicit": True})]
