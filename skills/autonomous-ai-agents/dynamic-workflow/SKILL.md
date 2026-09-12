@@ -1,209 +1,190 @@
 ---
 name: dynamic-workflow
-description: Orchestrate large fan-out work as a plan-in-code "workflow" so the agent's context holds only the final verified answer, not the exhaust of hundreds of intermediate steps. Use for codebase-wide sweeps, large migrations, multi-angle research, and any task too big for one context window where the split strategy is known enough to script. Includes the adversarial-convergence verification recipe (independent attempts + refuters, keep only surviving claims).
-version: 1.0.0
-author: Hermes Agent + Teknium
+description: Plan-in-code fan-outs, adversarial verification, waves.
+version: 2.0.0
+author: Teknium + Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [orchestration, fan-out, subagents, delegation, verification, migration, audit, research]
+    tags: [orchestration, fan-out, subagents, delegation, verification, migration, audit, research, campaign]
     category: autonomous-ai-agents
-    related_skills: []
+    related_skills: [hermes-agent, simplify-code]
 when_to_use:
   - A task is too big for one context window AND you can describe the split (per-file, per-endpoint, per-source, per-record)
-  - You want orchestration codified as a re-runnable script, not improvised turn-by-turn
-  - Quality matters more than token economy: you want independent attempts cross-checked / refuted before you trust the answer
-  - Codebase-wide bug/security sweep, 100+ file migration, multi-angle research with sources cross-checked
+  - You want orchestration codified as a re-runnable script plus a shared brief, not improvised turn by turn
+  - Quality matters more than token economy - independent attempts cross-checked and refuted before you trust the answer
+  - Codebase-wide sweeps, 100+ file migrations, multi-round refactor campaigns, multi-angle research
 when_not_to_use:
-  - Small bounded task (<~10 units) — just call the tool directly or do it inline
-  - Tight serial dependency (B needs A's output) — orchestration overhead is wasted
-  - You need it to survive the user sending a new message — see "The synchronous trap" below; use cron/kanban instead
+  - Small bounded task (under ~10 units) - do it inline or call the tool directly
+  - Tight serial dependency (B needs A's output) - orchestration overhead is wasted
+  - Work that must outlive this process (days, restarts) - use `cronjob` or the kanban swarm instead
 ---
 
-# Dynamic Workflow — plan-in-code fan-out with verification
+# Dynamic Workflow Skill
 
-This is Hermes's answer to Claude Code's "dynamic workflows" (run hundreds of
-parallel subagents in one session). The mechanic worth copying is NOT "more
-subagents" — it is **moving the plan, the loop, and the intermediate results
-OUT of the context window and INTO a script.** Normally the agent IS the
-orchestrator: every intermediate result piles into context, which is exactly
-what caps you at a handful of agents. A workflow keeps only the *final verified
-answer* in context; the script holds everything else.
+Runs large fan-out work as a workflow: the plan, the loop and every intermediate
+result live in a script and on disk, so the parent's context holds only verified
+results. Covers one-shot fan-outs, adversarial convergence (attempts + refuters),
+and multi-wave campaigns that integrate dozens of worker branches. It does not
+make `delegate_task` durable across restarts; that is the kanban swarm's job.
 
-> This skill is self-contained, but it builds on standard fan-out hygiene —
-> chunk inputs to ~50-70KB per child, route structured output to files (not the
-> `summary` field, which truncates under load), use delimiter-separated lines
-> over JSON wrappers, and remember that a "stalled" child often completed its
-> write anyway (check the filesystem before retrying). If your install has a
-> `delegate-task-output-patterns` skill, load it for the detailed thresholds;
-> the rules above are the load-bearing subset.
+## When to Use
 
-## The two orchestration-script layers (pick the right one — they are NOT interchangeable)
+Reach for it when the unit of work is clear (a file, an endpoint, a record) and
+there are more units than one context can hold. Skip it for under ~10 units or
+for serial chains. For a refactor or fix campaign on hermes-agent itself, load
+`hermes-agent` (the dev workflow) alongside; this skill owns the fan-out shape.
 
-Hermes has no JS runtime. The "orchestration script" is one of two layers, and
-the split is enforced by a real capability boundary, not a style preference:
+## Prerequisites
 
-| | Layer A: `execute_code` (Python script) | Layer B: `delegate_task` batch |
+- `delegate_task` available and `delegation.max_concurrent_children` sized for
+  the wave (default 10; the runtime rejects a `tasks=[]` larger than that with a
+  clear error rather than queueing). `delegation.max_spawn_depth >= 2` only if
+  children must fan out themselves.
+- A writable run directory resolved from the terminal environment's temp dir
+  (`$TMPDIR`, else the platform temp dir). Never a literal `/tmp`: Termux has no
+  `/tmp`, native Windows breaks on it. Use `<tmp>/wf_<name>_<uuid>/`, unique per
+  run, so an interrupted earlier run cannot leave stale outputs to be misread.
+- `execute_code` for the deterministic layer (only `web_search`, `web_extract`,
+  `read_file`, `write_file`, `search_files`, `terminal`, `patch` exist inside it).
+
+## How to Run
+
+Two layers, split by a real capability boundary:
+
+| | Layer A - `execute_code` script | Layer B - `delegate_task` batch |
 |---|---|---|
-| Use for | DETERMINISTIC fan-out — fetch N URLs, parse N files, run N shell commands, template N outputs | LLM-JUDGMENT fan-out — classify, review, decide, write, refute, audit per item |
-| The script holds | the loop + branching + intermediate vars (real Python) | n/a — you call it once with a `tasks=[...]` array; each task is its own isolated agent |
-| Tools available inside | `web_search, web_extract, read_file, write_file, search_files, terminal, patch` ONLY (the `SANDBOX_ALLOWED_TOOLS` set) | configured child toolsets, subject to delegate restrictions (leaf children are stripped of `delegate_task`, `clarify`, `memory`, `send_message`, `execute_code` — see `DELEGATE_BLOCKED_TOOLS`) |
-| Can it call `delegate_task`? | **NO.** `delegate_task` is NOT in `SANDBOX_ALLOWED_TOOLS`. Do not write a script that imports it — it will fail. | itself, if `role='orchestrator'` and `max_spawn_depth>=2` |
-| Concurrency | you control it in Python (`ThreadPoolExecutor`, batches) | `delegation.max_concurrent_children` (default 3; raise in config.yaml) |
-| Cost shape | cheap — most steps are tool calls, no per-item LLM unless you call `web_search`/aux | one model call tree PER child task — multiplies linearly, can be very expensive |
+| Use for | DETERMINISTIC work: fetch N URLs, parse N files, run N commands, template N outputs, build manifests, merge outputs | LLM-JUDGMENT work: classify, review, decide, write, refute, refactor one unit |
+| Holds | loop, branching, intermediate variables | nothing; one call with `tasks=[...]`, each task its own isolated agent |
+| Tools | the sandbox set above; it can NOT call `delegate_task` | the parent's toolsets, inherited unchanged (no per-task narrowing); children lose `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob_manage` |
+| Concurrency | yours (`ThreadPoolExecutor`, batches) | bounded by `delegation.max_concurrent_children` |
+| Cost | tool calls only | one full agent tree per task; multiplies linearly |
 
-**Rule of thumb:** do the deterministic part in Layer A first (inline, in a
-script), then fan out ONLY the irreducibly-LLM step via Layer B. This is
-Pattern 1 from `delegate-task-output-patterns`, applied at workflow scale.
-Mixing them: a Layer-A script can write a manifest file, and you (the parent)
-then read that manifest and issue a single Layer-B `delegate_task` batch.
+Do the deterministic part in Layer A first, fan out only the irreducibly-LLM
+step in Layer B, synthesize on the parent.
 
-## The synchronous trap (READ THIS — it is the #1 way a "workflow" disappoints)
+### Background-first: results re-enter as messages
 
-`delegate_task` runs **synchronously inside the parent turn**. If the user sends
-a new message, hits /stop, or /new, every in-flight child is **cancelled and its
-work discarded** (status `interrupted`). It does NOT run in the background, and
-it does NOT survive the turn. There is no cache-resume of a half-finished fan-out.
+A top-level `delegate_task` returns immediately with one handle per task; each
+child's result re-enters the conversation as a new message when it finishes. You
+cannot read `out_*.csv` on the line after the call. Finish whatever does not
+depend on the children, give a one-line status, and END YOUR TURN; act on each
+result message as it lands. An ordinary follow-up user message does not cancel
+children; `/stop`, `/new` and process exit do. Only a delegation issued by an
+orchestrator subagent (depth > 0) is synchronous.
 
-So a "workflow" in Hermes is one of:
+## Quick Reference
 
-1. **Foreground workflow (default):** Layer A and/or one Layer-B batch, completed
-   within a single turn. Good for minutes-long fan-out (dozens of units). The
-   user waits. This is what you build 90% of the time.
-2. **Durable workflow (hours/days, survives interruption):** use the **kanban
-   swarm** (the SQLite-backed multi-agent kernel that ships with Hermes —
-   `hermes_cli/kanban_swarm.py` + the kanban plugin; if your install has a
-   `kanban-multiagent` skill, load it for the workflow). It
-   writes a task graph (root → parallel workers → verifier → synthesizer) into
-   the SQLite kanban kernel with a JSON blackboard. State persists across turns
-   and restarts. This is the ONLY path that matches Claude Code's "runs into
-   hours and days, resumes where it left off." Reach for it when the foreground
-   path would time out or when the user must be able to walk away.
+- Unit must be answerable without sibling output, else it is serial.
+- Manifest: one unit per line in `<run>/manifest.jsonl`; print count + run dir.
+- Per child: ~8-12 mechanical edits, or ~2-3k lines of reading, or ~50-70 KB of
+  corpus; size by the LARGEST unit. Structured output goes to files, never the
+  `summary` field (it truncates under load); delimiter-separated lines over JSON.
+- Parent verifies file count and per-run freshness before merging.
+- A "stalled" child usually completed its write; check the filesystem first.
+- Scoped slice first (one directory, 20 records), report token cost, then scale.
 
-Never promise "background, resumable, hundreds of agents over days" from a plain
-`delegate_task` call. For a durable multi-agent workflow *graph*, the kanban
-swarm is the right fit. For simpler durable/out-of-turn cases there are lighter
-options too: a `cronjob` one-shot or scheduled job, or a managed
-`terminal(background=True, notify_on_complete=True)` process — both survive the
-turn without standing up a full task graph.
+## Procedure
 
-## Workflow recipe (foreground)
+### One-shot fan-out
 
-1. **Decompose into independent units.** What is the unit — a file? an endpoint?
-   a source? a record? Each unit must be answerable WITHOUT the others' output
-   (else it's serial, not fan-out — see when_not_to_use).
-2. **Deterministic pre-pass (Layer A).** In one `execute_code` script, gather the
-   manifest: list the files, extract the candidate sites, fetch the raw sources,
-   compute anything regex/parse can compute. Write a manifest to a **unique
-   per-run** directory — `/tmp/wf_<name>_<uuid>/manifest.jsonl` (one unit per
-   line), never a bare `/tmp/wf_<name>/` that a prior interrupted run could have
-   left stale outputs in. This is the "plan in code." Print the unit count and
-   the run dir, and stop.
-3. **Size the fan-out** against `delegate-task-output-patterns`: chunk so each
-   child handles ~8-12 mechanical file edits OR ~2000-3000 lines of reading OR
-   ~50-70KB of corpus. Look at the LARGEST unit, not the average. One
-   `delegate_task(tasks=[...])` call is bounded by
-   `delegation.max_concurrent_children` (default 3) — it does NOT queue hundreds
-   of tasks internally. For larger fan-out, issue bounded waves yourself (loop:
-   one batch, collect, next batch) or have the user raise the config
-   intentionally.
-4. **LLM-judgment fan-out (Layer B).** Issue ONE `delegate_task` with a `tasks=[]`
-   array, one task per chunk. Each task: reads its slice from the manifest,
-   emits delimiter-separated lines to `/tmp/wf_<name>_<uuid>/out_<i>.csv`, prints a
-   status word, stops. Do NOT depend on the `summary` field for content.
-5. **Synthesize on the parent.** Read the out_*.csv files yourself — verify the
-   file count and freshness (each was written this run) so a stale or missing
-   output from an interrupted child isn't silently read as success — then merge
-   and present. The cross-cutting "whole picture" step stays on the parent — only
-   the per-unit work fanned out.
+1. Decompose into independent units.
+2. Layer A pre-pass writes the manifest.
+3. Size chunks against the limits above; for more tasks than
+   `max_concurrent_children`, issue bounded waves yourself.
+4. Layer B: one `delegate_task(tasks=[...])`; each task reads its slice, writes
+   `<run>/out_<i>.csv`, prints a status word, stops.
+5. End the turn. As result messages arrive, read the files, verify, merge; the
+   cross-cutting synthesis stays on the parent.
 
-## The novel mechanic worth building: adversarial convergence
+### Adversarial convergence (finding-quality work)
 
-This is the part Hermes did NOT already have and the real reason to bother.
-Claude Code's quality claim ("independent agents try to refute each other's
-findings; only surviving claims surface; iterate until they converge") maps
-cleanly onto `delegate_task` batch mode:
+1. Independent attempts: the SAME question to N children (2-4) with DIFFERENT
+   framings in each `context`, each writing one claim per line to
+   `<run>/attempt_<i>.md`. Located, individually falsifiable claims only
+   ("`POST /api/users/:id/role` in `src/routes/users.ts:142` has no role check");
+   a refuter cannot break "the auth layer has problems".
+2. Merge and dedupe on the parent; note the agreement count per claim.
+3. Refuters: a second batch told to BREAK each claim with counter-evidence,
+   emitting `claim_idx|survives|counter_evidence`. Give them the sources, not the
+   attempts' reasoning.
+4. Surface only survivors; drop refuted claims with a one-line reason.
+5. Feed new claims from round 2 through one more refutation; stop when a round
+   adds no survivors, cap at 3 rounds.
 
-### Recipe: N independent attempts + M refuters
+The same mechanic protects the parent from its own wrong premises: when you
+hand children a heuristic ("every patch target on a facade is a dead seam"),
+tell them to refute it with evidence before acting on it. Four squads doing so
+turned a 647-site blanket rewrite into 59 real fixes and saved 130+ green tests.
 
-For a finding-quality task (security audit, "is this code path actually
-vulnerable?", "does this migration preserve behavior?", a high-stakes plan):
+### Campaign shape (dozens of workers, several waves, hours)
 
-1. **Independent attempts (round 1).** Fan out the SAME question to N children
-   (N=2-4) with DIFFERENT framings/angles in each `context`, so they don't
-   collapse to the same reasoning. Each writes its claims to
-   `/tmp/wf_<name>/attempt_<i>.md` as a list of discrete, individually-checkable
-   claims (one claim per line — atomicity is what makes refutation possible).
-2. **Collect + dedupe (parent or Layer A).** Merge all claims into a single
-   numbered list. Identical claims from independent attempts = higher prior;
-   note the agreement count per claim.
-3. **Refutation round (round 2).** Fan out a refuter batch: each refuter gets the
-   claim list and is told "your job is to BREAK these claims — for each, find the
-   counter-evidence (the auth check that DOES exist, the test that DOES cover it,
-   the edge case the claim ignores). Output `claim_idx|survives|counter_evidence`."
-   Give refuters the codebase/sources, not the original attempts' reasoning.
-4. **Keep only survivors.** A claim surfaces to the user only if it survived
-   refutation (no refuter produced valid counter-evidence). Filtered claims are
-   dropped, with a one-line note of why if the user asked for completeness.
-5. **Converge (optional).** If round 2 surfaced NEW claims (refuters often find
-   adjacent issues), feed them back through one more refutation round. Stop when
-   a round produces no new surviving claims — that's convergence. Cap at 3 rounds
-   to bound cost.
+The one-shot recipe does not scale to a whole-codebase pass. What did:
 
-This gives you the "more trustworthy than a single pass" property without a
-runtime — it's just two `delegate_task` batches and a merge, structured so
-disagreement is visible and unsupported claims die before they reach the user.
-
-### Why atomic claims matter
-A refuter cannot break "the auth layer has problems." It CAN break "endpoint
-`POST /api/users/:id/role` in src/routes/users.ts:142 has no role check." Force
-attempts to emit specific, located, individually-falsifiable claims or the
-refutation round is theater.
-
-## Cost discipline (this is the thing that bites)
-
-A workflow can consume dramatically more tokens than a normal turn — that is
-inherent, not a bug. Two real multipliers:
-
-- **Each Layer-B child is a full agent tree.** 20 children ≈ 20× the model calls.
-  `delegation.max_concurrent_children` only bounds *concurrency*, not *total*.
-- **Hermes aux/subagent model defaults to main-model-first.** Children inherit
-  the parent's (often expensive reasoning) model. `delegate_task` does NOT expose
-  a per-task `model` or `profile` field — its per-task keys are
-  `{goal, context, toolsets, role}`. To run the fan-out cheaper you either route
-  delegation globally via `delegation` config (model/provider applied to all
-  children), or — for genuinely model/profile-scoped work — use cron, the kanban
-  swarm, or a separate Hermes process. The cleanest lever for mechanical fan-out
-  is still Layer A: do the deterministic part in a script with no per-item LLM at
-  all.
-
-Always: start on a SCOPED slice (one directory, 20 records, 10 endpoints), prove
-the recipe end-to-end, report the token cost, THEN offer to run it at full scale.
-Never silently fan out hundreds of children — surface the cost first and let the
-user say go.
+1. Measure first (LOC, hotspots, dead symbols, oracle corpora) and write ONE
+   shared `BRIEF.md` plus a per-cluster `task_<cluster>.md`. Every child reads
+   both. When the fleet drifts (children shaving docstrings instead of cutting
+   code), patch the brief once and steer; re-dispatched children inherit the fix.
+2. Exclusive ownership: one cluster of files per worker, edits outside it are
+   discarded at integration. Sub-fan-outs inside one file own line RANGES and
+   define helpers inside their range so diffs merge cleanly.
+3. Commit per verified step, locally, no push, no PR, no rebase from children.
+   Committed state is the only handoff; every worker that died mid-campaign lost
+   exactly its uncommitted tail. A worker sharing a worktree index commits with
+   `git commit -- <paths>` only; a bare commit swept a sibling's staged hunks.
+4. Fleet size 12-16 concurrent. Above ~40 processes on one OAuth grant the
+   hourly token refresh stampedes into 401s and kills the wave. Queue the rest.
+5. Parent liveness: a child reporting `completed` with a few dozen log lines, or
+   with 0 commits on its branch, has not finished; look for its sub-branches or
+   re-dispatch it with the predecessor's worktree and diff.
+6. Integration per round: freeze a base SHA, rebase clean branches mechanically,
+   give each conflicting branch its own rebase worker ("main's behaviour wins,
+   re-applied inside the new structure"), merge onto one integration branch,
+   run the FULL suite on the combined tree. Collisions that every branch passed
+   alone appear only here. The next round branches from the integrated commit
+   so its workers cannot conflict with each other.
+7. Before declaring a round integrated: `git rev-list --count <integration>..<branch>`
+   is 0 for EVERY branch. Workers keep committing after you merge their tip;
+   168 commits across six slices were once left behind that way.
+8. Test runs: exactly one runner on the box, behind a lock file, at high `-j`.
+   Many parallel low-`-j` runners were slower AND killed each other's process
+   groups. Red files are re-run on a bare `origin/main` worktree in the same
+   venv; identical per-file failure sets are pre-existing, not yours.
+9. Forward-port at the end, not per round: freeze main's SHA, fan out the
+   conflicted files by directory to workers editing ONE merge worktree with
+   no commits, then the parent commits the merge once. CI never runs on a
+   conflicted PR, so re-merge main before every push.
+10. Live QA is its own wave: one squad per surface, isolated `HERMES_HOME`,
+    expectation written before the check, evidence on disk, report only, and a
+    PR-vs-main difference is the only thing that counts as a regression. Green
+    unit tests missed the one P0 (a logged-in code path no test exercised).
+11. Reviewer claims get the same treatment as child claims: A/B against the
+    base before "restoring" anything. Several confidently stated review deltas
+    already behaved that way on base.
+12. A parent restart needs a `HANDOFF.md`: why it died, which handles are dead,
+    per-branch scorecard (LOC delta, import smoke, targeted tests), and the exact
+    re-dispatch text. Snapshot every dirty worktree into a `wip:` commit first.
 
 ## Pitfalls
 
-- **Writing `delegate_task` inside an `execute_code` script.** It's not in
-  `SANDBOX_ALLOWED_TOOLS`; the import/stub won't exist. Layer A is deterministic
-  tools only. Fan out LLM judgment from the parent turn, not from inside a script.
-- **Promising background/resumable from `delegate_task`.** It's synchronous and
-  turn-scoped. Durable = kanban swarm.
-- **Trusting `summary` fields for content.** Route structured output to files
-  (Pattern 2 in delegate-task-output-patterns).
-- **Non-atomic claims in the verify recipe.** Unfalsifiable claims survive
-  refutation by default and pollute the output. Force located, specific claims.
-- **Same framing in all "independent" attempts.** They collapse to one answer and
-  the cross-check is worthless. Vary the angle in each child's context.
-- **Fanning out a serial task.** If unit B needs unit A's output, parallelism
-  produces wrong/empty results. Re-check independence before fanning out.
+- Calling `delegate_task` inside an `execute_code` script: not in the sandbox.
+- Synthesizing on the same turn as the fan-out call: the files do not exist yet.
+- Promising background-durable-for-days from `delegate_task`: it is turn-scoped
+  and dies with the process. Durable graph = kanban swarm; one-off = `cronjob`.
+- Trusting `summary` for content, or `status=completed` for completion.
+- Same framing in every "independent" attempt: they collapse to one answer.
+- `git stash` anywhere in a worktree campaign: `refs/stash` is shared across
+  worktrees and another worker will pop your edits. Compare via a temp worktree.
+- Reporting a hit target when the honest number is lower. Say "16% so far, here
+  is the path to 30%" and run the next round.
 
-## Verification before you call it done
+## Verification
 
-- Did the deterministic pre-pass actually run, and does the manifest line-count
-  match the expected unit count? (`wc -l /tmp/wf_<name>/manifest.jsonl`)
-- Did every fan-out child write its output file? (`ls /tmp/wf_<name>/out_*.csv`) —
-  remember stalled children often completed anyway (Pattern 6).
-- For the verify recipe: can you point to the refuter counter-evidence for every
-  DROPPED claim, and confirm every SURFACED claim went through refutation?
-- Did you report token cost on the scoped run before offering full scale?
+- Manifest line count matches the expected unit count.
+- Every `out_*.csv` exists and was written this run.
+- Every dropped claim has recorded counter-evidence; every surfaced claim went
+  through refutation.
+- Campaign: every branch at 0 unmerged commits, full suite on the integrated
+  tree with reds triaged against bare main, live QA report per surface, token
+  cost reported on the scoped slice before the full run.
