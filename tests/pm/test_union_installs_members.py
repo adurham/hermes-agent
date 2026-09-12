@@ -11,12 +11,14 @@ lock, empty site-packages) can never silently return.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 import pytest
 
 import pm.workspace as ws
+from pm.environment import managed_environment
 
 @pytest.fixture(autouse=True)
 def isolated_machine_home(tmp_path, monkeypatch):
@@ -44,12 +46,17 @@ def mini_workspace(tmp_path, monkeypatch):
     whose dep (pyfiglet) is NOT a root dep. Store paths pointed at tmp."""
     core = tmp_path / "core"
     core.mkdir()
+    from tests.pm.test_workspace_build_inputs import _wheel
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _wheel(wheels, "pyfiglet", "1.0.2")
     (core / "pyproject.toml").write_text(
         "[project]\n"
         'name = "fake-core"\n'
         'version = "0.1.0"\n'
         'requires-python = ">=3.11"\n'
-        'dependencies = []\n',
+        'dependencies = []\n[tool.uv]\npackage=false\nno-index=true\n'
+        f'find-links=[{json.dumps(wheels.as_posix())}]\n',
         encoding="utf-8",
     )
     plug = tmp_path / "plugins" / "member-plug"
@@ -74,7 +81,7 @@ def mini_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(pm.paths, "store_root", lambda: store)
     monkeypatch.setattr(ws.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ws.paths, "store_root", lambda: store)
-    return tmp_path, plug, venv
+    return tmp_path, core, plug, venv
 
 
 @pytest.mark.skipif(_uv_available() is False, reason="uv not on PATH")
@@ -82,8 +89,9 @@ def test_lock_and_sync_installs_member_deps(mini_workspace):
     """The probe scenario: after lock_and_sync, the member's dep MUST be
     importable from the synced venv. Under plain `uv sync --frozen` the
     lock contains the dep but site-packages does not — this fails."""
-    _, plug, venv = mini_workspace
-    ws.lock_and_sync([plug], [], venv_dir=venv)
+    tmp, core, plug, venv = mini_workspace
+    ws.lock_and_sync([plug], [], root=tmp / "workspace", source=core, seed_lock=None,
+                     environment=managed_environment(venv))
 
     sp = _site_packages(venv)
     assert sp.is_dir(), "no site-packages in the synced venv"
@@ -102,9 +110,12 @@ def test_union_survives_a_resync(mini_workspace):
     """The prune-proof contract: a second lock_and_sync (what an update
     rebuild does) must NOT remove the member's deps — they are in the
     union lock, not pip-guests."""
-    _, plug, venv = mini_workspace
-    ws.lock_and_sync([plug], [], venv_dir=venv)
-    ws.lock_and_sync([plug], [], venv_dir=venv)
+    tmp, core, plug, venv = mini_workspace
+    ws.lock_and_sync([plug], [], root=tmp / "workspace", source=core, seed_lock=None,
+                     environment=managed_environment(venv))
+    venv = tmp / "next-venv"
+    ws.lock_and_sync([plug], [], root=tmp / "next-workspace", source=core,
+                     seed_lock=tmp / "workspace" / "uv.lock", environment=managed_environment(venv))
 
     sp = _site_packages(venv)
     assert any(p.name.startswith("pyfiglet") for p in sp.iterdir()), (

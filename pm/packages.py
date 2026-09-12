@@ -429,7 +429,7 @@ class Venv(StatePackage):
                 replay = recorded.parent
             seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
                     else project / "uv.lock")
-            lock_and_sync(members, extras, venv_dir=candidate, root=generation / "workspace",
+            lock_and_sync(members, extras, root=generation / "workspace",
                           seed_lock=seed, frozen=repair or not members, replay=replay,
                           source=project, environment=environment)
             resolved_lock = generation / "workspace" / "uv.lock"

@@ -42,7 +42,9 @@ def test_uv_failure_retains_utf8_build_diagnostic(
     diagnostic = "🔍 cryptography: OpenSSL headers not found"
     raw = diagnostic.encode("utf-8") + suffix + b"\n"
     expected = diagnostic + ("�" if suffix else "")
-    monkeypatch.setattr(ws, "_generate_pyproject", lambda *a, **k: (tmp_path, False))
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "pyproject.toml").write_text('[project]\nname="test-core"\nversion="1"\n')
     from pm.environment import PythonEnvironment
 
     environment = PythonEnvironment(
@@ -62,8 +64,8 @@ def test_uv_failure_retains_utf8_build_diagnostic(
 
     monkeypatch.setattr("pm.environment.subprocess.run", run_uv)
     with pytest.raises(InstallError) as excinfo:
-        ws.lock_and_sync([], venv_dir=environment.destination, root=tmp_path,
-                         source=tmp_path, environment=environment)
+        ws.lock_and_sync([], [], root=tmp_path / "workspace", source=core,
+                         seed_lock=None, environment=environment)
 
     assert type(excinfo.value) is InstallError  # A build error is not a resolver conflict.
     assert excinfo.value.cause == f"uv {stage} exited 17: {expected}"

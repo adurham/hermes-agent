@@ -504,7 +504,7 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     first.create()
     workspace.lock_and_sync(
         [original_member], ["chosen"], source=source, root=tmp_path / "first" / "workspace",
-        venv_dir=first.destination, environment=first, seed_lock=source / "uv.lock",
+        environment=first, seed_lock=source / "uv.lock",
     )
     first.check()
     assert _run([str(first.executable), "-I", "-c", "import base_dep, member_dep; print(base_dep.__version__)"],
@@ -522,7 +522,7 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     second.create()
     workspace.lock_and_sync(
         [], ["chosen"], source=source, root=tmp_path / "second" / "workspace",
-        venv_dir=second.destination, environment=second, replay=recorded,
+        environment=second, seed_lock=None, replay=recorded,
     )
     second.check()
     assert _run([str(second.executable), "-I", "-c", "import member_dep, chosen_dep; print(member_dep.__version__)"],

@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 from pm import paths
 from pm.package import InstallError
 
-WORKSPACE_DIRNAME = ".pm-workspace"
 _MEMBER_EXCLUDE = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
 
 
@@ -58,17 +57,6 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     return InstallError("venv", cause)
 
 
-def workspace_root() -> Path:
-    """Default preparation root; callers can supply a fresh transaction root."""
-    from hermes_cli.runtime_paths import install_state_dir
-    return install_state_dir(paths.repo_root()) / WORKSPACE_DIRNAME
-
-
-def _member_rel(root: Path, plugin_dir: Path) -> str:
-    """Use portable separators for a member inside the generated workspace."""
-    return os.path.relpath(plugin_dir.resolve(), root.resolve()).replace("\\", "/")
-
-
 def member_sources(plugin_dirs) -> dict[Path, Path]:
     """Map installed identities to build inputs, including staged plugin updates."""
     rows = plugin_dirs.items() if isinstance(plugin_dirs, Mapping) else ((path, path) for path in plugin_dirs)
@@ -100,8 +88,6 @@ def members_stamp(plugin_dirs) -> str:
 
 def _copy_core_inputs(source: Path, destination: Path) -> None:
     """Build from a writable snapshot, never from signed/read-only source."""
-    import shutil
-
     import fnmatch
     import tomllib
 
@@ -130,8 +116,6 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
                 and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
             target = destination / entry.name
-            if target.exists():
-                shutil.rmtree(target)
             shutil.copytree(entry, target, ignore=ignore)
     for name in files:
         entry = source / name
@@ -144,24 +128,17 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         shutil.copy2(entry, target)
 
 
-def _generate_pyproject(plugin_dirs: list[Path], root: Optional[Path] = None, *,
-                        source: Optional[Path] = None) -> tuple[Path, bool]:
-    """(Re)generate the workspace root's pyproject.toml from core's
-    pyproject + the enabled plugin members. Idempotent — same inputs,
-    same bytes. Returns (root, changed): changed is True when the member
-    surface moved (member set or a member's pyproject content), which is
-    the signal to re-seed the resolution from the committed lock."""
-    if root is None:
-        root = workspace_root()
-    source = (paths.repo_root() if source is None else source).resolve()
+def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path) -> None:
+    """Snapshot core and plugin build inputs into a fresh generation."""
+    source = source.resolve()
     if root.resolve() == source or source.is_relative_to(root.resolve()):
         raise InstallError("venv", "workspace must not replace the core source")
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True)
 
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_member_rel(root, _workspace_member(source, root, identity=identity))
+    members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
                for identity, source in member_sources(plugin_dirs).items()]
 
     lines = [core_text.rstrip("\n")]
@@ -172,40 +149,8 @@ def _generate_pyproject(plugin_dirs: list[Path], root: Optional[Path] = None, *,
 
     text = "\n".join(lines) + "\n"
     target = root / "pyproject.toml"
-    try:
-        changed = target.read_text(encoding="utf-8") != text
-    except OSError:
-        changed = True
     _copy_core_inputs(source, root)
     target.write_text(text, encoding="utf-8")
-    return root, changed
-
-
-def _seed_lock(root: Path, seed_lock: Optional[Path] = None, *, source: Optional[Path] = None) -> None:
-    """Seed the generated root's uv.lock with the CURRENT resolution.
-
-    Seed precedence: the parent-supplied ``seed_lock`` path first, then
-    the root's own existing uv.lock (the current EXTENDED resolution from
-    the previous sync), then the committed core lock — so a plugin-driven
-    extension keeps every compatible selection it already made, and a
-    fresh root extends the committed resolution. uv preserves compatible
-    selections from the seed (a plugin's range spec does not move core
-    pins); explicit exact requirements stay binding as declared
-    constraints. The lock is COPIED — shipped/extended source bytes are
-    never rewritten; only the staging root receives the copy.
-
-    Called only when the member surface changed; an unchanged root keeps
-    its lock untouched, so repeated syncs are stable. Seed failures
-    SURFACE (they would silently degrade the resolution otherwise)."""
-    if seed_lock is None:
-        existing = root / "uv.lock"
-        if existing.is_file():
-            seed_lock = existing
-        else:
-            seed_lock = (paths.repo_root() if source is None else source) / "uv.lock"
-    if not seed_lock.is_file():
-        return  # nothing committed to seed from; uv resolves from scratch
-    (root / "uv.lock").write_bytes(seed_lock.read_bytes())
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:
@@ -283,18 +228,15 @@ def _legacy_requirements(plugin_dir: Path) -> list[str]:
     return list(dict.fromkeys(specs))
 
 
-def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path | None = None) -> Path:
+def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
-    import shutil
     import tomllib
 
-    key = hashlib.sha256(str((identity or plugin_dir).resolve()).encode()).hexdigest()[:16]
+    key = hashlib.sha256(str(identity.resolve()).encode()).hexdigest()[:16]
     pyproject = plugin_dir / "pyproject.toml"
     if pyproject.is_file() and "GENERATED by pm" not in pyproject.read_text(encoding="utf-8-sig"):
         member = root / "plugin-sources" / key
-        if member.exists():
-            shutil.rmtree(member)
         shutil.copytree(plugin_dir, member, symlinks=True,
                         ignore=_member_ignored)
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
@@ -309,7 +251,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path | None = N
                 resolved = (plugin_dir / relative).resolve()
                 if resolved.is_relative_to(plugin_dir.resolve()):
                     continue  # The referenced tree was copied with this member.
-                spec["path"] = ((identity or plugin_dir) / relative).resolve().as_posix()
+                spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
         if changed:
             import tomli_w
@@ -318,7 +260,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path | None = N
         return member
     specs = _legacy_requirements(plugin_dir)
     member = root / "plugin-deps" / key
-    member.mkdir(parents=True, exist_ok=True)
+    member.mkdir(parents=True)
     (member / "pyproject.toml").write_text(
         f'[project]\nname = "hermes-plugin-{key}"\nversion = "0.0.0"\n'
         'requires-python = ">=3.11"\n'
@@ -376,57 +318,34 @@ def install_node_sidecar(
 
 
 def lock_and_sync(
-    plugin_dirs: list[Path],
-    extras: Optional[list[str]] = None,
+    plugin_dirs: list[Path] | Mapping[Path, Path],
+    extras: list[str],
     *,
-    venv_dir: Path,
-    root: Optional[Path] = None,
-    env: Optional[dict] = None,
-    seed_lock: Optional[Path] = None,
+    root: Path,
+    source: Path,
+    seed_lock: Path | None,
+    environment: PythonEnvironment,
     frozen: bool = False,
-    replay: Optional[Path] = None,
-    source: Optional[Path] = None,
-    environment: PythonEnvironment | None = None,
+    replay: Path | None = None,
 ) -> None:
-    """Build the root, then `uv lock` + `uv sync --frozen --extra ...`.
+    """Prepare a fresh generation using explicit inputs and a prepared engine.
 
-    Everything resolves into a parent-supplied STAGING surface: ``root``
-    pins the generated workspace dir, ``venv_dir`` pins
-    UV_PROJECT_ENVIRONMENT and ``seed_lock`` (optional) pins which
-    existing lock seeds the extension (default: the root's current
-    extended lock, else the committed core lock). ``env`` replaces the
-    ambient base environment when supplied; either way the subprocess
-    gets a COPY — the live process environment is never mutated. ``replay``
-    copies a recorded sibling workspace and uses its lock without resolution
-    or plugin discovery; it is reserved for restoring an existing selection.
-    ``source`` and ``environment`` bypass live source/tool discovery when supplied;
-    the environment owns the child process policy, cache and interpreter.
-
-    Raises a CLASSIFIED InstallError on failure: ResolutionConflict only
-    for a confirmed resolver conflict; network, build and tool failures
-    stay generic InstallError — they are not evidence of a dependency
-    conflict and must not disable plugins.
+    The caller selects the seed; uv retains its compatible versions. Repair
+    copies the recorded workspace verbatim and never reads current manifests.
+    Resolver conflicts remain distinct from download/build failures.
     """
-    if environment is not None and environment.destination != venv_dir:
-        raise ValueError("workspace and environment destinations differ")
-
+    if root.exists() or root.is_symlink():
+        raise InstallError("venv", f"workspace must be fresh: {root}")
     if replay is None:
-        generated, changed = _generate_pyproject(plugin_dirs, root, source=source)
-        if changed:
-            _seed_lock(generated, seed_lock, source=source)
+        _generate_pyproject(plugin_dirs, root, source=source)
+        if seed_lock is not None:
+            (root / "uv.lock").write_bytes(seed_lock.read_bytes())
     else:
-        import shutil
-
-        if root is None or not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
+        if not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
             raise InstallError("venv", f"recorded workspace is missing: {replay}")
-        # Generation workspaces are siblings at the same depth. External
-        # member paths still resolve. Generated members move with the copy.
+        # Sibling generations keep external relative paths at the same depth;
+        # snapshotted members and their exact lock travel with the workspace.
         shutil.copytree(replay, root, ignore=shutil.ignore_patterns("__pycache__", ".venv", "build", "*.egg-info"))
-        generated = root
         frozen = True
 
-    if environment is None:
-        from pm.environment import managed_environment
-
-        environment = managed_environment(venv_dir, env=env)
-    environment.sync(generated, extras=extras or (), frozen=frozen)
+    environment.sync(root, extras=extras, frozen=frozen)

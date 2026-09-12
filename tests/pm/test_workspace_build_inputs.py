@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from pm import workspace
+from pm.environment import managed_environment
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +38,8 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     uv = shutil.which("uv")
     assert uv is not None
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
-    workspace.lock_and_sync([], [], root=root, venv_dir=venv)
+    workspace.lock_and_sync([], [], root=root, source=core, seed_lock=None,
+                            environment=managed_environment(venv))
     python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     probe = subprocess.run([str(python), "-c", "import buildable_core; print(buildable_core.VALUE)"],
                            cwd=tmp_path, text=True, capture_output=True, check=True, timeout=30)
@@ -57,13 +59,19 @@ def test_source_refresh_does_not_need_metadata_change_and_refuses_live_root(tmp_
     uv = shutil.which("uv")
     assert uv
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
-    workspace.lock_and_sync([], root=staged, venv_dir=tmp_path / "env")
+    workspace.lock_and_sync([], [], root=staged, source=core, seed_lock=None,
+                            environment=managed_environment(tmp_path / "env"))
     (core / "code.py").write_text("VALUE = 2\n")
-    workspace.lock_and_sync([], root=staged, venv_dir=tmp_path / "env")
+    fresh = tmp_path / "fresh"
+    workspace.lock_and_sync([], [], root=fresh, source=core, seed_lock=staged / "uv.lock",
+                            environment=managed_environment(tmp_path / "fresh-env"))
+    assert (staged / "code.py").read_text() == "VALUE = 1\n"
+    staged = fresh
     assert (staged / "code.py").read_text() == "VALUE = 2\n"
     before = (core / "code.py").read_bytes()
-    with pytest.raises(workspace.InstallError, match="source"):
-        workspace.lock_and_sync([], root=core, venv_dir=tmp_path / "env")
+    with pytest.raises(workspace.InstallError, match="fresh"):
+        workspace.lock_and_sync([], [], root=core, source=core, seed_lock=None,
+                                environment=managed_environment(tmp_path / "env"))
     assert (core / "code.py").read_bytes() == before
 
 
@@ -86,7 +94,8 @@ def test_legacy_member_is_generated_only_inside_workspace(tmp_path, monkeypatch)
     assert uv
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     generated = tmp_path / "stage"
-    workspace.lock_and_sync([plugin], root=generated, venv_dir=tmp_path / "env")
+    workspace.lock_and_sync([plugin], [], root=generated, source=core, seed_lock=None,
+                            environment=managed_environment(tmp_path / "env"))
     metadata = tomllib.loads((generated / "pyproject.toml").read_text())
     member = (generated / metadata["tool"]["uv"]["workspace"]["members"][0]).resolve()
     assert member.is_relative_to(generated)
@@ -134,7 +143,8 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
     monkeypatch.setattr(workspace.paths, "repo_root", lambda: core)
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     baseline, first_env = tmp_path / "baseline", tmp_path / "first-env"
-    workspace.lock_and_sync([], [], root=baseline, venv_dir=first_env)
+    workspace.lock_and_sync([], [], root=baseline, source=core, seed_lock=None,
+                            environment=managed_environment(first_env))
     first_lock = (baseline / "uv.lock").read_bytes()
     assert next(p["version"] for p in tomllib.loads(first_lock.decode())["package"] if p["name"] == "pkgb") == "1.2"
     _wheel(wheels, "pkgb", "1.3")
@@ -147,9 +157,11 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
     extended, candidate = tmp_path / "extended", tmp_path / "candidate"
     if exact:
         with pytest.raises(workspace.ResolutionConflict):
-            workspace.lock_and_sync([plugin], [], root=extended, venv_dir=candidate, seed_lock=baseline / "uv.lock")
+            workspace.lock_and_sync([plugin], [], root=extended, source=core, seed_lock=baseline / "uv.lock",
+                                    environment=managed_environment(candidate))
     else:
-        workspace.lock_and_sync([plugin], [], root=extended, venv_dir=candidate, seed_lock=baseline / "uv.lock")
+        workspace.lock_and_sync([plugin], [], root=extended, source=core, seed_lock=baseline / "uv.lock",
+                                    environment=managed_environment(candidate))
         installed = tomllib.loads((extended / "uv.lock").read_text(encoding="utf-8"))["package"]
         assert next(p["version"] for p in installed if p["name"] == "pkgb") == "1.3"
         python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
