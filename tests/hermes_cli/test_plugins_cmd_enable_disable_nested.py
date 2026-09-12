@@ -240,3 +240,43 @@ class TestCompositeMenuWritesCanonicalKey:
         saved_dis = mock_save_dis.call_args[0][0]
         assert "web/firecrawl" in saved_dis      # canonical key persisted
         assert "web-firecrawl" not in saved_dis   # never the bare name
+
+    @pytest.mark.parametrize("config_changes", [False, True])
+    def test_fallback_forwards_preinteraction_digest(
+        self, tmp_path, monkeypatch, config_changes,
+    ):
+        from hermes_cli import plugins_cmd as pc
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        initial_config = "plugins:\n  enabled: [web/firecrawl]\n  disabled: []\n"
+        config_path.write_text(initial_config, encoding="utf-8")
+        original_digest = pc._plugin_selection_version()
+        monkeypatch.setattr(pc, "_discover_all_plugins", lambda: [
+            ("web-firecrawl", "1.0", "firecrawl", "bundled", None, "web/firecrawl"),
+        ])
+        monkeypatch.setattr(pc, "_provider_categories", lambda: [])
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        # Missing curses must use the real text-menu and persistence chain.
+        monkeypatch.setitem(sys.modules, "curses", None)
+        answers = iter(("1", ""))  # uncheck the plugin, then confirm
+
+        def respond(_prompt):
+            answer = next(answers)
+            if config_changes and answer == "1":
+                config_path.write_text(
+                    initial_config + "model: edited-during-input\n", encoding="utf-8",
+                )
+            return answer
+
+        with patch("builtins.input", side_effect=respond), patch(
+            "hermes_cli.plugins_admission.admit_plugin_set_change",
+        ) as admit:
+            pc.cmd_toggle()
+
+        admit.assert_called_once_with(
+            set(), {"web/firecrawl"}, active_plugins_dir=tmp_path / "plugins",
+            extra_dirs=(), expected_config=original_digest,
+        )
+        if config_changes:
+            assert pc._plugin_selection_version() != original_digest

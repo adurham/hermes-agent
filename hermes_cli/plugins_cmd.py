@@ -1986,7 +1986,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
             except (ValueError, KeyboardInterrupt, EOFError):
                 return
             print()
-        _save_plugin_selection_fallback(plugin_keys, chosen, disabled)
+        _save_plugin_selection_fallback(plugin_keys, chosen, disabled, expected_config=expected_config)
 
     if categories:
         print(color("\n  Provider Plugins", Colors.YELLOW))
@@ -2004,7 +2004,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
     print()
 
 
-def _save_plugin_selection_fallback(plugin_keys, chosen, disabled) -> None:
+def _save_plugin_selection_fallback(plugin_keys, chosen, disabled, *, expected_config=None) -> None:
     """The text fallback's save: same admission authority, refusal printed."""
     from hermes_cli.plugins_admission import AdmissionRefused
 
