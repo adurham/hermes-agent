@@ -21,7 +21,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from hermes_constants import get_hermes_home
-from hermes_cli.runtime_paths import store_root
+from hermes_cli.runtime_paths import dependency_home_root, store_root
 
 
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
@@ -222,9 +222,11 @@ def mint_launcher(
 
 def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> str:
     module, func = ENTRY_POINTS[name]
+    # Profile boot repairs shared launchers: their default must stay at the
+    # install's dependency root, not whichever profile triggered publication.
     return (
         "import os, re, sys\n"
-        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {str(get_hermes_home())!r}\n"
+        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {str(dependency_home_root())!r}\n"
         "os.environ.pop('PYTHONHOME', None)\n"
         "os.environ.pop('PYTHONPATH', None)\n"
         f"sys.path.insert(0, {str(repo_root.resolve())!r})\n"

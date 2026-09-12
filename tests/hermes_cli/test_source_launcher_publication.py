@@ -100,6 +100,69 @@ def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, mo
     assert not (repo / "venv").exists()
 
 
+@pytest.mark.parametrize("publisher", [
+    pytest.param("boot", marks=pytest.mark.platforms("posix")),
+    pytest.param("native", marks=pytest.mark.platforms("windows")),
+    pytest.param("cmd", marks=pytest.mark.platforms("windows")),
+])
+def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, monkeypatch, publisher):
+    from hermes_cli import boot_bootstrap, post_update
+
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
+    profile = home / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    (home / "active_profile").write_text("default\n", encoding="utf-8")
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "commit": "abcdef012345", "updateMechanism": "git", "runtimeDir": str(home / "tools"),
+    }), encoding="utf-8")
+    site = site_packages(repo / "venv")
+    site.mkdir(parents=True)
+    (site / "selected_probe.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
+    out = tmp_path / ".local" / "bin"
+    if publisher == "cmd":
+        monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    launchers = [Path(p) for p in _launchers.ensure_install_launchers(repo, out)]
+    assert len(launchers) == len(_launchers.ENTRY_POINTS)
+    if publisher == "cmd":
+        assert all(launcher.suffix == ".cmd" for launcher in launchers)
+
+    def assert_home(override, expected):
+        env = dict(os.environ)
+        env.pop("HERMES_HOME", None)
+        if override is not None:
+            env["HERMES_HOME"] = str(override)
+        for launcher in launchers:
+            result = subprocess.run([str(launcher)], cwd=tmp_path, env=env,
+                                    capture_output=True, text=True, encoding="utf-8", timeout=30)
+            assert result.returncode == 7, result.stdout + result.stderr
+            receipt = json.loads(result.stdout)
+            assert Path(receipt["home"]) == expected
+            assert receipt["value"] == "ready"
+            assert Path(receipt["exe"]).samefile(interpreter)
+
+    assert_home(None, home)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    if publisher == "boot":
+        # Keep the real per-profile boot gate and exposure step, not unrelated
+        # migrations. A named profile's first boot republishes the shared files.
+        monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", tuple(
+            step for step in post_update.BOOT_HOME_STEPS if step[0] == "expose_cli"
+        ))
+        result = boot_bootstrap.run_boot_bootstrap(repo)
+        assert result["home"]["expose_cli"]["ok"], result
+        assert boot_bootstrap.record_path(repo).is_file()
+    else:
+        # Windows exposure is installer-owned. Both transports use this writer.
+        assert _launchers.ensure_install_launchers(repo, out)
+    assert_home(None, home)
+    assert_home(profile, profile)
+    other_home = tmp_path / "explicit custom home"
+    other_home.mkdir()
+    assert_home(other_home, other_home)
+
+
 @pytest.mark.platforms("posix")
 def test_posix_materializer_publishes_only_executable_shell_launchers(tmp_path, monkeypatch):
     repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
