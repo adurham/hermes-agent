@@ -2342,6 +2342,9 @@ def cmd_update(args):
 
         raise
     except BaseException as _update_exc:
+        if gateway_mode:
+            from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
+            _write_gateway_update_exit_code(False)
         _finalize_update_receipt(1, f"{type(_update_exc).__name__}: {_update_exc}")
         raise
     else:

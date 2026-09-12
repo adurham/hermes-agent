@@ -212,6 +212,56 @@ def test_missing_child_result_fails_boundary_receipt_and_releases_lock(transitio
     lock.release()
 
 
+def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transition, monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from hermes_cli import main, update_cmd, update_lock, update_receipt
+
+    root, git, old, new, request = transition
+    marker = Path(request["home"]) / ".update_exit_code"
+    (root / "hermes_cli/update_completion.py").write_text(
+        "import os, pathlib, time\n"
+        "(pathlib.Path(os.environ['HERMES_HOME']) / '.update_exit_code').write_text('0\\n')\n"
+        "print('SUCCESS_PUBLISHED', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", request["home"])
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
+    monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+    interrupted = False
+
+    class Interrupt(io.StringIO):
+        def write(self, value):
+            nonlocal interrupted
+            result = super().write(value)
+            if not interrupted and "SUCCESS_PUBLISHED" in self.getvalue():
+                assert marker.read_text().strip() == "0"
+                interrupted = True
+                raise KeyboardInterrupt()
+            return result
+
+    def complete(args, gateway_mode):
+        update_receipt.begin_update_receipt()
+        request["receipt"] = update_receipt._current.get().data
+        update_cmd._complete_source_update(request)
+
+    monkeypatch.setattr(sys, "stdout", Interrupt())
+    monkeypatch.setattr(update_cmd, "_cmd_update_impl", complete)
+    with pytest.raises(KeyboardInterrupt):
+        main.cmd_update(SimpleNamespace(gateway=True))
+    assert interrupted, "child never published success before cancellation"
+    receipt = update_receipt.read_latest_receipt()
+    assert receipt["update_id"] == request["receipt"]["update_id"]
+    assert receipt["outcome"] == "failed"
+    assert receipt["exit_code"] == 1
+    assert receipt["stop_reason"].startswith("KeyboardInterrupt:")
+    assert marker.read_text().strip() == "1"
+    lock = update_lock.UpdateLock()
+    assert lock.acquire()
+    lock.release()
+
+
 @pytest.mark.platforms("posix")
 def test_killed_selected_python_returns_signal_exit_status(transition):
     from hermes_cli import update_completion
@@ -291,6 +341,63 @@ def test_bootstrap_does_not_initialize_old_site_packages(transition, tmp_path, m
     result = update_completion.run_completion(request)
     assert result["exit_code"] == 0
     assert not trap.exists(), "preparation initialized the old application's .pth graph"
+
+
+@pytest.mark.parametrize("stage", ["prepare", "selected"])
+def test_progress_is_forwarded_before_held_stage_is_released(transition, monkeypatch, stage):
+    import io
+    import threading
+    from hermes_cli import update_completion
+
+    root, git, old, new, request = transition
+    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    release = root / "release"
+    released = root / "released"
+    held_body = (
+        "    print('STAGE_READY')\n"  # Deliberately no flush: -I ignores PYTHONUNBUFFERED.
+        "    deadline = time.monotonic() + 20\n"
+        "    while not Path('release').exists():\n"
+        "        if time.monotonic() >= deadline: raise TimeoutError('stage was not released')\n"
+        "        time.sleep(0.02)\n"
+        "    Path('released').touch()\n"
+    )
+    module, definition = (
+        ("pm/__init__.py", "def sync_venv(**kw):\n") if stage == "prepare" else
+        ("hermes_cli/source_build.py", "def build_update_products(*a, **kw):\n")
+    )
+    (root / module).write_text("import time\nfrom pathlib import Path\n" + definition + held_body)
+    observed = threading.Event()
+
+    class Output(io.StringIO):
+        def write(self, value):
+            result = super().write(value)
+            if "STAGE_READY" in self.getvalue():
+                observed.set()
+            return result
+
+    output = Output()
+    monkeypatch.setattr(sys, "stdout", output)
+    responses, errors = [], []
+
+    def run():
+        try:
+            responses.append(update_completion.run_completion(request))
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    try:
+        assert observed.wait(10), f"{stage} progress remained buffered: {output.getvalue()}"
+        assert worker.is_alive(), "completion finished instead of waiting for release"
+        assert not released.exists(), "stage passed its gate before progress was observed"
+    finally:
+        release.touch()
+        worker.join(timeout=30)
+    assert not worker.is_alive(), "completion did not stop after release"
+    assert not errors
+    assert released.exists()
+    assert responses[0]["exit_code"] == 0
 
 
 @pytest.mark.platforms("posix")

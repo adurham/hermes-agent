@@ -47,7 +47,7 @@ def run_completion(request: dict) -> dict:
         request = {**request, "stdout_isatty": sys.stdout.isatty()}
         request["bytecode_cache"] = str(Path(directory) / "bytecode")
         _write_json(request_path, request)
-        command = [sys.executable, "-I", "-S", "-X", f"pycache_prefix={request['bytecode_cache']}",
+        command = [sys.executable, "-I", "-S", "-u", "-X", f"pycache_prefix={request['bytecode_cache']}",
                    str(root / "hermes_cli/update_completion.py"),
                    str(request_path), str(result_path)]
         proc = subprocess.Popen(
@@ -138,7 +138,7 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             request["pm_receipt"] = receipt.last_for_update(update_id)
             _write_json(request_path, request)
     command = [str(venv_python_path(selected_venv(root))),
-               "-I", "-S", "-X", f"pycache_prefix={request['bytecode_cache']}",
+               "-I", "-S", "-u", "-X", f"pycache_prefix={request['bytecode_cache']}",
                str(root / "hermes_cli/update_completion.py"),
                str(request_path), str(result_path), "--prepared"]
     # A second interpreter is mandatory: PM may have selected a different Python
