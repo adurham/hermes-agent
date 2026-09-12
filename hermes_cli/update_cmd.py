@@ -439,35 +439,6 @@ def _print_called_process_error_tail(
 # scripts/write_install_stamp.py.
 
 
-def _invalidate_update_cache():
-    """Delete the update-check cache for ALL profiles so no banner
-    reports a stale "commits behind" count after a successful update.
-
-    The git repo is shared across profiles — when one profile runs
-    ``hermes update``, every profile is now current.
-    """
-    homes = []
-    # Default profile home (Docker-aware — uses /opt/data in Docker)
-    from hermes_constants import get_default_hermes_root
-
-    default_home = get_default_hermes_root()
-    homes.append(default_home)
-    # Named profiles under <root>/profiles/
-    profiles_root = default_home / "profiles"
-    if profiles_root.is_dir():
-        for entry in profiles_root.iterdir():
-            if entry.is_dir():
-                homes.append(entry)
-    for home in homes:
-        try:
-            cache_file = home / ".update_check"
-            if cache_file.exists():
-                cache_file.unlink()
-        except Exception:
-            pass
-
-
-
 def _write_update_incomplete_marker() -> None:
     # Historical updater hook. PM's successful facts determine completion.
     stop_for_relaunch()
@@ -752,7 +723,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         if head_sha and target_sha and head_sha == target_sha:
             print("✓ Already up to date.")
         else:
-            from hermes_cli.banner import _github_compare_behind
+            from hermes_cli.source_check import _github_compare_behind
             from hermes_cli.config import recommended_update_command
 
             counted = _github_compare_behind(head_sha, target_sha)
@@ -1071,7 +1042,7 @@ def _prepare_checkout_for_update(
 
     apply_is_shallow = _is_shallow_checkout(git_cmd)
     if commit_count > 0 and apply_is_shallow:
-        from hermes_cli.banner import _github_compare_behind
+        from hermes_cli.source_check import _github_compare_behind
         counted = _github_compare_behind(*_tip_shas(git_cmd, target_ref))
         # counted == 0 means local-ahead: falls through to the up-to-date path.
         commit_count = counted if counted is not None else -1
@@ -1303,7 +1274,6 @@ def _finish_already_up_to_date(
     _windows_gateway_resume) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
-    _invalidate_update_cache()
 
     # Restore stash and switch back if we moved. EXCEPTION: a parked branch verified clean +
     # fully merged stays on the target — re-parking on the stale branch recreates the incident.
@@ -1347,7 +1317,6 @@ def _apply_pulled_update(
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
     _windows_gateway_resume) -> None:
     """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
-    _invalidate_update_cache()
     post_pull_sha = _verify_head_after_pull(
         git_cmd, branch, pre_pull_sha, in_place_update=_plan.in_place_update,
         _windows_gateway_resume=_windows_gateway_resume)

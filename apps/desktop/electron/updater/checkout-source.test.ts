@@ -56,7 +56,7 @@ it('carries each install channel from Python publication checks into the source 
   try {
     fs.mkdirSync(origin)
     fs.mkdirSync(home)
-    git(['init', '-b', 'feature/gui'])
+    git(['init', '-b', 'upstream-build'])
     const commits: string[] = []
 
     for (const label of ['old', 'stable', 'canary', 'unpublished']) {
@@ -80,7 +80,10 @@ it('carries each install channel from Python publication checks into the source 
 
     responses.set('/releases/stable/release-candidates.json', { tag: tags.stable, commit: commits[1] })
     git(['tag', 'v99.0.0'])
-    git(['clone', origin, root], temporary)
+    git(['worktree', 'add', '-b', 'feature/gui', root])
+    git(['remote', 'add', 'origin', origin])
+    fs.writeFileSync(path.join(origin, 'install-stamp.json'), JSON.stringify({ updateMechanism: 'external' }))
+    fs.writeFileSync(path.join(root, 'install-stamp.json'), JSON.stringify({ updateMechanism: 'self' }))
     await new Promise<void>((resolve: () => void): void => {
       server.listen(0, '127.0.0.1', resolve)
     })
@@ -122,48 +125,22 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
       )
     }
 
+    const checkerPath: string = path.join(root, 'hermes_cli', 'source_check.py')
+    fs.writeFileSync(checkerPath, fs.readFileSync(checkerPath, 'utf8').replace(
+      'from __future__ import annotations',
+      `from __future__ import annotations\nimport runpy; runpy.run_path(${JSON.stringify(path.join(root, 'transport.py'))})`
+    ))
+
     const deps: CheckoutStrategyDeps = {
       hermesHome: home,
       isWindows: process.platform === 'win32',
       isMac: process.platform === 'darwin',
       defaultUpdateBranch: 'main',
       updateHandoffDwellMs: 0,
-      updateCheckCachePath: path.join(home, 'cache.json'),
-      writeFileAtomic: (file: string, contents: string): void => fs.writeFileSync(file, contents),
-      isGitCheckout: (): boolean => true,
-      readCanonicalInstallStamp: (): null => null,
-      readDesktopUpdateConfig: (): { branch: string; branchExplicit: boolean } => ({
-        branch: 'main',
-        branchExplicit: false
-      }),
       resolveUpdateRoot: (): string => root,
-      readSourceUpdate: async (install: string): Promise<SourceUpdate> => {
-        const result: { stdout: string } = await execute(
-          python,
-          [
-            '-c',
-            "import runpy,sys; runpy.run_path(sys.argv.pop(1)); runpy.run_module('hermes_cli.source_releases', run_name='__main__')",
-            path.join(root, 'transport.py'),
-            '--install-root',
-            install,
-            '--git',
-            'git'
-          ],
-          { cwd: root, env: environment }
-        )
-
-        return JSON.parse(result.stdout) as SourceUpdate
-      },
-      resolveHealedBranch: async (_root: string, branch: string): Promise<string> => branch,
-      getOriginUrl: async (): Promise<string> => origin,
-      runGit: async (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => ({
-        code: 0,
-        stdout: git(args, root),
-        stderr: ''
+      readSourceUpdate: (install: string, opts: { force?: boolean }): Promise<SourceUpdate | null> => readSourceUpdate({
+        python, git: 'git', updateRoot: install, hermesHome: home, force: opts.force
       }),
-      fetchGitHubApi: async (): Promise<never> => {
-        throw new Error('branch API must not resolve releases')
-      },
       directoryExists: fs.existsSync,
       resolveUpdaterBinary: (): null => null,
       firstLine: (text: string): string => text.split('\n')[0],
@@ -199,7 +176,6 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
 
     for (const channel of ['stable', 'canary'] as const) {
       await setChannel(channel)
-      await setChannel(channel === 'stable' ? 'canary' : 'stable', origin)
       const sha: string = commits[channel === 'stable' ? 1 : 2]
       const checked: unknown = await strategy.check()
       expect(checked, JSON.stringify({ checked, requests })).toMatchObject({
@@ -246,8 +222,8 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
     expect(deps.stopBackendsForUpdate).not.toHaveBeenCalled()
     expect(spawned).toHaveLength(0)
     await setChannel('main')
-    expect(await readSourceUpdate({ python, git: 'git', updateRoot: root, hermesHome: home })).toEqual({
-      channel: 'main'
+    expect(await readSourceUpdate({ python, git: 'git', updateRoot: root, hermesHome: home })).toMatchObject({
+      supported: true, branch: 'feature/gui', targetSha: commits[3], updateAvailable: false
     })
     const count: number = requests.length
     expect(await strategy.check()).toMatchObject({

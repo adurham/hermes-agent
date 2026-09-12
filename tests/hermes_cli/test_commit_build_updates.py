@@ -42,21 +42,18 @@ def test_commit_build_refuses_without_gui_advice(commit_build, git_present):
 
 @pytest.mark.parametrize("passive", [False, True])
 def test_commit_build_never_checks_upstream_or_reuses_source_cache(commit_build, monkeypatch, passive):
-    from hermes_cli import banner
+    from hermes_cli import banner, source_check
 
     # Even a shared home's source-checkout cache and an embedded SHA cannot turn this into an update.
     monkeypatch.setenv("HERMES_REVISION", "b" * 40)
-    check = Mock(return_value=5)
-    monkeypatch.setattr(banner, "_check_via_rev", check)
-    cache = Mock(return_value={"behind": 5})
-    monkeypatch.setattr(banner, "_read_json", cache)
-    assert banner.check_for_updates(passive=passive) is None
+    check = Mock(side_effect=AssertionError("must not probe"))
+    monkeypatch.setattr(source_check, "_branch_tip", check)
+    assert source_check.check_for_updates(passive=passive)["behind"] is None
     check.assert_not_called()
-    cache.assert_not_called()
 
 
 def test_commit_version_banner_uses_stamp_not_shared_checkout(commit_build, monkeypatch):
-    from hermes_cli import banner
+    from hermes_cli import banner, source_check
     from hermes_cli.version_info import get_version_info
 
     git = Mock(side_effect=AssertionError("version must not inspect another checkout"))
@@ -73,7 +70,7 @@ def test_commit_backend_update_routes_refuse_before_checks_or_spawns(commit_buil
     from starlette.testclient import TestClient
     import hermes_cli.web_server as server
     import hermes_cli.web_server_gateway as gateway
-    from hermes_cli import banner
+    from hermes_cli import banner, source_check
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(server, "PROJECT_ROOT", commit_build)
@@ -82,7 +79,7 @@ def test_commit_backend_update_routes_refuse_before_checks_or_spawns(commit_buil
     spawn = Mock(side_effect=AssertionError("no updater process"))
     monkeypatch.setattr(gateway, "_spawn_hermes_action", spawn)
     check = Mock(side_effect=AssertionError("no update check"))
-    monkeypatch.setattr(banner, "check_for_updates", check)
+    monkeypatch.setattr(source_check, "check_for_updates", check)
     cache = get_hermes_home() / ".update_check"
     cache.write_text("source checkout cache")
     client = TestClient(server.app)

@@ -47,7 +47,7 @@ def _run_count_block(*, shallow: bool, raw_count: str, api_count):
     with patch.object(update_cmd, "subprocess") as sub:
         sub.run = MagicMock(side_effect=fake)
         sub.CalledProcessError = real_subprocess.CalledProcessError
-        with patch("hermes_cli.banner._github_compare_behind", return_value=api_count):
+        with patch("hermes_cli.source_check._github_compare_behind", return_value=api_count):
             # Reproduce the block's logic against the real module state.
             git_cmd = ["git"]
             result = sub.run(
@@ -63,7 +63,7 @@ def _run_count_block(*, shallow: bool, raw_count: str, api_count):
                 == "true"
             )
             if commit_count > 0 and apply_is_shallow:
-                from hermes_cli.banner import _github_compare_behind
+                from hermes_cli.source_check import _github_compare_behind
 
                 head_sha = sub.run(git_cmd + ["rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
                 target_sha = sub.run(
@@ -109,7 +109,7 @@ def test_shallow_local_ahead_treated_as_up_to_date():
 
 
 def test_shallow_zero_count_short_circuits_without_api():
-    with patch("hermes_cli.banner._github_compare_behind") as api:
+    with patch("hermes_cli.source_check._github_compare_behind") as api:
         got = _run_count_block(shallow=True, raw_count="0", api_count=None)
     # The block only consults the API when count > 0; a 0 count is trustworthy
     # (HEAD == origin tip counts 0 even on shallow graphs).

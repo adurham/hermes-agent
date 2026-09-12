@@ -4,7 +4,6 @@ from __future__ import annotations
 from html.parser import HTMLParser
 import json
 import logging
-import os
 import re
 import subprocess
 import urllib.error
@@ -26,9 +25,12 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 def source_repository(git_cmd=None, cwd=None) -> str:
     """GitHub forks own their releases; other origins must mirror official tags."""
     if git_cmd is not None:
+        from hermes_cli.source_check import source_git_env
+
         result = subprocess.run(
             [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            stdin=subprocess.DEVNULL, env=source_git_env(),
         )
         match = _GITHUB_ORIGIN.fullmatch(result.stdout.strip())
         if result.returncode == 0 and match:
@@ -149,12 +151,14 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
         if not isinstance(sha, str) or not _SHA.fullmatch(sha):
             raise ValueError(f"No published commit for release {tag}")
         if git_cmd is not None:
+            from hermes_cli.source_check import source_git_env
+
             ref = f"refs/tags/{tag}"
             result = subprocess.run(
                 [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"],
                 cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                 check=True, timeout=60, stdin=subprocess.DEVNULL,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"},
+                env=source_git_env(),
             )
             refs = dict((parts[1], parts[0]) for line in result.stdout.splitlines()
                         if len(parts := line.split()) == 2)
@@ -166,36 +170,3 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         logger.warning("Could not resolve the %s source release: %s", channel, exc)
         return None, None
-
-
-def main() -> None:
-    """Read-only JSON probe for the desktop, using the CLI's channel authority."""
-    import argparse
-    import contextlib
-    import sys
-    from pathlib import Path
-
-    from hermes_cli.config import load_config, require_parseable_user_config
-    from hermes_cli.update_channel import resolve_update_channel
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--install-root", type=Path, required=True)
-    parser.add_argument("--git", default="git")
-    args = parser.parse_args()
-    # Config diagnostics must not corrupt the JSON transport.
-    with contextlib.redirect_stdout(sys.stderr):
-        # Recovery defaults are safe for repair UI, not for choosing an update target.
-        require_parseable_user_config()
-        channel = resolve_update_channel(load_config(), args.install_root)
-    result = {"channel": channel}
-    if channel in ("stable", "canary"):
-        tag, sha = resolve_source_release(channel, [args.git], args.install_root)
-        if tag is None or sha is None:
-            result.update(error="release-unavailable", message=f"Could not resolve the {channel} release commit.")
-        else:
-            result.update(latestTag=tag, targetSha=sha)
-    print(json.dumps(result))
-
-
-if __name__ == "__main__":
-    main()

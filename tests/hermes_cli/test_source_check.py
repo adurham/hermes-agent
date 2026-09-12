@@ -1,0 +1,279 @@
+"""Exercise the passive checker with real linked worktrees and loopback HTTP."""
+import json
+import subprocess
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
+
+import pytest
+
+
+@pytest.fixture
+def installation(tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+
+    def git(*args, cwd=root):
+        return subprocess.check_output([
+            "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "-c", "commit.gpgsign=false", *args,
+        ], cwd=cwd, text=True).strip()
+
+    git("init", "-b", "main")
+    git("commit", "--allow-empty", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    git("commit", "--allow-empty", "-m", "local")
+    head = git("rev-parse", "HEAD")
+    git("remote", "add", "origin", "https://github.com/fixture/fork.git")
+    linked = tmp_path / "linked"
+    git("worktree", "add", "-b", "feature/gui", str(linked))
+    responses = {}
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            code, body = responses.get(self.path, (404, {}))
+            self.send_response(code)
+            self.end_headers()
+            self.wfile.write((body if isinstance(body, str) else json.dumps(body)).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    original = urllib.request.urlopen
+
+    def local(request, *args, **kwargs):
+        url = urlsplit(request.full_url)
+        assert url.hostname in {"api.github.com", "hermes-assets.nousresearch.com"}
+        return original(f"http://127.0.0.1:{server.server_port}{url.path}" + (f"?{url.query}" if url.query else ""), *args, **kwargs)
+
+    monkeypatch.setattr(urllib.request, "urlopen", local)
+    yield root, linked, home, base, head, responses, requests, git
+    server.shutdown()
+    server.server_close()
+    thread.join()
+
+
+def test_target_worktree_owns_admission_and_fork_comparison(installation, monkeypatch):
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "external"}))
+    (linked / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}))
+    cache = home / "shared-cache.json"
+    target = "a" * 40
+    responses["/repos/fixture/fork/commits/feature%2Fgui"] = (200, target)
+    responses[f"/repos/fixture/fork/compare/{head}...{target}"] = (200, {"ahead_by": 3, "commits": []})
+    commands = []
+    original = subprocess.run
+
+    def record(args, **kwargs):
+        commands.append(args)
+        return original(args, **kwargs)
+
+    before = {str(p.relative_to(root)): p.read_bytes() for p in (root / ".git").rglob("*") if p.is_file()}
+    monkeypatch.setattr(subprocess, "run", record)
+    status = check_for_updates(install_root=linked, home=home, cache_path=cache)
+    assert status["supported"] is True
+    assert status["branch"] == "feature/gui"
+    assert status["behind"] == 3
+    assert status["hermesRoot"] == str(linked)
+    assert check_for_updates(install_root=root, home=home, cache_path=cache)["supported"] is False
+    assert len(requests) == 2
+    assert all(not any(arg in {"fetch", "checkout", "reset", "update-ref", "stash"} for arg in cmd) for cmd in commands)
+    assert git("rev-parse", "HEAD", cwd=linked) == head
+    assert {str(p.relative_to(root)): p.read_bytes() for p in (root / ".git").rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("tip_kind,compare,expected", [
+    ("head", None, 0), ("base", None, 0),
+    ("unknown", {"ahead_by": 61}, 61), ("unknown", {"ahead_by": 0}, 0),
+    ("unknown", None, -1), ("unknown", {"ahead_by": True}, -1),
+])
+def test_counts_are_honest_without_fetch(installation, tip_kind, compare, expected):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    target = {"head": head, "base": base, "unknown": "a" * 40}[tip_kind]
+    responses["/repos/fixture/fork/commits/main"] = (200, target)
+    if compare is not None:
+        responses[f"/repos/fixture/fork/compare/{head}...{target}"] = (200, compare)
+    status = check_for_updates(install_root=root, home=home)
+    assert status["behind"] == expected
+    assert status["updateAvailable"] is (expected != 0)
+    if tip_kind != "unknown":
+        assert len(requests) == 1
+
+
+def test_cache_force_expiry_and_passive_opt_out(installation, monkeypatch):
+    from hermes_cli import source_check
+    root, linked, home, base, head, responses, requests, git = installation
+    clock = [1000000.0]
+    monkeypatch.setattr(source_check.time, "time", lambda: clock[0])
+    url = "/repos/fixture/fork/commits/main"
+    responses[url] = (200, head)
+    check = lambda **kw: source_check.check_for_updates(install_root=root, home=home, **kw)
+    assert check()["behind"] == 0
+    responses[url] = (503, {})
+    (root / "dirty.txt").write_text("carried work")
+    assert check()["dirty"] is True
+    assert len(requests) == 1
+    assert check(force=True)["error"] == "fetch-failed"
+    clock[0] += 3599
+    assert check()["error"] == "fetch-failed"
+    assert len(requests) == 2
+    clock[0] += 2
+    responses[url] = (200, head)
+    assert check()["behind"] == 0
+    assert len(requests) == 3
+    clock[0] += 86401
+    assert check()["behind"] == 0
+    assert len(requests) == 4
+    (home / "config.yaml").write_text("updates: {check: false}")
+    assert check(passive=True)["behind"] is None
+    assert check()["behind"] == 0
+    assert len(requests) == 4
+    git("commit", "--allow-empty", "-m", "moved")
+    responses[url] = (200, git("rev-parse", "HEAD"))
+    assert check()["behind"] == 0
+    assert len(requests) == 5
+
+
+def test_explicit_and_current_branch_heal_only_after_confirmed_absence(installation, monkeypatch):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    git("remote", "set-url", "origin", str(root))
+    # Use the same real linked worktree with a local origin. No GitHub fallback is involved.
+    assert check_for_updates(install_root=linked, home=home)["branch"] == "feature/gui"
+    assert check_for_updates(install_root=linked, home=home, branch="main")["branch"] == "main"
+    assert check_for_updates(install_root=linked, home=home, branch="deleted")["branch"] == "main"
+    git("remote", "set-url", "origin", str(home / "unreachable"))
+    failed = check_for_updates(install_root=linked, home=home, branch="deleted", force=True)
+    assert failed["branch"] == "deleted"
+    assert failed["error"] == "fetch-failed"
+    assert git("branch", "--show-current", cwd=linked) == "feature/gui"
+    assert requests == []
+
+
+def test_running_revision_is_not_applied_to_an_explicit_target(installation, monkeypatch):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    monkeypatch.setenv("HERMES_REVISION", "e" * 40)
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(root))
+    responses["/repos/fixture/fork/commits/feature%2Fgui"] = (200, head)
+    assert check_for_updates(install_root=linked, home=home)["currentSha"] == head
+    # Default invocation retains the Nix revision probe even without a Git checkout.
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: home)
+    responses["/repos/NousResearch/hermes-agent/commits/main"] = (200, "e" * 40)
+    assert check_for_updates(home=home)["behind"] == 0
+
+
+def test_deleted_desktop_branch_is_persisted_only_after_definitive_probe(installation):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "deleted", "other": "preserved"}))
+    git("remote", "set-url", "origin", str(home / "unreachable"))
+    status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
+    assert status["branch"] == "deleted"
+    assert json.loads(branch_file.read_text())["branch"] == "deleted"
+    git("remote", "set-url", "origin", str(root))
+    status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
+    assert status["branch"] == "main"
+    assert json.loads(branch_file.read_text()) == {"branch": "main", "other": "preserved"}
+
+
+def test_inherited_git_target_cannot_redirect_an_explicit_install(installation, monkeypatch):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    responses["/repos/fixture/fork/commits/feature%2Fgui"] = (200, head)
+    monkeypatch.setenv("GIT_DIR", str(root / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(root))
+    status = check_for_updates(install_root=linked, home=home)
+    assert status["currentBranch"] == "feature/gui"
+    assert status["behind"] == 0
+
+
+@pytest.mark.parametrize("mechanism", ["external", "electron-updater", "app-installer", "microsoft-store", "self", None])
+def test_source_admission_is_stamp_owned_not_path_owned(installation, mechanism):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    if mechanism:
+        (linked / "install-stamp.json").write_text(json.dumps({"updateMechanism": mechanism, "distribution": "nix" if mechanism == "external" else "source"}))
+    responses["/repos/fixture/fork/commits/feature%2Fgui"] = (200, head)
+    status = check_for_updates(install_root=linked, home=home)
+    assert status["supported"] is (mechanism in ("self", None))
+    assert len(requests) == (1 if status["supported"] else 0)
+    empty = home / "no-source"
+    empty.mkdir()
+    (empty / "install-stamp.json").write_text(json.dumps({"updateMechanism": mechanism, "distribution": "nix" if mechanism == "external" else "source"}))
+    assert check_for_updates(install_root=empty, home=home)["reason"] == "not-a-git-checkout"
+
+
+def test_embedded_revision_keeps_https_ref_advertisement_recovery(installation, monkeypatch):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    monkeypatch.setenv("HERMES_REVISION", head)
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: home)
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda root: "nix")
+    original = subprocess.run
+    probes = []
+
+    def advertise(args, **kwargs):
+        if "ls-remote" in args:
+            probes.append((args, kwargs))
+            return subprocess.CompletedProcess(args, 0, head + "\trefs/heads/main\n", "")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", advertise)
+    assert check_for_updates(home=home)["behind"] == 0
+    assert len(probes) == 1
+    assert "https://github.com/NousResearch/hermes-agent.git" in probes[0][0]
+    assert probes[0][1]["stdin"] == subprocess.DEVNULL
+    assert probes[0][1]["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_malformed_optional_changelog_and_cache_do_not_hide_the_update(installation):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    cache = home / "cache.json"
+    responses["/repos/fixture/fork/commits/main"] = (200, "a" * 40)
+    responses[f"/repos/fixture/fork/compare/{head}...{'a' * 40}"] = (200, {
+        "ahead_by": 2, "commits": [{"sha": "b" * 40, "commit": 42}],
+    })
+    status = check_for_updates(install_root=root, home=home, cache_path=cache)
+    assert status["behind"] == 2
+    assert status["updateAvailable"] is True
+    data = json.loads(cache.read_text())
+    data["status"] = None
+    cache.write_text(json.dumps(data))
+    assert check_for_updates(install_root=root, home=home, cache_path=cache)["behind"] == 2
+    assert len(requests) == 4
+
+
+@pytest.mark.parametrize("repository,heals", [("NousResearch/hermes-agent", True), ("fixture/fork", False)])
+def test_official_ssh_healing_uses_public_https_without_retargeting_forks(installation, monkeypatch, repository, heals):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    git("remote", "set-url", "origin", f"git@github.com:{repository}.git")
+    git("config", f"url.{root.as_uri()}.insteadOf", "https://github.com/NousResearch/hermes-agent.git")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "false")
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "deleted"}))
+    responses[f"/repos/{repository}/commits/main"] = (200, head)
+    status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
+    assert status["branch"] == ("main" if heals else "deleted")
+    assert json.loads(branch_file.read_text())["branch"] == status["branch"]
+    if heals:
+        assert status["behind"] == 0
+    else:
+        assert status["error"] == "fetch-failed"

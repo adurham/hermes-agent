@@ -411,7 +411,6 @@ import {
 } from './translucency'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
-import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   resolveUpdaterMechanism,
   type UpdaterApplyResultWire,
@@ -2976,12 +2975,6 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
-async function getOriginUrl(updateRoot) {
-  const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
-
-  return origin.code === 0 ? origin.stdout.trim() : ''
-}
-
 function emitUpdateProgress(payload) {
   const merged = { stage: 'idle', message: '', percent: null, error: null, ...payload, at: Date.now() }
   rememberLog(`[updates] ${merged.stage}: ${merged.message || merged.error || ''}`)
@@ -2989,35 +2982,6 @@ function emitUpdateProgress(payload) {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('hermes:updates:progress', merged)
   }
-}
-
-// Self-heal the tracked update branch: if origin no longer publishes it (e.g.
-// bb/gui was merged into main and deleted), fall back to main and persist so
-// every later check/apply follows main — no manual flip, even for already-
-// installed clients. Read-only ls-remote probe; only flips on a definitive
-// "ref absent" (exit 2), never on a transient network error, so a flaky
-// connection can't strand a user on the wrong branch.
-async function resolveHealedBranch(updateRoot, branch) {
-  if (!branch || branch === 'main') {
-    return branch || 'main'
-  }
-
-  const originUrl = await getOriginUrl(updateRoot)
-  const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
-
-  if (probe.code !== 2) {
-    return branch
-  }
-
-  rememberLog(`[updates] origin/${branch} is gone (merged?); falling back to main`)
-  const config = readDesktopUpdateConfig()
-
-  if (config.branch !== 'main') {
-    writeDesktopUpdateConfig({ ...config, branch: 'main' })
-  }
-
-  return 'main'
 }
 
 async function checkUpdates(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
@@ -3042,19 +3006,6 @@ async function checkUpdates(opts: { force?: boolean } = {}): Promise<UpdaterStat
   // one stamp, no direct body path. The flow lives in updater/checkout.ts;
   // this is the only production door to the checkout arms.
   return resolveCheckoutUpdateStrategy().check(opts)
-}
-
-async function fetchGitHubApi(url: string, accept: string = 'application/vnd.github+json'): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: { Accept: accept, 'User-Agent': 'hermes-desktop-update-check' },
-    signal: AbortSignal.timeout(10_000)
-  })
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
-  }
-
-  return accept === 'application/vnd.github.sha' ? response.text() : response.json()
 }
 
 let updateInFlight = false
@@ -3191,24 +3142,17 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     defaultUpdateBranch: DEFAULT_UPDATE_BRANCH,
     updateHandoffDwellMs: UPDATE_HANDOFF_DWELL_MS,
     directoryExists,
-    readCanonicalInstallStamp,
-    readDesktopUpdateConfig,
-    readSourceUpdate: (updateRoot: string): Promise<SourceUpdate | null> => readSourceUpdate({
+    readSourceUpdate: (updateRoot: string, opts: { force?: boolean }): Promise<SourceUpdate | null> => readSourceUpdate({
       python: findPythonForRoot(updateRoot),
       git: resolveGitBinary(),
       updateRoot,
-      hermesHome: HERMES_HOME
+      hermesHome: HERMES_HOME,
+      branchConfigPath: DESKTOP_UPDATE_CONFIG_PATH,
+      force: opts.force
     }),
     resolveUpdateRoot,
     resolveUpdaterBinary,
-    resolveHealedBranch,
-    getOriginUrl,
-    runGit,
     firstLine,
-    fetchGitHubApi,
-    isGitCheckout,
-    updateCheckCachePath: path.join(app.getPath('userData'), 'update-check-cache.json'),
-    writeFileAtomic,
 
     emitUpdateProgress,
     rememberLog,
@@ -3911,9 +3855,8 @@ async function handOffWindowsBootstrapRecovery(reason) {
   const updateRoot = resolveUpdateRoot()
   const { branch: configuredBranch } = readDesktopUpdateConfig()
 
-  const branch = isGitCheckout(updateRoot)
-    ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    : configuredBranch || DEFAULT_UPDATE_BRANCH
+  // Recovery can run without Python. Keep the chosen branch; do not guess a replacement.
+  const branch: string = configuredBranch || DEFAULT_UPDATE_BRANCH
 
   const updaterArgs: string[] = chooseUpdaterArgs(
     { runtimeUsable: isSourceRuntimeUsable(updateRoot) },

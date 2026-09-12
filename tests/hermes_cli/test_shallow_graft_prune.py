@@ -113,7 +113,7 @@ def test_update_check_prunes_and_reports_count(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(update_cmd, "_git_run", fake_git_run)
     monkeypatch.setattr(update_cmd, "_base_git_cmd", lambda: ["git"])
-    monkeypatch.setattr("hermes_cli.banner._github_compare_behind", lambda *a, **k: 0)
+    monkeypatch.setattr("hermes_cli.source_check._github_compare_behind", lambda *a, **k: 0)
     prune_calls = []
     monkeypatch.setattr(
         "hermes_cli.gitlock.prune_stale_shallow_grafts",
