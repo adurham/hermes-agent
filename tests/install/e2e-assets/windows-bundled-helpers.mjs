@@ -1,22 +1,17 @@
-// windows-bundled-helpers.mjs — pure helpers + small CLI for the Windows
-// packaged-app (MSIX / App Installer) E2E arm (tests/install/windows-bundled-e2e.ps1).
-//
-// Everything OS-visible here derives from the PRODUCTION builders in
-// scripts/msix-shared.mjs (buildAppInstaller, OUT_OF_STORE_PUBLISHER,
-// contentTypeFor) so the test feed cannot drift from the real feed. The
-// production module's path is a CLI arg (--msix-shared) so the primary
-// checkout's copy (with the parent-owned MainBundle/descriptorFilename
-// support) is used read-only; the in-repo file is the fallback.
+// Windows packaged-app acceptance helpers. Release Python owns descriptor XML;
+// msix-shared supplies the expected publisher and content types. --msix-shared
+// selects the checkout whose release module and native facts are under test.
 //
 // CLI (space-separated flag pairs — `node script.mjs -- --flag value` also
 // works; see the repo AGENTS note on Node eating `--` args):
 //   node windows-bundled-helpers.mjs validate-manifest --manifest <path> --msix-shared <path>
 //   node windows-bundled-helpers.mjs descriptor --feed <dir> --base-url <url>
-//        --identity <name> --version <4-part> --bundle <filename>
+//        --identity <name> --publisher <subject> --version <4-part> --bundle <filename>
 //        [--descriptor-filename update.appinstaller] [--msix-shared <path>]
 //   node windows-bundled-helpers.mjs serve --feed <dir> --port-file <path>
 
 import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import http from 'node:http'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -158,24 +153,6 @@ export function feedLayout(feedDir, manifest) {
   }
 }
 
-/**
- * The arguments for the production buildAppInstaller for one feed side.
- * variantChannelPath is '' — the side is folded into baseUrl (context
- * contract), and the descriptor Uri is the optional descriptorFilename
- * (parent-owned fix; defaults to the bundle filename with .appinstaller).
- * @param {{ baseUrl: string, identityName: string, version: string, bundleFilename: string, descriptorFilename?: string }} o
- */
-export function descriptorArgs(o) {
-  return {
-    baseUrl: o.baseUrl,
-    variantChannelPath: '',
-    identityName: o.identityName,
-    version: o.version,
-    bundleFilename: o.bundleFilename,
-    ...(o.descriptorFilename ? { descriptorFilename: o.descriptorFilename } : {})
-  }
-}
-
 /** Load the production msix-shared module from an explicit path. */
 export async function loadMsixShared(msixSharedPath) {
   const resolved = path.resolve(msixSharedPath)
@@ -214,34 +191,15 @@ async function main() {
   }
 
   if (cmd === 'descriptor') {
-    const shared = await loadMsixShared(msixShared)
-    if (typeof shared.buildAppInstaller !== 'function') {
-      throw new Error('production buildAppInstaller missing — contract regression')
-    }
-    const xml = shared.buildAppInstaller(descriptorArgs({
-      baseUrl: flags['base-url'],
-      identityName: flags.identity,
-      version: flags.version,
-      bundleFilename: flags.bundle,
-      descriptorFilename: flags['descriptor-filename'] || undefined
-    }))
-    // CONTRACT CHECK: the descriptor's own Uri must be the descriptor
-    // filename (the OS registers THIS uri as the update source), not a
-    // derived-from-bundle name. If the parent's descriptorFilename support
-    // is missing, the derived Uri would be <bundle>.appinstaller instead.
-    if (flags['descriptor-filename']) {
-      const m = /Uri="([^"]+)"/.exec(xml)
-      if (!m || !m[1].endsWith(flags['descriptor-filename'])) {
-        throw new Error(
-          `buildAppInstaller ignored descriptorFilename: Uri=${m ? m[1] : '(none)'} ` +
-          `does not end with ${flags['descriptor-filename']} — parent msix-shared fix required`
-        )
-      }
-    }
     const feed = path.resolve(flags.feed)
-    fs.mkdirSync(path.dirname(path.resolve(flags.out || path.join(feed, 'update.appinstaller'))), { recursive: true })
     const outPath = flags.out || path.join(feed, 'update.appinstaller')
-    fs.writeFileSync(outPath, xml)
+    const base = flags['base-url'].replace(/\/+$/, '')
+    execFileSync(process.env.HERMES_PYTHON || 'python', [
+      '-m', 'scripts.bundles.release_artifacts', 'appinstaller', '--root', feed, '--out', outPath,
+      '--identity', flags.identity, '--publisher', flags.publisher, '--version', flags.version,
+      '--self-uri', `${base}/${flags['descriptor-filename'] || 'update.appinstaller'}`,
+      '--artifact-uri', `${base}/${flags.bundle}`,
+    ], { cwd: path.resolve(path.dirname(msixShared), '..'), stdio: 'inherit' })
     console.log(JSON.stringify({ ok: true, path: outPath }))
     return
   }

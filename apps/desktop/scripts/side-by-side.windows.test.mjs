@@ -48,7 +48,7 @@ async function nativeProof() {
     'apps/desktop/product-identity.cjs', 'apps/desktop/electron-builder.config.cjs',
     'apps/desktop/package.json', 'apps/desktop/update-feed.cjs', 'apps/desktop/update-feed.json',
     'apps/desktop/assets/msix-manifest.xml',
-    ...['before-build', 'gen-msix-manifest', 'gen-appinstaller', 'mac-sign', 'payload-digests', 'write-build-stamp', 'utils']
+    ...['before-build', 'gen-msix-manifest', 'mac-sign', 'payload-digests', 'write-build-stamp', 'utils']
       .map(name => `apps/desktop/scripts/${name}.mjs`),
     'scripts/msix-shared.mjs', 'scripts/release-content-types.json', 'scripts/build/python.mjs',
   ]
@@ -159,13 +159,24 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
       }
     }
     const descriptor = path.join(root, `${label}.appinstaller`)
-    const generated = run(process.execPath, [path.join(desktop, 'scripts/gen-appinstaller.mjs'), '--out', descriptor, '--base-url', 'https://example.invalid/fixture'], { cwd: work, env: childEnv })
-    if (flavorEnv.HERMES_BUILD_COMMIT) {
-      check(generated.status !== 0 && !fs.existsSync(descriptor), `${label}: commit build emitted App Installer feed`)
-      check(facts.config.publish === null, `${label}: commit build config still publishes`)
+    if (facts.identity.channel) {
+      const publisher = attribute(roundtrip, 'Identity', 'Publisher')
+      const selfUri = `https://example.invalid/fixture/${facts.identity.channel}.appinstaller`
+      const artifactUri = `https://example.invalid/fixture/${facts.app.name}-${version}-win.msixbundle`
+      checked(process.env.HERMES_PYTHON || 'python', [
+        '-m', 'scripts.bundles.release_artifacts', 'appinstaller', '--root', root, '--out', descriptor,
+        '--identity', name, '--publisher', publisher, '--version', version,
+        '--self-uri', selfUri, '--artifact-uri', artifactUri,
+      ], { cwd: repo, env: childEnv })
+      const feed = fs.readFileSync(descriptor, 'utf8')
+      check(attribute(feed, 'MainBundle', 'Name') === name, `${label}: App Installer targets another family`)
+      check(attribute(feed, 'MainBundle', 'Publisher') === publisher, `${label}: App Installer changed publisher`)
+      check(attribute(feed, 'MainBundle', 'Version') === version, `${label}: App Installer changed version`)
+      check(attribute(feed, 'AppInstaller', 'Uri') === selfUri, `${label}: App Installer changed subscription`)
+      check(attribute(feed, 'MainBundle', 'Uri') === artifactUri, `${label}: App Installer changed artifact`)
     } else {
-      assert.equal(generated.status, 0, generated.output)
-      check(attribute(fs.readFileSync(descriptor, 'utf8'), 'MainBundle', 'Name') === name, `${label}: App Installer targets another family`)
+      check(!fs.existsSync(descriptor), `${label}: commit build emitted App Installer feed`)
+      check(facts.config.publish === null, `${label}: commit build config still publishes`)
     }
     const row = { label, name, version, aliases, packageDir, cliName: facts.identity.cliName, commit: flavorEnv.HERMES_BUILD_COMMIT || null }
     rows.push(row)

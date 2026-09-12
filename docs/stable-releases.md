@@ -153,6 +153,16 @@ in JavaScript or PowerShell. These adapters consume release facts rather than
 reimplementing the release gate. Gate jobs use only Python's standard library;
 they do not install the application or the JS workspace to report a verdict.
 
+`scripts.bundles.release_artifacts` owns App Installer XML and feed publication.
+Its serializer takes explicit package identity, publisher, version, subscription
+URI and artifact URI. Stable promotion uses the accepted candidate metadata;
+canary publication verifies the native bundle manifest against the adapter's
+expected identity before uploading the bundle, then the descriptor. Native SDK
+bundling/signing stays in `stage-msixbundle.mjs`. Store and commit builds stop
+before that feed handoff; `stable-store` submits the verified candidate without
+rebuilding it. Native acceptance uses the same Python serializer, including its
+12-hour on-launch check policy.
+
 Signing and publication credentials stay in their protected job environments.
 The source CI call does not inherit deployment secrets. Configure the existing
 release-signing and container-publish environments before running this pipeline.

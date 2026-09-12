@@ -1,17 +1,17 @@
 // windows-bundled-helpers — unit tests for the pure helpers of the
-// Windows packaged-app E2E arm. node:test, no production imports needed:
-// the publisher rule takes the production constant as injected data (the
-// driver binds it to OUT_OF_STORE_PUBLISHER at runtime, from the same
-// module it builds the feed descriptors with).
+// Windows packaged-app E2E arm. Pure manifest validation plus real descriptor
+// CLI calls through the release Python module; no Windows installation needed.
 //
 //   node --test tests/install/e2e-assets/windows-bundled-helpers.test.mjs
 import { test } from 'node:test'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { validateBundledManifest, fourPartNewer, feedLayout, descriptorArgs } from './windows-bundled-helpers.mjs'
+import { validateBundledManifest, fourPartNewer, feedLayout } from './windows-bundled-helpers.mjs'
 
 const PUB = 'CN=Nous Research Inc., O=Nous Research Inc., L=Austin, S=Texas, C=US'
 const OTHER_PUB = 'CN=Someone Else'
@@ -132,10 +132,21 @@ test('feedLayout stages per-side bundles and one swapped descriptor, rejecting c
   assert.throws(() => feedLayout('feed', m), /collide/)
 })
 
-test('descriptorArgs pass the contract shape (empty channel path, optional descriptor filename)', () => {
-  assert.deepEqual(descriptorArgs({ baseUrl: 'http://127.0.0.1:9/old', identityName: 'I', version: '0.3.0.0', bundleFilename: 'b.msixbundle' }), {
-    baseUrl: 'http://127.0.0.1:9/old', variantChannelPath: '', identityName: 'I', version: '0.3.0.0', bundleFilename: 'b.msixbundle'
-  })
-  const withD = descriptorArgs({ baseUrl: 'u', identityName: 'I', version: 'v', bundleFilename: 'b', descriptorFilename: 'update.appinstaller' })
-  assert.equal(withD.descriptorFilename, 'update.appinstaller')
+test('native acceptance descriptor CLI uses explicit publisher and a stable subscription across upgrades', () => {
+  const feed = fs.mkdtempSync(path.join(os.tmpdir(), 'wbh-descriptor-'))
+  try {
+    for (const version of ['1.2.3.0', '1.2.4.31']) {
+      execFileSync(process.execPath, [fileURLToPath(new URL('./windows-bundled-helpers.mjs', import.meta.url)),
+        'descriptor', '--feed', feed, '--base-url', 'http://127.0.0.1:9',
+        '--identity', 'Fixture.App', '--publisher', 'CN=Fixture & "Team"',
+        '--version', version, '--bundle', `${version}.msixbundle`, '--descriptor-filename', 'update.appinstaller',
+      ])
+      const xml = fs.readFileSync(path.join(feed, 'update.appinstaller'), 'utf8')
+      assert.match(xml, /Publisher="CN=Fixture &amp; &quot;Team&quot;"/)
+      assert.match(xml, /Uri="http:\/\/127.0.0.1:9\/update.appinstaller"/)
+      assert.ok(xml.includes(`Uri="http://127.0.0.1:9/${version}.msixbundle"`))
+      assert.equal((xml.match(new RegExp(`Version="${version.replaceAll('.', '\\.')}"`, 'g')) || []).length, 2)
+      assert.match(xml, /HoursBetweenUpdateChecks="12"/)
+    }
+  } finally { fs.rmSync(feed, { recursive: true, force: true }) }
 })

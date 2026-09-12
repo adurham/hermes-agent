@@ -79,7 +79,7 @@ try {
     }
     $baseUrl = (Get-Content -Raw $PortFile).Trim()
     function Descriptor($Side, [string]$File) {
-        Run-Node @($Helper, 'descriptor', '--feed', $Feed, '--base-url', $baseUrl, '--identity', $Side.identity, '--version', $Side.version, '--bundle', $File, '--descriptor-filename', 'update.appinstaller')
+        Run-Node @($Helper, 'descriptor', '--feed', $Feed, '--base-url', $baseUrl, '--identity', $Side.identity, '--publisher', $Side.publisher, '--version', $Side.version, '--bundle', $File, '--descriptor-filename', 'update.appinstaller')
     }
     Descriptor $m.old 'old.msixbundle'
     $descriptor = Join-Path $Feed 'update.appinstaller'
