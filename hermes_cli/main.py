@@ -3397,6 +3397,19 @@ def main():
         from hermes_cli.boot_bootstrap import default_project_root, maybe_run_boot_bootstrap
         maybe_run_boot_bootstrap(default_project_root())
 
+    # Every dispatch, including fast chat/serve, gets one passive PM verdict.
+    try:
+        from hermes_cli.boot_bootstrap import default_project_root
+        from hermes_cli.venv_sync import check_runtime
+
+        problem = check_runtime(default_project_root())
+        if problem:
+            print(f"⚠ {problem}", file=sys.stderr)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
+
     if _try_termux_fast_tui_launch():
         return
     if _try_termux_fast_cli_launch():
@@ -3405,27 +3418,6 @@ def main():
         return
     if _try_fast_chat_launch():
         return
-
-    # The startup check: O(1) stamp comparisons, no network, no installs.
-    # One loud line when the install is damaged; never blocks the command.
-    # Then provision: prepend the store's tool dirs to PATH so reactive
-    # which('git'|'bash'|'ffmpeg'|...) resolves the bundled binaries.
-    try:
-        import pm
-
-        pm.adopt()
-        problems = pm.check()
-        if problems:
-            print(
-                f"⚠ install out of sync ({'; '.join(problems)}) — run `hermes pm install`",
-                file=sys.stderr,
-            )
-        else:
-            pm.activate()
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
 
     parser, subparsers = _build_cli_parser()
 

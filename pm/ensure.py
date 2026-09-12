@@ -641,17 +641,17 @@ def adopt() -> bool:
     return True
 
 
-def check() -> list[str]:
-    """The startup check: cheap stamp comparisons of the installed state
-    against the lockfile. Returns problems; empty means healthy. Never
+def drift() -> dict[str, str]:
+    """Cheap stamp comparisons of the installed state
+    against the lockfile. Maps package names to reasons; empty means healthy. Never
     installs, never touches the network. An install pm has never touched
     (no installed-state file) reports nothing — pm only vouches for what
     it installed. Lockfile packages this build doesn't know (version skew
     during a partial update) are skipped, not fatal."""
     if not paths.facts_path().is_file() and not paths.runtime_facts_path().is_file():
-        return []
+        return {}
 
-    problems: list[str] = []
+    problems: dict[str, str] = {}
     lockfile = _lockfile()
     facts = _facts()
     store = _store()
@@ -666,7 +666,7 @@ def check() -> list[str]:
         if package.missing_reason(target) is not None:
             continue
         if _installed_location(package, lockfile, target) is None:
-            problems.append(f"{name}: not installed or outdated")
+            problems[name] = "not installed or outdated"
     try:
         venv = get_package("venv")
     except KeyError:
@@ -674,10 +674,15 @@ def check() -> list[str]:
     if venv is not None and (paths.runtime_facts_path().is_file() or facts.get("venv") is not None):
         try:
             if not venv_is_current():
-                problems.append("venv: out of sync with uv.lock")
+                problems["venv"] = "out of sync with uv.lock"
         except (OSError, RuntimeError, ValueError) as exc:
-            problems.append(f"venv: {exc}")
+            problems["venv"] = str(exc)
     return problems
+
+
+def check() -> list[str]:
+    """Human-readable startup diagnostics. Use drift() for package identities."""
+    return [f"{name}: {reason}" for name, reason in drift().items()]
 
 
 def _store_path_dirs() -> list[str]:

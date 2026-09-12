@@ -166,10 +166,34 @@ def test_provisioning_is_the_machine_scope_driver_path():
     assert not any("cua" in name for name in names)
 
 
+def test_provisioning_does_not_use_human_diagnostics(tmp_path, monkeypatch):
+    import json
+    import importlib
+    import pm
+    from pm import paths
+
+    engine = importlib.import_module("pm.ensure")
+    runtime = tmp_path / "tools"
+    runtime.mkdir()
+    (runtime / "facts.json").write_text(json.dumps({"schema": 1, "packages": {}}))
+    lock = tmp_path / "lock.json"
+    lock.write_text(json.dumps({"schema": 1, "packages": {"node": {"version": "test"}}}))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lock)
+    monkeypatch.setattr(engine, "sealed", lambda: False)
+    monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(pm, "check", lambda: ["translated diagnostic without a package token"])
+    ensured = []
+    monkeypatch.setattr(pm, "ensure", lambda name, **kwargs: ensured.append((name, kwargs)))
+
+    assert post_update.main(["--scope", "machine"]) == 0
+    assert ensured == [("node", {"explicit": True})]
+
+
 def test_provision_runtimes_is_a_noop_when_pm_is_current(monkeypatch):
     import pm
 
-    monkeypatch.setattr(pm, "check", lambda: [])
+    monkeypatch.setattr(pm, "drift", lambda: {})
     assert post_update.step_provision_runtimes() == {"ok": True, "skipped": "current"}
 
 
@@ -184,7 +208,7 @@ def test_provision_runtimes_reensures_only_what_pm_names(monkeypatch):
     pm_ensure = importlib.import_module("pm.ensure")
 
     ensured = []
-    monkeypatch.setattr(pm, "check", lambda: ["node: not installed or outdated", "venv: out of sync with uv.lock"])
+    monkeypatch.setattr(pm, "drift", lambda: {"node": "outdated", "venv": "out of sync"})
     monkeypatch.setattr(pm_ensure, "sealed", lambda: False)
     monkeypatch.setattr(pm_ensure, "lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(pm, "ensure", lambda name, explicit=False: ensured.append((name, explicit)))
@@ -203,7 +227,7 @@ def test_provision_runtimes_respects_the_lazy_install_policy(monkeypatch):
 
     pm_ensure = importlib.import_module("pm.ensure")
 
-    monkeypatch.setattr(pm, "check", lambda: ["node: not installed or outdated"])
+    monkeypatch.setattr(pm, "drift", lambda: {"node": "outdated"})
     monkeypatch.setattr(pm_ensure, "sealed", lambda: False)
     monkeypatch.setattr(pm_ensure, "lazy_installs_allowed", lambda: False)
     result = post_update.step_provision_runtimes()
