@@ -9,6 +9,28 @@ class AdmissionRefused(RuntimeError):
     """The candidate set was refused; config and environment untouched."""
 
 
+def candidate_member_dirs(
+    candidate_enabled: Iterable[str],
+    candidate_disabled: Iterable[str] = (),
+    *,
+    active_plugins_dir: Optional[Path] = None,
+    extra_dirs: Iterable[Path] = (),
+) -> list[Path]:
+    """Shipped callers' member-list adapter; new discovery belongs to PM.
+
+    Without an active plugins dir, preserve every home's recorded selection.
+    """
+    from pm.publication import candidate_members
+
+    active = Path(active_plugins_dir) if active_plugins_dir else None
+    return candidate_members(
+        extra_dirs,
+        proposed_home=active.parent if active else None,
+        enabled=candidate_enabled,
+        disabled=candidate_disabled,
+    )
+
+
 def admit_plugin_set_change(
     candidate_enabled: set,
     candidate_disabled: set,

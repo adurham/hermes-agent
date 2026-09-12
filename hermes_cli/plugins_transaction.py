@@ -5,6 +5,13 @@ from pathlib import Path
 import shutil
 
 
+def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
+    """Recover a shipped caller's row through the stdlib boot-journal owner."""
+    from hermes_cli.runtime_state import _recover_plugin_publication
+
+    _recover_plugin_publication(project, row, journal)
+
+
 def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
                    *, target_digest: str | None = None) -> None:
     from pm.client import sync_venv
