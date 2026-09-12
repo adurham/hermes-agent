@@ -212,7 +212,8 @@ def test_missing_child_result_fails_boundary_receipt_and_releases_lock(transitio
     lock.release()
 
 
-def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transition, monkeypatch):
+@pytest.mark.parametrize("cleanup_failure", [None, "kill", "wait"])
+def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transition, monkeypatch, cleanup_failure):
     import io
     from types import SimpleNamespace
     from hermes_cli import main, update_cmd, update_lock, update_receipt
@@ -230,6 +231,35 @@ def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transi
     monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
     monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
     interrupted = False
+    cleanup_error = (OSError("retained-handle kill failed") if cleanup_failure == "kill"
+                     else subprocess.TimeoutExpired("completion", 5))
+    waits = []
+    children = []
+    popen = subprocess.Popen
+
+    def capture_child(*args, **kwargs):
+        proc = popen(*args, **kwargs)
+        if not children:
+            children.append(proc)
+            wait = proc.wait
+            kill = proc.kill
+
+            def cleanup_kill():
+                kill()
+                if cleanup_failure == "kill":
+                    raise cleanup_error
+
+            def cleanup_wait(timeout=None):
+                waits.append(timeout)
+                # Inject faults after real cleanup so a regression cannot leak the child.
+                result = wait(timeout=5)
+                if cleanup_failure == "wait":
+                    raise cleanup_error
+                return result
+
+            monkeypatch.setattr(proc, "kill", cleanup_kill)
+            monkeypatch.setattr(proc, "wait", cleanup_wait)
+        return proc
 
     class Interrupt(io.StringIO):
         def write(self, value):
@@ -244,13 +274,19 @@ def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transi
     def complete(args, gateway_mode):
         update_receipt.begin_update_receipt()
         request["receipt"] = update_receipt._current.get().data
+        monkeypatch.setattr(subprocess, "Popen", capture_child)
         update_cmd._complete_source_update(request)
 
     monkeypatch.setattr(sys, "stdout", Interrupt())
     monkeypatch.setattr(update_cmd, "_cmd_update_impl", complete)
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(KeyboardInterrupt) as error:
         main.cmd_update(SimpleNamespace(gateway=True))
     assert interrupted, "child never published success before cancellation"
+    assert children[0].poll() is not None
+    assert children[0].stdout.closed
+    assert waits and all(timeout is not None and timeout > 0 for timeout in waits)
+    if cleanup_failure:
+        assert error.value.__cause__ is cleanup_error
     receipt = update_receipt.read_latest_receipt()
     assert receipt["update_id"] == request["receipt"]["update_id"]
     assert receipt["outcome"] == "failed"
@@ -480,6 +516,77 @@ def test_interrupt_reaps_completion_descendants_before_return(transition, monkey
         for pid in pids:
             if psutil.pid_exists(pid):
                 psutil.Process(pid).kill()
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("failure", ["launch", "timeout", "nonzero"])
+def test_taskkill_failure_still_reaps_child_and_preserves_interrupt(tmp_path, monkeypatch, failure):
+    """Only native Windows exercises taskkill dispatch and retained-handle kill."""
+    import io
+    from hermes_cli import update_completion
+
+    package = tmp_path / "hermes_cli"
+    package.mkdir()
+    (package / "update_completion.py").write_text(
+        "import time\nprint('READY', flush=True)\ntime.sleep(60)\n"
+    )
+    request = {"source": str(tmp_path), "home": str(tmp_path), "receipt": {"update_id": "test"}}
+    interrupted = KeyboardInterrupt("cancel completion")
+    child = None
+    waits = []
+    popen, run = subprocess.Popen, subprocess.run
+
+    def capture_child(*args, **kwargs):
+        nonlocal child
+        proc = popen(*args, **kwargs)
+        # The nonzero fault uses a real command, but it is not the completion child.
+        if child is None:
+            child = proc
+            wait = proc.wait
+
+            def bounded_wait(timeout=None):
+                waits.append(timeout)
+                return wait(timeout=timeout)
+
+            monkeypatch.setattr(proc, "wait", bounded_wait)
+        return proc
+
+    def failed_taskkill(command, **kwargs):
+        assert child is not None
+        assert command == ["taskkill", "/T", "/F", "/PID", str(child.pid)]
+        if failure == "launch":
+            raise FileNotFoundError("taskkill unavailable")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        # Keep subprocess.run's real nonzero/check behavior, without killing a tree.
+        return run([sys.executable, "-c", "raise SystemExit(9)"], **kwargs)
+
+    class Interrupt(io.StringIO):
+        def write(self, value):
+            result = super().write(value)
+            if "READY" in self.getvalue():
+                raise interrupted
+            return result
+
+    monkeypatch.setattr(subprocess, "Popen", capture_child)
+    monkeypatch.setattr(subprocess, "run", failed_taskkill)
+    monkeypatch.setattr(sys, "stdout", Interrupt())
+    try:
+        with pytest.raises(KeyboardInterrupt) as error:
+            update_completion.run_completion(request)
+        assert error.value is interrupted
+        expected = {"launch": FileNotFoundError, "timeout": subprocess.TimeoutExpired,
+                    "nonzero": subprocess.CalledProcessError}[failure]
+        assert isinstance(error.value.__cause__, expected)
+        assert child is not None
+        assert child.poll() is not None, "retained completion child survived failed taskkill"
+        assert child.stdout.closed
+        assert waits and all(timeout is not None and timeout > 0 for timeout in waits)
+    finally:
+        # Only this disposable child is ours; no service or process scan is involved.
+        if child is not None:
+            child.kill()
+            child.wait(timeout=5)
 
 
 def test_forged_terminal_receipt_cannot_acknowledge_success(transition):

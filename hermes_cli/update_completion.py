@@ -63,21 +63,30 @@ def run_completion(request: dict) -> dict:
                 if not chunk:
                     break
             code = proc.wait()
-        except BaseException:
+        except BaseException as exc:
             # This group/retained process handle belongs exclusively to us.
-            # Stop descendants BEFORE releasing the command's update lock.
-            if os.name == "posix":
+            # Try to stop descendants before releasing the command's update lock.
+            try:
                 try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            else:
-                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=10,
-                               creationflags=subprocess.CREATE_NO_WINDOW)
-                proc.kill()
-            proc.wait()
+                    if os.name == "posix":
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    else:
+                        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, timeout=10, check=True,
+                                       creationflags=subprocess.CREATE_NO_WINDOW)
+                finally:
+                    # A failed tree kill must not bypass retained-handle cleanup.
+                    try:
+                        proc.kill()
+                    finally:
+                        proc.wait(timeout=10)
+            except BaseException as cleanup_error:
+                exc.add_note("Completion cleanup failed; child processes may still be running.")
+                raise exc from cleanup_error
             raise
         finally:
             proc.stdout.close()
