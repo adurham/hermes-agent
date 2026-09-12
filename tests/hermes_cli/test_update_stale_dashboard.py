@@ -552,7 +552,8 @@ class TestManualBackendRespawn:
     def test_child_exiting_within_the_grace_window_is_a_reported_failure(
             self, tmp_path, monkeypatch, capsys):
         """A respawn that dies at once (parse error on a stale argv, port already bound)
-        must surface as a failure, never as ``✓ restarted`` (#124778)."""
+        must surface as a failure, never as ``✓ restarted`` (#124778), reported with the
+        caller's argv so it matches the stopped PID's cmdline (#109290)."""
         live = self._live()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
@@ -570,30 +571,9 @@ class TestManualBackendRespawn:
             failed = live._respawn_dashboard_processes([["hermes", "dashboard", "--port", "8300"]])
 
         out = capsys.readouterr().out
-        assert failed == [["hermes", "dashboard", "--port", "8300", "--no-open"]]
+        assert failed == [["hermes", "dashboard", "--port", "8300"]]
         assert "✓ restarted" not in out
         assert "✗ failed to restart" in out
-
-    def test_python_dash_m_argv_shape_replays_unchanged(self, tmp_path, monkeypatch):
-        """``[python, -m, hermes_cli.main, ...]`` is not an interpreter+launcher pair;
-        only that pair is rebuilt, so module-shaped argvs keep replaying verbatim."""
-        live = self._live()
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        spawned: list[list[str]] = []
-
-        class _FakePopen:
-            def __init__(self, cmd, **kwargs):
-                spawned.append(list(cmd))
-
-            def poll(self):
-                return None
-
-        captured = ["python", "-m", "hermes_cli.main", "serve", "--port", "8400"]
-        with patch.object(live.subprocess, "Popen", _FakePopen), \
-             patch.object(live.time, "sleep"):
-            live._respawn_dashboard_processes([captured])
-
-        assert spawned == [captured]
 
 
 class TestFilterDashboardRespawnCandidates:

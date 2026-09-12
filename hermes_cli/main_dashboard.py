@@ -412,43 +412,46 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     """
     from hermes_constants import get_hermes_home
     respawned: list[list[str]] = []
-    spawned: list[tuple[list[str], "subprocess.Popen"]] = []
-    failed: list[tuple[list[str], str]] = []
+    spawned: list[tuple[list[str], list[str], "subprocess.Popen"]] = []
+    failed: list[tuple[list[str], list[str], str]] = []
     log_path = get_hermes_home() / "logs" / "dashboard-restart.log"
     with contextlib.suppress(OSError):
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for command in commands:
+    for original in commands:
+        command = _respawnable_command_for_current_install(original)
+        # Keep restarted dashboards headless; reopening a browser after a
+        # background update is noisy and fails in SSH/headless sessions.
+        if "dashboard" in command and "--no-open" not in command:
+            command = [*command, "--no-open"]
         try:
-            command = _respawnable_command_for_current_install(command)
-            # Keep restarted dashboards headless; reopening a browser after a
-            # background update is noisy and fails in SSH/headless sessions.
-            if "dashboard" in command and "--no-open" not in command:
-                command = [*command, "--no-open"]
             with open(log_path, "ab") as log_f:
                 proc = subprocess.Popen(
                     command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
                     start_new_session=True, close_fds=True)
-            spawned.append((command, proc))
+            spawned.append((original, command, proc))
         except (OSError, ValueError) as exc:
-            failed.append((command, str(exc)))
+            failed.append((original, command, str(exc)))
 
     # A respawned backend is a resident server: one that exits within the grace
     # window died at startup (SyntaxError on a stale argv, port already bound,
     # ...) and must surface as a failure, not as ``✓ restarted`` (#124778).
-    time.sleep(_RESPAWN_LIVENESS_GRACE_SECONDS)
-    for command, proc in spawned:
+    if spawned:
+        time.sleep(_RESPAWN_LIVENESS_GRACE_SECONDS)
+    for original, command, proc in spawned:
         if proc.poll() is None:
             respawned.append(command)
         else:
-            failed.append((command, f"child exited during the first "
-                                    f"{_RESPAWN_LIVENESS_GRACE_SECONDS:.0f}s (code {proc.returncode})"))
+            failed.append((original, command, f"child exited during the first "
+                                              f"{_RESPAWN_LIVENESS_GRACE_SECONDS:.0f}s (code {proc.returncode})"))
 
     for command in respawned:
         print(f"    ✓ restarted: {shlex.join(command)}")
-    for command, err_msg in failed:
+    for _, command, err_msg in failed:
         print(f"    ✗ failed to restart ({shlex.join(command)}): {err_msg}")
-    return [command for command, _ in failed]
+    # The caller's argv, not the spawned one: callers match it against the stopped PID's
+    # captured cmdline to book the runtime as not brought back (#109290).
+    return [original for original, _, _ in failed]
 
 
 class _UpdateOutputStream:
