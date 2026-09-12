@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
+from functools import partial
 import threading
 import zipfile
 from pathlib import Path
@@ -13,7 +15,7 @@ import pytest
 import pm
 from pm import paths, registry
 from pm.downloader import DownloadPaused
-from pm.ensure import ensure
+from pm.ensure import ensure, stage_only
 from pm.lock import Facts, Lockfile
 from pm.package import Package
 from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
@@ -37,7 +39,14 @@ def isolate_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
 
-def test_install_pause_preserves_archives_and_resumes_the_same_pin(tmp_path, monkeypatch, dl_server):
+@pytest.fixture(params=["install", "stage"])
+def realize(request):
+    if request.param == "install":
+        return partial(ensure, explicit=True)
+    return partial(stage_only, target="linux-arm64-bionic")
+
+
+def test_install_pause_preserves_archives_and_resumes_the_same_pin(tmp_path, monkeypatch, dl_server, realize):
     root = tmp_path / "store"
     lock_path = tmp_path / "lock.json"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -52,7 +61,7 @@ def test_install_pause_preserves_archives_and_resumes_the_same_pin(tmp_path, mon
         RangeHandler.payloads[path] = payload
         pins.append({"url": url(dl_server, path), "sha256": hashlib.sha256(payload).hexdigest()})
     lock = Lockfile(lock_path)
-    lock.set_pin(ComponentPackage.name, "1", {pm.current_target(): pins})
+    lock.set_pin(ComponentPackage.name, "1", {"any": pins})
     lock.save()
     pause = threading.Event()
 
@@ -61,7 +70,7 @@ def test_install_pause_preserves_archives_and_resumes_the_same_pin(tmp_path, mon
             pause.set()
 
     with pytest.raises(DownloadPaused):
-        ensure(ComponentPackage.name, explicit=True, progress=progress, pause_event=pause)
+        realize(ComponentPackage.name, progress=progress, pause_event=pause)
     assert Facts(paths.facts_path()).get(ComponentPackage.name) is None
     assert list(paths.partials_root().glob("*.ranges"))
     first_requests = [request for request in RangeHandler.ranges_seen if request[0] == "/component-0.zip"]
@@ -69,17 +78,22 @@ def test_install_pause_preserves_archives_and_resumes_the_same_pin(tmp_path, mon
     assert (root / f"fetch-{pins[0]['sha256']}").is_dir()
 
     pause.clear()
-    ensure(ComponentPackage.name, explicit=True, pause_event=pause)
+    result = realize(ComponentPackage.name, pause_event=pause)
     fact = Facts(paths.facts_path()).get(ComponentPackage.name)
-    assert fact["artifacts"] == [pin["sha256"] for pin in pins]
+    if fact is None:
+        entry = result
+        assert json.loads((entry / ".pm-stage-pin.json").read_text())["sha256"] == [pin["sha256"] for pin in pins]
+    else:
+        entry = root / fact["entry"]
+        assert fact["artifacts"] == [pin["sha256"] for pin in pins]
     for name, body in contents.items():
-        assert (root / fact["entry"] / name).read_bytes() == body
+        assert (entry / name).read_bytes() == body
     assert [request for request in RangeHandler.ranges_seen if request[0] == "/component-0.zip"] == first_requests
     assert not list(paths.partials_root().glob("*.part"))
     assert not list(root.glob("fetch-*"))
 
 
-def test_install_progress_covers_all_archives_including_cache(tmp_path, monkeypatch, dl_server):
+def test_install_progress_covers_all_archives_including_cache(tmp_path, monkeypatch, dl_server, realize):
     root = tmp_path / "store"
     lock_path = tmp_path / "lock.json"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -93,14 +107,14 @@ def test_install_progress_covers_all_archives_including_cache(tmp_path, monkeypa
         RangeHandler.payloads[path] = payload
         pins.append({"url": url(dl_server, path), "sha256": hashlib.sha256(payload).hexdigest()})
     lock = Lockfile(lock_path)
-    lock.set_pin(ComponentPackage.name, "1", {pm.current_target(): pins})
+    lock.set_pin(ComponentPackage.name, "1", {"any": pins})
     lock.save()
     store = pm.Store(root)
     with store.scratch() as scratch:
         store.fetch(pins[0]["url"], pins[0]["sha256"], scratch)
     ticks = []
     stages = []
-    ensure(ComponentPackage.name, explicit=True,
+    realize(ComponentPackage.name,
               progress=lambda *args: stages.append(args),
               download_progress=lambda done, total, ranges: ticks.append((done, total, ranges)))
     expected = sum(map(len, payloads))

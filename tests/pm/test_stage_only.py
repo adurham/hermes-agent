@@ -172,6 +172,38 @@ def test_stage_only_repin_same_version_rebuilds(tmp_path, sandbox, monkeypatch):
     assert (stable / "bin" / "tool").read_bytes() == payload_b
 
 
+@pytest.mark.platforms("windows")
+def test_stage_repin_refuses_a_native_directory_hold_then_recovers(sandbox, monkeypatch):
+    import ctypes
+    from ctypes import wintypes
+
+    original, replacement = b"original", b"replacement"
+    _arm_lock(monkeypatch, [{"url": "https://example.test/tool", "sha256": _sha(original)}])
+    _seed_fetch_cache(sandbox, original)
+    entry = ensure_mod.stage_only("stage-test", TARGET)
+    marker = (entry / ".pm-stage-pin.json").read_bytes()
+    _arm_lock(monkeypatch, [{"url": "https://example.test/tool", "sha256": _sha(replacement)}])
+    _seed_fetch_cache(sandbox, replacement)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    # FILE_FLAG_BACKUP_SEMANTICS opens a directory; omit FILE_SHARE_DELETE.
+    handle = kernel.CreateFileW(str(entry), 0, 3, None, 3, 0x02000000, None)
+    assert handle != wintypes.HANDLE(-1).value, ctypes.get_last_error()
+    try:
+        with pytest.raises(InstallError):
+            ensure_mod.stage_only("stage-test", TARGET)
+        assert (entry / "bin/tool").read_bytes() == original
+        assert (entry / ".pm-stage-pin.json").read_bytes() == marker
+    finally:
+        kernel.CloseHandle(handle)
+    ensure_mod.stage_only("stage-test", TARGET)
+    assert (entry / "bin/tool").read_bytes() == replacement
+
+
 @pytest.mark.parametrize("error_name", ["HashError", "DownloadPaused"])
 def test_permanent_or_paused_download_is_not_retried(error_name):
     from pm import downloader
@@ -200,7 +232,7 @@ def test_repin_failure_preserves_previous_staged_entry(sandbox, monkeypatch, fai
         raise InstallError("stage-test", "injected staging failure")
 
     if failure == "fetch":
-        monkeypatch.setattr(sandbox, "fetch", fail)
+        monkeypatch.setattr(sandbox, "fetch_many", fail)
     else:
         monkeypatch.setattr(sandbox, "publish", fail)
     with pytest.raises(InstallError, match="injected staging failure"):

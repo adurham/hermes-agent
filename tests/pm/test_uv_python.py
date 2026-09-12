@@ -199,8 +199,7 @@ def test_bundled_uv_uses_a_verified_writable_python_without_changing_runtime(ins
     assert tree_digest(entry) == shipped_digest
 
 
-@pytest.mark.platforms("windows")
-@pytest.mark.parametrize("damage", ["source", "copy", "publication"])
+@pytest.mark.parametrize("damage", [None, "source", "copy", "publication"])
 def test_copy_failure_preserves_previous_python(installed_uv, monkeypatch, damage):
     import pm.registry as registry
     from pm.store import Store, tree_digest
@@ -216,12 +215,15 @@ def test_copy_failure_preserves_previous_python(installed_uv, monkeypatch, damag
     entry_name = python.store_entry("test", target)
     source = shipped / entry_name
     source.mkdir()
-    (source / "python.exe").write_bytes(b"new interpreter")
+    binary_rel = python.binary(source, target).relative_to(source)
+    (source / binary_rel).parent.mkdir(parents=True, exist_ok=True)
+    (source / binary_rel).write_bytes(b"new interpreter")
     facts.record("python", "test", entry_name, {}, shipped,
                  target=target, artifacts=[digest], digest=tree_digest(source))
     previous = writable / entry_name
     previous.mkdir()
-    (previous / "python.exe").write_bytes(b"previous interpreter")
+    (previous / binary_rel).parent.mkdir(parents=True, exist_ok=True)
+    (previous / binary_rel).write_bytes(b"previous interpreter")
     previous_facts = Facts(writable / "facts.json")
     previous_facts.record("python", "previous", entry_name, {}, writable,
                           target=target, artifacts=[digest], digest=tree_digest(previous))
@@ -229,19 +231,28 @@ def test_copy_failure_preserves_previous_python(installed_uv, monkeypatch, damag
     copytree = shutil.copytree
 
     if damage == "source":
-        (source / "python.exe").write_bytes(b"damaged source")
+        (source / binary_rel).write_bytes(b"damaged source")
     elif damage == "copy":
-        def damaged_copy(src, dest, **kwargs):
-            copytree(src, dest, **kwargs)
-            (dest / "python.exe").write_bytes(b"damaged copy")
+        def damaged_copy(src, dest, *args, **kwargs):
+            result = copytree(src, dest, *args, **kwargs)
+            if Path(src) == source:
+                (dest / binary_rel).write_bytes(b"damaged copy")
+            return result
         monkeypatch.setattr(shutil, "copytree", damaged_copy)
-    else:
+    elif damage == "publication":
         def failed_publication(*args, **kwargs):
             raise OSError("publication refused")
         monkeypatch.setattr(Store, "publish", failed_publication)
 
-    with pytest.raises(InstallError, match="verification|copied bytes|publication refused"):
+    if damage is None:
+        monkeypatch.setattr(Store, "fetch_many", lambda *args, **kwargs: pytest.fail("copy downloaded bytes"))
         ensure._install(python, ensure._lockfile(), previous_facts, Store(writable), target,
                         copy_from=(facts, Store(shipped)))
-    assert (previous / "python.exe").read_bytes() == b"previous interpreter"
-    assert previous_facts.path.read_bytes() == before
+        assert tree_digest(previous) == tree_digest(source)
+        assert previous_facts.get("python")["digest"] == facts.get("python")["digest"]
+    else:
+        with pytest.raises(InstallError, match="verification|copied bytes|publication refused"):
+            ensure._install(python, ensure._lockfile(), previous_facts, Store(writable), target,
+                            copy_from=(facts, Store(shipped)))
+        assert (previous / binary_rel).read_bytes() == b"previous interpreter"
+        assert previous_facts.path.read_bytes() == before
