@@ -29,10 +29,8 @@ export interface PoolStopEntry<Process = unknown> {
 export interface PoolStopperDeps<Process> {
   /** The live backend pool. Entries are evicted synchronously on stop. */
   pool: Map<string, PoolStopEntry<Process>>
-  /** Signal the child (tree/group kill per platform). Synchronous. */
-  stopChild: (child: Process | undefined) => void
-  /** Bounded wait: resolves when the child exits, escalating to SIGKILL. */
-  waitForExit: (child: Process | undefined) => Promise<void>
+  /** The physical lifecycle owns signalling, escalation and confirmed exit. */
+  stopChild: (child: Process | undefined) => Promise<void>
 }
 
 export interface PoolStopper {
@@ -73,8 +71,7 @@ export function createPoolStopper<Process>(deps: PoolStopperDeps<Process>): Pool
     deps.pool.delete(key)
 
     const stopping = (async (): Promise<void> => {
-      deps.stopChild(entry.process)
-      await deps.waitForExit(entry.process)
+      await deps.stopChild(entry.process)
     })().then(
       (): void => {
         stops.delete(key)

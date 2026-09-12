@@ -25,6 +25,7 @@ from utils import (
 )
 
 from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
@@ -137,10 +138,6 @@ class BackupInProgressError(RuntimeError):
 
 class _SQLiteSnapshotError(RuntimeError):
     pass
-
-
-class _SQLiteBackupTimeout(RuntimeError):
-    """Raised when a SQLite snapshot remains busy past its deadline."""
 
 
 @contextmanager
@@ -286,12 +283,6 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
 
 # --- SQLite safe copy ---
 
-def _close_quietly(conn: Optional[sqlite3.Connection]) -> None:
-    if conn is not None:
-        with suppress(Exception):
-            conn.close()
-
-
 def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
     conn = None
@@ -301,43 +292,6 @@ def _query_ro_sqlite(path: Path, fn):
     except Exception as exc:
         return None, exc
     finally:
-        _close_quietly(conn)
-
-
-def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> bool:
-    """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
-
-    Fails closed when no consistent snapshot can be made: copying only the main file loses WAL data.
-    """
-    conn = backup_conn = None
-    try:
-        # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
-        # full locked-source deadline instead of adding the default timeout before each callback.
-        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=0.0)
-        backup_conn = sqlite3.connect(str(dst))
-        busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
-
-        def _check_backup_progress(status: int, _remaining: int, _total: int) -> None:
-            nonlocal busy_deadline
-            now = time.monotonic()
-            if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
-                if now >= busy_deadline:
-                    raise _SQLiteBackupTimeout(f"database remained locked for {timeout_seconds:g} seconds")
-            else:
-                busy_deadline = now + max(0.0, timeout_seconds)
-
-        conn.backup(backup_conn, pages=256, progress=_check_backup_progress, sleep=0.1)
-        return True
-    except Exception as exc:
-        logger.warning("SQLite safe copy failed for %s: %s", src, exc)
-        # Windows won't remove the partial destination while SQLite still has it open.
-        _close_quietly(backup_conn)
-        backup_conn = None
-        with suppress(OSError):
-            dst.unlink(missing_ok=True)
-        return False
-    finally:
-        _close_quietly(backup_conn)
         _close_quietly(conn)
 
 
@@ -694,28 +648,8 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     ) as zf:
         for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
             try:
-                # Safe copy for SQLite databases (handles WAL mode)
-                if abs_path.suffix == ".db":
-                    # Stage the snapshot alongside the output zip so that the
-                    # temp file lives on the same filesystem.  The system
-                    # default (/tmp) may be a small tmpfs that cannot hold
-                    # large databases, causing silent backup incompleteness.
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".db", delete=False, dir=str(out_path.parent)
-                    ) as tmp:
-                        tmp_db = Path(tmp.name)
-                    if _safe_copy_db(abs_path, tmp_db):
-                        zf.write(tmp_db, arcname=str(rel_path))
-                        total_bytes += tmp_db.stat().st_size
-                        tmp_db.unlink(missing_ok=True)
-                    else:
-                        tmp_db.unlink(missing_ok=True)
-                        errors.append(f"  {rel_path}: SQLite safe copy failed")
-                        continue
-                else:
-                    zf.write(abs_path, arcname=str(rel_path))
-                    total_bytes += abs_path.stat().st_size
-            except (PermissionError, OSError, ValueError) as exc:
+                total_bytes += _write_backup_file(zf, abs_path, str(rel_path), out_path.parent)
+            except (OSError, ValueError, _SQLiteSnapshotError) as exc:
                 errors.append(f"  {rel_path}: {exc}")
                 continue
 
@@ -1113,50 +1047,6 @@ def run_import(args) -> None:
 # Quick state snapshots (used by /snapshot slash command and hermes backup --quick)
 # ---------------------------------------------------------------------------
 
-# Critical state files to include in quick snapshots (relative to HERMES_HOME).
-# Everything else is either regeneratable (logs, cache) or managed separately
-# (skills, repo, sessions/).
-#
-# Entries may be individual files OR directories.  Directories are captured
-# recursively; missing entries are silently skipped.  Pairing data lives in
-# platform-specific JSON blobs outside state.db, so it's listed here explicitly
-# — `hermes update` snapshots this set before pulling so approved-user lists
-# are recoverable if anything goes wrong (issue #15733).
-_QUICK_STATE_FILES = (
-    "state.db",
-    "config.yaml",
-    ".env",
-    "auth.json",
-    "cron/jobs.json",
-    "cron/executions.db",
-    "gateway_state.json",
-    "channel_directory.json",
-    "channel_aliases.json",
-    "processes.json",
-    "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
-    # Per-profile user-created stores that live outside the git checkout and
-    # are therefore destroyed if the update flow removes/replaces the file and
-    # the post-update schema-init re-creates an empty one (issue #52889). All
-    # are at $HERMES_HOME/<name> for the default/root profile; on non-root
-    # profiles the real path is outside HERMES_HOME and the entry is silently
-    # skipped (best-effort, same as the pairing stores). SQLite DBs are copied
-    # WAL-safely via _safe_copy_db.
-    "projects.db",                      # per-profile project store
-    "response_store.db",                # gateway conversation history / tool payloads
-    "memory_store.db",                  # holographic memory facts/entities
-    "verification_evidence.db",         # agent verification audit trail
-    "kanban.db",                        # default board (back-compat <root>/kanban.db)
-    "kanban/boards",                    # non-default boards: each <slug>/kanban.db + board metadata (workspaces/ + attachments/ are skipped as regenerable)
-    # Pairing stores (generic + per-platform JSONs outside state.db)
-    "pairing",                          # legacy location (gateway/pairing.py)
-    "platforms/pairing",                # new location (gateway/pairing.py)
-    "feishu_comment_pairing.json",      # Feishu comment subscription pairings
-)
-
-# ``_QUICK_SNAPSHOTS_DIR`` lives with the exclusion rules at the top of the module.
-_QUICK_DEFAULT_KEEP = 20
-
-
 def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
@@ -1505,11 +1395,6 @@ def restore_quick_snapshot(
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
     return restored > 0
-
-
-# Relative path of the cron job database inside HERMES_HOME. Kept in sync with
-# the entry in ``_QUICK_STATE_FILES`` and with ``cron/jobs.py``'s ``JOBS_FILE``.
-_CRON_JOBS_REL = "cron/jobs.json"
 
 
 def _count_cron_jobs(path: Path) -> Optional[int]:
@@ -1934,6 +1819,22 @@ def run_quick_backup(args) -> None:
 # Shared full-zip backup helper
 # ---------------------------------------------------------------------------
 
+def _write_backup_file(zf: zipfile.ZipFile, source: Path, arcname: str, staging_dir: Path) -> int:
+    """Serialize one file, staging SQLite beside the ZIP rather than in small tmpfs."""
+    if source.suffix != ".db":
+        zf.write(source, arcname=arcname)
+        return source.stat().st_size
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(staging_dir)) as tmp:
+        snapshot = Path(tmp.name)
+    try:
+        if not _safe_copy_db(source, snapshot):
+            raise _SQLiteSnapshotError("SQLite safe copy failed")
+        zf.write(snapshot, arcname=arcname)
+        return snapshot.stat().st_size
+    finally:
+        snapshot.unlink(missing_ok=True)
+
+
 def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     """Single-flight wrapper for automatic full zip backups."""
     try:
@@ -1975,27 +1876,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         ) as zf:
             for index, (abs_path, rel_path) in enumerate(files_to_add, 1):
                 try:
-                    if abs_path.suffix == ".db":
-                        # Stage the snapshot alongside the output zip so that the
-                        # temp file lives on the same filesystem.  The system
-                        # default (/tmp) may be a small tmpfs that cannot hold
-                        # large databases, causing silent backup incompleteness.
-                        with tempfile.NamedTemporaryFile(
-                            suffix=".db", delete=False, dir=str(out_path.parent)
-                        ) as tmp:
-                            tmp_db = Path(tmp.name)
-                        try:
-                            if not _safe_copy_db(abs_path, tmp_db):
-                                logger.warning(
-                                    "Full-zip backup aborted: SQLite snapshot failed for %s",
-                                    rel_path,
-                                )
-                                raise _SQLiteSnapshotError(str(rel_path))
-                            zf.write(tmp_db, arcname=str(rel_path))
-                        finally:
-                            tmp_db.unlink(missing_ok=True)
-                    else:
-                        zf.write(abs_path, arcname=str(rel_path))
+                    _write_backup_file(zf, abs_path, str(rel_path), out_path.parent)
                 except (PermissionError, OSError, ValueError) as exc:
                     logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
                     continue

@@ -19,6 +19,7 @@ import {
   win32AppInstallerFeedPath
 } from '../app-updater'
 
+import { applyPackagedHandoff } from './packaged-handoff'
 import type { RelaunchRegistration } from './relaunch'
 
 import type { UpdaterApplyResultWire, UpdaterStatusWire } from './index'
@@ -106,57 +107,35 @@ export class AppInstallerStrategy {
       percent: 100
     })
 
-    let registration: RelaunchRegistration | undefined
-    let teardownStarted = false
-
-    try {
-      await triggerAppInstallerUpdate(
-        feedBaseUrl,
-        this.deps.channel,
-        this.deps.light,
-        this.deps.installer,
-        async () => {
-          registration = await this.deps.registerPendingRelaunch(this.deps.appVersion)
-
-          if (!registration.automatic) {
+    return applyPackagedHandoff(
+      {
+        teardown: this.deps.teardownBundledBackend,
+        restore: this.deps.restoreBundledBackend,
+        emitProgress: this.deps.emitUpdateProgress,
+        relaunch: {
+          register: (): Promise<RelaunchRegistration> => this.deps.registerPendingRelaunch(this.deps.appVersion),
+          onManual: (): void =>
             this.deps.emitUpdateProgress({
-              stage: 'restart', percent: 100,
+              stage: 'restart',
+              percent: 100,
               message: 'Automatic relaunch could not be registered. Reopen Hermes after App Installer finishes.'
             })
-          }
-
-          teardownStarted = true
-          await this.deps.teardownBundledBackend()
-        },
-        sourceUri
-      )
-
-      this.deps.quit()
-    } catch (error) {
-      const errors: unknown[] = [error]
-
-      try {
-        await registration?.cancel()
-      } catch (cancelError) {
-        errors.push(cancelError)
-      }
-
-      if (teardownStarted) {
-        try {
-          await this.deps.restoreBundledBackend()
-        } catch (restoreError) {
-          errors.push(restoreError)
         }
+      },
+      async (stop: () => Promise<void>): Promise<UpdaterApplyResultWire> => {
+        await triggerAppInstallerUpdate(
+          feedBaseUrl,
+          this.deps.channel,
+          this.deps.light,
+          this.deps.installer,
+          stop,
+          sourceUri
+        )
+        this.deps.quit()
+
+        return { ok: true, manual: false, bundled: true, handedOff: true, mechanism: this.mechanism }
       }
-
-      const message = errors.map(item => item instanceof Error ? item.message : String(item)).join('; ')
-      this.deps.emitUpdateProgress({ stage: 'error', message, percent: null })
-
-      if (errors.length > 1) { throw new AggregateError(errors, message, { cause: error }) }
-      throw error
-    }
-
-    return { ok: true, manual: false, bundled: true, handedOff: true, mechanism: this.mechanism }
+    )
   }
 }
 

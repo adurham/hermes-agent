@@ -13,25 +13,31 @@ interface Child {
   killed: boolean
 }
 
-function harness() {
-  const pool = new Map<string, PoolStopEntry>()
+function harness(): {
+  addChild: (key: string) => Child
+  events: string[]
+  exitResolvers: Map<Child, () => void>
+  pool: Map<string, PoolStopEntry<Child>>
+  stopper: ReturnType<typeof createPoolStopper<Child>>
+} {
+  const pool = new Map<string, PoolStopEntry<Child>>()
   const events: string[] = []
   const exitResolvers = new Map<Child, () => void>()
 
   const stopper = createPoolStopper({
     pool,
-    stopChild: child => {
+    stopChild: (child: Child | undefined): Promise<void> => {
       ;(child as Child).killed = true
       events.push('stop')
-    },
-    waitForExit: child =>
-      new Promise<void>(resolve => {
-        exitResolvers.set(child as Child, () => {
+
+      return new Promise<void>((resolve: () => void): void => {
+        exitResolvers.set(child as Child, (): void => {
           ;(child as Child).exited = true
           events.push('exit')
           resolve()
         })
       })
+    }
   })
 
   function addChild(key: string): Child {
@@ -181,9 +187,13 @@ test('failed stops block respawn and retain the child for a later stop retry', a
 
   const stopper = createPoolStopper({
     pool,
-    stopChild: current => { attempts.push(current!) },
-    waitForExit: async current => {
-      if (refuses) { throw failure }
+    stopChild: async (current: Child | undefined): Promise<void> => {
+      attempts.push(current!)
+
+      if (refuses) {
+        throw failure
+      }
+
       current!.exited = true
     }
   })
