@@ -1,27 +1,28 @@
-"""Tests for interrupted-install self-heal (the ``.update-incomplete`` marker).
+"""An interrupted old updater must retry with a complete source handoff.
 
-Covers the breadcrumb lifecycle. The launch-time recovery itself is now owned
-by PM: ``hermes_cli/_early_recovery.recover_if_needed`` asks ``pm.recovery``
-to restore dependencies and clears markers only on success — see
-tests/hermes_cli/test_early_recovery.py and tests/pm/test_recovery.py.
+The historical .update-incomplete writer is a relaunch shim, not a state
+protocol. PM recovery tests own dependency repair; this boundary must refuse
+completion when an old in-flight caller cannot provide the new request.
 """
 
-from __future__ import annotations
+import pytest
 
-import hermes_cli.main as m
+from hermes_cli import main as cli_main, update_cmd
 
 
-def test_marker_round_trip(tmp_path, monkeypatch):
-    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
-    marker = m._update_marker_path()
-    assert marker == tmp_path / ".update-incomplete"
-    assert not marker.exists()
+def test_incomplete_handoff_requires_explicit_update_retry(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        update_cmd, "run_completion",
+        lambda request: pytest.fail("cannot launch completion without captured update state"),
+    )
 
-    m._write_update_incomplete_marker()
-    assert marker.exists()
-    body = marker.read_text()
-    assert "started=" in body
-    assert "pid=" in body
+    with pytest.raises(SystemExit) as error:
+        update_cmd._complete_source_update(None)
 
-    m._clear_update_incomplete_marker()
-    assert not marker.exists()
+    assert error.value.code == 1
+    output = capsys.readouterr()
+    assert "run `hermes update` again" in output.err
+    assert "Update complete" not in output.out
+    assert not (tmp_path / ".update-incomplete").exists()
+    assert not (tmp_path / ".lazy-refresh-incomplete").exists()
