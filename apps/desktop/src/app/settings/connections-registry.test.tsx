@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-roster'
 import { $connection } from '@/store/session'
+import { deferred } from '@/test/deferred'
 
 import {
   ConnectionsRegistrySection,
@@ -116,13 +117,8 @@ describe('ConnectionsRegistrySection', () => {
     const applyConnectionConfig = vi.fn()
     const saveConnectionConfig = vi.fn()
     const probeConnectionConfig = vi.fn().mockResolvedValue({ reachable: true, authMode: 'oauth', providers: [] })
-    let finishLogin!: (value: { connected: boolean }) => void
-
-    const oauthLoginConnectionConfig = vi.fn().mockReturnValue(
-      new Promise<{ connected: boolean }>(resolve => {
-        finishLogin = resolve
-      })
-    )
+    const pendingLogin = deferred<{ connected: boolean }>()
+    const oauthLoginConnectionConfig = vi.fn().mockReturnValue(pendingLogin.promise)
 
     Object.assign(window.hermesDesktop, {
       applyConnectionConfig,
@@ -139,7 +135,7 @@ describe('ConnectionsRegistrySection', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Sign in with/ }))
     await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://a.example'))
     fireEvent.change(url, { target: { value: 'https://b.example' } })
-    await act(async () => finishLogin({ connected: true }))
+    await act(async (): Promise<void> => pendingLogin.resolve({ connected: true }))
     expect(screen.queryByText('Signed in')).toBeNull()
     fireEvent.click(screen.getByText('Save connection'))
     await waitFor(() =>

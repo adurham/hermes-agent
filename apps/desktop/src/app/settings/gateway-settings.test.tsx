@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { deferred } from '@/test/deferred'
+
 // Collect the component graph before the behavioral test deadline starts.
 import { GatewaySettings } from './gateway-settings'
 
@@ -60,20 +62,10 @@ describe('GatewaySettings', () => {
   it('releases a pending save after a late probe invalidates its response', async () => {
     const saved = { ...localConnection, mode: 'remote', remoteUrl: 'https://a.example', remoteTokenSet: true }
     getConnectionConfig.mockResolvedValue(saved)
-    let finishSave!: (value: typeof saved) => void
-    let finishProbe!: (value: { reachable: boolean; authMode: string; providers: never[] }) => void
-    saveConnectionConfig.mockReturnValueOnce(
-      new Promise<typeof saved>(resolve => {
-        finishSave = resolve
-      })
-    )
-
-    const probeConnectionConfig = vi.fn(
-      () =>
-        new Promise<{ reachable: boolean; authMode: string; providers: never[] }>(resolve => {
-          finishProbe = resolve
-        })
-    )
+    const pendingSave = deferred<typeof saved>()
+    const pendingProbe = deferred<{ reachable: boolean; authMode: string; providers: never[] }>()
+    saveConnectionConfig.mockReturnValueOnce(pendingSave.promise)
+    const probeConnectionConfig = vi.fn().mockReturnValue(pendingProbe.promise)
 
     Object.assign(window.hermesDesktop, { probeConnectionConfig })
     render(<GatewaySettings />)
@@ -87,8 +79,8 @@ describe('GatewaySettings', () => {
       remoteToken: undefined
     })
     expect(saveButton.disabled).toBe(true)
-    await act(async () => finishProbe({ reachable: true, authMode: 'oauth', providers: [] }))
-    await act(async () => finishSave(saved))
+    await act(async (): Promise<void> => pendingProbe.resolve({ reachable: true, authMode: 'oauth', providers: [] }))
+    await act(async (): Promise<void> => pendingSave.resolve(saved))
     expect(saveButton.disabled).toBe(false)
     expect(screen.getByRole('button', { name: /Sign in with/ })).toBeTruthy()
     expect(screen.queryByPlaceholderText('Existing token saved')).toBeNull()
@@ -96,12 +88,8 @@ describe('GatewaySettings', () => {
 
   it('pre-saves OAuth before login and applies the resolved auth mode without requiring a test', async () => {
     getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'remote', remoteUrl: 'https://login.example' })
-    let finishSave!: () => void
-    saveConnectionConfig.mockReturnValueOnce(
-      new Promise<void>(resolve => {
-        finishSave = resolve
-      })
-    )
+    const pendingSave = deferred<void>()
+    saveConnectionConfig.mockReturnValueOnce(pendingSave.promise)
     const oauthLoginConnectionConfig = vi.fn().mockResolvedValue({ connected: true })
     const applyConnectionConfig = vi.fn().mockResolvedValue(localConnection)
     const testConnectionConfig = vi.fn()
@@ -123,7 +111,7 @@ describe('GatewaySettings', () => {
       remoteUrl: 'https://login.example'
     })
     expect(oauthLoginConnectionConfig).not.toHaveBeenCalled()
-    await act(async () => finishSave())
+    await act(async (): Promise<void> => pendingSave.resolve())
     await screen.findByText('Signed in')
     expect(oauthLoginConnectionConfig).toHaveBeenCalledExactlyOnceWith('https://login.example')
     fireEvent.click(screen.getByRole('button', { name: 'Save and reconnect' }))
@@ -151,12 +139,8 @@ describe('GatewaySettings', () => {
 
     getConnectionConfig.mockResolvedValue(saved)
     saveConnectionConfig.mockResolvedValue(saved)
-    let finishSave!: (value: typeof saved) => void
-    saveConnectionConfig.mockReturnValueOnce(
-      new Promise<typeof saved>(resolve => {
-        finishSave = resolve
-      })
-    )
+    const pendingSave = deferred<typeof saved>()
+    saveConnectionConfig.mockReturnValueOnce(pendingSave.promise)
     Object.assign(window.hermesDesktop, {
       probeConnectionConfig: vi.fn().mockResolvedValue({ reachable: true, authMode: 'token', providers: [] })
     })
@@ -172,7 +156,7 @@ describe('GatewaySettings', () => {
       })
     )
     // Flush the save's reset and probe effects before acquiring the replacement field.
-    await act(async () => finishSave(saved))
+    await act(async (): Promise<void> => pendingSave.resolve(saved))
     const tokenInput = await screen.findByPlaceholderText('Existing token saved-preview')
     expect(tokenInput.isConnected, 'saved credential control must survive the refresh probe').toBe(true)
     fireEvent.change(tokenInput, { target: { value: 'replacement' } })
@@ -194,13 +178,8 @@ describe('GatewaySettings', () => {
   it('discards an old token test while saving the current credential-ready payload', async () => {
     getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'remote', remoteUrl: 'https://a.example' })
     const probeConnectionConfig = vi.fn().mockResolvedValue({ reachable: true, authMode: 'token', providers: [] })
-    let finishTest!: (value: { ok: boolean; baseUrl: string }) => void
-
-    const testConnectionConfig = vi.fn().mockReturnValue(
-      new Promise<{ ok: boolean; baseUrl: string }>(resolve => {
-        finishTest = resolve
-      })
-    )
+    const pendingTest = deferred<{ ok: boolean; baseUrl: string }>()
+    const testConnectionConfig = vi.fn().mockReturnValue(pendingTest.promise)
 
     Object.assign(window.hermesDesktop, { probeConnectionConfig, testConnectionConfig })
     render(<GatewaySettings />)
@@ -214,7 +193,7 @@ describe('GatewaySettings', () => {
       remoteToken: 'old-token'
     })
     fireEvent.change(token, { target: { value: 'new-token' } })
-    await act(async () => finishTest({ ok: true, baseUrl: 'https://a.example' }))
+    await act(async (): Promise<void> => pendingTest.resolve({ ok: true, baseUrl: 'https://a.example' }))
     expect(screen.queryByText('Connected to https://a.example')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Save for next restart' }))
     await waitFor(() =>

@@ -34,6 +34,7 @@ import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { deferred } from '@/test/deferred'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import {
@@ -42,7 +43,6 @@ import {
   localModelsOwner,
   refreshLocalModels,
   useLocalModelsOwner,
-  useLocalRuntimeJobs,
   watchLocalRuntimeJobs
 } from './local-runtime-jobs'
 
@@ -177,15 +177,6 @@ it('uses one status polling clock across staggered Settings, picker and menu mou
   )
   await tick(2_000)
 
-  const statusQuery = queryClient
-    .getQueryCache()
-    .find({ queryKey: localModelsKey({ connectionId: 'A', profile: 'work' }, 'status') })
-
-  expect(
-    statusQuery?.observers.filter(
-      (observer): boolean => Boolean(observer.options.refetchInterval) && observer.options.enabled !== false
-    )
-  ).toHaveLength(1)
   expect(api.mock.calls.filter(([request]): boolean => request.path.endsWith('/status'))).toHaveLength(2)
   settings.unmount()
   await tick(2_000)
@@ -204,19 +195,14 @@ it('keeps paused work alive after Settings unmount and isolates late results by 
   await tick(3_000)
   expect(queryClient.getQueryData(localModelsKey({ connectionId: 'A', profile: 'work' }, 'jobs'))).toEqual([running])
 
-  let release: (value: unknown) => void = (): void => {}
-
-  const pending: Promise<unknown> = new Promise((resolve): void => {
-    release = resolve
-  })
-
-  api.mockImplementationOnce((): Promise<unknown> => pending)
+  const pending = deferred<{ jobs: LocalRuntimeJob[] }>()
+  api.mockReturnValueOnce(pending.promise)
   watchLocalRuntimeJobs({ connectionId: 'A', profile: 'work' })
   setApiRequestConnection('B')
   jobs = [{ ...running, target: 'Download B' }]
   watchLocalRuntimeJobs({ connectionId: 'B', profile: 'work' })
   await tick()
-  release({ jobs: [{ ...running, status: 'done' }] })
+  pending.resolve({ jobs: [{ ...running, status: 'done' }] })
   await tick()
   expect(queryClient.getQueryData(localModelsKey({ connectionId: 'B', profile: 'work' }, 'jobs'))).toEqual(jobs)
   expect(notify).toHaveBeenCalledTimes(1)
@@ -233,13 +219,8 @@ it('keeps paused work alive after Settings unmount and isolates late results by 
 it.each(['connection', 'profile'] as const)(
   'does not paint a late Settings snapshot after a %s switch',
   async (change: 'connection' | 'profile'): Promise<void> => {
-    let release: (value: unknown) => void = (): void => {}
-
-    const pending: Promise<unknown> = new Promise((resolve): void => {
-      release = resolve
-    })
-
-    api.mockImplementationOnce((): Promise<unknown> => pending)
+    const pending = deferred<LocalModelsStatus>()
+    api.mockReturnValueOnce(pending.promise)
     const settings: RenderResult = mountSettings()
     await tick()
     await act(async (): Promise<void> => {
@@ -265,7 +246,7 @@ it.each(['connection', 'profile'] as const)(
     })
     await tick()
     expect(settings.container.textContent).toContain('installed')
-    release({ ...status, tag: 'OLD-OWNER' })
+    pending.resolve({ ...status, tag: 'OLD-OWNER' })
     await tick()
     expect(settings.container.textContent).not.toContain('OLD-OWNER')
 
@@ -312,27 +293,17 @@ it('discards late legacy completions and update notices without invalidating the
   watchLocalRuntimeJobs(owner)
   await tick()
 
-  let releaseJobs: (value: unknown) => void = (): void => {}
-
-  let releaseStatus: (value: unknown) => void = (): void => {}
-
-  const pendingJobs: Promise<unknown> = new Promise((resolve): void => {
-    releaseJobs = resolve
-  })
-
-  const pendingStatus: Promise<unknown> = new Promise((resolve): void => {
-    releaseStatus = resolve
-  })
-
-  api.mockImplementationOnce((): Promise<unknown> => pendingJobs)
+  const pendingJobs = deferred<{ jobs: LocalRuntimeJob[] }>()
+  const pendingStatus = deferred<LocalModelsStatus>()
+  api.mockReturnValueOnce(pendingJobs.promise)
   watchLocalRuntimeJobs(owner)
-  api.mockImplementationOnce((): Promise<unknown> => pendingStatus)
+  api.mockReturnValueOnce(pendingStatus.promise)
   const update: Promise<void> = checkLocalRuntimeUpdate(owner)
   $connection.set({ ...connection, baseUrl: 'http://B' })
   const key: readonly string[] = ['model-options', 'work', 'global']
   queryClient.setQueryData(key, { providers: [] })
-  releaseJobs({ jobs: [{ ...running, status: 'done' }] })
-  releaseStatus({ ...status, update_available: true })
+  pendingJobs.resolve({ jobs: [{ ...running, status: 'done' }] })
+  pendingStatus.resolve({ ...status, update_available: true })
   await update
   await tick()
   expect(queryClient.getQueryData<readonly LocalRuntimeJob[]>(localModelsKey(owner, 'jobs'))).toEqual([running])
@@ -341,32 +312,6 @@ it('discards late legacy completions and update notices without invalidating the
   refreshLocalModels(owner)
   expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false)
   expect(notify).not.toHaveBeenCalled()
-})
-
-it('reconnects mounted job subscribers if their query is removed', async (): Promise<void> => {
-  jobs = [running]
-  const owner = { connectionId: 'A', profile: 'work' }
-
-  const hook = renderHook(
-    (): string =>
-      useLocalRuntimeJobs(owner, (rows: readonly LocalRuntimeJob[]): string => rows[0]?.status ?? 'missing'),
-    {
-      wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    }
-  )
-
-  await tick(1)
-  expect(hook.result.current).toBe('running')
-  await act(async (): Promise<void> => {
-    queryClient.removeQueries({ queryKey: localModelsKey(owner, 'jobs'), exact: true })
-    await vi.advanceTimersByTimeAsync(1)
-  })
-  hook.rerender()
-  await tick(1)
-  expect(hook.result.current).toBe('running')
-  jobs = [{ ...running, status: 'paused' }]
-  await tick(700)
-  expect(hook.result.current).toBe('paused')
 })
 
 it('keeps menu focus and its scalar selection stable across byte updates and outages', async (): Promise<void> => {

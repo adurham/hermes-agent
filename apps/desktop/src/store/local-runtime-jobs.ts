@@ -246,16 +246,8 @@ export function watchLocalRuntimeJobs(
           return
         }
 
-        if (event.query.getObserversCount() > 1) {
-          // A mounted consumer still needs this owner. Rebind both the polling
-          // observer and its passive projections to the replacement query.
-          for (const subscriber of [...event.query.observers]) {
-            subscriber.setOptions(subscriber.options)
-          }
-        } else {
-          observer.destroy()
-          watchers.get(client)?.delete(id)
-        }
+        observer.destroy()
+        watchers.get(client)?.delete(id)
       }
     })
   }

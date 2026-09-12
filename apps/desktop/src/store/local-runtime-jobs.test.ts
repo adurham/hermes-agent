@@ -9,10 +9,14 @@ vi.mock('@/store/session', async (): Promise<object> => {
   return { $connection: atom(null), $defaultReasoningEffort: atom<string>('') }
 })
 
+import { QueryClient, type QueryKey, QueryObserver } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { queryClient } from '@/lib/query-client'
+import { deferred } from '@/test/deferred'
 import type { LocalRuntimeJob } from '@/types/hermes'
+
+import type { LocalModelsOwner } from './local-runtime-jobs'
 
 // The BACKEND is the authority: a staged registry the poll reads from, so
 // transitions arrive the way production sees them — via a poll response,
@@ -155,26 +159,54 @@ describe('local runtime jobs store — pause/settle contract', () => {
     ).toBe('running')
   })
 
-  it('coalesces refresh requests while one backend read is in flight', async () => {
-    let release: (value: { jobs: LocalRuntimeJob[] }) => void = () => {}
+  it('publishes a pinned job response into an injected QueryClient observer', async (): Promise<void> => {
+    const client: QueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const owner: LocalModelsOwner = { connectionId: 'A', profile: 'work' }
+    backend.jobs = [job({ done_bytes: 1, total_bytes: 2 })]
 
-    const pending = new Promise<{ jobs: LocalRuntimeJob[] }>(resolve => {
-      release = resolve
+    const observer: QueryObserver<readonly LocalRuntimeJob[]> = new QueryObserver<readonly LocalRuntimeJob[]>(client, {
+      queryKey: ['local-models', 'A', 'work', 'jobs'],
+      enabled: false
     })
 
-    vi.mocked(getLocalModelsJobs).mockReturnValueOnce(pending)
-    watchLocalRuntimeJobs()
-    watchLocalRuntimeJobs()
-    watchLocalRuntimeJobs()
-    expect(getLocalModelsJobs).toHaveBeenCalledTimes(1)
-    backend.jobs = [job({ done_bytes: 40 })]
-    release({ jobs: [] })
-    await vi.waitFor(() => expect(getLocalModelsJobs).toHaveBeenCalledTimes(2))
-    expect(
-      (queryClient.getQueryData<readonly LocalRuntimeJob[]>(localModelsKey(localModelsOwner(), 'jobs')) ?? [])[0]
-        ?.done_bytes
-    ).toBe(40)
+    const unsubscribe: () => void = observer.subscribe((): void => {})
+
+    try {
+      watchLocalRuntimeJobs(owner, client)
+      await vi.waitFor((): void => expect(observer.getCurrentResult().data).toEqual(backend.jobs))
+      expect(getLocalModelsJobs).toHaveBeenCalledWith(owner)
+      expect(queryClient.getQueryData(localModelsKey(owner, 'jobs'))).toBeUndefined()
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
   })
+
+  it.each(['cold', 'warm'] as const)(
+    'coalesces one trailing read with a %s production cache',
+    async (cache: 'cold' | 'warm'): Promise<void> => {
+      const owner: LocalModelsOwner = { connectionId: 'A', profile: 'work' }
+      const key: QueryKey = localModelsKey(owner, 'jobs')
+
+      if (cache === 'warm') {
+        watchLocalRuntimeJobs(owner)
+        await vi.waitFor((): void => expect(queryClient.getQueryData(key)).toEqual([]))
+      }
+
+      vi.mocked(getLocalModelsJobs).mockClear()
+      const pending = deferred<{ jobs: LocalRuntimeJob[] }>()
+      vi.mocked(getLocalModelsJobs).mockReturnValueOnce(pending.promise)
+      watchLocalRuntimeJobs(owner)
+      watchLocalRuntimeJobs(owner)
+      watchLocalRuntimeJobs(owner)
+      await Promise.resolve()
+      expect(getLocalModelsJobs).toHaveBeenCalledTimes(1)
+      backend.jobs = [job({ done_bytes: 40 })]
+      pending.resolve({ jobs: [] })
+      await vi.waitFor((): void => expect(getLocalModelsJobs).toHaveBeenCalledTimes(2))
+      expect(queryClient.getQueryData<readonly LocalRuntimeJob[]>(key)?.[0]?.done_bytes).toBe(40)
+    }
+  )
 
   it('preserves the query data reference when a poll returns identical payload', async () => {
     backend.jobs = [job({ done_bytes: 40 })]
