@@ -79,7 +79,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         artifact = tmp_path / 'apps/desktop/release/HermesBundled-0.33.0-win-x64.msix'
         artifact.parent.mkdir(parents=True)
         artifact.write_bytes(b'inert downloadable fixture')
-        staged = shell_step(tmp_path, r2_server, 'build-win32', 'Stage Windows packages to R2', env)
+        staged = shell_step(tmp_path, r2_server, 'build-win32-commit', 'Stage Windows packages to R2', env)
         assert staged.returncode == 0, staged.stdout + staged.stderr
     result = shell_step(tmp_path, r2_server, 'commit-builds-summary',
                         'Render the full expected-binary matrix', env)
@@ -109,7 +109,9 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
             assert 'Disabled' in line and '](' not in line
     assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
     for name in ('build-win32', 'build-darwin'):
-        assert jobs[name]['strategy']['fail-fast'] is False
+        execution = f'{name}-commit'
+        assert execution in jobs[name]['needs']
+        assert jobs[execution]['strategy']['fail-fast'] is False
     step = next(step for step in jobs['commit-builds-summary']['steps'] if 'run' in step)
     assert step['env']['RUN_URL'] == '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
     assert step['env']['HERMES_BUNDLE_ENV_JSON'] == '${{ inputs.bundle_env }}'
@@ -126,14 +128,14 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     release = tmp_path / 'apps/desktop/release'
     release.mkdir(parents=True)
     producers = [
-        ('build-win32', 'Stage Windows packages to R2', 'win32-x64', [
+        ('build-win32-commit', 'Stage Windows packages to R2', 'win32-x64', [
             'HermesBundled-0.33.0-win-x64.msix']),
-        ('build-win32', 'Stage Windows packages to R2', 'win32-arm64', [
+        ('build-win32-commit', 'Stage Windows packages to R2', 'win32-arm64', [
             'HermesBundled-0.33.0-win-arm64.msix']),
-        ('build-darwin', 'Stage macOS packages and feed inputs to R2', 'darwin-arm64', [
+        ('build-darwin-commit', 'Stage macOS packages and feed inputs to R2', 'darwin-arm64', [
             'HermesBundled-0.33.0-mac-arm64.dmg', 'HermesBundled-0.33.0-mac-arm64.zip',
             'HermesBundled-0.33.0-mac-arm64.zip.blockmap']),
-        ('build-darwin', 'Stage macOS packages and feed inputs to R2', 'darwin-x64', [
+        ('build-darwin-commit', 'Stage macOS packages and feed inputs to R2', 'darwin-x64', [
             'HermesBundled-0.33.0-mac-x64.dmg', 'HermesBundled-0.33.0-mac-x64.zip',
             'HermesBundled-0.33.0-mac-x64.zip.blockmap']),
         ('publish-win32-updater', 'Stage universal bundles to R2', 'windows-universal', [
