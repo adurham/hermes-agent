@@ -110,6 +110,10 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     again = gm.build_migration_plan()
     assert again.already_multiplexed and gm.apply_migration(again) is True
 
+    manifest_path = fleet.root / gm.MANIFEST_NAME
+    raw = manifest_path.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    manifest_path.write_bytes(b"\xef\xbb\xbf" + raw)
     fleet.ops.clear()
     assert gm.rollback_migration(fleet.root) is True
     assert _config_flag(fleet.root) is False

@@ -144,6 +144,66 @@ def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
     return _run
 
 
+@pytest.mark.parametrize("local", [False, True])
+def test_source_launch_reads_bom_electron_path_without_provisioning(tmp_path, monkeypatch, local):
+    root = _make_desktop_tree(tmp_path)
+    desktop = root / "apps" / "desktop"
+    (desktop / "dist").mkdir()
+    (desktop / "dist" / "index.html").write_text("prepared renderer", encoding="utf-8")
+    electron = root / "node_modules" / "electron"
+    (electron / "dist").mkdir(parents=True)
+    (electron / "package.json").write_text("{}", encoding="utf-8")
+    executable = electron / "dist" / "électron"
+    executable.touch()
+    (electron / "path.txt").write_text(executable.name + "\n", encoding="utf-8-sig")
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(main_desktop, "_desktop_launch_env", lambda args: ({}, []))
+    monkeypatch.setattr(main_desktop, "_register_linux_desktop_entry", lambda: None)
+    calls = []
+    monkeypatch.setattr(main_desktop.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+    args = _ns(source=True, skip_build=True, local=local)
+    with pytest.raises(SystemExit) as exit_info:
+        main_desktop.cmd_gui(args)
+    assert exit_info.value.code == 0
+    assert calls == [[str(executable), ".", *(["--local"] if local else [])]]
+    executable.unlink()
+    with pytest.raises(SystemExit) as exit_info:
+        main_desktop.cmd_gui(args)
+    assert exit_info.value.code == 1
+    assert len(calls) == 1
+
+
+def test_packaged_renderer_bom_does_not_bypass_entry_validation(tmp_path):
+    import json
+    import struct
+    from hermes_cli.desktop_update_verify import _verify_packaged_entry
+
+    resources = tmp_path / "resources"
+    dist = resources / "app.asar.unpacked" / "dist"
+    dist.mkdir(parents=True)
+    entry = b"export {};"
+    (dist / "main.mjs").write_bytes(entry)
+    package = json.dumps({"main": "dist/main.mjs"}).encode("utf-8")
+    header = json.dumps({"files": {
+        "package.json": {"size": len(package), "offset": "0"},
+        "dist": {"files": {"main.mjs": {"size": len(entry), "unpacked": True}}},
+    }}).encode("utf-8")
+    padded = header + b"\0" * (-len(header) % 4)
+    (resources / "app.asar").write_bytes(
+        struct.pack("<4I", 4, 8 + len(padded), 4 + len(padded), len(header)) + padded + package)
+    index = dist / "index.html"
+    index.write_text('<title>café</title><script type="module" src="./main.mjs"></script>',
+                     encoding="utf-8-sig")
+    _verify_packaged_entry(resources)
+    index.write_text("<title>café</title>", encoding="utf-8-sig")
+    with pytest.raises(RuntimeError, match="renderer has no local module entry"):
+        _verify_packaged_entry(resources)
+    index.write_bytes(b"\xef\xbb\xbf\xff")
+    with pytest.raises(RuntimeError, match="renderer entry is invalid"):
+        _verify_packaged_entry(resources)
+
+
 # Dependency admission and staging are exercised by test_desktop_source_build.py.
 
 

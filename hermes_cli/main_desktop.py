@@ -1277,7 +1277,7 @@ def cmd_gui(args: argparse.Namespace):
         # Electron package, including when --skip-build was requested.
         electron = _electron_dir(PROJECT_ROOT)
         try:
-            executable = electron / "dist" / (electron / "path.txt").read_text(encoding="utf-8").strip()
+            executable = electron / "dist" / (electron / "path.txt").read_text(encoding="utf-8-sig").strip()
             if not executable.is_file():
                 raise FileNotFoundError(executable)
         except OSError as exc:

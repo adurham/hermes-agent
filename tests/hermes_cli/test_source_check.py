@@ -104,9 +104,9 @@ def test_counts_are_honest_without_fetch(installation, tip_kind, compare, expect
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation
     target = {"head": head, "base": base, "unknown": "a" * 40}[tip_kind]
-    responses["/repos/fixture/fork/commits/main"] = (200, target)
+    responses["/repos/fixture/fork/commits/main"] = (200, "\ufeff" + target)
     if compare is not None:
-        responses[f"/repos/fixture/fork/compare/{head}...{target}"] = (200, compare)
+        responses[f"/repos/fixture/fork/compare/{head}...{target}"] = (200, "\ufeff" + json.dumps(compare))
     status = check_for_updates(install_root=root, home=home)
     assert status["behind"] == expected
     assert status["updateAvailable"] is (expected != 0)
@@ -123,6 +123,10 @@ def test_cache_force_expiry_and_passive_opt_out(installation, monkeypatch):
     responses[url] = (200, head)
     check = lambda **kw: source_check.check_for_updates(install_root=root, home=home, **kw)
     assert check()["behind"] == 0
+    cache = next((home / "source-checks").glob("*.json"))
+    raw = cache.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    cache.write_bytes(b"\xef\xbb\xbf" + raw)
     responses[url] = (503, {})
     (root / "dirty.txt").write_text("carried work")
     assert check()["dirty"] is True
@@ -181,15 +185,17 @@ def test_deleted_desktop_branch_is_persisted_only_after_definitive_probe(install
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation
     branch_file = home / "desktop-update.json"
-    branch_file.write_text(json.dumps({"branch": "deleted", "other": "preserved"}))
+    branch_file.write_text(json.dumps({"branch": "deleted", "other": "café"}, ensure_ascii=False),
+                           encoding="utf-8-sig")
     git("remote", "set-url", "origin", str(home / "unreachable"))
     status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
     assert status["branch"] == "deleted"
-    assert json.loads(branch_file.read_text())["branch"] == "deleted"
+    assert json.loads(branch_file.read_bytes())["branch"] == "deleted"
     git("remote", "set-url", "origin", str(root))
     status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
     assert status["branch"] == "main"
-    assert json.loads(branch_file.read_text()) == {"branch": "main", "other": "preserved"}
+    assert json.loads(branch_file.read_text(encoding="utf-8")) == {"branch": "main", "other": "café"}
+    assert not branch_file.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
 def test_inherited_git_target_cannot_redirect_an_explicit_install(installation, monkeypatch):

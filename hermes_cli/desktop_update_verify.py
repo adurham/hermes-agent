@@ -59,7 +59,7 @@ def _verify_packaged_entry(resources: Path) -> None:
 
     index = resources / "app.asar.unpacked" / "dist" / "index.html"
     try:
-        html = index.read_text(encoding="utf-8")
+        html = index.read_text(encoding="utf-8-sig")
         if not any(_MODULE_TAG.search(match.group(0))
                    and match.group(0).lower().startswith("<script")
                    and not re.match(r"^[a-z]+:|^//", match.group(1), re.IGNORECASE)

@@ -45,7 +45,7 @@ def _read(url: str, *, missing_ok: bool = False) -> str | None:
     })
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            return response.read(2 * 1024 * 1024).decode("utf-8")
+            return response.read(2 * 1024 * 1024).decode("utf-8-sig")
     except urllib.error.HTTPError as exc:
         if missing_ok and exc.code == 404:
             return None

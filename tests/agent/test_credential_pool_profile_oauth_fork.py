@@ -775,12 +775,23 @@ def test_clean_mark_persists_so_a_fresh_process_takes_no_auth_lock(fleet, monkey
     first = _count_locks(monkeypatch)
     assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
     assert len(first) == 2, "cold heal should take the profile and root locks"
-    assert grants._oauth_heal_clean_mark_path().exists(), "clean mark not written"
+    mark = grants._oauth_heal_clean_mark_path()
+    assert mark is not None
+    raw = mark.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    recorded = json.loads(raw)
+    mark.write_bytes(b"\xef\xbb\xbf" + raw)
 
     _new_process(auth_mod)
     second = _count_locks(monkeypatch)
     assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
     assert second == [], "a fresh process re-locked the auth store to redo a clean heal"
+
+    grants._persist_oauth_heal_clean_mark("openai-codex", ("café", 1))
+    assert json.loads(mark.read_bytes()) == {**recorded, "openai-codex": ["café", 1]}
+    assert not mark.read_bytes().startswith(b"\xef\xbb\xbf")
+    mark.write_bytes(b"\xef\xbb\xbf{")
+    assert grants._persisted_oauth_heal_fingerprint("anthropic") is None
 
 
 def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):

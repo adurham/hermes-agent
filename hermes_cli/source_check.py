@@ -102,7 +102,7 @@ def _github_compare_behind(current_rev: str, target_rev: str, repository: str = 
 def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     req = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": "hermes-update-check"})
     with urllib.request.urlopen(req, timeout=10) as response:
-        return response.read(2 * 1024 * 1024).decode("utf-8").strip()
+        return response.read(2 * 1024 * 1024).decode("utf-8-sig").strip()
 
 
 def _branch_tip(repository: str | None, branch: str, root: Path, git: str, remote: str = "origin") -> tuple[str | None, bool]:
@@ -177,7 +177,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
         raise ValueError(f"Invalid update channel: {channel}")
     head = embedded or _git_stdout(["rev-parse", "HEAD"], cwd=root, git=git)
     current_branch = None if embedded else _git_stdout(["rev-parse", "--abbrev-ref", "HEAD"], cwd=root, git=git)
-    desktop_config = _quiet(lambda: json.loads(branch_config_path.read_text(encoding="utf-8"))) if branch_config_path else None
+    desktop_config = _quiet(lambda: json.loads(branch_config_path.read_text(encoding="utf-8-sig"))) if branch_config_path else None
     configured_branch = desktop_config.get("branch") if isinstance(desktop_config, dict) else None
     if isinstance(configured_branch, str):
         configured_branch = configured_branch.strip() or None
@@ -196,7 +196,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     identity = {"root": str(root), "home": str(home), "head": head, "origin": origin, "branch": selected_branch,
                 "channel": channel, "embedded": embedded}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
-    cached = _quiet(lambda: json.loads(cache_file.read_text(encoding="utf-8")))
+    cached = _quiet(lambda: json.loads(cache_file.read_text(encoding="utf-8-sig")))
     now = time.time()
     if (not force and isinstance(cached, dict) and cached.get("identity") == identity
             and isinstance(cached.get("status"), dict) and cached["status"].get("supported") is True):
@@ -228,7 +228,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
             result["branch"] = "main"
             if branch_config_path and not branch and configured_branch == selected_branch:
                 # Do not overwrite a concurrent choice made while the network probe ran.
-                current_config = _quiet(lambda: json.loads(branch_config_path.read_text(encoding="utf-8")))
+                current_config = _quiet(lambda: json.loads(branch_config_path.read_text(encoding="utf-8-sig")))
                 if current_config == desktop_config:
                     from utils import atomic_json_write
                     atomic_json_write(branch_config_path, {**desktop_config, "branch": "main"})

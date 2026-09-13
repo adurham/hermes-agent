@@ -20,8 +20,8 @@ def git(root, *args):
     ).stdout.strip()
 
 
-@pytest.fixture
-def releases(tmp_path, monkeypatch):
+@pytest.fixture(params=["utf-8", "utf-8-sig"])
+def releases(tmp_path, monkeypatch, request):
     origin = tmp_path / "origin"
     origin.mkdir()
     git(origin, "init", "-b", "main")
@@ -73,7 +73,7 @@ def releases(tmp_path, monkeypatch):
             self.send_response(404 if data is None else 200)
             self.end_headers()
             if data is not None:
-                self.wfile.write((data if isinstance(data, str) else json.dumps(data)).encode())
+                self.wfile.write((data if isinstance(data, str) else json.dumps(data)).encode(request.param))
 
         def log_message(self, format, *args):
             pass

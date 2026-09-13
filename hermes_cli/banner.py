@@ -389,7 +389,7 @@ def banner_snapshot_fingerprint() -> Optional[str]:
 
 def load_banner_snapshot(enabled_toolsets: List[str] = None) -> Optional[Dict[str, Any]]:
     """Return the stored banner snapshot when its fingerprint is current."""
-    blob = _quiet(lambda: json.loads(_banner_snapshot_path().read_text(encoding="utf-8")))
+    blob = _quiet(lambda: json.loads(_banner_snapshot_path().read_text(encoding="utf-8-sig")))
     if not isinstance(blob, dict):
         return None
     fp = banner_snapshot_fingerprint()
