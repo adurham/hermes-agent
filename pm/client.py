@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import json
-import os
 from pathlib import Path
 import subprocess
 import threading
@@ -12,6 +11,7 @@ import uuid
 from pm import paths
 from pm.package import InstallError, Runner, StatePackage
 from pm.runtime import is_runtime, runtime_command, runtime_environment
+from pm.worker_operations import OPERATIONS
 
 
 def _members(value):
@@ -41,13 +41,8 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
     request_id = uuid.uuid4().hex
     update_id = receipt._ambient_update_id()
     callbacks = callbacks or {}
-    names = ([arguments["name"]] if operation in ("ensure", "stage_only") else
-             {"sync_venv": ["venv"], "venv_is_current": ["venv"],
-              "build_environment": ["uv"], "lock_project": ["uv"],
-              "ensure_environment": ["uv"], "ensure_python_tool": ["uv"],
-              "stage_manager_runtime": ["uv"], "check_project_lock": ["uv"],
-              "export_requirements": ["uv"], "build_requirements_environment": ["uv"],
-              "prune_cache": ["uv"]}.get(operation, []))
+    spec = OPERATIONS[operation]
+    names = list(spec.packages) if spec.packages is not None else [arguments["name"]]
     message = {
         "id": request_id, "operation": operation, "arguments": arguments,
         "update_id": update_id,
@@ -60,10 +55,8 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
     # Bootstrap precedes dispatch and must share the operation's selected cache.
     cache = Path(arguments["cache"]) if arguments.get("cache") is not None else None
     environment = runtime_environment()
-    state_sync = operation in ("sync_venv", "build_environment", "lock_project",
-                               "ensure_environment", "ensure_python_tool", "check_project_lock",
-                               "export_requirements", "build_requirements_environment") or (
-        operation == "ensure" and isinstance(get_package(arguments["name"]), StatePackage))
+    state_sync = spec.bootstrap == "policy" or (
+        spec.bootstrap == "state" and isinstance(get_package(arguments["name"]), StatePackage))
     if (state_sync and not arguments.get("explicit") and not arguments.get("repair")
             and not lazy_installs_allowed()):
         # A ready PM still decides no-op/refusal under its install lock. A cold
@@ -79,7 +72,7 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
                 receipt.finalize("failed", 1, token=token)
             raise
         environment["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
-    elif operation == "venv_is_current":
+    elif spec.bootstrap == "never":
         command = runtime_command(worker, bootstrap=False, cache=cache)
     else:
         command = runtime_command(worker, cache=cache)
@@ -211,13 +204,8 @@ def stage_only(name, target, *, progress=None) -> Path:
 
 
 def _python_operation(operation: str, arguments: dict):
-    from pm import operations
-    implementation = getattr(operations, operation, None)
-    if implementation is None:
-        from pm import build_operations
-        implementation = getattr(build_operations, operation)
     if is_runtime():
-        return implementation(**arguments)
+        return OPERATIONS[operation].resolve(operation)(**arguments)
     payload = {key: str(value.absolute()) if isinstance(value, Path) else value
                for key, value in arguments.items()}
     return _request(operation, payload)

@@ -1,7 +1,6 @@
 """One stdlib JSON-line PM request per isolated process."""
 from __future__ import annotations
 
-import importlib
 import json
 import os
 from pathlib import Path
@@ -74,10 +73,11 @@ def main():
     from pm import paths, receipt
     from pm.package import InstallError
     from pm.registry import load_package_definitions
+    from pm.worker_operations import OPERATIONS
     context = request["context"]
     paths.repo_root = lambda: Path(context["repo"])
     paths.lockfile_path = lambda: Path(context["lockfile"])
-    engine = importlib.import_module("pm.ensure")
+
     call = 0
     callback_lock = threading.Lock()
 
@@ -102,13 +102,8 @@ def main():
     with receipt.worker_context(request.get("update_id")):
         try:
             load_package_definitions(request.get("packages", []))
-            from pm import operations as python
-            operations = {"ensure": engine.ensure, "sync_venv": engine.sync_venv,
-                          "stage_only": engine.stage_only, "venv_is_current": engine.venv_is_current,
-                          "build_environment": python.build_environment, "lock_project": python.lock_project,
-                          "stage_manager_runtime": python.stage_manager_runtime,
-                          "ensure_environment": python.ensure_environment,
-                          "ensure_python_tool": python.ensure_python_tool}
+            operation = request["operation"]
+            implementation = OPERATIONS[operation].resolve(operation)
             arguments = request["arguments"]
             if request["operation"] in ("sync_venv", "venv_is_current"):
                 arguments["plugin_dirs"] = _members(arguments.get("plugin_dirs"))
@@ -117,12 +112,7 @@ def main():
             for name in ("progress", "download_progress"):
                 if name in request["callbacks"]:
                     arguments[name] = lambda *args, name=name: callback(name, *args)
-            if request["operation"] in ("check_project_lock", "export_requirements",
-                                        "build_requirements_environment", "prune_cache"):
-                from pm import build_operations
-                result = getattr(build_operations, request["operation"])(**arguments)
-            else:
-                result = operations[request["operation"]](**arguments)
+            result = implementation(**arguments)
             if request["operation"] == "ensure":
                 result = None  # Runner is reconstructed from the caller's base env.
             if isinstance(result, Path):

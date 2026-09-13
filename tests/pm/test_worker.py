@@ -602,7 +602,26 @@ def test_worker_side_environment_reuses_and_keeps_selection_on_failed_tool(clien
     assert (root / "active.json").read_bytes() == selection
 
 
-def test_unknown_worker_operation_is_not_dispatched(client):
-    with pytest.raises((KeyError, RuntimeError), match="activate"):
-        client._request("activate", {})
+@pytest.mark.parametrize("operation", ["activate", "stage_manager_runtime"])
+@pytest.mark.parametrize("route", ["client", "wire"])
+def test_unknown_worker_operation_is_not_dispatched(client, monkeypatch, tmp_path, isolated_python, operation, route):
+    import json
+
+    arguments = {"destination": str(tmp_path / "unused")}
+    if route == "client":
+        monkeypatch.setattr(client, "runtime_command", lambda *a, **kw: pytest.fail("unsupported operation acquired PM"))
+        with pytest.raises(KeyError, match=operation):
+            client._request(operation, arguments)
+    else:
+        request = {"id": "unsupported", "operation": operation, "arguments": arguments,
+                   "callbacks": [], "packages": [],
+                   "context": {"repo": str(paths.repo_root()), "lockfile": str(paths.lockfile_path())}}
+        worker = Path(client.__file__).with_name("worker.py")
+        result = subprocess.run(client.runtime_command(worker), input=json.dumps(request) + "\n",
+                                capture_output=True, text=True, encoding="utf-8", timeout=30,
+                                env=client.runtime_environment())
+        assert result.returncode == 0, result.stderr
+        response = json.loads(result.stdout)
+        assert response["error"]["type"] == "KeyError", response
+        assert operation in response["error"]["message"]
     assert not paths.facts_path().exists()
