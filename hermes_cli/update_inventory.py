@@ -389,6 +389,7 @@ def match_runtime_outcomes(
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
     stale_serve_pids: "set | None" = None, failed_respawn_pids: "set | None" = None,
     external_gateway_pids: "set | None" = None,
+    live_gateway_pids: "dict[str, set[int]] | None" = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
@@ -408,6 +409,16 @@ def match_runtime_outcomes(
     (#109290). The probe itself fails closed (unreadable ledger -> every planned serve is listed as
     surviving), so ``deferred`` means "not shown to be gone", not "observed alive". See #111494.
 
+    ``live_gateway_pids`` (profile -> gateway PIDs alive for that profile AFTER the restart phase:
+    control-socket identity, or a runtime-status record whose PID is still live) carries the same
+    incarnation evidence for gateways: the plan identifies a gateway by the
+    profile it SERVES, while the restart bookkeeping names the SERVICE it runs under, and those two
+    disagree whenever a service serves a profile its name does not encode — a root-home launchd
+    label running the sticky active profile, a hash-suffixed systemd unit for a custom
+    ``HERMES_HOME``. No name rule can bridge that, so a planned PID that is gone while a gateway
+    answers for the same profile counts as ``restarted``. A missing successor, or the planned PID
+    still answering, stays ``unaccounted`` — the tripwire keeps its teeth.
+
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
     different process that shares the profile, nothing more. See #100479.
@@ -426,6 +437,11 @@ def match_runtime_outcomes(
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
         failed_respawns = {int(p) for p in (failed_respawn_pids or set())}
         external = {p for p in (external_gateway_pids or ()) if isinstance(p, int)}
+        successors = (
+            {str(profile): {p for p in pids if isinstance(p, int)} for profile, pids in live_gateway_pids.items()}
+            if live_gateway_pids is not None
+            else None
+        )
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
@@ -455,6 +471,14 @@ def match_runtime_outcomes(
                 return "failed"
             if _gateway_named_in(r, restarted_set):
                 return "restarted"
+            if successors is not None and r.pid is not None:
+                # Incarnation-verified last resort: the planned process is gone and a gateway answers
+                # for the same profile now. Name-independent on purpose — the supervising service's
+                # label/unit may encode the install root (or a hashed home) instead of the served
+                # profile, which the profile-scoped name matcher above can never credit.
+                live = successors.get(r.profile)
+                if live and r.pid not in live:
+                    return "restarted"
             return "external" if r.pid in external else "unaccounted"
 
         for r in plan.runtimes:
