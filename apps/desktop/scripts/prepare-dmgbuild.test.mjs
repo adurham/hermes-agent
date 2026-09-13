@@ -20,7 +20,7 @@ test('explicit PM supplier is copied with paired Python; missing runtime fails b
     const binary = path.join(vendor, 'dmgbuild')
     const python = path.join(vendor, 'python/bin/python3')
     fs.mkdirSync(path.dirname(python), { recursive: true })
-    fs.writeFileSync(binary, '#!/bin/bash\nexit 1\n')
+    fs.writeFileSync(binary, '#!/usr/bin/env bash\nexit 1\n')
     fs.writeFileSync(python, 'paired Python fixture')
     const out = path.join(root, 'packager')
     const copied = prepareDmgbuild({ source: root, out, cache: path.join(root, 'cache'), binary })

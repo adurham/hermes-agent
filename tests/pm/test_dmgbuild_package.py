@@ -25,7 +25,7 @@ def test_dmgbuild_stages_paired_runtime_and_stays_out_of_payload(tmp_path, monke
     python.parent.mkdir(parents=True)
     python.write_bytes(struct.pack("<II", 0xFEEDFACF, cpu) + bytes(56))
     launcher = payload / "dmgbuild"
-    launcher.write_text('#!/bin/bash\nexec "$(dirname "$0")/python/bin/python3" -m dmgbuild "$@"\n')
+    launcher.write_text('#!/usr/bin/env bash\nexec "$(dirname "$0")/python/bin/python3" -m dmgbuild "$@"\n', encoding="utf-8")
     archive = tmp_path / "dmgbuild.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
         tar.add(payload, arcname=".")

@@ -130,7 +130,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     if not (web_dir / "package.json").exists():
         return True
     try:
-        with open(_web_project_root(web_dir) / ".web_ui_build.lock", "a", encoding="utf-8") as lock_file:
+        with (_web_project_root(web_dir) / ".web_ui_build.lock").open("ab") as lock_file:
             _lock(lock_file.fileno(), wait=True)
             return _do_build_web_ui(web_dir, fatal=fatal)
     except OSError as exc:
