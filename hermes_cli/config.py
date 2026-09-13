@@ -2371,6 +2371,12 @@ def load_env() -> Dict[str, str]:
     """Load ~/.hermes/.env as a dict (memoised; ``get_env_value()`` runs hundreds of times per
     interactive menu render). Each assignment's value is opaque data for boundary discovery."""
     global _env_cache
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    # A frozen-policy worker never opens the profile's files; its secrets arrive
+    # through the owner-installed scope, so the .env layer is empty here.
+    if worker_config_snapshot() is not None:
+        return {}
     env_path = get_env_path()
 
     try:
