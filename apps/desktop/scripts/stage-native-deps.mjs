@@ -25,6 +25,7 @@ import {
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { isMain } from './utils.mjs'
+import { recordNativeInputs } from './prepared-native-deps.mjs'
 import { parseArgs } from 'node:util'
 import { productOutput, withProduct, workspaceTool } from '../../../scripts/build/frontend-common.mjs'
 
@@ -621,14 +622,19 @@ export function stageGetWindows(
   return stageGetWindowsInto(srcRoot, destRoot, { platform, arch, install })
 }
 
-// Preparation may rebuild/download native bindings. The compiler only consumes
-// the resulting tree, and must never call this preparation function.
-export async function prepareDesktopNativeDependencies({ source, out, platform = process.platform, arch = process.arch }) {
+/**
+ * Preparation may rebuild/download native bindings; compilation only consumes them.
+ * @param {{ source: string, out: string, platform?: string, arch?: string, nativeToolchain?: string }} inputs
+ * @returns {Promise<{out: string}>}
+ */
+export async function prepareDesktopNativeDependencies({ source, out, platform = process.platform, arch = process.arch, nativeToolchain }) {
   ;({ source, out } = productOutput(source, out, ['node_modules', 'apps/desktop/node_modules', 'apps/desktop/src', 'apps/desktop/electron']))
+  rmSync(`${out}.prepared.json`, { force: true })
   await withProduct(out, async product => {
     stageNodePty({ source, out: product, platform, arch })
     stageGetWindows({ source, out: product, platform, arch })
   }, { source })
+  recordNativeInputs({ source, out, platform, arch, nativeToolchain })
   return { out }
 }
 
@@ -636,6 +642,7 @@ if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: {
     source: { type: 'string', default: resolve(projectRoot, '../..') },
     out: { type: 'string' }, platform: { type: 'string', default: process.platform }, arch: { type: 'string', default: process.arch },
+    'native-toolchain': { type: 'string' },
   } })
-  await prepareDesktopNativeDependencies({ ...values, out: values.out || join(values.source, 'apps/desktop/build/native-deps') })
+  await prepareDesktopNativeDependencies({ ...values, nativeToolchain: values['native-toolchain'], out: values.out || join(values.source, 'apps/desktop/build/native-deps') })
 }

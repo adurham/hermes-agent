@@ -77,6 +77,7 @@
 *-snapshots/
 .act-sandbox-agent.*
 .build/
+.cache/desktop-inputs/
 .bytecode-fingerprint
 .bytecode-fingerprint.tmp
 .codex/

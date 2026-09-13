@@ -117,6 +117,35 @@ class BinaryPackage(Package):
         return env_for(*self.deps)
 
 
+@register
+class Dmgbuild(BinaryPackage):
+    """Build-only DMG supplier, independently pinned by PM rather than dmg-builder.
+
+    The lock version is <release>+<bundle revision>. Updates are manual: review
+    the official electron-builder-binaries bundle and re-pin both Darwin targets.
+    Keep the paired Python tree intact for the launcher and diagnostic hook.
+    """
+
+    name = "dmgbuild"
+    internal = True
+    on_path = False
+    flatten = False
+    probe_version = False
+    binary_rel = {"posix": "dmgbuild"}
+    gaps = {target: "DMG creation requires macOS" for target in ALL_TARGETS if not target.startswith("darwin-")}
+
+    def fetch_url(self, version: str, target: str) -> str:
+        release, _, revision = version.partition("+")
+        arch = {"darwin-arm64": "arm64", "darwin-x64": "x86_64"}[target]
+        return (
+            "https://github.com/electron-userland/electron-builder-binaries/releases/download/"
+            f"dmg-builder@{release}/dmgbuild-bundle-{arch}-{revision}.tar.gz"
+        )
+
+    def verify(self, entry: Path, target: str) -> str:
+        return super().verify(entry, target) or self._binary_reason(entry / "python/bin/python3", entry, target)
+
+
 class _BionicDebArm:
     """Shared bionic-arm behavior for the termux tool packages: extract as a
     .deb on the bionic target (DebPackage's hardened ar+tar), as the binary

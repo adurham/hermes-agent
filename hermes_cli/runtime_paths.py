@@ -52,11 +52,19 @@ def base_venv(project_root: Path) -> Path:
 
 
 def store_root(project_root: Path) -> Path:
-    """Read the stamped byte store before PM dependencies are available."""
+    """Resolve a payload-relative or stamped store before PM imports."""
     override = os.environ.get("HERMES_RUNTIME_DIR")
     if override:
         return Path(override).resolve()
     root = Path(project_root).resolve()
+    manifest_path = root.parent / "manifest.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        if (root.parent / manifest.get("repo", "")).resolve() == root:
+            store = (root.parent / manifest["store"]).resolve()
+            if not store.is_relative_to(root.parent):
+                raise RuntimeError("payload store escapes its root")
+            return store
     for directory in (root, *root.parents):
         stamp = directory / "install-stamp.json"
         if stamp.is_file():

@@ -46,22 +46,63 @@ failure aborts completion; an existing stale product is not a successful
 update. There is no updater-specific npm cache, fallback install, extra
 refresh, or memory-provider reinstall. PM owns the complete Python union.
 
-Build a desktop distribution from a checkout at its release tag. Use its
-PM-prepared Python 3.14. The driver delegates Python dependency preparation to PM:
+Build a desktop distribution from a clean checkout at its release tag. Start
+with a host Python that can run the entrypoint and Git; preparation acquires the
+pinned Python, Node and npm through PM. Native compilers/SDKs remain host inputs:
 
 ```sh
 python -m scripts.bundles.desktop --tag=vX.Y.Z
 ```
 
-`desktop.py` requires exactly one of `--tag` or `--commit`. Commit builds
+Without `--prepared`, `desktop.py` requires exactly one of `--tag` or `--commit`. Commit builds
 require the full commit SHA and matching checkout HEAD. `--variant` accepts
 `bundled`, `store`, or `light`, with `bundled` as the default. `--repo` selects
-the checkout. Arguments after `--` go to Electron Builder.
+the checkout. Arguments after `--` go to the prepared Electron Builder wrapper;
+they cannot replace the admitted target, tools, output or packaging configuration.
 
-The driver prepares Node dependencies, builds the selected products, and runs
-Electron packaging. The desktop npm build prepares its stamp and native tree
-before the shared desktop compiler. Electron-specific dependency compilation,
+The driver first prepares the complete dependency set: managed tools, the locked
+Node workspace union, icon environment, Electron-native bindings, packaging
+utilities, and (except for light) the application and independent PM environments.
+Only then does it compile products, assemble the payload, and package Electron.
 MSIX metadata, signing, notarization, and package formats remain adapter work.
+
+### Split desktop preparation and consumption
+
+The one-command build and CI use the same preparation operation. To stop before
+product compilation and packaging:
+
+```sh
+python scripts/bundles/desktop.py --tag vX.Y.Z --variant bundled --prepare-only \
+  --work "$PWD/.build/desktop-job" --cache "$PWD/.cache/desktop-inputs"
+python scripts/bundles/desktop.py --prepared "$PWD/.build/desktop-job/prepared.json"
+```
+
+`--work` and `--cache` are separate, build-owned directories. Preparation claims
+the work directory itself; do not create it beforehand. It writes `prepared.json`
+last, after every provider succeeds. That file contains this job's absolute paths
+and source identity, not a portable cache receipt. Reprepare after moving a
+checkout, changing source or locks, or losing an input. Repeated preparation may
+reuse admitted dependency bytes while rebuilding path-bound environments.
+
+`--prepared` does not accept new tag/commit/work/cache arguments. It validates
+the clean checkout and prepared inputs, then fails on stale or missing inputs
+instead of installing them. Bundled and Store builds may consume the same
+preparation for a stable tag; light and commit builds cannot switch to Store.
+Product builds still run each time. Native staging exposes `prepare_native` and
+`finish_native` to this composition; `hermes pm bundle` remains a complete
+native staging command, not the desktop preparation interface.
+
+Windows and macOS release jobs use **restore → prepare → save → build**. The
+cache action derives provider paths and transports candidates; it neither
+creates the preparation workdir nor declares a cache hit valid. Saves run after
+successful preparation, before product compilation or signing. Failed
+preparation leaves completed provider data locally but does not save an overall
+snapshot. The general `setup-pm` action remains available for other workflows.
+
+The strict boundary forbids dependency acquisition during consumption, not all
+network access: signing, timestamping, notarization and publication retain their
+online responsibilities. A network-denied unsigned native build is still needed
+to prove the boundary on each release target.
 
 Stage a native agent with both frontend products, without Electron packaging:
 
@@ -83,6 +124,37 @@ the application environment, and the agent. That PM command does not build
 frontends. `npm run payload --workspace apps/desktop` uses the stage driver
 that includes them. Neither command creates an Electron installer.
 
+### Split PM Bundle preparation and assembly
+
+PM Bundle uses the same isolated tool bootstrap and native preparation slice,
+without installing desktop workspaces, icons, Electron bindings or packagers:
+
+```sh
+python -S -B scripts/bundles/native_build.py --source "$PWD" \
+  --work "$PWD/.build/payload-job" --cache "$PWD/.cache/payload-inputs" \
+  --out "$PWD/build/agent-payload" --ref HEAD --prepare-only
+python -S -B scripts/bundles/native_build.py \
+  --prepared "$PWD/build/agent-payload.prepared.json"
+```
+
+Use a clean checkout at the selected revision. `--ref` defaults to `HEAD`;
+`--commit` accepts an exact full SHA instead. Work, cache and output must be
+separate; preparation claims a previously absent work directory. Without
+`--prepare-only`, the driver also assembles. `--prepared` takes no new selection
+or path arguments and validates the native receipt before assembly; it never
+bootstraps or repairs dependencies. The receipt and lock are output siblings
+(`agent-payload.prepared.json`, `agent-payload.prepare.lock`), not shipped files.
+Assembly deliberately supplies no frontend products, as with `hermes pm bundle`.
+
+The `payload-test` producer on the existing cache action selects only `tools`,
+`python/runtime` and `native`. It excludes source `node_modules`, npm caches,
+icon environments and packagers. PM's managed tool bootstrap still includes Node
+and npm, but does not run desktop `npm ci`. Native compiler identity and Windows
+ARM64 prerequisites use the shared owner once. Cache hits always undergo provider
+admission; native SDK/compiler prerequisites still belong to the host. PR jobs
+only restore; saves require successful preparation on the default-branch trusted
+lane with no alternate source ref. No signing or publication is added.
+
 For Termux, tools and the wheelhouse are prerequisites:
 
 ```sh
@@ -94,9 +166,8 @@ The Termux driver accepts exactly one of `--tag` or `--commit`. It prepares
 the TUI workspace, calls the shared TUI builder, and passes that product to
 `build_deb.sh`. It does not add the dashboard or replace bionic preparation.
 
-The CLI contracts are in `scripts/bundles/desktop.py:129–143`,
-`scripts/bundles/stage.py:17–46`, `pm/cli.py:442–444,488–491`, and
-`scripts/termux/build.py:21–62`.
+The CLI contracts are in `scripts/bundles/desktop.py`,
+`scripts/bundles/stage.py`, `pm/cli.py`, and `scripts/termux/build.py`.
 
 ## Shared agent and launcher contract
 
@@ -220,16 +291,42 @@ consumers. They are not interchangeable cleanup targets.
   extracted binaries without scanning build-only artifacts.
 - PM-runtime and application builds share the provider's persistent uv cache.
   CI restores/saves that cache, not the temporary build HOME. Failed builds
-  retain completed wheels. Only v2 keys are restored; there is no legacy fallback.
+  retain completed wheels. General PM staging uses its v2 cache namespace;
+  desktop preparation uses its own input snapshot namespace.
   Plain `uv cache prune` removes dangling entries without discarding offline
   wheel inputs. It does not remove all historical versions or enforce a size cap.
-- Icon preparation uses its own `SOURCE/.cache/icon-build`. Its build-only
-  dependencies do not belong in the native application cache.
+- Standalone icon preparation uses `SOURCE/.cache/icon-build`. Desktop
+  preparation places its icon environment under the job workdir and its wheel
+  cache under `CACHE/python/build`. Neither enters the shipped runtime.
 - Frontend `node_modules` is a provider input, not a frontend product.
   Docker's runtime TypeScript and Photon selections are separate exceptions.
 
-The native cache behavior is in `scripts/bundles/native.py:55–65,202–216`.
+The native cache behavior is in `scripts/bundles/native.py`.
 Removing all caches from a payload can break offline environment reconstruction.
+
+Desktop transport selects PM tool entries, Python download/wheel caches, npm's
+content-addressed downloads, prepared workspace dependencies, and native/package
+tool inputs through `scripts/ci/desktop_build_cache.py`. It does not select the
+workdir, virtual environments, live user home, signing tokens, or products.
+The signature-result cache is separate. Native wheel partitions depend on
+observed compiler/SDK/OpenSSL identity; incomplete identity deliberately forgoes
+warm reuse. This is not a fully pinned host SDK.
+
+Cache keys are lookup hints, not authorization. Native builders have separate
+release and commit execution jobs with literal `cache-mode: write` and
+`cache-mode: read`, respectively. GitHub enforces these permissions on scoped
+cache tokens, so commit builds cannot save caches even from their own scripts.
+Both branches share their matrix, environment, and steps through YAML anchors.
+The original `build-win32` and `build-darwin` IDs aggregate the branches: after
+successful validation and input archiving, exactly the selected branch must
+succeed and the other must be skipped. A failed, cancelled, or unexpectedly
+skipped selected build fails the aggregate; it cannot permit publication.
+Existing publication dependencies keep using those IDs. A skipped save or a
+different key prefix alone cannot prevent a script from poisoning a writer
+namespace.
+Default-branch canary dispatch retains default-branch cache scope; changing a
+checkout SHA does not change the workflow ref's cache scope. See GitHub's
+[cache access contract](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#controlling-cache-access-with-cache-mode).
 
 ## Pinned binary inputs
 
@@ -246,11 +343,13 @@ cannot replace an existing object.
 
 The all-target workflow runs on pin changes on main, manual dispatch, and as
 an admitted release prerequisite. It uses runner Python before the pinned
-toolchain is available. Protected build jobs opt into the same R2-first step
-through `setup-pm`'s `archive-inputs` input. Target payload steps seed the
-actual PM store's disposable fetch entries with `--target` and `--store`;
-Termux also passes `--payload` for runtime libraries. Cache hits do not skip
-preservation. Untrusted PR jobs receive no publication credentials.
+toolchain is available. Desktop jobs depend on that prerequisite and then let PM
+fetch verified inputs without archival write credentials; they do not need a
+second cache-seeding lane. Other protected workflows can opt into archival
+through `setup-pm`'s `archive-inputs` input. Targeted archival can seed disposable
+fetch entries with `--target` and `--store`; Termux also passes `--payload` for
+runtime libraries. Cache hits do not skip preservation. Desktop R2 credentials
+are scoped to upload steps. Untrusted PR jobs receive no publication credentials.
 
 Installed PM clients, bootstrap installers, and Nix pin consumers use the
 primary URL followed by the public mirror if the download is unavailable.
@@ -269,6 +368,12 @@ Electron/SDK archives independently downloaded by their build tools.
 
 The checks below distinguish product tests from distribution acceptance.
 Signed installers and Android device execution require their native runners.
+
+The macOS dmgbuild acquisition owner is part of packaging preparation, not the
+strict build. Native DMG creation, detach diagnostics, signing and notarization
+must be exercised after tool-provider changes. Windows x64/ARM64 and
+macOS x64/ARM64 cold/warm and signed-artifact acceptance remain separate from
+Linux helper tests. Linux desktop release lanes remain disabled.
 
 Focused helper tests cannot establish all of these requirements:
 

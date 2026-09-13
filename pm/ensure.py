@@ -272,6 +272,7 @@ def _install(
     *,
     copy_from: tuple[Facts, Store] | None = None,
     _lock_held: bool = False,
+    _fresh_copy: bool = False,
 ) -> Path:
     """Realize one pin. Host installs commit facts; cross-target stages carry a marker."""
     version = lockfile.version(package.name)
@@ -312,11 +313,11 @@ def _install(
             ) and _entry_verified(package, previous, store, target)
         else:
             try:
-                recorded = (entry / ".pm-stage-pin.json").read_text(encoding="utf-8")
+                recorded = (entry / ".pm-stage-pin.json").read_text(encoding="utf-8-sig")
             except OSError:
                 recorded = None
             current = recorded == pin and not package.verify(entry, target)
-        if current:
+        if current and not _fresh_copy:
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:

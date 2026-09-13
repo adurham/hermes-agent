@@ -26,14 +26,22 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     output = tmp_path / "payload"
-    target_python = output / "staged-python" / ("python.exe" if os.name == "nt" else "bin/python")
-    target_python.parent.mkdir(parents=True)
+    canonical = tmp_path / "canonical"
+    from pm.lock import Facts
+    from pm.registry import get_package
+    from pm.store import tree_digest
+    lock, target = native._lockfile(), native.current_target()
+    python_package = get_package("python")
+    python_entry = python_package.store_entry(lock.version("python"), target)
+    source_python = python_package.binary(canonical / python_entry, target)
+    target_python = output / "tools" / source_python.relative_to(canonical)
+    source_python.parent.mkdir(parents=True)
     # PM seals a payload-owned base interpreter, not an external venv launcher.
     # The POSIX host supplies its stdlib; Windows needs it beside the executable.
     if os.name == "nt":
-        shutil.copytree(Path(sys.base_prefix), target_python.parent, dirs_exist_ok=True)
+        shutil.copytree(Path(sys.base_prefix), source_python.parent, dirs_exist_ok=True)
     else:
-        shutil.copy2(Path(getattr(sys, "_base_executable")).resolve(), target_python)
+        shutil.copy2(Path(getattr(sys, "_base_executable")).resolve(), source_python)
     repo = tmp_path / "repo"
     repo.mkdir()
     pm_project = Path(__file__).resolve().parents[2] / "pm"
@@ -48,21 +56,29 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     (repo / "entry.py").write_text("def main(): return 0\n", encoding="utf-8")
     uv = shutil.which("uv")
     assert uv, "native bundle test requires uv"
+    uv_package = get_package("uv")
+    uv_entry = canonical / uv_package.store_entry(lock.version("uv"), target)
+    uv_entry.mkdir(parents=True)
+    shutil.copy2(uv, uv_package.binary(uv_entry, target))
+    facts = Facts(canonical / "facts.json")
+    for name in ("python", "uv"):
+        package = get_package(name)
+        entry = canonical / package.store_entry(lock.version(name), target)
+        facts.record(name, lock.version(name), entry.name, package.env(entry, target), canonical,
+                     target=target, artifacts=[row["sha256"] for row in lock.artifacts(name, target)],
+                     digest=tree_digest(entry))
+    canonical_before = {name: tree_digest(canonical / facts.get(name)["entry"]) for name in ("python", "uv")}
     env = {**os.environ, "UV_OFFLINE": "1", "UV_PYTHON_DOWNLOADS": "never", "UV_CACHE_DIR": str(tmp_path / "cache")}
     subprocess.run([uv, "lock", "--python", sys.executable], cwd=repo, env=env, check=True, capture_output=True)
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
     monkeypatch.setattr("pm.paths.repo_root", lambda: repo)
-    monkeypatch.setattr(native, "_bundle_package_names", lambda: [])
-    monkeypatch.setattr(native, "_install_names", lambda names: 0)
-    monkeypatch.setattr(native, "_store", lambda: SimpleNamespace(root=output / "tools", entry=lambda _: target_python.parent))
-    monkeypatch.setattr(native, "_facts", lambda: SimpleNamespace(get=lambda _: {"entry": "python", "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"}, entries_in_use=lambda: []))
-    monkeypatch.setattr(native, "get_package", lambda _: SimpleNamespace(binary=lambda *args: target_python))
+    monkeypatch.setattr(native, "_bundle_package_names", lambda: ["uv"])
+    monkeypatch.setattr("pm.prepare_tools", lambda names, **kwargs: kwargs["out"])
     monkeypatch.setattr("pm.client.is_runtime", lambda: True)
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
-    monkeypatch.setattr(native, "_arch_guard", lambda store: [])
-    monkeypatch.setattr("scripts.bundles.payload.relativize_links", lambda root: 0)
+
     monkeypatch.setattr("pm.extras.ANCHORS", {"payloadtest": "bundle_probe.present"})
     import pm
     real_build = pm.build_environment
@@ -98,7 +114,76 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     monkeypatch.setattr(pm, "build_environment", build)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "original"))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
-    assert native._stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 0
+    prepared = native.prepare_native(out=output, ref="HEAD", source=repo, cache=tmp_path / "cache", tools=canonical, env=env)
+    assert {name: tree_digest(canonical / facts.get(name)["entry"]) for name in ("python", "uv")} == canonical_before
+    assert not target_python.samefile(source_python)
+    assert prepared == output.with_name(output.name + ".prepared.json")
+    assert not prepared.is_relative_to(output)
+    assert prepared.is_file()
+    assert not (output / "manifest.json").exists()
+    from scripts.bundles.native_prepared import load_prepared, preparation_lock
+    with preparation_lock(output):
+        with pytest.raises(ValueError, match="already in use"):
+            native.finish_native(prepared, {})
+    assert prepared.is_file()
+    # Dependencies are already installed. Reject changed bytes rather than
+    # healing them, including a substituted directory with identical bytes.
+    inventory = json.loads(prepared.read_text())
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    assert inventory["revision"] == revision
+    assert inventory["inputs"]["ref"] == "HEAD"
+    changed_inputs = json.loads(prepared.read_text())
+    changed_inputs["inputs"]["project"] = str(repo / "pyproject.toml")
+    prepared.write_text(json.dumps(changed_inputs), encoding="utf-8")
+    with pytest.raises(ValueError, match="run preparation again"):
+        load_prepared(prepared)
+    prepared.write_text(json.dumps(inventory), encoding="utf-8")
+    for relative in ("hermes-agent/entry.py", "hermes-agent/uv.lock",
+                     "venv/pyvenv.cfg", "pm-runtime/pm-runtime.json",
+                     "enabled-features.json"):
+        changed = output / relative
+        original = changed.read_bytes()
+        changed.write_bytes(original + b"\nchanged")
+        with pytest.raises(ValueError, match="run preparation again"):
+            load_prepared(prepared)
+        changed.write_bytes(original)
+    moved = output / "hermes-agent"
+    outside = tmp_path / "substituted-source"
+    moved.rename(outside)
+    moved.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="run preparation again"):
+        load_prepared(prepared)
+    moved.unlink()
+    outside.rename(moved)
+    # A source entry linked outside the payload must never be admitted, even
+    # when its link text itself is freshly covered by the stored digest.
+    linked = moved / "escape"
+    linked.symlink_to(witness)
+    from scripts.bundles.native_prepared import _source_digest
+    inventory["digests"]["hermes-agent"] = _source_digest(moved)
+    prepared.write_text(json.dumps(inventory), encoding="utf-8")
+    with pytest.raises(ValueError, match="run preparation again"):
+        load_prepared(prepared)
+    linked.unlink()
+    inventory["digests"]["hermes-agent"] = _source_digest(moved)
+    prepared.write_text(json.dumps(inventory), encoding="utf-8")
+    frontend = tmp_path / "web-product"
+    frontend.mkdir()
+    (frontend / "index.html").write_text("built web", encoding="utf-8")
+    with monkeypatch.context() as strict:
+        def forbidden(*args, **kwargs):
+            pytest.fail("strict finish entered dependency acquisition or a child process")
+        strict.setattr(pm, "build_environment", forbidden)
+        strict.setattr(pm, "stage_manager_runtime", forbidden)
+        strict.setattr(subprocess, "run", forbidden)
+        assert native.finish_native(prepared, {"web": frontend}) == 0
+        (output / "hermes-agent/install-stamp.json").write_text('{"variant":"bundled"}', encoding="utf-8")
+        (output / "manifest.json").write_text('{"variant":"bundled"}', encoding="utf-8")
+        launcher = output / ("bin/probe.exe" if os.name == "nt" else "bin/probe")
+        launcher.rename(launcher.with_name("renamed-launcher"))
+        (frontend / "index.html").write_text("store web", encoding="utf-8")
+        assert native.finish_native(prepared, {"web": frontend}) == 0
+    assert (output / "hermes-agent/hermes_cli/web_dist/index.html").read_text() == "store web"
     assert calls[0]["all_extras"] is True
     assert calls[0]["cache"] == tmp_path / "cache"
     assert (output / "hermes-agent/pyproject.toml").is_file()
@@ -126,11 +211,10 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     assert not (output / "manifest.json").exists()
     assert os.environ["HERMES_RUNTIME_DIR"] == str(tmp_path / "original")
 
-    import pytest
     (repo / "pm/lock.json").write_text("{}", encoding="utf-8")
     subprocess.run(["git", "add", "pm/lock.json"], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=f@example.test", "commit", "-m", "different pins"], cwd=repo, check=True, capture_output=True)
-    monkeypatch.setattr(native, "_install_names", lambda names: pytest.fail("mismatched pins reached provisioning"))
+    monkeypatch.setattr("pm.prepare_tools", lambda names, **kwargs: pytest.fail("mismatched pins reached provisioning"))
     with pytest.raises(ValueError, match="PM lock differs"):
         native._stage_native(SimpleNamespace(out=str(output), ref="HEAD"))
 
@@ -332,6 +416,21 @@ def test_native_dispatch_isolates_process_state_on_real_child_failure(tmp_path, 
     assert not (tmp_path / "user-tools").exists()
     assert not (out / "manifest.json").exists()
     assert not list(out.glob(".build-*"))
+
+
+def test_native_preparation_refuses_symlinked_output_before_writing(tmp_path, monkeypatch):
+    monkeypatch.setattr("pm.prepare_tools", lambda *args, **kwargs: pytest.fail("unsafe output reached acquisition"))
+    output = tmp_path / "payload"
+    output.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("untouched", encoding="utf-8")
+    (output / "hermes-agent").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink|escaped"):
+        native.prepare_native(out=output, ref="HEAD", source=Path(__file__).resolve().parents[2],
+                              cache=tmp_path / "cache")
+    assert (outside / "keep").read_text() == "untouched"
+    assert not (output / "native-prepared.json").exists()
 
 
 def test_native_dispatch_keeps_cache_across_failed_children(tmp_path, monkeypatch):

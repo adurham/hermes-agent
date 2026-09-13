@@ -25,7 +25,7 @@ from pm.ensure import (
 from pm.client import (
     ensure, sync_venv, build_environment, lock_project, stage_manager_runtime,
     ensure_environment, ensure_python_tool, venv_is_current,
-    check_project_lock, export_requirements, build_requirements_environment, prune_cache,
+    check_project_lock, export_requirements, build_requirements_environment, prune_cache, stage_tools, prepare_tools,
 )
 from pm.operations import environment_python, python_tool
 from pm.extras import available, ensure_import
@@ -51,6 +51,8 @@ __all__ = [
     "build_environment",
     "lock_project",
     "stage_manager_runtime",
+    "stage_tools",
+    "prepare_tools",
     "ensure_environment",
     "environment_python",
     "ensure_python_tool",

@@ -254,14 +254,17 @@ jobs:
       sha: ${{ needs.validate.outputs.sha }}
     secrets: inherit
 
-  build-win32:
+  # Cache permissions are literal job-token scopes, not checkout/save-step policy.
+  # Share execution via anchors, and keep the original IDs as downstream gates.
+  build-win32-release:
     name: bundled ${{ matrix.target.label }}
-    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == ''
     needs: [validate, archive-inputs]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
+    cache-mode: write
     timeout-minutes: 900
-    strategy:
+    strategy: &win32-strategy
       fail-fast: false
       matrix:
         target:
@@ -269,20 +272,16 @@ jobs:
             runner: windows-2025
           - label: win32-arm64
             runner: windows-11-arm
-    env:
+    env: &win32-env
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      # Signature outputs are separate from the prepared dependency snapshot.
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-      electron_config_cache: ${{ github.workspace }}/.cache/electron
-      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-    steps:
+    steps: &win32-steps
       - name: Exclude build write paths from Defender scanning
         shell: powershell
         run: |
@@ -313,29 +312,38 @@ jobs:
           ref: ${{ needs.validate.outputs.sha }}
           fetch-tags: true
 
-      - name: Set up the locked build toolchain
-        id: pm
-        uses: ./.github/actions/setup-pm
+      - name: Restore desktop dependency inputs
+        id: build-cache
+        uses: ./.github/actions/desktop-build-cache
         with:
-          toolchain: all
-          archive-inputs: true
-          # The payload tools cache does not include uv's built wheels.
-          cache-python: true
-          save-python-cache: false
-          save-node-cache: false
+          phase: restore
+          source: ${{ github.workspace }}
+          work: ${{ runner.temp }}/desktop-job
+          cache: ${{ github.workspace }}/.cache/desktop-inputs
+          producer: desktop
 
-      - name: Resolve toolchain cache key
-        id: toolchain
+      - name: Prepare the complete desktop build
+        id: prepare
         shell: bash
+        env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
         run: |
-          node -e '
-            const l = require("./package-lock.json")
-            const el = l.packages["apps/desktop/node_modules/electron"].version
-            const eb = l.packages["node_modules/electron-builder"].version
-            if (!el || !eb) process.exit(1)
-            console.log(`electron=${el}`)
-            console.log(`builder=${eb}`)
-          ' >> "$GITHUB_OUTPUT"
+          args=(--tag "$HERMES_PAYLOAD_TAG")
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then args=(--commit "$HERMES_BUILD_COMMIT"); fi
+          python scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
+            --work "$RUNNER_TEMP/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
+          python -m scripts.ci.desktop_commands "$RUNNER_TEMP/desktop-job/prepared.json"
+
+      - name: Save dependency inputs before building
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' }}
+        uses: ./.github/actions/desktop-build-cache
+        with:
+          phase: save
+          source: ${{ github.workspace }}
+          work: ${{ runner.temp }}/desktop-job
+          cache: ${{ github.workspace }}/.cache/desktop-inputs
+          producer: desktop
+          key: ${{ steps.build-cache.outputs.cache-key }}
 
       - name: Cache verified payload signatures
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -346,100 +354,6 @@ jobs:
           restore-keys: |
             payload-signatures-v1-${{ runner.os }}-${{ matrix.target.label }}-
             payload-signatures-v1-${{ runner.os }}-
-
-      - name: Set up native ARM64 build dependencies
-        if: matrix.target.label == 'win32-arm64'
-        uses: ./.github/actions/setup-windows-build-deps
-
-      - name: Cache pm store
-        # Tag-dispatched runs (every canary) scope actions/cache under the
-        # dispatch ref, which GitHub mangles to refs/heads/refs/tags/<tag> —
-        # a different scope per tag, so an exact key can never be restored
-        # by a later canary. The content key below is stable across tags
-        # when pm/lock.json + uv.lock are unchanged; the restore-keys prefix
-        # (which ignores the tag entirely) rescues the previous canary's
-        # store when the locks DID move.
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: apps/desktop/build/agent-payload/tools
-          key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
-          restore-keys: |
-            pm-store-v2-${{ matrix.target.label }}-
-
-      - name: Retrieve pinned payload inputs from R2
-        shell: bash
-        run: python -m scripts.ci.archive_inputs --target '${{ matrix.target.label }}' --store apps/desktop/build/agent-payload/tools
-
-      - name: Resolve electron's default download cache path
-        shell: bash
-        run: |
-          # @electron/get does NOT honor ELECTRON_CACHE/electron_config_cache:
-          # the electron-builder build's electron zip download uses the
-          # default env-paths cache root. It must be in the actions/cache
-          # path list or every build re-downloads electron (~115MB).
-          case "$RUNNER_OS" in
-            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
-            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
-            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
-          esac
-
-      - name: Cache electron + electron-builder toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ github.workspace }}/.cache/electron-builder
-            ${{ github.workspace }}/.cache/electron
-            ${{ env.ELECTRON_DEFAULT_CACHE }}
-          # eb2: bumped from eb- (2026-08-28) — the old eb- caches never
-          # contained the electron zip (it lives in @electron/get's default
-          # cache root, which wasn't in the path list), so every build
-          # re-downloaded electron. The new key forces a fresh save that
-          # includes the default cache root.
-          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
-          # An electron/builder bump misses the exact key, but the previous
-          # dist is still mostly reusable (electron's postinstall skips the
-          # download when dist/ exists) — restore it and let npm ci top up.
-          restore-keys: |
-            eb2-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Restore prepared desktop dependencies
-        id: node-modules-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            node_modules
-            apps/*/node_modules
-            ui-tui/node_modules
-            ui-tui/packages/*/node_modules
-            web/node_modules
-            tests-js/node_modules
-          # No partial restore: npm ci deletes both the tree and native outputs.
-          key: desktop-node-deps-v1-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', 'apps/*/package.json', 'ui-tui/package.json', 'ui-tui/packages/*/package.json', 'web/package.json', 'tests-js/package.json', '.npmrc', 'scripts/build/node-deps.mjs') }}
-
-      - name: Prepare desktop dependencies
-        shell: bash
-        run: node scripts/build/node-deps.mjs --source . --workspace apps/desktop --workspace ui-tui --workspace web --reuse
-
-      # Save before packaging: a later build/signing failure must not lose this work,
-      # and builder mutations must not become the next job's dependency input.
-      - name: Save prepared desktop dependencies
-        if: steps.node-modules-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            node_modules
-            apps/*/node_modules
-            ui-tui/node_modules
-            ui-tui/packages/*/node_modules
-            web/node_modules
-            tests-js/node_modules
-          key: ${{ steps.node-modules-cache.outputs.cache-primary-key }}
-
-      - name: Save warmed npm downloads
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.pm.outputs.npm-cache-path }}
-          key: ${{ steps.pm.outputs.node-cache-key }}
 
       - name: Azure login (OIDC)
         if: vars.AZURE_CLIENT_ID != ''
@@ -463,18 +377,6 @@ jobs:
           ( while sleep 240; do mint || true; done ) &
           echo "AZURE_FEDERATED_TOKEN_FILE=$file" >> "$GITHUB_ENV"
 
-      - name: Pin CMake < 4 for sdist builds
-        # python-olm (matrix extra) builds libolm from sdist on non-Linux
-        # targets, and its libolm/CMakeLists.txt requires CMake < 3.5
-        # compat (removed in CMake 4, which the darwin + win32 runners
-        # ship). Pin a CMake 3.x first on PATH for those legs so the sdist
-        # build configures. Linux uses the manylinux wheel — no build, no
-        # cmake needed. The pip cmake package ships a binary wheel for
-        # every non-Linux target (macos universal2, win_amd64, win_arm64).
-        shell: bash
-        run: |
-          python -m scripts.ci.python_packages cmake==3.31.6
-
       - name: Build and package
         shell: powershell
         timeout-minutes: 900
@@ -489,24 +391,12 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_TOKEN_CREDENTIALS: prod
         run: |
-          if ($env:HERMES_BUILD_COMMIT) {
-              python scripts/bundles/desktop.py --commit="$env:HERMES_BUILD_COMMIT" --variant=bundled
-          } else {
-              python scripts/bundles/desktop.py --tag="$env:HERMES_PAYLOAD_TAG" --variant=bundled
-              # The official Store identity is stable-only. Canary must never
-              # replace it, even in a Store flight ring.
-              if ($env:HERMES_PAYLOAD_TAG -notlike "*-canary.*") {
-                  python scripts/bundles/desktop.py --tag="$env:HERMES_PAYLOAD_TAG" --variant=store
-              }
+          python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant bundled
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not $env:HERMES_BUILD_COMMIT -and $env:HERMES_PAYLOAD_TAG -notlike "*-canary.*") {
+              python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant store
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-
-      - name: Save warmed Python dependencies even after a packaging failure
-        if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
-        uses: ./.github/actions/save-pm-cache
-        with:
-          python: ${{ steps.pm.outputs.python-path }}
-          path: ${{ steps.pm.outputs.uv-cache-path }}
-          key: ${{ steps.pm.outputs.python-cache-key }}
 
       - name: Verify native signature cache contracts
         shell: bash
@@ -524,11 +414,14 @@ jobs:
         if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           TARGET: ${{ matrix.target.label }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
         # The tag archive is the handoff, never an update feed. The receipt
-        # appears only after both normal and Store packages are uploaded.
+        # appears after the selected packages (including Store on stable) upload.
         run: |
           args=(--include '*.msix')
           if [ "$RELEASE_PHASE" = candidate ]; then
@@ -547,6 +440,42 @@ jobs:
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           fi
 
+  build-win32-commit:
+    name: bundled ${{ matrix.target.label }} (commit)
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit != ''
+    needs: [validate, archive-inputs]
+    runs-on: ${{ matrix.target.runner }}
+    environment: release-signing
+    cache-mode: read
+    timeout-minutes: 900
+    strategy: *win32-strategy
+    env: *win32-env
+    steps: *win32-steps
+
+  build-win32:
+    name: bundled win32 result
+    # always() crosses the deliberately skipped trust branch; failed admission
+    # still skips this result, just as it skipped the original native builder.
+    if: >-
+      always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && needs.validate.result == 'success' && needs.archive-inputs.result == 'success'
+    needs: [validate, archive-inputs, build-win32-release, build-win32-commit]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 5
+    env:
+      SELECTED_BUILD_SUCCEEDED: >-
+        ${{ (inputs.build_commit == '' && needs.build-win32-release.result == 'success' && needs.build-win32-commit.result == 'skipped')
+          || (inputs.build_commit != '' && needs.build-win32-commit.result == 'success' && needs.build-win32-release.result == 'skipped') }}
+    steps: &native-build-result-steps
+      - name: Require exactly the selected native build to succeed
+        shell: bash
+        run: |
+          if [ "$SELECTED_BUILD_SUCCEEDED" != "true" ]; then
+            echo "::error::selected native build did not succeed, or the other trust branch was not skipped"
+            exit 1
+          fi
+
   # ── macOS builders (REAL) ──────────────────────────────────────────────────
   # Native per-arch darwin builds via scripts/bundles/desktop.py (the
   # one driver: same `--mac dmg zip` pass a local mac build runs). Each leg
@@ -558,14 +487,15 @@ jobs:
   # merge-multiple download) and publish-darwin-updater merges them into
   # releases/darwin/<channel>/<channel>-mac.yml — artifacts first, feed
   # pointer last, whole channel green before anything publishes.
-  build-darwin:
+  build-darwin-release:
     name: bundled ${{ matrix.target.label }}
-    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == ''
     needs: [validate, archive-inputs]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
+    cache-mode: write
     timeout-minutes: 360
-    strategy:
+    strategy: &darwin-strategy
       fail-fast: false
       matrix:
         target:
@@ -573,20 +503,14 @@ jobs:
             runner: macos-15
           - label: darwin-x64
             runner: macos-15-intel
-    env:
+    env: &darwin-env
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-      electron_config_cache: ${{ github.workspace }}/.cache/electron
-      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-    steps:
+    steps: &darwin-steps
       - name: Disable Spotlight indexing for DMG staging
         # Spotlight indexes the freshly-mounted dmg staging image past
         # hdiutil's detach retries (per-VM, not a cross-job race).
@@ -603,114 +527,38 @@ jobs:
           fetch-tags: true
           fetch-depth: 0
 
-      - name: Set up the locked build toolchain
-        id: pm
-        uses: ./.github/actions/setup-pm
+      - name: Restore desktop dependency inputs
+        id: build-cache
+        uses: ./.github/actions/desktop-build-cache
         with:
-          toolchain: all
-          archive-inputs: true
-          # The payload tools cache does not include uv's built wheels.
-          cache-python: true
-          save-python-cache: false
-          save-node-cache: false
+          phase: restore
+          source: ${{ github.workspace }}
+          work: ${{ runner.temp }}/desktop-job
+          cache: ${{ github.workspace }}/.cache/desktop-inputs
+          producer: desktop
 
-      - name: Resolve toolchain cache key
-        id: toolchain
+      - name: Prepare the complete desktop build
+        id: prepare
         shell: bash
+        env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
         run: |
-          node -e '
-            const l = require("./package-lock.json")
-            const el = l.packages["apps/desktop/node_modules/electron"].version
-            const eb = l.packages["node_modules/electron-builder"].version
-            if (!el || !eb) process.exit(1)
-            console.log(`electron=${el}`)
-            console.log(`builder=${eb}`)
-          ' >> "$GITHUB_OUTPUT"
+          args=(--tag "$HERMES_PAYLOAD_TAG")
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then args=(--commit "$HERMES_BUILD_COMMIT"); fi
+          python3 scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
+            --work "$RUNNER_TEMP/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
+          python3 -m scripts.ci.desktop_commands "$RUNNER_TEMP/desktop-job/prepared.json"
 
-      - name: Cache pm store
-        # Tag-dispatched runs (every canary) scope actions/cache under the
-        # dispatch ref, which GitHub mangles to refs/heads/refs/tags/<tag> —
-        # a different scope per tag, so an exact key can never be restored
-        # by a later canary. The content key below is stable across tags
-        # when pm/lock.json + uv.lock are unchanged; the restore-keys prefix
-        # (which ignores the tag entirely) rescues the previous canary's
-        # store when the locks DID move.
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Save dependency inputs before building
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' }}
+        uses: ./.github/actions/desktop-build-cache
         with:
-          path: apps/desktop/build/agent-payload/tools
-          key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
-          restore-keys: |
-            pm-store-v2-${{ matrix.target.label }}-
-
-      - name: Retrieve pinned payload inputs from R2
-        shell: bash
-        run: python -m scripts.ci.archive_inputs --target '${{ matrix.target.label }}' --store apps/desktop/build/agent-payload/tools
-
-      - name: Resolve electron's default download cache path
-        shell: bash
-        run: |
-          # @electron/get does NOT honor ELECTRON_CACHE/electron_config_cache:
-          # the electron-builder build's electron zip download uses the
-          # default env-paths cache root. It must be in the actions/cache
-          # path list or every build re-downloads electron (~115MB).
-          case "$RUNNER_OS" in
-            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
-            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
-            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
-          esac
-
-      - name: Cache electron + electron-builder toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ github.workspace }}/.cache/electron-builder
-            ${{ github.workspace }}/.cache/electron
-            ${{ env.ELECTRON_DEFAULT_CACHE }}
-          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
-          # An electron/builder bump misses the exact key, but the previous
-          # dist is still mostly reusable (electron's postinstall skips the
-          # download when dist/ exists) — restore it and let npm ci top up.
-          restore-keys: |
-            eb2-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Restore prepared desktop dependencies
-        id: node-modules-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            node_modules
-            apps/*/node_modules
-            ui-tui/node_modules
-            ui-tui/packages/*/node_modules
-            web/node_modules
-            tests-js/node_modules
-          # No partial restore: npm ci deletes both the tree and native outputs.
-          key: desktop-node-deps-v1-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', 'apps/*/package.json', 'ui-tui/package.json', 'ui-tui/packages/*/package.json', 'web/package.json', 'tests-js/package.json', '.npmrc', 'scripts/build/node-deps.mjs') }}
-
-      - name: Prepare desktop dependencies
-        shell: bash
-        run: node scripts/build/node-deps.mjs --source . --workspace apps/desktop --workspace ui-tui --workspace web --reuse
-
-      # Save before packaging: a later build/signing failure must not lose this work,
-      # and builder mutations must not become the next job's dependency input.
-      - name: Save prepared desktop dependencies
-        if: steps.node-modules-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            node_modules
-            apps/*/node_modules
-            ui-tui/node_modules
-            ui-tui/packages/*/node_modules
-            web/node_modules
-            tests-js/node_modules
-          key: ${{ steps.node-modules-cache.outputs.cache-primary-key }}
-
-      - name: Save warmed npm downloads
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.pm.outputs.npm-cache-path }}
-          key: ${{ steps.pm.outputs.node-cache-key }}
+          phase: save
+          source: ${{ github.workspace }}
+          work: ${{ runner.temp }}/desktop-job
+          cache: ${{ github.workspace }}/.cache/desktop-inputs
+          producer: desktop
+          key: ${{ steps.build-cache.outputs.cache-key }}
 
       # Commit artifacts are downloadable too. Require signing for them,
       # candidates, and published tags before building any payload.
@@ -749,22 +597,11 @@ jobs:
           printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/apple-api-key.p8"
           echo "APPLE_API_KEY=$RUNNER_TEMP/apple-api-key.p8" >> "$GITHUB_ENV"
 
-      - name: Pin CMake < 4 for sdist builds
-        # python-olm (matrix extra) builds libolm from sdist on non-Linux
-        # targets, and its libolm/CMakeLists.txt requires CMake < 3.5
-        # compat (removed in CMake 4, which the darwin runners ship). Pin a
-        # CMake 3.x first on PATH so the sdist build configures.
-        shell: bash
-        run: |
-          python -m scripts.ci.python_packages cmake==3.31.6
-
       - name: Build and package
         shell: bash
         timeout-minutes: 330
         env:
           HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
-          GITHUB_SHA: ${{ needs.validate.outputs.sha }}
-          GITHUB_REF_NAME: ${{ inputs.tag }}
           PYTHONUTF8: '1'
           # electron-osx-sign*/electron-notarize* keep the sign+notarize
           # phase visible: without them NOTHING logs between "signing
@@ -780,19 +617,7 @@ jobs:
           # every Mach-O) — raise the fd limit and let DEBUG show progress.
           ulimit -n 16384 2>/dev/null || true
           echo "file descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
-          if [ -n "$HERMES_BUILD_COMMIT" ]; then
-            python scripts/bundles/desktop.py --commit="$HERMES_BUILD_COMMIT" --variant=bundled
-          else
-            python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
-          fi
-
-      - name: Save warmed Python dependencies even after a packaging failure
-        if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
-        uses: ./.github/actions/save-pm-cache
-        with:
-          python: ${{ steps.pm.outputs.python-path }}
-          path: ${{ steps.pm.outputs.uv-cache-path }}
-          key: ${{ steps.pm.outputs.python-cache-key }}
+          python scripts/bundles/desktop.py --prepared "$RUNNER_TEMP/desktop-job/prepared.json" --variant bundled
 
       - name: Audit bundle architecture
         shell: bash
@@ -843,6 +668,9 @@ jobs:
         if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           TARGET: ${{ matrix.target.label }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
@@ -865,6 +693,35 @@ jobs:
             python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           fi
+
+  build-darwin-commit:
+    name: bundled ${{ matrix.target.label }} (commit)
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit != ''
+    needs: [validate, archive-inputs]
+    runs-on: ${{ matrix.target.runner }}
+    environment: release-signing
+    cache-mode: read
+    timeout-minutes: 360
+    strategy: *darwin-strategy
+    env: *darwin-env
+    steps: *darwin-steps
+
+  build-darwin:
+    name: bundled darwin result
+    # always() crosses the deliberately skipped trust branch; failed admission
+    # still skips this result, just as it skipped the original native builder.
+    if: >-
+      always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && needs.validate.result == 'success' && needs.archive-inputs.result == 'success'
+    needs: [validate, archive-inputs, build-darwin-release, build-darwin-commit]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 5
+    env:
+      SELECTED_BUILD_SUCCEEDED: >-
+        ${{ (inputs.build_commit == '' && needs.build-darwin-release.result == 'success' && needs.build-darwin-commit.result == 'skipped')
+          || (inputs.build_commit != '' && needs.build-darwin-commit.result == 'success' && needs.build-darwin-release.result == 'skipped') }}
+    steps: *native-build-result-steps
 
   # ── Linux builders (DISABLED for now) ─────────────────────────────────────
   build-linux:
@@ -938,13 +795,13 @@ jobs:
             const el = l.packages["apps/desktop/node_modules/electron"].version
             const eb = l.packages["node_modules/electron-builder"].version
             if (!el || !eb) process.exit(1)
-            console.log(`electron=${el}`)
-            console.log(`builder=${eb}`)
+            console.log("electron=" + el)
+            console.log("builder=" + eb)
           ' >> "$GITHUB_OUTPUT"
 
       # Cache reuse is optional. Bundle scripts provision the pinned SDK
       # and signing dependencies through electron-builder on a cache miss.
-      # Keep the path list identical to the build legs for warm reuse.
+      # This smaller consumer has its own cache, separate from desktop inputs.
       - name: Resolve electron's default download cache path
         shell: bash
         run: |

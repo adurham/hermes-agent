@@ -23,6 +23,8 @@ class Operation:
 OPERATIONS = {
     "ensure": Operation("pm.ensure", None, "state"),
     "stage_only": Operation("pm.ensure", None, "always"),
+    "stage_tools": Operation("pm.build_operations", None, "never"),
+    "prepare_tools": Operation("pm.build_operations", None, "always"),
     "sync_venv": Operation("pm.ensure", ("venv",), "policy"),
     "venv_is_current": Operation("pm.ensure", ("venv",), "never"),
     "build_environment": Operation("pm.operations", ("uv",), "policy"),

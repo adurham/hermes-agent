@@ -33,8 +33,20 @@ export function npmCommand({ env = process.env } = {}) {
   return [process.execPath, cli]
 }
 
+function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }) {
+  if (!existsSync(receipt) || !existsSync(hiddenLock)) return false
+  const installed = readFileSync(hiddenLock)
+  const expected = `${key}\n${createHash('sha256').update(installed).digest('hex')}\n`
+  if (nativeKey !== undefined) {
+    const nativeReceipt = `${receipt}.native-toolchain`
+    if (!existsSync(nativeReceipt) || readFileSync(nativeReceipt, 'utf8') !== `${expected}${nativeKey}\n`) return false
+  }
+  return readFileSync(receipt, 'utf8') === expected && Object.keys(JSON.parse(installed).packages)
+    .every(path => existsSync(join(source, path)))
+}
+
 /** Install the full requested workspace union in one strict, locked operation. */
-export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true }) {
+export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain }) {
   source = resolve(source)
   if (!Array.isArray(workspaces) || workspaces.length === 0) {
     throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
@@ -65,6 +77,11 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   // This receipt certifies dependency preparation, never compiled product freshness.
   // Keep it inside the cached tree so a clean npm ci also removes the receipt.
   const receipt = join(source, 'node_modules/.hermes-node-deps')
+  // Ordinary product builders consume the baseline receipt; preparation also
+  // binds lifecycle outputs to its compiler/SDK identity. On a mismatch npm ci
+  // removes arbitrary package lifecycle outputs, not just known node-pty paths.
+  const nativeReceipt = `${receipt}.native-toolchain`
+  const nativeKey = nativeToolchain === undefined ? undefined : JSON.stringify(nativeToolchain)
   const hiddenLock = join(source, 'node_modules/.package-lock.json')
   const inputs = createHash('sha256').update(JSON.stringify({
     node: process.versions.node, npm: npmVersion, platform: process.platform, arch: process.arch, args,
@@ -79,21 +96,19 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     inputs.update(file).update('\0').update(existsSync(join(source, file)) ? readFileSync(join(source, file)) : '<missing>').update('\0')
   }
   const key = inputs.digest('hex')
-  if (reuse && existsSync(receipt) && existsSync(hiddenLock)) {
-    const installed = readFileSync(hiddenLock)
-    const expected = `${key}\n${createHash('sha256').update(installed).digest('hex')}\n`
-    if (readFileSync(receipt, 'utf8') === expected && Object.keys(JSON.parse(installed).packages)
-      .every(path => existsSync(join(source, path)))) {
-      console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
-      return { source, workspaces: selected }
-    }
+  if (reuse && completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey })) {
+    console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
+    return { source, workspaces: selected }
   }
   if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
   // npm can fail during validation before deleting node_modules. Invalidate first.
   rmSync(receipt, { force: true })
+  rmSync(nativeReceipt, { force: true })
   execFileSync(node, [npm, ...args], { cwd: source, env, stdio: 'inherit' })
   if (reuse) {
-    writeFileSync(receipt, `${key}\n${createHash('sha256').update(readFileSync(hiddenLock)).digest('hex')}\n`)
+    const completed = `${key}\n${createHash('sha256').update(readFileSync(hiddenLock)).digest('hex')}\n`
+    writeFileSync(receipt, completed)
+    if (nativeKey !== undefined) writeFileSync(nativeReceipt, `${completed}${nativeKey}\n`)
   }
   return { source, workspaces: selected }
 }
@@ -110,7 +125,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     source: { type: 'string' }, workspace: { type: 'string', multiple: true },
     reuse: { type: 'boolean', default: false },
     'no-install': { type: 'boolean', default: false },
+    'native-toolchain': { type: 'string' },
   } })
   if (!values.source) throw new Error('--source is required')
-  prepareNodeDependencies({ source: values.source, workspaces: values.workspace, reuse: values.reuse, install: !values['no-install'] })
+  prepareNodeDependencies({ source: values.source, workspaces: values.workspace, reuse: values.reuse, install: !values['no-install'], nativeToolchain: values['native-toolchain'] })
 }

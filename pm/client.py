@@ -42,7 +42,8 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
     update_id = receipt._ambient_update_id()
     callbacks = callbacks or {}
     spec = OPERATIONS[operation]
-    names = list(spec.packages) if spec.packages is not None else [arguments["name"]]
+    names = list(spec.packages) if spec.packages is not None else (
+        arguments["names"] if "names" in arguments else [arguments["name"]])
     message = {
         "id": request_id, "operation": operation, "arguments": arguments,
         "update_id": update_id,
@@ -326,6 +327,25 @@ def build_requirements_environment(requirements: Sequence[str], *, out: Path,
         "requirements": list(requirements), "out": Path(out), "python": python, "cache": cache,
         "env": dict(env) if env is not None else None, "wheelhouse": wheelhouse,
         "offline": offline, "sealed": sealed, "explicit": explicit,
+    }))
+
+
+def prepare_tools(names: Sequence[str], *, out: Path, target: str,
+                  cache: Path | None = None) -> Path:
+    """Realize build tools without selecting application or profile state."""
+    if isinstance(names, str):
+        raise TypeError("names must be a sequence, not a string")
+    return Path(_python_operation("prepare_tools", {
+        "names": list(names), "out": Path(out), "target": target, "cache": cache,
+    }))
+
+
+def stage_tools(names: Sequence[str], *, source_store: Path, out: Path, target: str) -> Path:
+    """Independently copy verified pins through a ready PM; never bootstrap."""
+    if isinstance(names, str):
+        raise TypeError("names must be a sequence, not a string")
+    return Path(_python_operation("stage_tools", {
+        "names": list(names), "source_store": Path(source_store), "out": Path(out), "target": target,
     }))
 
 

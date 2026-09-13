@@ -66,6 +66,25 @@ Native desktop bundles stage the supported tool set and all target-compatible
 Python extras before packaging. `--extra all` and `--all-extras` are not
 synonyms. Platform markers still exclude dependencies that cannot run on a target.
 
+The complete desktop builder composes PM with the Node/native packaging providers.
+From a clean checkout at a release tag, `python scripts/bundles/desktop.py --tag vX.Y.Z`
+prepares dependencies and builds the installer. Add `--prepare-only` to stop after
+preparation; consume its job-local result with
+`python scripts/bundles/desktop.py --prepared .build/desktop-job/prepared.json`.
+`--work` and `--cache` select separate build-owned roots. Preparation, not the
+caller, creates the work directory. A full commit SHA can replace the tag through
+`--commit`; the checkout must match.
+
+Preparation uses isolated PM state, pinned tools, fresh path-bound Python
+environments, the complete JS workspace union, native bindings and packaging
+utilities. Reusable dependency caches are not live installations or portable
+virtual environments. The prepared result binds the source, target and paths;
+missing or changed inputs fail consumption rather than trigger a download.
+Reprepare after a move or input change. Signing and notarization can still use
+the network. See the
+[desktop build guide](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md)
+for native compiler requirements and release verification limits.
+
 A packaged application's base payload is immutable. Hermes runs its backend
 from that payload, rather than copying a source checkout on first launch.
 The bundle builder checks its files and writes the launch paths into the desktop

@@ -21,6 +21,39 @@ build or a target-native runtime.
 builders, they can access package registries. There is no universal installer,
 all-products dispatcher, or cross-platform Python environment.
 
+## Complete desktop preparation
+
+`../bundles/desktop.py` composes these providers for local and CI packaging:
+
+```sh
+python scripts/bundles/desktop.py --tag vX.Y.Z --variant bundled --prepare-only \
+  --work "$PWD/.build/desktop-job" --cache "$PWD/.cache/desktop-inputs"
+python scripts/bundles/desktop.py --prepared "$PWD/.build/desktop-job/prepared.json"
+```
+
+Start from a clean checkout at that tag (or use `--commit FULL_SHA`). A host
+Python and Git bootstrap preparation; PM selects the pinned tools. Native
+compiler/SDK prerequisites are still platform-specific. Omitting `--prepare-only`
+runs both phases. Defaults use the same `.build/desktop-job` and
+`.cache/desktop-inputs` roots. Do not pre-create the work directory: preparation
+claims it and publishes its job-local path selection only after success.
+
+Preparation covers the exact workspace union, icon Python environment, runtime
+and independent PM dependencies, Electron-native bindings, Electron archive and
+selected packaging utilities. Light omits the runtime and TUI/web union.
+Compilation and packaging consume those inputs, refusing missing/stale inputs
+rather than acquiring replacements. The result is tied to this source revision,
+target and absolute paths; it must not be restored as an authoritative CI cache.
+Stable bundled/Store variants can share it. Product compilation still reruns.
+
+The desktop cache action derives reusable paths from provider declarations and
+saves them after preparation, before compilation/signing. It excludes job-local
+environments and products. Native wheel reuse additionally depends on measured
+compiler/SDK inputs. Signing-result caches remain separate. Strict dependency
+consumption is not offline signing: timestamps, notarization and publication can
+still require network access. Native unsigned network-denied packaging and final
+signed launch acceptance are distinct verification gates.
+
 ## Prepared JavaScript workspace
 
 Run commands from the repository root. Replace the absolute example paths with
@@ -247,9 +280,10 @@ cache. `scripts.bundles.stage --cache PATH` (or `hermes pm bundle --cache PATH`)
 selects the persistent cache explicitly. Direct staging also accepts the
 provider's `UV_CACHE_DIR`; otherwise it uses the output parent's `.uv-cache`.
 The PM runtime and application dependency builds receive this same cache.
-CI's `setup-pm` restores it and `save-pm-cache` prunes/saves it after the build,
-including a failed build. Cache keys use only the v2 namespace, without legacy
-fallback. The packaged `uv-cache/` is a copy, not the writable build cache.
+General PM staging uses `setup-pm` and `save-pm-cache` to restore and save it
+after the build, including failures, under its v2 namespace. Desktop composition
+instead prepares the full dependency set before its single dependency snapshot
+save. The packaged `uv-cache/` is a copy, not the writable build cache.
 
 ### Windows ARM64 build prerequisites
 
@@ -264,7 +298,8 @@ The PowerShell entrypoint accepts `-StateRoot` for persistent build-tool state
 and `-EnvironmentFile` for its prepared environment. The Python adapter passes
 that environment only to build children. Rust's original toolchain homes stay
 explicit, so temporary HOME isolation cannot hide an initialized toolchain.
-CI exports the same compiler, SDK, Rust, and OpenSSL environment to later steps.
+General CI setup exports that compiler environment to later steps. Desktop
+preparation keeps it child-scoped and records native cache identity there.
 Warm OpenSSL reuse validates both static libraries and its development header.
 
 ## Runnable agent assembly

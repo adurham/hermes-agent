@@ -139,10 +139,9 @@ def test_native_stage_builds_pm_before_application_environment(tmp_path, monkeyp
     shutil.copy2(Path(__file__).resolve().parents[2] / "pm/lock.json", lock)
     monkeypatch.setattr(payload, "snapshot", lambda *args: None)
     monkeypatch.setattr(native, "_bundle_package_names", lambda: [])
-    monkeypatch.setattr(native, "_install_names", lambda names: 0)
+    monkeypatch.setattr("pm.prepare_tools", lambda *args, **kwargs: tmp_path / "prepared-tools")
+    monkeypatch.setattr("pm.stage_tools", lambda *args, **kwargs: tmp_path / "tools")
     monkeypatch.setattr(native, "Facts", Facts)
-    monkeypatch.setattr(native, "_facts", Facts)
-    monkeypatch.setattr(native, "_store", lambda: SimpleNamespace(entry=lambda name: tmp_path / "tools" / name))
     monkeypatch.setattr(native, "get_package", lambda name: SimpleNamespace(binary=lambda path, target: path / "python"))
 
     cache_dir = tmp_path / "cache"

@@ -162,6 +162,7 @@ test('a prepared input changing during desktop compilation cannot publish a curr
 test('native preparation stages the selected source into an explicit tree before compilation', async () => {
   const { prepareDesktopNativeDependencies } = await import('../apps/desktop/scripts/stage-native-deps.mjs')
   const input = fixture()
+  cpSync(join(repo, 'package-lock.json'), join(input.source, 'package-lock.json'))
   const nativeOut = join(dirname(input.out), 'prepared-native')
   await prepareDesktopNativeDependencies({ source: input.source, out: nativeOut })
   expect(existsSync(join(nativeOut, 'node-pty/package.json'))).toBe(true)

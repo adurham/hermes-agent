@@ -66,6 +66,25 @@ test('read-only dependency preparation reuses complete receipts but refuses miss
   expect(readFileSync(join(source, 'node_modules/.hermes-node-deps'))).toEqual(receipt)
 }, 30000)
 
+test('native toolchain admission rejects a changed compiler without breaking ordinary builders', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const options = { source, workspaces: ['web'], reuse: true,
+    env: { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') } }
+  prepareNodeDependencies({ ...options, nativeToolchain: 'native-first' })
+  const artifact = join(source, 'node_modules/compiled-output')
+  writeFileSync(artifact, 'old compiler')
+  prepareNodeDependencies({ ...options, install: false })
+  prepareNodeDependencies({ ...options, nativeToolchain: 'native-first', install: false })
+  expect(() => prepareNodeDependencies({ ...options, nativeToolchain: 'native-second', install: false })).toThrow(/disabled/)
+  expect(readFileSync(artifact, 'utf8')).toBe('old compiler')
+  const cli = [join(repo, 'scripts/build/node-deps.mjs'), '--source', source, '--workspace', 'web', '--reuse', '--native-toolchain', 'native-second']
+  execFileSync(process.execPath, cli, { env: options.env, stdio: 'pipe' })
+  expect(existsSync(artifact)).toBe(false)
+  prepareNodeDependencies({ ...options, nativeToolchain: 'native-second', install: false })
+  prepareNodeDependencies({ ...options, install: false })
+}, 30000)
+
 test('one locked preparation retains the requested union without provisioning desktop', async () => {
   const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
   const source = fixture()
