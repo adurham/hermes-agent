@@ -5,10 +5,6 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import {
-  chromiumRoots,
-  isMachO,
-  listLooseMachO,
-  listTopLevelApps,
   parseDeveloperId,
   repairFrameworkLinks,
   resolveSigningIdentity,
@@ -24,48 +20,6 @@ function machoBuf() {
   buf.writeUInt32BE(0xfeedfacf, 0)
   return buf
 }
-
-test('isMachO accepts a 64-bit Mach-O magic and rejects text', () => {
-  const dir = tempRoot()
-  try {
-    const bin = path.join(dir, 'a')
-    const txt = path.join(dir, 'b.txt')
-    fs.writeFileSync(bin, machoBuf())
-    fs.writeFileSync(txt, 'not a binary')
-    assert.equal(isMachO(bin), true)
-    assert.equal(isMachO(txt), false)
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('chromiumRoots only names full Chromium store entries', () => {
-  const payload = tempRoot()
-  try {
-    fs.mkdirSync(path.join(payload, 'tools', 'chromium-1208'), { recursive: true })
-    fs.mkdirSync(path.join(payload, 'tools', 'chromium_headless_shell-1208'), { recursive: true })
-    fs.mkdirSync(path.join(payload, 'tools', 'uv-0.12.3-darwin-arm64'), { recursive: true })
-    const roots = chromiumRoots(payload).map(p => path.basename(p)).sort()
-    assert.deepEqual(roots, ['chromium-1208'])
-  } finally {
-    fs.rmSync(payload, { recursive: true, force: true })
-  }
-})
-
-test('listTopLevelApps finds .app dirs and listLooseMachO skips them', () => {
-  const root = tempRoot()
-  try {
-    const app = path.join(root, 'Google Chrome for Testing.app')
-    fs.mkdirSync(path.join(app, 'Contents', 'MacOS'), { recursive: true })
-    fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'Chrome'), machoBuf())
-    const loose = path.join(root, 'libEGL.dylib')
-    fs.writeFileSync(loose, machoBuf())
-    assert.deepEqual(listTopLevelApps(root), [app])
-    assert.deepEqual(listLooseMachO(root), [loose])
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true })
-  }
-})
 
 test('repairFrameworkLinks turns a flattened Foo.framework/Foo into a symlink', () => {
   if (process.platform === 'win32') return
@@ -120,6 +74,12 @@ test('signNestedChromium --deep signs the .app and file-signs loose Mach-O', () 
     fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'Chrome'), machoBuf())
     const loose = path.join(payload, 'tools', 'chromium-1208', 'libEGL.dylib')
     fs.writeFileSync(loose, machoBuf())
+    fs.writeFileSync(path.join(path.dirname(loose), 'README'), 'not Mach-O')
+    for (const name of ['chromium_headless_shell-1208', 'uv-0.12.3-darwin-arm64']) {
+      const other = path.join(payload, 'tools', name)
+      fs.mkdirSync(other, { recursive: true })
+      fs.writeFileSync(path.join(other, 'binary'), machoBuf())
+    }
     const calls = []
     const r = signNestedChromium(payload, {
       identity: 'Developer ID Application: Test',

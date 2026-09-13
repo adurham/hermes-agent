@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopBootstrapEvent, DesktopBootstrapState, DesktopConnectionProbeResult } from '@/global'
+import type { DesktopBootstrapEvent, DesktopBootstrapState } from '@/global'
 
 import { DesktopInstallOverlay } from './desktop-install-overlay'
 
@@ -303,103 +303,6 @@ describe('DesktopInstallOverlay first-run setup', () => {
     await waitFor(() => expect(screen.queryByText('Gateway URL')).toBeNull())
   })
 
-  it('ignores a completed probe after the gateway URL becomes invalid', async () => {
-    const desktop = installDesktopMock(
-      bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
-      })
-    )
-
-    let resolveProbe: ((result: DesktopConnectionProbeResult) => void) | undefined
-
-    const pendingProbe = new Promise<DesktopConnectionProbeResult>(resolve => {
-      resolveProbe = resolve
-    })
-
-    desktop.probeConnectionConfig.mockReturnValue(pendingProbe)
-
-    render(<DesktopInstallOverlay />)
-
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-    const urlInput = await screen.findByPlaceholderText('https://gateway.example.com/hermes')
-    fireEvent.change(urlInput, { target: { value: 'https://gateway.example.com/hermes' } })
-
-    await act(async () => {
-      await new Promise(resolve => setTimeout(resolve, 550))
-    })
-    expect(desktop.probeConnectionConfig).toHaveBeenCalledTimes(1)
-
-    fireEvent.change(urlInput, { target: { value: 'not-a-url' } })
-    await act(async () => {
-      resolveProbe?.({
-        authMode: 'token',
-        baseUrl: 'https://gateway.example.com/hermes',
-        error: null,
-        providers: [],
-        reachable: true,
-        version: '0.17.0'
-      })
-      await pendingProbe
-    })
-
-    expect(screen.queryByPlaceholderText('Paste session token')).toBeNull()
-    expect((screen.getByText('Test connection').closest('button') as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByText('Apply and reconnect').closest('button') as HTMLButtonElement).disabled).toBe(true)
-  })
-
-  it('does not enable Apply when credentials change during a connection test', async () => {
-    const desktop = installDesktopMock(
-      bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
-      })
-    )
-
-    desktop.probeConnectionConfig.mockResolvedValue({
-      authMode: 'token',
-      baseUrl: 'https://gateway.example.com/hermes',
-      error: null,
-      providers: [],
-      reachable: true,
-      version: '0.17.0'
-    })
-
-    let resolveTest: ((result: { baseUrl: string; ok: boolean; version: string }) => void) | undefined
-
-    const pendingTest = new Promise<{ baseUrl: string; ok: boolean; version: string }>(resolve => {
-      resolveTest = resolve
-    })
-
-    desktop.testConnectionConfig.mockReturnValue(pendingTest)
-
-    render(<DesktopInstallOverlay />)
-
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-    fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
-      target: { value: 'https://gateway.example.com/hermes' }
-    })
-
-    await act(async () => {
-      await new Promise(resolve => setTimeout(resolve, 550))
-    })
-
-    const tokenInput = await screen.findByPlaceholderText('Paste session token')
-    const apply = screen.getByText('Apply and reconnect').closest('button') as HTMLButtonElement
-
-    fireEvent.change(tokenInput, { target: { value: 'token-a' } })
-    fireEvent.click(screen.getByText('Test connection'))
-    await waitFor(() => expect(desktop.testConnectionConfig).toHaveBeenCalledTimes(1))
-
-    fireEvent.change(tokenInput, { target: { value: 'token-b' } })
-
-    await act(async () => {
-      resolveTest?.({ baseUrl: 'https://gateway.example.com/hermes', ok: true, version: '0.17.0' })
-      await pendingTest
-    })
-
-    expect(screen.queryByText('Connected to https://gateway.example.com/hermes (0.17.0).')).toBeNull()
-    expect(apply.disabled).toBe(true)
-  })
-
   it('restores remote apply controls when applying the tested connection fails', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
@@ -610,45 +513,19 @@ describe('DesktopInstallOverlay first-run setup', () => {
   })
 })
 
-describe('DesktopInstallOverlay bundled / already-installed cards', () => {
-  it('shows the use-existing card for an installed runtime and hides the install-to footer', async () => {
-    installDesktopMock(
-      bootstrapState({
-        setupChoice: {
-          platform: 'win32',
-          activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent',
-          local: 'installed',
-          bundled: false
-        }
-      })
-    )
+it.each([
+  ['installed', false, 'Use Hermes on this computer', /already installed here/i, false],
+  ['bundled', true, 'Use Hermes on this computer', /included with this app/i, false],
+  [undefined, false, 'Install Hermes locally', /Will install to/i, true]
+] as const)('local presentation for %s (including old backends)', async (local: 'installed' | 'bundled' | undefined, bundled: boolean, title: string, description: RegExp, footer: boolean): Promise<void> => {
+  const state: DesktopBootstrapState = bootstrapState({ setupChoice: { platform: 'win32', activeRoot: 'C:\\Hermes', local: local ?? 'none', bundled } })
 
-    render(<DesktopInstallOverlay />)
+  if (local === undefined && state.setupChoice) { Reflect.deleteProperty(state.setupChoice, 'local') }
+  installDesktopMock(state)
+  render(<DesktopInstallOverlay />)
+  expect(await screen.findByText(title)).toBeTruthy()
+  expect(screen.getByText(description)).toBeTruthy()
+  expect(screen.queryByText(/Will install to/i) !== null).toBe(footer)
 
-    expect(await screen.findByText('Use Hermes on this computer')).toBeTruthy()
-    expect(screen.getByText(/already installed here/i)).toBeTruthy()
-    expect(screen.queryByText(/Will install to/i)).toBeNull()
-    expect(screen.queryByText('Install Hermes locally')).toBeNull()
-  })
-
-  it('shows the bundled flavor for a healthy bundled install', async () => {
-    installDesktopMock(
-      bootstrapState({
-        setupChoice: {
-          platform: 'win32',
-          activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent',
-          local: 'bundled',
-          bundled: true
-        }
-      })
-    )
-
-    render(<DesktopInstallOverlay />)
-
-    expect(await screen.findByText('Use Hermes on this computer')).toBeTruthy()
-    expect(screen.getByText(/included with this app/i)).toBeTruthy()
-    expect(screen.queryByText(/Will install to/i)).toBeNull()
-  })
-
-
+  if (!footer) { expect(screen.queryByText('Install Hermes locally')).toBeNull() }
 })

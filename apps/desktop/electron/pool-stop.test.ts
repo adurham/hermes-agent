@@ -116,6 +116,7 @@ test('stopAll waits for current and already-stopping backends', async () => {
   })
 
   assert.equal(pool.size, 0)
+  assert.equal(stopper.hasPending(), true)
   assert.equal(a.killed, true)
   assert.equal(b.killed, true)
 
@@ -126,30 +127,6 @@ test('stopAll waits for current and already-stopping backends', async () => {
 
   exitResolvers.get(a)?.()
   await Promise.all([all, priorStop])
-  assert.equal(settled, true)
-})
-
-test('stopAll joins a stop whose pool entry was already evicted', async () => {
-  const { addChild, exitResolvers, pool, stopper } = harness()
-  const child = addChild('already-stopping')
-
-  const first = stopper.stop('already-stopping')
-
-  assert.equal(pool.size, 0)
-  assert.equal(stopper.hasPending(), true)
-
-  let settled = false
-
-  const all = stopper.stopAll().then(() => {
-    settled = true
-  })
-
-  await Promise.resolve()
-
-  assert.equal(settled, false)
-
-  exitResolvers.get(child)?.()
-  await Promise.all([first, all])
   assert.equal(settled, true)
   assert.equal(stopper.hasPending(), false)
 })

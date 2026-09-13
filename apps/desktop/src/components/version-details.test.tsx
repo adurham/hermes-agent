@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 import type { DesktopVersionInfo } from '@/global'
 import { I18nProvider } from '@/i18n'
@@ -7,29 +7,10 @@ import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import { VersionDetails } from './version-details'
 
-const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
-const initialHermesDesktop = desktopWindow.hermesDesktop
-
-function installDesktopBridge() {
-  const openExternal = vi.fn().mockResolvedValue(undefined)
-
-  desktopWindow.hermesDesktop = {
-    openExternal
-  } as unknown as Window['hermesDesktop']
-
-  return openExternal
-}
-
-afterEach(() => {
+afterEach((): void => {
   cleanup()
   closeRightRail()
-  vi.restoreAllMocks()
-
-  if (initialHermesDesktop) {
-    desktopWindow.hermesDesktop = initialHermesDesktop
-  } else {
-    delete desktopWindow.hermesDesktop
-  }
+  vi.unstubAllGlobals()
 })
 
 const baseVersion: DesktopVersionInfo = {
@@ -41,98 +22,36 @@ const baseVersion: DesktopVersionInfo = {
 }
 
 describe('VersionDetails', () => {
-  it('omits the branch suffix when no branch is present', () => {
-    render(
-      <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails version={{ ...baseVersion, source: 'ci', branch: null }} />
-      </I18nProvider>
-    )
+  interface VersionCase { version: Partial<DesktopVersionInfo>; visible: string[]; absent?: string[] }
 
-    expect(screen.getByText('Build Origin')).toBeTruthy()
-    expect(screen.getByText('CI')).toBeTruthy()
-  })
+  const cases: VersionCase[] = [
+    { version: { source: 'ci', branch: null }, visible: ['Build Origin', 'CI'] },
+    { version: { source: 'ci', branch: 'unknown' }, visible: ['CI (unknown)'] },
+    { version: { source: 'nix', distribution: 'nix' }, visible: ['Build Origin', 'Nix', 'Distribution'] },
+    { version: { source: 'ci', distribution: 'docker' }, visible: ['CI', 'Distribution', 'Docker'] },
+    { version: { distribution: 'desktop-app', hermesRuntime: { type: 'embedded' } }, visible: ['Runtime', 'Embedded runtime'] },
+    { version: { hermesRuntime: { type: 'external', source: { type: 'git', root: '/home/u/.hermes/hermes-agent' } } },
+      visible: ['Runtime', 'git (/home/u/.hermes/hermes-agent)'], absent: ['External (uses the machine runtime)'] },
+    { version: { hermesRuntime: { type: 'external' } }, visible: ['Runtime', 'External (uses the machine runtime)'] },
+    { version: { distribution: 'desktop-app', updateMechanism: 'microsoft-store' },
+      visible: ['Distribution', 'Microsoft Store'], absent: ['Desktop app (MSIX)'] },
+    { version: { distribution: 'desktop-app', updateMechanism: 'app-installer' },
+      visible: ['Desktop app (MSIX)'], absent: ['Microsoft Store'] }
+  ]
 
-  it('shows a literal branch named unknown inline', () => {
-    render(
-      <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails version={{ ...baseVersion, source: 'ci', branch: 'unknown' }} />
-      </I18nProvider>
-    )
+  it.each(cases)('renders $version', ({ version, visible, absent = [] }: VersionCase): void => {
+    render(<I18nProvider configClient={null} initialLocale="en"><VersionDetails version={{ ...baseVersion, ...version }} /></I18nProvider>)
 
-    expect(screen.getByText('CI (unknown)')).toBeTruthy()
-  })
+    for (const text of visible) { expect(screen.getAllByText(text).length).toBeGreaterThan(0) }
 
-  it('shows the Nix source and distribution from the stamp', () => {
-    render(
-      <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails version={{ ...baseVersion, source: 'nix', distribution: 'nix' }} />
-      </I18nProvider>
-    )
+    for (const text of absent) { expect(screen.queryByText(text)).toBeNull() }
 
-    expect(screen.getByText('Build Origin')).toBeTruthy()
-    expect(screen.getAllByText('Nix')).toHaveLength(2)
-    expect(screen.getByText('Distribution')).toBeTruthy()
-  })
-
-  it('distinguishes CI provenance from the Docker distribution', () => {
-    render(
-      <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails version={{ ...baseVersion, source: 'ci', distribution: 'docker' }} />
-      </I18nProvider>
-    )
-
-    expect(screen.getByText('CI')).toBeTruthy()
-    expect(screen.getByText('Distribution')).toBeTruthy()
-    expect(screen.getByText('Docker')).toBeTruthy()
-  })
-
-  it('shows the runtime row for an embedded build running its payload', () => {
-    render(
-      <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails
-          version={{
-            ...baseVersion,
-            distribution: 'desktop-app',
-            hermesRuntime: { type: 'embedded' }
-          }}
-        />
-      </I18nProvider>
-    )
-
-    expect(screen.getByText('Runtime')).toBeTruthy()
-    expect(screen.getByText('Embedded runtime')).toBeTruthy()
-  })
-
-  it('shows the runtime source with its location when an external build runs a machine runtime', () => {
-    render(
-      <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails
-          version={{
-            ...baseVersion,
-            hermesRuntime: { type: 'external', source: { type: 'git', root: '/home/u/.hermes/hermes-agent' } }
-          }}
-        />
-      </I18nProvider>
-    )
-
-    expect(screen.getByText('Runtime')).toBeTruthy()
-    expect(screen.getByText('git (/home/u/.hermes/hermes-agent)')).toBeTruthy()
-    expect(screen.queryByText('External (uses the machine runtime)')).toBeNull()
-  })
-
-  it('shows the generic external label before the first backend spawn', () => {
-    render(
-      <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails version={{ ...baseVersion, hermesRuntime: { type: 'external' } }} />
-      </I18nProvider>
-    )
-
-    expect(screen.getByText('Runtime')).toBeTruthy()
-    expect(screen.getByText('External (uses the machine runtime)')).toBeTruthy()
+    if (version.source === 'nix') { expect(screen.getAllByText('Nix')).toHaveLength(2) }
   })
 
   it('opens the commit URL via the system-browser bridge without opening a preview tab', async () => {
-    const openExternal = installDesktopBridge()
+    const openExternal: Mock<Window['hermesDesktop']['openExternal']> = vi.fn<Window['hermesDesktop']['openExternal']>().mockResolvedValue(undefined)
+    vi.stubGlobal('hermesDesktop', { openExternal } satisfies Pick<Window['hermesDesktop'], 'openExternal'>)
 
     render(
       <I18nProvider configClient={null} initialLocale="en">

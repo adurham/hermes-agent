@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { HermesApiRequest, HermesConnection } from '@/global'
-import type { LocalModelsStatus, LocalRuntimeJob, ModelOptionsResponse } from '@/types/hermes'
+import type { LocalCatalogModel, LocalModelsStatus, LocalRuntimeJob, ModelOptionsResponse } from '@/types/hermes'
 
 vi.mock('@/hermes', async (): Promise<object> => ({
   ...(await import('@/api/local-models')),
@@ -31,7 +31,7 @@ import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu
 import { I18nProvider } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { $localModelsEnabled } from '@/store/local-models-flag'
-import { notify } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { deferred } from '@/test/deferred'
@@ -79,6 +79,12 @@ const running: LocalRuntimeJob = {
 }
 
 let jobs: LocalRuntimeJob[] = []
+let catalog: LocalCatalogModel[] = []
+
+const model: LocalCatalogModel = {
+  id: 'model', display_name: 'Download A', description: '', size_bytes: 2, size_label: '2 B',
+  native_context: 4096, native_context_label: '4K', recommended: true, downloaded: false, fits: true, mtp: false, fit_summary: 'fits'
+}
 
 const api = vi.fn(async (request: HermesApiRequest): Promise<unknown> => {
   if (request.path.endsWith('/status')) {
@@ -86,11 +92,19 @@ const api = vi.fn(async (request: HermesApiRequest): Promise<unknown> => {
   }
 
   if (request.path.endsWith('/catalog')) {
-    return { models: [] }
+    return { models: catalog }
   }
 
   if (request.path.endsWith('/jobs')) {
     return { jobs: structuredClone(jobs) }
+  }
+
+  if (request.path.endsWith('/download/pause') || request.path.endsWith('/download/resume')) {
+    expect(request).toMatchObject({ connectionId: 'A', profile: 'work', method: 'POST', body: { job_id: 'same-id' } })
+    const paused: boolean = request.path.endsWith('/pause')
+    jobs = jobs.map((job: LocalRuntimeJob): LocalRuntimeJob => ({ ...job, status: paused ? 'paused' : 'running', can_pause: !paused, can_resume: paused }))
+
+    return paused ? { ok: true, paused: true } : { ok: true, resumed: true }
   }
 
   if (request.path.endsWith('/hardware')) {
@@ -112,9 +126,11 @@ beforeEach((): void => {
   vi.useFakeTimers()
   queryClient.clear()
   jobs = []
+  catalog = []
   api.mockClear()
   $connection.set(null)
   vi.mocked(notify).mockClear()
+  vi.mocked(notifyError).mockClear()
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
   setApiRequestConnection('A')
   setApiRequestProfile('work')
@@ -356,4 +372,34 @@ it('keeps menu focus and its scalar selection stable across byte updates and out
   expect(queryClient.getQueryData(key)).toBe(snapshot)
   expect(screen.getByText('75%')).toBeTruthy()
   expect(window.document.activeElement).toBe(input)
+})
+
+it.each(['model-download', 'quickstart', 'runtime-install'] as const)('%s pause and resume travel through the owner API and publish server truth', async (kind: LocalRuntimeJob['kind']): Promise<void> => {
+  catalog = [model]
+  jobs = [{ ...running, kind, can_pause: true, phase: kind === 'runtime-install' ? 'downloading-runtime' : 'downloading' }]
+  const settings: RenderResult = mountSettings()
+  await tick()
+  fireEvent.click(screen.getByRole('button', { name: /pause/i }))
+  await tick()
+  expect(jobs[0].status).toBe('paused')
+  expect(screen.getByRole('button', { name: /resume/i })).toBeTruthy()
+  expect(screen.getAllByText(/paused/i).length).toBeGreaterThan(0)
+  expect(screen.getAllByRole('progressbar').some((bar: HTMLElement): boolean => bar.getAttribute('aria-valuenow') === '50')).toBe(true)
+  expect(notify).not.toHaveBeenCalled()
+  expect(notifyError).not.toHaveBeenCalled()
+
+  if (kind === 'quickstart') { expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull() }
+  fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+  await tick()
+  expect(jobs[0].status).toBe('running')
+  expect(api.mock.calls.filter(([request]): boolean => request.method === 'POST').map(([request]): string => request.path))
+    .toEqual(['/api/local-models/download/pause', '/api/local-models/download/resume'])
+  jobs = [{ ...jobs[0], status: 'done' }]
+  await tick(3_000)
+  expect(notify).toHaveBeenCalledTimes(1)
+  settings.unmount()
+  watchLocalRuntimeJobs({ connectionId: 'A', profile: 'work' })
+  await tick()
+  expect(notify).toHaveBeenCalledTimes(1)
+  expect(api.mock.calls.filter(([request]): boolean => request.path.endsWith('/status')).length).toBeGreaterThan(1)
 })
