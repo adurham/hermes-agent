@@ -86,14 +86,10 @@ if (args.includes('--win') && process.env.AZURE_SIGN_ENDPOINT && process.env.AZU
   )
 }
 
-// Cap concurrent fs.open calls in the electron-builder process.
-// @electron/osx-sign walks the whole .app with Promise.all and no
-// concurrency bound. The payload (lark_oapi alone is thousands of files)
-// exhausts the macOS table: EMFILE on a random .py. Raising ulimit only
-// moves the ceiling. --require, not an import: isbinaryfile captures
-// promisify(fs.open) at its own load.
-const preloads = ['--require', path.join(import.meta.dirname, 'fs-open-limit.cjs')]
+const preloads = []
 if (process.platform === 'darwin') {
+  // Install the supplier-only probe owner before electron-builder imports osx-sign.
+  preloads.push('--import', path.join(import.meta.dirname, 'patch-electron-builder-mac-binary.mjs'))
   preloads.push('--require', path.join(import.meta.dirname, 'dmgbuild-diagnostics.cjs'))
 }
 
