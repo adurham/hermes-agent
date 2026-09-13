@@ -8,7 +8,7 @@ import type { GatewayEventContext } from './types'
 
 vi.mock('@/store/native-notifications', () => ({ dispatchNativeNotification: vi.fn() }))
 
-function context(type: string, requestId: string, routedSession: string | null): GatewayEventContext {
+function context(type: GatewayEventContext['event']['type'], requestId: string, routedSession: string | null): GatewayEventContext {
   const payload = { request_id: requestId, profile_key: '/home/h/.hermes' }
   return {
     deps: { updateSessionState: vi.fn() } as unknown as GatewayEventContext['deps'],
