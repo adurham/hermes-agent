@@ -268,21 +268,18 @@ class Download:
             totals[key] = remote.total
             coverage[key] = covered
 
-        progress_lock = threading.Lock()
-
         def report(key: str, written: _Ranges, total: int, *, complete: bool = False) -> None:
-            with progress_lock:
-                totals[key] = total
-                if total or complete:
-                    unknown.discard(key)
-                else:
-                    unknown.add(key)
-                # The last key identifies the source reporting this tick.
-                coverage.pop(key, None)
-                coverage[key] = list(written)
-                if progress is not None:
-                    done = sum(b - a for rows in coverage.values() for a, b in rows)
-                    progress(done, 0 if unknown else sum(totals.values()), dict(coverage))
+            totals[key] = total
+            if total or complete:
+                unknown.discard(key)
+            else:
+                unknown.add(key)
+            # The last key identifies the source reporting this tick.
+            coverage.pop(key, None)
+            coverage[key] = list(written)
+            if progress is not None:
+                done = sum(b - a for rows in coverage.values() for a, b in rows)
+                progress(done, 0 if unknown else sum(totals.values()), dict(coverage))
 
         for source in selected:
             key = str(source.dest)
@@ -468,12 +465,16 @@ class Download:
         lock = threading.Lock()
         errors: list[Exception] = []
         stop = threading.Event()
+        updated = threading.Event()
+        pending = len(ranges)
         covered = list(covered)
+        reported = list(covered)
 
         def worker(start: int, end: int) -> None:
-            if self._paused.is_set() or stop.is_set():
-                return
+            nonlocal pending
             try:
+                if self._paused.is_set() or stop.is_set():
+                    return
                 headers = {**_UA, "Range": f"bytes={start}-{end - 1}"}
                 if remote.etag:
                     headers["If-Range"] = remote.etag
@@ -494,7 +495,7 @@ class Download:
                         position += len(chunk)
                         with lock:
                             covered[:] = _coalesce(covered + [(start, position)])
-                            tick(list(covered))
+                            updated.set()
                     if response.read(1):
                         raise _RangeError("range body exceeds its declared bounds")
             except Exception as exc:
@@ -503,9 +504,36 @@ class Download:
                 with lock:
                     errors.append(exc)
                 stop.set()
+            finally:
+                with lock:
+                    pending -= 1
+                    updated.set()
 
         with ThreadPoolExecutor(max_workers=connections, thread_name_prefix="hermes-download") as pool:
             futures = [pool.submit(worker, start, end) for start, end in ranges]
+            observer_failed = False
+            finished = not ranges
+            while not finished:
+                updated.wait()
+                with lock:
+                    snapshot = list(covered)
+                    finished = pending == 0
+                    updated.clear()
+                # Only the coordinator observes progress. Slow UI/worker IPC
+                # coalesces intermediate snapshots, never holds up range writes.
+                if not observer_failed and snapshot != reported:
+                    try:
+                        tick(snapshot)
+                    except Exception as exc:
+                        with lock:
+                            errors.append(exc)
+                        observer_failed = True
+                        stop.set()
+                    except BaseException:
+                        stop.set()
+                        raise
+                    reported = snapshot
+
             for future in futures:
                 future.result()
         return covered, errors
