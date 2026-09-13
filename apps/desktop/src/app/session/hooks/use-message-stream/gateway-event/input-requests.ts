@@ -206,9 +206,12 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'sudo.expire' || event.type === 'display.install.sudo.expire') {
-    // The backend gave up waiting; tear the card down so a late Send cannot go anywhere.
+    // The backend gave up waiting; tear the card down so a late Send cannot go anywhere. The install
+    // card is app-level (stored under the null session), so its expiry must not be routed to whatever
+    // chat is active now.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-    clearSudoRequest(sessionId ?? undefined, requestId || undefined)
+    const install = event.type === 'display.install.sudo.expire'
+    clearSudoRequest(install ? null : sessionId ?? undefined, requestId || undefined)
 
     return true
   }
@@ -331,15 +334,18 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     const install = event.type === 'display.install.sudo.request'
 
     if (requestId) {
+      // The install card belongs to the app, not to a chat: the gateway emits it sessionless and the
+      // stream resolver would otherwise attribute it to the ambient chat, hiding it on a chat switch.
+      const owner = install ? null : sessionId ?? null
       setSudoRequest({
         requestId,
-        sessionId: sessionId ?? null,
+        sessionId: owner,
         origin: { connectionId: event.connectionId ?? null, profile: event.profile ?? $activeGatewayProfile.get() },
         ...(install ? { respondMethod: 'display.install.sudo.respond', description: translateNow('prompts.sudoInstallDesc') } : {})
       })
 
-      if (sessionId) {
-        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      if (owner) {
+        updateSessionState(owner, state => ({ ...state, needsInput: true }))
       }
 
       dispatchNativeNotification({
