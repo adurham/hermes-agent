@@ -17,7 +17,6 @@ import type {
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
-import { relativeLuminance } from '../lib/color.js'
 import { type ImageAttachment, stageImagePath } from '../lib/imageAttachments.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
