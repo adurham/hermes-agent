@@ -23,10 +23,13 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     import inspect
 
     from hermes_cli.runtime_paths import site_packages
+    from pm.lock import Facts, Lockfile
+    from pm.store import Store
+    from tests.pm._fixtures import _wheel
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     output = tmp_path / "payload"
-    target_python = output / "staged-python" / ("python.exe" if os.name == "nt" else "bin/python")
+    target_python = output / "tools/cached-python" / ("python.exe" if os.name == "nt" else "bin/python3")
     target_python.parent.mkdir(parents=True)
     # PM seals a payload-owned base interpreter, not an external venv launcher.
     # The POSIX host supplies its stdlib; Windows needs it beside the executable.
@@ -36,16 +39,48 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
         shutil.copy2(Path(getattr(sys, "_base_executable")).resolve(), target_python)
     repo = tmp_path / "repo"
     repo.mkdir()
-    pm_project = Path(__file__).resolve().parents[2] / "pm"
-    (repo / "pm").mkdir()
-    for name in ("pyproject.toml", "uv.lock", "lock.json"):
-        shutil.copy2(pm_project / name, repo / "pm" / name)
-    (repo / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.0.0"\nrequires-python=">=3.11"\n[project.scripts]\nprobe="entry:main"\n[project.optional-dependencies]\npayloadtest=[]\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    source = Path(__file__).resolve().parents[2]
+    shutil.copytree(source / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    (repo / "hermes_cli").mkdir()
+    for name in ("__init__.py", "runtime_paths.py", "runtime_state.py"):
+        shutil.copy2(source / "hermes_cli" / name, repo / "hermes_cli" / name)
+    shutil.copy2(source / "hermes_constants.py", repo / "hermes_constants.py")
+    wheels = repo / "wheels"
+    wheels.mkdir()
+    witness = tmp_path / "inventory-python.json"
+    wheel = _wheel(wheels, "bundle_probe")
+    import zipfile
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("bundle_probe/witness/__init__.py", "import json,pathlib,sys\n"
+                         f"pathlib.Path({str(witness)!r}).write_text(json.dumps(sys.executable))\n")
+        archive.writestr("bundle_probe/witness/present.py", "")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname="fixture"\nversion="1.0.0"\nrequires-python=">=3.11"\n'
+        '[project.scripts]\nprobe="entry:main"\n[project.optional-dependencies]\npayloadtest=["bundle-probe==1.0"]\n'
+        '[tool.uv]\npackage=false\nno-index=true\nfind-links=["wheels"]\n', encoding="utf-8")
+    selected = {"agent-browser", "chromium", "uv", "python"}
+    stale = {"chromium-headless-shell", "retired-tool"}
+    user_store = tmp_path / "user-tools"
+    for store in (output / "tools", user_store):
+        store.mkdir(parents=True, exist_ok=True)
+        facts = Facts(store / "facts.json")
+        for name in selected | stale:
+            entry = store / f"cached-{name}"
+            entry.mkdir(exist_ok=True)
+            (entry / "payload").write_text(name, encoding="utf-8")
+            facts.record(name, f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}", entry.name, {}, store)
+        (store / "orphaned-version").mkdir()
+        (store / ".partials").mkdir()
+    user_before = {path.relative_to(user_store): path.read_bytes() if path.is_file() else None for path in user_store.rglob("*")}
+    selection = Lockfile(tmp_path / "selection.json")
+    for name in ("agent-browser", "uv"):
+        selection.set_pin(name, "fixture", {})
+    selection.save()
     from scripts.build.inputs import RESOURCE_ENV
     for name in RESOURCE_ENV:
         (repo / name).mkdir()
         (repo / name / "asset").write_text("required", encoding="utf-8")
-    (repo / "entry.py").write_text("def main(): return 0\n", encoding="utf-8")
+    (repo / "entry.py").write_text("import bundle_probe\ndef main(): print(bundle_probe.__version__); return 7\n", encoding="utf-8")
     uv = shutil.which("uv")
     assert uv, "native bundle test requires uv"
     env = {**os.environ, "UV_OFFLINE": "1", "UV_PYTHON_DOWNLOADS": "never", "UV_CACHE_DIR": str(tmp_path / "cache")}
@@ -54,21 +89,18 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
     monkeypatch.setattr("pm.paths.repo_root", lambda: repo)
-    monkeypatch.setattr(native, "_bundle_package_names", lambda: [])
-    monkeypatch.setattr(native, "_install_names", lambda names: 0)
-    monkeypatch.setattr(native, "_store", lambda: SimpleNamespace(root=output / "tools", entry=lambda _: target_python.parent))
-    monkeypatch.setattr(native, "_facts", lambda: SimpleNamespace(get=lambda _: {"entry": "python", "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"}, entries_in_use=lambda: []))
-    monkeypatch.setattr(native, "get_package", lambda _: SimpleNamespace(binary=lambda *args: target_python))
+    (repo / "untracked").write_text("must not ship", encoding="utf-8")
+    monkeypatch.setattr(native, "_lockfile", lambda: selection)
+    monkeypatch.setattr(native, "_install_names", lambda names: 0)  # prepared artifacts, real facts/prune
+    monkeypatch.setattr(native, "_store", lambda: Store(output / "tools"))
+    monkeypatch.setattr(native, "_facts", lambda: Facts(output / "tools/facts.json"))
     monkeypatch.setattr("pm.client.is_runtime", lambda: True)
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
-    monkeypatch.setattr(native, "_arch_guard", lambda store: [])
-    monkeypatch.setattr("scripts.bundles.payload.relativize_links", lambda root: 0)
-    monkeypatch.setattr("pm.extras.ANCHORS", {"payloadtest": "bundle_probe.present"})
+    monkeypatch.setattr("pm.extras.ANCHORS", {"payloadtest": "bundle_probe.witness.present"})
     import pm
     real_build = pm.build_environment
     install_timeout = inspect.signature(real_build).parameters["timeout"].default
     calls = []
-    witness = tmp_path / "inventory-python.json"
     fail_inventory = False
 
     def build(**kwargs):
@@ -84,39 +116,57 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
         site = site_packages(output / "venv")
         if fail_inventory:
             shutil.rmtree(site)
-        else:
-            package = site / "bundle_probe"
-            package.mkdir()
-            (package / "__init__.py").write_text(
-                "import json, pathlib, sys\n"
-                f"pathlib.Path({str(witness)!r}).write_text(json.dumps(sys.executable), encoding='utf-8')\n",
-                encoding="utf-8",
-            )
-            (package / "present.py").write_text("", encoding="utf-8")
         return result
 
     monkeypatch.setattr(pm, "build_environment", build)
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "original"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(user_store))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
     assert native._stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 0
-    assert calls[0]["all_extras"] is True
     assert calls[0]["cache"] == tmp_path / "cache"
     assert (output / "hermes-agent/pyproject.toml").is_file()
+    assert not (output / "hermes-agent/untracked").exists()
+    assert not (output / "hermes-agent/.git").exists()
+    facts = Facts(output / "tools/facts.json")
+    for name in stale:
+        assert facts.get(name) is None
+        assert not (output / "tools" / f"cached-{name}").exists()
+    for name in selected:
+        assert facts.get(name)["entry"] == f"cached-{name}"
+        assert (output / "tools" / f"cached-{name}" / "payload").read_text(encoding="utf-8-sig") == name
+    assert not (output / "tools/orphaned-version").exists()
+    assert (output / "tools/.partials").is_dir()
+    assert user_before == {path.relative_to(user_store): path.read_bytes() if path.is_file() else None for path in user_store.rglob("*")}
+
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["repo"] == "hermes-agent"
     command = "bin/probe.exe" if os.name == "nt" else "bin/probe"
     assert manifest["runtime"]["commands"] == {"probe": command}
     feature_file = output / "enabled-features.json"
-    assert json.loads(feature_file.read_text(encoding="utf-8"))["extras"] == ["payloadtest"]
-    assert Path(json.loads(witness.read_text(encoding="utf-8"))) == target_python
-    assert os.environ["HERMES_RUNTIME_DIR"] == str(tmp_path / "original")
+    assert os.environ["HERMES_RUNTIME_DIR"] == str(user_store)
 
+    moved = tmp_path / "installed elsewhere"
+    output.rename(moved)
+    try:
+        run = subprocess.run([str(moved / command)], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+        assert run.returncode == 7, run.stderr
+        assert run.stdout.strip() == "1.0"
+        from pm import runtime as runtime_api, paths
+        with monkeypatch.context() as patch:
+            patch.setattr(paths, "repo_root", lambda: moved / "hermes-agent")
+            run = subprocess.run(runtime_api.runtime_command(moved / "hermes-agent/pm/launch.py", ["status"]),
+                                 cwd=tmp_path, env=runtime_api.runtime_environment(), capture_output=True, text=True, timeout=30)
+        assert run.returncode == 0, run.stderr
+        assert "no pm sync receipt" in run.stdout
+    finally:
+        moved.rename(output)
+    assert json.loads(feature_file.read_text(encoding="utf-8"))["extras"] == ["payloadtest"]
+    assert Path(json.loads(witness.read_text(encoding="utf-8-sig"))) == target_python
     before = feature_file.read_bytes()
     fail_inventory = True
     assert native._stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 1
     assert not (output / "manifest.json").exists()
     assert feature_file.read_bytes() == before
-    assert os.environ["HERMES_RUNTIME_DIR"] == str(tmp_path / "original")
+    assert os.environ["HERMES_RUNTIME_DIR"] == str(user_store)
 
     from pm.package import InstallError
     def fail_build(**kwargs):
@@ -124,7 +174,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     monkeypatch.setattr(pm, "build_environment", fail_build)
     assert native._stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 1
     assert not (output / "manifest.json").exists()
-    assert os.environ["HERMES_RUNTIME_DIR"] == str(tmp_path / "original")
+    assert os.environ["HERMES_RUNTIME_DIR"] == str(user_store)
 
     import pytest
     (repo / "pm/lock.json").write_text("{}", encoding="utf-8")
@@ -259,65 +309,6 @@ def test_staged_cache_rebuilds_venv_offline_without_build_sources_or_zips(tmp_pa
     assert probe.stdout.splitlines() == ["installed from cached wheel", "1.0"]
 
 
-def test_native_dispatch_reuses_pm_cache_offline(tmp_path, monkeypatch):
-    import pm
-    from pm.packages import uv_cache_dir
-    from tests.pm._fixtures import _wheel
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "setup-pm"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "setup-pm/tools"))
-    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
-    monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
-    uv = shutil.which("uv")
-    assert uv, "native bundle test requires uv"
-    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
-    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
-    cache = uv_cache_dir()
-    wheels = tmp_path / "wheels"
-    wheels.mkdir()
-    _wheel(wheels, "cache_probe", "1.0")
-    wheel, = wheels.glob("*.whl")
-    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(wheels)))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    requirement = f"cache-probe @ http://127.0.0.1:{server.server_port}/{wheel.name}"
-    try:
-        pm.build_requirements_environment(
-            [requirement], out=tmp_path / "first", explicit=True,
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-    shutil.rmtree(wheels)
-    pm.prune_cache(cache)
-    original = dict(os.environ)
-    run = subprocess.run
-    homes = []
-
-    def child(command, *, cwd, env):
-        assert Path(env["UV_CACHE_DIR"]) == cache
-        homes.append(Path(env["HOME"]))
-        # The server and source wheel are gone. Only the cache restored for
-        # PM can satisfy this install inside the payload's isolated HOME.
-        return run([sys.executable, "-c",
-                    "import os, subprocess, sys; from pathlib import Path; import pm, pm._uv; "
-                    "pm.client.is_runtime = lambda: True; "
-                    f"pm._uv._toolchain = lambda **kw: (Path({uv!r}), Path(sys.executable)); "
-                    "python = pm.build_requirements_environment([sys.argv[1]], "
-                    "out=Path(os.environ['HOME'])/'venv', "
-                    "cache=Path(os.environ['UV_CACHE_DIR']), offline=True, explicit=True); "
-                    "subprocess.run([str(python), '-I', '-c', 'import cache_probe'], check=True)",
-                    requirement], cwd=cwd, env=env, check=True)
-
-    monkeypatch.setattr(native.subprocess, "run", child)
-    for name in ("first-payload", "second-payload"):
-        assert native.stage_native(SimpleNamespace(out=tmp_path / name, ref="HEAD")) == 0
-    assert all(not home.exists() for home in homes)
-    assert dict(os.environ) == original
-
-
 def test_native_dispatch_isolates_process_state_on_real_child_failure(tmp_path, monkeypatch):
     # Compiler provisioning has its own native test; this probe must stop
     # at the invalid revision without installing tools on a developer host.
@@ -334,64 +325,53 @@ def test_native_dispatch_isolates_process_state_on_real_child_failure(tmp_path, 
     assert not list(out.glob(".build-*"))
 
 
-def test_native_dispatch_keeps_cache_across_failed_children(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cache_source,explicit_compilers,status", [
+    ("explicit", True, 17), ("ambient", False, 0), ("default", False, 17),
+])
+def test_native_dispatch_child_environment(tmp_path, monkeypatch, cache_source, explicit_compilers, status):
+    from pm.packages import uv_cache_dir
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "host")
     monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
-    out = tmp_path / "payload"
-    cache = tmp_path / "persistent-cache"
-    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "ambient-cache"))
-    original = dict(os.environ)
-    run = subprocess.run
-    attempts = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "user"))
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    ambient = tmp_path / "ambient"
+    if cache_source != "default":
+        monkeypatch.setenv("UV_CACHE_DIR", str(ambient))
+    cache = {"explicit": tmp_path / "explicit", "ambient": ambient, "default": uv_cache_dir()}[cache_source]
+    compilers = {}
+    for key, name in (("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")):
+        home = tmp_path / ("custom" if explicit_compilers else "host") / name
+        home.mkdir(parents=True)
+        (home / "fixture-state").write_text(key, encoding="utf-8")
+        compilers[key] = str(home)
+        monkeypatch.delenv(key, raising=False)
+        if explicit_compilers:
+            monkeypatch.setenv(key, str(home))
+    before, run, homes = dict(os.environ), subprocess.run, []
+    observed = tmp_path / "child.json"
 
     def child(command, *, cwd, env):
         assert command[command.index("-m") + 1] == "scripts.bundles.native"
-        assert Path(env["UV_CACHE_DIR"]) == cache
-        attempts.append(Path(env["HOME"]))
-        # Run a real child using the actual dispatch environment. Its cache
-        # write must survive the failing process and temporary-HOME cleanup.
         return run([sys.executable, "-c",
-                    "import os,sys; from pathlib import Path; "
-                    "p=Path(os.environ['UV_CACHE_DIR']); p.mkdir(exist_ok=True); "
-                    "f=p/'reused'; f.write_text(f.read_text()+'x' if f.exists() else 'x'); sys.exit(17)"],
-                   cwd=cwd, env=env)
+                    "import os,json,sys; from pathlib import Path; "
+                    "Path(sys.argv[1]).write_text(json.dumps(dict(os.environ))); "
+                    "assert all((Path(os.environ[k])/'fixture-state').read_text() == k for k in ('CARGO_HOME','RUSTUP_HOME')); "
+                    "p=Path(os.environ['UV_CACHE_DIR']); p.mkdir(parents=True,exist_ok=True); "
+                    "f=p/'reused'; f.write_text(f.read_text()+'x' if f.exists() else 'x'); sys.exit(int(sys.argv[2]))",
+                    str(observed), str(status)], cwd=cwd, env=env)
 
     monkeypatch.setattr(native.subprocess, "run", child)
+    out = tmp_path / "payload"
     for _ in range(2):
-        assert native.stage_native(SimpleNamespace(out=out, ref="HEAD", cache=cache)) == 17
-    assert (cache / "reused").read_text() == "xx"
-    assert all(not home.exists() for home in attempts)
-    assert not (tmp_path / "ambient-cache").exists()
-    assert dict(os.environ) == original
-
-
-@pytest.mark.parametrize("explicit", [False, True])
-def test_native_dispatch_preserves_compiler_homes_inside_isolated_home(tmp_path, monkeypatch, explicit):
-    host_home = tmp_path / "host"
-    monkeypatch.setattr(Path, "home", lambda: host_home)
-    monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
-    homes = {}
-    for key, name in (("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")):
-        directory = (tmp_path / "custom" if explicit else host_home) / name
-        directory.mkdir(parents=True)
-        (directory / "fixture-state").write_text(key, encoding="utf-8")
-        homes[key] = str(directory)
-        if explicit:
-            monkeypatch.setenv(key, str(directory))
-        else:
-            monkeypatch.delenv(key, raising=False)
-    before = dict(os.environ)
-    run = subprocess.run
-
-    def child(command, *, cwd, env):
-        assert env["HOME"] != str(host_home)
-        assert env["USERPROFILE"] == env["HOME"]
-        assert {key: env.get(key) for key in homes} == homes
-        return run([sys.executable, "-c",
-                    "import os; from pathlib import Path; "
-                    "assert all((Path(os.environ[k]) / 'fixture-state').read_text() == k "
-                    "for k in ('CARGO_HOME', 'RUSTUP_HOME'))"],
-                   cwd=cwd, env=env, check=True)
-
-    monkeypatch.setattr(native.subprocess, "run", child)
-    assert native.stage_native(SimpleNamespace(out=tmp_path / "out", ref="HEAD")) == 0
+        assert native.stage_native(SimpleNamespace(out=out, ref="HEAD", cache=cache if cache_source == "explicit" else None)) == status
+        env = json.loads(observed.read_text(encoding="utf-8-sig"))
+        homes.append(Path(env["HOME"]))
+        assert env["HOME"] == env["USERPROFILE"] != str(tmp_path / "host")
+        assert {key: env[key] for key in compilers} == compilers
+        assert Path(env["UV_CACHE_DIR"]) == cache
+        assert Path(env["HERMES_RUNTIME_DIR"]) == out / "tools"
+        assert Path(env["HERMES_HOME"]) == homes[-1] / ".hermes"
+    assert (cache / "reused").read_text(encoding="utf-8-sig") == "xx"
+    assert all(not home.exists() for home in homes)
     assert dict(os.environ) == before

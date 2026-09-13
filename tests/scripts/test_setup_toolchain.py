@@ -12,10 +12,11 @@ import pytest
 from pm.lock import Lockfile
 from pm.paths import lockfile_path
 from pm.store import current_target
+from tests.pm._fixtures import build_worker, client, isolated_python  # noqa: F401
 
 
 @pytest.mark.parametrize("extras", [[], ["dev"]], ids=["runtime", "tests"])
-def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkeypatch, extras):
+def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkeypatch, extras, build_worker):
     from types import SimpleNamespace
     import shutil
 
@@ -36,17 +37,10 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
         '[tool.uv]\npackage=false\nno-index=true\n'
         f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8",
     )
-    uv = shutil.which("uv")
-    assert uv
-    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
-    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     lock_project(core, python=Path(sys.executable), offline=True, explicit=True)
     home = tmp_path / "ci-home"
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("pm.paths.repo_root", lambda: core)
-    # This test exercises the worker-side CI environment split with offline uv.
-    # Dispatch into that worker is covered by test_runtime_entrypoints.
-    monkeypatch.setattr("pm.runtime.is_runtime", lambda: True)
     files = {name: tmp_path / name for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH")}
     for name, file in files.items():
         monkeypatch.setenv(name, str(file))
