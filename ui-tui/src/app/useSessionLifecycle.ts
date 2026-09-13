@@ -164,6 +164,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         canonicalSubscriptions.current.delete(sessionId)
       }
     }).catch(() => undefined)
+
     const previous = canonicalDetachFlights.current.get(sessionId)
     const pending = previous ? previous.then(detach) : detach()
 
@@ -395,6 +396,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchUiState({ status: 'switching session…' })
 
       const pendingDetach = canonicalDetachFlights.current.get(id)
+
       const request = pendingDetach
         ? pendingDetach.then(() => flight === attachmentFlight.current
           ? gw.request<SessionActivateResponse>('session.activate', { session_id: id }) : null)
@@ -473,6 +475,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         }
 
         const pendingDetach = canonicalDetachFlights.current.get(id)
+
         const request = pendingDetach
           ? pendingDetach.then(() => flight === attachmentFlight.current
             ? gw.request<SessionResumeResponse<SessionInfo>>('session.resume', { cols: colsRef.current, session_id: id }) : null)

@@ -7,8 +7,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
-import { ConfigSettings } from './config-settings'
-
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()

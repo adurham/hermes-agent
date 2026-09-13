@@ -28,7 +28,6 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setSessionTileDelegate } from '@/store/session-states'
 
-
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
 import { useMessageStream } from './index'
