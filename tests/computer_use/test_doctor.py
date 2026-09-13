@@ -82,34 +82,25 @@ def _degraded_report() -> dict:
 
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def pm_driver(tmp_path, monkeypatch):
-    """Exercise real passive PM selection; native driver probes are mocked below."""
     import pm
     from pm import paths
-    from pm.store import tree_digest
+    from tests.computer_use.driver_fixture import record_driver
 
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
     monkeypatch.setattr(pm, "ensure", MagicMock(side_effect=AssertionError("doctor must not install")))
-    package, target = pm.get_package("cua-driver"), pm.current_target()
-    lock = pm.Lockfile(paths.lockfile_path())
-    version = lock.version(package.name)
-    assert version is not None
-    root = paths.store_root()
-    entry = root / package.store_entry(version, target)
-    binary = package.binary(entry, target)
-    assert binary is not None
-    binary.parent.mkdir(parents=True)
-    binary.write_bytes(Path(sys.executable).read_bytes())
-    binary.chmod(0o755)
-    pm.Facts(paths.facts_path()).record(
-        package.name, version, entry.name, package.env(entry, target), root,
-        target=target, artifacts=[a["sha256"] for a in lock.artifacts(package.name, target)],
-        digest=tree_digest(entry),
-    )
-    return binary
+    return record_driver()
+
+
+@pytest.fixture(autouse=True)
+def protocol_driver(request, monkeypatch):
+    # Only selection tests need a real PM store; protocol/rendering tests
+    # begin after binary selection and never execute the copied interpreter.
+    if request.cls is not TestDriverCmdResolution:
+        monkeypatch.setattr("tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd", lambda cmd=None: "fixture-driver")
 
 
 @pytest.fixture(autouse=True)
@@ -292,36 +283,21 @@ class TestJsonOutput:
 
 
 class TestDriverCmdResolution:
-    def test_explicit_driver_cmd_arg_wins(self, pm_driver, tmp_path, monkeypatch):
-        from tools.computer_use import doctor
-
-        explicit = tmp_path / pm_driver.name
-        explicit.write_bytes(pm_driver.read_bytes())
-        explicit.chmod(0o755)
-        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(pm_driver))
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch.object(doctor, "_open_mcp", return_value=proc) as spawn, \
-             patch("sys.stdout", new_callable=StringIO):
-            assert doctor.run_doctor(driver_cmd=str(explicit)) == 0
-        spawn.assert_called_once_with(str(explicit))
-
-    def test_env_var_used_when_no_arg_given(self, pm_driver, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("explicit", [False, True])
+    def test_override_selection(self, pm_driver, tmp_path, monkeypatch, explicit):
         from tools.computer_use import doctor
 
         external = tmp_path / pm_driver.name
         external.write_bytes(pm_driver.read_bytes())
         external.chmod(0o755)
-        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(external))
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(pm_driver if explicit else external))
         proc = _fake_proc_with_responses(
             {"jsonrpc": "2.0", "id": 1, "result": {}},
             {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
         )
         with patch.object(doctor, "_open_mcp", return_value=proc) as spawn, \
              patch("sys.stdout", new_callable=StringIO):
-            assert doctor.run_doctor() == 0
+            assert doctor.run_doctor(driver_cmd=str(external) if explicit else None) == 0
         spawn.assert_called_once_with(str(external))
 
     def test_pm_driver_is_found_when_path_omits_it(self, pm_driver, monkeypatch):
@@ -339,7 +315,7 @@ class TestDriverCmdResolution:
         assert paths.facts_path().read_bytes() == before
 
     @pytest.mark.parametrize("use_env", [False, True], ids=["argument", "environment"])
-    def test_missing_override_does_not_fall_back_to_pm(self, tmp_path, monkeypatch, use_env, capsys):
+    def test_missing_override_does_not_fall_back_to_pm(self, pm_driver, tmp_path, monkeypatch, use_env, capsys):
         from tools.computer_use import doctor
 
         missing = str(tmp_path / "missing-driver")

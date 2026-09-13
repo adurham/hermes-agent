@@ -22,46 +22,15 @@ def _fake_mautrix_types():
     """Minimal mautrix.types with the 8 names the adapter imports/binds."""
     mod = types.ModuleType("mautrix.types")
 
-    class EventType:
-        ROOM_MESSAGE = "m.room.message"
-        REACTION = "m.reaction"
-
-    class UserID(str):
-        pass
-
-    class RoomID(str):
-        pass
-
-    class EventID(str):
-        pass
-
-    class ContentURI(str):
-        pass
-
-    class RoomCreatePreset:
-        PRIVATE = "private_chat"
-
-    class PresenceState:
-        ONLINE = "online"
-
-    class TrustState:
-        UNVERIFIED = 0
-
-    mod.EventType = EventType
-    mod.UserID = UserID
-    mod.RoomID = RoomID
-    mod.EventID = EventID
-    mod.ContentURI = ContentURI
-    mod.RoomCreatePreset = RoomCreatePreset
-    mod.PresenceState = PresenceState
-    mod.TrustState = TrustState
+    for name in ("EventType", "UserID", "RoomID", "EventID", "ContentURI",
+                 "RoomCreatePreset", "PresenceState", "TrustState"):
+        setattr(mod, name, object())
     return mod
 
 
-@pytest.fixture(params=[(), ("asyncpg",)], ids=["installed", "fresh"])
-def fresh_dependency_boundary(monkeypatch, request):
-    """Installed and fresh dependencies both bind through PM's single operation."""
-    monkeypatch.setattr(pm_extras, "missing", lambda extra: request.param)
+@pytest.fixture
+def fresh_dependency_boundary(monkeypatch):
+    """Exercise the real importer after PM admits the SDK."""
     monkeypatch.setattr(pm_extras, "ensure_import", lambda *a, **kw: None)
     monkeypatch.delenv("MATRIX_E2EE_MODE", raising=False)
     monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)

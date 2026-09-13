@@ -1521,31 +1521,19 @@ class TestSharedEventLoopLifecycle:
 
         provider_b.shutdown()
 
-    def test_client_aclose_called_on_cloud_mode_shutdown(self, provider):
+    @pytest.mark.parametrize("mode", ["cloud", "local_embedded"])
+    def test_client_aclose_called_on_shutdown(self, provider, mode):
         """Per-provider session cleanup still runs even though the shared
         loop is preserved. Each provider's own aiohttp session is closed
         via ``self._client.aclose()``; only the (empty) shared loop survives.
         """
         assert provider._client is not None
         mock_client = provider._client
+        provider._mode = mode
 
         provider.shutdown()
 
-        mock_client.aclose.assert_called_once()
-        assert provider._client is None
-
-
-class TestShutdown:
-    def test_local_embedded_shutdown_closes_client_on_shared_loop(self, provider):
-        """The embedded client is hindsight_client.Hindsight (HTTP to the side-env
-        daemon): same aclose-on-shared-loop path as cloud."""
-        client = _make_mock_client()
-        provider._mode = "local_embedded"
-        provider._client = client
-
-        provider.shutdown()
-
-        client.aclose.assert_awaited_once()
+        mock_client.aclose.assert_awaited_once()
         assert provider._client is None
 
 

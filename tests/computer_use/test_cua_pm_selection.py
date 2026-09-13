@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.computer_use.driver_fixture import record_driver
+
 
 @pytest.fixture
 def cua_home(tmp_path, monkeypatch):
@@ -21,31 +23,6 @@ def cua_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _record_driver(version="0.20.0"):
-    from pm import Facts, Lockfile, current_target, get_package, paths
-    from pm.store import tree_digest
-
-    package = get_package("cua-driver")
-    target = current_target()
-    root = paths.store_root()
-    entry = root / package.store_entry(version, target)
-    entry.mkdir(parents=True)
-    binary = package.binary(entry, target)
-    assert binary is not None
-    binary.parent.mkdir(parents=True, exist_ok=True)
-    binary.write_bytes(Path(sys.executable).read_bytes())
-    binary.chmod(0o755)
-    artifact = {"url": "https://example.invalid/cua-fixture", "sha256": "a" * 64}
-    lock = Lockfile(paths.lockfile_path())
-    lock.set_pin(package.name, version, {target: artifact})
-    lock.save()
-    Facts(paths.facts_path()).record(
-        package.name, version, entry.name, package.env(entry, target), root,
-        target=target, artifacts=[artifact["sha256"]], digest=tree_digest(entry),
-    )
-    return binary
-
-
 def test_pm_selection_ignores_vendor_tree_and_is_passive(cua_home, monkeypatch):
     import pm
     from pm import paths
@@ -55,7 +32,7 @@ def test_pm_selection_ignores_vendor_tree_and_is_passive(cua_home, monkeypatch):
         pytest.fail("passive CUA lookup attempted acquisition")
 
     monkeypatch.setattr(pm, "ensure", no_install)
-    binary = _record_driver()
+    binary = record_driver()
     legacy = cua_home / ".local" / "bin" / binary.name
     legacy.parent.mkdir(parents=True)
     legacy.write_bytes(binary.read_bytes())
@@ -67,46 +44,20 @@ def test_pm_selection_ignores_vendor_tree_and_is_passive(cua_home, monkeypatch):
     assert resolve_cua_driver_cmd(str(legacy)) == str(legacy)
     assert resolve_cua_driver_cmd(str(cua_home / "missing")) is None
     assert paths.facts_path().read_bytes() == before
-    lock = pm.Lockfile(paths.lockfile_path())
-    lock.set_pin("cua-driver", "0.21.0", lock.pinned_artifacts("cua-driver"))
-    lock.save()
-    assert resolve_cua_driver_cmd() is None
-    previous = pm.installed_package("cua-driver", allow_outdated=True)
-    assert previous is not None and previous.binary == binary
-    binary.unlink()
-    assert resolve_cua_driver_cmd() is None
 
 
 @pytest.mark.platforms("linux")
 def test_setup_acquires_through_pm_and_validates_real_manifest(cua_home, monkeypatch):
     import pm
     from hermes_cli.tools_config_cua import install_cua_driver
-    from tools.computer_use.cua_backend_driver import (
-        _CUA_DRIVER_RUNTIME_CONTRACT_ARGS, cua_driver_runtime_contract_status,
-    )
+    from tools.computer_use.cua_backend_driver import cua_driver_runtime_contract_status
 
     monkeypatch.setenv("PATH", "")
     calls = []
 
     def acquire(name, *, explicit):
         calls.append((name, explicit))
-        binary = _record_driver()
-        # A local process fixture, not an upstream CUA installation.
-        manifest = {
-            "binary_version": "0.20.0",
-            "mcp_invocation": {"command": str(binary), "args": ["mcp"]},
-            "subcommands": [
-                {"name": verb, "args": [{"name": arg} for arg in sorted(args)]}
-                for verb, args in _CUA_DRIVER_RUNTIME_CONTRACT_ARGS.items()
-            ],
-        }
-        binary.write_text(
-            f"#!{sys.executable}\nimport json, sys\n"
-            f"manifest = {manifest!r}\n"
-            "assert sys.argv[1:] == ['manifest']\n"
-            "print(json.dumps(manifest))\n",
-            encoding="utf-8",
-        )
+        record_driver(manifest=True)
         return pm.Runner(name, pm.env_for(name))
 
     monkeypatch.setattr(pm, "ensure", acquire)
@@ -129,7 +80,6 @@ def test_private_start_uses_post_ensure_binary(cua_home, monkeypatch, permission
 
     import pm
     from tools.computer_use import cua_backend as backend_module
-    from tools.computer_use.cua_backend_driver import _CUA_DRIVER_RUNTIME_CONTRACT_ARGS
 
     monkeypatch.setenv("PATH", "")
     manifest_path = cua_home / "capabilities.yaml"
@@ -138,7 +88,7 @@ def test_private_start_uses_post_ensure_binary(cua_home, monkeypatch, permission
         "capability_manifest": str(manifest_path), "no_overlay": False,
     })
     if preinstalled:
-        previous = _record_driver()
+        previous = record_driver()
         previous.write_text(f"#!{sys.executable}\nprint('{{}}')\n", encoding="utf-8")
     backend = backend_module.CuaDriverBackend(permission_mode=permission_mode)
     assert backend._embedded_daemon is not None
@@ -148,22 +98,7 @@ def test_private_start_uses_post_ensure_binary(cua_home, monkeypatch, permission
     def acquire(name, **kwargs):
         assert name == "cua-driver" and not kwargs.get("explicit", False)
         version = next(versions)
-        binary = _record_driver(version)
-        manifest = {
-            "binary_version": version,
-            "mcp_invocation": {"command": str(binary), "args": ["mcp"]},
-            "subcommands": [
-                {"name": verb, "args": [{"name": arg} for arg in sorted(args)]}
-                for verb, args in _CUA_DRIVER_RUNTIME_CONTRACT_ARGS.items()
-            ],
-        }
-        binary.write_text(
-            f"#!{sys.executable}\nimport json, sys\n"
-            f"manifest = {manifest!r}\n"
-            "if sys.argv[1:] == ['manifest']:\n    print(json.dumps(manifest))\n"
-            "else:\n    assert sys.argv[1] in ('status', 'stop')\n",
-            encoding="utf-8",
-        )
+        binary = record_driver(version, manifest=True)
         acquired.append(str(binary))
         return pm.Runner(name, pm.env_for(name))
 

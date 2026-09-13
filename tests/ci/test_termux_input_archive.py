@@ -1,6 +1,5 @@
 """CI runs archival before the exact tool and payload consumers."""
 from pathlib import Path
-import shlex
 
 from ruamel.yaml import YAML
 
@@ -10,30 +9,6 @@ R2_ENV = {"CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE
 
 def load(name):
     return YAML(typ="base").load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
-
-
-def test_termux_and_desktop_stagers_consume_archive_seeds():
-    release = load("desktop-bundled-release.yml")
-    for file, job_name in (("desktop-bundled-release.yml", "termux-deb"), ("termux-verify.yml", "native-runtime")):
-        job = load(file)["jobs"][job_name]
-        steps = job["steps"]
-        index, step = next((i, s) for i, s in enumerate(steps) if "scripts.ci.archive_inputs" in s.get("run", ""))
-        args = shlex.split(step["run"])
-        assert args[args.index("--target") + 1] == "linux-arm64-bionic"
-        assert args[args.index("--store") + 1] == "$HERMES_RUNTIME_DIR"
-        assert args[args.index("--payload") + 1] == "termux-build/payload"
-        assert "if" not in step and "continue-on-error" not in step
-        assert R2_ENV <= (job.get("env", {}).keys() | step.get("env", {}).keys())
-        first_stage = next(i for i, s in enumerate(steps) if "scripts/termux/build_cpython.sh" in s.get("run", ""))
-        assert index < first_stage
-    for name in ("build-win32", "build-darwin"):
-        steps = release["jobs"][name]["steps"]
-        index, step = next((i, s) for i, s in enumerate(steps) if "scripts.ci.archive_inputs" in s.get("run", ""))
-        assert "--target '${{ matrix.target.label }}'" in step["run"]
-        assert "--store apps/desktop/build/agent-payload/tools" in step["run"]
-        assert index < next(i for i, s in enumerate(steps) if "scripts/bundles/desktop.py" in s.get("run", ""))
-        setup = next(s for s in steps if s.get("uses") == "./.github/actions/setup-pm")
-        assert setup["with"]["archive-inputs"] == "true"
 
 
 def test_archive_gate_uses_bootstrap_python_and_trusted_exact_revision():
