@@ -314,6 +314,21 @@ def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monke
     assert binary.read_text(encoding="utf-8") == "deptool"
 
 
+def test_standalone_warm_ensure_does_not_wait_for_unrelated_writer(pm_env):
+    from concurrent.futures import ThreadPoolExecutor
+    from pm.ensure import ensure
+
+    _, runtime, _, _ = pm_env
+    ensure("faketool", explicit=True)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with Store(runtime).install_lock():
+            # A downloader can hold this lock for minutes. A healthy unrelated
+            # tool must remain usable without waiting for that writer to finish.
+            future = pool.submit(ensure, "faketool", explicit=True, base_env={})
+            runner = future.result(timeout=3)
+            assert "faketool-1.0" in runner.env["PATH"]
+
+
 def test_install_forgets_verification_when_state_operation_releases_lock(pm_env, monkeypatch):
     import importlib
     import os

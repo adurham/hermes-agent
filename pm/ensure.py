@@ -442,11 +442,6 @@ def ensure(
         sync_venv(explicit=explicit)
         return Runner(name, compose_env([], base=base_env))
 
-    if explicit and _operation is None:
-        with _install_operation() as operation:
-            return ensure(name, base_env=base_env, explicit=True, progress=progress,
-                          pause_event=pause_event, download_progress=download_progress,
-                          _operation=operation)
     lockfile = _lockfile()
     target = current_target()
     chain = walk([name])
