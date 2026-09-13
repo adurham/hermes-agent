@@ -64,8 +64,8 @@ def check_runtime(project_root: Path) -> str | None:
     return f"install out of sync ({'; '.join(problems)}) — {remedy}"
 
 
-def publish_launchers(project_root: Path) -> None:
-    """Refresh the durable source command before an old Python can be collected."""
+def publish_launchers(project_root: Path, *, create: bool = True) -> None:
+    """Refresh durable commands; bootstrap repairs only existing PATH exposure."""
     from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, expose_cli, resolve_store_python
     from hermes_cli.steward import read_install_stamp
 
@@ -78,7 +78,7 @@ def publish_launchers(project_root: Path) -> None:
         from pm.package import InstallError
 
         raise InstallError("launchers", "source launcher publication failed", "retry the source update")
-    result = expose_cli(root)
+    result = expose_cli(root, create=create)
     if not result["ok"]:
         import logging
 

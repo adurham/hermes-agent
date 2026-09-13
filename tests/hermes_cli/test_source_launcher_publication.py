@@ -107,6 +107,7 @@ def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, mo
 
 @pytest.mark.parametrize("publisher", [
     pytest.param("boot", marks=pytest.mark.platforms("posix")),
+    pytest.param("repair", marks=pytest.mark.platforms("posix")),
     pytest.param("native", marks=pytest.mark.platforms("windows")),
     pytest.param("cmd", marks=pytest.mark.platforms("windows")),
 ])
@@ -158,6 +159,8 @@ def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, mo
         result = boot_bootstrap.run_boot_bootstrap(repo)
         assert result["home"]["expose_cli"]["ok"], result
         assert boot_bootstrap.record_path(repo).is_file()
+    elif publisher == "repair":
+        assert _launchers.expose_cli(repo, create=False)["ok"]
     else:
         # Windows exposure is installer-owned. Both transports use this writer.
         assert _launchers.ensure_install_launchers(repo, out)
@@ -169,7 +172,8 @@ def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, mo
 
 
 @pytest.mark.platforms("posix")
-def test_posix_materializer_publishes_only_executable_shell_launchers(tmp_path, monkeypatch):
+@pytest.mark.parametrize("corruption", ["bom", "crlf"])
+def test_posix_materializer_publishes_only_executable_shell_launchers(tmp_path, monkeypatch, corruption):
     repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
     out = tmp_path / "bin"
     out.mkdir()
@@ -179,6 +183,20 @@ def test_posix_materializer_publishes_only_executable_shell_launchers(tmp_path, 
     assert set(out.iterdir()) == set(launchers)
     local = repo / ".hermes" / "bin"
     assert {p.name for p in local.iterdir()} == set(_launchers.ENTRY_POINTS)
+    launcher = local / "hermes"
+    expected = launcher.read_bytes()
+    launcher.write_bytes(b"\xef\xbb\xbf" + expected if corruption == "bom" else expected.replace(b"\n", b"\r\n"))
+    assert _launchers.ensure_install_launchers(repo, out)
+    # Shell executables need exact bytes: neither a BOM before #! nor CRLF is
+    # interchangeable with the generated script, even if text decoding agrees.
+    assert launcher.read_bytes() == expected
+    result = subprocess.run([str(out / "hermes"), "--print-runtime-command"],
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert Path(json.loads(result.stdout)[0]).samefile(_interpreter)
+    before = launcher.stat().st_mtime_ns
+    assert _launchers.ensure_install_launchers(repo, out)
+    assert launcher.stat().st_mtime_ns == before
 
 
 def test_materializer_cli_refuses_missing_store_without_publishing(tmp_path, monkeypatch):
@@ -204,25 +222,25 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
     out = home / ".local" / "bin"
     out.mkdir(parents=True)
     # Old venv and sibling-ACP wrappers, with an unrelated command sharing bin.
-    (out / "hermes").write_text(f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n')
+    (out / "hermes").write_text(f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n', encoding="utf-8")
     (out / "hermes-acp").write_text(
         '#!/usr/bin/env bash\n# Hermes Agent — ACP launcher (written by `hermes update`).\n'
-        f'exec "{out}/hermes" acp "$@"\n')
+        f'exec "{out}/hermes" acp "$@"\n', encoding="utf-8")
     foreign = f'#!/bin/sh\n# user note about {repo}\nexit 19\n'
-    (out / "hermes-agent").write_text(foreign)
+    (out / "hermes-agent").write_text(foreign, encoding="utf-8")
 
     result = _launchers.expose_cli()
     assert result["ok"], result
     assert set(result["written"]) == {"hermes", "hermes-acp"}
     for name in ("hermes", "hermes-acp"):
         run = subprocess.run([str(out / name), "quoted argument"], cwd=tmp_path,
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True, timeout=30, encoding="utf-8")
         assert run.returncode == 7, run.stderr
         receipt = json.loads(run.stdout)
         assert receipt["value"] == "migrated"
         assert receipt["argv"] == ["quoted argument"]
         assert Path(receipt["exe"]).samefile(interpreter)
-    assert (out / "hermes-agent").read_text() == foreign
+    assert (out / "hermes-agent").read_text(encoding="utf-8-sig") == foreign
     before = {p: p.stat().st_mtime_ns for p in out.iterdir()}
     assert _launchers.expose_cli()["written"] == []
     assert before == {p: p.stat().st_mtime_ns for p in out.iterdir()}
@@ -250,7 +268,7 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
                 command = [*_resolve_direct_command(str(launcher)), *args]
             elif surface == "published":
                 result = subprocess.run([str(launcher), "--print-runtime-command", "--", *args],
-                                        capture_output=True, text=True, timeout=30)
+                                        capture_output=True, text=True, timeout=30, encoding="utf-8")
                 assert result.returncode == 0, result.stderr
                 command = json.loads(result.stdout)
             else:
@@ -270,7 +288,7 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
             if surface not in ("legacy", "systemd", "launchd"):
                 assert Path(command[0]).samefile(interpreter)
     assert collect_generations(repo, min_age_seconds=0) == [selected.parent.parent / "old"]
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout)["value"] == "new"
     assert json.loads(result.stdout)["argv"] == args
@@ -306,7 +324,7 @@ def test_windows_repair_upgrades_healthy_old_pm_external_launchers(tmp_path, mon
     if not launcher.exists():
         launcher = local / "hermes.cmd"
     result = subprocess.run([str(launcher), "--print-runtime-command"], capture_output=True,
-                            text=True, timeout=30)
+                            text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert Path(json.loads(result.stdout)[0]).samefile(interpreter)
 
@@ -321,7 +339,7 @@ def test_dashboard_action_boots_selected_dependencies(tmp_path, monkeypatch):
     proc = web_server_gateway._spawn_hermes_action(["--version"], "gateway-restart")
     try:
         assert proc.wait(timeout=30) == 7
-        log = (home / "logs" / web_server_gateway._ACTION_LOG_FILES["gateway-restart"]).read_text()
+        log = (home / "logs" / web_server_gateway._ACTION_LOG_FILES["gateway-restart"]).read_text(encoding="utf-8-sig")
         assert json.loads(log.splitlines()[-1])["value"] == "selected"
     finally:
         if proc.poll() is None:
@@ -331,12 +349,13 @@ def test_dashboard_action_boots_selected_dependencies(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("layout", ["legacy", "payload"])
 def test_pre_pm_base_dependencies_activate_only_at_boot(tmp_path, monkeypatch, layout):
-    repo, _, _ = fixture_tree(tmp_path, monkeypatch)
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
     environment = repo / "venv"
     if layout == "payload":
         environment = repo.parent / "payload-deps"
         (repo.parent / "manifest.json").write_text(
-            json.dumps({"repo": repo.name, "venv": environment.name}), encoding="utf-8")
+            json.dumps({"repo": repo.name, "venv": environment.name,
+                        "store": (home / "tools").relative_to(repo.parent).as_posix()}), encoding="utf-8")
     site = site_packages(environment)
     site.mkdir(parents=True)
     editable = tmp_path / "editable"
@@ -344,7 +363,7 @@ def test_pre_pm_base_dependencies_activate_only_at_boot(tmp_path, monkeypatch, l
     (editable / "selected_probe.py").write_text("VALUE = 'base-pth'\n", encoding="utf-8")
     (site / "member.pth").write_text(str(editable) + "\n", encoding="utf-8")
     command = _launchers.runtime_command(repo)
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout)["value"] == "base-pth"
 
@@ -353,7 +372,7 @@ def test_external_interpreter_keeps_its_owned_dependencies(tmp_path, monkeypatch
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "empty-store"))
     command = _launchers.runtime_command(ROOT, code="import ruamel.yaml; print('external-runtime-ready')")
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "external-runtime-ready"
 
@@ -380,37 +399,56 @@ def test_service_survives_python_tool_replacement(tmp_path, monkeypatch):
             assert str(store / version) not in unit
             command = shlex.split(next(line.split("=", 1)[1] for line in unit.splitlines() if line.startswith("ExecStart=")))
     shutil.rmtree(store / "python-A")
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout)["value"] == "ready"
 
 
 @pytest.mark.platforms("posix")
-def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monkeypatch):
+@pytest.mark.parametrize("create", [True, False])
+def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monkeypatch, create):
+    import builtins
+
     from hermes_cli.venv_sync import publish_launchers
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: home)
     site = site_packages(repo / "venv")
     site.mkdir(parents=True)
-    (site / "selected_probe.py").write_text("VALUE = 'ready'\n")
+    (site / "selected_probe.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
     out = home / ".local/bin"
     out.mkdir(parents=True)
+    if not create:
+        original_import = builtins.__import__
+
+        def without_config(name, *args, **kwargs):
+            assert name != "hermes_cli.config", "bootstrap publication imported application config"
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", without_config)
     store = home / "tools"
     for version in ("python-A", "python-B"):
         python = store / version / "bin/python3"
         python.parent.mkdir(parents=True)
         python.symlink_to(interpreter)
-        (store / "facts.json").write_text(json.dumps({"schema": 1, "packages": {"python": {"entry": version}}}))
+        (store / "facts.json").write_text(json.dumps({"schema": 1, "packages": {"python": {"entry": version}}}), encoding="utf-8")
         if version == "python-A":
             _launchers.mint_launcher("hermes", repo, out, python, None)
         else:
-            publish_launchers(repo)
+            if create:
+                publish_launchers(repo)
+            else:
+                publish_launchers(repo, create=False)
+                assert set(out.iterdir()) == {out / "hermes"}
+                assert not (home / "bin").exists()
+                assert not (home / "config.yaml").exists()
+                assert not (home / "skills").exists()
     shutil.rmtree(store / "python-A")
     result = subprocess.run([str(out / "hermes")], cwd=tmp_path,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout)["value"] == "ready"
+    assert Path(json.loads(result.stdout)["exe"]) == store / "python-B/bin/python3"
 
 
 def test_update_import_probe_uses_selected_dependencies(tmp_path, monkeypatch):

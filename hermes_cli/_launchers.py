@@ -253,10 +253,10 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
 def _write_shell(target: Path, command: list[str]) -> Path | None:
     body = f'#!/bin/sh\nexec {shlex.join(command)} "$@"\n'
     try:
-        if not target.is_symlink() and target.read_text(encoding="utf-8") == body:
+        if not target.is_symlink() and target.read_bytes() == body.encode("utf-8"):
             if os.access(target, os.X_OK):
                 return target
-    except (OSError, UnicodeError):
+    except OSError:
         pass
 
     def write(staging: Path) -> None:
@@ -295,13 +295,16 @@ def _owns_launcher(target: Path, root: Path) -> bool:
     return False
 
 
-def _publish_conveniences(root: Path, out_dir: Path, names) -> dict[Path, bool]:
+def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = True) -> dict[Path, bool]:
     """User-bin commands forward to durable local launchers, not a Python pin."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    elif not out_dir.is_dir():
+        return {}
     published = {}
     for name in names:
         target = out_dir / name
-        if (target.exists() or target.is_symlink()) and not _owns_launcher(target, root):
+        if (not create or target.exists() or target.is_symlink()) and not _owns_launcher(target, root):
             continue
         before = target.lstat().st_mtime_ns if target.exists() or target.is_symlink() else None
         command = ([str(root / ".hermes/bin/hermes"), "--run-module", "run_agent"]
@@ -347,29 +350,32 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
             if (path := stage_launcher(name, root, Path(out_dir))) is not None]
 
 
-def expose_cli(project_root: Path | None = None) -> dict:
+def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict:
     """Repair PATH conveniences without taking over another installation's files.
 
     macOS CLI-first launches link the bundle's signed shims directly; Electron
     need not have run. Source installs converge on the store launcher owner.
     Shell rc/PATH registration remains installer-owned.
+
+    Before dependency sync succeeds, create=False maintains only commands we
+    already own, without loading application config or enabling new exposure.
     """
     if _is_windows():
         return {"ok": True, "skipped": "windows-installer-owned"}
-    try:
-        from hermes_cli.config import load_config
-    except ImportError:
-        # The explicit PM bootstrap publishes Python before application deps.
-        # Installers will expose it after sync; never invent a config reader here.
-        return {"ok": True, "skipped": "config-unavailable"}
+    if create:
+        try:
+            from hermes_cli.config import load_config
+        except ImportError:
+            # Installers expose after sync; never invent a config reader here.
+            return {"ok": True, "skipped": "config-unavailable"}
+        cli_cfg = (load_config() or {}).get("cli", {})
+        if isinstance(cli_cfg, dict) and not cli_cfg.get("expose_on_path", True):
+            return {"ok": True, "skipped": "config-disabled"}
     from hermes_cli.steward import read_install_stamp
 
-    cli_cfg = (load_config() or {}).get("cli", {})
-    if isinstance(cli_cfg, dict) and not cli_cfg.get("expose_on_path", True):
-        return {"ok": True, "skipped": "config-disabled"}
     root = Path(project_root or os.environ.get("HERMES_INSTALL_ROOT") or Path(__file__).resolve().parents[1]).resolve()
     if _is_bundled_payload(root):
-        if sys.platform == "darwin":
+        if create and sys.platform == "darwin":
             return _symlink_sealed_launchers(root.parent / "bin")
         return {"ok": True, "skipped": "bundle-owns-launchers"}
     if read_install_stamp(root).get("updateMechanism") == "external":
@@ -385,11 +391,11 @@ def expose_cli(project_root: Path | None = None) -> dict:
         # entries or reclaim a convenience that was repointed to another root.
         from hermes_constants import get_default_hermes_root
         for directory in (get_default_hermes_root() / "bin", Path("/usr/local/bin")):
-            if directory not in dirs and _owns_launcher(directory / "hermes", root):
+            if directory not in dirs and (not create or _owns_launcher(directory / "hermes", root)):
                 dirs.append(directory)
         written = []
         for directory in dirs:
-            published = _publish_conveniences(root, directory, (*WINDOWS_BIN_LAUNCHERS, "hermes-agent"))
+            published = _publish_conveniences(root, directory, (*WINDOWS_BIN_LAUNCHERS, "hermes-agent"), create=create)
             written.extend(path.name for path, changed in published.items() if changed)
         return {"ok": True, "written": written}
     except OSError as exc:

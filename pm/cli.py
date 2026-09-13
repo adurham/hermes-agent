@@ -100,7 +100,7 @@ def _install_names(names: list[str], target: str | None = None) -> int:
                     if name == "python":
                         from hermes_cli.venv_sync import publish_launchers
 
-                        publish_launchers(repo_root())
+                        publish_launchers(repo_root(), create=False)
                     print(f"✓ {name}", flush=True)
             except InstallError as e:
                 print(f"✗ {e}", flush=True)

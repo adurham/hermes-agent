@@ -264,8 +264,10 @@ $env:HERMES_RUNTIME_DIR = Join-Path $env:HERMES_HOME 'tools'
 It makes the bootstrap and PM use the same writable store. Do not persist a
 path into an installed MSIX or macOS bundle. Activation runs the setup script's
 runtime-only path to provision tools and sync the `all` Python extra. It does
-not select `dev` or install JS workspaces. It also skips setup's user-facing
-installation work: shell configuration, launchers, `.env`, and bundled skills.
+not select `dev` or install JS workspaces. It maintains installation-local
+commands and repairs existing owned PATH wrappers, but does not create new PATH
+conveniences or load application configuration. It also skips setup's user-facing
+installation work: shell configuration, `.env`, and bundled skills.
 Run the setup script separately if you want that full installation workflow.
 
 Before Python exists, the shell bootstrap acquires the pinned interpreter.

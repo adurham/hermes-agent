@@ -30,7 +30,8 @@ def _write_bundled_stamp(repo_root: Path) -> None:
     payload (payload marker + a valid updateMechanism)."""
     repo_root.mkdir(parents=True, exist_ok=True)
     (repo_root / "install-stamp.json").write_text(
-        json.dumps({"payload": "bundled", "updateMechanism": "electron-updater"})
+        json.dumps({"payload": "bundled", "updateMechanism": "electron-updater"}),
+        encoding="utf-8",
     )
 
 
@@ -44,9 +45,9 @@ def fake_install(tmp_path, monkeypatch):
 
     root = tmp_path / "checkout"
     (root / "venv" / "bin").mkdir(parents=True)
-    (root / "venv" / "bin" / "python").write_text("#!fake\n")
-    (root / "hermes").write_text("# entrypoint\n")
-    (root / "run_agent.py").write_text("# agent\n")
+    (root / "venv" / "bin" / "python").write_text("#!fake\n", encoding="utf-8")
+    (root / "hermes").write_text("# entrypoint\n", encoding="utf-8")
+    (root / "run_agent.py").write_text("# agent\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(root))
     store = tmp_path / "tools"
     store.mkdir()
@@ -54,13 +55,14 @@ def fake_install(tmp_path, monkeypatch):
     interpreter = Path(sys._base_executable).resolve()
     (store / "facts.json").write_text(json.dumps({"schema": 1, "packages": {"python": {
         "entry": str(interpreter.parent if os.name == "nt" else interpreter.parents[1]),
-    }}}))
+    }}}), encoding="utf-8")
     return home, root
 
 
 @pytest.mark.platforms("windows")
-def test_windows_is_installer_owned():
-    assert _launchers.expose_cli() == {
+@pytest.mark.parametrize("create", [True, False])
+def test_windows_is_installer_owned(create):
+    assert _launchers.expose_cli(create=create) == {
         "ok": True,
         "skipped": "windows-installer-owned",
     }
@@ -72,6 +74,49 @@ def test_registered_as_a_home_step():
 
 class TestExposeCli:
     @posix_only
+    @pytest.mark.parametrize("hermes", ["missing", "foreign"])
+    def test_repair_only_preserves_missing_and_foreign_commands(self, fake_install, monkeypatch, hermes):
+        home, root = fake_install
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: pytest.fail("repair read config"))
+        wrapper_dir = home / ".local" / "bin"
+        extra = home / "bin"
+        assert _launchers.expose_cli(create=False) == {"ok": True, "written": []}
+        assert not wrapper_dir.exists()
+        assert not extra.exists()
+        assert {p.name for p in (root / ".hermes/bin").iterdir()} == set(_launchers.ENTRY_POINTS)
+
+        # An owned ACP entry must be repaired even without an owned hermes
+        # sibling admitting this directory. Its old target is already gone.
+        extra.mkdir()
+        dangling = root / "venv/bin/hermes-acp"
+        acp = extra / "hermes-acp"
+        acp.symlink_to(dangling)
+        assert not acp.exists() and acp.is_symlink()
+        foreign = b"#!/bin/sh\n# user-owned caf\xc3\xa9 command\nexit 19\n"
+        if hermes == "foreign":
+            (extra / "hermes").write_bytes(foreign)
+        wrapper_dir.mkdir(parents=True)
+        (wrapper_dir / "hermes").write_bytes(foreign)
+        foreign_link = wrapper_dir / "hermes-acp"
+        foreign_target = home / "other-install/hermes-acp"
+        foreign_link.symlink_to(foreign_target)
+        before = {path: path.lstat().st_mtime_ns for path in (wrapper_dir, wrapper_dir / "hermes", foreign_link)}
+
+        assert _launchers.expose_cli(create=False) == {"ok": True, "written": ["hermes-acp"]}
+        assert acp.is_file() and not acp.is_symlink() and os.access(acp, os.X_OK)
+        assert not dangling.exists()
+        assert not (extra / "hermes-agent").exists()
+        assert not (wrapper_dir / "hermes-agent").exists()
+        if hermes == "foreign":
+            assert (extra / "hermes").read_bytes() == foreign
+        else:
+            assert not (extra / "hermes").exists()
+        assert (wrapper_dir / "hermes").read_bytes() == foreign
+        assert foreign_link.is_symlink() and foreign_link.readlink() == foreign_target
+        assert before == {path: path.lstat().st_mtime_ns for path in before}
+        assert _launchers.expose_cli(create=False) == {"ok": True, "written": []}
+
+    @posix_only
     def test_writes_all_three_wrappers_fresh(self, fake_install):
         home, root = fake_install
         result = _launchers.expose_cli()
@@ -79,7 +124,7 @@ class TestExposeCli:
         assert sorted(result["written"]) == ["hermes", "hermes-acp", "hermes-agent"]
         for name in ("hermes", "hermes-agent", "hermes-acp"):
             wrapper = home / ".local" / "bin" / name
-            body = wrapper.read_text()
+            body = wrapper.read_text(encoding="utf-8-sig")
             assert str(root) in body
             assert str(root / ".hermes" / "bin") in body
             assert os.access(wrapper, os.X_OK)
@@ -93,9 +138,9 @@ class TestExposeCli:
         wrapper_dir = home / ".local" / "bin"
         wrapper_dir.mkdir(parents=True)
         foreign = f'#!/bin/sh\nexec "{other}/venv/bin/python" "{other}/hermes" "$@"\n'
-        (wrapper_dir / "hermes").write_text(foreign)
+        (wrapper_dir / "hermes").write_text(foreign, encoding="utf-8")
         result = _launchers.expose_cli()
-        assert (wrapper_dir / "hermes").read_text() == foreign
+        assert (wrapper_dir / "hermes").read_text(encoding="utf-8-sig") == foreign
         assert "hermes" not in result["written"]
         # The other two had no file at all — those ARE written.
         assert sorted(result["written"]) == ["hermes-acp", "hermes-agent"]
@@ -118,9 +163,12 @@ class TestExposeCli:
         result = _launchers.expose_cli()
         assert result == {"ok": True, "skipped": "no-store-python"}
 
-    @pytest.mark.platforms("linux")
+    @pytest.mark.parametrize("create", [
+        pytest.param(True, marks=pytest.mark.platforms("linux")),
+        pytest.param(False, marks=posix_only),
+    ])
     def test_bundled_tree_skips_bundle_owns_launchers(
-        self, fake_install, monkeypatch, tmp_path
+        self, fake_install, monkeypatch, tmp_path, create
     ):
         """The bundle owns its shims: on Linux (AppImage: transient mount)
         the step names the shape and writes nothing."""
@@ -129,10 +177,13 @@ class TestExposeCli:
         (payload / "repo").mkdir()
         _write_bundled_stamp(payload / "repo")
         for name in ("hermes", "hermes-agent", "hermes-acp"):
-            (payload / "bin" / name).write_text("\x7fELF fake shim\n")
+            (payload / "bin" / name).write_text("\x7fELF fake shim\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_INSTALL_ROOT", str(payload / "repo"))
-        result = _launchers.expose_cli()
+        if not create:
+            monkeypatch.setattr("hermes_cli.config.load_config", lambda: pytest.fail("repair read config"))
+        result = _launchers.expose_cli(create=create)
         assert result == {"ok": True, "skipped": "bundle-owns-launchers"}
+        assert not (fake_install[0] / ".local/bin").exists()
 
     @posix_only
     def test_unstamped_tree_with_sibling_bin_is_not_a_bundle(
@@ -145,7 +196,7 @@ class TestExposeCli:
         (tmp_path / "tools" / "facts.json").unlink()
         parent = tmp_path / "hermes-home"
         (parent / "bin").mkdir(parents=True)
-        (parent / "bin" / "hermes").write_text("#!/bin/sh\n# installer launcher\n")
+        (parent / "bin" / "hermes").write_text("#!/bin/sh\n# installer launcher\n", encoding="utf-8")
         checkout = parent / "hermes-agent"
         checkout.mkdir()
         monkeypatch.setenv("HERMES_INSTALL_ROOT", str(checkout))
@@ -161,12 +212,12 @@ class TestExposeCli:
         wrapper_dir = home / ".local" / "bin"
         wrapper_dir.mkdir(parents=True)
         console_script = root / "venv" / "bin" / "hermes"
-        console_script.write_text("# real console script\n")
+        console_script.write_text("# real console script\n", encoding="utf-8")
         (wrapper_dir / "hermes").symlink_to(console_script)
         result = _launchers.expose_cli()
         assert "hermes" in result["written"]
         # The venv console script survives untouched…
-        assert console_script.read_text() == "# real console script\n"
+        assert console_script.read_text(encoding="utf-8-sig") == "# real console script\n"
         # …and the link-dir entry is now a real file, not a symlink.
         assert not (wrapper_dir / "hermes").is_symlink()
 
@@ -183,19 +234,19 @@ def test_direct_packaged_cli_exposes_shims_before_electron(tmp_path):
     _write_bundled_stamp(repo)
     (repo / "install-stamp.json").write_text(json.dumps({
         "payload": "bundled", "commit": "abcdef012345", "updateMechanism": "electron-updater",
-    }))
+    }), encoding="utf-8")
     bin_dir = payload / "bin"
     bin_dir.mkdir()
     code = f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r}); from hermes_cli.main import main; main()"
     for name in ("hermes", "hermes-agent", "hermes-acp"):
         shim = bin_dir / name
-        shim.write_text(f'#!/bin/sh\nexec {shlex.join([sys.executable, "-I", "-c", code])} "$@"\n')
+        shim.write_text(f'#!/bin/sh\nexec {shlex.join([sys.executable, "-I", "-c", code])} "$@"\n', encoding="utf-8")
         shim.chmod(0o755)
     env = dict(os.environ, HOME=str(home), HERMES_HOME=str(home / ".hermes"),
                HERMES_INSTALL_ROOT=str(repo), HERMES_RUNTIME_DIR=str(tmp_path / "tools"))
     # Execute the package CLI directly. No Electron process or linking helper runs.
     result = subprocess.run([str(bin_dir / "hermes"), "--version"], env=env,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     for name in ("hermes", "hermes-agent", "hermes-acp"):
         assert (home / ".local/bin" / name).is_symlink()
@@ -216,7 +267,7 @@ class TestSymlinkSealedLaunchers:
         payload_bin = tmp_path / "Hermes.app" / "Contents" / "Resources" / "agent-payload" / "bin"
         payload_bin.mkdir(parents=True)
         for name in ("hermes", "hermes-agent", "hermes-acp"):
-            (payload_bin / name).write_text("fake mach-o shim\n")
+            (payload_bin / name).write_text("fake mach-o shim\n", encoding="utf-8")
         return home, payload_bin
 
     def test_links_all_three_fresh(self, payload):
@@ -252,12 +303,12 @@ class TestSymlinkSealedLaunchers:
         link_dir = home / ".local" / "bin"
         link_dir.mkdir(parents=True)
         # A real file (pipx-style launcher)…
-        (link_dir / "hermes").write_text("#!/bin/sh\n# pipx launcher\n")
+        (link_dir / "hermes").write_text("#!/bin/sh\n# pipx launcher\n", encoding="utf-8")
         # …and a live symlink to a different tool.
         other = tmp_path / "other-tool"
-        other.write_text("other\n")
+        other.write_text("other\n", encoding="utf-8")
         (link_dir / "hermes-agent").symlink_to(other)
         result = _launchers._symlink_sealed_launchers(payload_bin)
-        assert (link_dir / "hermes").read_text() == "#!/bin/sh\n# pipx launcher\n"
+        assert (link_dir / "hermes").read_text(encoding="utf-8-sig") == "#!/bin/sh\n# pipx launcher\n"
         assert os.readlink(link_dir / "hermes-agent") == str(other)
         assert sorted(result["written"]) == ["hermes-acp"]
