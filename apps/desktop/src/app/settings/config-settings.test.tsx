@@ -3,7 +3,9 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
 import { ConfigSettings } from './config-settings'
 
@@ -38,6 +40,15 @@ vi.mock('@/store/projects', () => ({
   scanAndRecordRepos: vi.fn().mockResolvedValue(undefined)
 }))
 
+// The module graph behind ConfigSettings is large (1.5s cold here, >10s on a
+// saturated CI runner); load it once under the hook timeout so the 15s test
+// budget is spent on the autosave behaviour, not on transform + import.
+let ConfigSettings: typeof ConfigSettingsType
+
+beforeAll(async () => {
+  ;({ ConfigSettings } = await import('./config-settings'))
+}, 60_000)
+
 beforeEach(() => {
   getElevenLabsVoices.mockResolvedValue({ available: false })
   getHermesConfigSchema.mockResolvedValue({ fields: {} })
@@ -71,7 +82,7 @@ describe('ConfigSettings autosave', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
-      await renderConfigSettings()
+      renderConfigSettings()
 
       const toggle = await screen.findByRole('switch')
 
