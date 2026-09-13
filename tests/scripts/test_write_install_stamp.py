@@ -13,6 +13,7 @@ import pytest
     ("bootstrap", "docker", "external", "bootstrap", None),
     ("bundled", "desktop-app", "electron-updater", "bundled", "v0.18.0"),
     ("bundled", "desktop-app", "app-installer", "bundled", "v0.18.0"),
+    ("bundled", "desktop-app", "microsoft-store", "bundled", "v0.18.0"),
     ("bundled", "desktop-app", "external", "bundled", "v0.18.0"),
     ("light", "desktop-app", "electron-updater", "light", "v0.18.0"),
 ])
@@ -40,6 +41,24 @@ def test_cli_stamp_roundtrip(tmp_path, monkeypatch, variant, distribution, mecha
         info = _stamp_version_info()
         assert info is not None and info.commit == "d" * 40
         assert _is_sealed(tmp_path)
+        (tmp_path / ".git").mkdir()
+        assert not _is_sealed(tmp_path), "a stamped source checkout is not sealed"
+
+
+@pytest.mark.parametrize("arguments", [[], ["--update-mechanism", "carrier-pigeon"]])
+def test_missing_or_invalid_mechanism_cannot_emit_stamp(tmp_path, arguments):
+    from scripts.write_install_stamp import build_stamp
+
+    out = tmp_path / "install-stamp.json"
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve().parents[2] / "scripts/write_install_stamp.py"),
+         "--output", str(out), "--commit", "a" * 40, *arguments],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode != 0 and "--update-mechanism" in result.stderr
+    assert not out.exists()
+    with pytest.raises(SystemExit, match="invalid --update-mechanism"):
+        build_stamp(commit="a" * 40, update_mechanism=arguments[-1] if arguments else "")
 
 
 @pytest.mark.parametrize("variant,tag,error", [
