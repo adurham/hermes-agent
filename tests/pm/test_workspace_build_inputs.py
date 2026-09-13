@@ -26,7 +26,9 @@ def _buildable_source(plugin):
         encoding="utf-8",
     )
     (plugin / "plugin.yaml").write_text("name: replay-plugin\n", encoding="utf-8")
-    (plugin / "replay_plugin.py").write_text("VALUE = 'recorded plugin bytes'\n", encoding="utf-8")
+    (plugin / "replay_plugin").mkdir()
+    (plugin / "replay_plugin/__init__.py").write_text("from .values import VALUE\n", encoding="utf-8")
+    (plugin / "replay_plugin/values.py").write_text("VALUE = 'recorded plugin bytes'\n", encoding="utf-8")
     (plugin / "README.md").write_text("# fixture readme")
     (plugin / "LICENSE").write_text("MIT")
     # The backend must consume the copied metadata inputs too.
@@ -40,7 +42,8 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     name = "replay_plugin-1.0-py3-none-any.whl"
     dist = "replay_plugin-1.0.dist-info"
     entries = {
-        "replay_plugin.py": Path("replay_plugin.py").read_bytes(),
+        "replay_plugin/__init__.py": Path("replay_plugin/__init__.py").read_bytes(),
+        "replay_plugin/values.py": Path("replay_plugin/values.py").read_bytes(),
         dist + "/METADATA": "Metadata-Version: 2.1\\nName: replay-plugin\\nVersion: 1.0\\n",
         dist + "/WHEEL": "Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
     }
@@ -113,7 +116,7 @@ def test_repair_replays_saved_in_tree_build_backend(tmp_path):
     (plugin / "pyproject.toml").write_text("damaged [", encoding="utf-8")
     (plugin / "plugin.yaml").write_text("damaged [", encoding="utf-8")
     (plugin / "build/backend.py").unlink()
-    (plugin / "replay_plugin.py").write_text("raise RuntimeError('damaged live source')\n", encoding="utf-8")
+    (plugin / "replay_plugin/values.py").write_text("raise RuntimeError('damaged live source')\n", encoding="utf-8")
     repair = PythonEnvironment(
         uv=Path(uv), python=Path(sys.executable), destination=tmp_path / "repair-env",
         # A fresh cache forces uv to invoke the saved backend again, not reuse a wheel.

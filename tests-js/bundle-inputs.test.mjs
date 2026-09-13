@@ -43,6 +43,7 @@ test('package transitions are ordered, identity-preserving, and report through t
 test.each(['windows', 'macos'])('%s rejects malformed and incompatible pairs', platform => {
   const cases = [
     ['schema', 2, /schema/], ['platform', 'linux', /platform/], ['arch', 'riscv', /architecture/],
+    ['arch', 'arm64', /architecture/],
     ['new', null, /tag/], ['new.tag', 'main', /tag/], ['new.commit', 'not-a-commit', /commit/],
     ['new.identity', 4, /identity/], ['new.identity', 'other.bundle', /identity/],
     ['new.commit', 'a'.repeat(40), /commit/], ['new.artifact', null, /SHA-256/],
@@ -61,7 +62,15 @@ test.each(['windows', 'macos'])('%s rejects malformed and incompatible pairs', p
       ['new.teamId', ['ABCDEFGHIJ'], /teamId/], ['new.teamId', '', /teamId/], ['new.teamId', 'OTHER12345', /signing team/],
     ]),
   ]
-  for (const [field, value, diagnostic] of cases) {
+  const oldCases = cases.filter(([field]) => field.startsWith('new') && field !== 'new.version')
+    .map(([field, value, diagnostic]) => [field.replace(/^new/, 'old'),
+      field === 'new.commit' && value === 'a'.repeat(40) ? 'b'.repeat(40) :
+        field === 'new.artifact.sha256' && value === 'a'.repeat(64) ? 'b'.repeat(64) : value, diagnostic])
+  oldCases.push(...(platform === 'windows' ? [
+    ['old.version', '1.3.0.0', /increase/], ['old.version', '1.4.0.0', /increase/],
+    ['old.version', '1.2.0', /four numeric/], ['old.version', '1.2.65536.0', /16 bits/],
+  ] : [['old.version', '1.9.0', /match/]]))
+  for (const [field, value, diagnostic] of [...cases, ...oldCases]) {
     const bad = fixture(platform), keys = field.split('.')
     const last = keys.pop()
     keys.reduce((object, key) => object[key], bad)[last] = value
@@ -69,6 +78,7 @@ test.each(['windows', 'macos'])('%s rejects malformed and incompatible pairs', p
     expect(() => validateDownloadedBundle(bad, platform, 'x64'), field).toThrow(diagnostic)
   }
   expect(() => validateBundleInputs(fixture(platform), platform, 'riscv')).toThrow('Unsupported')
+  expect(() => validateBundleInputs(fixture(platform), platform, 'arm64')).toThrow('architecture')
   const pair = fixture(platform)
   if (platform === 'macos') {
     pair.new.tag = 'v1.3.0-canary.20260907000000'; pair.new.version = pair.new.tag.slice(1)
@@ -113,10 +123,12 @@ test.each(['windows', 'macos'])('%s staging and resumed validation use actual fi
   // Native Mac resume uses require(), not an ESM-only import.
   const validator = fileURLToPath(new URL('../tests/install/e2e-assets/bundle-manifest.cjs', import.meta.url))
   execFileSync(process.execPath, ['-e', 'require(process.argv[1]).validateDownloadedBundle(require(process.argv[2]), process.argv[3], "x64")', validator, filename, platform])
-  for (const missing of [undefined, path.join(directory, 'missing'), directory]) {
-    const bad = structuredClone(result); bad.new.artifact.path = missing
-    expect(() => validateDownloadedBundle(bad, platform, 'x64')).toThrow('artifact.path')
-    if (platform === 'windows') expect(validateBundledManifest(bad, { expectedPublisher: 'CN=Test' }).ok).toBe(false)
+  for (const slot of ['old', 'new']) {
+    for (const missing of [undefined, path.join(directory, 'missing'), directory]) {
+      const bad = structuredClone(result); bad[slot].artifact.path = missing
+      expect(() => validateDownloadedBundle(bad, platform, 'x64')).toThrow('artifact.path')
+      if (platform === 'windows') expect(validateBundledManifest(bad, { expectedPublisher: 'CN=Test' }).ok).toBe(false)
+    }
   }
   const altered = structuredClone(result); altered.new.commit = altered.old.commit
   expect(() => validateDownloadedBundle(altered, platform, 'x64')).toThrow('commit')

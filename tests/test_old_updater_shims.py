@@ -150,8 +150,11 @@ def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):
     assert config.format_unsupported_install_warning("pip") == ""
     assert main._detect_venv_python_processes() == []
     assert main._detect_venv_python_processes(exclude_pids={123}) == []
-    assert browser_tool.warm_agent_browser_npx_cache() is False
-    assert browser_tool.warm_agent_browser_npx_cache(timeout=0.1) is False
+    # Require the permanent historical definition, never the temporary lazy pointer.
+    warmer = vars(browser_tool)["warm_agent_browser_npx_cache"]
+    assert warmer.__module__ == browser_tool.__name__
+    assert warmer() is False
+    assert warmer(timeout=0.1) is False
     # A private, never-raised type keeps historical `except helper():` valid
     # without swallowing real errors or resolving the removed quarantine code.
     error_type = update_cmd._shim_quarantine_error_type()
