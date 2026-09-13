@@ -73,13 +73,19 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """One JPEG grab of the bot's screen (``data_url``: null while stopped). Read-only: no lease change.
-    Suppressed while a human holds the lease — the frame may show what they are typing."""
+    Suppressed while a human holds the lease — the frame may show what they are typing — and when
+    the lease moved DURING the grab: a takeover racing the framebuffer read means the frame may
+    already be the human's session, so it is dropped rather than shipped to every client."""
     try:
         from tools.bot_desktop import lease as _bd_lease
-        if _bd_lease.human_holds():
+        before = _bd_lease.get()
+        if before.holder == _bd_lease.HUMAN:
             return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
         from tools.bot_desktop.thumbnail import thumbnail_data_url
-        return _ok(rid, {"data_url": thumbnail_data_url()})
+        data_url = thumbnail_data_url()
+        if _bd_lease.get().epoch != before.epoch:
+            return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
+        return _ok(rid, {"data_url": data_url})
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
 
@@ -99,7 +105,12 @@ def _(rid, params: dict) -> dict:
 @method("display.stop")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
+    """Stopping kills the screen under whoever is on it, so it obeys the same rule as a bare
+    display.lease.release: refused while a human holds unless the caller says ``force``."""
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    if not params.get("force") and _bd_lease.human_holds():
+        return _err(rid, _DISPLAY_ERR, "a human holds this screen; pass force: true to stop it anyway",
+                    data={"code": "viewer_mismatch"})
     try:
         _bd_lease.release()
         stopped = _bd_runtime.stop()
@@ -111,21 +122,38 @@ def _(rid, params: dict) -> dict:
 # viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
 # keep its identity — and its lease — while nobody can claim an id minted for another connection.
 _minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+# Transports that cannot be weakly referenced (stdio, slotted, or none bound at all) are one
+# connection per process — the TUI's own pipe — so their minted ids share one process-wide set.
+_unweakable_minted_ids: set[str] = set()
+
+
+def _minted_for_this_connection() -> set[str]:
+    try:
+        return _minted_viewer_ids.setdefault(current_transport(), set())
+    except TypeError:
+        return _unweakable_minted_ids
 
 
 def _mint_viewer_id(requested: str) -> str:
     """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
     earlier; anything else (including a holder id read off display.status) gets a fresh id."""
     import secrets
-    try:
-        mine = _minted_viewer_ids.setdefault(current_transport(), set())
-    except TypeError:  # stdio / slotted transports cannot be weakly referenced: always mint
-        mine = set()
+    mine = _minted_for_this_connection()
     if requested in mine:
         return requested
     viewer_id = secrets.token_urlsafe(16)
     mine.add(viewer_id)
     return viewer_id
+
+
+def _foreign_viewer_id(rid, viewer_id: str):
+    """The error for a viewer id this connection never minted, or None. acquire/release take the id
+    as a capability, so one a caller invented or read off the wire must be refused — otherwise the
+    minting only shapes the honest path and a made-up id still evicts or releases the human."""
+    if viewer_id in _minted_for_this_connection():
+        return None
+    return _err(rid, _DISPLAY_ERR, "viewer_id was not minted for this connection; call display.observe first",
+                data={"code": "viewer_mismatch"})
 
 
 @method("display.observe")
@@ -161,10 +189,12 @@ def _(rid, params: dict) -> dict:
     if _bd_runtime.install_command() is None:
         return _err(rid, _DISPLAY_ERR, "no supported package manager (apt-get, dnf, pacman) on this host")
     profile_key = hermes_home_key()
-    sid = str(params.get("session_id") or "")
 
     def _ask_password() -> str:
-        return _block("display.install.sudo.request", sid, {"profile_key": profile_key}, timeout=300)
+        # App-level card, no session: it reaches the connection that clicked Install through the
+        # transport copy_context() carries below. A client-supplied session_id could route the
+        # masked password card into another window's chat, so none is accepted.
+        return _block("display.install.sudo.request", "", {"profile_key": profile_key}, timeout=300)
 
     def _line(text: str) -> None:
         _broadcast_global_event("display.install.log", {"profile_key": profile_key, "line": text})
@@ -199,6 +229,8 @@ def _(rid, params: dict) -> dict:
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    if (refused := _foreign_viewer_id(rid, viewer_id)) is not None:
+        return refused
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _lease_view(lease)})
 
@@ -213,6 +245,8 @@ def _(rid, params: dict) -> dict:
     if viewer_id is None and not params.get("force") and _bd_lease.human_holds():
         return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
                     data={"code": "viewer_mismatch"})
+    if viewer_id is not None and not params.get("force") and (refused := _foreign_viewer_id(rid, viewer_id)) is not None:
+        return refused
     lease = _bd_lease.release(viewer_id)
     return _ok(rid, {"lease": _lease_view(lease)})
 

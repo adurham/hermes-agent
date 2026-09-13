@@ -65,16 +65,19 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     assert _call(server, "display.thumbnail", {})["result"]["data_url"].endswith("SECRET")
 
 
-def test_release_without_viewer_id_cannot_yank_another_viewers_lease(_fresh_lease):
+def test_release_without_viewer_id_cannot_yank_another_viewers_lease(monkeypatch, tmp_path, _fresh_lease):
     """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
-    must be refused unless it forces; a matching viewer id and force keep working."""
+    must be refused unless it forces; the holder's own (minted) viewer id and force keep working."""
     import tui_gateway.server as server
+    from tools.bot_desktop import runtime
 
-    _fresh_lease.acquire("viewer-1")
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    mine = _call(server, "display.observe", {})["result"]["viewer_id"]
+    _fresh_lease.acquire(mine)
     refused = _call(server, "display.lease.release", {})
     assert refused["error"]["data"]["code"] == "viewer_mismatch"
     assert _fresh_lease.get().holder == _fresh_lease.HUMAN
-    assert _call(server, "display.lease.release", {"viewer_id": "viewer-1"})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+    assert _call(server, "display.lease.release", {"viewer_id": mine})["result"]["lease"]["holder"] == _fresh_lease.AGENT
     _fresh_lease.acquire("viewer-2")
     assert _call(server, "display.lease.release", {"force": True})["result"]["lease"]["holder"] == _fresh_lease.AGENT
 
@@ -123,3 +126,96 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
         assert lease_events and all(holder not in json.dumps(p) for p in lease_events)
     finally:
         lease._reset_for_tests()
+
+
+def test_stop_cannot_kill_the_screen_under_a_human_without_force(monkeypatch, _fresh_lease):
+    """display.stop released the lease unconditionally before stopping Xvnc: any authenticated caller
+    could yank a human mid-login and kill the screen under them. Same rule as display.lease.release."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import runtime
+
+    stops = []
+    monkeypatch.setattr(runtime, "stop", lambda: stops.append(1) or True)
+    _fresh_lease.acquire("viewer-1")
+    refused = _call(server, "display.stop", {})
+    assert refused["error"]["data"]["code"] == "viewer_mismatch"
+    assert _fresh_lease.get().holder == _fresh_lease.HUMAN and stops == []
+    forced = _call(server, "display.stop", {"force": True})["result"]
+    assert forced["stopped"] is True and stops == [1]
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+
+def test_lease_acquire_and_release_only_honour_an_id_this_connection_minted(monkeypatch, tmp_path, _fresh_lease):
+    """The minted identity is worthless if acquire takes any string: a caller could acquire under a
+    made-up id (evicting the human) or release with a guessed one. Both must insist on an id that
+    display.observe minted for THIS connection."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import runtime
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+
+    class _Peer:
+        def write(self, obj):
+            return True
+
+    def rpc(peer, method, params):
+        return server.dispatch({"jsonrpc": "2.0", "id": 3, "method": method, "params": params}, peer)
+
+    mine, other = _Peer(), _Peer()
+    minted = rpc(mine, "display.observe", {})["result"]["viewer_id"]
+    forged = rpc(other, "display.lease.acquire", {"viewer_id": "made-up"})
+    assert forged["error"]["data"]["code"] == "viewer_mismatch"
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+    ok = rpc(mine, "display.lease.acquire", {"viewer_id": minted})["result"]
+    assert ok["lease"]["holder"] == _fresh_lease.HUMAN
+    # another connection presenting the holder's id (read off the wire) cannot release it either
+    stolen = rpc(other, "display.lease.release", {"viewer_id": minted})
+    assert stolen["error"]["data"]["code"] == "viewer_mismatch"
+    assert _fresh_lease.get().holder == _fresh_lease.HUMAN
+    assert rpc(mine, "display.lease.release", {"viewer_id": minted})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+
+
+def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):
+    """The sudo card is app-level: it goes to the connection that clicked Install (copy_context
+    pins the transport). Honouring params.session_id let a caller route the masked password card
+    into ANOTHER window's chat."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import install, runtime
+
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y x")
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda *a, **k: None)
+    asked = threading.Event()
+    blocks = []
+
+    def fake_block(event, sid, payload, timeout=300, batch_qids=None):
+        blocks.append((event, sid))
+        asked.set()
+        return ""
+
+    def fake_install(*, ask_password, on_line, timeout_seconds=900.0, claimed=False):
+        ask_password()
+        return -1
+
+    monkeypatch.setattr(server, "_block", fake_block)
+    monkeypatch.setattr(install, "install_packages", fake_install)
+    resp = _call(server, "display.install", {"session_id": "victim-session"})
+    assert resp["result"]["started"], resp
+    assert asked.wait(5)
+    assert blocks and all(sid != "victim-session" for _ev, sid in blocks), blocks
+
+
+def test_thumbnail_grabbed_across_a_takeover_is_suppressed(monkeypatch, _fresh_lease):
+    """The human_holds() check happens before the grab; a takeover that lands while the framebuffer
+    is being read means the returned frame may already show the human's session. The lease epoch
+    must match before and after the grab or the frame is dropped."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import thumbnail
+
+    def grab_while_human_takes_over():
+        _fresh_lease.acquire("viewer-1")
+        return "data:image/jpeg;base64,SECRET"
+
+    monkeypatch.setattr(thumbnail, "thumbnail_data_url", grab_while_human_takes_over)
+    result = _call(server, "display.thumbnail", {})["result"]
+    assert result["data_url"] is None and result["suppressed"] == "human_has_control", result

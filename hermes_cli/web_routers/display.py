@@ -9,6 +9,13 @@ only from the viewer that currently holds the lease. noVNC's ``viewOnly`` is UX;
 
 A lease change closes the evicted viewer's socket with 4000 ``control-taken`` so its UI drops back to
 Watch mode and reconnects.
+
+Design notes. The ticket rides in the query string on purpose: noVNC's Websock owns the socket and
+cannot negotiate a subprotocol or add a header, and the ticket is single-use and expires in 30 s, so
+a logged URL is spent by the time anyone reads it. The bridge's input gate re-reads ``lease.json`` at
+most every ``_LEASE_REFRESH_S`` (250 ms) between in-process ``on_change`` callbacks: that bounds how
+long another PROCESS's takeover can go unnoticed, and is the price of not stat-ing the lease file on
+the event loop for every pointer move.
 """
 
 from __future__ import annotations
@@ -65,9 +72,15 @@ def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
 
 @router.websocket("/api/display/ws")
 async def display_ws(ws: WebSocket) -> None:
+    # Host/Origin/client-IP policy is refused BEFORE accept, like every other dashboard route: a
+    # cross-origin page never gets a completed handshake. Everything after that (ticket, desktop
+    # state) is refused AFTER accept so the code + reason arrive in a close frame — a close before
+    # accept surfaces in the browser as an opaque HTTP 403 and the renderer cannot tell "re-observe"
+    # (4401) from "screen is gone" (4001).
     if not _ws_request_is_allowed(ws):
         await ws.close(code=_CLOSE_NOT_ALLOWED)
         return
+    await ws.accept()
     info = _consume_display_ticket(ws)
     if info is None:
         await ws.close(code=_CLOSE_BAD_TICKET, reason="display ticket missing, expired or used")
@@ -76,7 +89,8 @@ async def display_ws(ws: WebSocket) -> None:
 
 
 async def _bridge(ws: WebSocket, info: dict) -> None:
-    """Pump RFB bytes between the viewer socket and THIS profile's Xvnc, gated by the lease."""
+    """Pump RFB bytes between the viewer socket (already accepted) and THIS profile's Xvnc, gated by
+    the lease."""
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _lease
     from tools.bot_desktop.rfb_filter import RfbClientFilter
@@ -96,7 +110,6 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop socket unreachable")
         return
 
-    await ws.accept()
     loop = asyncio.get_running_loop()
     evicted = asyncio.Event()
     held = {"ever": _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)}
@@ -166,6 +179,9 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
+        # Cancelled pumps must finish before we tear down the socket they hold, or they outlive the
+        # bridge on the loop (a viewer reconnecting in a loop piled them up).
+        await asyncio.gather(*pending, return_exceptions=True)
         for t in done:
             exc = t.exception()
             if exc and not isinstance(exc, (WebSocketDisconnect, ConnectionError)):
@@ -173,6 +189,10 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     finally:
         unsubscribe()
         writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:  # Xvnc already gone (ECONNRESET / EPIPE on the FIN)
+            pass
         # Closing the viewer window hands control back. A DROPPED link (laptop lid, Wi-Fi, 1006)
         # keeps the human's exclusion: they may be mid-login on that screen and the agent must not
         # resume into it. The Desktop reconnects into the same lease, or the human hands back.
