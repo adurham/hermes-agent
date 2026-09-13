@@ -203,13 +203,6 @@ def _stage_native(args) -> int:
     if venv_dir.exists():
         shutil.rmtree(venv_dir)
     env = dict(os.environ)
-    if current_target().startswith("darwin"):
-        # python-build-standalone bakes phantom toolchain paths (its build
-        # dir's llvm-ar) into sysconfig; sdist builds then fail with
-        # "No such file or directory: .../tools/llvm/bin/llvm-ar". Point
-        # sdist builds at the machine's real toolchain.
-        env.setdefault("AR", "/usr/bin/ar")
-        env.setdefault("CC", "clang")
     from pm import build_environment
     from pm.package import InstallError
 

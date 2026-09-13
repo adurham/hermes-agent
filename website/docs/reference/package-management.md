@@ -209,6 +209,12 @@ process when you enter through `activate.ps1`.
 Other platforms still require the native compiler tools and libraries needed
 by dependencies without compatible wheels.
 
+For the pinned macOS Python, PM defaults `AR` to `/usr/bin/ar`: the distributed
+interpreter's sysconfig still points at its supplier's temporary LLVM directory.
+This applies to source and bundle builds alike. Explicit `AR` and `CC` values
+remain authoritative; PM does not change the toolchain of a caller-supplied
+interpreter such as Nix Python. No `CC` default is needed for the current pin.
+
 Clone the repository and select your branch before preparing dependencies:
 
 ```bash

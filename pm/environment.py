@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import TextIO
@@ -128,10 +129,16 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     if tools is None:
         raise InstallError("venv", "PM's pinned toolchain is unavailable")
     uv, pinned_python = tools
+    python = pinned_python if python is None else python.absolute()
+    build_env = _base_environment(env)
+    if sys.platform == "darwin" and python.resolve() == pinned_python.resolve():
+        # PBS's AR still names its deleted build directory. Its CC is already
+        # clang; only the archiver needs a default, and only for our interpreter.
+        build_env.setdefault("AR", "/usr/bin/ar")
     return PythonEnvironment(
-        uv=uv, python=pinned_python if python is None else python.absolute(),
+        uv=uv, python=python,
         destination=destination.absolute(), cache=uv_cache_dir() if cache is None else cache.absolute(),
-        env=_base_environment(env), offline=offline, output=output,
+        env=build_env, offline=offline, output=output,
     )
 
 

@@ -33,6 +33,9 @@ def _exercise_relocated_pm_runtime(tmp_path, monkeypatch):
         shutil.copytree(Path(sys.base_prefix), python.parent, dirs_exist_ok=True)
     else:
         shutil.copy2(Path(sys._base_executable).resolve(), python)
+        # Relocatable PBS does not retain the host's stdlib prefix. Supply the
+        # fixture's promised host library tree, including libpython on macOS.
+        (python.parent.parent / "lib").symlink_to(Path(sys.base_prefix) / "lib", target_is_directory=True)
     stage = getattr(native, "stage_pm_runtime", None)
     assert callable(stage), "native payload has no isolated PM runtime stage"
     cache = tmp_path / "build-cache"

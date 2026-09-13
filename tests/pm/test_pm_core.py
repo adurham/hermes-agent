@@ -574,6 +574,12 @@ def test_python_package_stably_signs_macos_runtime(tmp_path):
     binary.parent.mkdir(parents=True)
     (staged / "python" / "lib").mkdir()
     shutil.copy2(Path(sys._base_executable).resolve(), binary)
+    subprocess.run(
+        ["codesign", "--force", "--sign", "-", "--timestamp=none",
+         "--identifier", "test.hermes.downloaded", "--requirements",
+         '=designated => identifier "test.hermes.downloaded"', str(binary)],
+        check=True, capture_output=True, timeout=30,
+    )
     python.stage(Store(tmp_path / "store"), staged, "fixture", current_target())
     binary = python.binary(staged, current_target())
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(binary)],

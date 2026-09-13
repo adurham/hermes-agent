@@ -582,6 +582,14 @@ class TestAnchoredAliasesBootE2E:
         store_bin = store / "bin"
         store_bin.mkdir(parents=True)
         shutil.copy2(real_py, store_bin / minor)
+        # The runner itself may already have PM's stable signature. Give only
+        # this disposable source a different identity so a skipped sign fails.
+        subprocess.run(
+            ["codesign", "--force", "--sign", "-", "--timestamp=none",
+             "--identifier", "test.hermes.unanchored", "--requirements",
+             '=designated => identifier "test.hermes.unanchored"', str(store_bin / minor)],
+            check=True, capture_output=True, timeout=30,
+        )
         os.symlink(base / "lib", store / "lib")
 
         root = tmp_path / "checkout"
@@ -601,6 +609,17 @@ class TestAnchoredAliasesBootE2E:
         assert anchored is not None
 
         for name in ("python", "python3", minor):
+            executable = venv_bin / name
+            assert not executable.is_symlink()
+            subprocess.run(
+                ["codesign", "--verify", "--deep", "--strict", str(executable)],
+                check=True, capture_output=True, timeout=30,
+            )
+            identity = subprocess.run(
+                ["codesign", "-d", "-r-", str(executable)],
+                check=True, capture_output=True, text=True, timeout=30,
+            )
+            assert 'designated => identifier "com.nousresearch.hermes.managed-python"' in identity.stdout
             probe = subprocess.run(
                 [str(venv_bin / name), "-c",
                  "import encodings, sys; print(sys.prefix)"],
