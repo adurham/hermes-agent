@@ -1,7 +1,6 @@
 """Release gates and package transitions bind the intended immutable artifacts."""
 import copy
 import hashlib
-import io
 import json
 import os
 import subprocess
@@ -96,7 +95,8 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
         plan_transitions(new, old, BASE)
 
 
-def test_manifest_origin_checks_with_real_https(tmp_path):
+@pytest.fixture
+def https_origin(tmp_path, monkeypatch):
     import datetime
     import ipaddress
     import ssl
@@ -123,7 +123,6 @@ def test_manifest_origin_checks_with_real_https(tmp_path):
     key_file.write_bytes(key.private_bytes(serialization.Encoding.PEM,
                                          serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     requests = []
-    data = b'{"schema":1}'
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -134,7 +133,9 @@ def test_manifest_origin_checks_with_real_https(tmp_path):
                 self.send_header("Location", f"https://{host}:{self.server.server_port}/manifest")
                 self.end_headers()
             else:
-                self.send_response(200)
+                item = self.server.store.get(self.path.lstrip('/'))
+                data = item[0] if item else b'not found'
+                self.send_response(200 if item else 404)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -143,6 +144,8 @@ def test_manifest_origin_checks_with_real_https(tmp_path):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.store = {'manifest': (b'{"schema":1}', '"e"')}
+    server.requests = requests
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_context.load_cert_chain(cert_file, key_file)
     server.socket = server_context.wrap_socket(server.socket, server_side=True)
@@ -150,36 +153,34 @@ def test_manifest_origin_checks_with_real_https(tmp_path):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                                         urllib.request.HTTPSHandler(context=client_context)).open
     base = f"https://127.0.0.1:{server.server_port}"
+    server.base, server.opener = base, opener
+    monkeypatch.setenv('SSL_CERT_FILE', str(cert_file))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        digest = hashlib.sha256(data).hexdigest()
-        assert read_manifest(f"{base}/same", digest, expected_origin=base, opener=opener) == {"schema": 1}
-        with pytest.raises(ValueError, match="origin"):
-            read_manifest(f"{base}/cross", opener=opener)
-        requests.clear()
-        with pytest.raises(ValueError, match="origin"):
-            read_manifest(f"https://localhost:{server.server_port}/manifest", expected_origin=base, opener=opener)
-        assert requests == []
+        yield server
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
 
 
-def test_manifest_digest_and_tag_movement_fail_closed(tmp_path, monkeypatch):
-    data = b'{"schema":1}'
+def test_manifest_origin_checks_with_real_https(https_origin):
+    server = https_origin
+    base, opener = server.base, server.opener
+    digest = hashlib.sha256(b'{"schema":1}').hexdigest()
+    assert read_manifest(f'{base}/same', digest, expected_origin=base, opener=opener) == {'schema': 1}
+    with pytest.raises(ValueError, match='digest'):
+        read_manifest(f'{base}/manifest', 'f' * 64, opener=opener)
+    with pytest.raises(ValueError, match='origin'):
+        read_manifest(f'{base}/cross', opener=opener)
+    server.requests.clear()
+    with pytest.raises(ValueError, match='origin'):
+        read_manifest(f'https://localhost:{server.server_port}/manifest', expected_origin=base, opener=opener)
+    assert server.requests == []
 
-    class Response(io.BytesIO):
-        def geturl(self):
-            return BASE + "/manifest.json"
 
-    def opener(url, timeout):
-        return Response(data)
-
-    assert read_manifest(BASE, hashlib.sha256(data).hexdigest(), opener=opener) == {"schema": 1}
-    with pytest.raises(ValueError, match="digest"):
-        read_manifest(BASE, "f" * 64, opener=opener)
+def test_tag_movement_fails_closed(tmp_path, monkeypatch):
     commit = "a" * 40
     env = {"RELEASE_TAG": "v1.2.3", "GITHUB_SHA": commit, "GITHUB_REF": "refs/tags/v1.2.3"}
 

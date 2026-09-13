@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import sys
 from urllib.request import urlopen
+from urllib.parse import quote, unquote
 
 import pytest
 
@@ -159,7 +160,7 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     missing = shell_step(tmp_path, r2_server, 'termux-deb', termux_name, env)
     assert missing.returncode != 0
     assert r2_server.store == before
-    deb = tmp_path / 'termux-build/deb/hermes-agent_0.33.0~commit.aaaaaaaaaaaa_aarch64.deb'
+    deb = tmp_path / 'termux-build/deb/hermes agent_0.33.0~commit.aaaaaaaaaaaa_aarch64.deb'
     deb.parent.mkdir(parents=True)
     deb.write_bytes(b'transport fixture, not a native Debian package')
     staged = shell_step(tmp_path, r2_server, 'termux-deb', termux_name, env)
@@ -180,15 +181,29 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     text = summary.read_text(encoding='utf-8')
     links = re.findall(r'\]\((http[^)]+)\)', text)
     # Blockmaps are receipt inputs; every other staged product has a download row.
-    expected = {f'{base}/{key}' for key in artifact_keys if not key.endswith('.blockmap')}
+    expected = {f'{base}/{quote(key, safe="/")}' for key in artifact_keys if not key.endswith('.blockmap')}
     assert set(links) == expected
     assert len(links) == len(expected)
     for url in links:
         with urlopen(url, timeout=5) as response:
-            key = url.removeprefix(base + '/')
+            key = unquote(url.removeprefix(base + '/'))
             assert response.read() == r2_server.store[key][0]
+    page_key = f'releases/commit/{sha}/index.html'
+    page = r2_server.store[page_key][0].decode()
+    assert all(f'href="{url}"' in page for url in expected)
+    assert 'Store' not in page and 'Linux x64' in page and 'Linux ARM64' in page
     assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
     assert not any(method == 'DELETE' for method, _, _ in r2_server.requests)
+
+    receipt_key = f'releases/commit/{sha}/handoff-win32-x64.json'
+    original = r2_server.store[receipt_key]
+    r2_server.store[receipt_key] = (b'not-json', '"invalid"')
+    failed = shell_step(tmp_path, r2_server, 'commit-builds-summary',
+                        'Render the full expected-binary matrix', summary_env)
+    assert failed.returncode != 0
+    assert summary.read_text(encoding='utf-8') == text
+    assert r2_server.store[page_key][0].decode() == page
+    r2_server.store[receipt_key] = original
 
     # The actual summary command remains useful after an admitted matrix failure.
     r2_server.store.pop(f'releases/commit/{sha}/handoff-darwin-x64.json')
