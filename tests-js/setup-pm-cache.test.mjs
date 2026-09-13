@@ -39,29 +39,7 @@ it('restores compatible wheels without freezing a partial build under its depend
   }
 })
 
-it('all bundle consumers save on failure, after building, without discarding offline wheels', () => {
-  const workflows = [
-    action('../.github/workflows/desktop-bundled-release.yml'),
-    action('../.github/workflows/pm-bundle.yml'),
-  ]
-  const jobs = workflows.flatMap(workflow => Object.values(workflow.jobs)).filter(job =>
-    job.steps?.some(step => ['Build and package', 'Stage the payload'].includes(step.name)))
-  expect(jobs.length).toBeGreaterThan(0)
-  for (const job of jobs) {
-    const setupIndex = job.steps.findIndex(step => step.uses === './.github/actions/setup-pm')
-    const saveIndex = job.steps.findIndex(step => step.uses === './.github/actions/save-pm-cache')
-    const setupStep = job.steps[setupIndex]
-    const saveStep = job.steps[saveIndex]
-    expect(setupStep.with['save-python-cache']).toBe(false)
-    expect(saveIndex).toBeGreaterThan(setupIndex)
-    expect(job.steps.slice(setupIndex + 1, saveIndex).some(step => step.run?.includes('bundle'))).toBe(true)
-    expect(saveStep.if).toBe(`\${{ !cancelled() && steps.${setupStep.id}.outcome == 'success' }}`)
-    expect(saveStep.with).toEqual({
-      python: `\${{ steps.${setupStep.id}.outputs.python-path }}`,
-      path: `\${{ steps.${setupStep.id}.outputs.uv-cache-path }}`,
-      key: `\${{ steps.${setupStep.id}.outputs.python-cache-key }}`,
-    })
-  }
+it('explicit PM saves preserve downloaded offline wheels and do not prune during cancellation', () => {
   const [prune, upload] = save.runs.steps
   expect(prune.if).toBe('${{ !cancelled() }}')
   expect(prune.run).toBe('"$PM_PYTHON" -m pm.build_env --prune-cache --cache "$PM_CACHE"')
@@ -72,7 +50,7 @@ it('all bundle consumers save on failure, after building, without discarding off
   expect(upload.with).toEqual({ path: '${{ inputs.path }}', key: '${{ inputs.key }}' })
 })
 
-it('desktop consumers can replace an underfilled npm snapshot before packaging fails', () => {
+it('explicit npm snapshots remain replaceable and isolated from toolchain-only producers', () => {
   const restored = setup.runs.steps.find(step => step.id === 'node-cache-restore')
   expect(restored).toBeDefined()
   const prefix = restored.with['restore-keys'].trim()
@@ -82,21 +60,69 @@ it('desktop consumers can replace an underfilled npm snapshot before packaging f
     expect(prefix).toContain(boundary)
   }
   expect(setup.outputs['node-cache-key'].value).toContain('steps.node-cache-restore.outputs.cache-primary-key')
-  const workflow = action('../.github/workflows/desktop-bundled-release.yml')
-  const jobs = Object.values(workflow.jobs).filter(job =>
-    job.steps?.some(step => step.name === 'Prepare desktop dependencies'))
-  expect(jobs.length).toBeGreaterThan(0)
-  for (const job of jobs) {
-    const toolchain = job.steps.find(step => step.uses === './.github/actions/setup-pm')
-    expect(toolchain.with['save-node-cache']).toBe(false)
-    const prepareIndex = job.steps.findIndex(step => step.name === 'Prepare desktop dependencies')
-    const saveIndex = job.steps.findIndex(step => step.name === 'Save warmed npm downloads')
-    const buildIndex = job.steps.findIndex(step => step.name === 'Build and package')
-    expect(saveIndex).toBeGreaterThan(prepareIndex)
-    expect(saveIndex).toBeLessThan(buildIndex)
-    expect(job.steps[saveIndex].with).toEqual({
-      path: `\${{ steps.${toolchain.id}.outputs.npm-cache-path }}`,
-      key: `\${{ steps.${toolchain.id}.outputs.node-cache-key }}`,
-    })
+})
+
+// Key isolation, offline wheel/receipt relocation and the transport action are
+// covered by tests/scripts/test_desktop_build_cache.py. These declarations guard
+// the caller seam: a cache hit never replaces preparation.
+const desktop = action('../.github/workflows/desktop-bundled-release.yml')
+const payload = action('../.github/workflows/pm-bundle.yml')
+const desktopSaveGate = "${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' }}"
+const payloadSaveGate = "${{ !cancelled() && steps.prepare.outcome == 'success' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.ref == '' || inputs.ref == github.sha) }}"
+
+it.each([
+  ['build-win32-release', desktop, 'desktop', 'write', 'scripts/bundles/desktop.py', desktopSaveGate],
+  ['build-win32-commit', desktop, 'desktop', 'read', 'scripts/bundles/desktop.py', desktopSaveGate],
+  ['build-darwin-release', desktop, 'desktop', 'write', 'scripts/bundles/desktop.py', desktopSaveGate],
+  ['build-darwin-commit', desktop, 'desktop', 'read', 'scripts/bundles/desktop.py', desktopSaveGate],
+  ['bundle', payload, 'payload-test', undefined, 'scripts/bundles/native_build.py', payloadSaveGate],
+])('%s restores, admits and saves candidates before consuming them', (id, workflow, producer, cacheMode, driver, saveGate) => {
+  const job = workflow.jobs[id]
+  expect(job).toBeDefined()
+  if (cacheMode) {
+    expect(job['cache-mode']).toBe(cacheMode)
+    expect(job.needs).toEqual(['validate', 'archive-inputs'])
+    expect(job.if).toContain(`inputs.build_commit ${cacheMode === 'read' ? '!=' : '=='} ''`)
   }
+  const cacheSteps = job.steps.filter(step => step.uses === './.github/actions/desktop-build-cache')
+  expect(cacheSteps.map(step => step.with.phase)).toEqual(['restore', 'save'])
+  const [restore, upload] = cacheSteps
+  const prepare = job.steps.find(step => step.id === 'prepare')
+  const builds = job.steps.filter(step => step.run?.includes(driver) && step.run.includes('--prepared '))
+  expect(prepare).toBeDefined()
+  expect(builds).not.toHaveLength(0)
+  expect(prepare.run).toContain(driver)
+  expect(prepare.run).toContain('--prepare-only')
+  // Admission runs on warm hits too; a failed preparation must fail the job.
+  for (const step of [restore, prepare, ...builds]) {
+    expect(step.if).toBeUndefined()
+    expect(step['continue-on-error']).toBeUndefined()
+  }
+  expect(job.steps.indexOf(prepare)).toBeGreaterThan(job.steps.indexOf(restore))
+  expect(job.steps.indexOf(upload)).toBeGreaterThan(job.steps.indexOf(prepare))
+  for (const build of builds) {
+    expect(job.steps.indexOf(build)).toBeGreaterThan(job.steps.indexOf(upload))
+    expect(build.run).not.toContain('--prepare-only')
+  }
+  expect(restore.with.producer).toBe(producer)
+  expect(restore.with.source).toBe('${{ github.workspace }}')
+  expect(upload.with).toEqual({
+    ...restore.with,
+    phase: 'save',
+    key: `\${{ steps.${restore.id}.outputs.cache-key }}`,
+  })
+  // No cache-hit gate: immutable underfilled snapshots must be replaceable.
+  // A failed/cancelled preparation cannot publish; later build failure cannot
+  // discard an already-saved candidate snapshot.
+  expect(upload.if).toBe(saveGate)
+})
+
+it.each(['win32', 'darwin'])('%s publication requires the selected build to succeed, not merely skip', platform => {
+  const gate = desktop.jobs[`build-${platform}`]
+  expect(gate.needs).toEqual(['validate', 'archive-inputs', `build-${platform}-release`, `build-${platform}-commit`])
+  expect(gate.if).toContain("needs.validate.result == 'success' && needs.archive-inputs.result == 'success'")
+  expect(gate.env.SELECTED_BUILD_SUCCEEDED.replace(/\s+/g, ' ').trim()).toBe(
+    `\${{ (inputs.build_commit == '' && needs.build-${platform}-release.result == 'success' && needs.build-${platform}-commit.result == 'skipped') || (inputs.build_commit != '' && needs.build-${platform}-commit.result == 'success' && needs.build-${platform}-release.result == 'skipped') }}`,
+  )
+  expect(desktop.jobs[`publish-${platform}-updater`].needs).toContain(`build-${platform}`)
 })
