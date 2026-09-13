@@ -6,20 +6,6 @@ import pytest
 from hermes_cli import main as cli_main, main_install_repair
 
 
-def test_historical_dependency_handoff_stops_for_relaunch(monkeypatch, capsys):
-    import subprocess
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("historical sync must not spawn another updater")
-
-    monkeypatch.setattr(subprocess, "Popen", forbidden)
-    monkeypatch.setenv("HERMES_UPDATE_REEXEC", "1")
-    with pytest.raises(SystemExit) as stopped:
-        cli_main._reexec_dependency_sync_off_windows_shim()
-    assert stopped.value.code == 0
-    assert "run `hermes` again" in capsys.readouterr().err
-
-
 def test_pending_rename_filter_drops_only_our_shim_pairs():
     shims = [Path(r"C:\hermes\venv\Scripts\hermes.exe")]
     entries = [

@@ -31,6 +31,7 @@ class _StubHandler(BaseHTTPRequestHandler):
     models: dict | None = None
     require_auth = False
     chat_answer = "Paris"
+    reasoning = ""
     requests_processing = 0
     slots: list = []
 
@@ -73,7 +74,8 @@ class _StubHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length)) if length else {}
         if self.path == "/v1/chat/completions":
             self._send(200, {"choices": [{"message": {
-                "role": "assistant", "content": self.chat_answer}}]})
+                "role": "assistant", "content": self.chat_answer,
+                "reasoning_content": self.reasoning}}]})
         elif self.path == "/models/load":
             self._send(200, {"success": True})
         elif self.path == "/models/unload":
@@ -218,24 +220,11 @@ def test_touch_generate_is_the_readiness_proof(stub_server, tmp_path):
     assert sup.touch_generate("m") is False
 
 
-def test_touch_generate_scans_reasoning_content(stub_server, tmp_path):
-    """Reasoning models answer inside reasoning_content (receipted pitfall)."""
+@pytest.mark.parametrize('reasoning,ready', [('The capital is Paris.', True), ('', False)])
+def test_touch_generate_scans_reasoning_content(stub_server, tmp_path, reasoning, ready):
     port, handler = stub_server
-    sup = _make_supervisor(tmp_path, port)
-
-    class ReasoningHandler(handler):  # type: ignore[valid-type]
-        def do_POST(self):  # noqa: N802
-            if self.path == "/v1/chat/completions":
-                self._send(200, {"choices": [{"message": {
-                    "role": "assistant", "content": "",
-                    "reasoning_content": "The capital of France is Paris."}}]})
-            else:
-                self._send(404, {})
-
-    # Swap handler class on the live stub server socket is overkill; just
-    # verify the scan logic path via the normal handler with empty content.
-    handler.chat_answer = ""
-    assert sup.touch_generate("m") is False  # empty content, no reasoning field
+    handler.chat_answer, handler.reasoning = '', reasoning
+    assert _make_supervisor(tmp_path, port).touch_generate('m') is ready
 
 
 def test_ensure_model_ready_unknown_model_raises(stub_server, tmp_path):

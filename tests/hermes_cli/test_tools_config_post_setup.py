@@ -13,47 +13,42 @@ import pytest
 from hermes_cli.tools_config_post_setup import _run_post_setup
 
 
-def test_cloud_browser_explicit_setup_ensures_managed_driver():
+@pytest.mark.platforms('linux')
+@pytest.mark.parametrize('provider,docker,playwright', [
+    ('browserbase', False, False), ('agent_browser', False, True),
+    ('agent_browser', False, False), ('agent_browser', True, False),
+    ('browser_use_cli', False, False),
+])
+def test_browser_setup_respects_provider_and_native_owner(monkeypatch, capsys, provider, docker, playwright):
     with (
-        patch("tools.browser_use_cli.install_cli", return_value=(True, "ready")),
-        patch("tools.browser_tool_install._find_agent_browser", return_value="/external/agent-browser"),
-        patch("pm.ensure") as ensure,
-        patch("subprocess.run") as run,
-    ):
-        _run_post_setup("browserbase")
-
-    ensure.assert_called_once_with("agent-browser", explicit=True)
-    run.assert_not_called()
-
-
-@pytest.mark.platforms("linux")
-@pytest.mark.parametrize("playwright_present", [True, False])
-def test_local_setup_uses_pm_dependency_union_and_gives_system_library_guidance(
-    capsys, playwright_present,
-):
-    with (
-        patch("tools.browser_use_cli.install_cli", return_value=(True, "ready")),
-        patch("tools.browser_tool_install._running_in_docker", return_value=False),
-        patch("tools.browser_tool_install._chromium_installed", return_value=False),
-        patch("importlib.util.find_spec", return_value=object() if playwright_present else None),
-        patch("shutil.which", return_value="/usr/bin/apt-get"),
-        patch("pm.ensure") as ensure,
-        patch("subprocess.run") as run,
+        patch('tools.browser_use_cli.install_cli', return_value=(True, 'ready')) as install,
+        patch('tools.browser_tool_install._running_in_docker', return_value=docker),
+        patch('tools.browser_tool_install._find_agent_browser', return_value='/image/agent-browser'),
+        patch('tools.browser_tool_install._chromium_installed', return_value=False) as chromium,
+        patch('importlib.util.find_spec', return_value=object() if playwright else None),
+        patch('shutil.which', return_value='/usr/bin/apt-get'),
+        patch('pm.ensure') as ensure, patch('subprocess.run') as run,
     ):
         before = dict(os.environ)
-        _run_post_setup("agent_browser")
+        _run_post_setup(provider)
         assert dict(os.environ) == before
-
-    ensure.assert_called_once_with("agent-browser", explicit=True)
+    install.assert_called_once()
     run.assert_not_called()
-    output = capsys.readouterr().out
-    assert "system" in output
-    if playwright_present:
-        assert sys.executable in output
-        assert "-m playwright install-deps chromium" in output
+    if provider == 'browserbase':
+        chromium.assert_not_called()
+    if provider == 'browser_use_cli' or docker:
+        ensure.assert_not_called()
     else:
-        assert "https://playwright.dev/python/docs/browsers#install-system-dependencies" in output
-    assert "npx" not in output
+        ensure.assert_called_once_with('agent-browser', explicit=True)
+    output = capsys.readouterr().out
+    if docker:
+        assert 'Docker' in output
+    elif provider == 'agent_browser':
+        assert 'system' in output and 'npx' not in output
+        if playwright:
+            assert sys.executable in output and '-m playwright install-deps chromium' in output
+        else:
+            assert 'https://playwright.dev/python/docs/browsers#install-system-dependencies' in output
 
 
 @pytest.mark.parametrize("status", [200, 503])

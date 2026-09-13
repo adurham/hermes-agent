@@ -54,6 +54,17 @@ def fixture_tree(tmp_path, monkeypatch):
     return repo, home, interpreter
 
 
+def select_generation(repo, name, value):
+    selected = install_state_dir(repo) / 'environments' / str(name) / 'venv'
+    site = site_packages(selected)
+    site.mkdir(parents=True)
+    (selected / 'pyvenv.cfg').write_text('home = fixture\n', encoding='utf-8')
+    (site / 'selected_probe.py').write_text(f'VALUE = {value!r}\n', encoding='utf-8')
+    (install_state_dir(repo) / 'facts.json').write_text(
+        json.dumps({'packages': {'venv': {'environment': str(selected)}}}), encoding='utf-8')
+    return selected
+
+
 @pytest.mark.platforms("windows", "posix")
 @pytest.mark.parametrize("form", ["native", "shell"])
 def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, monkeypatch, form):
@@ -73,13 +84,7 @@ def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, mo
         ]
     args = ['spaces and café', 'apostrophe\'s', r'one\two', '$HOME; echo no', '']
     for number in (1, 2):
-        selected = install_state_dir(repo) / "environments" / str(number) / "venv"
-        site = site_packages(selected)
-        site.mkdir(parents=True)
-        (selected / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
-        (site / "selected_probe.py").write_text(f"VALUE = {number}\n", encoding="utf-8")
-        (install_state_dir(repo) / "facts.json").write_text(
-            json.dumps({"packages": {"venv": {"environment": str(selected)}}}), encoding="utf-8")
+        select_generation(repo, number, number)
         env = dict(os.environ)
         env.pop("HERMES_HOME", None)
         env.pop("HERMES_RUNTIME_DIR", None)
@@ -195,13 +200,7 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
-    selected = install_state_dir(repo) / "environments" / "current" / "venv"
-    site = site_packages(selected)
-    site.mkdir(parents=True)
-    (selected / "pyvenv.cfg").write_text("home = fixture\n")
-    (site / "selected_probe.py").write_text("VALUE = 'migrated'\n")
-    (install_state_dir(repo) / "facts.json").write_text(json.dumps({
-        "schema": 1, "packages": {"venv": {"environment": str(selected)}}}))
+    select_generation(repo, 'current', 'migrated')
     out = home / ".local" / "bin"
     out.mkdir(parents=True)
     # Old venv and sibling-ACP wrappers, with an unrelated command sharing bin.
@@ -239,16 +238,9 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
     launcher = next(path for path in out.iterdir() if path.stem == "hermes")
     args = ["café ' quoted", "", "$HOME; not a shell"]
     command = []
-    selected = install_state_dir(repo) / "environments" / "old" / "venv"
     for value in ("old", "new"):
-        selected = selected.parent.parent / value / "venv"
-        site = site_packages(selected)
-        site.mkdir(parents=True)
-        (selected / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+        selected = select_generation(repo, value, value)
         (selected.parent / ".lease-managed").touch()
-        (site / "selected_probe.py").write_text(f"VALUE = {value!r}\n", encoding="utf-8")
-        (install_state_dir(repo) / "facts.json").write_text(
-            json.dumps({"packages": {"venv": {"environment": str(selected)}}}), encoding="utf-8")
         if value == "old":
             if surface == "legacy":
                 command = [sys.executable, "-I", str(repo / "scripts/hermes-gateway"), "--help"]
@@ -323,13 +315,7 @@ def test_dashboard_action_boots_selected_dependencies(tmp_path, monkeypatch):
     from hermes_cli import web_server, web_server_gateway
 
     repo, home, _ = fixture_tree(tmp_path, monkeypatch)
-    selected = install_state_dir(repo) / "environments" / "current" / "venv"
-    site = site_packages(selected)
-    site.mkdir(parents=True)
-    (selected / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
-    (site / "selected_probe.py").write_text("VALUE = 'selected'\n", encoding="utf-8")
-    (install_state_dir(repo) / "facts.json").write_text(
-        json.dumps({"packages": {"venv": {"environment": str(selected)}}}), encoding="utf-8")
+    select_generation(repo, 'current', 'selected')
     monkeypatch.setattr(web_server, "PROJECT_ROOT", repo)
     monkeypatch.setattr(web_server_gateway, "_ACTION_LOG_DIR", home / "logs")
     proc = web_server_gateway._spawn_hermes_action(["--version"], "gateway-restart")

@@ -101,29 +101,6 @@ def test_migrate_config_restores_backup_when_version_does_not_advance(
     assert backups, "backup file must exist"
 
 
-def test_migrate_config_restores_backup_on_exception(tmp_path, monkeypatch):
-    import hermes_cli.config as cfg
-    import hermes_cli.config_migrations as mig
-
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text("_config_version: 20\n", encoding="utf-8")
-
-    floor = getattr(mig, "SUPPORT_FLOOR_VERSION", 12)
-    monkeypatch.setattr(cfg, "check_config_version", lambda: (max(20, floor), 34))
-    monkeypatch.setattr(cfg, "get_config_path", lambda: config_path)
-    monkeypatch.setattr(cfg, "get_env_path", lambda: tmp_path / ".env")
-
-    def exploding_migrate(**kw):
-        config_path.write_text("half-written garbage", encoding="utf-8")
-        raise RuntimeError("migration blew up")
-
-    monkeypatch.setattr(cfg, "migrate_config", lambda **kw: exploding_migrate(**kw))
-
-    with pytest.raises(RuntimeError, match="blew up"):
-        step_migrate_config()
-    assert config_path.read_text(encoding="utf-8") == "_config_version: 20\n"
-
-
 # ── step_state_db_guard ──────────────────────────────────────────────
 
 

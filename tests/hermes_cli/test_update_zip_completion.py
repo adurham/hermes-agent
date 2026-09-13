@@ -41,10 +41,18 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
     root.mkdir()
     (root / "pyproject.toml").write_text('[project]\nversion="1.0"\n', encoding="utf-8")
     (root / "payload.txt").write_text("old", encoding="utf-8")
+    for name in ("tools/code.py", "apps/desktop/source.js", "apps/desktop/release/Hermes.exe",
+                 "venv/keep", "node_modules/keep", ".env"):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("retained", encoding="utf-8")
     archive = tmp_path / "source.zip"
     with zipfile.ZipFile(archive, "w") as out:
         out.writestr("hermes-agent-main/pyproject.toml", '[project]\nversion="2.0"\n')
         out.writestr("hermes-agent-main/payload.txt", "new")
+        for name in ("new-entry/data", "tools/code.py", "apps/desktop/source.js",
+                     "venv/keep", "node_modules/keep", ".env"):
+            out.writestr("hermes-agent-main/" + name, "new")
     # Only redirect transport: extraction, staging, dirty recheck and swap run.
     monkeypatch.setattr("urllib.request.urlretrieve", lambda url, dst: urlretrieve(archive.as_uri(), dst))
     monkeypatch.setattr(main, "PROJECT_ROOT", root)
@@ -133,6 +141,10 @@ def test_zip_command_migrates_profiles_recovers_snapshot_and_verifies_fleet(
     assert (state.sibling / ".env").read_bytes() == (state.active / ".env").read_bytes()
     assert json.loads(state.jobs.read_text()) == state.original_jobs
     assert (state.root / "payload.txt").read_text() == "new"
+    for name in ("tools/code.py", "apps/desktop/source.js", "new-entry/data"):
+        assert (state.root / name).read_text(encoding="utf-8") == "new"
+    for name in ("apps/desktop/release/Hermes.exe", "venv/keep", "node_modules/keep", ".env"):
+        assert (state.root / name).read_text(encoding="utf-8") == "retained"
     assert "v1.0 → v2.0" in capsys.readouterr().out
     assert state.events == ["prepare", *([("marker", True)] if gateway_mode else []),
                             "restart", "resume", "finalize"]
@@ -174,7 +186,7 @@ def test_zip_helper_propagates_completion_status_after_real_verification(zip_upd
 
 
 @pytest.mark.parametrize("route", ["direct", "git-failure"])
-@pytest.mark.parametrize("failure", ["swap", "preparation"])
+@pytest.mark.parametrize("failure", ["swap", "late-swap", "stage", "preparation"])
 def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, monkeypatch, route, failure):
     import os
     import pm
@@ -183,6 +195,8 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
     before = {profile: (profile / "config.yaml").read_bytes()
               for profile in (state.active, state.sibling)}
     old_project = (state.root / "pyproject.toml").read_bytes()
+    original_tree = {p.relative_to(state.root): p.read_bytes()
+                     for p in state.root.rglob("*") if p.is_file()}
     monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (route == "direct", ["git"], False))
     monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
     monkeypatch.setattr(update_cmd, "_should_zip_fallback_on_update_error", lambda exc: True)
@@ -191,16 +205,27 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
         raise subprocess.CalledProcessError(1, ["git", "fetch"])
     monkeypatch.setattr(update_cmd, "_git_run", fail_fetch)
     installed = []
-    if failure == "swap":
+    if failure in {"swap", "late-swap"}:
         rename = os.rename
 
         def fail_second_swap(src, dst):
             if str(src).endswith(".hermes-update-staging"):
                 installed.append(dst)
-                if len(installed) == 2:
+                if len(installed) == (5 if failure == "late-swap" else 2):
                     raise OSError("locked replacement")
             return rename(src, dst)
         monkeypatch.setattr(os, "rename", fail_second_swap)
+        expected = SystemExit
+    elif failure == "stage":
+        import shutil
+
+        copytree = shutil.copytree
+
+        def fail_copy(src, dst, *args, **kwargs):
+            if str(dst).endswith(".hermes-update-staging"):
+                raise OSError("staging disk full")
+            return copytree(src, dst, *args, **kwargs)
+        monkeypatch.setattr(shutil, "copytree", fail_copy)
         expected = SystemExit
     else:
         def fail_preparation(*args, **kwargs):
@@ -210,11 +235,14 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
         expected = pm.InstallError
     with pytest.raises(expected) as raised:
         update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=True)
-    if failure == "swap":
+    if failure in {"swap", "late-swap"}:
         assert raised.value.code == 1
-        assert len(installed) == 2
+        assert len(installed) == (5 if failure == "late-swap" else 2)
         assert (state.root / "pyproject.toml").read_bytes() == old_project
         assert (state.root / "payload.txt").read_text() == "old"
+    if failure != "preparation":
+        assert {p.relative_to(state.root): p.read_bytes()
+                for p in state.root.rglob("*") if p.is_file()} == original_tree
     assert state.events == ["resume"]
     assert state.token["resume_needed"] is False
     assert {profile: (profile / "config.yaml").read_bytes() for profile in before} == before
@@ -222,3 +250,67 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
     assert json.loads(state.jobs.read_text()) == state.original_jobs
     assert not (state.active / "logs/update_receipts/latest.json").exists()
     assert not list(state.root.glob("*.hermes-update-*"))
+
+
+@pytest.mark.parametrize("entry", ["payload.txt", "tools"])
+def test_zip_recovers_crashed_backup_before_failed_copy_and_retry(zip_update, monkeypatch, entry):
+    import shutil
+
+    root = zip_update.root
+    target = root / entry
+    backup = root / (entry + ".hermes-update-old")
+    target.rename(backup)
+    leftover = root / (entry + ".hermes-update-staging")
+    leftover.write_text("interrupted copy", encoding="utf-8")
+    function = "copytree" if entry == "tools" else "copy2"
+    original = getattr(shutil, function)
+
+    def fail(src, dst, *args, **kwargs):
+        if str(dst) == str(leftover):
+            raise OSError("copy refused after crash")
+        return original(src, dst, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(shutil, function, fail)
+        with pytest.raises(SystemExit) as error:
+            update_cmd_zip._download_and_swap_zip("main", "local fixture")
+        assert error.value.code == 1
+    witness = target / "code.py" if entry == "tools" else target
+    assert witness.read_text(encoding="utf-8") == ("retained" if entry == "tools" else "old")
+    assert not list(root.glob("*.hermes-update-*"))
+    update_cmd_zip._download_and_swap_zip("main", "local fixture")
+    assert witness.read_text(encoding="utf-8") == "new"
+    assert not list(root.glob("*.hermes-update-*"))
+
+
+def test_atomic_directory_compat_entrypoint(tmp_path):
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "new").write_text("new", encoding="utf-8")
+    (dst / "old").write_text("old", encoding="utf-8")
+    update_cmd_zip._atomic_replace_dir(str(src), str(dst))
+    assert {p.name for p in dst.iterdir()} == {"new"}
+    assert (dst / "new").read_text(encoding="utf-8") == "new"
+    assert not list(tmp_path.glob("*.hermes-update-*"))
+
+
+def test_zip_refuses_non_main_before_transport(zip_update, monkeypatch, capsys):
+    monkeypatch.setattr('urllib.request.urlretrieve', lambda *_: pytest.fail('unsupported branch downloaded'))
+    before = (zip_update.root / 'payload.txt').read_bytes()
+    with pytest.raises(SystemExit) as error:
+        update_cmd_zip._update_via_zip(SimpleNamespace(branch='feature'), completion_request={})
+    assert error.value.code == 1
+    assert '--branch=feature is not supported' in capsys.readouterr().out
+    assert (zip_update.root / 'payload.txt').read_bytes() == before
+
+
+@pytest.mark.parametrize("windows,folder,executable", [(True, "Scripts", "python.exe"), (False, "bin", "python")])
+def test_venv_layout_explicit_and_native(tmp_path, windows, folder, executable):
+    import os
+    from hermes_constants import venv_bin_dir, venv_python_path
+
+    assert venv_bin_dir(tmp_path, windows=windows) == tmp_path / folder
+    assert venv_python_path(str(tmp_path), windows=windows) == tmp_path / folder / executable
+    if windows == (os.name == "nt"):
+        assert venv_python_path(tmp_path) == tmp_path / folder / executable

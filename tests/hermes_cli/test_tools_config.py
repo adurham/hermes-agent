@@ -386,28 +386,7 @@ class TestAgentBrowserPostSetup:
         with patch("pm.ensure") as ensure:
             yield ensure
 
-    def test_browserbase_returns_before_any_chromium_check(self):
-        with patch("subprocess.run") as run, patch(
-            "tools.browser_tool_install._chromium_installed"
-        ) as chromium_check:
-            _run_post_setup("browserbase")
 
-        run.assert_not_called()
-        chromium_check.assert_not_called()
-
-    def test_docker_with_missing_chromium_warns_instead_of_installing(self, _stub_package_install):
-        with patch(
-            "tools.browser_tool_install._find_agent_browser", return_value="/image/agent-browser"
-        ), patch("subprocess.run") as run, patch(
-            "tools.browser_tool_install._chromium_installed", return_value=False
-        ), patch(
-            "tools.browser_tool_install._running_in_docker", return_value=True
-        ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
-            _run_post_setup("agent_browser")
-
-        run.assert_not_called()
-        _stub_package_install.assert_not_called()
-        assert any("Docker" in c.args[0] for c in warn.call_args_list)
 
     @pytest.mark.parametrize("failure", ["pm", "timeout"])
     def test_install_failure_reports_error(self, failure):
@@ -433,13 +412,6 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
     Camofox must attempt the CLI install, not just the explicit
     "Browser Use" row."""
 
-    @pytest.mark.parametrize("key", ["agent_browser", "browserbase", "browser_use_cli"])
-    def test_browser_post_setup_attempts_cli_install(self, key):
-        with patch("hermes_cli.tools_config_post_setup._ensure_browser_use_cli") as ensure, patch(
-            "shutil.which", return_value=None
-        ), patch("subprocess.run"), patch("pm.ensure"):
-            _run_post_setup(key)
-        ensure.assert_called_once()
 
     def test_camofox_post_setup_never_touches_browser_use(self):
         """Camofox is Firefox-based with no CDP surface; the CDP-only
@@ -671,17 +643,7 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
 # Subscription rows and never-installed KittenTTS/Piper).
 
 
-def _fake_features(*, logged_in: bool, paid: bool = True):
-    account = (
-        NousPortalAccountInfo(
-            logged_in=True, source="jwt", fresh=False, paid_service_access=paid
-        )
-        if logged_in
-        else NousPortalAccountInfo(
-            logged_in=False, source="none", fresh=False, paid_service_access=None
-        )
-    )
-    return SimpleNamespace(nous_auth_present=logged_in, account_info=account)
+
 
 
 def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
