@@ -419,6 +419,12 @@ def match_runtime_outcomes(
     answers for the same profile counts as ``restarted``. A missing successor, or the planned PID
     still answering, stays ``unaccounted`` — the tripwire keeps its teeth.
 
+    That credit needs an unambiguous baseline: a profile with SEVERAL planned gateway runtimes cannot
+    be attributed to one successor (the fleet probe publishes at most one row per profile), so one
+    replacement cannot have replaced two planned processes. Such a profile keeps the name-path
+    verdict instead of letting an untouched sibling vanish behind a successor that can only have
+    replaced one of them.
+
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
     different process that shares the profile, nothing more. See #100479.
@@ -442,6 +448,12 @@ def match_runtime_outcomes(
             if live_gateway_pids is not None
             else None
         )
+        # Baseline identity: the fleet probe publishes at most one row per profile, so successor
+        # evidence is only attributable when the plan holds ONE gateway runtime for that profile.
+        planned_gateways: dict[str, int] = {}
+        for _planned in plan.runtimes:
+            if isinstance(_planned, RuntimeRecord) and _planned.kind not in _SERVE_KINDS:
+                planned_gateways[_planned.profile] = planned_gateways.get(_planned.profile, 0) + 1
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
@@ -477,9 +489,16 @@ def match_runtime_outcomes(
                 # label/unit may encode the install root (or a hashed home) instead of the served
                 # profile, which the profile-scoped name matcher above can never credit.
                 live = successors.get(r.profile)
-                if live and r.pid not in live:
+                ambiguous = planned_gateways.get(r.profile, 0) > 1
+                if live and r.pid not in live and not ambiguous:
                     return "restarted"
-                if not live:
+                if ambiguous:
+                    logger.debug(
+                        "%s planned gateway runtimes for profile %r — one successor cannot attribute "
+                        "the restart, leaving pid %s on the name path",
+                        planned_gateways[r.profile], r.profile, r.pid,
+                    )
+                elif not live:
                     # No row for this profile: the fallback has nothing to work with and reconciliation
                     # stays on the service-name path. Logged because the tripwire below reads identically
                     # whether the evidence was missing or the restart was actually missed.

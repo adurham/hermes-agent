@@ -508,6 +508,32 @@ def test_live_gateway_pids_from_fleet_skips_down_and_unusable_rows():
     assert _live_gateway_pids_from_fleet([]) == {}
 
 
+def test_one_successor_cannot_credit_two_planned_runtimes_same_profile():
+    """The fleet probe publishes at most one row per profile, so one successor cannot
+    say which of two planned same-profile gateways it replaced. Neither may be
+    credited — otherwise an untouched sibling disappears behind a replacement that
+    can only have replaced one of them, and the tripwire is suppressed."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("coder", 76508, supervisor="launchd"), _rt("coder", 76795, supervisor="launchd")),
+        restarted_services=[], relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids=set(), failed_units=[], live_gateway_pids={"coder": {76796}},
+    )
+    assert [o["outcome"] for o in outcomes] == ["unaccounted", "unaccounted"]
+    assert report_unaccounted_runtimes(outcomes) is True
+
+
+def test_successor_credit_stays_per_profile_with_several_planned_runtimes():
+    """The ambiguity guard is per profile: two profiles with one planned runtime each
+    are both credited from their own successor."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("coder", 76508, supervisor="launchd"), _rt("work", 401, supervisor="launchd")),
+        restarted_services=[], relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids=set(), failed_units=[],
+        live_gateway_pids={"coder": {76796}, "work": {402}},
+    )
+    assert [o["outcome"] for o in outcomes] == ["restarted", "restarted"]
+
+
 def test_successor_evidence_is_gateway_only_and_stays_optional():
     """Serve/dashboard rows reconcile in their own vocabulary, and callers that
     pass no ``live_gateway_pids`` keep the bookkeeping-only verdict."""
