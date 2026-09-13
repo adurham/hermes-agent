@@ -16,13 +16,20 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
 import re
 import socket
+import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -524,6 +531,20 @@ class _R2StubHandler(BaseHTTPRequestHandler):
         if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
             data = self._read_chunked()
         key = self._key()
+        query = parse_qs(urlsplit(self.path).query)
+        if "partNumber" in query:
+            state = server.multipart
+            assert query["uploadId"] == ["a+/="]
+            assert self.headers["x-amz-content-sha256"] == hashlib.sha256(data).hexdigest()
+            number = int(query["partNumber"][0])
+            state.attempts[number] = state.attempts.get(number, 0) + 1
+            if state.failure == "part":
+                return self._send(400, b"InvalidRequest")
+            if number == 2 and state.attempts[number] == 1:
+                return self._send(503, b"")
+            etag = '"' + hashlib.md5(data).hexdigest() + '"'
+            state.parts[number] = (data, etag)
+            return self._send(200, b"", {"ETag": etag})
         if self.headers.get("If-None-Match") == "*" and key in server.store:
             self._send(412, b"Precondition Failed")
             return
@@ -533,9 +554,45 @@ class _R2StubHandler(BaseHTTPRequestHandler):
         server.store[key] = (data, self.headers.get("If-Match", '"new"'))
         self._send(200, b"")
 
+    def do_POST(self):
+        server, state = self.server, self.server.multipart
+        server.requests.append(("POST", self.path, dict(self.headers)))
+        query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        assert self.headers["x-amz-content-sha256"] == hashlib.sha256(body).hexdigest()
+        key = self._key()
+        if "uploads" in query:
+            state.created += 1
+            state.parts = {}
+            if state.reject_existing and key in server.store:
+                return self._send(412, b"")
+            return self._send(200, b'<InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><UploadId>a+/=</UploadId></InitiateMultipartUploadResult>')
+        assert query["uploadId"] == ["a+/="]
+        state.completed += 1
+        if state.failure == "complete" or (state.failure == "transient" and state.completed == 1):
+            code = "InvalidPart" if state.failure == "complete" else "InternalError"
+            return self._send(200, f"<Error><Code>{code}</Code></Error>")
+        if state.failure == "disconnect" and state.completed == 1:
+            self.close_connection = True
+            return
+        if self.headers.get("If-None-Match") == "*" and key in server.store:
+            return self._send(412, b"")
+        parts = ET.fromstring(body).findall("{*}Part")
+        numbers = [int(part.findtext("{*}PartNumber", "0")) for part in parts]
+        assert numbers == sorted(state.parts)
+        assert [part.findtext("{*}ETag") for part in parts] == [state.parts[n][1] for n in numbers]
+        server.store[key] = (b"".join(state.parts[n][0] for n in numbers), '"multipart"')
+        if state.failure == "lost-response" and state.completed == 1:
+            self.close_connection = True
+            return
+        self._send(200, b'<CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ETag>done</ETag></CompleteMultipartUploadResult>')
+
     def do_DELETE(self):
         server = self.server  # type: ignore[attr-defined]
         server.requests.append(("DELETE", self.path, dict(self.headers)))
+        if "uploadId=" in self.path:
+            server.multipart.aborted += 1
+            return self._send(204, b"")
         key = self._key()
         server.store.pop(key, None)
         self._send(204, b"")
@@ -567,6 +624,8 @@ def r2_server(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _R2StubHandler)
     server.store = {}
     server.requests = []
+    server.multipart = SimpleNamespace(parts={}, attempts={}, failure=None, created=0,
+                                       completed=0, aborted=0, reject_existing=False)
 
     def listing_xml():
         parts = ["<?xml version='1.0'?><ListBucketResult><IsTruncated>false</IsTruncated>"]
@@ -588,6 +647,64 @@ def r2_server(monkeypatch):
     yield server
     server.shutdown()
     server.server_close()
+
+
+@pytest.mark.parametrize("failure", [None, "part", "complete", "transient", "disconnect", "lost-response"])
+def test_multipart_publication_is_atomic_and_retryable(r2_server, tmp_path, failure):
+    path = tmp_path / "bundle.msixbundle"
+    payload = b"a" * (5 * 1024 * 1024) + b"b" * (5 * 1024 * 1024) + b"last"
+    path.write_bytes(payload)
+    state = r2_server.multipart
+    state.failure, state.reject_existing = failure, failure is not None
+    key = "releases/stable/bundle.msixbundle"
+    creds, base, bucket = r2.credentials()
+
+    def upload():
+        r2.put_object(creds, base, bucket, key, path, r2.amz_timestamp(),
+                      "application/msixbundle", {"If-None-Match": "*"}, multipart_part_size=5 * 1024 * 1024)
+
+    if failure in {"part", "complete"}:
+        with pytest.raises(r2.R2RequestError):
+            upload()
+        assert key not in r2_server.store and state.aborted == 1
+        assert not any(method == "HEAD" for method, _, _ in r2_server.requests)
+        return
+    upload()
+    assert r2_server.store[key][0] == payload
+    assert state.attempts[2] >= 2
+    assert state.created == (2 if failure else 1)
+    for method, _, headers in r2_server.requests:
+        assert headers["authorization"].startswith("AWS4-HMAC-SHA256 ")
+        if method == "POST":
+            assert headers["If-None-Match"] == "*"
+    metadata = next(headers for method, url, headers in r2_server.requests if "uploads=" in url)
+    assert metadata["Content-Type"] == "application/msixbundle" and metadata["Cache-Control"] == "no-store"
+    upload()
+    path.write_bytes(payload[:-1] + b"!")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        upload()
+    assert r2_server.store[key][0] == payload
+
+
+def test_cli_reuses_an_immutable_multipart_object(r2_server, tmp_path):
+    path = tmp_path / "bundle.msixbundle"
+    payload = b"x" * (64 * 1024 * 1024 + 1)
+    path.write_bytes(payload)
+    r2_server.store["releases/tag/v1.0.0/bundle.msixbundle"] = (payload, '"existing"')
+    r2_server.multipart.reject_existing = True
+    # Redirect only sockets: CLI and sibling imports must keep one exception identity.
+    script = (
+        "import http.client, runpy, sys\n"
+        f"http.client.HTTPSConnection = lambda *a, **k: http.client.HTTPConnection('127.0.0.1', {r2_server.server_port})\n"
+        "sys.argv = ['r2', *sys.argv[1:]]\n"
+        "runpy.run_module('scripts.releases.r2', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, "put", "--tag", "v1.0.0", "--key", path.name, "--file", str(path), "--immutable"],
+        cwd=Path(__file__).resolve().parents[2], env=os.environ, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert [method for method, _, _ in r2_server.requests] == ["POST", "GET", "HEAD"]
 
 
 def test_put_streams_a_file_and_verifies_size(r2_server):

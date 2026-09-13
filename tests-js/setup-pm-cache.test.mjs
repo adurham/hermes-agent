@@ -71,3 +71,32 @@ it('all bundle consumers save on failure, after building, without discarding off
   expect(upload.uses.split('@')[0]).toBe('actions/cache/save')
   expect(upload.with).toEqual({ path: '${{ inputs.path }}', key: '${{ inputs.key }}' })
 })
+
+it('desktop consumers can replace an underfilled npm snapshot before packaging fails', () => {
+  const restored = setup.runs.steps.find(step => step.id === 'node-cache-restore')
+  expect(restored).toBeDefined()
+  const prefix = restored.with['restore-keys'].trim()
+  expect(restored.with.key).toBe(`${prefix}\${{ github.run_id }}-\${{ github.run_attempt }}`)
+  // A toolchain-only job must not shadow the desktop consumer's warm snapshot.
+  for (const boundary of ['github.job', 'node-cache-dependency-path', 'cache-suffix', 'target', 'npm-version']) {
+    expect(prefix).toContain(boundary)
+  }
+  expect(setup.outputs['node-cache-key'].value).toContain('steps.node-cache-restore.outputs.cache-primary-key')
+  const workflow = action('../.github/workflows/desktop-bundled-release.yml')
+  const jobs = Object.values(workflow.jobs).filter(job =>
+    job.steps?.some(step => step.name === 'Prepare desktop dependencies'))
+  expect(jobs.length).toBeGreaterThan(0)
+  for (const job of jobs) {
+    const toolchain = job.steps.find(step => step.uses === './.github/actions/setup-pm')
+    expect(toolchain.with['save-node-cache']).toBe(false)
+    const prepareIndex = job.steps.findIndex(step => step.name === 'Prepare desktop dependencies')
+    const saveIndex = job.steps.findIndex(step => step.name === 'Save warmed npm downloads')
+    const buildIndex = job.steps.findIndex(step => step.name === 'Build and package')
+    expect(saveIndex).toBeGreaterThan(prepareIndex)
+    expect(saveIndex).toBeLessThan(buildIndex)
+    expect(job.steps[saveIndex].with).toEqual({
+      path: `\${{ steps.${toolchain.id}.outputs.npm-cache-path }}`,
+      key: `\${{ steps.${toolchain.id}.outputs.node-cache-key }}`,
+    })
+  }
+})

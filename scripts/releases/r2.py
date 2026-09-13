@@ -11,7 +11,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Callable, Iterable
+from typing import Callable, Iterable, cast
 from urllib.parse import quote, urlparse
 
 REGION = "auto"
@@ -538,11 +538,13 @@ def put_object(
     content_type: str | None,
     conditions: dict[str, str] | None = None,
     fetcher: Callable[..., Response] | None = None,
+    *,
+    multipart_part_size: int = 64 * 1024 * 1024,
 ) -> None:
-    """`payload` is a FILE PATH (streamed — the msixbundle is ~2.7GB; str or
-    os.PathLike accepted) or a small in-memory bytes body (feed manifests
-    from finalize). A 412 on an immutable path PUT verifies the remote bytes
-    match before treating the conflict as success."""
+    """Stream file paths, using multipart for large artifacts, or send bytes.
+
+    Immutable conflicts must match the local digest before reuse.
+    """
     conditions = conditions or {}
     is_path = isinstance(payload, (str, os.PathLike))
     if is_path:
@@ -570,6 +572,11 @@ def put_object(
     response: Response | None = None
     for _ in range(3):
         try:
+            if is_path and size > multipart_part_size:
+                from .r2_multipart import upload_file
+
+                upload_file(url, cast(str, payload), size, creds, content_type, extra, multipart_part_size)
+                break
             response = (
                 fetcher(method="PUT", url=url, body_hash=body_hash, body=body,
                         content_length=size, extra_headers=extra)
@@ -1006,8 +1013,11 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
+    # Siblings import the canonical module; run the CLI on that same identity.
+    from scripts.releases.r2 import main as cli_main
+
     try:
-        main()
+        cli_main()
     except SystemExit:
         raise
     except Exception as err:  # pragma: no cover — CLI error surface

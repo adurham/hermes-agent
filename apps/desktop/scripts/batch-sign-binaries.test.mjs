@@ -3,7 +3,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { Arch, Packager, Platform, WinPackager } from 'app-builder-lib'
 import { afterEach, test } from 'vitest'
+
+import builderConfig from '../electron-builder.config.cjs'
 
 import {
   azureSigningConfigured,
@@ -127,24 +130,48 @@ test('customSign skips Store- submission packages (Partner Center signs)', async
   assert.equal(result, true)
 })
 
-test('customSign delegates the msix package and the product exe to the Azure signer', async () => {
+test('customSign delegates only the msix package and root product exe to the Azure signer', async () => {
+  /** @type {string[][]} */
   const delegated = []
+  /** @type {Parameters<typeof customSign>[2]} */
   const deps = {
-    signMsix: async configuration => delegated.push(['msix', configuration.path]),
-    azureSignFile: async file => delegated.push(['exe', file])
+    signMsix: async configuration => { delegated.push(['msix', configuration.path]) },
+    azureSignFile: async file => { delegated.push(['exe', file]) }
   }
-  const packager = { appInfo: { productFilename: 'Hermes' } }
+  const output = path.join(tmpTree(), '${os}', '${arch}')
+  const info = new Packager({
+    projectDir: path.resolve(import.meta.dirname, '..'),
+    targets: Platform.WINDOWS.createTarget(['msix'], Arch.x64, Arch.arm64),
+    config: {
+      ...builderConfig,
+      // validateConfig normalizes these file sets in place.
+      files: structuredClone(builderConfig.files),
+      extraResources: structuredClone(builderConfig.extraResources),
+      directories: { output },
+      win: { ...builderConfig.win, executableName: 'hermes-collision' }
+    }
+  })
+  await info.validateConfig()
+  const packager = new WinPackager(info)
+  const msix = path.join(tmpTree(), 'HermesBundled-0.28.0-win-x64.msix')
+  assert.equal(await customSign({ path: msix }, packager, deps), true)
+  assert.deepEqual(delegated, [['msix', msix]])
 
-  await customSign({ path: 'C:/out/HermesBundled-0.28.0-win-x64.msix' }, packager, deps)
-  await customSign({ path: 'C:/out/win-unpacked/Hermes.exe' }, packager, deps)
-
-  // The hook's contract is `true` (handled) even when it delegated —
-  // electron-builder must not fall back to per-file default signing.
-  assert.deepEqual(delegated, [
-    ['msix', 'C:/out/HermesBundled-0.28.0-win-x64.msix'],
-    ['exe', 'C:/out/win-unpacked/Hermes.exe']
-  ])
-  assert.equal(await customSign({ path: 'C:/out/win-unpacked/Hermes.exe' }, packager, deps), true)
+  for (const arch of [Arch.x64, Arch.arm64]) {
+    const root = packager['computeAppOutDir'](packager.expandMacro(output, Arch[arch]), arch)
+    const exeName = `${packager.appInfo.productFilename}.exe`
+    const exe = path.join(root, exeName)
+    delegated.length = 0
+    // Same basename is not enough: payload copies wait for the afterPack batch.
+    for (const file of [path.join(root, 'resources', 'agent-payload', 'bin', exeName), path.join(`${root}-other`, exeName)]) {
+      assert.equal(await customSign({ path: file }, packager, deps), true)
+    }
+    assert.deepEqual(delegated, [])
+    // Returning true suppresses electron-builder's fallback per-file signer.
+    assert.equal(await customSign({ path: exe }, packager, deps), true)
+    assert.equal(await customSign({ path: exe.toUpperCase() }, packager, deps), true)
+    assert.deepEqual(delegated, [['exe', exe], ['exe', exe.toUpperCase()]])
+  }
 })
 
 test('customSign does not mistake a similarly-named payload exe for the product exe', async () => {

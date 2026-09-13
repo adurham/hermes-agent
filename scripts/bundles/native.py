@@ -53,16 +53,30 @@ def _arch_guard(store_dir: Path) -> list[str]:
 
 
 def stage_uv_cache(source: Path, destination: Path) -> None:
-    """Keep extracted wheels for offline installs, not unsigned build ZIPs.
+    """Keep offline wheel/index entries, without copying sdist build inputs.
 
-    The macOS signer reaches extracted native code, but not code inside ZIPs.
-    uv installs built wheels from their extracted cache entries.
+    uv installs built wheels from extracted entries; their ZIPs and source
+    trees (including Rust target/ outputs) are build-only. Scope exclusions
+    to cache metadata boundaries so extracted package data stays intact.
     """
-    shutil.copytree(source, destination)
-    for bucket in destination.glob("sdists-v*"):
-        for wheel in bucket.rglob("*.whl"):
-            if wheel.is_file():
-                wheel.unlink()
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        path = Path(directory)
+        parts = path.relative_to(source).parts
+        if not parts or not parts[0].startswith("sdists-v"):
+            return set()
+        omitted = set()
+        # Source trees live under a revision selected by a sibling pointer.
+        if "src" in names and (path / "src").is_dir() and any(
+            (path.parent / pointer).is_file() for pointer in ("revision.http", "revision.rev")
+        ):
+            omitted.add("src")
+        # Build settings can put wheel entries in a shard below the revision.
+        # The signer can reach extracted code, but not native code inside ZIPs.
+        if "metadata.msgpack" in names:
+            omitted.update(name for name in names if name.endswith(".whl") and (path / name).is_file())
+        return omitted
+
+    shutil.copytree(source, destination, ignore=ignore)
 
 
 def stage_pm_runtime(root: Path, python: Path, repo: Path, *, offline: bool = False,

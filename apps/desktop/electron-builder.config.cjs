@@ -169,6 +169,8 @@ module.exports = {
     })
   },
   dmg: {
+    // Avoid the failing optional APFS shrink pass; keep compressed conversion.
+    shrink: false,
     title: `Install ${displayName}`,
     backgroundColor: '#f5f5f7',
     iconSize: 96,

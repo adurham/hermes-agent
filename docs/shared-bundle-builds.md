@@ -214,8 +214,10 @@ consumers. They are not interchangeable cleanup targets.
 - Native staging prunes obsolete entries only in its build-owned tool store.
   It does not prune the user's machine-wide store.
 - Native staging retains `uv-cache/` for offline mutable-environment rebuilds.
-  It keeps extracted wheel entries but removes wheel ZIPs beneath `sdists-v*`
-  so native signing can reach the extracted binaries.
+  It copies extracted wheels and index/revision metadata, but excludes redundant
+  wheel ZIPs and cached sdist `src/` trees (including Rust `target/` outputs)
+  before copying. The provider cache is unchanged; native signing reaches the
+  extracted binaries without scanning build-only artifacts.
 - PM-runtime and application builds share the provider's persistent uv cache.
   CI restores/saves that cache, not the temporary build HOME. Failed builds
   retain completed wheels. Only v2 keys are restored; there is no legacy fallback.

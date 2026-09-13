@@ -1,6 +1,7 @@
 """The native bundle pipeline publishes only after a real staged sync succeeds."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -134,7 +135,44 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
         native._stage_native(SimpleNamespace(out=str(output), ref="HEAD"))
 
 
-def test_staged_cache_installs_built_wheel_without_unsigned_zip(tmp_path):
+@pytest.mark.parametrize("pointer, shard", [("revision.http", ""), ("revision.rev", "build-settings")])
+def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, pointer, shard):
+    cache = tmp_path / "cache"
+    revision = Path("sdists-v9/index/package/revision")
+    wheels = revision / shard
+    waste = {
+        revision / "src/target/release/build.exe": b"build output",
+        wheels / "cache_proof-1.0-py3-none-any.whl": b"redundant ZIP",
+    }
+    kept = {
+        wheels / "metadata.msgpack": b"wheel metadata",
+        revision.parent / pointer: b"revision pointer",
+        wheels / "cache_proof-1.0-py3-none-any/src/template.whl": b"package data",
+        Path("archive-v0/entry/cache_proof/src/__init__.py"): b"archive data",
+        Path("other-bucket/src/keep.whl"): b"unrelated data",
+    }
+    for relative, data in {**waste, **kept}.items():
+        path = cache / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    copyfile = shutil.copyfile
+
+    def record_copy(source, destination, **kwargs):
+        assert Path(source).relative_to(cache) not in waste, "build inputs must never be copied"
+        return copyfile(source, destination, **kwargs)
+
+    shipped = tmp_path / "payload/uv-cache"
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "copyfile", record_copy)
+        native.stage_uv_cache(cache, shipped)
+    assert all(not (shipped / relative).exists() for relative in waste)
+    assert all((shipped / relative).read_bytes() == data for relative, data in kept.items())
+    assert all((cache / relative).read_bytes() == data for relative, data in {**waste, **kept}.items())
+
+
+def test_staged_cache_rebuilds_venv_offline_without_build_sources_or_zips(tmp_path):
+    from tests.pm._fixtures import _wheel
+
     uv = shutil.which("uv")
     assert uv, "native bundle test requires uv"
     package = tmp_path / "package"
@@ -150,49 +188,75 @@ def test_staged_cache_installs_built_wheel_without_unsigned_zip(tmp_path):
     archive = dist / "cache_proof-1.0.0.tar.gz"
     with tarfile.open(archive, "w:gz") as source:
         source.add(package, arcname="cache_proof-1.0.0")
+    wheel = _wheel(dist, "wheel_proof")
+    for name, artifact in (("cache-proof", archive), ("wheel-proof", wheel)):
+        index = dist / "simple" / name
+        index.mkdir(parents=True)
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        (index / "index.html").write_text(
+            f'<a href="../../{artifact.name}#sha256={digest}">{artifact.name}</a>', encoding="utf-8",
+        )
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="offline-proof"\nversion="1.0"\nrequires-python=">=3.11"\n'
+        'dependencies=["cache-proof==1.0.0", "wheel-proof==1.0"]\n[tool.uv]\npackage=false\n',
+        encoding="utf-8",
+    )
     cache = tmp_path / "build-cache"
     env = {**os.environ, "UV_CACHE_DIR": str(cache), "UV_NO_CONFIG": "1", "UV_PYTHON_DOWNLOADS": "never"}
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(dist)))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    url = f"http://127.0.0.1:{server.server_port}/{archive.name}"
+    index_url = f"http://127.0.0.1:{server.server_port}/simple"
     try:
         subprocess.run(
             [uv, "pip", "install", "--python", sys.executable, "--target", str(tmp_path / "first"),
-             "--no-build-isolation", "--no-deps", url],
+             "--no-build-isolation", "--no-deps", "--index-url", index_url,
+             "cache-proof==1.0.0", "wheel-proof==1.0"],
             env=env, cwd=tmp_path, capture_output=True, text=True, check=True, timeout=60,
         )
+        locked = subprocess.run(
+            [uv, "lock", "--python", sys.executable, "--index-url", index_url, "--no-build-isolation"],
+            env=env, cwd=project, capture_output=True, text=True, timeout=60,
+        )
+        assert locked.returncode == 0, locked.stderr
+        warmed = subprocess.run(
+            [uv, "sync", "--python", sys.executable, "--frozen", "--index-url", index_url],
+            env=env, cwd=project, capture_output=True, text=True, timeout=60,
+        )
+        assert warmed.returncode == 0, warmed.stderr
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
-    assert list(cache.rglob("*.whl")), "the actual uv build must create the redundant ZIP"
+    built_zips = list(cache.rglob("*.whl"))
+    assert built_zips, "the actual uv build must create the redundant ZIP"
+    sources = [path for bucket in cache.glob("sdists-v*") for path in bucket.rglob("src") if path.is_dir()]
+    assert sources, "the actual uv build must leave its source tree in the cache"
     shipped = tmp_path / "payload/uv-cache"
     native.stage_uv_cache(cache, shipped)
     assert not list(shipped.rglob("*.whl"))
-    assert list(cache.rglob("*.whl")), "the build machine's cache must not change"
+    assert all(not (shipped / path.relative_to(cache)).exists() for path in sources)
+    assert all(path.exists() for path in [*built_zips, *sources]), "the build machine's cache must not change"
 
-    # The stopped server and absent source trees make a fallback build impossible.
-    shutil.rmtree(dist)
-    shutil.rmtree(package)
-    shutil.rmtree(cache)
-    for source in (shipped / "sdists-v9").rglob("src"):
-        if source.is_dir():
-            shutil.rmtree(source)
-    installed = tmp_path / "installed"
+    # Nothing outside the shipped cache can satisfy this fresh mutable venv.
+    for directory in (dist, package, cache, tmp_path / "first", project / ".venv"):
+        shutil.rmtree(directory)
     result = subprocess.run(
-        [uv, "pip", "install", "--python", sys.executable, "--target", str(installed),
-         "--no-deps", "--offline", url],
-        env={**env, "UV_CACHE_DIR": str(shipped)}, cwd=tmp_path,
-        capture_output=True, text=True, check=True, timeout=60,
+        [uv, "sync", "--python", sys.executable, "--frozen", "--offline", "--index-url", index_url],
+        env={**env, "UV_CACHE_DIR": str(shipped)}, cwd=project,
+        capture_output=True, text=True, timeout=60,
     )
+    assert result.returncode == 0, result.stderr
     assert "Building" not in result.stderr
+    python = project / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     probe = subprocess.run(
-        [sys.executable, "-c", "import cache_proof; print(cache_proof.VALUE)"],
-        cwd=tmp_path, env={**env, "PYTHONPATH": str(installed)},
-        capture_output=True, text=True, check=True, timeout=30,
+        [str(python), "-I", "-c",
+         "import cache_proof, wheel_proof; print(cache_proof.VALUE); print(wheel_proof.__version__)"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, check=True, timeout=30,
     )
-    assert probe.stdout.strip() == "installed from cached wheel"
+    assert probe.stdout.splitlines() == ["installed from cached wheel", "1.0"]
 
 
 def test_native_dispatch_reuses_pm_cache_offline(tmp_path, monkeypatch):

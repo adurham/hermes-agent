@@ -323,6 +323,7 @@ jobs:
           # The payload tools cache does not include uv's built wheels.
           cache-python: true
           save-python-cache: false
+          save-node-cache: false
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -434,6 +435,12 @@ jobs:
             web/node_modules
             tests-js/node_modules
           key: ${{ steps.node-modules-cache.outputs.cache-primary-key }}
+
+      - name: Save warmed npm downloads
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pm.outputs.npm-cache-path }}
+          key: ${{ steps.pm.outputs.node-cache-key }}
 
       - name: Azure login (OIDC)
         if: vars.AZURE_CLIENT_ID != ''
@@ -606,6 +613,7 @@ jobs:
           # The payload tools cache does not include uv's built wheels.
           cache-python: true
           save-python-cache: false
+          save-node-cache: false
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -698,6 +706,12 @@ jobs:
             web/node_modules
             tests-js/node_modules
           key: ${{ steps.node-modules-cache.outputs.cache-primary-key }}
+
+      - name: Save warmed npm downloads
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pm.outputs.npm-cache-path }}
+          key: ${{ steps.pm.outputs.node-cache-key }}
 
       # Commit artifacts are downloadable too. Require signing for them,
       # candidates, and published tags before building any payload.
@@ -1371,9 +1385,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-        # Content-addressed off the pm lock digest: builds once per lock
-        # bump, then no-ops. The wheelhouse container phase boots this
-        # instead of the bare base, skipping the ~10-min toolchain apt.
+        # The pinned base and Dockerfile select the pre-baked toolchain.
+        # Recipe changes must not reuse an image built without those tools.
         run: |
           mkdir -p termux-build
           # The builder script prints progress (build logs, smoke output)
@@ -1385,10 +1398,8 @@ jobs:
           echo "image=$img" >> "$GITHUB_OUTPUT"
 
       - name: Restore the wheelhouse
-        # The manufactured native wheels are the expensive artifact of this
-        # job. build_wheels.py skips any dist whose exact-pinned wheel is
-        # already present, so a restored wheelhouse turns the 20-minute
-        # native compile phase into a cache-hit verification.
+        # Reuse manufactured wheels only when the complete input identity
+        # and wheel hashes pass admission. A prefix hit alone is not proof.
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

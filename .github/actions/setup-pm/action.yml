@@ -22,6 +22,9 @@ inputs:
   cache-node:
     description: Cache npm downloads; never cache node_modules.
     default: 'true'
+  save-node-cache:
+    description: Save automatically on success. Set false to save a consumer-scoped rolling snapshot with actions/cache/save after npm preparation.
+    default: 'true'
   python-cache-dependency-glob:
     description: Dependency files that invalidate the uv cache.
     default: |
@@ -72,7 +75,13 @@ outputs:
     value: ${{ steps.install.outputs.uv-cache-path }}
   node-cache-hit:
     description: Exact npm dependency cache hit.
-    value: ${{ steps.node-cache.outputs.cache-hit }}
+    value: ${{ steps.node-cache.outputs.cache-hit || steps.node-cache-restore.outputs.cache-hit }}
+  node-cache-key:
+    description: Rolling snapshot key when save-node-cache is false.
+    value: ${{ steps.node-cache-restore.outputs.cache-primary-key }}
+  npm-cache-path:
+    description: npm download cache directory for an explicit consumer save.
+    value: ${{ steps.install.outputs.npm-cache-path }}
 runs:
   using: composite
   steps:
@@ -163,11 +172,21 @@ runs:
 
     - name: Cache npm dependency downloads
       id: node-cache
-      if: inputs.toolchain != 'python' && inputs.cache-node == 'true'
+      if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && inputs.save-node-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.install.outputs.npm-cache-path }}
         key: node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-${{ hashFiles(inputs.node-cache-dependency-path) }}${{ inputs.cache-suffix != '' && format('-{0}', inputs.cache-suffix) || '' }}
+
+    - name: Restore npm dependencies for an explicit save
+      id: node-cache-restore
+      if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && inputs.save-node-cache == 'false'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.install.outputs.npm-cache-path }}
+        # Scope producers so tool-only jobs cannot replace a full desktop cache.
+        key: setup-pm-npm-v1-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.npm-version }}-${{ hashFiles(inputs.node-cache-dependency-path) }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: setup-pm-npm-v1-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.npm-version }}-${{ hashFiles(inputs.node-cache-dependency-path) }}-${{ github.job }}-
 
     - name: Install the requested Python extras through PM
       id: dependencies
