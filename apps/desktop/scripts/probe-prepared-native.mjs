@@ -32,8 +32,8 @@ async function probeChild(nativeDeps) {
       else resolve(undefined)
     })
   })
-  console.log(JSON.stringify({ electron: process.versions.electron, node: process.versions.node,
-    platform: process.platform, arch: process.arch, marker, exitCode: 0 }))
+  fs.writeSync(1, JSON.stringify({ electron: process.versions.electron, node: process.versions.node,
+    platform: process.platform, arch: process.arch, marker, exitCode: 0 }) + '\n')
 }
 
 /**
@@ -71,6 +71,9 @@ export function probePreparedNative({ source, nativeDeps, packaging, out, native
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   if (process.argv[2] === '--child') {
     await probeChild(path.resolve(process.argv[3]))
+    // ConPTY can retain a worker after shell exit. This isolated probe has
+    // completed its contract and synchronously flushed its result.
+    process.exit(0)
   } else {
     const { values } = parseArgs({ options: {
       source: { type: 'string' }, 'native-deps': { type: 'string' }, packaging: { type: 'string' },
