@@ -51,12 +51,15 @@ def prune_site_pth(venv_dir: Path) -> None:
 def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                    timeout: int, output: TextIO) -> subprocess.CompletedProcess:
     """Keep CI progress live, a bounded diagnostic tail, and a wall-clock timeout."""
+    from pm.workspace import _RESOLVER_MARKERS
+
     deadline = time.monotonic() + timeout
     proc = subprocess.Popen(command, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=0)
     pipe = proc.stdout
     assert isinstance(pipe, io.TextIOWrapper)  # Popen was given stdout=PIPE and text=True.
     tail = ""
+    conflict = ""
     try:
         # A descendant can keep stdout open after proc exits. Nonblocking reads
         # bound that drain without leaving a thread stuck in readline()/close().
@@ -76,6 +79,11 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                 continue
             text = decoder.decode(data, final=not data)
             if text:
+                # Preserve an observed resolver marker even after verbose output
+                # evicts it. Scan across read boundaries, never retain the full log.
+                if not conflict:
+                    lowered = (tail + text).lower()
+                    conflict = next((marker for marker in _RESOLVER_MARKERS if marker in lowered), "")
                 tail = (tail + text)[-2000:]
                 output.write(text)
                 output.flush()
@@ -92,6 +100,8 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
         raise
     finally:
         pipe.close()
+    if conflict and conflict not in tail.lower():
+        tail = conflict + "\n" + tail[-(2000 - len(conflict) - 1):]
     return subprocess.CompletedProcess(command, code, "", tail)
 
 

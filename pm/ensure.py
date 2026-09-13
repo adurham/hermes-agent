@@ -7,7 +7,7 @@ import json
 import logging
 import shutil
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -271,6 +271,7 @@ def _install(
     download_progress: ProgressFn | None = None,
     *,
     copy_from: tuple[Facts, Store] | None = None,
+    _lock_held: bool = False,
 ) -> Path:
     """Realize one pin. Host installs commit facts; cross-target stages carry a marker."""
     version = lockfile.version(package.name)
@@ -290,7 +291,7 @@ def _install(
     artifacts = lockfile.artifacts(package.name, target)
     pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
 
-    with store.install_lock():
+    with nullcontext() if _lock_held else store.install_lock():
         if pause_event is not None and pause_event.is_set():
             raise DownloadPaused("install paused")
         if facts is not None:
@@ -387,6 +388,35 @@ def stage_only(
                     progress=progress, pause_event=pause_event, download_progress=download_progress)
 
 
+class _InstallOperation:
+    """Validity lasts only while this operation holds the publication lock."""
+
+    def __init__(self) -> None:
+        self.stack = ExitStack()
+        self.store: Store | None = None
+        self.checked: set[tuple[str, str | None, str, str]] = set()
+
+    def lock(self) -> Store:
+        if self.store is None:
+            self.store = Store(paths.writable_store_root())
+            self.stack.enter_context(self.store.install_lock())
+        return self.store
+
+    def close(self) -> None:
+        self.checked.clear()
+        self.store = None
+        self.stack.close()
+
+
+@contextmanager
+def _install_operation():
+    operation = _InstallOperation()
+    try:
+        yield operation
+    finally:
+        operation.close()
+
+
 def ensure(
     name: str,
     *,
@@ -395,6 +425,7 @@ def ensure(
     progress=None,
     pause_event: threading.Event | None = None,
     download_progress: ProgressFn | None = None,
+    _operation: _InstallOperation | None = None,
 ) -> Runner:
     """``explicit`` marks a deliberate install command (`hermes pm
     install`, `hermes pm bundle`) — those ARE the remedy the lazy-install
@@ -404,21 +435,45 @@ def ensure(
     install to a UI, including ordered multi-archive labels.
     """
     if isinstance(get_package(name), StatePackage):
+        if _operation is not None:
+            # Python construction can provision tools itself. Drop both the
+            # lock and its validity before entering that independent operation.
+            _operation.close()
         sync_venv(explicit=explicit)
         return Runner(name, compose_env([], base=base_env))
 
+    if explicit and _operation is None:
+        with _install_operation() as operation:
+            return ensure(name, base_env=base_env, explicit=True, progress=progress,
+                          pause_event=pause_event, download_progress=download_progress,
+                          _operation=operation)
     lockfile = _lockfile()
     target = current_target()
     chain = walk([name])
-    missing = [p for p in chain if _installed_location(p, lockfile, target, verify=explicit) is None]
+    checked = _operation.checked if _operation is not None else set()
+    if _operation is not None:
+        _operation.lock()
+    missing = []
+    for package in chain:
+        identity = (package.name, lockfile.version(package.name), target,
+                    json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
+        if identity in checked:
+            continue
+        if _installed_location(package, lockfile, target, verify=explicit) is None:
+            missing.append(package)
+        else:
+            checked.add(identity)
     if missing and not explicit and not lazy_installs_allowed():
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))
     if missing:
-        store = Store(paths.writable_store_root())
+        store = _operation.lock() if _operation is not None else Store(paths.writable_store_root())
         facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
         for package in missing:
+            # Publication may change entries; do not carry observations across it.
+            checked.clear()
             _install(package, lockfile, facts, store, target, progress=progress,
-                     pause_event=pause_event, download_progress=download_progress)
+                     pause_event=pause_event, download_progress=download_progress,
+                     _lock_held=_operation is not None)
     return Runner(name, env_for(name, base_env=base_env))
 
 
@@ -521,7 +576,8 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
             if unsupported:
                 raise InstallError("venv", f"extras {unsupported} are not supported by this Python/platform",
                                    "choose a supported provider; no dependency environment was changed")
-        frozen = read_features()
+        shipped = read_features()
+        frozen = shipped
         # Without a frozen declaration, explicit source setup needs no policy
         # read: the config loader initializes/chmods unrelated user state.
         if frozen is not None and not repair and lazy_installs_allowed():
@@ -568,7 +624,9 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                 stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
                 inputs = {"repair": True}
             else:
-                enabled = sorted(set(fact.get("extras", [])) | set(extras or []))
+                # The first writable generation replaces, rather than layers on,
+                # the payload. Retain its extras until a recorded selection owns them.
+                enabled = sorted(set(fact.get("extras", shipped or [])) | set(extras or []))
                 stamp = package.expected_stamp(enabled, **inputs)
             if not repair and not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
                 raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")

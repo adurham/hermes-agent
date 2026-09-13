@@ -84,23 +84,26 @@ def _live_progress(name: str):
 
 
 def _install_names(names: list[str], target: str | None = None) -> int:
-    failed = 0
-    for name in names:
-        try:
-            if target is not None:
-                # Cross-target staging: publish the entry, touch no facts.
-                entry = stage_only(name, target)
-                print(f"✓ {name} (staged for {target}: {entry.name})")
-            else:
-                ensure(name, explicit=True, progress=_live_progress(name))
-                if name == "python":
-                    from hermes_cli.venv_sync import publish_launchers
+    from pm.ensure import _install_operation
 
-                    publish_launchers(repo_root())
-                print(f"✓ {name}", flush=True)
-        except InstallError as e:
-            print(f"✗ {e}", flush=True)
-            failed += 1
+    failed = 0
+    with _install_operation() as operation:
+        for name in names:
+            try:
+                if target is not None:
+                    # Cross-target staging: publish the entry, touch no facts.
+                    entry = stage_only(name, target)
+                    print(f"✓ {name} (staged for {target}: {entry.name})")
+                else:
+                    ensure(name, explicit=True, progress=_live_progress(name), _operation=operation)
+                    if name == "python":
+                        from hermes_cli.venv_sync import publish_launchers
+
+                        publish_launchers(repo_root())
+                    print(f"✓ {name}", flush=True)
+            except InstallError as e:
+                print(f"✗ {e}", flush=True)
+                failed += 1
     return failed
 
 

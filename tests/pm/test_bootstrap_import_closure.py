@@ -34,3 +34,21 @@ print(root)
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr
     assert Path(result.stdout.strip()) == store
+
+
+def test_managed_python_signing_import_needs_no_pm_or_application(tmp_path):
+    repo = Path(__file__).resolve().parents[2]
+    script = """
+import sys
+class NoApplication:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'pm' or fullname == 'utils' or fullname.startswith(('pm.', 'agent.')):
+            raise AssertionError('signing imported ' + fullname)
+sys.meta_path.insert(0, NoApplication())
+from hermes_cli.macos_signing import sign_managed_python
+assert callable(sign_managed_python)
+"""
+    result = subprocess.run([sys.executable, "-S", "-c", script], cwd=repo,
+                            env=dict(os.environ, HERMES_HOME=str(tmp_path / "home")),
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr

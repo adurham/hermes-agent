@@ -144,7 +144,7 @@ class TestEnsureTccAnchor:
         signed = []
 
         monkeypatch.setattr(
-            tcc, "_macos_sign_managed_python", lambda p: signed.append(Path(p)) or True
+            "hermes_cli.macos_signing.sign_managed_python", lambda p: signed.append(Path(p)) or True
         )
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)

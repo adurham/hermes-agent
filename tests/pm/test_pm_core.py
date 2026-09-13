@@ -273,6 +273,80 @@ def test_deps_compose_dependents_win(pm_env):
     assert path.index("toptool-1.0") < path.index("deptool-1.0")
 
 
+def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monkeypatch):
+    import importlib
+    import os
+    from collections import Counter
+    from hermes_cli.runtime_state import _lock
+    from pm.cli import _install_names
+
+    ensure = importlib.import_module("pm.ensure")
+    lockfile_path, runtime, docroot, _ = pm_env
+    for name in ("deptool", "toptool"):
+        _, digest = make_tar(docroot, f"{name}-1.0.tar.gz", {"bin/faketool": name})
+        _pin(lockfile_path, name, "1.0", digest)
+    assert _install_names(["deptool", "toptool"]) == 0
+    checked = Counter()
+    locked = []
+    original = ensure._entry_verified
+
+    def verify(package, fact, store, target):
+        fd = os.open(store.root / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            locked.append(not _lock(fd, wait=False))
+        finally:
+            os.close(fd)
+        checked[package.name] += 1
+        return original(package, fact, store, target)
+
+    monkeypatch.setattr(ensure, "_entry_verified", verify)
+    assert _install_names(["deptool", "toptool"]) == 0
+    assert checked == {"deptool": 1, "toptool": 1}
+    assert all(locked), "validation must share the publication lock"
+
+    # The next operation must not reuse validity across a writer's mutation.
+    fact = Facts(runtime / "facts.json").get("deptool")
+    assert fact is not None
+    binary = runtime / fact["entry"] / "bin/faketool"
+    with Store(runtime).install_lock():
+        binary.write_text("corrupt", encoding="utf-8")
+    assert _install_names(["toptool"]) == 0
+    assert binary.read_text(encoding="utf-8") == "deptool"
+
+
+def test_install_forgets_verification_when_state_operation_releases_lock(pm_env, monkeypatch):
+    import importlib
+    import os
+    from hermes_cli.runtime_state import _lock
+    from pm.cli import _install_names
+    from pm.packages import Venv
+
+    ensure = importlib.import_module("pm.ensure")
+    lockfile_path, runtime, docroot, _ = pm_env
+    for name in ("deptool", "toptool"):
+        _, digest = make_tar(docroot, f"{name}-1.0.tar.gz", {"bin/faketool": name})
+        _pin(lockfile_path, name, "1.0", digest)
+    assert _install_names(["toptool"]) == 0
+    fact = Facts(runtime / "facts.json").get("deptool")
+    assert fact is not None
+    binary = runtime / fact["entry"] / "bin/faketool"
+
+    def sync(**kwargs):
+        # State operations provision their own tools. They must be able to
+        # acquire the lock independently, and invalidate prior observations.
+        fd = os.open(runtime / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            assert _lock(fd, wait=False), "tool lock leaked into the state operation"
+            binary.write_text("corrupt", encoding="utf-8")
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(ensure, "sync_venv", sync)
+    monkeypatch.setitem(registry._packages, "venv", Venv())
+    assert _install_names(["deptool", "venv", "toptool"]) == 0
+    assert binary.read_text(encoding="utf-8") == "deptool"
+
+
 def test_version_bump_selects_the_new_tool(pm_env):
     from pm.ensure import ensure
 
@@ -472,54 +546,39 @@ def test_python_package_url_carries_release_tag():
         pass
 
 
-def test_python_package_stably_signs_macos_runtime(monkeypatch, tmp_path):
-    import pm.packages as packages
+@pytest.mark.platforms("macos")
+def test_python_package_stably_signs_macos_runtime(tmp_path):
+    import shutil
+    import subprocess
+    import sys
     from pm.registry import get_package
 
     python = get_package("python")
-    binary = tmp_path / "bin" / "python3"
-    binary.parent.mkdir()
-    binary.touch()
-    calls = []
-
-    monkeypatch.setattr(packages.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(packages.shutil, "which", lambda name: "/usr/bin/codesign")
-    monkeypatch.setattr(
-        packages.subprocess,
-        "run",
-        lambda cmd, **kwargs: calls.append((cmd, kwargs)) or type("Result", (), {"returncode": 0})(),
-    )
-    monkeypatch.setattr(python, "binary", lambda entry, target: binary)
-
-    python.stage(Store(tmp_path / "store"), tmp_path, "3.11", "darwin-arm64")
-
-    assert calls[0][0] == [
-        "/usr/bin/codesign",
-        "--force",
-        "--deep",
-        "--sign",
-        "-",
-        "--timestamp=none",
-        "--identifier",
-        "com.nousresearch.hermes.managed-python",
-        "--requirements",
-        '=designated => identifier "com.nousresearch.hermes.managed-python"',
-        str(binary),
-    ]
-    assert calls[1][0] == ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(binary)]
+    staged = tmp_path / "staged"
+    binary = staged / "python" / "bin" / "python3"
+    binary.parent.mkdir(parents=True)
+    (staged / "python" / "lib").mkdir()
+    shutil.copy2(Path(sys._base_executable).resolve(), binary)
+    python.stage(Store(tmp_path / "store"), staged, "fixture", current_target())
+    binary = python.binary(staged, current_target())
+    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(binary)],
+                   check=True, capture_output=True, timeout=30)
+    identity = subprocess.run(["codesign", "-d", "-r-", str(binary)],
+                              check=True, capture_output=True, text=True, timeout=30)
+    assert 'designated => identifier "com.nousresearch.hermes.managed-python"' in identity.stdout + identity.stderr
 
 
+@pytest.mark.platforms("not macos")
 def test_python_package_does_not_sign_non_macos_runtime(monkeypatch, tmp_path):
-    import pm.packages as packages
+    import hermes_cli.macos_signing as signing
 
-    monkeypatch.setattr(packages.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
-        packages.subprocess,
+        signing.subprocess,
         "run",
         lambda *args, **kwargs: pytest.fail("codesign must not run outside macOS"),
     )
 
-    assert packages._macos_sign_managed_python(tmp_path / "python") is False
+    assert signing.sign_managed_python(tmp_path / "python") is False
 
 
 def test_machine_matches_binary_pe_headers(tmp_path):
@@ -642,7 +701,6 @@ def test_arch_guard_allows_emulated_x64_on_win32_arm64(monkeypatch, tmp_path):
 
 
 def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_path):
-    import pm.packages as packages
     from pm.registry import get_package
 
     staged = tmp_path / "staged"
@@ -650,7 +708,7 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
     (staged / "vcruntime140.dll").write_bytes(b"arm64")
 
-    monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
     get_package("python").stage(None, staged, "3.14.7", "win32-arm64")
 
     assert not (staged / "vcruntime140_1.dll").exists()
@@ -658,14 +716,13 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
 
 
 def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
-    import pm.packages as packages
     from pm.registry import get_package
 
     staged = tmp_path / "staged"
     staged.mkdir()
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
 
-    monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
     get_package("python").stage(None, staged, "3.14.7", "win32-x64")
 
     assert (staged / "vcruntime140_1.dll").is_file()

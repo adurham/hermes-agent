@@ -7,6 +7,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -180,54 +181,6 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return github_release_tags("astral-sh/uv")
 
 
-_MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
-
-
-def _macos_sign_managed_python(python: Path) -> bool:
-    """Give a downloaded Python a stable macOS code identity."""
-    if platform.system() != "Darwin":
-        return False
-
-    codesign = shutil.which("codesign")
-    if not codesign:
-        return False
-
-    requirement = (
-        "=designated => identifier "
-        f'"{_MACOS_MANAGED_PYTHON_IDENTIFIER}"'
-    )
-    try:
-        signed = subprocess.run(
-            [
-                codesign,
-                "--force",
-                "--deep",
-                "--sign",
-                "-",
-                "--timestamp=none",
-                "--identifier",
-                _MACOS_MANAGED_PYTHON_IDENTIFIER,
-                "--requirements",
-                requirement,
-                str(python),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if signed.returncode != 0:
-            return False
-        verified = subprocess.run(
-            [codesign, "--verify", "--deep", "--strict", str(python)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        return verified.returncode == 0
-    except Exception:
-        return False
-
-
 @register
 class Python(_BionicDebArm, BinaryPackage, DebPackage):
     """The pinned interpreter for launchers and every PM-managed uv command.
@@ -258,8 +211,10 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
         binary = self.binary(staged, target)
-        if binary is not None:
-            _macos_sign_managed_python(binary)
+        if binary is not None and sys.platform == "darwin":
+            from hermes_cli.macos_signing import sign_managed_python
+
+            sign_managed_python(binary)
         # python-build-standalone ships the x64 VC runtime (vcruntime140_1.dll)
         # beside ARM64 Windows Python; it cannot load on ARM64 and would fail
         # the arch guard. Drop it HERE, before publish: the tree digest is
@@ -408,7 +363,7 @@ class Venv(StatePackage):
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
         candidate = generation / "venv"
-        environment = managed_environment(candidate, explicit=explicit or repair)
+        environment = managed_environment(candidate, explicit=explicit or repair, output=sys.stderr)
         members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
         try:
             generation.mkdir(parents=True)

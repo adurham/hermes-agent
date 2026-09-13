@@ -71,7 +71,9 @@ from that payload, rather than copying a source checkout on first launch.
 The bundle builder checks its files and writes the launch paths into the desktop
 build stamp. Electron uses those paths without probing or repairing the payload.
 Additional pinned tools can use the writable tool store. Python additions use
-a complete writable environment outside the signed package.
+a complete writable environment outside the signed package. Its first generation
+retains the shipped extras along with the new requirements. Later generations
+use the recorded extra selection as their baseline.
 
 Termux uses a separate bionic build and a sealed APT package. Docker bakes its
 runtime into the image and disables on-demand dependency installation. Nix
