@@ -447,8 +447,9 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     # while distinct watch_match events from one process must stay visible.
     dedup_key = _notification_event_dedup_key(evt)
     if dedup_key not in emitted:
-        from tools.process_registry_notifications import async_delegation_display_text
-        display_text = async_delegation_display_text(evt) if is_delegation else text
+        from tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
+        display_text = (async_delegation_display_text(evt) if is_delegation
+                        else process_completion_display_text([evt]) if evt_type == "completion" else text)
         _emit("status.update", sid, {"kind": "process", "text": display_text})
         emitted.add(dedup_key)
     if evt_type == "completion" and completions is not None:
@@ -465,7 +466,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
 
 
 def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
-    from tools.process_registry_notifications import ProcessNotificationBatch
+    from tools.process_registry_notifications import PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
 
     if not notifications:
@@ -478,13 +479,15 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         return
     claimed = [(event, text, claim) for event, text in notifications
                if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None]
-    text = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed)).render(registry)
+    batch = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed))
+    text = batch.render(registry)
     if text is None:
         _notif_release_turn(session)
     try:
         if text is not None:
             if not _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
-                                 "completion batch dispatch failed"):
+                                 "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
+                                 display_metadata={"display_text": batch.display_text(registry)}):
                 for event, _text, claim in claimed:
                     _notif_defer_event(event, claim,
                         deferred.append if deferred is not None else registry.completion_queue.put)
