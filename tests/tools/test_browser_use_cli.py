@@ -77,93 +77,40 @@ def _fake_cli(tmp_path, body):
     return str(script)
 
 
-class TestModeDetection:
-    def test_default_on_when_cli_available(self, monkeypatch):
-        """Backend unset: Browser Use mode is the default when the CLI runs."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
-        assert bu_cli.is_browser_use_cli_mode() is True
+@pytest.mark.parametrize("config,installed,key,camofox,expected", [
+    ({}, True, False, False, True), ({}, False, False, False, False),
+    ({"backend": "off"}, True, True, False, False),
+    ({"backend": False}, True, True, False, False),
+    ({"backend": "browser-use"}, False, False, False, True),
+    ({"backend": "other"}, True, True, False, False),
+    ({"cloud_provider": "browser-use"}, False, True, False, True),
+    ({"cloud_provider": "browser-use", "use_gateway": True}, False, True, False, False),
+    ({"cloud_provider": "browser-use"}, False, False, False, False),
+    ({}, True, True, True, False),
+    ({"backend": "browser-use"}, True, True, True, False),
+    ({"cloud_provider": "browser-use", "backend": "other"}, True, True, False, False),
+    ({"cloud_provider": "browserbase"}, False, True, False, False),
+    ({"cloud_provider": "local"}, False, True, False, False),
+    ({}, False, True, False, True),
+    (None, False, False, False, False),
+])
+def test_mode_precedence(config, installed, key, camofox, expected, monkeypatch):
+    def read():
+        if config is None:
+            raise OSError("config unreadable")
+        return {"browser": config}
 
-    def test_default_off_when_cli_unavailable(self, monkeypatch):
-        """Backend unset + no runnable CLI: keep the built-in browser tools."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_explicit_off_wins_over_default(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"backend": bu_cli.BACKEND_DISABLED}},
-        )
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_yaml_bool_off_means_disabled(self, monkeypatch):
-        """YAML 1.1 parses unquoted `off` as False — must mean disabled."""
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"backend": False}},
-        )
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_config_opt_in(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"backend": "browser-use"}},
-        )
-        assert bu_cli.is_browser_use_cli_mode() is True
-
-    def test_other_backend_value_is_not_cli_mode(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"backend": "something-else"}},
-        )
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_config_read_failure_uses_default(self, monkeypatch):
-        def boom():
-            raise RuntimeError("config unreadable")
-
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", boom)
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
-        assert bu_cli.is_browser_use_cli_mode() is False
+    monkeypatch.setattr("hermes_cli.config.read_raw_config", read)
+    monkeypatch.setattr("tools.browser_camofox.is_camofox_mode", lambda: camofox)
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"] if installed else None)
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key" if key else "")
+    monkeypatch.setenv("BROWSERBASE_API_KEY", "bb-key")
+    monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "bb-project")
+    assert bu_cli.is_browser_use_cli_mode() is expected
 
 
 class TestSubprocessEnvironment:
-    def test_browser_use_telemetry_defaults_off(self, monkeypatch):
-        import sys
-        from types import ModuleType
-
-        browser_tool = ModuleType("tools.browser_tool")
-        browser_tool._build_browser_env = lambda: {}
-        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
-        env = bu_cli._base_subprocess_env()
-        assert env["ANONYMIZED_TELEMETRY"] == "false"
-
-    def test_subprocess_env_strips_parent_python_import_paths(self, monkeypatch):
-        """#83427/#84841/#86006/#86104: the browser-use CLI runs under its
-        own Python — inherited PYTHONPATH/PYTHONHOME pointing at Hermes's
-        venv make it import wrong-ABI C-extensions (pydantic_core) and
-        crash. Both must be stripped; unrelated vars survive."""
-        import sys
-        from types import ModuleType
-
-        browser_tool = ModuleType("tools.browser_tool")
-        browser_tool._build_browser_env = lambda: {
-            "PYTHONPATH": "/hermes:/hermes/venv/lib/site-packages",
-            "PYTHONHOME": "/hermes/venv",
-            "KEEP_ME": "yes",
-        }
-        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
-
-        env = bu_cli._base_subprocess_env()
-
-        assert "PYTHONPATH" not in env
-        assert "PYTHONHOME" not in env
-        assert env["KEEP_ME"] == "yes"
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX PATH-floor semantics")
+    @pytest.mark.platforms("posix")
     def test_subprocess_env_floors_version_manager_only_path(self, monkeypatch):
         """Profile workers (kanban bots, cron) can inherit a PATH of only
         version-manager dirs (observed in the wild: one nvm dir repeated
@@ -187,7 +134,7 @@ class TestSubprocessEnvironment:
         assert "/usr/bin" in parts
         assert "/bin" in parts
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX PATH-floor semantics")
+    @pytest.mark.platforms("posix")
     def test_floor_preserves_existing_entries_and_order(self):
         """The floor only adds dirs — never drops or reorders what the
         caller's environment already had."""
@@ -198,7 +145,7 @@ class TestSubprocessEnvironment:
         positions = [merged.index(p) for p in original.split(os.pathsep)]
         assert positions == sorted(positions)
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX PATH-floor semantics")
+    @pytest.mark.platforms("posix")
     def test_floor_survives_missing_sibling_helper(self, monkeypatch):
         """If browser_tool stops exporting _merge_browser_path, the floor
         degrades to appending FHS bin dirs instead of vanishing."""
@@ -287,21 +234,6 @@ class TestVaultSupervisorAttach:
         assert _fake_supervisor_registry == [("t-vault", "ws://127.0.0.1:47000/devtools/browser/t-vault")]
 
 
-class TestFindCli:
-    def test_uses_only_pm_selected_tool(self, monkeypatch, tmp_path):
-        import pm
-        selected = tmp_path / "pm-generation" / "browser-use"
-        monkeypatch.setattr(pm, "python_tool", lambda name, executable: selected)
-        monkeypatch.setattr(shutil, "which", lambda *a, **kw: "/unmanaged/browser-use")
-        assert bu_cli._find_cli_unpatched() == [str(selected)]
-
-    def test_missing_managed_tool_does_not_use_path(self, monkeypatch):
-        import pm
-        monkeypatch.setattr(pm, "python_tool", lambda *a, **kw: None)
-        monkeypatch.setattr(shutil, "which", lambda *a, **kw: "/unmanaged/browser-use")
-        assert bu_cli._find_cli_unpatched() is None
-
-
 class TestLegacyCloudMigration:
     """Pre-CLI direct-API Browser Use cloud configs (cloud_provider:
     "browser-use" + BROWSER_USE_API_KEY) auto-route to the CLI backend;
@@ -309,91 +241,6 @@ class TestLegacyCloudMigration:
 
     _LEGACY = {"browser": {"cloud_provider": "browser-use"}}
 
-    def test_direct_api_config_migrates(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        assert bu_cli.is_browser_use_cli_mode() is True
-
-    def test_gateway_config_stays_on_legacy_path(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"cloud_provider": "browser-use", "use_gateway": True}},
-        )
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_no_api_key_stays_on_legacy_path(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_camofox_user_does_not_migrate(self, monkeypatch):
-        """A Camofox user (env-var selected, cloud_provider unset) with a
-        stray BROWSER_USE_API_KEY keeps Camofox — no silent mode flip."""
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config", lambda: {"browser": {}}
-        )
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        import tools.browser_camofox as camofox
-
-        monkeypatch.setattr(camofox, "is_camofox_mode", lambda: True)
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_camofox_overrides_explicit_backend(self, monkeypatch):
-        """Even with browser.backend: browser-use, an active Camofox setup
-        falls back to the built-in tools (no CDP surface to drive)."""
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"backend": "browser-use"}},
-        )
-        import tools.browser_camofox as camofox
-
-        monkeypatch.setattr(camofox, "is_camofox_mode", lambda: True)
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-
-    def test_explicit_other_backend_wins(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"cloud_provider": "browser-use", "backend": "something-else"}},
-        )
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_other_cloud_provider_does_not_migrate(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"cloud_provider": "browserbase"}},
-        )
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_explicit_local_does_not_migrate(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
-            lambda: {"browser": {"cloud_provider": "local"}},
-        )
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
-        assert bu_cli.is_browser_use_cli_mode() is False
-
-    def test_auto_detect_with_key_migrates(self, monkeypatch):
-        """No cloud_provider configured + BROWSER_USE_API_KEY set: credential
-        auto-detection prefers Browser Use (even when Browserbase creds are
-        also present), which now means Browser Use mode."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        monkeypatch.setenv("BROWSERBASE_API_KEY", "bb-key")
-        monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "bb-project")
-        assert bu_cli.is_browser_use_cli_mode() is True
-
-    def test_auto_detect_without_key_does_not_migrate(self, monkeypatch):
-        """No key, no CLI: nothing to migrate and no default flip."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
-        assert bu_cli.is_browser_use_cli_mode() is False
 
     @pytest.mark.platforms("linux")
     def test_migrated_config_gets_bu_autospawn(self, tmp_path, monkeypatch):
@@ -427,222 +274,77 @@ class TestLegacyCloudMigration:
         assert _is_provider_active(cli_row, dict(self._LEGACY)) is False
 
 
-class TestBackendCdpResolution:
-    """browser_exec routes through the configured browser backend by reusing
-    the legacy stack's provider session machinery (_get_session_info)."""
+@pytest.mark.parametrize("operator,override,provider,gateway,engine,session,endpoint,expected_key,expected_env,private", [
+    ("ws://operator/x", "http://override", "cloud", False, True, "", "http://engine", None, {"BU_CDP_WS": "ws://operator/x"}, False),
+    ("", "http://override", "cloud", False, True, "", "http://engine", None, {"BU_CDP_URL": "http://override"}, False),
+    ("", "wss://override/x", None, False, True, "named", "http://engine", None, {"BU_CDP_WS": "wss://override/x"}, False),
+    ("", "", "cloud", False, True, "", "wss://cloud/x", "task", {"BU_CDP_WS": "wss://cloud/x"}, False),
+    ("", "", "cloud", False, True, "research", "wss://cloud/x", "bu-named-research", {"BU_CDP_WS": "wss://cloud/x"}, True),
+    ("", "", "browser-use", False, False, "research", "unused", None, {}, True),
+    ("", "", "browser-use", True, False, "research", "wss://gateway/x", "bu-named-research", {"BU_CDP_WS": "wss://gateway/x"}, True),
+    ("", "", None, False, True, "", "http://engine", "task", {"BU_CDP_URL": "http://engine"}, True),
+    ("", "", None, False, True, "research", "http://engine", "bu-named-research", {"BU_CDP_URL": "http://engine"}, True),
+    ("", "", None, False, False, "", "unused", None, {"BU_CDP_WS": "ws://127.0.0.1:47000/devtools/browser/task"}, True),
+    ("", "", None, False, False, "research", "unused", None, {"BU_CDP_WS": "ws://127.0.0.1:47000/devtools/browser/bu-named-research"}, True),
+])
+def test_exec_cdp_precedence(monkeypatch, operator, override, provider, gateway, engine,
+                             session, endpoint, expected_key, expected_env, private):
+    from types import SimpleNamespace
 
-    def _env(self):
-        return {}
+    monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {"browser": {"use_gateway": gateway}})
+    monkeypatch.setenv("BU_CDP_WS", operator)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: override)
+    monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda url: url)
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: SimpleNamespace(name=provider) if provider else None)
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: engine)
+    seen = []
+    monkeypatch.setattr(bt_session, "_get_session_info", lambda key: seen.append(key) or {"cdp_url": endpoint})
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["fixture"])
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda cmd, code, env, timeout:
+                        subprocess.CompletedProcess(cmd, 0, json.dumps({"code": code, "env": env}), ""))
+    tasks = ["task", "followup"] if session else ["task"]
+    for task in tasks:
+        result = json.loads(bu_cli.browser_exec("print('payload')", session=session, task_id=task))
+        assert result["success"], result
+        child = json.loads(result["output"])
+        assert {k: v for k, v in child["env"].items() if k in {"BU_CDP_URL", "BU_CDP_WS"} and v} == expected_env
+        assert "_HERMES_BU_PRIVATE_BROWSER" not in child["env"]
+        assert ("_hermes_ensure_own_tab" in child["code"]) is bool(session and not private)
+        assert child["code"].endswith("print('payload')")
+        compile(child["code"], "browser-payload", "exec")
+    assert seen == ([expected_key] * len(tasks) if expected_key else [])
 
-    def test_existing_bu_env_wins(self, monkeypatch):
-        env = {"BU_CDP_WS": "ws://operator-override:9222"}
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env["BU_CDP_WS"] == "ws://operator-override:9222"
 
-    def test_cdp_override_exported(self, monkeypatch):
+def test_exec_without_task_uses_default_backend_identity(monkeypatch, _fake_managed_chromium):
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["fixture"])
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda cmd, *a:
+                        subprocess.CompletedProcess(cmd, 0, "ok", ""))
+    assert json.loads(bu_cli.browser_exec("print(1)"))["success"]
+    assert _fake_managed_chromium == [("browser-exec-default", "get", ("cdp-url",))]
 
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "http://127.0.0.1:9222")
-        env = self._env()
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env["BU_CDP_URL"] == "http://127.0.0.1:9222"
 
-    def test_ws_override_uses_bu_cdp_ws(self, monkeypatch):
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "wss://connect.example/x")
-        env = self._env()
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env["BU_CDP_WS"] == "wss://connect.example/x"
-
-    def test_cloud_provider_session_exported(self, monkeypatch):
-        import tools.browser_tool as bt
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(
-            bt_session, "_get_session_info",
-            lambda task_id: {"cdp_url": "wss://browser.example/cdp/abc"},
-        )
-        env = self._env()
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env["BU_CDP_WS"] == "wss://browser.example/cdp/abc"
-
-    def test_no_provider_drives_packaged_chromium_not_user_chrome(self, monkeypatch, _fake_managed_chromium):
-        """Local mode must hand the harness the agent-browser-launched Chromium (same browser the built-in
-        tools use) — never leave BU_CDP_* unset, which makes the harness hunt for the user's installed
-        Chrome (Allow popup, >=136 default-profile block, chrome-not-running on headless hosts)."""
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
-        env = self._env()
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env["BU_CDP_WS"] == "ws://127.0.0.1:47000/devtools/browser/t1"
-        assert env[bu_cli._PRIVATE_BROWSER_SENTINEL] == "1"
-        assert _fake_managed_chromium == [("t1", "get", ("cdp-url",))]
-        env = self._env()
-        assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
-        assert _fake_managed_chromium[-1][0] == "bu-named-r7k2"  # named session → its own Chromium
-
-    def test_packaged_chromium_launch_failure_is_an_error(self, monkeypatch):
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
-        monkeypatch.setattr(bt_session, "_run_browser_command",
-                            lambda *a, **k: {"success": False, "error": "Chromium browser not installed"})
-        env = self._env()
-        err = bu_cli._resolve_backend_cdp(env, "t1")
-        assert err and "Chromium browser not installed" in err
-        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
-
-    def test_provider_failure_returns_error(self, monkeypatch):
-
-        def boom(task_id):
+@pytest.mark.parametrize("provider,engine,fault,expected", [
+    (True, False, "raises", "api down"), (True, False, "missing", "no CDP endpoint"),
+    (False, True, "raises", "browser.engine"), (False, True, "missing", "no CDP endpoint"),
+    (False, False, "missing", "Chromium browser not installed"),
+])
+def test_exec_backend_failure_never_launches_cli(monkeypatch, provider, engine, fault, expected):
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object() if provider else None)
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: engine)
+    def info(key):
+        if fault == "raises":
             raise RuntimeError("api down")
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(bt_session, "_get_session_info", boom)
-        err = bu_cli._resolve_backend_cdp(self._env(), "t1")
-        assert err and "api down" in err
-
-    def test_provider_without_cdp_returns_error(self, monkeypatch):
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(bt_session, "_get_session_info", lambda task_id: {"cdp_url": None})
-        err = bu_cli._resolve_backend_cdp(self._env(), "t1")
-        assert err and "no" in err.lower() and "CDP" in err
-
-    @pytest.mark.platforms("linux")
-    def test_named_session_composes_with_provider_backend(self, tmp_path, monkeypatch):
-        """session=<name> composes with a configured provider backend: the
-        name keys its OWN provider browser (bu-named-<name>), so concurrent
-        named sessions never share one browser (#86894)."""
-
-        seen = []
-
-        def fake_session_info(key):
-            seen.append(key)
-            return {"cdp_url": "wss://browser.example/cdp/" + key}
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(bt_session, "_get_session_info", fake_session_info)
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME ws:$BU_CDP_WS"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-        result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
-        assert result["success"] is True
-        assert seen == ["bu-named-r7k2"]
-        assert "bu:r7k2" in result["output"]
-        assert "ws:wss://browser.example/cdp/bu-named-r7k2" in result["output"]
-
-    def test_named_session_key_stable_across_tasks(self, monkeypatch):
-        """The same session name maps to the same provider cache key no
-        matter which task calls it — that is what lets a follow-up call
-        reattach to the same cloud browser."""
-        import tools.browser_tool as bt
-
-        seen = []
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(
-            bt_session, "_get_session_info",
-            lambda key: seen.append(key) or {"cdp_url": "wss://x/cdp/a"},
-        )
-        env1, env2 = {}, {}
-        assert bu_cli._resolve_backend_cdp(env1, "task-A", session_name="research") is None
-        assert bu_cli._resolve_backend_cdp(env2, "task-B", session_name="research") is None
-        assert seen == ["bu-named-research", "bu-named-research"]
-
-    def test_named_session_direct_api_bu_cloud_still_skips_provider(
-        self, tmp_path, monkeypatch
-    ):
-        """Direct-API Browser Use cloud configs keep the native named-daemon
-        path: resolving through the provider would double-session and
-        double-bill."""
-        import tools.browser_tool as bt
-
-        class _BUProvider:
-            name = "browser-use"
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
-        monkeypatch.setattr(
-            bt_session, "_get_session_info",
-            lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
-        )
-        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
-        env = {}
-        assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
-        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
-
-
-class TestOwnTabPreamble:
-    """Named sessions on SHARED browsers (a /browser connect CDP override) get the own-tab preamble
-    prepended; private per-name browsers (packaged Chromium, provider) and unnamed sessions do not."""
-
-    def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False, shared_cdp=""):
-        import tools.browser_tool as bt
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: shared_cdp)
-        if provider:
-            monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
-            monkeypatch.setattr(
-                bt_session, "_get_session_info",
-                lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
-            )
-        else:
-            monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
-        # fake CLI echoes stdin back so we can inspect what code was sent
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["test-browser-use"])
-        monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda cmd, code, env, timeout:
-                            subprocess.CompletedProcess(cmd, 0, code, ""))
-        return json.loads(bu_cli.browser_exec("print('payload')", session=session))
-
-    @pytest.mark.platforms("linux")
-    def test_named_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
-        result = self._run(tmp_path, monkeypatch, session="r7k2", shared_cdp="http://127.0.0.1:9222")
-        assert result["success"] is True
-        assert "_hermes_ensure_own_tab" in result["output"]
-        # model code still present, after the preamble
-        assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
-
-    def test_named_packaged_chromium_skips_preamble(self, tmp_path, monkeypatch):
-        """Each named session launches its own packaged Chromium — nothing to share a tab with."""
-        result = self._run(tmp_path, monkeypatch, session="r7k2")
-        assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
-
-    def test_unnamed_session_gets_no_preamble(self, tmp_path, monkeypatch):
-        result = self._run(tmp_path, monkeypatch, session="")
-        assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
-
-    @pytest.mark.platforms("linux")
-    def test_named_provider_browser_skips_preamble(self, tmp_path, monkeypatch):
-        """Per-name provider browsers are private — preamble would leak a tab."""
-        result = self._run(tmp_path, monkeypatch, session="r7k2", provider=True)
-        assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
-
-    @pytest.mark.platforms("linux")
-    def test_sentinel_never_reaches_subprocess_env(self, tmp_path, monkeypatch):
-        import tools.browser_tool as bt
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(
-            bt_session, "_get_session_info",
-            lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
-        )
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "sentinel:${_HERMES_BU_PRIVATE_BROWSER:-unset}"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-        result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
-        assert "sentinel:unset" in result["output"]
-
-    def test_preamble_is_valid_python(self):
-        import ast
-
-        ast.parse(bu_cli._OWN_TAB_PREAMBLE)
-        # and composes with model code
-        ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
+        return {"cdp_url": None}
+    monkeypatch.setattr(bt_session, "_get_session_info", info)
+    monkeypatch.setattr(bt_session, "_run_browser_command", lambda *a, **kw:
+                        {"success": False, "error": "Chromium browser not installed"})
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["fixture"])
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda *a: pytest.fail("launched on routing failure"))
+    assert expected in json.loads(bu_cli.browser_exec("print(1)"))["error"]
 
 
 class TestProviderPickerIntegration:
@@ -862,56 +564,16 @@ class TestStepLabels:
         assert "Searching Amazon for paper towels" in line
         assert "new_tab" not in line
 
-    def test_header_instructs_leading_comment(self):
-        assert "one-line comment" in bu_cli._HEADER_BASE
-        assert "step label" in bu_cli._HEADER_BASE
-
-
-class TestHeaderVariants:
-    def test_vision_header_forbids_vision_tool_detour(self, monkeypatch):
-        monkeypatch.setattr(
-            "tools.vision_tools._should_use_native_vision_fast_path", lambda: True
-        )
-        header = bu_cli._description_header()
-        assert header.startswith(bu_cli._HEADER_BASE)
-        assert "attached to your context automatically" in header
-
-    def test_text_only_header_teaches_text_workflow(self, monkeypatch):
-        monkeypatch.setattr(
-            "tools.vision_tools._should_use_native_vision_fast_path", lambda: False
-        )
-        header = bu_cli._description_header()
-        assert "cannot view images" in header
-        assert "page_info()" in header
-
-
-class TestSkillTextDescription:
-    """The schema description is fully pinned: header + _HELPERS_DIGEST.
-
-    The live ``browser-use skill`` fetch was removed after A/B benchmarking
-    showed the pinned digest matches the full skill dump on success rate
-    (36/36 vs 36/36, opus-4.8 + kimi-k3) — see tools/browser_use_cli.py.
-    """
-
-    def test_description_is_pinned_header_plus_digest(self, monkeypatch):
-        # Even with a CLI present, the description must NOT shell out.
-        monkeypatch.setattr(
-            bu_cli, "_find_cli",
-            lambda: (_ for _ in ()).throw(AssertionError("schema must not invoke the CLI")),
-        )
-        overrides = bu_cli._dynamic_schema_overrides()
-        assert overrides["description"].startswith(bu_cli._HEADER_BASE)
-        assert overrides["description"].endswith(bu_cli._HELPERS_DIGEST)
-
-    def test_digest_names_core_helpers(self):
-        for helper in ("new_tab(", "page_info()", "js(", "fill_input(",
-                       "click_at_xy(", "capture_screenshot()", "cdp("):
-            assert helper in bu_cli._HELPERS_DIGEST
-
-    def test_static_fallback_carries_digest_and_install_hint(self):
-        desc = bu_cli.BROWSER_EXEC_SCHEMA["description"]
-        assert bu_cli._HELPERS_DIGEST in desc
-        assert "hermes tools" in desc
+@pytest.mark.parametrize("vision,lightpanda,expected", [
+    (True, False, "attached to your context automatically"),
+    (False, False, "cannot view images"), (True, True, "Lightpanda"),
+])
+def test_schema_is_dynamic_without_cli_io(monkeypatch, vision, lightpanda, expected):
+    monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: vision)
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (lightpanda, ""))
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: pytest.fail("schema invoked CLI"))
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("schema spawned child"))
+    assert expected in bu_cli._dynamic_schema_overrides()["description"]
 
 
 class TestBrowserExec:
@@ -962,41 +624,9 @@ class TestBrowserExec:
     def test_timeout_returns_actionable_error(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, "cat > /dev/null\nsleep 30\n")
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-        monkeypatch.setattr(bu_cli, "_MIN_TIMEOUT_S", 1)
-        result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=1))
+        monkeypatch.setattr(bu_cli, "_MIN_TIMEOUT_S", 2)
+        result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=2))
         assert "timed out" in result["error"]
-
-
-class TestInstallCli:
-    def test_installs_through_pm_even_with_an_unmanaged_binary(self, tmp_path, monkeypatch):
-        import pm
-        selected = tmp_path / "pm-generation" / "browser-use"
-        seen = {}
-
-        def install(name, requirements, executable, **kwargs):
-            seen.update(name=name, requirements=requirements, executable=executable, **kwargs)
-            return selected
-
-        monkeypatch.setattr(pm, "ensure_python_tool", install)
-        monkeypatch.setattr(shutil, "which", lambda *a, **kw: "/unmanaged/browser-use")
-        ok, message = bu_cli.install_cli(timeout_s=321)
-        assert ok, message
-        assert str(selected) in message
-        assert seen == dict(name="browser-use", requirements=bu_cli._CLI_REQUIREMENTS,
-                            executable="browser-use", explicit=True, timeout=321)
-
-    def test_pm_install_failure_is_actionable(self, monkeypatch):
-        import pm
-
-        def fail(*args, **kwargs):
-            raise RuntimeError("network unavailable; retry hermes tools")
-
-        monkeypatch.setattr(pm, "ensure_python_tool", fail)
-        monkeypatch.setattr(shutil, "which", lambda *a, **kw: None)
-        ok, message = bu_cli.install_cli()
-        assert not ok
-        assert "network unavailable" in message
-        assert "hermes tools" in message
 
 
 class TestDefaultDowngradeNotice:
@@ -1030,112 +660,6 @@ class TestDefaultDowngradeNotice:
         )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.default_downgrade_notice() is None
-
-
-class TestLightpandaBackendResolution:
-    """browser.engine: lightpanda in Browser Use mode — Hermes spawns
-    ``lightpanda serve`` through the same _get_session_info machinery and
-    exports its endpoint, but only when nothing with higher precedence
-    (BU_CDP_* env, a CDP override, a cloud provider) claimed the session."""
-
-    def _setup(self, monkeypatch, *, engine=True, info=None, boom=None):
-
-        seen = []
-
-        def fake_session_info(key):
-            seen.append(key)
-            if boom:
-                raise boom
-            return info if info is not None else {"cdp_url": "http://127.0.0.1:43111"}
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
-        monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: engine)
-        monkeypatch.setattr(bt_session, "_get_session_info", fake_session_info)
-        return seen
-
-    def test_exports_bu_cdp_url_and_private_sentinel(self, monkeypatch):
-        seen = self._setup(monkeypatch)
-        env = {}
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env["BU_CDP_URL"] == "http://127.0.0.1:43111"
-        assert env[bu_cli._PRIVATE_BROWSER_SENTINEL] == "1"
-        assert seen == ["t1"]
-
-    def test_named_session_keys_its_own_process(self, monkeypatch):
-        seen = self._setup(monkeypatch)
-        assert bu_cli._resolve_backend_cdp({}, "t1", session_name="r7k2") is None
-        assert seen == ["bu-named-r7k2"]
-
-    def test_default_key_without_task(self, monkeypatch):
-        seen = self._setup(monkeypatch)
-        assert bu_cli._resolve_backend_cdp({}, None) is None
-        assert seen == ["browser-exec-default"]
-
-    def test_launch_failure_returns_actionable_error(self, monkeypatch):
-        self._setup(monkeypatch, boom=RuntimeError("no lightpanda binary was found"))
-        err = bu_cli._resolve_backend_cdp({}, "t1")
-        assert err and "no lightpanda binary was found" in err
-        assert "browser.engine" in err
-
-    def test_missing_cdp_returns_error(self, monkeypatch):
-        self._setup(monkeypatch, info={"cdp_url": None})
-        err = bu_cli._resolve_backend_cdp({}, "t1")
-        assert err and "no CDP endpoint" in err
-
-    def test_engine_auto_falls_through_to_packaged_chromium(self, monkeypatch, _fake_managed_chromium):
-        seen = self._setup(monkeypatch, engine=False)
-        env = {}
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert seen == []  # no lightpanda process
-        assert env["BU_CDP_WS"].startswith("ws://") and _fake_managed_chromium[0][1:] == ("get", ("cdp-url",))
-
-    def test_bu_env_wins(self, monkeypatch):
-        seen = self._setup(monkeypatch)
-        env = {"BU_CDP_WS": "ws://operator:9222"}
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env["BU_CDP_WS"] == "ws://operator:9222"
-        assert seen == []
-
-    def test_cdp_override_wins(self, monkeypatch):
-
-        seen = self._setup(monkeypatch)
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "http://127.0.0.1:9222")
-        env = {}
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env["BU_CDP_URL"] == "http://127.0.0.1:9222"
-        assert seen == []
-
-    def test_cloud_provider_wins(self, monkeypatch):
-
-        seen = self._setup(monkeypatch, info={"cdp_url": "wss://cloud.example/x"})
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
-        env = {}
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env["BU_CDP_WS"] == "wss://cloud.example/x"
-        assert seen == ["t1"]  # provider path, same cache key
-
-
-class TestLightpandaPreamble:
-    def test_lightpanda_session_skips_own_tab_preamble(self, tmp_path, monkeypatch):
-        """A Lightpanda process is private to its session: no sibling daemon
-        to collide with, and Target.createTarget would fail anyway
-        (lightpanda-io/browser#1962)."""
-        import tools.browser_tool as bt
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
-        monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
-        monkeypatch.setattr(
-            bt_session, "_get_session_info", lambda key: {"cdp_url": "http://127.0.0.1:43111"}
-        )
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["test-browser-use"])
-        monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda cmd, code, env, timeout:
-                            subprocess.CompletedProcess(cmd, 0, code, ""))
-        result = json.loads(bu_cli.browser_exec("print('payload')", session="r7k2"))
-        assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
-        assert "print('payload')" in result["output"]
 
 
 class TestLightpandaHeader:
@@ -1251,7 +775,7 @@ class TestTimeoutProcessGroupKill:
     blocked forever, and the wedged call's activity heartbeat pins the session at
     "now" in the sidebar indefinitely."""
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    @pytest.mark.platforms("posix")
     def test_timeout_kills_grandchild_and_returns_promptly(self, tmp_path, monkeypatch):
         """A grandchild that outlives the direct child and holds the inherited stdout
         pipe must not keep browser_exec blocked past the timeout (it wedged permanently

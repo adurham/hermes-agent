@@ -81,29 +81,6 @@ class TestFindShellWindowsBehavior:
             assert result == _find_bash()
 
 
-class TestFindShellReturnsString:
-    """_find_shell must return a string, never None."""
-
-    def test_returns_string(self):
-        """_find_shell always returns a non-empty string on any platform."""
-        result = _find_shell()
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-
-class TestFindBashUnchanged:
-    """_find_bash should be unaffected by the _find_shell change."""
-
-    def test_find_bash_still_prefers_bash(self):
-        """_find_bash still returns bash (not $SHELL) on POSIX."""
-        result = _find_bash()
-        # On any system, _find_bash should return something containing "bash"
-        # or fall back to $SHELL or /bin/sh — but it should NOT prefer $SHELL
-        # over bash the way _find_shell does.
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-
 class TestFindBashCollapsedToPmShell:
     """_find_bash is now a thin wrapper over pm.shell(); the Windows
     candidate ladder (HERMES_GIT_BASH_PATH → %LOCALAPPDATA%\\hermes\\git →

@@ -9,7 +9,7 @@ import pytest
 from tools.browser_tool_lifecycle import _legacy_kill_process_tree
 
 
-@pytest.mark.platforms("linux", "darwin")
+@pytest.mark.platforms("posix")
 def test_posix_kills_process_group_term_then_kill(monkeypatch):
     proc = MagicMock(pid=999)
     monkeypatch.setattr(os, "getpgid", lambda pid: 999)
@@ -19,7 +19,7 @@ def test_posix_kills_process_group_term_then_kill(monkeypatch):
     assert calls == [(999, signal.SIGTERM), (999, signal.SIGKILL)]
 
 
-@pytest.mark.platforms("linux", "darwin")
+@pytest.mark.platforms("posix")
 def test_posix_missing_process_returns_silently(monkeypatch):
     def missing(pid):
         raise ProcessLookupError()
@@ -28,7 +28,7 @@ def test_posix_missing_process_returns_silently(monkeypatch):
     _legacy_kill_process_tree(MagicMock(pid=999))
 
 
-@pytest.mark.platforms("linux", "darwin")
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("kill_error", [None, OSError("already reaped")])
 def test_missing_killpg_falls_back_to_proc_kill(monkeypatch, kill_error):
     proc = MagicMock(pid=999)
@@ -38,7 +38,7 @@ def test_missing_killpg_falls_back_to_proc_kill(monkeypatch, kill_error):
     proc.kill.assert_called_once()
 
 
-@pytest.mark.platforms("linux", "darwin")
+@pytest.mark.platforms("posix")
 def test_permission_denied_does_not_attempt_sigkill(monkeypatch):
     monkeypatch.setattr(os, "getpgid", lambda pid: 999)
     calls = []
@@ -52,7 +52,7 @@ def test_permission_denied_does_not_attempt_sigkill(monkeypatch):
     assert calls == [(999, signal.SIGTERM)]
 
 
-@pytest.mark.platforms("win32")
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("error", [None, OSError("taskkill missing")])
 def test_windows_taskkill_targets_tree_and_is_best_effort(error):
     with patch("subprocess.run", side_effect=error) as run:
