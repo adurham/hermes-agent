@@ -444,7 +444,10 @@ COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-di
 ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 # PM's atomic writer creates private facts for source installs. In the
 # image these are shared, non-secret package metadata, read by UID 10000.
-RUN mkdir -p /opt/data && chmod 0644 /opt/hermes/tools/facts.json
+# uv's environment locks are build-only and may be world-writable. Remove
+# them after all builds; never relax permissions on mutable PM/home state.
+RUN mkdir -p /opt/data && chmod 0644 /opt/hermes/tools/facts.json && \
+    rm -f /opt/hermes/.venv/.lock /opt/hermes/pm-runtime/.lock
 VOLUME [ "/opt/data" ]
 
 # The image ENTRYPOINT is a tiny dispatcher rather than `/init` directly.
