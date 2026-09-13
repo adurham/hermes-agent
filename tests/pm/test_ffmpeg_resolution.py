@@ -10,8 +10,6 @@ from pm.packages import Ffmpeg
 
 @pytest.fixture
 def indexes(monkeypatch):
-    monkeypatch.setattr(update, "_btbn_cache", update._TTL())
-    monkeypatch.setattr(update, "_martin_cache", update._TTL())
     tag = "autobuild-2026-09-01-12-00"
     version = "9.1.2"
     assets = [

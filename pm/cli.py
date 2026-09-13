@@ -16,9 +16,10 @@ from pm.package import InstallError
 from pm.paths import repo_root
 from pm.registry import get_package
 from pm.store import ALL_TARGETS, current_target, hash_url
-from pm.update import Resolved, resolve_package
+from pm.update import Resolved, resolve_package, reuse_index_responses
 
 
+@reuse_index_responses()
 def cmd_lock(args) -> int:
     """--bump <name> <version>: resolve every target's archives, hash them,
     write. A target with one archive pins the object; several pin a list.
@@ -372,10 +373,12 @@ def cmd_update(args) -> int:
     return 0
 
 
+@reuse_index_responses()
 def _pin_artifacts(package, decision, current: dict) -> dict:
     """Retain unresolved targets and reuse hashes for unchanged artifact URLs."""
     per_target = decision.per_target or {t: decision.version for t in ALL_TARGETS}
     artifacts = dict(current)
+    hashes: dict[str, str] = {}
     for target, version in per_target.items():
         if package.missing_reason(target) is not None:
             continue
@@ -387,8 +390,13 @@ def _pin_artifacts(package, decision, current: dict) -> dict:
             urls = package.fetch_urls(version, target)
         if urls == [row["url"] for row in old]:
             continue
-        pinned = [{"url": url, "sha256": known.get(url) or package.known_sha256(version, url) or hash_url(url)}
-                  for url in urls]
+        pinned = []
+        for url in urls:
+            digest = known.get(url) or hashes.get(url)
+            if not digest:
+                digest = package.known_sha256(version, url) or hash_url(url)
+                hashes[url] = digest
+            pinned.append({"url": url, "sha256": digest})
         artifacts[target] = pinned[0] if len(pinned) == 1 else pinned
     return artifacts
 

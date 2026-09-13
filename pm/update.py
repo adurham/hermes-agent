@@ -29,11 +29,29 @@ import json
 import os
 import re
 import urllib.request
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Iterator, Optional
 
 from pm.network import retry_network
 from pm.registry import get_package
+
+
+# The context holds no data outside a resolve/pin call, including failed calls.
+# Keep the Package hooks unchanged while sharing their nested index requests.
+_index_responses: ContextVar[dict | None] = ContextVar("pm_index_responses", default=None)
+
+
+@contextmanager
+def reuse_index_responses() -> Iterator[None]:
+    """Share successful index reads only within this resolve or pin operation."""
+    token = _index_responses.set({})
+    try:
+        yield
+    finally:
+        _index_responses.reset(token)
+
 
 # ---------------------------------------------------------------------------
 # Version parsing / comparison (pure)
@@ -145,6 +163,7 @@ def resolve_best(
     return Resolved(name, locked, style, version=version, per_target={t: version for t in present})
 
 
+@reuse_index_responses()
 def resolve_package(package, targets: list[str], locked: Optional[str], *, artifacts: dict | None = None) -> Resolved:
     """Resolve versions and detect new artifacts within a shared minor."""
     latest = {
@@ -197,10 +216,18 @@ def _get_json(url: str) -> dict | list:
     from hermes_cli.urllib_security import open_credentialed_url
 
     def request():
+        headers = _index_headers(url)
+        key = (url, tuple(sorted(headers.items())), "json")
+        responses = _index_responses.get()
+        if responses is not None and key in responses:
+            return responses[key]
         with open_credentialed_url(
-            urllib.request.Request(url, headers=_index_headers(url)), timeout=60
+            urllib.request.Request(url, headers=headers), timeout=60
         ) as resp:
-            return json.load(resp)
+            result = json.load(resp)
+        if responses is not None:
+            responses[key] = result
+        return result
 
     return retry_network(request)
 
@@ -213,10 +240,17 @@ def _get_text(url: str, headers: Optional[dict] = None) -> str:
         hdrs.update(headers)
 
     def request():
+        key = (url, tuple(sorted(hdrs.items())), "text")
+        responses = _index_responses.get()
+        if responses is not None and key in responses:
+            return responses[key]
         with open_credentialed_url(
             urllib.request.Request(url, headers=hdrs), timeout=60
         ) as resp:
-            return resp.read().decode("utf-8", "replace")
+            result = resp.read().decode("utf-8", "replace")
+        if responses is not None:
+            responses[key] = result
+        return result
 
     return retry_network(request)
 
@@ -336,7 +370,7 @@ def node_latest_versions() -> list[str]:
 
 
 def martin_riedl_index() -> dict[str, dict[str, str]]:
-    """ffmpeg.martin-riedl.de index, cached: target -> {version: epoch}.
+    """ffmpeg.martin-riedl.de index: target -> {version: epoch}.
 
     The site has no directory listing or API — the root page is the index,
     and it lists the CURRENT build per platform (both snapshot builds like
@@ -344,13 +378,9 @@ def martin_riedl_index() -> dict[str, dict[str, str]]:
     <epoch>_<semver> download dir; snapshots never match the numeric
     pattern. The epoch is needed to reconstruct the download URL at pin
     time, so the index maps version -> epoch per target."""
-    cached = _martin_cache.get()
-    if cached is not None:
-        return cached
     try:
         page = _get_text("https://ffmpeg.martin-riedl.de/")
     except Exception:
-        _martin_cache.set({})
         return {}
     out: dict[str, dict[str, str]] = {}
     # /download/<os>/<arch>/<epoch>_<version>/ffmpeg.zip
@@ -364,7 +394,6 @@ def martin_riedl_index() -> dict[str, dict[str, str]]:
         versions = out.setdefault(target, {})
         if version not in versions or int(epoch) > int(versions[version]):
             versions[version] = epoch
-    _martin_cache.set(out)
     return out
 
 
@@ -379,9 +408,6 @@ def btbn_index() -> dict[str, dict[str, tuple[str, str]]]:
     Releases also contain Linux, shared and LGPL builds. Retain target
     identity here so discovery and pinning select the same artifact.
     """
-    cached = _btbn_cache.get()
-    if cached is not None:
-        return cached
     out: dict[str, dict[str, tuple[str, str]]] = {}
     for page in range(1, 4):
         data = _get_json(f"https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=30&page={page}")
@@ -404,7 +430,6 @@ def btbn_index() -> dict[str, dict[str, tuple[str, str]]]:
                     out.setdefault(target, {}).setdefault(version, (tag, name))
         if len(data) < 30:
             break
-    _btbn_cache.set(out)
     return out
 
 
@@ -433,22 +458,3 @@ def pbs_versions(minor: str, triple: str) -> list[str]:
         if len(data) < 30:
             break
     return []
-
-
-class _TTL:
-    """Tiny per-process cache so --check and the pin step share one fetch."""
-
-    def __init__(self) -> None:
-        self._value: object = None
-        self._set = False
-
-    def get(self):
-        return self._value if self._set else None
-
-    def set(self, value: object) -> None:
-        self._value = value
-        self._set = True
-
-
-_martin_cache = _TTL()
-_btbn_cache = _TTL()
