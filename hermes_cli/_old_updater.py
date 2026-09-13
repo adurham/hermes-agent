@@ -96,7 +96,7 @@ def _run_child(request: dict) -> tuple[int, dict]:
             [sys.executable, "-I", "-S", "-B", "-X", "utf8", str(root / "hermes_cli/_update_takeover.py"),
              str(context), str(result)], cwd=root, env=env,
         )
-        completed = json.loads(result.read_text(encoding="utf-8")) if result.is_file() else {}
+        completed = json.loads(result.read_text(encoding="utf-8-sig")) if result.is_file() else {}
         if not isinstance(completed, dict):
             raise ValueError("invalid update takeover acknowledgement")
         return child.returncode if child.returncode >= 0 else 1, completed

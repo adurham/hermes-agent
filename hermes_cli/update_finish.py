@@ -45,7 +45,7 @@ def _restore_plan(data):
 
 
 def main(context: Path, result: Path) -> int:
-    request = json.loads(context.read_text(encoding="utf-8"))
+    request = json.loads(context.read_text(encoding="utf-8-sig"))
     root = Path(request["root"])
     sys.path.insert(0, str(root))
     from hermes_cli import update_receipt

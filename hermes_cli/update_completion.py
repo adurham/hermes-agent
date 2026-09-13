@@ -70,7 +70,7 @@ def run_completion(request: dict) -> dict:
                 try:
                     if os.name == "posix":
                         try:
-                            os.killpg(proc.pid, signal.SIGKILL)
+                            os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — os.name == "posix"; own isolated group
                         except ProcessLookupError:
                             pass
                     else:
@@ -92,7 +92,7 @@ def run_completion(request: dict) -> dict:
             proc.stdout.close()
         code = _exit_status(code)
         try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
+            result = json.loads(result_path.read_text(encoding="utf-8-sig"))
             if result["schema"] != 1 or result["update_id"] != request["receipt"]["update_id"]:
                 raise ValueError("completion response identity mismatch")
             if result["exit_code"] != code:
@@ -126,7 +126,7 @@ def _read_terminal_receipt(request: dict) -> dict | None:
     directory = Path(request["home"]) / "logs/update_receipts"
     # Never latest.json: another profile/context may have finalized more recently.
     for path in directory.glob(f"update_*_{request['receipt']['update_id']}.json"):
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         if data.get("update_id") == request["receipt"]["update_id"] and data.get("finished_at"):
             return data
     return None
@@ -245,7 +245,7 @@ def _finish(request: dict, result_path: Path) -> int:
 
 def main() -> int:
     request_path, result_path = map(Path, sys.argv[1:3])
-    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request = json.loads(request_path.read_text(encoding="utf-8-sig"))
     if request["schema"] != 1:
         raise ValueError("unsupported source completion request")
     root = Path(__file__).resolve().parents[1]

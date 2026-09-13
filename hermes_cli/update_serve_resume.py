@@ -9,7 +9,7 @@ import sys
 def main(context: Path, result: Path) -> int:
     handled = False
     try:
-        request = json.loads(context.read_text(encoding="utf-8"))
+        request = json.loads(context.read_text(encoding="utf-8-sig"))
         root = Path(request["root"])
         token = request["stopped_serves"]
         if not token.get("pending"):

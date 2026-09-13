@@ -119,7 +119,7 @@ def transition(tmp_path):
         "    path = pathlib.Path(os.environ['HERMES_HOME']) / 'logs/update_receipts'\n"
         "    path.mkdir(parents=True, exist_ok=True)\n"
         "    path = path / ('update_test_' + r.correlation_id + '.json')\n"
-        "    path.write_text(json.dumps(r.data))\n"
+        "    path.write_text(json.dumps(r.data, ensure_ascii=False), encoding=r.data.get('encoding', 'utf-8'))\n"
         "    _current.set(None)\n"
         "    return path\n"
     )
@@ -138,10 +138,14 @@ def transition(tmp_path):
     return root, git, old, new, request
 
 
-def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path):
+@pytest.mark.parametrize("bom_boundary", [None, "request", "receipt"])
+def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path, bom_boundary):
     from hermes_cli import update_completion
 
     root, git, old, new, request = transition
+    request["pre_update_version"] = "日本 café"
+    if bom_boundary == "receipt":
+        request["receipt"]["encoding"] = "utf-8-sig"
     # Copy executable code, not its text shape: the process exercises the real transport.
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
     git("add", ".")
@@ -152,6 +156,8 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
         "import importlib.util, json, os, subprocess, sys\n"
         "spec = importlib.util.spec_from_file_location('transport', sys.argv[1])\n"
         "transport = importlib.util.module_from_spec(spec); spec.loader.exec_module(transport)\n"
+        f"if {bom_boundary == 'request'!r}:\n"
+        "    transport._write_json = lambda path, data: path.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8-sig')\n"
         "import pm\nassert pm.OLD_API\n"
         "subprocess.run(['git', 'checkout', sys.argv[2]], check=True)\n"
         "result = transport.run_completion(json.loads(sys.argv[3]))\n"
@@ -176,6 +182,7 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     assert by_name["build"]["pid"] == by_name["maintenance"]["pid"] == by_name["restart"]["pid"]
     assert by_name["maintenance"]["snapshots"] == {"work": "work-before"}
     assert by_name["maintenance"]["pre_update_snapshot_id"] == "active-before"
+    assert by_name["maintenance"]["pre_update_version"] == "日本 café"
     assert by_name["restart"]["profiles"] == ["work"]
     assert [e["name"] for e in events].index("exit_marker") < [e["name"] for e in events].index("restart")
 
@@ -589,17 +596,22 @@ def test_taskkill_failure_still_reaps_child_and_preserves_interrupt(tmp_path, mo
             child.wait(timeout=5)
 
 
-def test_forged_terminal_receipt_cannot_acknowledge_success(transition):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+@pytest.mark.parametrize("correlated", [False, True])
+def test_only_correlated_terminal_receipt_can_acknowledge_success(transition, encoding, correlated):
     from hermes_cli.update_completion import run_completion
 
     root, git, old, new, request = transition
+    receipt = {"update_id": request["receipt"]["update_id"] if correlated else "wrong",
+               "outcome": "success", "finished_at": "now", "detail": "日本 café"}
     (root / "hermes_cli/update_completion.py").write_text(
         "import json, pathlib, sys\n"
         "request = json.loads(pathlib.Path(sys.argv[1]).read_text())\n"
         "pathlib.Path(sys.argv[2]).write_text(json.dumps(dict(\n"
         "    schema=1, update_id=request['receipt']['update_id'], exit_code=0,\n"
-        "    windows_resume={}, receipt={'update_id': 'wrong', 'outcome': 'success'})))\n"
+        f"    windows_resume={{}}, receipt={receipt!r}), ensure_ascii=False), encoding={encoding!r})\n",
+        encoding="utf-8",
     )
     response = run_completion(request)
-    assert response["exit_code"] != 0
-    assert response["receipt"] is None
+    assert response["exit_code"] == (0 if correlated else 1)
+    assert response["receipt"] == (receipt if correlated else None)

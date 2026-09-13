@@ -108,7 +108,7 @@ def completion(tmp_path, monkeypatch):
         import sys
 
         context, result, fault = sys.argv[1:]
-        request = json.loads(Path(context).read_text())
+        request = json.loads(Path(context).read_text(encoding="utf-8-sig"))
         root = Path(request['root'])
         sys.path.insert(0, str(root))
 
@@ -225,6 +225,8 @@ def test_failure_preserves_original_receipt_before_build(completion, fault):
         message = "kind"
     elif fault == "receipt":
         message = "cannot accept prepared receipt"
+    request["receipt"]["steps"][0]["detail"] = "日本 café"
+    context.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8-sig")
     before = context.read_bytes()
     child = run(fault)
     assert child.returncode == 1, child.stdout + child.stderr

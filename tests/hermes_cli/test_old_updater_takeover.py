@@ -12,7 +12,8 @@ import pytest
 
 
 @pytest.mark.parametrize("status", [0, 7])
-def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, status):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, status, encoding):
     source = Path(__file__).resolve().parents[2]
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
@@ -33,10 +34,10 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
         "assert request['pre_update_version'] == 'old-version'\n"
         "assert request['home'] == os.environ['HERMES_HOME']\n"
         "with Path(request['home'], 'runs').open('a') as stream: stream.write('child\\n')\n"
-        "Path(sys.argv[2]).write_text(json.dumps({'resume_handled': True}))\n"
+        f"Path(sys.argv[2]).write_text(json.dumps({{'resume_handled': True}}), encoding={encoding!r})\n"
         f"raise SystemExit({status})\n", encoding="utf-8",
     )
-    home = tmp_path / "isolated home"
+    home = tmp_path / "isolated home 日本 café"
     home.mkdir()
     program = root / "historical.py"
     program.write_text(
@@ -95,7 +96,7 @@ def test_only_known_early_updater_restarts_with_original_arguments(tmp_path, pos
         "    _update_node_dependencies()\n"
         "def cmd_update(post_pull):\n    _cmd_update_impl(post_pull)\n", encoding="utf-8",
     )
-    home = tmp_path / "isolated home"
+    home = tmp_path / "isolated home 日本 café"
     home.mkdir()
     argv = [str(root / "historical.py"), "--profile", "work profile", "update", "--yes",
             "--keep-stash", "--switch-branch", "--force", "--gateway"]
@@ -138,7 +139,7 @@ def test_atexit_recovers_only_stopped_serves_after_cached_update(tmp_path, ackno
         f"Path(sys.argv[2]).write_text(json.dumps({{'serves_handled': {acknowledged!r}}} if cleanup else {{}}))\n"
         f"raise SystemExit({cleanup_status} if cleanup else 7)\n", encoding="utf-8",
     )
-    home = tmp_path / "isolated home"
+    home = tmp_path / "isolated home 日本 café"
     home.mkdir()
     program = root / "historical.py"
     program.write_text(
@@ -243,6 +244,36 @@ def test_serve_resume_child_leaves_token_unhandled_when_imports_fail(tmp_path):
     assert result.returncode == 1
     assert json.loads(result_path.read_text()) == {"serves_handled": False}
     assert "Stopped serve recovery failed" in result.stderr
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+@pytest.mark.parametrize("entrypoint", ["_update_takeover", "update_serve_resume"])
+def test_completed_serve_token_is_acknowledged_without_preparation(tmp_path, encoding, entrypoint):
+    source = Path(__file__).resolve().parents[2]
+    root = tmp_path / "checkout 日本 café"
+    package = root / "hermes_cli"
+    package.mkdir(parents=True)
+    for name in ("_update_takeover.py", "update_serve_resume.py"):
+        shutil.copy2(source / "hermes_cli" / name, package / name)
+    # Only selection is supplied. The two real entrypoints must carry the
+    # request without importing PM or launching any completed backend twice.
+    (package / "_launchers.py").write_text(
+        "import sys\nresolve_store_python = lambda root: sys.executable\n", encoding="utf-8")
+    (package / "runtime_paths.py").write_text(
+        "import os\nactivation_environment = lambda root: dict(os.environ)\n", encoding="utf-8")
+    context, result_path = tmp_path / "request.json", tmp_path / "result.json"
+    context.write_text(json.dumps({"root": str(root), "stopped_serves": {"pending": False}},
+                                  ensure_ascii=False), encoding=encoding)
+    before = context.read_bytes()
+    child = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", str(package / f"{entrypoint}.py"),
+         str(context), str(result_path)], cwd=tmp_path, capture_output=True,
+        text=True, encoding="utf-8", timeout=30,
+    )
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert json.loads(result_path.read_text(encoding="utf-8-sig")) == {"serves_handled": True}
+    assert not result_path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert context.read_bytes() == before
 
 
 def test_bootstrap_lock_remains_live_without_application_dependencies(tmp_path):
