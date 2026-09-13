@@ -1528,6 +1528,7 @@ jobs:
           ref: ${{ needs.validate.outputs.sha }}
       - name: Render the full expected-binary matrix
         env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -1549,7 +1550,7 @@ jobs:
           PY
           )
           python3 scripts/render-builds-table.py \
-            --summary-commit "$RELEASE_COMMIT" \
+            --summary-commit "$RELEASE_COMMIT" --repo "$GITHUB_REPOSITORY" \
             --summary-out "$GITHUB_STEP_SUMMARY" \
             --summary-failed-legs "$failed" --run-url "$RUN_URL"
 

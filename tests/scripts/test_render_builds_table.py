@@ -267,6 +267,8 @@ class TestTagRunPublishesThePage:
         # Canary tag → the canary channel page, as a full key (not a tag name).
         assert key == "releases/canary/index.html" and key_is_full
         assert rbt.recorded_build(page) == self.TAG
+        assert f'href="https://github.com/o/r/releases/tag/{self.TAG}"' in page
+        assert 'Bundle environment' not in page
         for name in ("HermesBundled-0.28.0-canary.20260818101010-win-x64.msix",
                      "HermesBundled-0.28.0-canary.20260818101010-mac-arm64.dmg",
                      "HermesLight-0.28.0-canary.20260818101010-win-x64.msix"):
@@ -333,7 +335,8 @@ class TestTagRunPublishesThePage:
         assert f"publish-win32-updater ({result})" in page
         assert f"publish-win32-updater ({result})" in edits[0]
         links = re.findall(r'href="([^"]+)"', page)
-        assert links == ([f"{base}/{self.KEYS[0]}"] if asset_present else [])
+        assert links[0] == f"https://github.com/NousResearch/hermes-agent/releases/tag/{self.TAG}"
+        assert links[1:] == ([f"{base}/{self.KEYS[0]}"] if asset_present else [])
         assert r2_server.store[channel_key][0] == previous
         if not asset_present:
             assert "No downloadable artifacts" in page

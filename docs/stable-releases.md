@@ -100,7 +100,12 @@ commit summary runs even when a build or assembly job fails; it lists only
 receipt-backed existing downloads and marks missing binaries as not built.
 Missing binaries link to the workflow run under **View build run**, not to
 nonexistent downloads. Disabled platforms have no download or failure link.
-Page publication still requires working R2 access.
+Page publication still requires working R2 access. The commit links to its source
+on GitHub; tag and channel pages link to the corresponding GitHub release tag.
+Commit pages also list explicit non-secret `--bundle-env` defaults and
+`--bundle-unset` clears passed to the desktop bundles, not the CI environment.
+Values are shown as JSON strings (including `""` for an empty value); clears are
+labeled **Unset**. The section is omitted when no overrides were supplied.
 
 Tagged builds also publish a per-tag diagnostic page at
 `releases/tag/<tag>/index.html` after build or feed failures, including when no
