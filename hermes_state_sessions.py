@@ -158,6 +158,8 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
+    from hermes_state_mutation_retirement import retire_terminal_receipts
+    retire_terminal_receipts(conn, ids)
     for chunk in _id_chunks(ids):
         ph = _session_ids_placeholders(chunk)
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
@@ -1437,6 +1439,8 @@ class SessionSessionsMixin:
                 session_id, *_collect_delegate_child_ids(conn, [session_id])
             }:
                 return False
+            from hermes_state_mutation_retirement import retire_terminal_receipts
+            retire_terminal_receipts(conn, [session_id])
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1455,9 +1459,9 @@ class SessionSessionsMixin:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
         share one transaction so a concurrent flush can't be lost."""
         def _do(conn):
-            cursor = conn.execute(
+            eligible = conn.execute(
                 """
-                DELETE FROM sessions
+                SELECT 1 FROM sessions
                 WHERE id = ?
                   AND title IS NULL
                   AND NOT EXISTS (
@@ -1469,10 +1473,16 @@ class SessionSessionsMixin:
                   )
                 """,
                 (session_id,),
-            )
-            if cursor.rowcount > 0:
-                self._delete_unreferenced_system_prompts(conn)
-            return cursor.rowcount > 0
+            ).fetchone()
+            if eligible is None:
+                return False
+            # Same BEGIN IMMEDIATE transaction as the check above: retire the ledger rows
+            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility.
+            from hermes_state_mutation_retirement import retire_terminal_receipts
+            retire_terminal_receipts(conn, [session_id])
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self._delete_unreferenced_system_prompts(conn)
+            return True
         deleted = self._execute_write(_do)
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
@@ -1491,6 +1501,8 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
+            from hermes_state_mutation_retirement import retire_terminal_receipts
+            retire_terminal_receipts(conn, existing)
             removed_ids.extend(_delete_delegate_children(conn, existing))
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)
@@ -1528,6 +1540,8 @@ class SessionSessionsMixin:
             session_ids = {row["id"] for row in conn.execute(
                 f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
             ).fetchall()}
+            from hermes_state_mutation_retirement import retire_prunable
+            session_ids = retire_prunable(conn, sorted(session_ids))
             if not session_ids:
                 return 0
             for chunk in _id_chunks(session_ids):
