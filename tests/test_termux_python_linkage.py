@@ -18,7 +18,7 @@ def test_python_symbols_gain_an_explicit_library_dependency(tmp_path):
 
     library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
     extension = tmp_path / Path(_cffi_backend.__file__).name
-    shutil.copy2(_cffi_backend.__file__, extension)
+    shutil.copyfile(_cffi_backend.__file__, extension)  # Writable scratch even from a read-only Nix store.
     original = subprocess.check_output(["patchelf", "--print-needed", str(extension)], text=True).splitlines()
     for name in original:
         if name.startswith("libpython"):
@@ -35,33 +35,24 @@ def test_python_symbols_gain_an_explicit_library_dependency(tmp_path):
 
 
 def test_wheel_rewrite_regenerates_record_for_changed_member(tmp_path):
-    import base64
-    import csv
-    import hashlib
-    import io
     import zipfile
+    from scripts.termux import retag_wheel
+    from tests.termux_fixtures import write_wheel, verify_record
 
-    wheel = tmp_path / "sample-1.0-cp311-cp311-linux_aarch64.whl"
-    record = "sample-1.0.dist-info/RECORD"
-    with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("sample/_native.so", b"unrepaired native bytes")
-        archive.writestr("sample/__init__.py", b"")
-        archive.writestr("sample-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nTag: cp311-cp311-linux_aarch64\n")
-        archive.writestr(record, "")
+    wheel = write_wheel(tmp_path)
 
     def repair(path, library):
         assert library == tmp_path / "libpython.so"
+        assert path.read_bytes() == b"\x7fELFfake"
         path.write_bytes(b"repaired native bytes")
         return True
 
     python_linkage.repair_wheel(wheel, tmp_path / "libpython.so", repair=repair)
+    verify_record(wheel)  # Retagging must not hide a stale repair RECORD.
     with zipfile.ZipFile(wheel) as archive:
-        assert archive.read("sample/_native.so") == b"repaired native bytes"
-        rows = {r[0]: r[1:] for r in csv.reader(io.StringIO(archive.read(record).decode()))}
-        for name in archive.namelist():
-            if name == record:
-                assert rows[name] == ["", ""]
-                continue
-            data = archive.read(name)
-            digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
-            assert rows[name] == ["sha256=" + digest, str(len(data))]
+        assert archive.read("fakedep/_native.so") == b"repaired native bytes"
+    retagged = retag_wheel.retag_wheel(str(wheel), "android_24_arm64_v8a")
+    verify_record(retagged)
+    with zipfile.ZipFile(retagged) as archive:
+        assert archive.read("fakedep/_native.so") == b"repaired native bytes"
+        assert b"Tag: py3-none-android_24_arm64_v8a\n" in archive.read("fakedep-1.2.3.dist-info/WHEEL")

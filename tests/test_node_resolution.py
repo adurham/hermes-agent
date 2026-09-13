@@ -17,6 +17,27 @@ from pm.registry import get_package
 from pm.store import current_target, tree_digest
 
 
+def _register_installed_tool(name, executable, companions=()):
+    executable = Path(executable)
+    version = subprocess.run([str(executable), "--version"], capture_output=True, text=True,
+                             check=True, timeout=10).stdout.strip().removeprefix("v")
+    package, target, store = get_package(name), current_target(), paths.store_root()
+    entry = store / package.store_entry(version, target)
+    binary = package.binary(entry, target)
+    assert binary is not None
+    binary.parent.mkdir(parents=True)
+    binary.symlink_to(executable)
+    for companion in companions:
+        binary.with_name(companion.name).symlink_to(companion)
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    lock = Lockfile(paths.lockfile_path())
+    lock.set_pin(name, version, {target: {"url": executable.as_uri(), "sha256": digest}})
+    lock.save()
+    Facts(paths.facts_path()).record(name, version, entry.name, package.env(entry, target), store,
+                                    target=target, artifacts=[digest], digest=tree_digest(entry))
+    return binary
+
+
 @pytest.fixture
 def node_store(tmp_path, monkeypatch):
     node = shutil.which("node")
@@ -32,24 +53,7 @@ def node_store(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
     lock_path = tmp_path / "lock.json"
     monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
-    lock = Lockfile(lock_path)
-    target = current_target()
-    package = get_package("node")
-    version = subprocess.run(
-        [node, "--version"], capture_output=True, text=True, check=True, timeout=10,
-    ).stdout.strip().removeprefix("v")
-    entry = store / package.store_entry(version, target)
-    binary = package.binary(entry, target)
-    assert binary is not None
-    binary.parent.mkdir(parents=True)
-    binary.symlink_to(node)
-    digest = hashlib.sha256(Path(node).read_bytes()).hexdigest()
-    lock.set_pin("node", version, {target: {"url": Path(node).as_uri(), "sha256": digest}})
-    lock.save()
-    Facts(paths.facts_path()).record(
-        "node", version, entry.name, package.env(entry, target), store,
-        target=target, artifacts=[digest], digest=tree_digest(entry),
-    )
+    binary = _register_installed_tool("node", node)
     return home, binary, node
 
 
@@ -133,27 +137,8 @@ def test_npm_and_npx_use_the_paired_pm_entry(node_store, monkeypatch):
     npx = Path(external).with_name("npx")
     if not npm.is_file() or not npx.is_file():
         pytest.skip("requires already-installed npm and npx")
-    version = subprocess.run(
-        [str(npm), "--version"], capture_output=True, text=True, check=True, timeout=10,
-    ).stdout.strip()
-    package = get_package("npm")
-    target = current_target()
-    store = paths.store_root()
-    entry = store / package.store_entry(version, target)
-    binary = package.binary(entry, target)
-    assert binary is not None
-    binary.parent.mkdir(parents=True)
-    binary.symlink_to(npm)
+    binary = _register_installed_tool("npm", npm, [npx])
     companion = binary.with_name("npx")
-    companion.symlink_to(npx)
-    lock = Lockfile(paths.lockfile_path())
-    digest = hashlib.sha256(npm.read_bytes()).hexdigest()
-    lock.set_pin("npm", version, {target: {"url": npm.as_uri(), "sha256": digest}})
-    lock.save()
-    Facts(paths.facts_path()).record(
-        "npm", version, entry.name, package.env(entry, target), store,
-        target=target, artifacts=[digest], digest=tree_digest(entry),
-    )
     legacy = home / "node" / "bin" / "npm"
     legacy.parent.mkdir(parents=True)
     legacy.symlink_to(npm)
@@ -172,7 +157,7 @@ def test_npm_and_npx_use_the_paired_pm_entry(node_store, monkeypatch):
             [resolved, "--version"], env=environment,
             capture_output=True, text=True, check=True, timeout=10,
         )
-        assert result.stdout.strip() == version
+        assert result.stdout.strip() == Lockfile(paths.lockfile_path()).version("npm")
     assert paths.facts_path().read_bytes() == before
     companion.unlink()
     assert hermes_constants.find_node_executable("npx") is None

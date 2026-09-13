@@ -46,6 +46,12 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     env = {"PATH": os.environ["PATH"], "HOME": str(home), "LANG": "C.UTF-8",
            "HERMES_HOME": str(home / ".hermes"), "UV_PYTHON_INSTALL_DIR": str(managed),
            "UV_PYTHON_DOWNLOADS": "never", "UV_CACHE_DIR": str(tmp_path / "cache")}
+    canary = tmp_path / "ambient-bin"
+    canary.mkdir()
+    npm_called = tmp_path / "npm-called"
+    (canary / "npm").write_text(f'#!/bin/sh\nprintf called > "{npm_called}"\nexit 99\n', encoding="utf-8")
+    (canary / "npm").chmod(0o755)
+    env["PATH"] = str(canary) + os.pathsep + env["PATH"]
     for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "NIX_SSL_CERT_FILE"):
         if key in os.environ:
             env[key] = os.environ[key]
@@ -110,6 +116,7 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     command = ["bash", str(ROOT / "scripts/install.sh"), "--dir", str(install),
                "--branch", "fixture", "--commit", commit, "--non-interactive", "--json"]
     result = run(command, expected=1 if fault else 0)
+    assert not npm_called.exists()
     if fault:
         assert not (install / ".hermes-bootstrap-complete").exists()
         assert not (home / ".local/bin/hermes").exists()

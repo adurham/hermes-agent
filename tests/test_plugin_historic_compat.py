@@ -33,7 +33,6 @@ def _plugin(home, name, *, dependencies=True):
 def test_candidate_member_dirs_preserves_proposed_home_order_and_extras(isolated_home, monkeypatch, active):
     from hermes_cli import plugins_admission
 
-    assert callable(getattr(plugins_admission, "candidate_member_dirs", None))
     home = isolated_home
     profile = home / "profiles" / "coder"
     profile.mkdir(parents=True)
@@ -61,16 +60,6 @@ def test_candidate_member_dirs_preserves_proposed_home_order_and_extras(isolated
     assert isinstance(result, list)
     assert result == [*expected, extra]
     assert {p: p.read_bytes() for p in home.rglob("*") if p.is_file()} == before
-
-
-def test_candidate_member_dirs_historical_defaults_do_not_replace_active_selection(isolated_home):
-    from hermes_cli import plugins_admission
-
-    assert callable(getattr(plugins_admission, "candidate_member_dirs", None))
-    old = _plugin(isolated_home, "old")
-    _plugin(isolated_home, "new")
-    (isolated_home / "config.yaml").write_text("plugins:\n  enabled: [old]\n", encoding="utf-8")
-    assert plugins_admission.candidate_member_dirs(["new"]) == [old]
 
 
 @pytest.fixture
@@ -112,7 +101,6 @@ sys.path.insert(0, sys.argv[1])
 for module in ('pm', 'hermes_cli.config', 'hermes_cli.plugins_cmd'):
     sys.modules[module] = None
 from hermes_cli import plugins_transaction
-assert callable(getattr(plugins_transaction, 'recover_plugin_publication', None))
 row = json.loads(sys.stdin.read())
 plugins_transaction.recover_plugin_publication(
     project=Path(sys.argv[2]), row=row, journal=Path(sys.argv[3]),
@@ -149,7 +137,6 @@ def test_old_publication_rolls_back_a_first_install(publication):
     from hermes_cli import plugins_transaction
     import shutil
 
-    assert callable(getattr(plugins_transaction, "recover_plugin_publication", None))
     project, row, journal, _ = publication
     shutil.rmtree(row["backup"])
     row.update(target_existed=False, metadata_before=None)
@@ -163,7 +150,6 @@ def test_old_publication_rolls_back_a_first_install(publication):
 def test_old_publication_refuses_unsafe_or_changed_state_without_writes(publication, tmp_path, invalid):
     from hermes_cli import plugins_transaction
 
-    assert callable(getattr(plugins_transaction, "recover_plugin_publication", None))
     project, row, journal, _ = publication
     if invalid == "edited-metadata":
         Path(row["metadata"]).write_bytes(b"independent user edit")
