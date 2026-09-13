@@ -423,7 +423,14 @@ def match_runtime_outcomes(
     be attributed to one successor (the fleet probe publishes at most one row per profile), so one
     replacement cannot have replaced two planned processes. Such a profile keeps the name-path
     verdict instead of letting an untouched sibling vanish behind a successor that can only have
-    replaced one of them.
+    replaced one of them. That resolves conservatively on purpose: pairing a successor to the planned
+    process it replaced would need a start-time identity that neither the plan record nor the fleet
+    row carries, and a tripwire firing on an anomalous plan is the intended direction.
+
+    Credit is deliberately NOT gated on restart bookkeeping either: the failure this fallback exists
+    for already had bookkeeping (``restarted_services`` named the service label — only the
+    profile↔label name match failed), and a gateway launchd respawned by itself has no restart-phase
+    record at all while the fleet row still proves its successor runs the new code.
 
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
@@ -450,9 +457,11 @@ def match_runtime_outcomes(
         )
         # Baseline identity: the fleet probe publishes at most one row per profile, so successor
         # evidence is only attributable when the plan holds ONE gateway runtime for that profile.
+        # Counted by kind explicitly: serve/dashboard rows for the same profile are different
+        # processes and must never make a gateway's successor evidence look ambiguous.
         planned_gateways: dict[str, int] = {}
         for _planned in plan.runtimes:
-            if isinstance(_planned, RuntimeRecord) and _planned.kind not in _SERVE_KINDS:
+            if isinstance(_planned, RuntimeRecord) and _planned.kind == "gateway":
                 planned_gateways[_planned.profile] = planned_gateways.get(_planned.profile, 0) + 1
 
         def _outcome(r: RuntimeRecord) -> str:

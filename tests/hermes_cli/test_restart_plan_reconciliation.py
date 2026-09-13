@@ -536,15 +536,18 @@ def test_successor_credit_stays_per_profile_with_several_planned_runtimes():
 
 def test_successor_evidence_is_gateway_only_and_stays_optional():
     """Serve/dashboard rows reconcile in their own vocabulary, and callers that
-    pass no ``live_gateway_pids`` keep the bookkeeping-only verdict."""
+    pass no ``live_gateway_pids`` keep the bookkeeping-only verdict. Two non-gateway
+    rows for the same profile must not make the gateway's evidence look ambiguous:
+    the baseline count is per gateway kind."""
     outcomes = match_runtime_outcomes(
-        _plan(_rt("coder", 76508, supervisor="launchd"), _serve("coder", 900)),
+        _plan(_rt("coder", 76508, supervisor="launchd"),
+              _serve("coder", 900), _serve("coder", 901, kind="dashboard")),
         restarted_services=[], relaunched_profiles=[],
         externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
         live_gateway_pids={"coder": {76796}},
     )
     by_pid = {o["pid"]: o["outcome"] for o in outcomes}
-    assert by_pid == {76508: "restarted", 900: "unaccounted"}
+    assert by_pid == {76508: "restarted", 900: "unaccounted", 901: "unaccounted"}
 
     without_probe = match_runtime_outcomes(
         _plan(_rt("coder", 76508, supervisor="launchd")),
