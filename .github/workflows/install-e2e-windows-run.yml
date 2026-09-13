@@ -101,11 +101,19 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
-      - name: Install driver dependencies and verify helpers
+      - name: Set up driver tools only
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache: false
+          cache-python: false
+          cache-node: false
+      - name: Install locked chat driver dependencies
+        shell: bash
+        run: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+      - name: Verify native helpers
         shell: pwsh
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node --test tests/install/e2e-assets/windows-bundled-helpers.test.mjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Start recording
@@ -175,6 +183,18 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+
+      - name: Set up driver tools only
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache: false
+          cache-python: false
+          cache-node: false
+
+      - name: Install locked chat driver dependencies
+        shell: bash
+        run: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
 
       # One recording mechanism on every OS: the composite action installs
       # ffmpeg (cached - winget's download is the slow part), starts the

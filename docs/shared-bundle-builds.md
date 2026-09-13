@@ -274,6 +274,29 @@ suites are `hermes-stable` and `hermes-canary`. Package files publish before
 signed metadata. [Stable release admission](stable-releases.md) coordinates
 acceptance and publication across distributions.
 
+## Public artifact handoffs
+
+The desktop release workflow downloads and installs each supported bundled
+format on a fresh native runner, then runs the same composer/provider/reply
+check as install-e2e. Windows universal assembly stages bytes before the smoke;
+its canary feed is published separately only after both native smoke matrices
+pass. macOS feed publication and stable candidate acceptance are likewise gated.
+See [install and chat acceptance](../tests/install/README.md#post-build-artifact-smoke)
+for covered formats, checkpoint evidence and the Store/Linux/no-upload limits.
+
+`scripts.releases.handoff fetch --public-base URL` downloads a staged artifact
+without R2 credentials. Supply either `--tag TAG --commit SHA` or
+`--commit-build SHA`, plus the producer `--name`, destination `--root`, and
+optional `--include` selectors. This uses the same receipt identity, path,
+size and SHA-256 checks as authenticated handoffs. Tagged and commit-only
+archives remain separate; the command does not resolve a mutable latest feed.
+
+Public reads require HTTPS, except for loopback fixture servers. They reject
+URL credentials, unsafe paths and redirects. An incomplete or corrupt download
+cannot replace an existing verified destination. Receipt files are saved only
+after all selected artifacts verify. Selection of one desktop format must still
+reject missing or ambiguous matches before installation.
+
 ## Cache ownership
 
 PM binary download archives and the native uv wheel cache have different

@@ -85,6 +85,9 @@ case "$UPDATE_METHOD" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ASSETS="$REPO_ROOT/tests/install/e2e-assets"
+# Pin driver tooling before an installer changes PATH. CI prepares locked deps.
+export HERMES_E2E_NODE="${HERMES_E2E_NODE:-$(command -v node)}"
 
 # Everything lives OUTSIDE the checkout; an untracked dir inside the repo
 # would make later dirty-tree checks lie.
@@ -103,6 +106,8 @@ source "$(dirname "$0")/e2e-assets/preserve-plugins.sh"
 source "$(dirname "$0")/e2e-assets/source-driver.sh"
 # shellcheck source=e2e-assets/installer-common.sh
 source "$(dirname "$0")/e2e-assets/installer-common.sh"
+# shellcheck source=e2e-assets/source-build-env.sh
+source "$ASSETS/source-build-env.sh"
 # Full transcript in the job log, collapsed (GitHub renders ::group:: as a
 # fold; plain text anywhere else). Win or lose -- a green install's log is
 # how you diagnose the leg that fails next.
@@ -162,6 +167,7 @@ export HOME="$WORK_ROOT/home"
 mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 export HERMES_HOME="$HOME/.hermes"
+export HERMES_DESKTOP_USER_DATA_DIR="$WORK_ROOT/electron-user-data"
 mkdir -p "$HERMES_HOME"
 
 INSTALL_DIR="$HERMES_HOME/hermes-agent"
@@ -199,9 +205,16 @@ assert_checkout() {
   python3 -B "$REPO_ROOT/tests/install/e2e-assets/source_driver.py" \
     --root "$INSTALL_DIR" --launcher "$hermes" --desktop "$EXPECT_DESKTOP" \
     || fail "read-only verification failed at $2; no repair was attempted"
-  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-$2.log" \
+  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 source_build_env "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-$2.log" \
     || fail "hermes --version failed after $2; log in $LOG_DIR/version-$2.log"
   ok "hermes --version works: $(head -c 120 "$LOG_DIR/version-$2.log" | tr -d '\n')"
+}
+
+desktop_checkpoint() { # phase, expected commit, selected method
+  source_build_env "$HERMES_E2E_NODE" "$ASSETS/source-desktop-smoke.mjs" \
+    --root "$INSTALL_DIR" --home "$HERMES_HOME" --user-data "$HERMES_DESKTOP_USER_DATA_DIR" \
+    --out "$LOG_DIR" --phase "$1" --expect-commit "$2" \
+    --desktop "$EXPECT_DESKTOP" --method "$3"
 }
 
 # --- install OLD ---------------------------------------------------------------
@@ -210,13 +223,14 @@ step "installing OLD ($INSTALL_REF) via its own scripts/install.sh ($INSTALL_MET
 EXPECT_DESKTOP=absent
 if [ "$INSTALL_METHOD" = "installer-script+desktop" ]; then
   EXPECT_DESKTOP=present
-  run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$OLD_SHA" old desktop
+  source_build_env run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$OLD_SHA" old desktop
   assert_checkout "$OLD_SHA" OLD
   assert_desktop_artifact OLD
 else
-  run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$OLD_SHA" old
+  source_build_env run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$OLD_SHA" old
   assert_checkout "$OLD_SHA" OLD
 fi
+desktop_checkpoint old "$OLD_SHA" "$INSTALL_METHOD"
 preserve_before_upgrade
 
 # --- update OLD -> HEAD ----------------------------------------------------------
@@ -232,24 +246,24 @@ case "$UPDATE_METHOD" in
     # argparse rejects the whole invocation when it does not exist. Ask the
     # installed hermes; older ones read the prompt from stdin, so close it.
     HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed update command"
-    help="$("$HERMES" update --help 2>&1)" || fail "installed update --help failed: $help"
+    help="$(source_build_env "$HERMES" update --help 2>&1)" || fail "installed update --help failed: $help"
     if grep -qF -- --yes <<< "$help"; then
       update_cmd=("$HERMES" update --yes)
     else
       update_cmd=("$HERMES" update)
     fi
     rc=0
-    (cd "$INSTALL_DIR" && "${update_cmd[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/update.log") || rc=$?
+    (cd "$INSTALL_DIR" && source_build_env "${update_cmd[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/update.log") || rc=$?
     log_group "hermes update transcript" "$LOG_DIR/update.log"
     [ "$rc" -eq 0 ] || fail "hermes update exited $rc; transcript above, log at $LOG_DIR/update.log"
     ;;
   installer-script)
     # A user re-running the one-liner today gets the CURRENT script.
-    run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" "$TARGET_LABEL"
+    source_build_env run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" "$TARGET_LABEL"
     ;;
   installer-script+desktop)
     EXPECT_DESKTOP=present
-    run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" "$TARGET_LABEL" desktop
+    source_build_env run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" "$TARGET_LABEL" desktop
     assert_desktop_artifact "$TARGET_LABEL"
     ;;
   hermes-desktop-app-update)
@@ -271,7 +285,7 @@ case "$UPDATE_METHOD" in
     # overlay (a fullscreen div that intercepts every click) - and the chat
     # surface is real too.
     source "$ASSETS/mock-provider.sh"
-    mock_start "$WORK_ROOT"
+    PATH="$(dirname "$HERMES_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
     trap mock_stop EXIT
 
     step "capturing the hermes desktop launch spec (build runs for real)"
@@ -279,7 +293,7 @@ case "$UPDATE_METHOD" in
     (cd "$INSTALL_DIR" && \
       PYTHONPATH="$ASSETS/launch-capture${PYTHONPATH:+:$PYTHONPATH}" \
       HERMES_E2E_CAPTURE_LAUNCH="$SPEC" \
-      "$HERMES" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+      source_build_env "$HERMES" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
     log_group "hermes desktop (launch capture) transcript" "$LOG_DIR/desktop-launch-capture.log"
     [ "$rc" -eq 0 ] || fail "hermes desktop exited $rc during launch capture; transcript above"
     # Exit 0 without a capture means a version that never reached its
@@ -288,18 +302,11 @@ case "$UPDATE_METHOD" in
     ok "captured $(cat "$SPEC.captured") launch spec"
 
     step "driving the app under Playwright: Settings -> About -> Update now"
-    # Driver tooling comes from the driver: a scratch dir with our own
-    # pinned @playwright/test, never resolved from the installed tree
-    # (older OLD refs predate the dependency; hoisting moves it around).
-    PW_DIR="$WORK_ROOT/playwright"
-    mkdir -p "$PW_DIR"
-    (cd "$PW_DIR" && npm install --no-save --no-audit --no-fund \
-      "@playwright/test@1.58.2" 2>&1 | ts_prefix > "$LOG_DIR/playwright-install.log") \
-      || { log_group "playwright install transcript" "$LOG_DIR/playwright-install.log"; fail "playwright install failed"; }
-    cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/source-update-observer.mjs" "$ASSETS/window-input.cjs" "$ASSETS/update-ui.cjs" "$PW_DIR/"
+    # Use the checkout module closure and current driver Node, not OLD tooling.
     rc=0
-    (cd "$PW_DIR" && node launch-from-spec.mjs \
+    (cd "$WORK_ROOT" && "$HERMES_E2E_NODE" "$ASSETS/launch-from-spec.mjs" \
       --spec "$SPEC" \
+      --old-sha "$OLD_SHA" --chat-out "$LOG_DIR/update-window" --mock-url "$HERMES_E2E_MOCK_URL" \
       --result "$HERMES_HOME/.hermes-update-result.json" \
       --expect-sha "$TARGET_SHA" \
       --repo-dir "$INSTALL_DIR" 2>&1 \
@@ -329,5 +336,6 @@ ok "collected install-side logs to $ildest"
 assert_checkout "$TARGET_SHA" "$TARGET_LABEL"
 
 preserve_after_upgrade
+desktop_checkpoint new "$TARGET_SHA" "$UPDATE_METHOD"
 
 step "PASS: $INSTALL_REF -> $TARGET_LABEL via $UPDATE_METHOD"

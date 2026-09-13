@@ -10,12 +10,12 @@
  * real executable, and the electron npm shim would re-spawn out of our
  * control).
  *
- * Usage (from the scratch dir where the driver installed @playwright/test):
+ * Usage (current CI checkout with locked driver dependencies):
  *   node launch-from-spec.mjs --spec /path/launch-spec.json \
  *     [--result $HERMES_HOME/.hermes-update-result.json] \
  *     [--expect-sha <sha> --repo-dir <install dir>] [--no-update]
  *
- * --no-update: launch + wait for the window + close. The smoke arm.
+ * --no-update: require a real desktop chat, then close gracefully.
  * Otherwise: click Update now, then require a new successful handoff result
  * or source-update receipt, the expected checkout, and marker removal.
  * A checkout reset alone is not completion. No driver-assisted relaunch,
@@ -32,6 +32,7 @@ import { _electron } from '@playwright/test';
 import { prepareWindowForInput } from './window-input.cjs';
 import { pickAppWindow, openAbout, waitForUpdate } from './update-ui.cjs';
 import { observeSourceUpdate } from './source-update-observer.mjs';
+import { runUpdateWindowChat, updateWindowEnvironment } from './update-window-chat.mjs';
 
 /**
  * @typedef {{argv: string[], cwd: string, env: Record<string, string>,
@@ -106,11 +107,17 @@ async function main() {
       result: { type: 'string' },
       'expect-sha': { type: 'string' },
       'repo-dir': { type: 'string' },
+      'old-sha': { type: 'string' },
+      'chat-out': { type: 'string' },
+      'mock-url': { type: 'string' },
       'no-update': { type: 'boolean', default: false },
       'timeout-ms': { type: 'string', default: '600000' },
     },
   });
   if (!values.spec) throw new Error('--spec is required');
+  if (!values['old-sha'] || !values['chat-out'] || !values['mock-url'] || !values['repo-dir']) {
+    throw new Error('--old-sha, --chat-out, --mock-url and --repo-dir are required for OLD chat');
+  }
   /** @type {LaunchSpec} */
   const spec = JSON.parse(fs.readFileSync(values.spec, 'utf8'));
   const launch = resolveLaunch(spec);
@@ -121,7 +128,7 @@ async function main() {
     executablePath: launch.executablePath,
     args: launch.args,
     cwd: launch.cwd,
-    env: launch.env,
+    env: updateWindowEnvironment(launch.env, values['repo-dir'], 'source'),
   });
   const window = await pickAppWindow(app, log);
   await window.screenshot({ path: `${values.spec}.window.png` }).catch(() => {});
@@ -129,9 +136,16 @@ async function main() {
   await prepareWindowForInput(app, window);
   log('[zoom] app window prepared at 100%');
 
+  phase('old-chat');
+  await runUpdateWindowChat(app, window, {
+    mockUrl: values['mock-url'], outDir: values['chat-out'],
+    expectCommit: values['old-sha'],
+    root: values['repo-dir'], origin: 'source', executable: launch.executablePath,
+  });
+
   if (values['no-update']) {
-    log('smoke mode: window proven, closing');
-    await app.close().catch(() => {});
+    log('smoke mode: OLD desktop chat proven, closing');
+    await app.close();
     process.exit(0);
   }
 

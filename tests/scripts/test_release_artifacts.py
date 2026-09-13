@@ -2,9 +2,16 @@
 import hashlib
 import copy
 import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
 import zipfile
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
+import hermes_yaml
 import pytest
 
 from scripts.bundles.release_artifacts import materialize, record, stamp_matches
@@ -12,6 +19,10 @@ from tests.scripts.test_release_r2 import r2_server  # noqa: F401
 from tests.scripts.test_stable_release import https_origin  # noqa: F401
 from tests.scripts.test_release_darwin import _inputs
 from scripts.bundles import release_artifacts as artifacts
+
+ROOT = Path(__file__).resolve().parents[2]
+SMOKE_RESULTS = {name: {'result': 'success'} for name in (
+    'smoke-darwin', 'smoke-win32', 'smoke-win32-universal')}
 
 
 def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_path):
@@ -30,7 +41,7 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
     out = root / 'metadata-windows-x64.json'
     original = package.read_bytes()
     record('windows', 'x64', root, tag, commit, out)
-    metadata = json.loads(out.read_text(encoding='utf-8'))
+    metadata = json.loads(out.read_text(encoding='utf-8-sig'))
     assert metadata['identity'] == 'Product'
     assert metadata['version'] == '1.2.3.0'
     assert metadata['publisher'] == 'CN=Test'
@@ -58,7 +69,7 @@ def staged_candidate(tmp_path, r2_server, https_origin):
             row = {'platform': platform, 'arch': arch, 'tag': tag, 'commit': commit, 'identity': 'Product'}
             if platform == 'windows':
                 row.update(version='1.2.3.0', publisher='CN=Test', applicationId='App')
-                package = f'Product-win-{arch}.msix'
+                package = f'HermesBundled-1.2.3-win-{arch}.msix'
                 handoff_name = f'win32-{arch}'
             elif platform == 'macos':
                 package = f'HermesBundled-1.2.3-mac-{arch}.zip'
@@ -94,7 +105,7 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     names = ['win32-x64', 'win32-arm64', 'darwin-x64', 'darwin-arm64', 'termux', 'windows-universal']
     handoff.fetch(tag, commit, names, fetched, ['metadata-*.json', '*.msixbundle'])
     r2_server.requests.clear()
-    manifest = assemble(fetched, tag, commit, base, tmp_path / 'release-candidates.json')
+    manifest = assemble(fetched, tag, commit, base, tmp_path / 'release-candidates.json', smoke_results=SMOKE_RESULTS)
     assert {row['platform'] + '/' + row['arch'] for row in manifest['packages']} == {
         'windows/x64', 'windows/arm64', 'macos/x64', 'macos/arm64', 'termux/aarch64'}
     assert all(not file['path'].startswith(('handoff-', 'metadata-')) for file in manifest['files'])
@@ -113,11 +124,11 @@ def test_assemble_rejects_missing_and_changed_receipts(tmp_path, staged_candidat
     original = receipt.read_bytes()
     receipt.unlink()
     with pytest.raises(ValueError, match='handoff'):
-        assemble(fetched, tag, commit, base, tmp_path / 'missing.json')
+        assemble(fetched, tag, commit, base, tmp_path / 'missing.json', smoke_results=SMOKE_RESULTS)
     receipt.write_bytes(original)
     (fetched / 'metadata-windows-x64.json').write_text('{}', encoding='utf-8')
     with pytest.raises(ValueError, match='digest'):
-        assemble(fetched, tag, commit, base, tmp_path / 'changed.json')
+        assemble(fetched, tag, commit, base, tmp_path / 'changed.json', smoke_results=SMOKE_RESULTS)
 
 
 def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_server, staged_candidate):
@@ -175,3 +186,147 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
         artifacts.promote(manifest, tmp_path / 'broken', base)
     assert not any(method == 'PUT' for method, _, _ in r2_server.requests)
     assert all(value == r2_server.store[key] for key, value in before.items() if not key.startswith('releases/tag/'))
+
+
+@pytest.fixture
+def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
+    """Run real workflow shell/CLIs; replace only service endpoints and tool setup."""
+    manifest, fetched, base = staged_candidate
+    jobs = hermes_yaml.safe_load((ROOT / '.github/workflows/desktop-bundled-release.yml').read_text(encoding='utf-8-sig'))['jobs']
+    shutil.copytree(fetched, tmp_path / 'candidates')
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    driver = bin_dir / 'python-driver.py'
+    driver.write_text(
+        'import runpy,sys\n'
+        f'sys.path.insert(0, {str(ROOT)!r})\n'
+        'from scripts.releases import r2\n'
+        f'r2.s3_endpoint=lambda _: "http://127.0.0.1:{r2_server.server_port}"\n'
+        'args=sys.argv[1:]\n'
+        'if args[:2] == ["-m", "scripts.ci.python_packages"]:\n'
+        '    import ruamel.yaml  # already provided by the test environment\n'
+        '    args=args[args.index("--")+1:]\n'
+        'sys.argv=args[1:] if args[0] == "-m" else args\n'
+        'if args[0] == "-m":\n'
+        '    runpy.run_module(args[1],run_name="__main__")\n'
+        'else:\n'
+        f'    runpy.run_path(str({str(ROOT)!r}+"/"+args[0]),run_name="__main__")\n',
+        encoding='utf-8')
+    body_file = tmp_path / 'release-body'
+    body_file.write_text('<!-- HERMES_BUILDS_TABLE -->', encoding='utf-8')
+    gh = bin_dir / 'gh'
+    gh.write_text(
+        f'#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n'
+        f'body=Path({str(body_file)!r})\n'
+        'if sys.argv[1:3] == ["release", "view"]:\n'
+        '    print(json.dumps({"body":body.read_text(encoding="utf-8-sig")}))\n'
+        'else:\n'
+        '    assert sys.argv[1:3] == ["release", "edit"], sys.argv\n'
+        '    body.write_text(sys.stdin.read(), encoding="utf-8")\n', encoding='utf-8')
+    gh.chmod(0o755)
+    for name in ('python', 'python3'):
+        command = bin_dir / name
+        command.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(driver))} "$@"\n', encoding='utf-8')
+        command.chmod(0o755)
+    digest = artifacts.sha256_file(tmp_path / 'release-candidates.json')
+
+    def run(job_name, step, needs, *, pinned=digest, ambient_needs=None):
+        expressions = {
+            '${{ inputs.tag }}': manifest['tag'], '${{ inputs.manifest-sha256 }}': pinned,
+            '${{ needs.validate.outputs.sha }}': manifest['commit'], '${{ github.token }}': 'inert',
+            '${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}': base, '${{ toJSON(needs) }}': json.dumps(needs),
+        }
+        for key in ('CLOUDFLARE_R2_ACCOUNT_ID', 'CLOUDFLARE_R2_ACCESS_KEY_ID', 'CLOUDFLARE_R2_SECRET_ACCESS_KEY', 'CLOUDFLARE_R2_BUCKET'):
+            expressions['${{ ' + ('vars.' if key.endswith('_BUCKET') else 'secrets.') + key + ' }}'] = os.environ[key]
+        env = {**os.environ, 'GITHUB_SHA': manifest['commit'], 'GITHUB_REPOSITORY': 'fixture/release',
+               'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'GITHUB_OUTPUT': str(tmp_path / 'outputs')}
+        env.pop('RELEASE_NEEDS', None)
+        if ambient_needs is not None:
+            env['RELEASE_NEEDS'] = json.dumps(ambient_needs)
+        for key, value in {**jobs[job_name].get('env', {}), **step.get('env', {})}.items():
+            env[key] = expressions.get(value, value)
+            assert '${{' not in env[key], (key, value)
+        return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']], cwd=tmp_path,
+                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=60)
+
+    return jobs, run, body_file
+
+
+@pytest.mark.parametrize('ambient_needs', [None, {job: {'result': 'skipped'} for job in SMOKE_RESULTS}])
+@pytest.mark.platforms('posix')
+def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_server, staged_candidate,
+                                                           candidate_workflow_step, ambient_needs, https_origin):
+    manifest, _, base = staged_candidate
+    jobs, run, body_file = candidate_workflow_step
+    candidate = next(step for step in jobs['candidate-manifest']['steps'] if step.get('id') == 'manifest')
+    needs = {name: {'result': 'success'} for name in jobs['candidate-manifest']['needs']}
+    result = run('candidate-manifest', candidate, needs)
+    assert result.returncode == 0, result.stdout + result.stderr
+    stored = json.loads(r2_server.store[f"releases/tag/{manifest['tag']}/release-candidates.json"][0])
+    assert stored['smoke_results'] == SMOKE_RESULTS
+    assert f'manifest-sha256={artifacts.sha256_file(tmp_path / "release-candidates.json")}' in (tmp_path / 'outputs').read_text(encoding='utf-8-sig')
+    # An unrelated orphan object must not acquire the candidate's Passed label.
+    orphan = f"releases/tag/{manifest['tag']}/HermesBundled-1.2.3-linux-x64.AppImage"
+    r2_server.store[orphan] = (b'orphan transport fixture', '"e"')
+    for step in jobs['stable-promote']['steps']:
+        if 'run' in step:
+            result = run('stable-promote', step, {'validate': {'result': 'success'}}, ambient_needs=ambient_needs)
+            assert result.returncode == 0, result.stdout + result.stderr
+    assert 'releases/win32/stable/stable.appinstaller' in r2_server.store
+    page = r2_server.store['releases/stable/index.html'][0].decode()
+    for output in (page, body_file.read_text(encoding='utf-8-sig')):
+        assert output.count('Passed') == len(SMOKE_RESULTS)
+        assert 'Not run' not in output and 'Build incomplete' not in output
+        assert orphan not in output
+        assert base + f"/releases/tag/{manifest['tag']}/HermesBundled-1.2.3-win-x64.msix" in output
+    with https_origin.opener(base + '/releases/stable/index.html', timeout=5) as response:
+        assert response.read().decode() == page
+
+
+@pytest.mark.platforms('posix')
+def test_candidate_smoke_admission_fails_before_publication(tmp_path, r2_server, staged_candidate, candidate_workflow_step):
+    manifest, _, _ = staged_candidate
+    jobs, run, body_file = candidate_workflow_step
+    candidate = next(step for step in jobs['candidate-manifest']['steps'] if step.get('id') == 'manifest')
+    needs = {name: {'result': 'success'} for name in jobs['candidate-manifest']['needs']}
+    for name in SMOKE_RESULTS:
+        for outcome in ('failure', 'cancelled', 'skipped', None):
+            failed = copy.deepcopy(needs)
+            if outcome is None:
+                del failed[name]
+            else:
+                failed[name]['result'] = outcome
+            r2_server.requests.clear()
+            result = run('candidate-manifest', candidate, failed)
+            assert result.returncode != 0 and name in result.stderr, result.stdout + result.stderr
+            assert not any(method == 'PUT' for method, _, _ in r2_server.requests)
+    key = f"releases/tag/{manifest['tag']}/release-candidates.json"
+    raw = r2_server.store[key][0]
+    for fault, message in [('legacy', 'Legacy candidate'), ('missing', 'Candidate smoke results'),
+                           ('failed', 'smoke-win32=failure'), ('identity', 'release identity'),
+                           ('tampered', 'digest mismatch')]:
+        invalid = copy.deepcopy(manifest)
+        if fault == 'legacy':
+            invalid['schema'] = 1
+            invalid.pop('smoke_results', None)
+        elif fault == 'missing':
+            invalid.pop('smoke_results', None)
+        elif fault == 'failed':
+            invalid['smoke_results'] = {**SMOKE_RESULTS, 'smoke-win32': {'result': 'failure'}}
+        else:
+            invalid['commit'] = 'b' * 40
+        data = json.dumps(invalid).encode()
+        r2_server.store[key] = (data, '"fault"')
+        digest = hashlib.sha256(raw if fault == 'tampered' else data).hexdigest()
+        before = dict(r2_server.store), body_file.read_bytes()
+        # Exercise both commands independently, not just shell short-circuiting.
+        for step in jobs['stable-promote']['steps']:
+            if 'run' not in step:
+                continue
+            r2_server.requests.clear()
+            result = run('stable-promote', step, {}, pinned=digest)
+            assert result.returncode != 0, (fault, step, result.stdout, result.stderr)
+            assert message in result.stderr, result.stdout + result.stderr
+            assert not any(method == 'PUT' for method, _, _ in r2_server.requests)
+            assert (dict(r2_server.store), body_file.read_bytes()) == before
+    r2_server.store[key] = (raw, '"original"')

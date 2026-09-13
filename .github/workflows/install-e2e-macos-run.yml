@@ -108,6 +108,18 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Set up driver tools only
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache: false
+          cache-python: false
+          cache-node: false
+
+      - name: Install locked chat driver dependencies
+        shell: bash
+        run: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+
       - name: Start screen recording
         uses: ./.github/actions/e2e-screen-record
         with:
@@ -192,8 +204,17 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Install driver dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Set up driver tools only
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache: false
+          cache-python: false
+          cache-node: false
+
+      - name: Install locked chat driver dependencies
+        shell: bash
+        run: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
 
       - name: Start screen recording
         uses: ./.github/actions/e2e-screen-record

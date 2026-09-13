@@ -322,6 +322,52 @@ def download_object(
     creds: dict[str, str], base: str, bucket: str, key: str, file: Path, now: str,
     *, expected_size: int, expected_sha256: str,
 ) -> None:
+    url = f"{base}/{bucket}/{encode_key_path(key)}"
+    parsed = urlparse(url)
+    def headers(attempt: int) -> dict[str, str]:
+        return r2_headers("GET", parsed.netloc, parsed.path, "", EMPTY_SHA,
+                          now if attempt == 1 else amz_timestamp(), creds)
+    _download_url(url, file, headers, expected_size=expected_size, expected_sha256=expected_sha256)
+
+
+def public_artifact_url(base: str, key: str) -> str:
+    """Public reads never carry credentials or follow redirects out of the archive."""
+    parsed = urlparse(base)
+    if (not parsed.hostname or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment or parsed.params
+            or any(c in base for c in ('%', '\\')) or any(ord(c) <= 32 for c in base)
+            or any(part in ('.', '..') for part in parsed.path.split('/'))
+            or not (parsed.scheme == 'https' or (parsed.scheme == 'http'
+                    and parsed.hostname in ('127.0.0.1', 'localhost', '::1')))):
+        raise ValueError('Invalid public artifact base URL')
+    return public_url_for(base, relative_artifact_path(key))
+
+
+def read_public_receipt(base: str, key: str) -> dict:
+    url = public_artifact_url(base, key)
+    parsed = urlparse(url)
+    conn = _connection(url, timeout=60.0)
+    try:
+        conn.request('GET', parsed.path)
+        response = conn.getresponse()
+        if response.status != 200:
+            raise R2RequestError('GET', parsed.path, response.status)
+        # Receipts are metadata, never an unbounded binary download.
+        body = response.read(4 * 1024 * 1024 + 1)
+        if len(body) > 4 * 1024 * 1024:
+            raise ValueError('Public handoff receipt exceeds metadata limit')
+        return json.loads(body)
+    finally:
+        conn.close()
+
+
+def download_public_object(base: str, key: str, file: Path, *, expected_size: int, expected_sha256: str) -> None:
+    _download_url(public_artifact_url(base, key), file, lambda _attempt: {},
+                  expected_size=expected_size, expected_sha256=expected_sha256)
+
+
+def _download_url(url: str, file: Path, request_headers: Callable[[int], dict[str, str]],
+                  *, expected_size: int, expected_sha256: str) -> None:
     """Publish a download locally only after its exact receipt matches."""
     import tempfile
 
@@ -329,15 +375,12 @@ def download_object(
         raise ValueError("Invalid artifact size or SHA256")
     file = Path(file)
     file.parent.mkdir(parents=True, exist_ok=True)
-    url = f"{base}/{bucket}/{encode_key_path(key)}"
     parsed = urlparse(url)
     for attempt in range(1, 4):
-        headers = r2_headers("GET", parsed.netloc, parsed.path, "", EMPTY_SHA,
-                             now if attempt == 1 else amz_timestamp(), creds)
         conn = _connection(url, timeout=600.0)
         temporary = None
         try:
-            conn.request("GET", parsed.path, headers=headers)
+            conn.request("GET", parsed.path, headers=request_headers(attempt))
             response = conn.getresponse()
             if response.status != 200:
                 raise R2RequestError("GET", parsed.path, response.status)
@@ -347,9 +390,11 @@ def download_object(
                 while chunk := response.read(1024 * 1024):
                     digest.update(chunk)
                     size += len(chunk)
+                    if size > expected_size:
+                        raise ValueError(f"Artifact checksum mismatch: {parsed.path}")
                     output.write(chunk)
             if size != expected_size or digest.hexdigest() != expected_sha256:
-                raise ValueError(f"Artifact checksum mismatch: {key}")
+                raise ValueError(f"Artifact checksum mismatch: {parsed.path}")
             temporary.replace(file)
             return
         except R2RequestError as error:

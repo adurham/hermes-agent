@@ -43,12 +43,75 @@ Each leg with the script drivers has these phases:
 3. Update: move `main` to HEAD. Apply one update method. An app update must produce a new successful receipt or handoff result; a changed checkout alone is not completion.
 4. Verify the installed command and products before running `hermes --version`. Select the command under the installation's `.hermes/bin`; use the old venv only for a source tree without PM. Check PM currency and compiler receipts where supported. Preserve the no-desktop scenario for a plain install. Do not rebuild, remove dependencies, or force-stop an updater during verification. Historical installs without these receipts get artifact-presence checks, not a freshness claim.
 
-The cheap fixture checks are `tests/scripts/test_source_driver.py` and `tests-js/source-update-observer.test.mjs`. They do not run installers or prove native GUI relaunch. The source app helper does not relaunch the updated app for it; the native packaged-update drivers own automatic-relaunch acceptance. The observer does not change source files, products, dependency selections, or facts.
+The cheap fixture checks are `tests/scripts/test_source_driver.py` and `tests-js/source-update-observer.test.mjs`. They do not run installers or prove native GUI relaunch. The native packaged-update drivers own automatic-relaunch acceptance. A later driver-owned launch checks chat only after the original update/relaunch assertions pass; it cannot repair a failed handoff. The observer does not change source files, products, dependency selections, or facts.
 
 The Windows `desktop-installer@latest` install downloads the published
 `Hermes-Setup.exe` and drives its GUI with AutoHotkey. The selected update
 method is a separate axis. App-update methods click the running app's Update
 control; script and CLI methods use their corresponding entry points.
+
+## Desktop chat at install and update checkpoints
+
+Desktop-bearing routes run the same message check used by post-build bundle
+smoke and the desktop chat spec: `tests-js/scripts/desktop-chat-smoke.ts`.
+It types a unique prompt through the real composer, requires a new request at
+the existing loopback mock provider, and waits for a new completed assistant
+reply in the active transcript. A reply preserved from OLD cannot satisfy NEW.
+Only inference is mocked; Electron, the installed backend, and rendering run
+for real. These checks require no external model credentials.
+
+- A desktop-bearing OLD installation must chat before its update. App-driven
+  updates also check the actual OLD window before clicking Update now.
+- After the existing completion and product checks, NEW must chat if the route
+  expects desktop. A route that adds desktop only at update retains the OLD
+  no-desktop assertion.
+- Plain source install/update routes that never request desktop record
+  `not-applicable`; the chat driver does not build desktop for them.
+- Native package updates must prove automatic relaunch first. The driver then
+  closes the verified app normally and launches the same installed binary for
+  `post-update-launch` chat. That second launch is not automatic-relaunch proof.
+
+`tests/install/e2e-assets/desktop-smoke.ts` runs an exact installed executable
+with an isolated home/userData and checks the actual backend listener's origin.
+Source checkpoints use that leg's installed tree; bundle checkpoints use its
+embedded payload. Missing products fail rather than trigger a build or repair.
+Driver Node/Playwright come from the current checkout, not OLD's dependencies.
+
+Each checkpoint writes a `desktop-chat-old.json`, `desktop-chat-new.json`, or
+`desktop-chat-installed.json` result plus a screenshot. Failed chat fails the
+leg even when version, health, and update receipts passed. Existing plugin and
+user-state preservation checks remain required. The mock configuration writer
+preserves unrelated settings, including the controlled update feed.
+
+## Post-build artifact smoke
+
+`desktop-bundled-release.yml` calls `desktop-bundle-smoke.yml` on fresh native
+Windows and macOS runners. It downloads the admitted commit's receipt-bound
+bytes through the public archive and installs the actual artifact before chat:
+
+| Native target | Independently installed formats |
+|---|---|
+| macOS arm64 and x64 | DMG, ZIP |
+| Windows arm64 and x64 | MSIX, universal MSIXBUNDLE |
+
+The universal envelope runs on both Windows architectures, verifying native
+slice selection. Windows assembly/staging is separate from feed publication;
+both Windows smoke matrices must pass before publishing its canary feed.
+macOS publication and stable candidate acceptance also require their smoke
+results. Failed checks retain the downloadable build and diagnostic artifacts.
+
+Stable candidate schema 2 binds these successful smoke groups into the pinned
+candidate manifest. Promotion renders that evidence, not the skipped smoke
+jobs from its own phase. Schema-1 candidates lack this admission and cannot be
+promoted by the new workflow; create a new candidate tag. They remain valid as
+previous-version upgrade baselines.
+
+This covers signed downloadable commit builds, canaries with upload enabled,
+and stable candidates. No-upload tag builds have no cross-job download handoff.
+Linux bundle jobs remain disabled, but Linux source-install desktop checks run.
+Unsigned Store submissions are not sideloaded or re-signed for this smoke;
+their Store acceptance remains separate. Passing helper tests does not establish
+native installation or chat acceptance: those require the corresponding runner.
 
 ## Old versions
 

@@ -152,3 +152,101 @@ def test_commit_identity_and_simultaneous_namespaces(tmp_path, r2_server):
     r2_server.store[f'releases/commit/{commit}/handoff-win32-x64.json'] = (b'not-json', '"e"')
     with pytest.raises(json.JSONDecodeError):
         handoff.read_commit_receipt(commit, 'win32-x64')
+
+
+@pytest.mark.parametrize('tag', ['v1.2.3', None])
+def test_public_handoff_downloads_exact_staged_bytes_without_credentials(tmp_path, monkeypatch, r2_server, tag):
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    commit = 'a' * 40
+    identity = ['--tag', tag, '--commit', commit] if tag else ['--commit-build', commit]
+    prefix = f'releases/tag/{tag}/' if tag else f'releases/commit/{commit}/'
+    built = tmp_path / 'built'
+    built.mkdir()
+    payload = b'public artifact transport fixture\n' * 90000
+    (built / 'app x64.msix').write_bytes(payload)
+    handoff.main(['stage', *identity, '--name', 'win32-x64', '--root', str(built), '--include', '*.msix'])
+    for key in ('CLOUDFLARE_R2_ACCOUNT_ID', 'CLOUDFLARE_R2_ACCESS_KEY_ID',
+                'CLOUDFLARE_R2_SECRET_ACCESS_KEY', 'CLOUDFLARE_R2_BUCKET'):
+        monkeypatch.delenv(key)
+    r2_server.requests.clear()
+    download = tmp_path / 'downloaded'
+    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
+    args = ['fetch', *identity, '--public-base', base, '--name', 'win32-x64',
+            '--root', str(download), '--include', '*.msix']
+    handoff.main(args)
+    assert (download / 'app x64.msix').read_bytes() == payload
+    receipt_file = download / 'handoff-win32-x64.json'
+    original_receipt = receipt_file.read_bytes()
+    assert json.loads(original_receipt)['commit'] == commit
+    assert all(method == 'GET' and not any(k.lower() == 'authorization' for k in headers)
+               for method, _, headers in r2_server.requests)
+    assert any(path.endswith('/app%20x64.msix') for _, path, _ in r2_server.requests)
+    result = subprocess.run([sys.executable, '-m', 'scripts.releases.handoff', *args],
+                            cwd=Path(__file__).resolve().parents[2], env=os.environ,
+                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (download / 'app x64.msix').read_bytes() == payload
+    # A bad CDN object cannot replace a previously verified local download.
+    r2_server.store[prefix + 'app x64.msix'] = (b'corrupt', '"changed"')
+    with pytest.raises(ValueError, match='checksum mismatch'):
+        handoff.main(args)
+    assert (download / 'app x64.msix').read_bytes() == payload
+    assert receipt_file.read_bytes() == original_receipt
+    assert sorted(p.name for p in download.iterdir()) == ['app x64.msix', receipt_file.name]
+    bad = json.loads(original_receipt)
+    bad['commit'] = 'b' * 40
+    r2_server.store[prefix + receipt_file.name] = (json.dumps(bad).encode(), '"bad"')
+    r2_server.requests.clear()
+    with pytest.raises(ValueError, match='identity'):
+        handoff.main(args)
+    assert len(r2_server.requests) == 1
+    bad = json.loads(original_receipt)
+    bad['files'][0]['path'] = '../outside.msix'
+    r2_server.store[prefix + receipt_file.name] = (json.dumps(bad).encode(), '"bad"')
+    r2_server.requests.clear()
+    with pytest.raises(ValueError, match='path'):
+        handoff.main(args)
+    assert len(r2_server.requests) == 1
+    assert not (tmp_path / 'outside.msix').exists()
+
+
+def test_public_handoff_rejects_unsafe_origins_paths_and_redirects(tmp_path, r2_server):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    commit = 'a' * 40
+    args = ['fetch', '--commit-build', commit, '--name', 'win32-x64', '--root', str(tmp_path / 'out')]
+    for base in ('http://cdn.example', 'https://user:password@cdn.example', 'file:///tmp',
+                 'https://cdn.example/?token=private', 'https://cdn.example/#fragment',
+                 'https://cdn.example/../escape', 'https://cdn.example/%2e%2e/escape'):
+        with pytest.raises(ValueError, match='public'):
+            handoff.main([*args, '--public-base', base])
+    assert r2_server.requests == []
+
+    class Redirect(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header('Location', f'http://127.0.0.1:{r2_server.server_port}/hermes-releases/unwanted')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Redirect)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(r2.R2RequestError) as error:
+            handoff.main([*args, '--public-base', f'http://127.0.0.1:{server.server_port}'])
+        assert error.value.status == 302
+        assert r2_server.requests == []
+        assert not (tmp_path / 'out').exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

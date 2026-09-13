@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Native Windows adapter: bundle x64 + arm64 MSIX packages and sign the
-// envelope. Candidate/commit modes stop at the artifact. Canary releases hand
-// the completed bundle and expected identity to release Python, which verifies
-// the manifest and publishes the bundle before its App Installer pointer.
+// envelope. Every mode stops at the artifact; CI stages it for native smoke
+// before the separate release Python publisher can write an App Installer feed.
 // Usage: node scripts/stage-msixbundle.mjs --tag vX.Y.Z --candidate
 //        node scripts/stage-msixbundle.mjs --tag vX.Y.Z-canary.STAMP
 import { execFileSync } from 'node:child_process'
@@ -11,7 +10,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { appIdentity, OUT_OF_STORE_PUBLISHER } from './msix-shared.mjs'
+import { appIdentity } from './msix-shared.mjs'
 import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle-tools.mjs'
 
 
@@ -79,7 +78,7 @@ if (!commitBuild && !canary && !candidate) throw new Error('Stable bundles must 
 
 const desktop = path.join(REPO_ROOT, 'apps', 'desktop')
 const releaseDir = path.join(desktop, 'release')
-const { identity, version, name, fileVersion } = appIdentity(desktop, tag)
+const { version, name, fileVersion } = appIdentity(desktop, tag)
 
 // Per-arch .msix files are found by the name electron-builder gave them
 // (appInfo.version = the 3-part or full-canary string, NOT the 4-part feed
@@ -160,23 +159,6 @@ if (signing) {
   console.warn('[stage-msixbundle] AZURE_SIGN_* not set — bundle will be UNSIGNED')
 }
 
-if (candidate) {
-  execFileSync(signtool, ['verify', '/pa', bundle], { stdio: 'inherit' })
-  console.log(`[stage-msixbundle] candidate ready: ${bundle}`)
-  process.exit(0)
-}
-
-// Commit-only mode stops here: the workflow hands the bundle to R2 through
-// scripts.releases.handoff (schema-2 receipt) — never a feed dir.
-if (commitBuild) {
-  console.log(`[stage-msixbundle] commit bundle ready (no upload): ${bundle}`)
-  process.exit(0)
-}
-
-// Python owns descriptor serialization, identity verification and publication.
-execFileSync(process.env.HERMES_PYTHON || 'python', [
-  '-m', 'scripts.bundles.release_artifacts', 'publish-appinstaller',
-  '--root', releaseDir, '--bundle', bundle, '--tag', tag, '--variant', variant,
-  '--identity', identity.msixAppIdWithOrg, '--publisher', OUT_OF_STORE_PUBLISHER, '--version', version,
-], { cwd: REPO_ROOT, stdio: 'inherit' })
-console.log('[stage-msixbundle] done — feed manifests + bundle staged')
+// Local assembly may be unsigned. CI's native smoke requires a valid signature
+// on the receipt-bound download before any release publication can proceed.
+console.log(`[stage-msixbundle] bundle ready (no upload): ${bundle}`)

@@ -14,9 +14,11 @@ name: Desktop Bundled Release
 #   build-darwin (darwin-arm64 + darwin-x64) → sign + notarize + stage
 #     dmg/zip/blockmap + per-arch feed inputs to the R2 tag archive
 #   build-linux                              → DISABLED for now (dummy skips)
-#   publish-win32-updater                   → native universal bundles
-#     (needs build-win32): canary also publishes its App Installer feed;
-#     stable candidates stage sideload + Store bundles without touching feeds.
+#   assemble-win32-bundle                   → native universal bundles
+#     (needs build-win32): all downloadable builds stage without touching feeds.
+#   smoke-darwin / smoke-win32 / smoke-win32-universal → native install + chat
+#   publish-win32-updater                   → tested canary bytes + feed
+#     (needs BOTH Windows smoke matrices); stable promotion stays separately gated.
 #   stable-store                           → verified Store submission
 #     (needs stable-publish): materialize the immutable accepted Store bundle
 #     and submit via the MSStore CLI without rebuilding.
@@ -740,13 +742,91 @@ jobs:
         shell: bash
         run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
 
-  # ── Windows updater channels (REAL — gated on build-win32 only) ──────────
-  publish-win32-updater:
-    name: Assemble Windows bundle and optionally publish canary feed
+  smoke-darwin:
+    name: Smoke macOS ${{ matrix.arch }} ${{ matrix.format }}
+    needs: [validate, build-darwin]
+    if: >-
+      !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.build-darwin.result == 'success' && inputs.termux_only != true
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+        format: [dmg, zip]
+    uses: ./.github/workflows/desktop-bundle-smoke.yml
+    with:
+      platform: darwin
+      arch: ${{ matrix.arch }}
+      format: ${{ matrix.format }}
+      sha: ${{ needs.validate.outputs.sha }}
+      tag: ${{ inputs.tag }}
+      commit-build: ${{ inputs.build_commit != '' }}
+      public-base: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+
+  smoke-win32:
+    name: Smoke Windows ${{ matrix.arch }} MSIX
     needs: [validate, build-win32]
-    if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+    if: >-
+      !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.build-win32.result == 'success' && inputs.termux_only != true
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    uses: ./.github/workflows/desktop-bundle-smoke.yml
+    with:
+      platform: win32
+      arch: ${{ matrix.arch }}
+      format: msix
+      sha: ${{ needs.validate.outputs.sha }}
+      tag: ${{ inputs.tag }}
+      commit-build: ${{ inputs.build_commit != '' }}
+      public-base: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+
+  smoke-win32-universal:
+    name: Smoke Windows ${{ matrix.arch }} MSIXBUNDLE
+    needs: [validate, assemble-win32-bundle]
+    if: >-
+      !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.assemble-win32-bundle.result == 'success' && inputs.termux_only != true
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    uses: ./.github/workflows/desktop-bundle-smoke.yml
+    with:
+      platform: win32
+      arch: ${{ matrix.arch }}
+      format: msixbundle
+      sha: ${{ needs.validate.outputs.sha }}
+      tag: ${{ inputs.tag }}
+      commit-build: ${{ inputs.build_commit != '' }}
+      public-base: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+
+  # Assembly never writes a feed, including for canaries.
+  assemble-win32-bundle:
+    name: Assemble and stage the Windows universal bundle
+    needs: [validate, build-win32]
+    if: >-
+      !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.build-win32.result == 'success' && inputs.termux_only != true
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
     runs-on: windows-2025
     environment: release-signing
+    cache-mode: read
     timeout-minutes: 45
     env:
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
@@ -856,7 +936,7 @@ jobs:
           ( while sleep 240; do mint || true; done ) &
           echo "AZURE_FEDERATED_TOKEN_FILE=$file" >> "$GITHUB_ENV"
 
-      - name: Bundle + stage the MSIX feeds
+      - name: Assemble the signed MSIX bundle without publishing
         shell: bash
         env:
           RELEASE_PHASE: ${{ inputs.release-phase }}
@@ -864,9 +944,8 @@ jobs:
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
         run: |
-          # Candidate mode builds the bundles without writing a feed.
-          # Canary mode publishes the App Installer bundle and pointer.
-          # Commit mode assembles only the sideload product, without a feed.
+          # All modes stop at signed bytes. The separate handoff stages them
+          # for smoke; publication must not assemble or sign a second time.
           if [ -n "$HERMES_BUILD_COMMIT" ]; then
             node scripts/stage-msixbundle.mjs --commit "$HERMES_BUILD_COMMIT" --version "$HERMES_PAYLOAD_VERSION" --variant bundled --no-upload
             exit 0
@@ -879,7 +958,6 @@ jobs:
           fi
 
       - name: Stage universal bundles to R2
-        if: inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
@@ -893,6 +971,74 @@ jobs:
               --name windows-universal --root apps/desktop/release --include '*.msixbundle'
           fi
 
+  publish-win32-updater:
+    name: Publish the tested Windows canary bundle
+    needs: [validate, assemble-win32-bundle, smoke-win32, smoke-win32-universal]
+    if: >-
+      !cancelled() && inputs.build_commit == '' && inputs.upload_release == true
+      && inputs.release-phase == '' && inputs.termux_only != true
+      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.assemble-win32-bundle.result == 'success'
+      && needs.smoke-win32.result == 'success' && needs.smoke-win32-universal.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    timeout-minutes: 15
+    concurrency:
+      group: win32-updater-feed-canary
+      cancel-in-progress: false
+    env:
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_DESKTOP_VARIANT: bundled
+      RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache-python: false
+          cache-node: false
+      - name: Retrieve the tested universal bundle
+        shell: bash
+        run: |
+          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name windows-universal --root staged --include 'HermesBundled-*-win.msixbundle'
+      - name: Publish identical tested bytes without rebuilding
+        shell: bash
+        run: |
+          node --input-type=module -e '
+            import identity from "./apps/desktop/product-identity.cjs";
+            import { OUT_OF_STORE_PUBLISHER } from "./scripts/msix-shared.mjs";
+            console.log(JSON.stringify({identity: identity.msixAppIdWithOrg, publisher: OUT_OF_STORE_PUBLISHER}));
+          ' > staged/expected-identity.json
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          from scripts.bundles.release_artifacts import main, single
+          expected = json.loads(Path('staged/expected-identity.json').read_text(encoding='utf-8'))
+          bundle = single(Path('staged').glob('HermesBundled-*-win.msixbundle'))
+          # The handoff binds the assembly filename and bytes. Never recompute
+          # its revision against stable tags that can change after native smoke.
+          match = re.fullmatch(r'HermesBundled-(\d+\.\d+\.\d+\.\d+)-win\.msixbundle', bundle.name)
+          if not match:
+              raise ValueError('Missing assembly version in receipt-bound bundle name')
+          version = match[1]
+          if (any(str(int(part)) != part or int(part) > 65535 for part in version.split('.'))
+                  or version.rsplit('.', 1)[0] != os.environ['HERMES_PAYLOAD_TAG'].split('-')[0].removeprefix('v')):
+              raise ValueError('Assembly version differs from the release tag base')
+          # publish-appinstaller compares this version to the baked envelope.
+          main(['publish-appinstaller', '--root', 'staged', '--bundle', str(bundle),
+                '--tag', os.environ['HERMES_PAYLOAD_TAG'], '--variant', 'bundled',
+                '--identity', expected['identity'], '--publisher', expected['publisher'],
+                '--version', version])
+          PY
+
   # ── macOS updater channel (REAL) ───────────────────────────────────────────
   # Merges the per-arch feed ymls (arm64-stable-mac.yml / x64-stable-mac.yml
   # …) into releases/darwin/<channel>/<channel>-mac.yml via
@@ -905,8 +1051,12 @@ jobs:
   # publish in parallel by design (distinct feed files).
   publish-darwin-updater:
     name: Publish the macOS updater feed
-    needs: [validate, build-darwin]
-    if: inputs.build_commit == '' && inputs.upload_release == true && inputs.termux_only != true
+    needs: [validate, build-darwin, smoke-darwin]
+    if: >-
+      !cancelled() && inputs.build_commit == '' && inputs.upload_release == true
+      && inputs.release-phase == '' && inputs.termux_only != true
+      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.build-darwin.result == 'success' && needs.smoke-darwin.result == 'success'
     runs-on: ubuntu-24.04
     environment: release-signing
     timeout-minutes: 15
@@ -1336,7 +1486,7 @@ jobs:
 
   builds-table:
     name: Render the release builds table
-    needs: [validate, build-win32, build-darwin, build-linux, publish-win32-updater, publish-darwin-updater, termux-deb]
+    needs: [validate, build-win32, build-darwin, build-linux, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, publish-win32-updater, publish-darwin-updater, termux-deb]
     # Failed builds still get a per-tag diagnostic page. The renderer only
     # advances the channel landing page when every prerequisite succeeded.
     if: |
@@ -1380,7 +1530,7 @@ jobs:
 
   commit-builds-summary:
     name: Commit build summary (every binary, built or not)
-    needs: [validate, build-win32, build-darwin, build-linux, publish-win32-updater, termux-deb]
+    needs: [validate, build-win32, build-darwin, build-linux, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, termux-deb]
     if: |
       always() && inputs.build_commit != ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
@@ -1423,8 +1573,14 @@ jobs:
 
   candidate-manifest:
     name: Stage verified stable candidate artifacts
-    needs: [validate, build-win32, build-darwin, publish-win32-updater, termux-deb]
-    if: inputs.release-phase == 'candidate'
+    needs: [validate, build-win32, build-darwin, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, termux-deb]
+    if: >-
+      !cancelled() && inputs.release-phase == 'candidate'
+      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.build-win32.result == 'success' && needs.build-darwin.result == 'success'
+      && needs.assemble-win32-bundle.result == 'success' && needs.termux-deb.result == 'success'
+      && needs.smoke-darwin.result == 'success' && needs.smoke-win32.result == 'success'
+      && needs.smoke-win32-universal.result == 'success'
     runs-on: ubuntu-latest-32-core
     environment: release-signing
     timeout-minutes: 90
@@ -1454,6 +1610,8 @@ jobs:
             --name termux --name windows-universal --root candidates \
             --include 'metadata-*.json' --include '*.msixbundle'
       - id: manifest
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
         run: python -m scripts.bundles.release_artifacts assemble --root candidates --out release-candidates.json
 
   stable-publish:
@@ -1541,7 +1699,12 @@ jobs:
         with:
           cache-python: false
       - run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.bundles.release_artifacts promote --root verified
-      - run: python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+      - name: Render the admitted candidate smoke results
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT"
 
   stable-phase-result:
     name: Stable bundle phase completed
@@ -1551,7 +1714,10 @@ jobs:
         validate,
         build-win32,
         build-darwin,
-        publish-win32-updater,
+        assemble-win32-bundle,
+        smoke-darwin,
+        smoke-win32,
+        smoke-win32-universal,
         termux-deb,
         candidate-manifest,
         stable-publish,
@@ -1572,7 +1738,7 @@ jobs:
           import json, os
           from scripts.releases.stable import require_success
           phases = {
-              'candidate': ['validate', 'build-win32', 'build-darwin', 'publish-win32-updater', 'termux-deb', 'candidate-manifest'],
+              'candidate': ['validate', 'build-win32', 'build-darwin', 'assemble-win32-bundle', 'smoke-darwin', 'smoke-win32', 'smoke-win32-universal', 'termux-deb', 'candidate-manifest'],
               'publish': ['validate', 'stable-publish', 'stable-store'],
               'promote': ['validate', 'stable-promote'],
           }
@@ -1581,7 +1747,7 @@ jobs:
 
   publish-canary:
     name: Publish the canary release
-    needs: [build-win32, build-darwin, build-linux, builds-table, publish-win32-updater, publish-darwin-updater]
+    needs: [build-win32, build-darwin, build-linux, builds-table, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, publish-win32-updater, publish-darwin-updater]
     if: |
       always()
       && inputs.build_commit == ''
@@ -1591,6 +1757,10 @@ jobs:
       && needs.build-darwin.result == 'success'
       && needs.build-linux.result == 'success'
       && needs.builds-table.result == 'success'
+      && needs.assemble-win32-bundle.result == 'success'
+      && needs.smoke-darwin.result == 'success'
+      && needs.smoke-win32.result == 'success'
+      && needs.smoke-win32-universal.result == 'success'
       && needs.publish-win32-updater.result == 'success'
       && needs.publish-darwin-updater.result == 'success'
     runs-on: ubuntu-24.04

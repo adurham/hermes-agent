@@ -30,7 +30,9 @@ def candidates(tag, commit, digest):
                 "artifact": {"sha256": digest,
                              "url": f"{BASE}/releases/tag/{tag}/{arch}" + (".msixbundle" if platform == "windows" else ".zip")},
             })
-    return {"schema": 1, "tag": tag, "commit": commit, "packages": packages}
+    return {"schema": 2, "tag": tag, "commit": commit, "packages": packages,
+            "smoke_results": {name: {"result": "success"} for name in (
+                "smoke-darwin", "smoke-win32", "smoke-win32-universal")}}
 
 
 def test_gate_requires_every_success_including_real_cli(tmp_path):
@@ -63,6 +65,10 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
 
 def test_transitions_bind_all_arches_identity_version_and_archive():
     old = candidates("v1.2.3", "a" * 40, "1" * 64)
+    old["schema"] = 1
+    del old["smoke_results"]
+    with pytest.raises(ValueError, match="Legacy candidate"):
+        validate_candidates(old, old["tag"], old["commit"], BASE)
     new = candidates("v1.2.4", "b" * 40, "2" * 64)
     require_stable_identity(new["tag"], new["commit"], "refs/tags/v1.2.4")
     for tag, ref in [("v1.2.4", "refs/heads/main"), ("v1.2.4-canary.20260907143420", "refs/tags/v1.2.4-canary.20260907143420")]:
@@ -92,7 +98,7 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
         with pytest.raises(ValueError, match="path encoding"):
             plan_transitions(old, traversal, BASE)
     with pytest.raises(ValueError, match="increase"):
-        plan_transitions(new, old, BASE)
+        plan_transitions(new, candidates("v1.2.3", "a" * 40, "1" * 64), BASE)
 
 
 @pytest.fixture
@@ -204,7 +210,7 @@ def test_tag_movement_fails_closed(tmp_path, monkeypatch):
     (repo / "input").write_text("first", encoding="utf-8")
     subprocess.run(["git", "add", "input"], check=True)
     subprocess.run(["git", "commit", "-m", "first"], check=True, capture_output=True)
-    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, encoding="utf-8").strip()
     subprocess.run(["git", "remote", "add", "origin", str(remote)], check=True)
     subprocess.run(["git", "tag", "v1.2.3"], check=True)
     subprocess.run(["git", "push", "origin", "main", "v1.2.3"], check=True, capture_output=True)

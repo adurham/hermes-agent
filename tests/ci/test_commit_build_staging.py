@@ -23,7 +23,7 @@ def step_script(job, name):
     return next(step['run'] for step in _workflow()['jobs'][job]['steps'] if step.get('name') == name)
 
 
-def shell_step(tmp_path, r2_server, job, name, env):
+def shell_step(tmp_path, r2_server, job, name, env, *, script=None):
     helper = tmp_path / 'bin'
     helper.mkdir(exist_ok=True)
     driver = helper / 'python-driver.py'
@@ -34,11 +34,12 @@ def shell_step(tmp_path, r2_server, job, name, env):
         f'r2.s3_endpoint=lambda _: "http://127.0.0.1:{r2_server.server_port}"\n'
         'args=sys.argv[1:]\n'
         'assert args[:2] == ["-m", "scripts.releases.handoff"] or '
-        'args[:1] == ["scripts/render-builds-table.py"] or args == ["-"], args\n'
+        'args[:1] in (["scripts/render-builds-table.py"], ["-"]), args\n'
         'if args[:1] == ["-m"]:\n'
         '    sys.argv=args[1:]\n'
         '    runpy.run_module(args[1],run_name="__main__")\n'
-        'elif args == ["-"]:\n'
+        'elif args[:1] == ["-"]:\n'
+        '    sys.argv=args\n'
         '    exec(compile(sys.stdin.read(), "workflow-inline", "exec"))\n'
         'else:\n'
         '    sys.argv=args\n'
@@ -50,11 +51,11 @@ def shell_step(tmp_path, r2_server, job, name, env):
         command.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(driver))} "$@"\n',
                            encoding='utf-8', newline='\n')
         command.chmod(0o755)
-    script = tmp_path / 'step.sh'
-    script.write_text(step_script(job, name), encoding='utf-8', newline='\n')
+    script_file = tmp_path / 'step.sh'
+    script_file.write_text(script if script is not None else step_script(job, name), encoding='utf-8', newline='\n')
     environment = _child_env(**env)
     environment['PATH'] = str(helper) + os.pathsep + environment['PATH']
-    return subprocess.run([_BASH, '-e', '-o', 'pipefail', str(script)], cwd=tmp_path,
+    return subprocess.run([_BASH, '-e', '-o', 'pipefail', str(script_file)], cwd=tmp_path,
                           env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60)
 
 
@@ -84,7 +85,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
     result = shell_step(tmp_path, r2_server, 'commit-builds-summary',
                         'Render the full expected-binary matrix', env)
     assert result.returncode == 0, result.stdout + result.stderr
-    text = summary.read_text(encoding='utf-8')
+    text = summary.read_text(encoding='utf-8-sig')
     page_key = f'releases/commit/{sha}/index.html'
     with urlopen(f'{base}/{page_key}', timeout=5) as response:
         page = response.read().decode()
@@ -105,7 +106,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
     for line in text.splitlines():
         if 'Not built' in line:
             assert f'[View build run]({run_url})' in line and base not in line
-        elif 'Linux' in line:
+        elif line.startswith('| Linux'):
             assert 'Disabled' in line and '](' not in line
     assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
     for name in ('build-win32', 'build-darwin'):
@@ -138,7 +139,7 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
         ('build-darwin-commit', 'Stage macOS packages and feed inputs to R2', 'darwin-x64', [
             'HermesBundled-0.33.0-mac-x64.dmg', 'HermesBundled-0.33.0-mac-x64.zip',
             'HermesBundled-0.33.0-mac-x64.zip.blockmap']),
-        ('publish-win32-updater', 'Stage universal bundles to R2', 'windows-universal', [
+        ('assemble-win32-bundle', 'Stage universal bundles to R2', 'windows-universal', [
             'HermesBundled-0.33.0.0-win.msixbundle']),
     ]
     artifact_keys = set()
@@ -174,13 +175,13 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     summary = tmp_path / 'summary.md'
     summary_env = {**env, 'GITHUB_STEP_SUMMARY': str(summary), 'RELEASE_NEEDS': json.dumps({
         'validate': {'result': 'success'}, 'build-win32': {'result': 'success'},
-        'build-darwin': {'result': 'success'}, 'publish-win32-updater': {'result': 'success'},
+        'build-darwin': {'result': 'success'}, 'assemble-win32-bundle': {'result': 'success'},
         'termux-deb': {'result': 'success'}, 'build-linux': {'result': 'success'},
     })}
     result = shell_step(tmp_path, r2_server, 'commit-builds-summary',
                         'Render the full expected-binary matrix', summary_env)
     assert result.returncode == 0, result.stdout + result.stderr
-    text = summary.read_text(encoding='utf-8')
+    text = summary.read_text(encoding='utf-8-sig')
     links = re.findall(r'\]\((http[^)]+)\)', text)
     # Blockmaps are receipt inputs; every other staged product has a download row.
     expected = {f'{base}/{quote(key, safe="/")}' for key in artifact_keys if not key.endswith('.blockmap')}
@@ -193,7 +194,7 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     page_key = f'releases/commit/{sha}/index.html'
     page = r2_server.store[page_key][0].decode()
     assert all(f'href="{url}"' in page for url in expected)
-    assert 'Store' not in page and 'Linux x64' in page and 'Linux ARM64' in page
+    assert 'Store-' not in page and 'Linux x64' in page and 'Linux ARM64' in page
     assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
     assert not any(method == 'DELETE' for method, _, _ in r2_server.requests)
 
@@ -203,7 +204,7 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     failed = shell_step(tmp_path, r2_server, 'commit-builds-summary',
                         'Render the full expected-binary matrix', summary_env)
     assert failed.returncode != 0
-    assert summary.read_text(encoding='utf-8') == text
+    assert summary.read_text(encoding='utf-8-sig') == text
     assert r2_server.store[page_key][0].decode() == page
     r2_server.store[receipt_key] = original
 
@@ -215,4 +216,4 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     incomplete = shell_step(tmp_path, r2_server, 'commit-builds-summary',
                             'Render the full expected-binary matrix', summary_env)
     assert incomplete.returncode == 0, incomplete.stdout + incomplete.stderr
-    assert 'failed: build-darwin' in summary.read_text(encoding='utf-8')
+    assert 'failed: build-darwin' in summary.read_text(encoding='utf-8-sig')

@@ -110,11 +110,8 @@ param(
 
     [string]$SetupExeUrl = "https://hermes-assets.nousresearch.com/Hermes-Setup.exe",
 
-    # Pinned @playwright/test for the update-gui driver. Installed fresh
-    # into a scratch dir every run -- never resolved from the installed
-    # tree -- so the driver behaves identically for every OLD ref. Bump
-    # deliberately; keep roughly in step with the repo's own lockfile.
-    [string]$PlaywrightVersion = "1.58.2"
+    # Driver dependencies come from the current checkout lockfile.
+    [string]$DriverNode = $env:HERMES_E2E_NODE
 )
 
 $ErrorActionPreference = "Stop"
@@ -136,6 +133,40 @@ $StatePath   = Join-Path $WorkRoot "shas.json"
 $ProofRoot   = Join-Path $WorkRoot "proof"
 $AhkDir      = Join-Path $WorkRoot "ahk"
 $AssetsDir   = Join-Path $PSScriptRoot "e2e-assets"
+if (-not $DriverNode) { $DriverNode = (Get-Command node.exe -ErrorAction Stop).Source }
+$env:HERMES_E2E_NODE = $DriverNode
+$env:HERMES_DESKTOP_USER_DATA_DIR = Join-Path $WorkRoot 'electron-user-data'
+$script:ChatMock = $null
+$script:ChatFailure = $false
+. (Join-Path $AssetsDir 'desktop-smoke-windows.ps1')
+
+function Start-JourneyChat {
+    if (-not $script:ChatMock) {
+        $script:ChatFailure = $true
+        $script:ChatMock = Start-DesktopJourneyMock $DriverNode $AssetsDir $WorkRoot $HermesHome $ProofRoot
+        $script:ChatFailure = $false
+    }
+}
+
+function Invoke-DesktopCheckpoint([string]$ChatPhase, [string]$Commit, [string]$Method) {
+    $script:ChatFailure = $true
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $DriverNode (Join-Path $AssetsDir 'source-desktop-smoke.mjs') `
+            --root $InstallDir --home $HermesHome --user-data $env:HERMES_DESKTOP_USER_DATA_DIR `
+            --out $ProofRoot --phase $ChatPhase --expect-commit $Commit --desktop $script:ExpectedDesktop --method $Method
+        $chatExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prevEap }
+    if ($chatExit -ne 0) { throw "Mandatory desktop chat $ChatPhase failed (exit $chatExit)" }
+    $script:ChatFailure = $false
+}
+
+function Confirm-OldChat([string]$Out) {
+    $receipt = Get-Content -LiteralPath (Join-Path $Out 'desktop-chat-old.json') -Raw | ConvertFrom-Json
+    if ($receipt.status -ne 'passed') { throw 'Mandatory OLD update-window chat failed' }
+    $script:ChatFailure = $false
+}
 
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $RepoUrlSsh   = "git@github.com:NousResearch/hermes-agent.git"
@@ -349,6 +380,7 @@ function Test-HermesRuns([string]$Label) {
 # shellcheck source=../e2e-assets/ts-prefix.ps1
 . (Join-Path $PSScriptRoot "e2e-assets\ts-prefix.ps1")
 . (Join-Path $PSScriptRoot "e2e-assets\source-driver.ps1")
+. (Join-Path $AssetsDir 'source-build-env.ps1')
 
 function Write-LogGroup([string]$Title, [string]$LogPath) {
     Write-Host "::group::$Title"
@@ -443,29 +475,15 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     Assert-True ($capExit -eq 0) "hermes desktop exited 0 during launch capture"
     Assert-True (Test-Path -LiteralPath "$spec.captured") "a launch was actually captured (exit 0 without a launch must not pass)"
 
-    $node = Get-ManagedNode
-    $driverDir = Join-Path $WorkRoot "pw-driver"
-    New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
-    $npmCli = Join-Path (Split-Path -Parent $node) "node_modules\npm\bin\npm-cli.js"
-    Assert-True (Test-Path -LiteralPath $npmCli) "managed npm exists beside the managed node"
-    Push-Location $driverDir
-    try {
-        & $node $npmCli install --no-save --no-audit --no-fund "@playwright/test@$PlaywrightVersion" 2>&1 |
-            Select-Object -Last 5 | ForEach-Object { Write-Host "  npm| $_" }
-        $npmExit = $LASTEXITCODE
-    } finally {
-        Pop-Location
-    }
-    Assert-True ($npmExit -eq 0) "npm install @playwright/test@$PlaywrightVersion into the driver dir"
-
-    Copy-Item (Join-Path $AssetsDir "launch-from-spec.mjs") (Join-Path $driverDir "launch-from-spec.mjs") -Force
-    Copy-Item (Join-Path $AssetsDir "source-update-observer.mjs") (Join-Path $driverDir "source-update-observer.mjs") -Force
-    Copy-Item (Join-Path $AssetsDir "window-input.cjs") (Join-Path $driverDir "window-input.cjs") -Force
-    Copy-Item (Join-Path $AssetsDir "update-ui.cjs") (Join-Path $driverDir "update-ui.cjs") -Force
+    $node = $DriverNode
+    $chatOut = Join-Path $ProofRoot 'update-window'
+    Remove-Item -LiteralPath (Join-Path $chatOut 'desktop-chat-old.json') -Force -ErrorAction SilentlyContinue
+    $script:ChatFailure = $true
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    Push-Location $driverDir
+    Push-Location $WorkRoot
     try {
-        & $node "launch-from-spec.mjs" --spec $spec `
+        & $node (Join-Path $AssetsDir "launch-from-spec.mjs") --spec $spec `
+            --old-sha (Read-State).old --chat-out $chatOut --mock-url $env:HERMES_E2E_MOCK_URL `
             --result (Join-Path $HermesHome ".hermes-update-result.json") `
             --expect-sha $TargetSha --repo-dir $InstallDir 2>&1 |
             ForEach-Object { Write-Host "  pw| $_" }
@@ -474,6 +492,7 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
         Pop-Location
         $ErrorActionPreference = $prevEap
     }
+    Confirm-OldChat $chatOut
     Assert-True ($driveExit -eq 0) "app driven via captured hermes desktop spec; update completed"
 }
 
@@ -540,22 +559,6 @@ function Stop-HermesAppProcesses([string]$Label) {
         Write-Host "  [$Label] stopped $($procs.Count) Hermes.exe process(es)"
         Start-Sleep -Seconds 3
     }
-}
-
-function Get-ManagedNode {
-    # `hermes update`/desktop builds use the Hermes-managed Node; use the same
-    # one to run the Playwright driver so no system Node is required.
-    $candidates = @(
-        (Join-Path $HermesHome "node\node.exe"),
-        (Join-Path $HermesHome "bin\node\node.exe"),
-        (Join-Path $InstallDir "node\node.exe")
-    )
-    foreach ($c in $candidates) {
-        if (Test-Path -LiteralPath $c) { return $c }
-    }
-    $fromPath = Get-Command node -ErrorAction SilentlyContinue
-    if ($fromPath) { return $fromPath.Source }
-    throw "No node.exe found (managed or on PATH)"
 }
 
 # ----------------------------------------------------------------------------
@@ -713,9 +716,6 @@ function Invoke-PhaseInstallGui {
         }
     }
 
-    # Close the freshly launched app (user quits after first look).
-    Stop-HermesAppProcesses "post-install"
-
     # The installer cloned/updated from serve.git's `main`; the phase's
     # expected sha says where that must land (install: OLD; update: HEAD).
     $installedSha = Get-InstalledHead
@@ -727,13 +727,13 @@ function Invoke-PhaseInstallGui {
     Test-HermesRuns "post-$Mode-gui"
     Assert-True ($null -ne (Get-DesktopExe)) "packaged Desktop Hermes.exe exists"
 
-    # Seed a provider so the update leg meets the ready app shell, not the
-    # onboarding overlay (an updating user has a configured provider).
-    $envFile = Join-Path $HermesHome ".env"
-    if (-not (Test-Path -LiteralPath $envFile) -or -not ((Get-Content $envFile -Raw -ErrorAction SilentlyContinue) -match "OPENROUTER_API_KEY")) {
-        Add-Content -LiteralPath $envFile -Value "OPENROUTER_API_KEY=sk-or-...-key"
-    }
-    Write-Host "  seeded placeholder provider key for the update leg"
+    # The installer Launch proof above must pass before a test-owned launch.
+    $script:ChatFailure = $true
+    Close-VerifiedDesktop (Get-DesktopExe)
+    $chatPhase = if ($Mode -eq 'install') { 'old' } else { 'new' }
+    @{ phase=$chatPhase; launch='post-installer-launch'; handoffProof=$proof } | ConvertTo-Json |
+        Set-Content (Join-Path $ProofRoot "desktop-chat-$chatPhase-launch.json")
+    Invoke-DesktopCheckpoint $chatPhase $ExpectedSha 'desktop-installer@latest'
 }
 
 # ----------------------------------------------------------------------------
@@ -758,52 +758,27 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
     $markerPath = Join-Path $HermesHome ".hermes-update-in-progress"
     Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
 
-    $node = Get-ManagedNode
-    # The Playwright driver gets its OWN pinned @playwright/test in a
-    # scratch dir -- NEVER the installed tree's copy. The driver talks to
-    # the app over Playwright's inspection pipe, so its Playwright version
-    # is independent of the app under test; installing it ourselves makes
-    # the leg identical for every OLD ref (older releases predate the
-    # dependency entirely, and hoisting moves it around in newer ones).
-    $driverDir = Join-Path $WorkRoot "pw-driver"
-    New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
-    $npmCli = Join-Path (Split-Path -Parent $node) "node_modules\npm\bin\npm-cli.js"
-    Assert-True (Test-Path -LiteralPath $npmCli) "managed npm exists beside the managed node"
-    Push-Location $driverDir
-    try {
-        & $node $npmCli install --no-save --no-audit --no-fund "@playwright/test@$PlaywrightVersion" 2>&1 |
-            Select-Object -Last 5 | ForEach-Object { Write-Host "  npm| $_" }
-        $npmExit = $LASTEXITCODE
-    } finally {
-        Pop-Location
-    }
-    Assert-True ($npmExit -eq 0) "npm install @playwright/test@$PlaywrightVersion into the driver dir"
+    $node = $DriverNode
 
     $recorder = Start-DesktopRecorder (Join-Path $proof "desktop-frames")
     try {
         # Launch the installed app and click through Settings -> About ->
         # Update now. Exit 0 = the app quit for the updater hand-off.
-        # Copy the driver INTO $driverDir first: Node resolves
-        # require('@playwright/test') from the SCRIPT's own directory upward,
-        # so running it from the CI checkout would resolve the wrong (or no)
-        # node_modules.
-        $driver = Join-Path $driverDir "e2e-drive-update.cjs"
-        Copy-Item (Join-Path $AssetsDir "drive-update.cjs") $driver -Force
-        Copy-Item (Join-Path $AssetsDir "window-input.cjs") (Join-Path $driverDir "window-input.cjs") -Force
-        Copy-Item (Join-Path $AssetsDir "update-ui.cjs") (Join-Path $driverDir "update-ui.cjs") -Force
-        Copy-Item (Join-Path $AssetsDir "process-close.cjs") (Join-Path $driverDir "process-close.cjs") -Force
-        Push-Location $driverDir
+        $driver = Join-Path $AssetsDir 'drive-update.cjs'
+        Remove-Item -LiteralPath (Join-Path $proof 'desktop-chat-old.json') -Force -ErrorAction SilentlyContinue
+        $script:ChatFailure = $true
+        Push-Location $WorkRoot
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & $node $driver $desktopExe $proof 2>&1 |
+            & $node $driver $desktopExe $proof (Read-State).old 2>&1 |
                 ForEach-Object { Write-Host "  $_" }
             $driveExit = $LASTEXITCODE
         } finally {
             Pop-Location
             $ErrorActionPreference = $prevEap
-            Remove-Item -LiteralPath $driver -Force -ErrorAction SilentlyContinue
         }
+        Confirm-OldChat $proof
         Assert-True ($driveExit -eq 0) "GUI driver clicked Update now and the app quit for hand-off"
 
         # The detached updater (spawned by the app, NOT by us) now runs
@@ -893,6 +868,12 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
             }
         } catch {}
         Save-DesktopScreenshot (Join-Path $proof "99-relaunched-desktop.png")
+        # Native relaunch and read-only product verification already passed.
+        $script:ChatFailure = $true
+        Close-VerifiedDesktop (Get-DesktopExe)
+        @{ phase='new'; launch='post-update-launch'; automaticRelaunch=$true } | ConvertTo-Json |
+            Set-Content (Join-Path $ProofRoot 'desktop-chat-new-launch.json')
+        Invoke-DesktopCheckpoint 'new' $TargetSha $Route
     }
     finally {
         Stop-DesktopRecorder $recorder (Join-Path $proof "desktop-frames")
@@ -971,6 +952,9 @@ function Invoke-PhaseInstall {
             Assert-DesktopArtifact "OLD"
         }
     }
+    if ($InstallMethod -ne 'desktop-installer@latest') {
+        Invoke-DesktopCheckpoint 'old' $state.old $InstallMethod
+    }
 }
 
 function Invoke-PhaseUpdate {
@@ -992,6 +976,7 @@ function Invoke-PhaseUpdate {
     Invoke-Git @("-C", $ServeRepo, "update-ref", "refs/heads/main", $state.current) | Out-Null
     Write-Host "  serve.git main advanced to $($state.current)"
 
+    if ($Route -in @('open-app-update', 'hermes-desktop-app-update')) { Start-JourneyChat }
     switch ($Route) {
         "open-app-update" {
             # Meaningful only where an OS entry point exists - install.ps1
@@ -1035,6 +1020,9 @@ function Invoke-PhaseUpdate {
     Assert-True ((Get-InstalledHead) -eq $state.current) "checkout landed on HEAD"
     Test-HermesRuns "post-update"
     Invoke-PreserveVerify
+    if ($Route -notin @('open-app-update', 'desktop-installer@latest')) {
+        Invoke-DesktopCheckpoint 'new' $state.current $Route
+    }
 }
 
 function Invoke-CheckedPhaseUpdate {
@@ -1047,7 +1035,8 @@ function Invoke-CheckedPhaseUpdate {
         Invoke-PhaseUpdate
     } catch {
         $failure = $_
-        $node = Get-ManagedNode
+        if ($script:ChatFailure) { throw $failure }
+        $node = $DriverNode
         $classification = & $node (Join-Path $AssetsDir "known-failures.cjs") $WorkRoot $InstallMethod $Route $failure.Exception.Message
         $classificationExit = $LASTEXITCODE
         if ($classificationExit -ne 0) { throw $failure }
@@ -1077,16 +1066,22 @@ $script:RealGitExe = (Get-Command git.exe -ErrorAction Stop).Source
 
 Set-GitRedirect
 
+try {
 switch ($Phase) {
     "stage"   { Invoke-PhaseStage }
-    "install" { Invoke-PhaseInstall }
-    "update"  { Invoke-CheckedPhaseUpdate }
+    "install" { Invoke-SourceBuild { Invoke-PhaseInstall } }
+    "update"  { Invoke-SourceBuild { Invoke-CheckedPhaseUpdate } }
     "all" {
         Invoke-PhaseStage
-        Invoke-PhaseInstall
-        Invoke-CheckedPhaseUpdate
+        Invoke-SourceBuild { Invoke-PhaseInstall }
+        Invoke-SourceBuild { Invoke-CheckedPhaseUpdate }
     }
 }
 
+} finally {
+    if ($script:ChatMock -and -not $script:ChatMock.HasExited) {
+        Stop-Process -Id $script:ChatMock.Id -ErrorAction SilentlyContinue
+    }
+}
 Write-Host ""
 Write-Host "Phase '$Phase' completed successfully."

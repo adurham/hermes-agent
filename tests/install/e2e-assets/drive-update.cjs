@@ -2,11 +2,10 @@
 // app) under Playwright's Electron driver and perform the update the way a
 // user does: Settings -> About -> "Update now". Screenshots at every step.
 //
-// Run from the installed checkout's apps/desktop directory (so
-// @playwright/test resolves from ITS node_modules — the same deps the
-// installed app was built with):
+// Run the current CI checkout's entrypoint with its locked driver deps:
 //
-//   node <this file> <path-to-Hermes.exe> <proof-dir>
+//   node <this file> <path-to-Hermes.exe> <proof-dir> <old-sha> [--native-handoff]
+// --native-handoff leaves the native UIA caller in charge of clicking Update.
 //
 // Exit codes: 0 = update hand-off started and the app quit (the detached
 // updater takes it from there — the PowerShell driver polls for the result);
@@ -26,9 +25,11 @@ const { pickAppWindow, openAbout, waitForUpdate } = require('./update-ui.cjs')
 
 const exePath = process.argv[2]
 const proofDir = process.argv[3]
+const oldSha = process.argv[4]
+const nativeHandoff = process.argv[5] === '--native-handoff'
 
-if (!exePath || !proofDir) {
-  console.error('usage: node drive-update.cjs <Hermes.exe> <proof-dir>')
+if (!exePath || !proofDir || !oldSha || !process.env.HERMES_E2E_MOCK_URL) {
+  console.error('usage: node drive-update.cjs <Hermes.exe> <proof-dir> <old-sha> [--native-handoff]; HERMES_E2E_MOCK_URL required')
   process.exit(1)
 }
 
@@ -59,36 +60,46 @@ const killer = setTimeout(() => {
 killer.unref()
 
 async function main() {
+  const { runUpdateWindowChat, updateWindowEnvironment } = await import('./update-window-chat.mjs')
+  const origin = nativeHandoff ? 'bundled' : 'source'
+  const root = nativeHandoff ? path.join(path.dirname(exePath), 'resources', 'agent-payload') : path.join(process.env.HERMES_HOME, 'hermes-agent')
   log(`launching ${exePath}`)
 
   const app = await _electron.launch({
     executablePath: exePath,
-    args: ['--disable-gpu', '--no-sandbox'],
+    args: ['--disable-gpu', '--no-sandbox', '--force-renderer-accessibility'],
+    cwd: path.dirname(exePath),
     // Inherit the driver's env: HERMES_HOME (isolated install) and
     // GIT_CONFIG_GLOBAL (URL redirect to the staged serve repo) MUST reach
     // the main process so its update check fetches from the staged repo.
-    env: { ...process.env },
+    env: updateWindowEnvironment(process.env, root, origin),
     timeout: 120_000
   })
   const child = app.process()
 
   const waitForProcessClose = observeProcessClose(child)
-  log(`launched Electron pid=${child.pid}`)
+  // On Windows Playwright's child is a shell wrapper, not Hermes.exe.
+  const appPid = await app.evaluate(() => process.pid)
+  log(`launched Electron pid=${appPid}`)
 
   const page = await pickAppWindow(app, log)
 
   await prepareWindowForInput(app, page)
   log('[zoom] app window prepared at 100%')
 
-  // Boot: wait for the composer to exist — the shell is mounted by then.
-  // The real backend (`hermes serve`) is booting underneath; give it time.
-  await page.waitForSelector('textarea, [contenteditable="true"]', {
-    state: 'attached',
-    timeout: 300_000
+  await runUpdateWindowChat(app, page, {
+    mockUrl: process.env.HERMES_E2E_MOCK_URL, outDir: proofDir,
+    expectCommit: oldSha,
+    origin, root, executable: exePath,
   })
-  log('renderer booted (composer attached)')
-  await page.waitForTimeout(3000)
   await shot(page, '01-app-booted')
+
+  if (nativeHandoff) {
+    fs.writeFileSync(path.join(proofDir, 'old-chat-ready.json'), JSON.stringify({ pid: appPid, exe: exePath, oldSha }) + '\n')
+    await waitForProcessClose(15 * 60 * 1000)
+    log('native OLD process closed; the OS updater owns relaunch')
+    return
+  }
 
   await openAbout(page, { log, shot, prepare: () => prepareWindowForInput(app, page) })
   const updateNow = await waitForUpdate(page, { log, shot })

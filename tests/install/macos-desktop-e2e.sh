@@ -47,7 +47,6 @@ UPDATE_METHOD=""
 INSTALL_REF=""
 UPDATE_REF=""
 DMG_URL="https://hermes-assets.nousresearch.com/Hermes-Setup.dmg"
-PLAYWRIGHT_VERSION="1.58.2"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --phase)
@@ -77,6 +76,7 @@ esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASSETS="$REPO_ROOT/tests/install/e2e-assets"
+export HERMES_E2E_NODE="${HERMES_E2E_NODE:-$(command -v node)}"
 
 WORK_ROOT="${HERMES_E2E_WORKROOT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hermes-macos-desktop-e2e}"
 LOG_DIR="${HERMES_E2E_LOG_DIR:-$WORK_ROOT/logs}"
@@ -95,6 +95,8 @@ source "$(dirname "$0")/e2e-assets/preserve-plugins.sh"
 source "$(dirname "$0")/e2e-assets/source-driver.sh"
 # shellcheck source=e2e-assets/installer-common.sh
 source "$(dirname "$0")/e2e-assets/installer-common.sh"
+# shellcheck source=e2e-assets/source-build-env.sh
+source "$ASSETS/source-build-env.sh"
 log_group() {
   printf '::group::%s\n' "$1"
   cat "$2"
@@ -109,6 +111,13 @@ arm_redirect() {
   export PATH="$HOME/.local/bin:$PATH"
   export HERMES_HOME="$HOME/.hermes"
   export INSTALL_DIR="$HERMES_HOME/hermes-agent"
+  export HERMES_DESKTOP_USER_DATA_DIR="$WORK_ROOT/electron-user-data"
+}
+
+desktop_checkpoint() { # phase, expected commit, selected method
+  source_build_env "$HERMES_E2E_NODE" "$ASSETS/source-desktop-smoke.mjs" \
+    --root "$INSTALL_DIR" --home "$HERMES_HOME" --user-data "$HERMES_DESKTOP_USER_DATA_DIR" \
+    --out "$LOG_DIR" --phase "$1" --expect-commit "$2" --desktop present --method "$3"
 }
 
 phase_stage() {
@@ -194,7 +203,7 @@ phase_install() {
   # `open`: launchd inherits NONE of the redirect env) and drive the
   # "Install Hermes" button with native input.
   local rc=0
-  bash "$ASSETS/drive-dmg-install.sh" \
+  source_build_env bash "$ASSETS/drive-dmg-install.sh" \
     --app-bin "$app_bin" \
     --install-dir "$INSTALL_DIR" \
     --proof-dir "$LOG_DIR" 2>&1 \
@@ -212,35 +221,36 @@ phase_install() {
   hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed command after install"
   python3 -B "$ASSETS/source_driver.py" --root "$INSTALL_DIR" --launcher "$hermes" --desktop present \
     || fail "read-only verification failed after install"
-  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-old.log" || fail "hermes --version failed after install"
+  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 source_build_env "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-old.log" || fail "hermes --version failed after install"
   ok "hermes --version works: $(head -c 120 "$LOG_DIR/version-old.log" | tr -d '\n')"
   find_installed_app >/dev/null || fail "no installed Hermes.app after the dmg bootstrap"
   ok "installed app: $(find_installed_app)"
+  # The bootstrap can leave its launched app running. Preserve that handoff,
+  # then request normal Quit of only this installed binary before smoke owns it.
+  local installed_bin
+  installed_bin="$(find_installed_app)/Contents/MacOS/Hermes"
+  osascript -l JavaScript -e 'ObjC.import("AppKit"); function run(args) {
+    const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
+    for (let i = 0; i < apps.count; i++) {
+      const app = apps.objectAtIndex(i);
+      if (app.executableURL && ObjC.unwrap(app.executableURL.path) === args[0]) {
+        if (!app.terminate) throw new Error("normal Quit refused");
+        const deadline = Date.now() + 30000;
+        while (!app.terminated && Date.now() < deadline) delay(0.2);
+        if (!app.terminated) throw new Error("installed app did not quit normally");
+      }
+    }
+  }' "$installed_bin" || fail "installed app did not close normally; no smoke launch attempted"
+  desktop_checkpoint old "$OLD_SHA" desktop-installer@latest
 }
-
-ensure_playwright() {
-  # Install the driver's OWN pinned @playwright/test into a scratch dir
-  # (never the installed tree's copy). Idempotent across phases.
-  local pw_dir="$WORK_ROOT/playwright"
-  [ -d "$pw_dir/node_modules/@playwright/test" ] && { printf '%s' "$pw_dir"; return 0; }
-  mkdir -p "$pw_dir"
-  (cd "$pw_dir" && npm install --no-save --no-audit --no-fund \
-    "@playwright/test@$PLAYWRIGHT_VERSION" 2>&1 | ts_prefix > "$LOG_DIR/playwright-install.log") \
-    || { log_group "playwright install transcript" "$LOG_DIR/playwright-install.log"; fail "playwright install failed"; }
-  printf '%s' "$pw_dir"
-}
-
-
 
 run_playwright_update() {
   # $1: spec file to launch from.
   local spec="$1"
-  local pw_dir
-  pw_dir="$(ensure_playwright)"
-  cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/source-update-observer.mjs" "$ASSETS/window-input.cjs" "$ASSETS/update-ui.cjs" "$pw_dir/"
   local rc=0
-  (cd "$pw_dir" && node launch-from-spec.mjs \
+  (cd "$WORK_ROOT" && "$HERMES_E2E_NODE" "$ASSETS/launch-from-spec.mjs" \
     --spec "$spec" \
+    --old-sha "$OLD_SHA" --chat-out "$LOG_DIR/update-window" --mock-url "$HERMES_E2E_MOCK_URL" \
     --result "$HERMES_HOME/.hermes-update-result.json" \
     --expect-sha "$TARGET_SHA" \
     --repo-dir "$INSTALL_DIR" 2>&1 \
@@ -266,7 +276,7 @@ phase_update() {
   # the dev:mock flow does, so the app is genuinely configured.
   # shellcheck source=../install/e2e-assets/mock-provider.sh
   source "$ASSETS/mock-provider.sh"
-  mock_start "$WORK_ROOT"
+  PATH="$(dirname "$HERMES_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
   trap mock_stop EXIT
   case "$UPDATE_METHOD" in
     hermes-update)
@@ -275,21 +285,21 @@ phase_update() {
       local hermes help
       hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed update command"
       local update_cmd=("$hermes" update)
-      help="$("$hermes" update --help 2>&1)" || fail "installed update --help failed: $help"
+      help="$(source_build_env "$hermes" update --help 2>&1)" || fail "installed update --help failed: $help"
       if grep -qF -- --yes <<< "$help"; then
         update_cmd=("$hermes" update --yes)
       fi
       local rc=0
-      (cd "$INSTALL_DIR" && "${update_cmd[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/update.log") || rc=$?
+      (cd "$INSTALL_DIR" && source_build_env "${update_cmd[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/update.log") || rc=$?
       log_group "hermes update transcript" "$LOG_DIR/update.log"
       [ "$rc" -eq 0 ] || fail "hermes update exited $rc; transcript above"
       ;;
     installer-script)
       # A dmg user re-running today's install one-liner.
-      run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" head
+      source_build_env run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" head
       ;;
     installer-script+desktop)
-      run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" head desktop
+      source_build_env run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" head desktop
       # The desktop stage is this leg's claim: the rebuilt app must exist.
       head_app=""
       for cand in \
@@ -329,7 +339,7 @@ PYEOF
       (cd "$INSTALL_DIR" && \
         PYTHONPATH="$ASSETS/launch-capture${PYTHONPATH:+:$PYTHONPATH}" \
         HERMES_E2E_CAPTURE_LAUNCH="$spec" \
-        "$hermes" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+        source_build_env "$hermes" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
       log_group "hermes desktop (launch capture) transcript" "$LOG_DIR/desktop-launch-capture.log"
       [ "$rc" -eq 0 ] || fail "hermes desktop exited $rc during launch capture"
       [ -f "$spec.captured" ] || fail "hermes desktop exited 0 but no launch was captured"
@@ -364,10 +374,11 @@ PYEOF
   command="$(source_hermes "$INSTALL_DIR")" || fail "no installed command after update"
   python3 -B "$ASSETS/source_driver.py" --root "$INSTALL_DIR" --launcher "$command" --desktop present \
     || fail "read-only verification failed after update; no repair was attempted"
-  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 "$command" --version 2>&1 | ts_prefix > "$LOG_DIR/version-head.log" \
+  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 source_build_env "$command" --version 2>&1 | ts_prefix > "$LOG_DIR/version-head.log" \
     || fail "hermes --version failed after update"
   ok "hermes --version works post-update"
   preserve_after_upgrade
+  desktop_checkpoint new "$TARGET_SHA" "$UPDATE_METHOD"
   step "PASS: $OLD_REF -> $TARGET_LABEL via $UPDATE_METHOD"
 }
 

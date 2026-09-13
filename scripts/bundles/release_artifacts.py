@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-from scripts.releases.stable import read_manifest, require_stable_identity, validate_candidates
+from scripts.releases.stable import read_admitted_candidate, successful_smoke_results, validate_candidates
 
 
 def sha256_file(file: Path) -> str:
@@ -82,11 +82,13 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
     out.write_text(json.dumps(row, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
-def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path) -> dict:
+def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
+             *, smoke_results: dict) -> dict:
     """Bind the native metadata to files already staged by their build jobs."""
     from scripts.releases.handoff import receipt_name, validate_receipt
     from scripts.releases.r2 import put, staging_key_for
 
+    smoke_results = successful_smoke_results(smoke_results)
     expected = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
     by_name = {}
     for name in expected:
@@ -130,7 +132,8 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path) -> 
         filename = universal_name if row["platform"] == "windows" else row["filename"]
         item = by_name[filename]
         packages.append({k: v for k, v in {**row, "artifact": {"url": item["url"], "sha256": item["sha256"]}}.items() if k != "filename"})
-    result = {"schema": 1, "tag": tag, "commit": commit, "packages": packages, "files": files}
+    result = {"schema": 2, "tag": tag, "commit": commit, "packages": packages, "files": files,
+              "smoke_results": smoke_results}
     validate_candidates(result, tag, commit, public_base)
     if not any(row["platform"] == "termux" for row in packages):
         raise ValueError("Missing Termux candidate")
@@ -287,20 +290,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "record":
         record(args.platform, args.arch, args.root, args.tag, args.commit, args.out)
     elif args.command == "assemble":
-        assemble(args.root, args.tag, args.commit, args.public_base, args.out)
+        assemble(args.root, args.tag, args.commit, args.public_base, args.out,
+                 smoke_results=json.loads(os.environ.get("RELEASE_NEEDS", "{}")))
         if os.environ.get("GITHUB_OUTPUT"):
             with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as file:
                 file.write(f"manifest-url={args.public_base.rstrip('/')}/releases/tag/{args.tag}/release-candidates.json\nmanifest-sha256={sha256_file(args.out)}\n")
     else:
-        expected_digest = os.environ.get("CANDIDATE_MANIFEST_SHA256", "")
-        if not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
-            raise ValueError("Pinned candidate manifest digest is required")
-        require_stable_identity(args.tag, args.commit, f"refs/tags/{args.tag}")
-        manifest = read_manifest(
-            f"{args.public_base.rstrip('/')}/releases/tag/{args.tag}/release-candidates.json",
-            expected_digest, expected_origin=args.public_base,
-        )
-        validate_candidates(manifest, args.tag, args.commit, args.public_base)
+        manifest = read_admitted_candidate(args.tag, args.commit, args.public_base,
+                                          os.environ.get("CANDIDATE_MANIFEST_SHA256", ""))
         if args.command == "materialize":
             materialize(manifest, args.root, public_base=args.public_base, store_only=args.store_only)
         else:

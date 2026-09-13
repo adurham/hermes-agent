@@ -23,6 +23,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { _electron } from '@playwright/test';
 import { createRequire } from 'node:module';
+import { runUpdateWindowChat, updateWindowEnvironment } from './update-window-chat.mjs';
 
 const require = createRequire(import.meta.url);
 const { observeProcessClose } = require('./process-close.cjs');
@@ -33,6 +34,9 @@ const { values } = parseArgs({
   options: {
     'app-bin': { type: 'string' },
     shots: { type: 'string', default: '.' },
+    'old-sha': { type: 'string' },
+    'chat-out': { type: 'string' },
+    'mock-url': { type: 'string' },
     'close-timeout-ms': { type: 'string', default: '420000' },
   },
 });
@@ -43,31 +47,37 @@ const shot = async (page, name) => {
 };
 
 const appBin = values['app-bin'];
+if (!appBin || !values['old-sha'] || !values['chat-out'] || !values['mock-url']) {
+  throw new Error('--app-bin, --old-sha, --chat-out and --mock-url are required');
+}
 fs.mkdirSync(values.shots, { recursive: true });
+fs.mkdirSync(values['chat-out'], { recursive: true });
 
 log(`launching ${appBin}`);
 const app = await _electron.launch({
   executablePath: appBin,
+  cwd: path.dirname(appBin),
   // Inherit the driver env: HERMES_HOME / HOME / updates feed config must
   // reach the main process exactly as a user's double-click would.
-  env: { ...process.env },
+  env: updateWindowEnvironment(process.env, path.resolve(path.dirname(appBin), '..', 'Resources', 'agent-payload'), 'bundled'),
   timeout: 120_000,
 });
 const child = app.process();
-const oldPid = child.pid;
-log(`launched Electron pid=${oldPid}`);
-fs.writeFileSync(path.join(values.shots, 'old-pid'), `${oldPid}\n`);
-
 const waitForProcessClose = observeProcessClose(child);
+const oldPid = await app.evaluate(() => process.pid);
+log(`launched Electron pid=${oldPid}`);
+fs.writeFileSync(path.join(values['chat-out'], 'old-pid'), `${oldPid}\n`);
 
 const page = await pickAppWindow(app, log);
 
 await prepareWindowForInput(app, page);
 
-// Boot: the shell is mounted once the composer exists.
-await page.waitForSelector('textarea, [contenteditable="true"]', { state: 'attached', timeout: 300_000 });
-log('renderer booted (composer attached)');
-await page.waitForTimeout(3_000);
+await runUpdateWindowChat(app, page, {
+  mockUrl: values['mock-url'], outDir: values['chat-out'],
+  expectCommit: values['old-sha'],
+  origin: 'bundled', executable: appBin,
+  root: path.resolve(path.dirname(appBin), '..', 'Resources', 'agent-payload'),
+});
 await shot(page, '01-app-booted');
 
 await openAbout(page, { log, shot, prepare: () => prepareWindowForInput(app, page) });
@@ -85,5 +95,5 @@ await shot(page, '05-updating-overlay');
 // observeProcessClose released our pipes, so ShipIt's relaunch survives.
 await waitForProcessClose(Number(values['close-timeout-ms']));
 log('old Electron process closed — Squirrel.Mac owns the swap and relaunch');
-fs.writeFileSync(path.join(values.shots, 'old-exited'), new Date().toISOString() + '\n');
+fs.writeFileSync(path.join(values['chat-out'], 'old-exited'), new Date().toISOString() + '\n');
 process.exit(0);
