@@ -40,12 +40,17 @@ and select the Python generation before application imports. Completion runs in
 that interpreter with the update context and receipt. The parent does not clear
 `sys.modules`, import the new application graph, or resume a pip fallback.
 
-Current source updates use one PM sync for the recorded extras and enabled
-plugins, then build frontend products in a fresh process on the selected
-Python. A retry on an already-current checkout follows the same path.
-Dependency or build failures stop completion; the updater does not retry
-through pip, reinstall providers separately, or create incomplete markers.
-Use `hermes pm repair` for damaged dependency files.
+Current source updates hand the selected checkout to a fresh completion owner.
+Its bootstrap Python disables site-package initialization before asking PM to
+sync the recorded extras and enabled plugins. The selected Python then owns
+frontend builds, profile/configuration maintenance, gateway restarts and runtime
+verification. Git, already-current retries and ZIP fallback use this same path.
+The original command keeps the update lock while waiting; a missing or failed
+completion result cannot report success. Correlated PM failures remain in the
+update receipt, and interrupted restarts retain their fleet obligation.
+Dependency or build failures never retry through pip or a source re-download.
+Use `hermes pm repair` for damaged dependency files. See the developer
+[source completion ownership note](https://github.com/NousResearch/hermes-agent/blob/main/docs/source-update-completion.md).
 
 ## Source installs and packaged builds
 
@@ -118,7 +123,17 @@ membership, and currency checks use the same declaration reader.
 PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
-The generated workspace and extended lock remain outside shipped source.
+Each candidate gets a fresh workspace with explicit source, lock seed, and
+prepared environment inputs. The generated workspace and extended lock remain
+outside shipped source. Repair copies the recorded workspace and lock, including
+plugin build inputs, rather than resolving against edited live manifests.
+
+Plugin enablement and staged code updates are submitted as data to the isolated
+PM worker. Under the installation lock, it discovers the proposed dependency
+union, validates the candidate, and publishes configuration or plugin files and
+metadata with the environment selection. It rejects inputs changed during
+preparation. A durable journal permits recovery before application imports,
+including code-only updates that do not require a new environment.
 
 Plugin selection changes, including pack enables, use the same admission
 transaction. PM reads the latest selection under its shared lock before applying
@@ -490,6 +505,7 @@ remain under uv and npm's own retry policies.
 
 ## Diagnostics
 
+- **Slow Python dependency builds:** PM's streamed uv commands enable verbose output. Bundle and build logs show package activity and build-backend stdout/stderr while the build runs, not only after failure.
 - **Missing or outdated tool:** read `hermes pm doctor`, then use an explicit PM install on a writable installation.
 - **New environment requires restart:** restart the affected Hermes process. Do not add a second site-packages tree to its live imports.
 - **Dependency conflict:** read `hermes pm status`. Correct the plugin requirements before retrying admission.

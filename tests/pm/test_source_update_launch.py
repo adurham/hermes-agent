@@ -83,9 +83,9 @@ def source_launch(tmp_path, monkeypatch, isolated_python):
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("update", ["launch", "sync", "checkout", "pm-update"])
+@pytest.mark.parametrize("update", ["launch", "sync", "pm-update"])
 def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monkeypatch, update):
-    from hermes_cli import _launchers, update_cmd_maint
+    from hermes_cli import _launchers
     from pm.cli import cmd_gc
     from pm.lock import Lockfile
     from pm.store import current_target, tree_digest
@@ -134,13 +134,11 @@ def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monk
     if update == "launch":
         assert venv_sync.prepare_launch(root, []) == new_python
     elif update == "sync":
+        # This is the PM sync -> launcher publication sequence now split across
+        # update_completion._prepare and _complete_selected. The former checkout
+        # case adds no distinct PM/GC coverage; the fresh-interpreter handoff is
+        # exercised separately in test_update_completion_process.py.
         assert venv_sync.sync(root) == {"state": "synced", "ok": True}
-    elif update == "checkout":
-        # Frontend compilation is not part of the dependency/launcher contract.
-        with monkeypatch.context() as build:
-            build.setattr(update_cmd_maint.subprocess, "run", lambda *args, **kwargs: None)
-            # PM's worker uses Popen, so its transaction still runs unchanged.
-            update_cmd_maint._prepare_updated_checkout(root, desktop=False)
     else:
         from types import SimpleNamespace
         from pm import cli

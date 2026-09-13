@@ -1,35 +1,10 @@
-"""Boot-time post-update bootstrap.
+"""Bounded home maintenance after an installed revision changes.
 
-Every install kind (git checkout, desktop bundled payload, docker, nix)
-compares two per-install facts at boot:
-
-* current identity — the commit this install IS: ``install-stamp.json``
-  for sealed trees, git HEAD for checkouts. Reading it is a couple of
-  file reads (plus one rev-parse for checkouts).
-* last-known identity — the commit this install last bootstrapped,
-  recorded under ``installs/<sha16>/bootstrap/`` keyed by the canonical
-  install root.
-
-Equal → nothing happens (the fast path, ~2 ms). Different → run the
-idempotent post-update steps from ``hermes_cli.post_update`` under a
-single-flight lock, then record the new identity.
-
-Two records, one per step scope:
-
-* home record — ``bootstrap/<profile>.json``. Gates home-scoped steps.
-  HERMES_HOME moves per profile, so each profile bootstraps its own
-  state once per code change.
-* machine record — ``bootstrap/machine.json``. Every profile resolves
-  the same file, so machine-global steps run once per machine per code
-  change and the record's lock serializes concurrent profile boots.
-
-The records are an optimization, never the correctness layer: every step
-is idempotent and self-gating, so a deleted record costs one redundant
-slow path, nothing more.
-
-Ported from the restack branch's boot_bootstrap, rewritten onto this
-branch's vocabulary: stamps via ``hermes_cli.steward``, managed tools via
-``pm`` (facts.json ledger) instead of the retired ``installation`` package.
+A per-install, per-profile record and lock remain because config migrations
+must not retry a broken migration on every launch, and the full SQLite
+integrity guard is too expensive to run every time. Steps still own their
+idempotence and rollback; failure is recorded until the next revision (or
+an explicit post-update run). PM owns runtime diagnosis, not this record.
 """
 from __future__ import annotations
 
@@ -38,7 +13,6 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -137,25 +111,12 @@ def current_install_identity(project_root: Path) -> str | None:
 # the per-install state folder: installs/<SHA16>/ under the DEFAULT home
 # ---------------------------------------------------------------------------
 
+def record_path(project_root: Path) -> Path:
+    """Each profile completes its own home maintenance for this installation."""
+    from hermes_cli.profiles import get_active_profile_name
 
-def record_path(project_root: Path, scope: str) -> Path:
-    """Where the last-known record for ``project_root`` lives.
-
-    Both scopes live INSIDE the per-install state folder:
-    ``bootstrap/machine.json`` for machine scope, ``bootstrap/<profile>.json``
-    for home scope — the per-profile semantics ride the FILENAME, not a
-    per-profile anchor directory.
-    """
-    if scope == "home":
-        from hermes_cli.profiles import get_active_profile_name
-
-        name = get_active_profile_name() or "default"
-        filename = f"{name}.json"
-    elif scope == "machine":
-        filename = "machine.json"
-    else:
-        raise ValueError(f"unknown record scope: {scope!r}")
-    return install_state_dir(project_root) / "bootstrap" / filename
+    name = get_active_profile_name() or "default"
+    return install_state_dir(project_root) / "bootstrap" / f"{name}.json"
 
 
 def read_last_known(path: Path) -> dict:
@@ -179,19 +140,13 @@ def _write_record(path: Path, identity: str, results: dict) -> None:
     os.replace(tmp, path)
 
 
-def write_record(project_root: Path, scope: str, identity: str, results: dict | None = None) -> None:
-    """Record ``identity`` as bootstrapped. Also used by the update phase
-    after it runs the steps itself, so the next boot skips."""
-    _write_record(record_path(project_root, scope), identity, results or {})
-
-
-def needs_bootstrap(project_root: Path, scope: str) -> str | None:
+def needs_bootstrap(project_root: Path) -> str | None:
     """The new identity when this install changed since its last bootstrap,
     else None. None identity (broken tree) never bootstraps."""
     identity = current_install_identity(project_root)
     if not identity:
         return None
-    known = read_last_known(record_path(project_root, scope))
+    known = read_last_known(record_path(project_root))
     if known.get("identity") == identity:
         return None
     return identity
@@ -269,89 +224,27 @@ class _RecordLock:
 # the boot entry point
 # ---------------------------------------------------------------------------
 
-def _report_sealed_runtime_drift(project_root: Path) -> str | None:
-    """Check a SEALED tree's managed tools against pm's lockfile, loudly.
-
-    pm's artifact-time gates (bundle staging, docker build, nix check)
-    are the wall; this is the boot-time backstop for artifacts assembled
-    around them: every boot of a drifted sealed tree prints the problem
-    list to stderr, so the drift is impossible to not-know about.
-
-    Report, not refusal: this runs inside the never-raises boot path, and
-    a sealed gateway that boots on stale tools is degraded — but a
-    gateway that refuses to boot over a tool version is DOWN, remotely,
-    with the fix (rebuild the artifact) out of the machine's own reach.
-
-    Returns the message when drift was found (for the boot summary), None
-    otherwise. Checkouts return None without reading anything — they
-    provision on demand and drift is their normal, self-healing state.
-    """
-    root = Path(project_root)
-    if (root / ".git").exists():
-        return None
-    try:
-        from hermes_cli.steward import sealed_steward
-
-        steward = sealed_steward(root)
-        if steward is None:
-            return None
-        import pm
-
-        problems = pm.check()
-    except Exception as exc:  # noqa: BLE001 — a backstop must not become a gate
-        logger.debug("sealed runtime drift check failed: %s", exc)
-        return None
-    if not problems:
-        return None
-    message = (
-        f"this {steward}-managed install's tools drifted from its pin table: "
-        + "; ".join(problems)
-        + " — rebuild the artifact to fix"
-    )
-    print(f"\n✗ {message}\n", file=sys.stderr)
-    return message
-
-
 def run_boot_bootstrap(project_root: Path) -> dict:
-    """Run due home- and machine-scoped steps for this install. Returns a
-    summary dict (for tests/logs); use maybe_run_boot_bootstrap at call
-    sites."""
+    """Bound home maintenance to one attempt per installed revision."""
     from hermes_cli import post_update
 
-    summary: dict = {"home": "skipped", "machine": "skipped"}
-
-    drift_message = _report_sealed_runtime_drift(Path(project_root))
-    if drift_message:
-        summary["sealed_runtime_drift"] = drift_message
-
-    for scope, steps in (
-        ("home", post_update.BOOT_HOME_STEPS),
-        ("machine", post_update.BOOT_MACHINE_STEPS),
-    ):
-        identity = needs_bootstrap(project_root, scope)
-        if not identity:
-            continue
-        record = record_path(project_root, scope)
-        lock = _RecordLock(record)
-        if not lock.acquire():
-            summary[scope] = "lost-race"
-            continue
-        try:
-            # Double-check under the lock: the previous holder may have
-            # finished between our read and our acquire.
-            if read_last_known(record).get("identity") == identity:
-                summary[scope] = "done-by-other"
-                continue
-            logger.info(
-                "post-update bootstrap (%s scope): code changed to %s, running steps",
-                scope, identity[:12],
-            )
-            results = post_update.run_steps(steps)
-            _write_record(record, identity, results)
-            summary[scope] = results
-        finally:
-            lock.release()
-    return summary
+    identity = needs_bootstrap(project_root)
+    if not identity:
+        return {"home": "skipped"}
+    record = record_path(project_root)
+    lock = _RecordLock(record)
+    if not lock.acquire():
+        return {"home": "lost-race"}
+    try:
+        # A previous holder may have finished after our first read.
+        if read_last_known(record).get("identity") == identity:
+            return {"home": "done-by-other"}
+        logger.info("home maintenance: code changed to %s, running steps", identity[:12])
+        results = post_update.run_steps(post_update.BOOT_HOME_STEPS)
+        _write_record(record, identity, results)
+        return {"home": results}
+    finally:
+        lock.release()
 
 
 def maybe_run_boot_bootstrap(project_root: Path) -> None:

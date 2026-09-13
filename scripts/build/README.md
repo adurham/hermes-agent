@@ -120,6 +120,10 @@ marker. Files, symlinks, and source directories are rejected. The exact npm
 destinations (`ui-tui/dist`, `hermes_cli/web_dist`, `apps/desktop/dist`, and
 `apps/desktop/build/native-deps`) remain rebuildable without a prior marker.
 Other in-tree products live beneath `.build/` or `apps/desktop/build/products/`.
+`frontend-common.mjs` classifies these destinations independently of which source
+children already exist, so a warm desktop rebuild uses the same rule as a fresh
+build. Explicit stamp, icon, native-tree and dependency inputs remain protected,
+even when they live beneath a generated destination.
 
 ### Icons and native inputs
 

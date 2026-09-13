@@ -10,7 +10,7 @@ import { readSourceUpdate, type SourceUpdate } from './checkout-source'
 it('offers manual recovery only for a missing source probe, never for a broken probe', async (): Promise<void> => {
   const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-channel-'))
   const home: string = path.join(root, 'profile')
-  const modulePath: string = path.join(root, 'hermes_cli', 'source_releases.py')
+  const modulePath: string = path.join(root, 'hermes_cli', 'source_check.py')
   fs.mkdirSync(path.dirname(modulePath))
   fs.mkdirSync(home)
   fs.writeFileSync(path.join(root, 'hermes_cli', '__init__.py'), '')
@@ -20,19 +20,11 @@ it('offers manual recovery only for a missing source probe, never for a broken p
   })
 
   const deps: CheckoutStrategyDeps = {
-    isGitCheckout: (): boolean => true,
-    updateCheckCachePath: path.join(root, 'cache.json'),
-    writeFileAtomic: vi.fn(), readSourceUpdate: probe, fetchGitHubApi: vi.fn(),
+    readSourceUpdate: probe,
     hermesHome: home, isWindows: process.platform === 'win32', isMac: process.platform === 'darwin',
     defaultUpdateBranch: 'main', updateHandoffDwellMs: 0,
-    directoryExists: fs.existsSync, readCanonicalInstallStamp: (): null => null,
-    readDesktopUpdateConfig: (): { branch: string } => ({ branch: 'main' }),
+    directoryExists: fs.existsSync,
     resolveUpdateRoot: (): string => root, resolveUpdaterBinary: vi.fn((): string => 'frozen-updater'),
-    resolveHealedBranch: vi.fn(async (_root: string, branch: string): Promise<string> => branch),
-    getOriginUrl: async (): Promise<string> => 'https://github.com/fixture/repo',
-    runGit: async (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => ({
-      code: 0, stdout: args.includes('--abbrev-ref') ? 'feature/work' : args.includes('HEAD') ? 'a'.repeat(40) : '', stderr: ''
-    }),
     firstLine: (text: string): string => text.split('\n')[0], emitUpdateProgress: vi.fn(), rememberLog: vi.fn(),
     startHermes: vi.fn(async (): Promise<void> => {}),
     stopBackendsForUpdate: vi.fn(async (): Promise<void> => {}),
@@ -54,7 +46,6 @@ it('offers manual recovery only for a missing source probe, never for a broken p
       expect(result.command).not.toContain('--branch')
       expect(deps.stopBackendsForUpdate).not.toHaveBeenCalled()
       expect(deps.resolveUpdaterBinary).not.toHaveBeenCalled()
-      expect(deps.fetchGitHubApi).not.toHaveBeenCalled()
       expect(deps.quit).not.toHaveBeenCalled()
     }
 

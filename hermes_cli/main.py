@@ -2052,6 +2052,8 @@ def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> li
     return []
 
 
+# Retired hooks must bypass update_cmd: its current dispatcher captures PM helpers
+# before swapping code, but a historical caller may first resolve these afterward.
 # Frozen updater surface (PEP 562 ``__getattr__`` below): the frozen
 # ``hermes_cli/update_cmd*.py`` files resolve these names via ``_m().<name>``
 # on hermes_cli.main; importing update_cmd eagerly would cost every ``hermes``
@@ -2060,23 +2062,28 @@ def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> li
 _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
     "hermes_cli.update_cmd": (
         "_assess_parked_branch_switch",
-        "_capture_active_lazy_features",
         "_cold_start_windows_gateway_after_update", "_discard_stashed_changes",
         "_filter_non_gateway_concurrent_instances", "_fleet_probe_expected_runtimes",
-        "_get_origin_url", "_handoff_reapable_backend_pids", "_ledger_manual_serve_holders",
-        "_ledger_reapable_backend_pids", "_leftover_pausable_gateway_pids", "_npm_lockfile_changed",
-        "_orphaned_desktop_backend_pids", "_park_stashed_changes",
+        "_get_origin_url", "_park_stashed_changes",
         "_pause_windows_gateways_for_update", "_print_parked_branch_kept_notice",
-        "_print_parked_branch_skip_warning", "_purge_stale_hermes_modules",
-        "_refresh_active_lazy_features", "_refresh_active_memory_provider_dependencies",
+        "_print_parked_branch_skip_warning",
         "_refresh_bootstrap_cache_scripts", "_refresh_windows_gateway_launchers",
-        "_relaunch_stopped_serves", "_reload_updated_runtime_modules",
         "_restore_stashed_changes",
         "_resume_windows_gateways_after_update", "_run_logged_subprocess", "_run_pre_update_backup",
-        "_stash_local_changes_if_needed", "_stop_process_trees", "_sync_with_upstream_if_needed",
+        "_stash_local_changes_if_needed", "_sync_with_upstream_if_needed",
         "_venv_launcher_ancestors",
         "_wait_for_windows_update_gateway_exit", "_warn_orphaned_update_autostashes",
-        "_write_update_incomplete_marker",
+    ),
+    "hermes_cli.old_updater_deps": (
+        "_capture_active_lazy_features", "_handoff_reapable_backend_pids",
+        "_ledger_manual_serve_holders", "_ledger_reapable_backend_pids",
+        "_leftover_pausable_gateway_pids", "_npm_lockfile_changed",
+        "_orphaned_desktop_backend_pids", "_refresh_active_lazy_features",
+        "_refresh_active_memory_provider_dependencies", "_relaunch_stopped_serves",
+        "_stop_process_trees",
+    ),
+    "hermes_cli.update_cmd_maint": (
+        "_purge_stale_hermes_modules", "_reload_updated_runtime_modules",
     ),
     "hermes_cli.dashboard_procs": (
         "_detect_concurrent_hermes_instances", "_kill_stale_dashboard_processes",
@@ -2089,12 +2096,15 @@ _FROZEN_ATTR_SOURCES: dict[str, str] = {
 
 def __getattr__(name):
     """Resolve the frozen updater surface on first read (see _FROZEN_UPDATER_SURFACE)."""
-    module = _FROZEN_ATTR_SOURCES.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
+    if name == "_write_update_incomplete_marker":
+        from hermes_cli._old_updater import stop_for_relaunch as value
+    else:
+        module = _FROZEN_ATTR_SOURCES.get(name)
+        if module is None:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        import importlib
 
-    value = getattr(importlib.import_module(module), name)
+        value = getattr(importlib.import_module(module), name)
     globals()[name] = value  # cache: later accesses skip __getattr__
     return value
 
@@ -2342,6 +2352,9 @@ def cmd_update(args):
 
         raise
     except BaseException as _update_exc:
+        if gateway_mode:
+            from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
+            _write_gateway_update_exit_code(False)
         _finalize_update_receipt(1, f"{type(_update_exc).__name__}: {_update_exc}")
         raise
     else:
@@ -3397,6 +3410,19 @@ def main():
         from hermes_cli.boot_bootstrap import default_project_root, maybe_run_boot_bootstrap
         maybe_run_boot_bootstrap(default_project_root())
 
+    # Every dispatch, including fast chat/serve, gets one passive PM verdict.
+    try:
+        from hermes_cli.boot_bootstrap import default_project_root
+        from hermes_cli.venv_sync import check_runtime
+
+        problem = check_runtime(default_project_root())
+        if problem:
+            print(f"⚠ {problem}", file=sys.stderr)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
+
     if _try_termux_fast_tui_launch():
         return
     if _try_termux_fast_cli_launch():
@@ -3405,25 +3431,6 @@ def main():
         return
     if _try_fast_chat_launch():
         return
-
-    # The startup check: O(1) stamp comparisons, no network, no installs.
-    # One loud line when the install is damaged; never blocks the command.
-    # Then provision: prepend the store's tool dirs to PATH so reactive
-    # which('git'|'bash'|'ffmpeg'|...) resolves the bundled binaries.
-    try:
-        import pm
-
-        pm.adopt()
-        problems = pm.activate()
-        if problems:
-            print(
-                f"⚠ install out of sync ({'; '.join(problems)}) — run `hermes pm install`",
-                file=sys.stderr,
-            )
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
 
     parser, subparsers = _build_cli_parser()
 

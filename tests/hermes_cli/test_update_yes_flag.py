@@ -73,8 +73,8 @@ class TestUpdateYesConfigMigration:
     """--yes auto-answers the config-migration prompt and skips API-key prompts."""
 
     @patch("hermes_cli.update_cmd._reload_config_modules")
-    @patch("hermes_cli.update_cmd._run_migrate_config_fresh")
-    @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
+    @patch("hermes_cli.config.migrate_config")
+    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
     @patch("shutil.which", return_value=None)
@@ -114,8 +114,8 @@ class TestUpdateYesConfigMigration:
         assert "Would you like to configure them now?" not in out
 
     @patch("hermes_cli.update_cmd._reload_config_modules")
-    @patch("hermes_cli.update_cmd._run_migrate_config_fresh")
-    @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
+    @patch("hermes_cli.config.migrate_config")
+    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
     @patch("shutil.which", return_value=None)
@@ -174,8 +174,8 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
     """
 
     @patch("hermes_cli.update_cmd._reload_config_modules")
-    @patch("hermes_cli.update_cmd._run_migrate_config_fresh")
-    @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
+    @patch("hermes_cli.config.migrate_config")
+    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
     @patch("shutil.which", return_value=None)

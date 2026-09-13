@@ -97,6 +97,52 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   expect(files(input.source).some(([name]) => name.includes('.vite') || name.endsWith('tsbuildinfo'))).toBe(false)
 }, 60000)
 
+test('desktop output cannot overlap a source directory symlinked outside the checkout', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const root = mkdtempSync(join(tmpdir(), 'desktop symlinked source-'))
+  roots.push(root)
+  const source = join(root, 'source')
+  const externalSource = join(root, 'external-source')
+  mkdirSync(join(source, 'apps/desktop'), { recursive: true })
+  put(join(externalSource, 'index.js'), 'source must not change')
+  symlinkSync(externalSource, join(source, 'apps/desktop/src'), 'junction')
+  const out = join(externalSource, 'product')
+  const before = files(root)
+
+  // Missing prepared inputs must not hide a failure to reject source overlap.
+  await expect(buildDesktop({ source, out,
+    icons: join(root, 'icons'), stamp: join(root, 'stamp.json'), nativeDeps: join(root, 'native'),
+  })).rejects.toThrow(/Output must not overlap build inputs/)
+  expect(files(root)).toEqual(before)
+  expect(readdirSync(externalSource)).toEqual(['index.js'])
+  expect(existsSync(out)).toBe(false)
+})
+
+test('in-tree desktop products rebuild after build exists without replacing prepared inputs', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  input.out = join(input.source, 'apps/desktop/build/products/desktop')
+  await buildDesktop(input)
+  put(join(input.source, 'apps/desktop/src/index.js'), 'document.getElementById("app").textContent = "warm rebuild"')
+  await buildDesktop(input)
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  const assets = files(join(input.out, 'assets')).map(([, bytes]) => Buffer.from(bytes, 'base64').toString()).join('')
+  expect(assets).toContain('warm rebuild')
+
+  // The generated-path allowance never overrides an explicitly prepared input,
+  // even when that input itself is an earlier builder-owned product.
+  const built = files(input.out)
+  for (const prepared of [
+    { stamp: join(input.out, 'hermes-build.json') },
+    { nativeDeps: join(input.out, 'node_modules') },
+    { icons: input.out },
+  ]) {
+    await expect(buildDesktop({ ...input, ...prepared })).rejects.toThrow(/overlap/)
+    expect(files(input.out)).toEqual(built)
+  }
+}, 30000)
+
 test('a prepared input changing during desktop compilation cannot publish a current receipt', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const input = fixture()
@@ -137,7 +183,7 @@ test('typecheck uses scratch state and incomplete prepared inputs fail before pu
   rmSync(join(input.icons, 'apps/desktop/public/apple-touch-icon.png'))
   await expect(buildDesktop(input)).rejects.toThrow(/icon/i)
   expect(files(input.out)).toEqual(built)
-  await expect(buildDesktop({ ...input, out: join(input.source, 'apps/desktop/scripts') })).rejects.toThrow(/overlap/)
+  await expect(buildDesktop({ ...input, out: join(input.source, 'apps/desktop/scripts') })).rejects.toThrow(/Output/)
   put(join(input.icons, 'apps/desktop/public/apple-touch-icon.png'), 'fresh icon')
   rmSync(join(input.nativeDeps, 'node-pty/build'), { recursive: true, force: true })
   rmSync(join(input.nativeDeps, 'node-pty/prebuilds'), { recursive: true, force: true })

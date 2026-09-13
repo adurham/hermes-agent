@@ -1,5 +1,7 @@
 import type { AppUpdater } from 'electron-updater'
 
+import { applyPackagedHandoff } from './packaged-handoff'
+
 import type { UpdaterApplyResultWire, UpdaterStatusWire, UpdaterStrategy } from './index'
 
 export interface MacStrategyDeps {
@@ -20,7 +22,9 @@ export class MacStrategy implements UpdaterStrategy {
   constructor(private readonly deps: MacStrategyDeps) {}
 
   async check(): Promise<UpdaterStatusWire> {
-    if (this.applying) { throw new Error('An update is already in progress.') }
+    if (this.applying) {
+      throw new Error('An update is already in progress.')
+    }
 
     return this.checkRelease()
   }
@@ -28,7 +32,9 @@ export class MacStrategy implements UpdaterStrategy {
   private async checkRelease(): Promise<UpdaterStatusWire> {
     const result = await this.deps.updater.checkForUpdates()
 
-    if (!result) { throw new Error('The macOS updater is not active for this app.') }
+    if (!result) {
+      throw new Error('The macOS updater is not active for this app.')
+    }
 
     return {
       supported: true,
@@ -42,9 +48,11 @@ export class MacStrategy implements UpdaterStrategy {
   }
 
   async apply(): Promise<UpdaterApplyResultWire> {
-    if (this.applying) { throw new Error('An update is already in progress.') }
+    if (this.applying) {
+      throw new Error('An update is already in progress.')
+    }
+
     this.applying = true
-    let stopped = false
 
     const progress = ({ percent }: { percent: number }): void => {
       this.deps.emitProgress({ stage: 'fetch', message: 'Downloading the Hermes update.', percent })
@@ -53,21 +61,33 @@ export class MacStrategy implements UpdaterStrategy {
     this.deps.updater.on('download-progress', progress)
 
     try {
-      const status = await this.checkRelease()
+      return await applyPackagedHandoff(
+        {
+          teardown: this.deps.beforeInstall,
+          restore: this.deps.onInstallFailure,
+          emitProgress: this.deps.emitProgress
+        },
+        async (stop: () => Promise<void>): Promise<UpdaterApplyResultWire> => {
+          const status = await this.checkRelease()
 
-      if (!status.updateAvailable) { return { ok: true, mechanism: this.mechanism } }
-      await this.deps.updater.downloadUpdate()
-      this.deps.emitProgress({ stage: 'prepare', message: 'Verifying the signed macOS update.', percent: null })
-      await this.deps.prepareInstall()
-      stopped = true
-      await this.deps.beforeInstall()
-      this.deps.emitProgress({ stage: 'restart', message: 'Restarting Hermes to install the update.', percent: 100 })
-      this.deps.updater.quitAndInstall()
+          if (!status.updateAvailable) {
+            return { ok: true, mechanism: this.mechanism }
+          }
 
-      return { ok: true, bundled: true, handedOff: true, mechanism: this.mechanism }
-    } catch (error) {
-      if (stopped) { await this.deps.onInstallFailure() }
-      throw error
+          await this.deps.updater.downloadUpdate()
+          this.deps.emitProgress({ stage: 'prepare', message: 'Verifying the signed macOS update.', percent: null })
+          await this.deps.prepareInstall()
+          await stop()
+          this.deps.emitProgress({
+            stage: 'restart',
+            message: 'Restarting Hermes to install the update.',
+            percent: 100
+          })
+          this.deps.updater.quitAndInstall()
+
+          return { ok: true, bundled: true, handedOff: true, mechanism: this.mechanism }
+        }
+      )
     } finally {
       this.deps.updater.removeListener('download-progress', progress)
       this.applying = false
@@ -84,21 +104,32 @@ export interface NativeMacUpdater {
 }
 
 /** Download completion alone does not mean Squirrel accepted the signature. */
-export function prepareMacInstall(native: NativeMacUpdater, timeoutMs = 120_000): Promise<void> {
-  return new Promise((resolve, reject) => {
+export function prepareMacInstall(native: NativeMacUpdater, timeoutMs: number = 120_000): Promise<void> {
+  return new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
     const cleanup = (): void => {
       clearTimeout(timer)
       native.removeListener('error', failed)
       native.removeListener('update-downloaded', ready)
     }
 
-    const failed = (error: Error): void => { cleanup(); reject(error) }
+    const failed = (error: Error): void => {
+      cleanup()
+      reject(error)
+    }
 
-    const ready = (): void => { cleanup(); resolve() }
-    const timer = setTimeout(() => failed(new Error('macOS update verification timed out.')), timeoutMs)
+    const ready = (): void => {
+      cleanup()
+      resolve()
+    }
+
+    const timer = setTimeout((): void => failed(new Error('macOS update verification timed out.')), timeoutMs)
     native.once('error', failed)
     native.once('update-downloaded', ready)
 
-    try { native.checkForUpdates() } catch (error) { failed(error as Error) }
+    try {
+      native.checkForUpdates()
+    } catch (error) {
+      failed(error as Error)
+    }
   })
 }

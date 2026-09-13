@@ -234,7 +234,12 @@ def test_concurrent_commands_keep_acknowledged_enables(plugin_world, sibling_pro
                 f"    return {command!r}\n"
                 "client.runtime_command = ready\n"
                 "from hermes_cli.plugins_cmd import cmd_enable\n"
-                f"cmd_enable({name!r}, allow_tool_override=False)\n"
+                "from hermes_cli.plugins_admission import AdmissionRefused\n"
+                "try:\n"
+                f"    cmd_enable({name!r}, allow_tool_override=False)\n"
+                "except AdmissionRefused as exc:\n"
+                "    assert 'configuration changed since this selection was read' in str(exc)\n"
+                "    raise SystemExit(75)\n"
             )
             processes.append(subprocess.Popen([sys.executable, "-I", "-B", "-c", script],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -245,9 +250,15 @@ def test_concurrent_commands_keep_acknowledged_enables(plugin_world, sibling_pro
         for process in processes:
             threading.Thread(target=lambda proc=process: ready.put(proc.stdout.readline().strip()), daemon=True).start()
         assert [ready.get(timeout=30) for _ in processes] == ["READY", "READY"]
-        for process in processes:
+        for index, process in enumerate(processes):
             out, err = process.communicate("go\n", timeout=60)
-            assert process.returncode == 0, out + err
+            expected = 75 if index == 1 and not sibling_profiles else 0
+            assert process.returncode == expected, out + err
+        if not sibling_profiles:
+            # The stale second request is refused, not acknowledged. An explicit
+            # retry reads the first successful enable and extends it.
+            assert world.enabled() == ["race-left"]
+            world.command("enable", name="race-right", no_allow_tool_override=True)
         if sibling_profiles:
             assert (world.home / "config.yaml").read_bytes() == untouched
             for name, home in zip(("race-left", "race-right"), homes):

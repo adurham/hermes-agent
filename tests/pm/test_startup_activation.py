@@ -78,8 +78,16 @@ def test_activate_returns_live_verdict_without_partial_environment(checked_store
 def test_startup_uses_one_verdict(checked_store, monkeypatch, capsys, caplog, surface, damaged):
     binaries, checks = checked_store
     if surface == "gateway":
-        from gateway.run import _run_pm_startup
-        start = _run_pm_startup
+        from gateway import run
+
+        async def started(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(run, "start_gateway", started)
+        monkeypatch.setattr(run, "_exit_after_graceful_shutdown", lambda code: None)
+        monkeypatch.setattr("hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
+        monkeypatch.setattr(sys, "argv", ["gateway"])
+        start = run.main
     else:
         from hermes_cli import main
 

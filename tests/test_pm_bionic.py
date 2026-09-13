@@ -152,26 +152,30 @@ def test_debpackage_unpack_hardened(tmp_path: Path):
         _P().unpack(evil, tmp_path / "staged2", "linux-arm64-bionic")
 
 
-def test_python_bionic_verify_is_file_evidence(tmp_path: Path):
+@pytest.mark.parametrize("name", ["python", "uv", "node"])
+def test_bionic_verify_is_file_evidence(tmp_path: Path, monkeypatch, name):
     """bionic verify never executes the staged binary; presence is the
     contract (the digest already proved the bytes)."""
     from pm.registry import get_package
 
-    py = get_package("python")
-    bin_rel = Path(py.prefix_rel) / py.main_rel("linux-arm64-bionic")
+    def refuse_exec(*args, **kwargs):
+        pytest.fail(f"bionic verification attempted execution: {args}")
+
+    monkeypatch.setattr("pm.packages.subprocess.run", refuse_exec)
+    package = get_package(name)
+    bin_rel = Path(package.prefix_rel) / package.main_rel("linux-arm64-bionic")
     entry = tmp_path / "entry"
     (entry / bin_rel).parent.mkdir(parents=True)
     (entry / bin_rel).write_bytes(b"bionic-elf-bytes")
-    assert py.verify(entry, "linux-arm64-bionic") == ""
+    assert package.verify(entry, "linux-arm64-bionic") == ""
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert "missing" in py.verify(empty, "linux-arm64-bionic")
+    assert "missing" in package.verify(empty, "linux-arm64-bionic")
 
 
 def test_bionic_binary_and_env_contract(tmp_path: Path):
-    """On bionic, _BionicDebArm.binary() must return the staged deb's main
-    binary path (file evidence, no exec), so the base Package.env contract
-    exposes the tool through PATH like every other pm package."""
+    """Bionic binaries retain their staged paths, but only on_path packages
+    expose them in the environment; internal uv stays private to PM."""
     from pm.registry import get_package
 
     for name in ("uv", "python", "node"):
@@ -185,9 +189,12 @@ def test_bionic_binary_and_env_contract(tmp_path: Path):
         assert binary == main, f"{name}.binary() on bionic: {binary}"
 
         env = pkg.env(entry, "linux-arm64-bionic")
-        assert env.get("PATH") == [str(main.parent)], (
-            f"{name}.env() on bionic does not follow the Package.env PATH contract"
+        expected_path = [str(main.parent)] if pkg.on_path else None
+        assert env.get("PATH") == expected_path, (
+            f"{name}.env() on bionic does not follow its on_path declaration"
         )
+        if pkg.internal:
+            assert "PATH" not in env, f"internal {name} must not leak into public PATH"
 
 
 def test_stage_only_does_not_record_host_facts(tmp_path, monkeypatch):

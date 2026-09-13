@@ -48,6 +48,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 # Direct-script invocation starts with scripts/, not the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -56,6 +57,7 @@ from scripts.releases import handoff, r2, semver  # noqa: E402
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
 END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
+DEFAULT_REPO = "NousResearch/hermes-agent"
 
 # Asset name shapes (electron-builder artifactName in
 # apps/desktop/electron-builder.config.cjs):
@@ -340,7 +342,7 @@ _PAGE_STYLE = (
     "h1{font-size:1.4rem}h2{font-size:1.05rem;margin-top:1.75rem}"
     "p{color:#444}table{border-collapse:collapse;width:100%}"
     "th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid #dcdcdc}"
-    "th{font-weight:600}a{color:#0a58ca}code{font-size:.95em}"
+    "th{font-weight:600}a{color:#0a58ca}code{font-size:.95em;white-space:pre-wrap;overflow-wrap:anywhere}"
 )
 
 # The record a channel page keeps of the release it describes; the write
@@ -371,12 +373,13 @@ def _link(url: str) -> str:
 
 def render_page(tag: str, assets_by_app: dict, base_url: str,
                 incomplete_jobs: list[str] | None = None,
-                run_url: str | None = None) -> str:
+                run_url: str | None = None, *, repo: str = DEFAULT_REPO) -> str:
     """The tag/channel page: the release-body download table as HTML."""
     channel = r2.channel_for_tag(tag)
+    tag_url = f"https://github.com/{quote(repo, safe='/')}/releases/tag/{quote(tag, safe='')}"
     body = [
         f"<h1>Hermes Desktop {channel} builds</h1>",
-        f"<p>Release <code>{html.escape(tag)}</code>. Only objects this release "
+        f"<p>Release {_link(tag_url)}<code>{html.escape(tag)}</code></a>. Only objects this release "
         "actually staged in the bucket are listed.</p>",
     ]
     if incomplete_jobs:
@@ -406,19 +409,34 @@ def render_page(tag: str, assets_by_app: dict, base_url: str,
 def render_commit_page(commit: str, names: list[str], base_url: str,
                        receipts: dict[str, dict | None],
                        failed_legs: list[str] | None = None,
-                       run_url: str | None = None) -> str:
+                       run_url: str | None = None, *, repo: str = DEFAULT_REPO,
+                       bundle_env: dict[str, str | None] | None = None) -> str:
     """The commit-build page: every expected binary, built or not."""
     _validated_commit_inputs(commit, receipts)
+    commit_url = f"https://github.com/{quote(repo, safe='/')}/commit/{commit}"
     rows = []
     for label, status, url, link_text in commit_entries(commit, names, base_url, receipts, failed_legs, run_url):
         cell = (f"{_link(url)}{html.escape(link_text)}</a>" if url and link_text else "—")
         rows.append([html.escape(label), html.escape(status), cell])
     body = [
         f"<h1>Hermes commit build <code>{html.escape(commit[:12])}</code></h1>",
-        f"<p>Commit <code>{html.escape(commit)}</code>. Every expected binary is listed; "
+        f"<p>Commit {_link(commit_url)}<code>{html.escape(commit)}</code></a>. Every expected binary is listed; "
         "built rows link to downloads; incomplete rows link to the build run when available.</p>",
         *_table(("Binary", "Status", "Download / diagnostics"), rows),
     ]
+    if bundle_env:
+        from scripts.releases.bundle_env import validate
+
+        body.extend([
+            "<h2>Bundle environment</h2>",
+            "<p>Explicit non-secret desktop bundle overrides only. Runtime values override defaults; "
+            "Unset always removes the variable. String values use JSON notation.</p>",
+            *_table(("Variable", "Value / action"), [
+                [f"<code>{html.escape(key)}</code>", "Unset" if value is None else
+                 f"<code>{html.escape(json.dumps(value, ensure_ascii=False))}</code>"]
+                for key, value in sorted(validate(bundle_env).items())
+            ]),
+        ])
     return _page(f"Hermes commit build {commit[:12]}", commit, body)
 
 
@@ -474,13 +492,14 @@ def existing_page(key: str) -> str | None:
         raise
 
 
-def write_channel_page(tag: str, assets_by_app: dict, base_url: str) -> str | None:
+def write_channel_page(tag: str, assets_by_app: dict, base_url: str,
+                       *, repo: str = DEFAULT_REPO) -> str | None:
     """Publish releases/<channel>/index.html for the tag's own channel."""
     key = r2.channel_page_key_for(r2.channel_for_tag(tag))
     if not supersedes(existing_page(key), tag):
         print(f"::warning::{key} already describes a newer release; leaving it unchanged")
         return None
-    return write_page(key, render_page(tag, assets_by_app, base_url), base_url)
+    return write_page(key, render_page(tag, assets_by_app, base_url, repo=repo), base_url)
 
 
 def r2_object_names_under(prefix: str) -> list[str]:
@@ -517,7 +536,9 @@ def main() -> int:
     parser.add_argument("--summary-failed-legs", default="",
                         help="With --summary-commit: comma-separated failed job names, "
                              "blamed on the Not built rows")
-    parser.add_argument("--repo", default="NousResearch/hermes-agent")
+    parser.add_argument("--repo", default=DEFAULT_REPO)
+    parser.add_argument("--bundle-env-json", default=os.environ.get("HERMES_BUNDLE_ENV_JSON", ""),
+                        help="Explicit non-secret commit desktop bundle overrides, not the CI environment")
     parser.add_argument("--run-url", default=None,
                         help="Actual workflow run URL for incomplete-build diagnostics")
     parser.add_argument("--r2-base-url", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL"),
@@ -543,6 +564,9 @@ def main() -> int:
             return 1
         commit = args.summary_commit
         try:
+            from scripts.releases.bundle_env import decode
+
+            bundle_env = decode(args.bundle_env_json)
             prefix = r2.commit_prefix_for(commit)
         except ValueError as err:
             print(f"::error::{err}")
@@ -555,7 +579,8 @@ def main() -> int:
         with open(args.summary_out, "a", encoding="utf-8") as out:
             out.write(block)
         write_page(r2.commit_page_key_for(commit),
-                   render_commit_page(commit, names, args.r2_base_url, receipts, failed_legs, args.run_url),
+                   render_commit_page(commit, names, args.r2_base_url, receipts, failed_legs, args.run_url,
+                                      repo=args.repo, bundle_env=bundle_env),
                    args.r2_base_url)
         built = sum(1 for row in commit_expected_rows(names, receipts) if row["state"] == "built")
         print(f"✓ Commit summary appended to {args.summary_out} ({built}/{len(_COMMIT_EXPECTED)} binaries built)")
@@ -581,7 +606,8 @@ def main() -> int:
         # consumed by source updates. Missing artifacts never become downloads.
         if not args.dry_run:
             write_page(r2.staging_key_for(args.tag, "index.html"),
-                       render_page(args.tag, assets, args.r2_base_url, incomplete, args.run_url), args.r2_base_url)
+                       render_page(args.tag, assets, args.r2_base_url, incomplete, args.run_url,
+                                   repo=args.repo), args.r2_base_url)
 
     # Keep the per-tag diagnostic page even when GitHub cannot supply a draft.
     view = subprocess.run(
@@ -595,7 +621,7 @@ def main() -> int:
     release = json.loads(view.stdout)
     body = release.get("body") or ""
     if not args.pending_run_url and not args.dry_run and not incomplete and names:
-        write_channel_page(args.tag, assets, args.r2_base_url)
+        write_channel_page(args.tag, assets, args.r2_base_url, repo=args.repo)
     if MARKER not in body:
         print("::warning::release body has no HERMES_BUILDS_TABLE marker; leaving it unchanged")
         return 0

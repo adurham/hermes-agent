@@ -351,7 +351,7 @@ class StatePackage(Package):
     def expected_stamp(self, extras: list[str]) -> str:
         raise NotImplementedError
 
-    def apply(self, extras: list[str]) -> None:
+    def apply(self, extras: list[str], *, explicit: bool = False) -> None:
         raise NotImplementedError
 
 

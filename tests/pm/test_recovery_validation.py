@@ -42,8 +42,10 @@ def test_validation_rejects_a_missing_required_import(tmp_path, monkeypatch, dam
     candidate = tmp_path / "venv"
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     from pm.workspace import lock_and_sync
+    from pm.environment import managed_environment
 
-    lock_and_sync([], [], root=workspace, venv_dir=candidate)
+    lock_and_sync([], [], root=workspace, source=core, seed_lock=None,
+                  environment=managed_environment(candidate))
     python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     validate_environment(python, env=env, cwd=workspace)
     shutil.rmtree(site_packages(candidate) / "dotenv")

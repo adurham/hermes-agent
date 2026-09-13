@@ -123,7 +123,7 @@ def test_maintenance_returns_sqlite_verdict_without_frontend_flags(monkeypatch, 
 
 
 @pytest.mark.parametrize("already_restarted_units", [None, {"hermes-serve"}])
-def test_dashboard_refresh_reloads_then_preserves_restart_bookkeeping(
+def test_dashboard_refresh_preserves_restart_bookkeeping(
     already_restarted_units, monkeypatch, capsys,
 ):
     order = []
@@ -138,7 +138,7 @@ def test_dashboard_refresh_reloads_then_preserves_restart_bookkeeping(
     )
     update_cmd_maint._refresh_dashboard_after_update(already_restarted_units=already_restarted_units)
 
-    assert order == ["reload", {
+    assert order == [{
         "restart_managed": True, "already_restarted_units": already_restarted_units,
     }]
     assert "could not be auto-restarted" in capsys.readouterr().out

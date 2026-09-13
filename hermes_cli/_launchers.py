@@ -21,7 +21,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from hermes_constants import get_hermes_home
-from hermes_cli.runtime_paths import store_root
+from hermes_cli.runtime_paths import dependency_home_root, store_root
 
 
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
@@ -222,9 +222,11 @@ def mint_launcher(
 
 def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> str:
     module, func = ENTRY_POINTS[name]
+    # Profile boot repairs shared launchers: their default must stay at the
+    # install's dependency root, not whichever profile triggered publication.
     return (
         "import os, re, sys\n"
-        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {str(get_hermes_home())!r}\n"
+        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {str(dependency_home_root())!r}\n"
         "os.environ.pop('PYTHONHOME', None)\n"
         "os.environ.pop('PYTHONPATH', None)\n"
         f"sys.path.insert(0, {str(repo_root.resolve())!r})\n"
@@ -248,14 +250,66 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
     )
 
 
-def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str) -> Path | None:
-    command = shlex.join([str(python_exe), "-I", "-c", script])
+def _write_shell(target: Path, command: list[str]) -> Path | None:
+    body = f'#!/bin/sh\nexec {shlex.join(command)} "$@"\n'
+    try:
+        if not target.is_symlink() and target.read_text(encoding="utf-8") == body:
+            if os.access(target, os.X_OK):
+                return target
+    except (OSError, UnicodeError):
+        pass
 
     def write(staging: Path) -> None:
-        staging.write_text(f'#!/bin/sh\nexec {command} "$@"\n', encoding="utf-8", newline="\n")
+        staging.write_text(body, encoding="utf-8", newline="\n")
         staging.chmod(0o755)
 
-    return _write_atomic(out_dir / name, write)
+    return _write_atomic(target, write)
+
+
+def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str) -> Path | None:
+    return _write_shell(out_dir / name, [str(python_exe), "-I", "-c", script])
+
+
+def _owns_launcher(target: Path, root: Path) -> bool:
+    """Recognize our old source/venv launchers, never a mere mention in a comment."""
+    if target.is_symlink():
+        return target.resolve().is_relative_to(root)
+    try:
+        tokens = shlex.split(target.read_text(encoding="utf-8-sig"), comments=True)
+    except (OSError, UnicodeError, ValueError):
+        return False
+    paths = {str(root / p) for p in (
+        "hermes", "run_agent.py", "venv/bin/python", "venv/bin/python3",
+        ".hermes/bin/hermes", ".hermes/bin/hermes-acp",
+    )}
+    # Current store launchers pass this Python bootstrap as one shell argument.
+    bootstrap = f"sys.path.insert(0, {str(root)!r})"
+    if paths.intersection(tokens) or any(bootstrap in token for token in tokens):
+        return True
+    # The historical updater wrote ACP as a sibling-hermes forwarder. Adopt
+    # it only when that sibling demonstrably belongs to this installation.
+    if target.name == "hermes-acp":
+        sibling = target.with_name("hermes")
+        return (tokens == ["exec", str(sibling), "acp", "$@"]
+                and _owns_launcher(sibling, root))
+    return False
+
+
+def _publish_conveniences(root: Path, out_dir: Path, names) -> dict[Path, bool]:
+    """User-bin commands forward to durable local launchers, not a Python pin."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    published = {}
+    for name in names:
+        target = out_dir / name
+        if (target.exists() or target.is_symlink()) and not _owns_launcher(target, root):
+            continue
+        before = target.lstat().st_mtime_ns if target.exists() or target.is_symlink() else None
+        command = ([str(root / ".hermes/bin/hermes"), "--run-module", "run_agent"]
+                   if name == "hermes-agent" else [str(root / ".hermes/bin" / name)])
+        if _write_shell(target, command) is None:
+            raise OSError(f"could not publish launcher {target}")
+        published[target] = before != target.lstat().st_mtime_ns
+    return published
 
 
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
@@ -276,23 +330,128 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
 
 
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
-    """Publish exact-install commands and their user-bin conveniences.
-
-    Installers/updaters use the local command, since a shared HOME/bin may
-    have been repointed to another checkout. Return the requested outputs.
-    """
-    repo_root = Path(repo_root)
-    local = repo_root / ".hermes" / "bin"
+    """Publish exact-install commands; conveniences follow them across Python repins."""
+    root = Path(repo_root).resolve()
+    local = root / ".hermes" / "bin"
     local.mkdir(parents=True, exist_ok=True)
+    written = [str(path) for name in WINDOWS_BIN_LAUNCHERS
+               if (path := stage_launcher(name, root, local)) is not None]
+    if Path(out_dir).resolve() == local:
+        return written
+    if len(written) != len(WINDOWS_BIN_LAUNCHERS):
+        return []
+    if not _is_windows():
+        return [str(path) for path in _publish_conveniences(root, Path(out_dir), WINDOWS_BIN_LAUNCHERS)]
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    return [str(path) for name in WINDOWS_BIN_LAUNCHERS
+            if (path := stage_launcher(name, root, Path(out_dir))) is not None]
+
+
+def expose_cli(project_root: Path | None = None) -> dict:
+    """Repair PATH conveniences without taking over another installation's files.
+
+    macOS CLI-first launches link the bundle's signed shims directly; Electron
+    need not have run. Source installs converge on the store launcher owner.
+    Shell rc/PATH registration remains installer-owned.
+    """
+    if _is_windows():
+        return {"ok": True, "skipped": "windows-installer-owned"}
+    try:
+        from hermes_cli.config import load_config
+    except ImportError:
+        # The explicit PM bootstrap publishes Python before application deps.
+        # Installers will expose it after sync; never invent a config reader here.
+        return {"ok": True, "skipped": "config-unavailable"}
+    from hermes_cli.steward import read_install_stamp
+
+    cli_cfg = (load_config() or {}).get("cli", {})
+    if isinstance(cli_cfg, dict) and not cli_cfg.get("expose_on_path", True):
+        return {"ok": True, "skipped": "config-disabled"}
+    root = Path(project_root or os.environ.get("HERMES_INSTALL_ROOT") or Path(__file__).resolve().parents[1]).resolve()
+    if _is_bundled_payload(root):
+        if sys.platform == "darwin":
+            return _symlink_sealed_launchers(root.parent / "bin")
+        return {"ok": True, "skipped": "bundle-owns-launchers"}
+    if read_install_stamp(root).get("updateMechanism") == "external":
+        return {"ok": True, "skipped": "externally-owned"}
+    if resolve_store_python(root) is None:
+        return {"ok": True, "skipped": "no-store-python"}
+    try:
+        local = root / ".hermes" / "bin"
+        if len(ensure_install_launchers(root, local)) != len(WINDOWS_BIN_LAUNCHERS):
+            return {"ok": False, "error": "source launcher publication failed"}
+        dirs = [Path.home() / ".local" / "bin"]
+        # Repair existing FHS/custom-home exposure, but never create new global
+        # entries or reclaim a convenience that was repointed to another root.
+        from hermes_constants import get_default_hermes_root
+        for directory in (get_default_hermes_root() / "bin", Path("/usr/local/bin")):
+            if directory not in dirs and _owns_launcher(directory / "hermes", root):
+                dirs.append(directory)
+        written = []
+        for directory in dirs:
+            published = _publish_conveniences(root, directory, (*WINDOWS_BIN_LAUNCHERS, "hermes-agent"))
+            written.extend(path.name for path, changed in published.items() if changed)
+        return {"ok": True, "written": written}
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _is_bundled_payload(root: Path) -> bool:
+    """Is ``root`` a desktop bundle's agent payload? The stamp is the
+    authority (payload marker / desktop-app distribution), never a
+    sibling-directory sniff; a .git tree is a dev checkout regardless."""
+    if (root / ".git").exists():
+        return False
+    from hermes_cli.steward import STEWARD_DESKTOP, read_install_stamp
+
+    stamp = read_install_stamp(root)
+    if not stamp:
+        return False
+    return bool(stamp.get("payload")) or stamp.get("distribution") == STEWARD_DESKTOP
+
+
+def _symlink_sealed_launchers(payload_bin) -> dict:
+    """Link ~/.local/bin/{hermes,hermes-agent,hermes-acp} at a sealed
+    bundle's own prebuilt shims (macOS only).
+
+    Symlinks, not copies: the shims are signed as part of the app bundle,
+    and a copy would both orphan the signature's context and go stale on
+    every app update — a symlink into the .app follows the bundle's
+    content wherever Squirrel.Mac swaps it.
+
+    Ownership guard mirrors expose_cli's wrapper logic: an existing
+    entry is replaced only when it is ours — a symlink into THIS app
+    bundle's payload — or missing/broken. A user's own `hermes` (pipx,
+    another checkout's wrapper) is never touched.
+    """
+    link_dir = Path.home() / ".local" / "bin"
+    payload_root = payload_bin.parent
     written: list[str] = []
-    for name in WINDOWS_BIN_LAUNCHERS:
-        if Path(out_dir).resolve() != local.resolve():
-            if stage_launcher(name, repo_root, local) is None:
+    try:
+        link_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("hermes", "hermes-agent", "hermes-acp"):
+            source = payload_bin / name
+            if not source.is_file():
                 continue
-        path = stage_launcher(name, repo_root, Path(out_dir))
-        if path is not None:
-            written.append(str(path))
-    return written
+            target = link_dir / name
+            if target.is_symlink():
+                current = os.readlink(target)
+                if current == str(source):
+                    continue  # already ours and current
+                # Ours if it points into this payload (stale app path from
+                # a previous version counts — resolve() of a dangling link
+                # still yields the old path text) — or dangling entirely.
+                points_into_payload = str(Path(current)).startswith(str(payload_root) + os.sep)
+                if not points_into_payload and target.exists():
+                    continue  # a live foreign link — user's arrangement
+            elif target.exists():
+                continue  # a real file we did not write — never clobber
+            target.unlink(missing_ok=True)
+            target.symlink_to(source)
+            written.append(name)
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "written": written, "mode": "sealed-symlinks"}
 
 
 if __name__ == "__main__":

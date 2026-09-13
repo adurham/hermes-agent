@@ -275,8 +275,11 @@ def test_commit_page_lists_a_missing_binary_without_a_link():
     page = rbt.render_commit_page(COMMIT, names, BASE, receipts, failed_legs=["build-darwin"])
     assert page.count("<tr>") == len(rbt._COMMIT_EXPECTED) + len(rbt._COMMIT_DISABLED) + 1
     assert "failed: build-darwin" in page
-    # Only the one staged object was built, so it is the only anchor.
-    assert page.count("<a href=") == 1
+    # Source navigation is separate from receipt-backed downloads.
+    assert re.findall(r'href="([^"]+)"', page) == [
+        f"https://github.com/NousResearch/hermes-agent/commit/{COMMIT}", f"{BASE}/{names[0]}",
+    ]
+    assert "Bundle environment" not in page
 
 
 def test_commit_run_publishes_the_commit_page(tmp_path, monkeypatch, capsys):

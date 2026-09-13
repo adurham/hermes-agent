@@ -8,83 +8,28 @@ install is not left in a non-bootable state with new code on old config version.
 
 from __future__ import annotations
 
+from hermes_cli import config as update_config
 from unittest.mock import MagicMock, patch
 
 from hermes_cli import update_cmd
 
 
-def test_current_checkout_runs_config_migration_on_version_bump(capsys):
-    """A retry migrates old config after preparing the updated checkout."""
-    completion = MagicMock(return_value=True)
-    with (
-        patch.object(update_cmd, "_prepare_updated_checkout") as prepare,
-        patch.object(update_cmd, "_m") as m,
-        patch.object(update_cmd, "_reload_config_modules"),
-        patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
-        patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
-        patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
-        patch.object(
-            update_cmd,
-            "_run_migrate_config_fresh",
-            return_value={"env_added": [], "config_added": ["migrated to v38"], "warnings": []},
-        ) as mock_migrate,
-        patch.object(update_cmd, "_print_verified_update_completion", completion),
-    ):
-        complete = update_cmd._repair_current_checkout(
-            assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
-            had_desktop_app_before_update=False, upstream_checked=True,
-        )
-
-    assert complete is True
-    prepare.assert_called_once_with(m.return_value.PROJECT_ROOT, desktop=False)
-    mock_migrate.assert_called_once_with(interactive=False, quiet=True)
-    completion.assert_called_once_with("✓ Already up to date!")
-    out = capsys.readouterr().out
-    assert "Checking configuration for new options..." in out
-    assert "Updating config format (v37 → v38)…" in out
-    assert "Config format updated" in out
 
 
-def test_current_checkout_up_to_date_config(capsys):
-    """When config is already up to date, it reports up to date without error."""
-    completion = MagicMock(return_value=True)
-    with (
-        patch.object(update_cmd, "_prepare_updated_checkout") as prepare,
-        patch.object(update_cmd, "_m") as m,
-        patch.object(update_cmd, "_reload_config_modules"),
-        patch.object(update_cmd, "_run_config_check_fresh", return_value=(38, 38)),
-        patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
-        patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
-        patch.object(update_cmd, "_run_migrate_config_fresh") as mock_migrate,
-        patch.object(update_cmd, "_print_verified_update_completion", completion),
-    ):
-        complete = update_cmd._repair_current_checkout(
-            assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
-            had_desktop_app_before_update=False, upstream_checked=True,
-        )
-
-    assert complete is True
-    prepare.assert_called_once_with(m.return_value.PROJECT_ROOT, desktop=False)
-    mock_migrate.assert_not_called()
-    completion.assert_called_once_with("✓ Already up to date!")
-    out = capsys.readouterr().out
-    assert "Checking configuration for new options..." in out
-    assert "Configuration is up to date" in out
 
 
 def test_check_and_apply_config_migration_interactive_prompt():
     """When new config options exist in an interactive session, it prompts the user."""
     with (
         patch.object(update_cmd, "_reload_config_modules"),
-        patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
+        patch.object(update_config, "check_config_version", return_value=(37, 38)),
         patch("hermes_cli.config.get_missing_env_vars", return_value=[{"name": "NEW_KEY", "description": "desc"}]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
         patch("sys.stdin.isatty", return_value=True),
         patch("sys.stdout.isatty", return_value=True),
         patch("builtins.input", return_value="y"),
         patch.object(
-            update_cmd,
-            "_run_migrate_config_fresh",
+            update_config, "migrate_config",
             return_value={"env_added": ["NEW_KEY"], "config_added": [], "warnings": []},
         ) as mock_migrate,
     ):
@@ -97,12 +42,11 @@ def test_check_and_apply_config_migration_assume_yes():
     """When assume_yes=True, it applies migrations non-interactively without prompting."""
     with (
         patch.object(update_cmd, "_reload_config_modules"),
-        patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
+        patch.object(update_config, "check_config_version", return_value=(37, 38)),
         patch("hermes_cli.config.get_missing_env_vars", return_value=[{"name": "NEW_KEY"}]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
         patch.object(
-            update_cmd,
-            "_run_migrate_config_fresh",
+            update_config, "migrate_config",
             return_value={"env_added": [], "config_added": ["opt"], "warnings": []},
         ) as mock_migrate,
     ):
@@ -115,14 +59,13 @@ def test_check_and_apply_config_migration_non_interactive():
     """In a non-interactive session (e.g. CI/scripts), it applies safe migrations automatically."""
     with (
         patch.object(update_cmd, "_reload_config_modules"),
-        patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
+        patch.object(update_config, "check_config_version", return_value=(37, 38)),
         patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[{"key": "new_setting"}]),
         patch("sys.stdin.isatty", return_value=False),
         patch("sys.stdout.isatty", return_value=False),
         patch.object(
-            update_cmd,
-            "_run_migrate_config_fresh",
+            update_config, "migrate_config",
             return_value={"env_added": [], "config_added": ["new_setting"], "warnings": []},
         ) as mock_migrate,
     ):

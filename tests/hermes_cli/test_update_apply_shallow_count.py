@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from hermes_cli import banner, main, update_cmd
+from hermes_cli import main, source_check, update_cmd
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -34,7 +34,7 @@ def test_apply_plan_counts_supplied_git_results(monkeypatch, tmp_path, shallow, 
 
     monkeypatch.setattr(subprocess, "run", git)
     compare = Mock(return_value=api_count)
-    monkeypatch.setattr(banner, "_github_compare_behind", compare)
+    monkeypatch.setattr(source_check, "_github_compare_behind", compare)
     plan = update_cmd._prepare_checkout_for_update(
         ["git"], "main", "main", is_fork=False, assume_yes=False,
         gateway_mode=False, gw_input_fn=None, switch_branch=False,

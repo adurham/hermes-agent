@@ -18,7 +18,7 @@ import hermes_yaml
 
 
 @pytest.fixture
-def zip_update(tmp_path, monkeypatch):
+def zip_update(tmp_path, monkeypatch, isolated_source_completion):
     home = tmp_path / "home"
     active = home / ".hermes"
     sibling = active / "profiles/other"
@@ -59,7 +59,7 @@ def zip_update(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "_desktop_packaged_executable", lambda root: None)
     monkeypatch.setattr(main, "_desktop_dist_exists", lambda root: False)
     monkeypatch.setattr(update_cmd, "_source_update_channel", lambda args: "main")
-    monkeypatch.setattr(maint, "_sweep_bytecode_after_update", lambda branch: None)
+    monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", lambda branch: None)
 
     def prepare(selected, *, desktop):
         assert selected == root and desktop is False
@@ -67,7 +67,7 @@ def zip_update(tmp_path, monkeypatch):
         events.append("prepare")
         # The pre-update snapshot must reach the real cron-loss safety net.
         jobs.write_text('{"jobs": []}', encoding="utf-8")
-    monkeypatch.setattr(maint, "_prepare_updated_checkout", prepare)
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", prepare)
     # PM/builds and machine-level repair are independently covered. Keep real
     # config migration, profile env backfill, snapshot recovery and receipts.
     monkeypatch.setattr("hermes_cli.macos_tcc_anchor.ensure_tcc_anchor", lambda: None)
@@ -92,7 +92,7 @@ def zip_update(tmp_path, monkeypatch):
     monkeypatch.setattr(update_cmd, "_write_gateway_update_exit_code", lambda ok: events.append(("marker", ok)))
 
     def restart(received, gateway_mode):
-        assert received is plan
+        assert received.to_dict() == plan.to_dict()
         events.append("restart")
         return fleet._GatewayRestartOutcome(
             incomplete=False, phase_errors=[], pre_restart_gateway_pids=[],
@@ -145,7 +145,7 @@ def test_zip_command_migrates_profiles_recovers_snapshot_and_verifies_fleet(
 
 
 @pytest.mark.parametrize("verdict", ["healthy", "unsafe-sqlite", "stale-fleet"])
-def test_zip_helper_preserves_bool_contract_after_real_verification(zip_update, monkeypatch, verdict):
+def test_zip_helper_propagates_completion_status_after_real_verification(zip_update, monkeypatch, verdict):
     state = zip_update
     args = SimpleNamespace(branch="main", yes=True, gateway=True)
     plan = update_cmd._begin_update_receipt_and_plan(args)
@@ -156,10 +156,14 @@ def test_zip_helper_preserves_bool_contract_after_real_verification(zip_update, 
     elif verdict == "stale-fleet":
         monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [
             {"pid": plan.runtimes[0].pid, "profile": "default"}])
-    result = update_cmd_zip._update_via_zip(
-        args, pre_update_snapshot_id=snapshot, _pre_update_plan=plan,
-        _windows_gateway_resume=state.token)
-    assert result is (verdict == "healthy")
+    request = update_cmd._source_completion_request(
+        update_cmd._resolve_update_options(args, True), plan, snapshot, state.token, False, True)
+    if verdict == "healthy":
+        assert update_cmd_zip._update_via_zip(args, completion_request=request) is True
+    else:
+        with pytest.raises(SystemExit) as error:
+            update_cmd_zip._update_via_zip(args, completion_request=request)
+        assert error.value.code == 1
     assert state.events == ["prepare", ("marker", verdict != "unsafe-sqlite"),
                             "restart", "resume", "finalize"]
     receipt = json.loads((state.active / "logs/update_receipts/latest.json").read_text())
@@ -202,7 +206,7 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
         def fail_preparation(*args, **kwargs):
             assert (state.root / "payload.txt").read_text() == "new"
             raise pm.InstallError("venv", "preparation stopped")
-        monkeypatch.setattr(maint, "_prepare_updated_checkout", fail_preparation)
+        monkeypatch.setattr("hermes_cli.source_build.build_update_products", fail_preparation)
         expected = pm.InstallError
     with pytest.raises(expected) as raised:
         update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=True)

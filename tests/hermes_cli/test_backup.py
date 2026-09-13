@@ -1206,7 +1206,7 @@ class TestProfileRestoration:
 
 class TestSafeCopyDb:
     def test_copies_valid_database(self, tmp_path):
-        from hermes_cli.backup import _safe_copy_db
+        from hermes_cli.backup_sqlite import _safe_copy_db
         src = tmp_path / "test.db"
         dst = tmp_path / "copy.db"
 
@@ -1229,7 +1229,7 @@ class TestSafeCopyDb:
     ):
         from types import SimpleNamespace
 
-        from hermes_cli import backup as backup_mod
+        from hermes_cli import backup_sqlite as backup_mod
 
         src = tmp_path / "locked.db"
         dst = tmp_path / "copy.db"
@@ -1282,7 +1282,7 @@ class TestSafeCopyDb:
         import sys
         import time
 
-        from hermes_cli.backup import _safe_copy_db
+        from hermes_cli.backup_sqlite import _safe_copy_db
         src = tmp_path / "locked.db"
         dst = tmp_path / "copy.db"
 

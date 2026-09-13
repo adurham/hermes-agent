@@ -2,7 +2,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import type * as RuntimeJobs from '@/store/local-runtime-jobs'
 import type * as Notifications from '@/store/notifications'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
@@ -16,8 +15,7 @@ vi.mock('@/store/notifications', async importOriginal => ({
   notifyError: vi.fn()
 }))
 
-vi.mock('@/store/local-runtime-jobs', async importOriginal => ({
-  ...(await importOriginal<typeof RuntimeJobs>()),
+vi.mock('@/store/local-runtime-jobs', (): object => ({
   watchLocalRuntimeJobs: vi.fn()
 }))
 
@@ -71,7 +69,7 @@ describe('LocalModelDownloadActions', () => {
     await waitFor(() => {
       expect(pauseLocalDownload).toHaveBeenCalledTimes(1)
     })
-    expect(pauseLocalDownload).toHaveBeenCalledWith('j1')
+    expect(pauseLocalDownload).toHaveBeenCalledWith('j1', undefined)
     expect(resumeLocalDownload).not.toHaveBeenCalled()
   })
 
@@ -105,7 +103,7 @@ describe('LocalModelDownloadActions', () => {
     await waitFor(() => {
       expect(resumeLocalDownload).toHaveBeenCalledTimes(1)
     })
-    expect(resumeLocalDownload).toHaveBeenCalledWith('j1')
+    expect(resumeLocalDownload).toHaveBeenCalledWith('j1', undefined)
     expect(pauseLocalDownload).not.toHaveBeenCalled()
   })
 

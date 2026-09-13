@@ -29,9 +29,12 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
   if (!icons || !stamp || !nativeDeps) throw new Error('icons, stamp and nativeDeps are required prepared inputs')
   const app = 'apps/desktop'
   ;({ source, out } = productOutput(source, out, [
-    ...readdirSync(join(resolve(source), app)).filter(name => name !== 'dist').map(name => `${app}/${name}`),
+    // Source children can be symlinks outside the checkout. Protect their
+    // canonical paths, but leave generated dist/build trees to productOutput.
+    ...readdirSync(join(resolve(source), app)).filter(name => !['dist', 'build'].includes(name)).map(name => `${app}/${name}`),
     `${app}/scripts`, 'scripts/build', 'package.json', 'package-lock.json',
-    'apps/shared', 'node_modules', ...[join(resolve(icons), app, 'public'), stamp, nativeDeps].map(input => relative(resolve(source), resolve(input))),
+    'apps/shared', 'node_modules',
+    ...[join(resolve(icons), app, 'public'), stamp, nativeDeps].map(input => relative(resolve(source), resolve(input))),
   ]))
   const publicIcons = join(resolve(icons), app, 'public')
   if (!existsSync(join(publicIcons, 'apple-touch-icon.png'))) throw new Error(`Missing desktop icon: ${join(publicIcons, 'apple-touch-icon.png')}`)

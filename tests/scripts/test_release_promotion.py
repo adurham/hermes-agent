@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -57,7 +58,13 @@ def test_publish_and_promote_use_the_same_content_before_any_channel_write(tmp_p
     assert events[0] == 'mac-feed'
     assert events[-1] == 'releases/termux/stable/dists/hermes-stable/InRelease'
     assert 'releases/win32/stable/stable.appinstaller' in r2_server.store
-    assert b'/releases/tag/v1.2.3/app.msixbundle' in r2_server.store['releases/win32/stable/stable.appinstaller'][0]
+    descriptor = ET.fromstring(r2_server.store['releases/win32/stable/stable.appinstaller'][0])
+    windows = next(row for row in packages if row['platform'] == 'windows')
+    assert descriptor.attrib == {'Uri': f'{base}/releases/win32/stable/stable.appinstaller', 'Version': windows['version']}
+    assert descriptor.find('{*}MainBundle').attrib == {
+        'Name': windows['identity'], 'Publisher': windows['publisher'],
+        'Version': windows['version'], 'Uri': windows['artifact']['url'],
+    }
 
     events.clear()
     content['app.msixbundle'] = b'changed artifact'

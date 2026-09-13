@@ -1,4 +1,5 @@
 """Stable updates consume one remote commit across Git and archive transports."""
+from copy import deepcopy
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
@@ -11,11 +12,8 @@ import urllib.request
 
 import pytest
 
-from hermes_cli import main as cli_main, update_cmd, update_cmd_maint, update_receipt
-
-
-class DependencyBoundary(Exception):
-    pass
+from hermes_cli import main as cli_main, update_cmd, update_receipt
+from hermes_cli.update_inventory import UpdatePlan
 
 
 def git(root, *args):
@@ -57,28 +55,35 @@ def update_tree(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_main, 'PROJECT_ROOT', clone)
     monkeypatch.setattr(update_receipt, '_code_identity', lambda **_: {'commit': base})
-    monkeypatch.setattr(cli_main, '_run_pre_update_backup', lambda *_: None)
+    monkeypatch.setattr(cli_main, '_run_pre_update_backup', lambda *_: 'release-snapshot')
     monkeypatch.setattr(cli_main, '_pause_windows_gateways_for_update', lambda: None)
     resumed = []
     monkeypatch.setattr(cli_main, '_resume_windows_gateways_after_update', lambda state: resumed.append(state))
     monkeypatch.setattr(cli_main, '_install_hangup_protection', lambda **_: {'installed': False})
     monkeypatch.setattr(cli_main, '_finalize_update_output', lambda *_: None)
-    monkeypatch.setattr(update_cmd, '_begin_update_receipt_and_plan', lambda *_: None)
+    plans = []
+
+    def inventory():
+        sha = git(clone, 'rev-parse', 'HEAD') if (clone / '.git').exists() else base
+        plan = UpdatePlan(install_method='git', expected_sha=sha, profiles=['default'])
+        plans.append(plan)
+        return plan
+
+    monkeypatch.setattr('hermes_cli.update_inventory.collect_runtime_inventory', inventory)
     monkeypatch.setattr(cli_main, '_sync_with_upstream_if_needed',
                         lambda *_a, **_k: pytest.fail('stable update reached upstream branch sync'))
 
-    def stop_at_dependencies(*_args, **_kwargs):
-        raise DependencyBoundary()
+    requests = []
 
-    monkeypatch.setattr(update_cmd, '_prepare_updated_checkout', stop_at_dependencies)
-    monkeypatch.setattr(update_cmd_maint, '_prepare_updated_checkout', stop_at_dependencies)
-    repaired = []
-    monkeypatch.setattr(update_cmd, '_repair_current_checkout', lambda **_: repaired.append(True) or True)
-    monkeypatch.setattr(update_cmd, '_apply_pending_fleet_restart_catchup', lambda: None)
+    def capture(request):
+        requests.append(deepcopy(request))
+        return {'exit_code': 0, 'receipt': None}
+
+    monkeypatch.setattr(update_cmd, 'run_completion', capture)
     args = SimpleNamespace(branch=None, channel='stable', yes=True, force=True, force_venv=True,
                            check=False, plan=False, gateway=False, install_id=False, set_channel=None)
     return SimpleNamespace(origin=origin, clone=clone, base=base, wanted=wanted, newer=newer,
-                           args=args, resumed=resumed, repaired=repaired)
+                           args=args, resumed=resumed, requests=requests, plans=plans)
 
 
 @pytest.mark.parametrize('server', ['sha', 'tag-fallback', 'moved-sha', 'moved-fallback',
@@ -137,17 +142,26 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         assert error.value.code == 1
         assert git(t.clone, 'rev-parse', 'HEAD') == t.base
         assert t.resumed
-    elif server == 'at-release':
-        cli_main.cmd_update(t.args)
-        assert t.repaired == [True]
-        assert git(t.clone, 'rev-parse', 'HEAD') == expected
+        assert t.requests == []
     else:
-        with pytest.raises(DependencyBoundary):
-            cli_main.cmd_update(t.args)
+        cli_main.cmd_update(t.args)
+        request, = t.requests
+        plan, = t.plans
+        assert request['source'] == str(t.clone.resolve())
+        assert request['branch'] == (t.args.branch or 'main')
+        assert request['plan'] == plan.to_dict()
+        assert request['receipt']['plan'] == plan.to_dict()
+        assert request['snapshot_id'] == 'release-snapshot'
+        if server == 'at-release':
+            assert request['completion_message'] == '✓ Already up to date!'
+            assert request['plan']['expected_sha'] == expected
+        else:
+            assert request['expected_sha'] == expected
         assert git(t.clone, 'rev-parse', 'HEAD') == expected
         content = 'unreleased-main\n' if server == 'explicit-branch' else 'release\n'
         assert (t.clone / 'content.txt').read_text(encoding='utf-8') == content
-        assert git(t.clone, 'branch', '--show-current') == ('retained-branch' if server == 'explicit-branch' else '')
+        branch = 'retained-branch' if server in {'at-release', 'explicit-branch'} else ''
+        assert git(t.clone, 'branch', '--show-current') == branch
     assert resolved == (server != 'explicit-branch')
     assert git(t.clone, 'rev-parse', 'v1.1.0') == t.base
     assert not git(t.clone, 'status', '--porcelain')
@@ -243,9 +257,16 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
             assert error.value.code == 1
             assert (t.clone / 'content.txt').read_bytes() == before
             assert not any('/archive/' in url for url in urls)
+            assert t.requests == []
         else:
-            with pytest.raises(DependencyBoundary):
-                cli_main.cmd_update(t.args)
+            cli_main.cmd_update(t.args)
+            request, = t.requests
+            plan, = t.plans
+            assert request['source'] == str(t.clone.resolve())
+            assert request['expected_sha'] == t.wanted
+            assert request['plan'] == plan.to_dict()
+            assert request['receipt']['plan'] == plan.to_dict()
+            assert request['snapshot_id'] == 'release-snapshot'
             assert (t.clone / 'content.txt').read_text(encoding='utf-8') == 'release\n'
             assert [url for url in urls if '/archive/' in url] == [
                 f'https://github.com/NousResearch/hermes-agent/archive/{t.wanted}.zip']

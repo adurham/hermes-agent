@@ -100,7 +100,12 @@ commit summary runs even when a build or assembly job fails; it lists only
 receipt-backed existing downloads and marks missing binaries as not built.
 Missing binaries link to the workflow run under **View build run**, not to
 nonexistent downloads. Disabled platforms have no download or failure link.
-Page publication still requires working R2 access.
+Page publication still requires working R2 access. The commit links to its source
+on GitHub; tag and channel pages link to the corresponding GitHub release tag.
+Commit pages also list explicit non-secret `--bundle-env` defaults and
+`--bundle-unset` clears passed to the desktop bundles, not the CI environment.
+Values are shown as JSON strings (including `""` for an empty value); clears are
+labeled **Unset**. The section is omitted when no overrides were supplied.
 
 Tagged builds also publish a per-tag diagnostic page at
 `releases/tag/<tag>/index.html` after build or feed failures, including when no
@@ -152,6 +157,16 @@ Electron-builder configuration/hooks and native Windows/macOS adapters remain
 in JavaScript or PowerShell. These adapters consume release facts rather than
 reimplementing the release gate. Gate jobs use only Python's standard library;
 they do not install the application or the JS workspace to report a verdict.
+
+`scripts.bundles.release_artifacts` owns App Installer XML and feed publication.
+Its serializer takes explicit package identity, publisher, version, subscription
+URI and artifact URI. Stable promotion uses the accepted candidate metadata;
+canary publication verifies the native bundle manifest against the adapter's
+expected identity before uploading the bundle, then the descriptor. Native SDK
+bundling/signing stays in `stage-msixbundle.mjs`. Store and commit builds stop
+before that feed handoff; `stable-store` submits the verified candidate without
+rebuilding it. Native acceptance uses the same Python serializer, including its
+12-hour on-launch check policy.
 
 Signing and publication credentials stay in their protected job environments.
 The source CI call does not inherit deployment secrets. Configure the existing

@@ -1,9 +1,22 @@
+vi.mock('@/store/profile', async (): Promise<object> => {
+  const { atom } = await import('nanostores')
+
+  return { $activeGatewayProfile: atom<string>('default') }
+})
+vi.mock('@/store/session', async (): Promise<object> => {
+  const { atom } = await import('nanostores')
+
+  return { $connection: atom(null), $defaultReasoningEffort: atom<string>('') }
+})
+
+import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { $localRuntimeJobs, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import { queryClient } from '@/lib/query-client'
+import { localModelsKey, localModelsOwner, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
@@ -105,11 +118,13 @@ const REFUSED_MODEL: LocalCatalogModel = {
 
 function renderPane() {
   return render(
-    <MemoryRouter>
-      <I18nProvider>
-        <LocalModelsSettings />
-      </I18nProvider>
-    </MemoryRouter>
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <I18nProvider>
+          <LocalModelsSettings />
+        </I18nProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
   )
 }
 
@@ -124,7 +139,8 @@ async function renderFullPane(): Promise<ReturnType<typeof renderPane>> {
   // straight to the full pane, the runtime section directly.
   await waitFor((): void => {
     expect(
-      Boolean(screen.queryByRole('button', { name: /let me choose/i })) || screen.queryAllByText(/this machine/i).length > 0
+      Boolean(screen.queryByRole('button', { name: /let me choose/i })) ||
+        screen.queryAllByText(/this machine/i).length > 0
     ).toBe(true)
   })
 
@@ -137,18 +153,23 @@ async function renderFullPane(): Promise<ReturnType<typeof renderPane>> {
   return result
 }
 
-beforeEach(() => {
+beforeEach((): void => {
+  queryClient.clear()
+  queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
   mocked.getLocalModelsStatus.mockResolvedValue(BASE_STATUS)
   mocked.getLocalHardware.mockResolvedValue(BASE_HARDWARE)
   mocked.getLocalCatalog.mockResolvedValue({ models: [FITTING_MODEL, SPILLED_MODEL, REFUSED_MODEL] })
   // The backend mock ECHOES the atom: the watcher's immediate poll reads
   // seeded jobs instead of wiping them with a default {jobs:[]}.
-  mocked.getLocalModelsJobs.mockImplementation(async () => ({ jobs: [...$localRuntimeJobs.get()] }))
-  $localRuntimeJobs.set([])
+  mocked.getLocalModelsJobs.mockImplementation(async () => ({
+    jobs: [...(queryClient.getQueryData<readonly LocalRuntimeJob[]>(localModelsKey(localModelsOwner(), 'jobs')) ?? [])]
+  }))
+  queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
 })
 
 afterEach(async () => {
   cleanup()
+  queryClient.clear()
   mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [] })
   await act(async () => {
     watchLocalRuntimeJobs()
@@ -318,7 +339,7 @@ describe('LocalModelsSettings', () => {
     })
     // A running job already in the app-level store — as after closing and
     // reopening the pane mid-download.
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'j9',
         kind: 'model-download',
@@ -351,7 +372,7 @@ describe('LocalModelsSettings', () => {
       runtime_installed: true,
       runtime_backend: 'cuda'
     })
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'j2',
         kind: 'model-download',
@@ -397,7 +418,7 @@ describe('quickstart', () => {
   })
 
   it('pins the quickstart progress view while the job runs', async () => {
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'q1',
         kind: 'quickstart',
@@ -470,12 +491,15 @@ describe('BrowseSection', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: /download ·/i }))
     await waitFor((): void => {
-      expect(mocked.downloadLocalModel).toHaveBeenCalledWith(SPILLED_MODEL.id)
+      expect(mocked.downloadLocalModel).toHaveBeenCalledWith(SPILLED_MODEL.id, {
+        connectionId: null,
+        profile: 'default'
+      })
     })
     mocked.activateLocalModel.mockResolvedValue({ job_id: 'explicit-spill' })
     fireEvent.click(await screen.findByRole('button', { name: /^use$/i }))
     await waitFor((): void => {
-      expect(mocked.activateLocalModel).toHaveBeenCalledWith(stagedId)
+      expect(mocked.activateLocalModel).toHaveBeenCalledWith(stagedId, { connectionId: null, profile: 'default' })
     })
     expect(mocked.quickstartLocalModels).not.toHaveBeenCalled()
   })
@@ -495,11 +519,13 @@ describe('BrowseSection', () => {
       })
 
       render(
-        <MemoryRouter>
-          <I18nProvider>
-            <LocalModelsSettings />
-          </I18nProvider>
-        </MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <I18nProvider>
+              <LocalModelsSettings />
+            </I18nProvider>
+          </MemoryRouter>
+        </QueryClientProvider>
       )
       await act(async () => {
         await vi.runOnlyPendingTimersAsync()
@@ -514,7 +540,7 @@ describe('BrowseSection', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(400)
       })
-      expect(hermes.searchHFModels).toHaveBeenCalledWith('qwen')
+      expect(hermes.searchHFModels).toHaveBeenCalledWith('qwen', 20, { connectionId: null, profile: 'default' })
       expect(screen.getByText('unsloth/Qwen3.8-27B-GGUF')).toBeTruthy()
 
       fireEvent.click(screen.getByRole('button', { name: /show files/i }))
@@ -534,7 +560,11 @@ describe('BrowseSection', () => {
       await act(async () => {
         await vi.runOnlyPendingTimersAsync()
       })
-      expect(hermes.downloadBrowsedModel).toHaveBeenCalledWith('unsloth/Qwen3.8-27B-GGUF', ['Qwen3.8-27B-Q4_K_M.gguf'])
+      expect(hermes.downloadBrowsedModel).toHaveBeenCalledWith(
+        'unsloth/Qwen3.8-27B-GGUF',
+        ['Qwen3.8-27B-Q4_K_M.gguf'],
+        { connectionId: null, profile: 'default' }
+      )
     } finally {
       vi.useRealTimers()
     }
@@ -597,33 +627,43 @@ describe('quickstart completion navigation', () => {
 
     // A finished quickstart already in history when the pane mounts —
     // must NOT trigger navigation.
-    $localRuntimeJobs.set([doneJob])
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [doneJob])
 
     render(
-      <MemoryRouter initialEntries={['/settings']}>
-        <I18nProvider>
-          <LocalModelsSettings />
-        </I18nProvider>
-        <Probe />
-      </MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/settings']}>
+          <I18nProvider>
+            <LocalModelsSettings />
+          </I18nProvider>
+          <Probe />
+        </MemoryRouter>
+      </QueryClientProvider>
     )
     await act(async () => {})
     expect(routeProbe).not.toHaveBeenCalledWith('/')
 
     // A quickstart the pane SAW running that then completes -> navigate.
     const running: LocalRuntimeJob = { ...doneJob, job_id: 'live-run', phase: 'downloading', status: 'running' }
-    await act(async () => {
-      $localRuntimeJobs.set([doneJob, running])
+    await act(async (): Promise<void> => {
+      queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [doneJob, running])
+      await new Promise<void>((resolve): void => {
+        setTimeout(resolve, 0)
+      })
     })
     await act(async () => {
-      $localRuntimeJobs.set([doneJob, { ...running, phase: 'done', status: 'done' }])
+      queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+        doneJob,
+        { ...running, phase: 'done', status: 'done' }
+      ])
     })
-    expect(routeProbe).toHaveBeenCalledWith('/')
+    await waitFor((): void => expect(routeProbe).toHaveBeenCalledWith('/'))
   })
 })
 
 describe('pause / resume integration', () => {
-  beforeEach(() => {
+  beforeEach((): void => {
+    queryClient.clear()
+    queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
     vi.mocked(hermes.pauseLocalDownload).mockResolvedValue({ ok: true, paused: true })
     vi.mocked(hermes.resumeLocalDownload).mockResolvedValue({ ok: true, resumed: true })
   })
@@ -634,7 +674,7 @@ describe('pause / resume integration', () => {
       runtime_installed: true,
       runtime_backend: 'cuda'
     })
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'j1',
         kind: 'model-download',
@@ -659,7 +699,7 @@ describe('pause / resume integration', () => {
     await waitFor(() => {
       expect(hermes.pauseLocalDownload).toHaveBeenCalledTimes(1)
     })
-    expect(hermes.pauseLocalDownload).toHaveBeenCalledWith('j1')
+    expect(hermes.pauseLocalDownload).toHaveBeenCalledWith('j1', { connectionId: null, profile: 'default' })
     expect(hermes.resumeLocalDownload).not.toHaveBeenCalled()
   })
 
@@ -669,7 +709,7 @@ describe('pause / resume integration', () => {
       runtime_installed: true,
       runtime_backend: 'cuda'
     })
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'j1',
         kind: 'model-download',
@@ -695,7 +735,7 @@ describe('pause / resume integration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
     await waitFor(() => {
-      expect(hermes.resumeLocalDownload).toHaveBeenCalledWith('j1')
+      expect(hermes.resumeLocalDownload).toHaveBeenCalledWith('j1', { connectionId: null, profile: 'default' })
     })
 
     // The watcher re-kicked: an authoritative re-read happens after resume.
@@ -705,7 +745,7 @@ describe('pause / resume integration', () => {
   })
 
   it('a paused quickstart stays pinned in the hero with a Resume control', async () => {
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'q1',
         kind: 'quickstart',
@@ -731,12 +771,12 @@ describe('pause / resume integration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
     await waitFor(() => {
-      expect(hermes.resumeLocalDownload).toHaveBeenCalledWith('q1')
+      expect(hermes.resumeLocalDownload).toHaveBeenCalledWith('q1', { connectionId: null, profile: 'default' })
     })
   })
 
   it('a running quickstart hero shows Pause during the download stage', async () => {
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'q1',
         kind: 'quickstart',
@@ -765,7 +805,7 @@ describe('pause / resume integration', () => {
       runtime_installed: false,
       update_available: false
     })
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'r1',
         kind: 'runtime-install',
@@ -789,12 +829,12 @@ describe('pause / resume integration', () => {
     fireEvent.click(pause)
 
     await waitFor(() => {
-      expect(hermes.pauseLocalDownload).toHaveBeenCalledWith('r1')
+      expect(hermes.pauseLocalDownload).toHaveBeenCalledWith('r1', { connectionId: null, profile: 'default' })
     })
   })
 
   it('quickstart hero suppresses the byte counter outside download phases', async () => {
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'q1',
         kind: 'quickstart',

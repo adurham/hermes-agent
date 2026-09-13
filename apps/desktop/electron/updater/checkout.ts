@@ -17,8 +17,7 @@ import {
   wrapHandoffForDetachedConsole
 } from '../updater-process'
 
-import { checkCheckoutUpdates, type CheckoutCheckDeps } from './checkout-check'
-import { sourceUpdateEnvironment } from './checkout-source'
+import { SOURCE_PROBE_RECOVERY, type SourceUpdate, sourceUpdateEnvironment } from './checkout-source'
 
 import type { UpdaterApplyResultWire, UpdaterMechanism, UpdaterStatusWire, UpdaterStrategy } from './index'
 
@@ -26,7 +25,9 @@ import type { UpdaterApplyResultWire, UpdaterMechanism, UpdaterStatusWire, Updat
  * Everything the checkout flow needs from the app shell. These are the
  * impure edges only — all update logic lives here.
  */
-export interface CheckoutStrategyDeps extends CheckoutCheckDeps {
+export interface CheckoutStrategyDeps {
+  resolveUpdateRoot: () => string
+  readSourceUpdate: (root: string, opts: { force?: boolean }) => Promise<SourceUpdate | null>
   hermesHome: string
   isWindows: boolean
   isMac: boolean
@@ -68,7 +69,12 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   const mechanism: UpdaterMechanism = deps.isWindows ? 'windows-handoff' : 'posix-handoff'
 
   async function check(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
-    const status = await checkCheckoutUpdates(deps, opts)
+    const root: string = deps.resolveUpdateRoot()
+
+    const status: UpdaterStatusWire = await deps.readSourceUpdate(root, opts) ?? {
+      supported: false, reason: 'source-probe-unavailable', message: SOURCE_PROBE_RECOVERY, hermesRoot: root
+    }
+
     status.mechanism = mechanism
 
     return status
@@ -84,7 +90,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   return { mechanism, check, apply }
 
   async function applyBody(): Promise<UpdaterApplyResultWire> {
-    const status: UpdaterStatusWire = await checkCheckoutUpdates(deps, { force: true })
+    const status: UpdaterStatusWire = await check({ force: true })
 
     if (status.reason === 'source-probe-unavailable') {
       return { ok: true, manual: true, command: 'hermes update --help', message: status.message, hermesRoot: status.hermesRoot }

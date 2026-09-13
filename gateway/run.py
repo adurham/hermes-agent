@@ -1503,26 +1503,6 @@ os.environ["_HERMES_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
 
-# pm startup: same contract as the CLI dispatch path (hermes_cli/main.py)
-# — the gateway daemon never passes through the CLI fast-launch checks, so
-# the store's tools (git/bash/ffmpeg/...) must be on PATH here. O(1) stamp
-# checks, no network, no installs; warns, never blocks. Runs from main(),
-# not import time: importers of this module (relay runtime, platform
-# actions, enrollment) need helpers, not PATH provisioning or a pm verdict
-# on their behalf.
-def _run_pm_startup() -> None:
-    try:
-        import pm
-
-        pm.adopt()
-        problems = pm.activate()
-        if problems:
-            logging.getLogger("gateway.run").warning(
-                f"install out of sync ({'; '.join(problems)}) — run `hermes pm install`"
-            )
-    except Exception:
-        logging.getLogger("gateway.run").debug("pm startup check failed", exc_info=True)
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home, get_hermes_home_override
@@ -5417,7 +5397,15 @@ def main():
     # the post-update bootstrap: the same one-pass record-gated maintenance
     # registry the CLI dispatch path runs (hermes_cli/main.py) — this
     # entrypoint bypasses that dispatch, so run it here too. Never raises.
-    _best_effort(_run_pm_startup)
+    try:
+        from hermes_cli.boot_bootstrap import default_project_root
+        from hermes_cli.venv_sync import check_runtime
+
+        problem = check_runtime(default_project_root())
+        if problem:
+            logger.warning(problem)
+    except Exception:
+        logger.debug("pm startup check failed", exc_info=True)
     try:
         from hermes_cli.boot_bootstrap import (
             default_project_root,

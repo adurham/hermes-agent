@@ -19,7 +19,7 @@ from pm.package import (
     _probe_reason,
 )
 from pm.registry import register
-from pm.store import ALL_TARGETS, Store, flatten_single_dir, merge_tree
+from pm.store import ALL_TARGETS, Store, current_target, flatten_single_dir, merge_tree
 from pm.update import (
     btbn_index,
     btbn_versions,
@@ -80,16 +80,15 @@ class BinaryPackage(Package):
         return entry / rel if rel else None
 
     def verify(self, entry: Path, target: str) -> str:
-        """Return '' when the entry is usable on target, else why not:
-        a missing binary, a wrong-arch binary, or a --version probe that
-        fails to exec, times out, or exits nonzero."""
+        """Check file/architecture evidence for every target, plus a smoke
+        probe only on the native target. Never execute cross-staged bytes."""
         binary = self.binary(entry, target)
         if binary is None:
             return "no binary_rel for this target"
         reason = self._binary_reason(binary, entry, target)
         if reason:
             return reason
-        if not self.probe_version:
+        if not self.probe_version or target != current_target():
             return ""
         try:
             proc = subprocess.run(
@@ -398,7 +397,7 @@ class Venv(StatePackage):
         h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
-    def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False) -> dict:
+    def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False) -> dict:
         """Prepare one complete environment; the caller commits its selection."""
         import uuid
         from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
@@ -409,7 +408,7 @@ class Venv(StatePackage):
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
         candidate = generation / "venv"
-        environment = managed_environment(candidate, explicit=repair)
+        environment = managed_environment(candidate, explicit=explicit or repair)
         members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
         try:
             generation.mkdir(parents=True)
@@ -429,7 +428,7 @@ class Venv(StatePackage):
                 replay = recorded.parent
             seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
                     else project / "uv.lock")
-            lock_and_sync(members, extras, venv_dir=candidate, root=generation / "workspace",
+            lock_and_sync(members, extras, root=generation / "workspace",
                           seed_lock=seed, frozen=repair or not members, replay=replay,
                           source=project, environment=environment)
             resolved_lock = generation / "workspace" / "uv.lock"

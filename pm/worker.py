@@ -99,37 +99,18 @@ def main():
             raise RuntimeError(reply["error"])
         return reply["result"]
 
-    def sync_venv(**arguments):
-        if "plugin_dirs" in request["callbacks"]:
-            arguments["plugin_dirs"] = lambda: _members(callback("plugin_dirs"))
-        else:
-            arguments["plugin_dirs"] = _members(arguments["plugin_dirs"])
-        if "before_publish" in request["callbacks"]:
-            def publish():
-                hooks = callback("before_publish")
-                if not any(hooks.values()):
-                    return None
-                def undo():
-                    if hooks["undo"]:
-                        callback("undo")
-                if hooks["finish"]:
-                    undo.finish = lambda: callback("finish")
-                return undo
-            arguments["before_publish"] = publish
-        return engine.sync_venv(**arguments)
-
     with receipt.worker_context(request.get("update_id")):
         try:
             load_package_definitions(request.get("packages", []))
             from pm import operations as python
-            operations = {"ensure": engine.ensure, "sync_venv": sync_venv,
+            operations = {"ensure": engine.ensure, "sync_venv": engine.sync_venv,
                           "stage_only": engine.stage_only, "venv_is_current": engine.venv_is_current,
                           "build_environment": python.build_environment, "lock_project": python.lock_project,
                           "stage_manager_runtime": python.stage_manager_runtime,
                           "ensure_environment": python.ensure_environment,
                           "ensure_python_tool": python.ensure_python_tool}
             arguments = request["arguments"]
-            if request["operation"] == "venv_is_current":
+            if request["operation"] in ("sync_venv", "venv_is_current"):
                 arguments["plugin_dirs"] = _members(arguments.get("plugin_dirs"))
             if request["operation"] == "ensure":
                 arguments["pause_event"] = pause

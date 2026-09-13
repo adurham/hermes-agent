@@ -37,7 +37,7 @@ import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
 import { appVersionInfo, type AppVersionInfo, assertSourceUpdateChannel, packagedReleaseChannel } from './app-version'
 import { runAppInstallerChecker } from './appinstaller-checker'
-import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate, waitForBackendExit as waitForBackendExitImpl } from './backend-child'
+import { stopBackendChild as stopBackendChildImpl, waitForBackendExit } from './backend-child'
 import {
   type BackendOutputTail,
   claimDecision,
@@ -59,7 +59,7 @@ import {
   makeUnsignedOauthError,
   waitForHermesReady
 } from './backend-health'
-import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
+import { backendCommandMatches, type BackendOwnershipEntry, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
 import {
   canImportHermesCli,
   execProbeSync,
@@ -310,10 +310,11 @@ import {
 import { selectPoolEvictions } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import {
+  assertPoolEntryStillOwned,
   isBackgroundSlotWaitTimeout,
   LocalBackendSpawnCoordinator,
   type LocalBackendSpawnPriority,
-  type LocalBackendSpawnRequest,
+  releaseLocalBackendSlot,
   releaseLocalBackendSlotAfterExit
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
@@ -412,7 +413,6 @@ import {
 } from './translucency'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
-import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   resolveUpdaterMechanism,
   type UpdaterApplyResultWire,
@@ -434,6 +434,7 @@ import { ExternalStrategy } from './updater/external'
 import { createMacStrategy } from './updater/mac-client'
 import { type ConsumedRelaunch, consumePendingRelaunch, registerUpdateRelaunch, type RelaunchRegistration } from './updater/relaunch'
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
+import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
@@ -1318,7 +1319,7 @@ const localBackendLifecycle = createLocalBackendLifecycle<ChildProcess>({
       stopBackendChildImpl(child, { forceKillProcessTree, isWindows: IS_WINDOWS })
     }
   },
-  waitForExit: (child: ChildProcess): Promise<void> => waitForBackendExit(child),
+  waitForExit: (child: ChildProcess): Promise<void> => waitForBackendExit(child, { forceKillProcessTree, isWindows: IS_WINDOWS }),
   cancelSetup: (): void => {
     firstRunSetupGate?.resetForRetry()
     bootstrapAbortController?.abort()
@@ -2947,12 +2948,6 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
-async function getOriginUrl(updateRoot) {
-  const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
-
-  return origin.code === 0 ? origin.stdout.trim() : ''
-}
-
 function emitUpdateProgress(payload) {
   const merged = { stage: 'idle', message: '', percent: null, error: null, ...payload, at: Date.now() }
   rememberLog(`[updates] ${merged.stage}: ${merged.message || merged.error || ''}`)
@@ -2960,35 +2955,6 @@ function emitUpdateProgress(payload) {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('hermes:updates:progress', merged)
   }
-}
-
-// Self-heal the tracked update branch: if origin no longer publishes it (e.g.
-// bb/gui was merged into main and deleted), fall back to main and persist so
-// every later check/apply follows main — no manual flip, even for already-
-// installed clients. Read-only ls-remote probe; only flips on a definitive
-// "ref absent" (exit 2), never on a transient network error, so a flaky
-// connection can't strand a user on the wrong branch.
-async function resolveHealedBranch(updateRoot, branch) {
-  if (!branch || branch === 'main') {
-    return branch || 'main'
-  }
-
-  const originUrl = await getOriginUrl(updateRoot)
-  const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
-
-  if (probe.code !== 2) {
-    return branch
-  }
-
-  rememberLog(`[updates] origin/${branch} is gone (merged?); falling back to main`)
-  const config = readDesktopUpdateConfig()
-
-  if (config.branch !== 'main') {
-    writeDesktopUpdateConfig({ ...config, branch: 'main' })
-  }
-
-  return 'main'
 }
 
 async function checkUpdates(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
@@ -3013,19 +2979,6 @@ async function checkUpdates(opts: { force?: boolean } = {}): Promise<UpdaterStat
   // one stamp, no direct body path. The flow lives in updater/checkout.ts;
   // this is the only production door to the checkout arms.
   return resolveCheckoutUpdateStrategy().check(opts)
-}
-
-async function fetchGitHubApi(url: string, accept: string = 'application/vnd.github+json'): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: { Accept: accept, 'User-Agent': 'hermes-desktop-update-check' },
-    signal: AbortSignal.timeout(10_000)
-  })
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
-  }
-
-  return accept === 'application/vnd.github.sha' ? response.text() : response.json()
 }
 
 let updateInFlight = false
@@ -3162,31 +3115,27 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     defaultUpdateBranch: DEFAULT_UPDATE_BRANCH,
     updateHandoffDwellMs: UPDATE_HANDOFF_DWELL_MS,
     directoryExists,
-    readCanonicalInstallStamp,
-    readDesktopUpdateConfig,
-    readSourceUpdate: (updateRoot: string): Promise<SourceUpdate | null> => readSourceUpdate({
+    readSourceUpdate: (updateRoot: string, opts: { force?: boolean }): Promise<SourceUpdate | null> => readSourceUpdate({
       python: findPythonForRoot(updateRoot),
       git: resolveGitBinary(),
       updateRoot,
-      hermesHome: HERMES_HOME
+      hermesHome: HERMES_HOME,
+      branchConfigPath: DESKTOP_UPDATE_CONFIG_PATH,
+      force: opts.force
     }),
     resolveUpdateRoot,
     resolveUpdaterBinary,
-    resolveHealedBranch,
-    getOriginUrl,
-    runGit,
     firstLine,
-    fetchGitHubApi,
-    isGitCheckout,
-    updateCheckCachePath: path.join(app.getPath('userData'), 'update-check-cache.json'),
-    writeFileAtomic,
 
     emitUpdateProgress,
     rememberLog,
     startHermes,
     stopBackendsForUpdate,
     repairMacUpdaterHelper,
-    preflightStateDb,
+    preflightStateDb: (home: string, log: (message: string) => void): void => {
+      const root: string = resolveUpdateRoot()
+      preflightStateDb({ python: findPythonForRoot(root), script: path.join(root, 'hermes_cli', 'backup_sqlite.py'), home, log })
+    },
     runningAppBundle,
     markQuittingForHandoff: () => {
       isQuittingForHandoff = true
@@ -3618,7 +3567,13 @@ const desktopParentStartMarker = createParentStartMarkerResolver({
   }
 })
 
-async function claimBackendChild(child, command, profile, nonce, outputTail: BackendOutputTail | null = null) {
+async function claimBackendChild(
+  child: ChildProcess & { hermesBackendIdentity?: BackendOwnershipEntry },
+  command: string,
+  profile: string,
+  nonce: string,
+  outputTail: BackendOutputTail | null = null
+): Promise<BackendOwnershipEntry> {
   // Probe/claim policy lives in backend-claim.ts (#93608): a marker probe
   // that fails against a LIVE child degrades to PID-only identity — matching
   // createParentStartMarkerResolver — instead of killing a healthy backend
@@ -3628,8 +3583,7 @@ async function claimBackendChild(child, command, profile, nonce, outputTail: Bac
   const decision = claimDecision(child.exitCode === null && !child.killed, probe)
 
   if (decision.action === 'fail') {
-    stopBackendChild(child)
-    await waitForBackendExit(child)
+    await localBackendLifecycle.stop(child)
     throw new Error(
       `Hermes backend (PID ${child.pid}) died before its identity could be recorded: ${decision.reason}${outputTail?.describe() ?? ''}`
     )
@@ -3665,8 +3619,7 @@ async function claimBackendChild(child, command, profile, nonce, outputTail: Bac
 
     return identity
   } catch (error) {
-    stopBackendChild(child)
-    await waitForBackendExit(child)
+    await localBackendLifecycle.stop(child)
     throw new Error(
       `Could not persist ownership for the Hermes backend: ${error.message}${outputTail?.describe() ?? ''}`
     )
@@ -3710,16 +3663,13 @@ function reapOrphanedBackendsOnce() {
 // `hermes update`; neither venv scans nor a second fleet stop belong here.
 async function stopBackendsForUpdate(): Promise<void> {
   if (IS_WINDOWS) {
-    stopBackendTreesForUpdate(backendConnectionState.getProcess(), {
-      forceKillProcessTree,
-      stopAllPoolBackends
-    })
+    await Promise.all([teardownPrimaryBackendAndWait(), stopAllPoolBackends()])
   }
 }
 
 // Uninstall still deletes the installation and its historical venv. Unlike
 // generation updates, deletion must wait for those old files to be released.
-async function releaseBackendLock(updateRoot, tag) {
+async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ unlocked: boolean }> {
   if (!IS_WINDOWS) {
     return { unlocked: true }
   }
@@ -3744,10 +3694,7 @@ async function releaseBackendLock(updateRoot, tag) {
     }
   }
 
-  stopBackendTreesForUpdate(hermesProcess, {
-    forceKillProcessTree,
-    stopAllPoolBackends
-  })
+  await Promise.all([teardownPrimaryBackendAndWait(), stopAllPoolBackends()])
 
   // Uninstall deletes the whole runtime. Drain separately-running gateways
   // through the CLI, rather than targeting a gateway worker by PID.
@@ -3882,9 +3829,8 @@ async function handOffWindowsBootstrapRecovery(reason) {
   const updateRoot = resolveUpdateRoot()
   const { branch: configuredBranch } = readDesktopUpdateConfig()
 
-  const branch = isGitCheckout(updateRoot)
-    ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    : configuredBranch || DEFAULT_UPDATE_BRANCH
+  // Recovery can run without Python. Keep the chosen branch; do not guess a replacement.
+  const branch: string = configuredBranch || DEFAULT_UPDATE_BRANCH
 
   const updaterArgs: string[] = chooseUpdaterArgs(
     { runtimeUsable: isSourceRuntimeUsable(updateRoot) },
@@ -3960,92 +3906,6 @@ function runningAppBundle() {
   } // -> .../X.app
 
   return dir.endsWith('.app') ? dir : null
-}
-
-// ── Pre-flight state.db integrity guard (#68474) ─────────────────────
-// Take an emergency snapshot of state.db and verify the live copy is
-// intact before any update process mutates the install.  Runs in the
-// desktop Electron process itself, before the backend is killed and
-// before the updater is spawned — a separate safety net from the
-// Python-level pre-update snapshot inside `hermes update`.
-function preflightStateDb(hermesHome, rememberLog) {
-  const stateDbPath = path.join(hermesHome, 'state.db')
-
-  if (!fileExists(stateDbPath)) {
-    rememberLog('[updates] state.db pre-flight: not found (fresh install?)')
-
-    return
-  }
-
-  try {
-    const stat = fs.statSync(stateDbPath)
-
-    if (stat.size > 100) {
-      const fd = fs.openSync(stateDbPath, 'r')
-      const header = Buffer.alloc(16)
-
-      fs.readSync(fd, header, 0, 16, 0)
-      fs.closeSync(fd)
-
-      const expectedHeader = Buffer.from('SQLite format 3\0')
-      const headerOk = header.equals(expectedHeader)
-
-      rememberLog(
-        `[updates] state.db pre-flight: size=${stat.size}, ` +
-          `headerOk=${headerOk}, headerHex=${header.toString('hex')}`
-      )
-
-      if (!headerOk) {
-        rememberLog(
-          '[updates] state.db header is INVALID before update — ' +
-            'this indicates pre-existing corruption or a concurrent write issue'
-        )
-      }
-
-      // Emergency timestamped backup, separate from the Python-level snapshot.
-      const ts = new Date().toISOString().replace(/[:.]/g, '-')
-
-      const emergencyPath = path.join(hermesHome, `state.db.pre-update-emergency-${ts}.bak`)
-
-      try {
-        fs.copyFileSync(stateDbPath, emergencyPath)
-        const emergStat = fs.statSync(emergencyPath)
-
-        rememberLog(`[updates] emergency state.db backup: ${emergencyPath} ` + `(${emergStat.size} bytes)`)
-
-        // Prune to the 2 most recent emergency backups.
-        try {
-          const homeDir = fs.readdirSync(hermesHome)
-
-          const backups = homeDir
-            .filter(
-              f =>
-                f.startsWith('state.db.pre-update-emergency-') &&
-                f.endsWith('.bak') &&
-                f !== path.basename(emergencyPath)
-            )
-            .sort()
-            .reverse()
-
-          for (const old of backups.slice(2)) {
-            try {
-              fs.unlinkSync(path.join(hermesHome, old))
-            } catch {
-              void 0
-            }
-          }
-        } catch {
-          void 0
-        }
-      } catch (copyErr) {
-        rememberLog(`[updates] emergency state.db backup failed: ${copyErr.message}`)
-      }
-    } else {
-      rememberLog(`[updates] state.db too small (${stat.size} bytes) for a valid SQLite database`)
-    }
-  } catch (statErr) {
-    rememberLog(`[updates] could not stat state.db before update: ${statErr.message}`)
-  }
 }
 
 // macOS/Linux update hand-off: spawn the repo-owned posix orchestrator
@@ -10692,20 +10552,13 @@ function resetBootProgressForReconnect() {
   )
 }
 
-function stopBackendChild(child: ChildProcess | null | undefined): void {
-  void localBackendLifecycle.stop(child).catch((error: unknown): void => rememberLog(`Backend teardown failed: ${error instanceof Error ? error.message : String(error)}`))
-}
-
-// Soft gateway-mode apply: tear down the primary without resetting boot UI or
-// reloading the renderer. The shell stays up; the renderer wipes session lists
-// (so skeletons retrigger) and re-dials. Distinct from hard re-home (profile
-// switch / crash recovery), which still resets boot progress + reloads.
-function resetHermesConnection({ soft = false } = {}) {
+// Reset routing and UI state only. Local callers must await physical teardown.
+// Remote revalidation has no local child and can reset this state directly.
+function resetHermesConnectionState({ soft = false }: { soft?: boolean } = {}): void {
   backendStartFailure = null
   remoteReauthFailure = null
   remoteLiveness.clear()
-  const hermesProcess = backendConnectionState.invalidate()
-  stopBackendChild(hermesProcess)
+  backendConnectionState.invalidate()
 
   if (!soft) {
     resetBootProgressForReconnect()
@@ -10724,7 +10577,7 @@ async function teardownPrimaryBackendAndWait({ soft = false }: { soft?: boolean 
   }
 
   try {
-    resetHermesConnection({ soft })
+    resetHermesConnectionState({ soft })
     await stopping
   } finally {
     if (soft) {
@@ -10760,29 +10613,6 @@ function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'r
       webContents.send('hermes:connections:changed', payload)
     }
   }
-}
-
-const backendExitWaits = new Map<ChildProcess, Promise<void>>()
-
-function waitForBackendExit(child: ChildProcess | null | undefined, timeoutMs: number = 5000): Promise<void> {
-  if (!child) {
-    return Promise.resolve()
-  }
-
-  const existing = backendExitWaits.get(child)
-
-  if (existing) {
-    return existing
-  }
-
-  const waiting = waitForBackendExitImpl(child, { forceKillProcessTree, isWindows: IS_WINDOWS }, timeoutMs)
-  backendExitWaits.set(child, waiting)
-  void waiting.then(
-    (): boolean => backendExitWaits.delete(child),
-    (): boolean => backendExitWaits.delete(child)
-  )
-
-  return waiting
 }
 
 // The profile the primary (window) backend runs as. readActiveDesktopProfile()
@@ -11796,31 +11626,6 @@ function startPoolIdleReaper() {
   }
 }
 
-function releaseLocalBackendSlot(entry: any) {
-  if (!entry) {
-    return
-  }
-
-  const release = entry.releaseLocalBackendSlot
-  const request = entry.localBackendSpawnRequest as LocalBackendSpawnRequest | null
-  entry.releaseLocalBackendSlot = null
-  entry.localBackendSlotKey = null
-  entry.localBackendSpawnRequest = null
-
-  if (release) {
-    release()
-  } else {
-    request?.cancel()
-  }
-}
-
-function assertPoolEntryStillOwned(poolKey: string, entry: any): void {
-  if (localBackendLifecycle.signal.aborted || backendPool.get(poolKey) !== entry) {
-    releaseLocalBackendSlot(entry)
-    throw new Error(`Profile backend start for "${poolKey}" was cancelled before spawn.`)
-  }
-}
-
 const failedLocalBackendTeardowns = new WeakMap<object, Promise<void>>()
 
 function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> {
@@ -11837,14 +11642,9 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
   const child = entry.process
 
   const teardown = releaseLocalBackendSlotAfterExit(
-    () => releaseLocalBackendSlot(entry),
-    async () => {
-      stopBackendChild(child)
-      await waitForBackendExit(child)
-
-      if (child && child.exitCode === null && child.signalCode === null) {
-        throw new Error(`Profile backend for "${poolKey}" did not exit; keeping the local slot occupied.`)
-      }
+    (): void => releaseLocalBackendSlot(entry),
+    async (): Promise<void> => {
+      await localBackendLifecycle.stop(child)
 
       releaseBackendChild(child)
     }
@@ -11864,7 +11664,11 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
 // entry means THIS machine regardless of the v1 routing table); `opts.poolKey`
 // is the backendPool key when it differs from the profile name (composite
 // registry scopes) so the exit/error cleanup evicts the right entry.
-async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
+async function spawnPoolBackend(
+  profile: string,
+  entry: any,
+  opts: { forceLocal?: boolean; poolKey?: string } = {}
+): Promise<Awaited<ReturnType<typeof backendConnectionState.getPromise>>> {
   const poolKey = opts.poolKey || profile
 
   await reapOrphanedBackendsOnce()
@@ -11907,7 +11711,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 
   const spawnPriority: LocalBackendSpawnPriority = spawnPriorityFrom(entry.spawnPriority)
 
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   const spawnRequest = localBackendSpawnCoordinator.request(poolKey, {
     timeoutMs: POOL_SLOT_WAIT_MS,
@@ -11936,7 +11740,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     entry.localBackendSpawnRequest = null
   }
 
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   const token = crypto.randomBytes(32).toString('base64url')
 
@@ -11988,7 +11792,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   const parentStartMarker = await desktopParentStartMarker()
   const backendNonce = crypto.randomBytes(16).toString('hex')
   const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   const child = spawnOwnedBackend(
     backend.command,
@@ -12043,7 +11847,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // surface as an unhandled rejection before the Promise.race below attaches.
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   child.stdout.on('data', rememberLog)
   child.stderr.on('data', rememberLog)
@@ -12130,13 +11934,12 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 // Bounded, deduplicated pool teardown (see pool-stop.ts): every stop path —
 // idle reaper, LRU eviction, profile delete/rename, quit — shares one
 // in-flight stop per key and retains the process handle until the bounded
-// SIGTERM -> SIGKILL escalation in waitForBackendExit() resolves. Previously
+// physical shutdown promise resolves. Previously
 // SIGTERM + immediate entry delete dropped the handle and a slow child
 // survived detached under PID 1.
 const poolStopper = createPoolStopper<ChildProcess>({
   pool: backendPool,
-  stopChild: child => stopBackendChild(child),
-  waitForExit: child => waitForBackendExit(child)
+  stopChild: localBackendLifecycle.stop
 })
 
 async function stopPoolBackend(profile: string) {
@@ -12273,7 +12076,7 @@ async function prepareProfileRenameRequest(request) {
   })
 }
 
-async function startHermes() {
+async function startHermes(): Promise<Awaited<ReturnType<typeof backendConnectionState.getPromise>>> {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -12528,8 +12331,7 @@ async function startHermes() {
     ))
 
     if (!processOwner) {
-      stopBackendChild(hermesProcess)
-      await waitForBackendExit(hermesProcess)
+      await localBackendLifecycle.stop(hermesProcess)
       releaseBackendChild(hermesProcess)
       throw new Error('Hermes backend start was superseded by a newer connection attempt.')
     }
@@ -14361,7 +14163,7 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
         currentConnectionPromise: () => backendConnectionState.getPromise(),
         log: rememberLog,
         probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
-        resetConnection: () => resetHermesConnection({ soft: true }),
+        resetConnection: () => resetHermesConnectionState({ soft: true }),
         tracker: remoteLiveness
       }),
       revalidatePool()
@@ -14626,7 +14428,7 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
 
   return { ok: true }
 })
-ipcMain.handle('hermes:bootstrap:repair', async () => {
+ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundled?: boolean; error?: string }> => {
   // A bundled install's payload is immutable and sealed at build time —
   // "repair" would re-run the installer against a separate
   // %LOCALAPPDATA%\hermes tree the app doesn't own. The only repair for a
@@ -14685,7 +14487,7 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   backendStartFailure = null
   remoteReauthFailure = null
   getFirstRunSetupGate().resetForRepair()
-  resetHermesConnection()
+  await teardownPrimaryBackendAndWait()
 
   return { ok: true }
 })

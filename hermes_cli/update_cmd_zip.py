@@ -318,22 +318,12 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
 
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
                    target_sha: str | None = None, target_repository: str | None = None,
-                   gateway_mode: bool | None = None, pre_update_snapshot_id=None,
-                   pre_update_version=None,
-                   _pre_update_plan=None, _windows_gateway_resume=None) -> bool:
+                   completion_request=None) -> bool:
     """Update via ZIP when Windows git file I/O fails; dependency/build failures propagate.
 
     A supplied commit keeps the archive on the target selected before Git failed.
     """
-    from hermes_cli.update_cmd import _m, _read_project_version
-    from hermes_cli.update_cmd_maint import (
-        _prepare_updated_checkout, _sweep_bytecode_after_update)
-    from hermes_cli.update_finish import finish_update
-
-    if pre_update_version is None:
-        pre_update_version = _read_project_version()
-    if gateway_mode is None:
-        gateway_mode = bool(getattr(args, "gateway", False))
+    from hermes_cli.update_cmd import _m, _complete_source_update
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
@@ -347,6 +337,10 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
+    # Older callers lack the snapshot/receipt/lifecycle handoff. Refuse before swap.
+    if completion_request is None:
+        from hermes_cli._old_updater import stop_for_relaunch
+        stop_for_relaunch(incomplete=True)
     if target_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", target_sha):
         raise ValueError("ZIP update requires an exact full commit SHA")
     ref = target_sha if target_sha is not None else f"refs/heads/{branch}"
@@ -355,19 +349,6 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
             or any(part in (".", "..") for part in repository.split("/"))):
         raise ValueError("ZIP update requires a GitHub owner/repository")
     _download_and_swap_zip(branch, f"https://github.com/{repository}/archive/{ref}.zip")
-    _sweep_bytecode_after_update(branch)
-    _prepare_updated_checkout(_m().PROJECT_ROOT, desktop=had_desktop_app_before_update)
-    try:
-        finish_update(
-            assume_yes=bool(getattr(args, "yes", False)), gateway_mode=gateway_mode,
-            pre_update_snapshot_id=pre_update_snapshot_id,
-            had_desktop_app_before_update=had_desktop_app_before_update,
-            pre_update_version=pre_update_version,
-            plan=_pre_update_plan, windows_resume=_windows_gateway_resume)
-    except SystemExit as exc:
-        # Shared completion reports an unsafe runtime/incomplete fleet with exit 1.
-        # Keep ZIP's legacy bool contract; swap and preparation failures still raise.
-        if exc.code != 1:
-            raise
-        return False
+    completion_request["expected_sha"] = target_sha
+    _complete_source_update(completion_request)
     return True

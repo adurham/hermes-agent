@@ -1,4 +1,5 @@
 """Execute commit staging and summary steps against a disposable object store."""
+import html
 import json
 import os
 from pathlib import Path
@@ -63,7 +64,10 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
     base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
     summary = tmp_path / 'summary.md'
     jobs = _workflow()['jobs']
+    bundle_env = {'HERMES_HOME': None, 'EMPTY': '', 'LABEL': '<script>\n"café" & value</script>'}
     env = dict(HERMES_BUILD_COMMIT=sha, HERMES_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
+               GITHUB_REPOSITORY='fixture-owner/fixture-repo',
+               HERMES_BUNDLE_ENV_JSON=json.dumps(bundle_env), CI_SECRET='must-not-appear',
                RELEASE_PHASE='', TARGET='win32-x64', RUN_URL=run_url,
                GITHUB_STEP_SUMMARY=str(summary), CLOUDFLARE_R2_PUBLIC_URL=base,
                CLOUDFLARE_R2_ACCOUNT_ID='loopback', CLOUDFLARE_R2_ACCESS_KEY_ID='test-inert',
@@ -83,6 +87,11 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
     page_key = f'releases/commit/{sha}/index.html'
     with urlopen(f'{base}/{page_key}', timeout=5) as response:
         page = response.read().decode()
+    assert f'href="https://github.com/fixture-owner/fixture-repo/commit/{sha}"' in page
+    assert 'Bundle environment' in page and 'HERMES_HOME' in page and 'Unset' in page
+    assert '<code>EMPTY</code></td><td><code>&quot;&quot;</code>' in page
+    assert html.escape(json.dumps(bundle_env['LABEL'], ensure_ascii=False)) in page
+    assert '<script>' not in page and 'must-not-appear' not in page and 'CI_SECRET' not in page
     links = re.findall(r'\]\((https?://[^)]+)\)', text)
     assert run_url in links
     assert text.count('✅ Built') == page.count('✅ Built') == int(has_download)
@@ -102,12 +111,14 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         assert jobs[name]['strategy']['fail-fast'] is False
     step = next(step for step in jobs['commit-builds-summary']['steps'] if 'run' in step)
     assert step['env']['RUN_URL'] == '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+    assert step['env']['HERMES_BUNDLE_ENV_JSON'] == '${{ inputs.bundle_env }}'
 
 
 def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tmp_path, r2_server):
     sha = 'a' * 40
     base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
     env = dict(HERMES_BUILD_COMMIT=sha, HERMES_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
+               GITHUB_REPOSITORY='o/r',
                RELEASE_PHASE='', GITHUB_SHA='b' * 40, CLOUDFLARE_R2_PUBLIC_URL=base,
                CLOUDFLARE_R2_ACCOUNT_ID='loopback', CLOUDFLARE_R2_ACCESS_KEY_ID='test-inert',
                CLOUDFLARE_R2_SECRET_ACCESS_KEY='test-inert', CLOUDFLARE_R2_BUCKET='hermes-releases')

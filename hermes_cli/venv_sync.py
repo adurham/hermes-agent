@@ -49,9 +49,24 @@ def _is_sealed(project_root: Path) -> bool:
     return True
 
 
+def check_runtime(project_root: Path) -> str | None:
+    """One passive startup verdict; callers only choose stderr or logging."""
+    import pm
+    from hermes_cli.steward import sealed_steward
+
+    pm.adopt()
+    problems = pm.activate()
+    if not problems:
+        return None
+    steward = sealed_steward(Path(project_root))
+    remedy = (f"this {steward}-managed install must rebuild the artifact to fix"
+              if steward else "run `hermes pm install`")
+    return f"install out of sync ({'; '.join(problems)}) — {remedy}"
+
+
 def publish_launchers(project_root: Path) -> None:
     """Refresh the durable source command before an old Python can be collected."""
-    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, resolve_store_python
+    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, expose_cli, resolve_store_python
     from hermes_cli.steward import read_install_stamp
 
     root = Path(project_root)
@@ -63,6 +78,11 @@ def publish_launchers(project_root: Path) -> None:
         from pm.package import InstallError
 
         raise InstallError("launchers", "source launcher publication failed", "retry the source update")
+    result = expose_cli(root)
+    if not result["ok"]:
+        import logging
+
+        logging.getLogger(__name__).warning("CLI exposure failed: %s", result["error"])
 
 
 def sync(project_root: Path | None = None, *, check: bool = False) -> dict:

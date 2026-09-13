@@ -688,8 +688,8 @@ class TestErrorResilience:
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
 
         # ...and when git isn't installed at all.
-        monkeypatch.setattr("shutil.which", lambda x: None)
-        mgr._git_available = None
+        monkeypatch.setattr("shutil.which", lambda *args, **kwargs: None)
+        mgr.new_turn()
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
 
 

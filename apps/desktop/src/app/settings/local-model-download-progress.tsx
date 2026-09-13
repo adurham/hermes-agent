@@ -1,11 +1,16 @@
-import { useState } from 'react'
+import { type ReactElement, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { pauseLocalDownload, resumeLocalDownload } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Loader2, Pause, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import {
+  isCurrentLocalModelsOwner,
+  type LocalModelsOwner,
+  localModelsRequestScope,
+  watchLocalRuntimeJobs
+} from '@/store/local-runtime-jobs'
 import { notifyError } from '@/store/notifications'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
@@ -91,7 +96,10 @@ export function LocalModelDownloadProgress({ job }: LocalModelDownloadProps) {
   )
 }
 
-export function LocalModelDownloadActions({ job }: LocalModelDownloadProps) {
+export function LocalModelDownloadActions({
+  job,
+  owner
+}: LocalModelDownloadProps & { owner?: LocalModelsOwner }): ReactElement | null {
   const { t } = useI18n()
   const copy = t.settings.localModels
   const [busy, setBusy] = useState<boolean>(false)
@@ -105,14 +113,16 @@ export function LocalModelDownloadActions({ job }: LocalModelDownloadProps) {
       // below decides what the row shows; only a real transport failure
       // surfaces as an error.
       if (kind === 'pause') {
-        await pauseLocalDownload(job.job_id)
+        await pauseLocalDownload(job.job_id, owner ? localModelsRequestScope(owner) : undefined)
       } else {
-        await resumeLocalDownload(job.job_id)
+        await resumeLocalDownload(job.job_id, owner ? localModelsRequestScope(owner) : undefined)
       }
 
-      watchLocalRuntimeJobs()
+      watchLocalRuntimeJobs(owner)
     } catch (err) {
-      notifyError(err, copy.downloadFailed(job.target))
+      if (!owner || isCurrentLocalModelsOwner(owner)) {
+        notifyError(err, copy.downloadFailed(job.target))
+      }
     } finally {
       setBusy(false)
     }

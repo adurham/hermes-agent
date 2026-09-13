@@ -22,13 +22,13 @@ def test_killed_publication_recovers_before_boot(tmp_path, commit_facts):
     code = '''
 import os, sys
 from pathlib import Path
-from hermes_cli.plugins_admission import _config_commit
+from pm.publication import PluginSelection
 from hermes_cli.runtime_paths import runtime_facts_path
 import pm.paths as paths
 from pm.lock import Facts
 repo, config = map(Path, sys.argv[1:3])
 paths.repo_root = lambda: repo
-change = _config_commit({"new"}, set())
+PluginSelection({"home": str(config.parent), "enabled": ["new"], "disabled": []}).publish(repo)
 if sys.argv[3] == "True":
     Facts(runtime_facts_path(repo)).record_state("venv", "new", [])
 os._exit(17)

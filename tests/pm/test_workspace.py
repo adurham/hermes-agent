@@ -3,9 +3,8 @@
 The workspace root is a pm-GENERATED project (never the committed
 pyproject.toml — sealed installs are read-only and member lists are
 machine-specific). Its pyproject = core's pyproject verbatim +
-``[tool.uv.workspace] members`` pointing at each enabled plugin dir via
-relative ``../``-escaping paths (proven to resolve). ``uv lock`` unions
-core + plugin deps into ONE lock; conflict = loud refusal.
+``[tool.uv.workspace] members`` pointing at each snapshotted plugin.
+``uv lock`` unions core + plugin deps into ONE lock; conflict = loud refusal.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import pm.workspace as ws
+from pm.environment import managed_environment
 
 
 @pytest.fixture(autouse=True)
@@ -68,17 +68,11 @@ def layout(tmp_path, monkeypatch):
     return tmp_path, core, plug_a, store
 
 
-def test_workspace_root_is_per_install_not_in_the_store(layout):
-    from hermes_cli.runtime_paths import install_state_dir
-    _, core, _, store = layout
-    assert ws.workspace_root() == install_state_dir(core) / ".pm-workspace"
-    assert not ws.workspace_root().is_relative_to(store)
-
-
 def test_build_writes_core_pyproject_verbatim(layout):
-    _, core, plug_a, _ = layout
-    root = ws.workspace_root()
-    ws.lock_and_sync([plug_a], root=root, venv_dir=root.parent / "env")
+    tmp, core, plug_a, _ = layout
+    root = tmp / "workspace"
+    ws.lock_and_sync([plug_a], [], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
     core_text = (core / "pyproject.toml").read_text(encoding="utf-8")
     # core's project table is carried verbatim (name, deps, requires-python)
@@ -93,9 +87,10 @@ def test_build_writes_core_pyproject_verbatim(layout):
 def test_members_keep_their_source_with_the_generation(layout):
     import tomllib
 
-    _, _, plug_a, _ = layout
-    root = ws.workspace_root()
-    ws.lock_and_sync([plug_a], root=root, venv_dir=root.parent / "env")
+    tmp, core, plug_a, _ = layout
+    root = tmp / "workspace"
+    ws.lock_and_sync([plug_a], [], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
     document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     [relative] = document["tool"]["uv"]["workspace"]["members"]
     copied = root / relative / "pyproject.toml"
@@ -106,20 +101,35 @@ def test_members_keep_their_source_with_the_generation(layout):
     assert copied.read_bytes() == before
 
 
-def test_build_is_idempotent(layout):
-    _, _, plug_a, _ = layout
-    root = ws.workspace_root()
-    ws.lock_and_sync([plug_a], root=root, venv_dir=root.parent / "env")
-    first = (ws.workspace_root() / "pyproject.toml").read_text(encoding="utf-8")
-    ws.lock_and_sync([plug_a], root=root, venv_dir=root.parent / "env")
-    second = (ws.workspace_root() / "pyproject.toml").read_text(encoding="utf-8")
-    assert first == second
+def test_preparation_refuses_existing_workspace_without_mutating_it(layout):
+    from pm.package import InstallError
+
+    tmp, core, plug_a, _ = layout
+    root = tmp / "workspace"
+    environment = managed_environment(tmp / "env")
+    kwargs = dict(root=root, source=core, seed_lock=None,
+                  environment=environment)
+    ws.lock_and_sync([plug_a], [], **kwargs)
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    (plug_a / "pyproject.toml").write_text('changed after publication')
+    with pytest.raises(InstallError, match="fresh"):
+        ws.lock_and_sync([], [], **kwargs)
+    assert {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+
+
+def test_missing_explicit_seed_cannot_silently_resolve_new_versions(layout):
+    tmp, core, plug_a, _ = layout
+    with pytest.raises(FileNotFoundError):
+        ws.lock_and_sync([plug_a], [], root=tmp / "workspace", source=core,
+                         seed_lock=tmp / "missing.lock", environment=managed_environment(tmp / "env"))
+    assert not (tmp / "env").exists()
 
 
 def test_zero_plugins_still_builds_a_root_with_no_members(layout):
-    _, _, _, _ = layout
-    root = ws.workspace_root()
-    ws.lock_and_sync([], root=root, venv_dir=root.parent / "env")
+    tmp, core, _, _ = layout
+    root = tmp / "workspace"
+    ws.lock_and_sync([], [], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "hermes-agent"' in text
     assert "[tool.uv.workspace]" not in text or "members = []" in text
@@ -197,7 +207,7 @@ def test_enabled_member_dirs_finds_enabled_dep_plugins(tmp_path, monkeypatch):
     # newest LAST) — discovery preserves the configured order.
     monkeypatch.setattr(
         "pm.plugins_state.enabled_plugins_ordered",
-        lambda: {plugins: ["legacy-plug", "modern-plug", "plain-plug"]},
+        lambda **kwargs: {plugins: ["legacy-plug", "modern-plug", "plain-plug"]},
     )
     found = ws.enabled_member_dirs()
     names = [p.name for p in found]
@@ -213,7 +223,7 @@ def test_enabled_member_dirs_empty_when_nothing_enabled(tmp_path, monkeypatch):
     (member / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        "pm.plugins_state.enabled_plugins_ordered", lambda: {}
+        "pm.plugins_state.enabled_plugins_ordered", lambda **kwargs: {}
     )
     assert ws.enabled_member_dirs() == []
 
@@ -247,115 +257,40 @@ def test_classify_network_failure_stays_generic():
     assert not isinstance(err, ResolutionConflict)
 
 
-def test_sync_failure_is_never_a_conflict(tmp_path, monkeypatch):
-    """--frozen: the lock already resolved, so a sync failure (download,
-    build, tooling) must stay generic — it must not disable plugins."""
+def test_sync_failure_is_never_a_conflict(layout, monkeypatch):
     from pm.package import InstallError
-    from pm.workspace import ResolutionConflict
 
-    class FakeProc:
-        returncode = 1
-        stderr = "error: Failed to download wheel (connection reset)"
-        stdout = ""
-
-    monkeypatch.setattr(ws, "_generate_pyproject", lambda *a, **k: (Path("/x/ws"), False))
-    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path("uv"), Path("pm-python")))
-
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return FakeProc()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    tmp, core, _, _ = layout
+    environment = managed_environment(tmp / "candidate")
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs:
+                        subprocess.CompletedProcess(cmd, 1, "", "Failed to download wheel"))
     with pytest.raises(InstallError) as excinfo:
-        ws.lock_and_sync([], [], venv_dir=tmp_path / "candidate")
-    assert not isinstance(excinfo.value, ResolutionConflict)
+        ws.lock_and_sync([], [], root=tmp / "workspace", source=core,
+                         seed_lock=None, environment=environment, frozen=True)
+    assert not isinstance(excinfo.value, ws.ResolutionConflict)
 
 
-def test_staging_root_and_env_are_honored_without_live_mutation(monkeypatch, tmp_path):
-    """lock_and_sync must resolve into the PARENT-SUPPLIED staging root +
-    venv, pass a COPY of the environment (never mutate the live one), and
-    leave the default generated root untouched."""
-    staging = tmp_path / "staging-ws"
-    staging.mkdir()
-
-    seen = {}
-
-    class FakeProc:
-        returncode = 0
-        stderr = ""
-        stdout = ""
-
-    def fake_run(cmd, cwd=None, env=None, **kwargs):
-        seen["cwd"] = cwd
-        seen["env"] = env
-        return FakeProc()
-
-    monkeypatch.setattr(ws, "_generate_pyproject", lambda *a, **k: (staging, False))
-    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path("uv"), Path("pm-python")))
-    monkeypatch.setattr("pm.packages.uv_cache_dir", lambda: tmp_path / "cache")
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    live_key = "PM_WORKSPACE_TEST_SENTINEL"
-    os.environ[live_key] = "live"
-    try:
-        ws.lock_and_sync(
-            [], [], venv_dir=tmp_path / "staging-venv", root=staging,
-            env={"PATH": "/staged/bin", live_key: "staged"},
-        )
-
-        assert Path(seen["cwd"]) == staging
-        assert seen["env"][live_key] == "staged"          # staged env wins
-        assert seen["env"]["UV_CACHE_DIR"] == str(tmp_path / "cache")
-        assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "staging-venv")
-        assert seen["env"]["UV_PYTHON"] == "pm-python"
-        assert os.environ[live_key] == "live"             # live env untouched
-    finally:
-        del os.environ[live_key]
-
-
-def test_changed_root_seeds_from_committed_lock_unchanged_keeps_extended(
-    layout, monkeypatch, tmp_path
-):
-    """Seed the CURRENT resolution without writing shipped bytes: a fresh
-    root seeds from the committed lock; an existing root seeds from its
-    own extended lock; an explicit parent-supplied seed_lock wins."""
-    _, core, plug_a, store = layout
-    (core / "uv.lock").write_bytes(b"committed-bytes\n")
-
-    class FakeProc:
-        returncode = 0
-        stderr = ""
-        stdout = ""
-
-    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path("uv"), Path("pm-python")))
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: FakeProc())
-
-    root = ws.workspace_root()
-    venv = tmp_path / "venv"
-
-    # First sync: fresh root -> seeded from the COMMITTED lock.
-    ws.lock_and_sync([plug_a], [], venv_dir=venv)
-    assert (root / "uv.lock").read_bytes() == b"committed-bytes\n"
-
-    # Changed surface (new member), root's own EXTENDED lock present ->
-    # the current extended resolution is the seed, not the committed one.
-    (root / "uv.lock").write_bytes(b"extended-bytes\n")
-    plug_b = layout[0] / "home" / "plugins" / "plug-b"
-    plug_b.mkdir(parents=True)
-    (plug_b / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    ws.lock_and_sync([plug_a, plug_b], [], venv_dir=venv)
-    assert (root / "uv.lock").read_bytes() == b"extended-bytes\n"
-
-    # Parent-supplied seed_lock wins over both.
-    other = tmp_path / "parent-extended.lock"
-    other.write_bytes(b"parent-bytes\n")
-    plug_c = layout[0] / "home" / "plugins" / "plug-c"
-    plug_c.mkdir(parents=True)
-    (plug_c / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    ws.lock_and_sync([plug_a, plug_b, plug_c], [], venv_dir=venv, seed_lock=other)
-    assert (root / "uv.lock").read_bytes() == b"parent-bytes\n"
-
-    # Shipped core lock untouched throughout.
-    assert (core / "uv.lock").read_bytes() == b"committed-bytes\n"
+def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypatch):
+    tmp, core, _, _ = layout
+    staging = tmp / "staging-ws"
+    monkeypatch.setenv("PM_WORKSPACE_TEST_SENTINEL", "live")
+    environment = managed_environment(tmp / "staging-venv", env={
+        "PATH": "/staged/bin", "PM_WORKSPACE_TEST_SENTINEL": "staged",
+    })
+    # The prepared environment is authoritative; workspace never discovers tools.
+    monkeypatch.setattr(shutil, "which", lambda *args, **kwargs: pytest.fail("PATH discovery"))
+    seen = []
+    def run(cmd, **kwargs):
+        seen.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(subprocess, "run", run)
+    ws.lock_and_sync([], [], root=staging, source=core, seed_lock=None, environment=environment)
+    assert [cmd[1] for cmd, _ in seen] == ["lock", "sync"]
+    for cmd, kwargs in seen:
+        assert Path(cmd[0]) == environment.uv
+        assert Path(kwargs["cwd"]) == staging
+        assert kwargs["env"]["PM_WORKSPACE_TEST_SENTINEL"] == "staged"
+        assert kwargs["env"]["UV_CACHE_DIR"] == str(environment.cache)
+        assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
+        assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
+    assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"

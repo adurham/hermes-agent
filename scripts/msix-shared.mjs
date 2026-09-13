@@ -1,10 +1,5 @@
-// msix-shared.mjs — the shared MSIX-distribution building blocks used by
-// BOTH the out-of-store feed generator (apps/desktop/scripts/gen-appinstaller.mjs)
-// and the release job that stages the feed (scripts/stage-msixbundle.mjs).
-//
-// The two call sites must agree on every name/URL that Windows keys on — the
-// .appinstaller's MainBundle identity and the bundle URI — so the XML
-// builder and the version/filename derivations live here, once.
+// Native MSIX identity/version derivation and artifact content types.
+// App Installer XML and feed publication belong to scripts.bundles.release_artifacts.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -48,52 +43,6 @@ export function contentTypeFor(filename) {
     }
   }
   return undefined
-}
-
-/**
- * @param {unknown} value any value to XML-escape
- * @returns {string}
- */
-function escapeAttr(value) {
-  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
-
-/**
- * Build an .appinstaller document for a channel.
- *
- * @param {{
- *   baseUrl: string             // feed host root (no trailing slash)
- *   variantChannelPath: string  // e.g. "win32/", "win32/light/", "win32/canary/"
- *   identityName: string        // package Identity Name (e.g. "NousResearch.HermesBundled")
- *   version: string             // 4-part MSIX version, e.g. "1.2.3.0"
- *   bundleFilename: string      // the universal .msixbundle filename in the feed dir
- *   descriptorFilename?: string // defaults to the channel's .appinstaller name
- * }} o
- * @returns {string} the .appinstaller XML
- */
-export function buildAppInstaller(o) {
-  const directory = [o.baseUrl.replace(/\/+$/, ''), o.variantChannelPath.replace(/^\/+|\/+$/g, '')].filter(Boolean).join('/')
-  const bundleUrl = `${directory}/${o.bundleFilename}`
-  const descriptor = o.descriptorFilename || `${o.variantChannelPath.replace(/\/+$/, '').split('/').pop()}.appinstaller`
-  const appinstallerUri = `${directory}/${descriptor}`
-
-  return [
-    '<?xml version="1.0" encoding="utf-8"?>',
-    '<AppInstaller',
-    `  Uri="${escapeAttr(appinstallerUri)}"`,
-    `  Version="${escapeAttr(o.version)}"`,
-    '  xmlns="http://schemas.microsoft.com/appx/appinstaller/2017/2">',
-    '  <MainBundle',
-    `    Name="${escapeAttr(o.identityName)}"`,
-    `    Publisher="${escapeAttr(OUT_OF_STORE_PUBLISHER)}"`,
-    `    Version="${escapeAttr(o.version)}"`,
-    `    Uri="${escapeAttr(bundleUrl)}" />`,
-    '  <UpdateSettings>',
-    '    <OnLaunch HoursBetweenUpdateChecks="12" />',
-    '  </UpdateSettings>',
-    '</AppInstaller>',
-    ''
-  ].join('\n')
 }
 
 // The canary tag base + embedded UTC stamp: v0.27.2-canary.20260829034013

@@ -13,7 +13,6 @@ from tests.hermes_cli.plugin_worker_support import (
 
 @pytest.mark.parametrize("failure", ["config", "facts"])
 def test_failed_publication_preserves_selection_and_imports(plugin_world, monkeypatch, failure):
-    from hermes_cli import runtime_state
     from hermes_cli.plugins_admission import AdmissionRefused
     from pm import client, paths, receipt
 
@@ -29,16 +28,18 @@ def test_failed_publication_preserves_selection_and_imports(plugin_world, monkey
     watched = [config, paths.runtime_facts_path()]
     before = {path: path.read_bytes() for path in watched}
     if failure == "config":
-        atomic_bytes = runtime_state._atomic_bytes
-        def fail(path, data):
-            if path == config and b"publication-candidate" in data:
-                raise OSError("fixture config disk full")
-            return atomic_bytes(path, data)
-        monkeypatch.setattr(runtime_state, "_atomic_bytes", fail)
+        prelude = (
+            "from pm import publication\n"
+            "atomic_bytes = publication._atomic_bytes\n"
+            "def fail(path, data):\n"
+            f"    if path == Path({str(config)!r}) and b'publication-candidate' in data:\n"
+            "        raise OSError('fixture config disk full')\n"
+            "    return atomic_bytes(path, data)\n"
+            "publication._atomic_bytes = fail\n"
+        )
     else:
-        # Fail on the worker's real disk-publication boundary, after proving
-        # the client callback has already changed config. Undo must cross the
-        # wire before the command can return failure.
+        # Config and facts now publish in the worker; the failed command must
+        # return only after that same worker has restored the previous bytes.
         prelude = (
             "from pm.lock import Facts\n"
             "def fail(self, *args, **kwargs):\n"
@@ -46,11 +47,11 @@ def test_failed_publication_preserves_selection_and_imports(plugin_world, monkey
             "    raise OSError('fixture facts disk full')\n"
             "Facts.record_state = fail\n"
         )
-        uv = shutil.which("uv")
-        assert uv
-        monkeypatch.setattr(client, "runtime_command", lambda path, **kw:
-                            worker_command(path, uv, sys.executable, prelude=prelude,
-                                           runtime_python=world.runtime_python))
+    uv = shutil.which("uv")
+    assert uv
+    monkeypatch.setattr(client, "runtime_command", lambda path, **kw:
+                        worker_command(path, uv, sys.executable, prelude=prelude,
+                                       runtime_python=world.runtime_python))
     with pytest.raises(AdmissionRefused, match=f"fixture {failure} disk full"):
         world.command("enable", name="publication-candidate", no_allow_tool_override=True)
     assert {path: path.read_bytes() for path in watched} == before

@@ -81,11 +81,6 @@ def test_boot_bootstrap_reaches_post_update_registry(hermes_home, tmp_path, monk
         "BOOT_HOME_STEPS",
         (("probe_home", lambda: (ran.append("home"), {"ok": True})[1]),),
     )
-    monkeypatch.setattr(
-        post_update,
-        "BOOT_MACHINE_STEPS",
-        (("probe_machine", lambda: (ran.append("machine"), {"ok": True})[1]),),
-    )
 
     root = tmp_path / "install"
     root.mkdir()
@@ -102,10 +97,10 @@ def test_boot_bootstrap_reaches_post_update_registry(hermes_home, tmp_path, monk
 
     boot_bootstrap.maybe_run_boot_bootstrap(root)
 
-    assert sorted(ran) == ["home", "machine"]
+    assert sorted(ran) == ["home"]
     # second boot: record-gated no-op, no doubled maintenance
     boot_bootstrap.maybe_run_boot_bootstrap(root)
-    assert sorted(ran) == ["home", "machine"]
+    assert sorted(ran) == ["home"]
 
 
 # ── gateway entry point reaches the registry ─────────────────────────

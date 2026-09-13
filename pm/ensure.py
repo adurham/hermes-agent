@@ -21,10 +21,8 @@ from pm.store import Store, current_target, merge_tree, tree_digest
 
 LOG = logging.getLogger(__name__)
 
-# ``progress(stage, done, total, label)`` — stage is "download" | "unpack",
-# label is the archive counter ("1/2") when a package has several. Slow
-# lines sit in one stage for minutes, so the byte counters are what prove
-# liveness to a UI.
+# ``progress(stage, done, total, label)`` reports download/unpack/verify;
+# multi-archive labels follow lockfile order.
 
 
 def _prepare_artifacts(package, store, scratch, artifacts, version, target, *,
@@ -265,7 +263,7 @@ def _publish_entry(package, store, staged, entry, previous_entry, target):
 def _install(
     package: Package,
     lockfile: Lockfile,
-    facts: Facts,
+    facts: Facts | None,
     store: Store,
     target: str,
     progress=None,
@@ -273,7 +271,8 @@ def _install(
     download_progress: ProgressFn | None = None,
     *,
     copy_from: tuple[Facts, Store] | None = None,
-) -> None:
+) -> Path:
+    """Realize one pin. Host installs commit facts; cross-target stages carry a marker."""
     version = lockfile.version(package.name)
     if version is None:
         raise InstallError(
@@ -284,28 +283,41 @@ def _install(
     if reason is not None:
         raise InstallError(package.name, f"unavailable on {target}: {reason}", "none")
 
-    artifacts = lockfile.artifacts(package.name, target)
     entry_name = package.store_entry(version, target)
+    entry = store.entry(entry_name)
+    if getattr(package, "pin_only", False):
+        return entry
+    artifacts = lockfile.artifacts(package.name, target)
+    pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
 
     with store.install_lock():
         if pause_event is not None and pause_event.is_set():
             raise DownloadPaused("install paused")
-        facts.reload()
-        entry = store.entry(entry_name)
-        previous_entry = store.entry(f".previous-{entry_name}")
+        if facts is not None:
+            facts.reload()
+        previous = facts.get(package.name) if facts is not None else None
+        previous_entry = store.entry(f".previous-{'stage-' if facts is None else ''}{entry_name}")
         if previous_entry.exists():
-            # An interrupted replacement keeps its old bytes outside scratch.
-            # Facts commit last; only a verified committed replacement wins.
-            fact = facts.get(package.name)
-            if fact and fact.get("entry") == entry_name and _entry_verified(package, fact, store, target):
+            # Facts commit last. Stages have no host-side commit record, so
+            # an interrupted stage always restores its prior usable bytes.
+            if (previous and previous.get("entry") == entry_name
+                    and _entry_verified(package, previous, store, target)):
                 _remove_entry(store, previous_entry.name)
             else:
                 _restore_previous_entry(store, entry, previous_entry)
-        if facts.installed(
-            package.name, version, store.root, _identity(lockfile, package.name, target)
-        ) and _entry_verified(package, facts.get(package.name), store, target):
+        if facts is not None:
+            current = previous is not None and facts.installed(
+                package.name, version, store.root, _identity(lockfile, package.name, target)
+            ) and _entry_verified(package, previous, store, target)
+        else:
+            try:
+                recorded = (entry / ".pm-stage-pin.json").read_text(encoding="utf-8")
+            except OSError:
+                recorded = None
+            current = recorded == pin and not package.verify(entry, target)
+        if current:
             _remove_downloads(store, artifacts)
-            return
+            return entry
         if not artifacts:
             raise InstallError(
                 package.name,
@@ -314,7 +326,6 @@ def _install(
             )
         with store.scratch() as scratch:
             staged = scratch / "tree"
-            previous = facts.get(package.name)
             try:
                 if copy_from is not None:
                     source_facts, source_store = copy_from
@@ -337,12 +348,15 @@ def _install(
                 reason = package.verify(staged, target)
                 if reason:
                     raise InstallError(package.name, f"staged entry failed verification: {reason}")
+                if facts is None:
+                    (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
                 with _publish_entry(package, store, staged, entry, previous_entry, target):
-                    facts.record(
-                        package.name, version, entry_name, package.env(entry, target), store.root,
-                        target=target, artifacts=[a["sha256"] for a in artifacts],
-                        digest=tree_digest(entry),
-                    )
+                    if facts is not None:
+                        facts.record(
+                            package.name, version, entry_name, package.env(entry, target), store.root,
+                            target=target, artifacts=[a["sha256"] for a in artifacts],
+                            digest=tree_digest(entry),
+                        )
                 _remove_downloads(store, artifacts)
             except (InstallError, DownloadPaused):
                 raise
@@ -360,68 +374,17 @@ def _install(
                 else version
             )
             LOG.info("repair: %s re-realized %s -> %s", package.name, old, new)
+    return entry
 
 
-def stage_only(name: str, target: str, progress=None) -> "Path":
-    """Cross-target staging: publish the pinned (package, version, target)
-    entry into the store and return its path. No facts are written and no
-    Runner is composed -- the staged binaries belong to ANOTHER machine
-    (e.g. linux-arm64-bionic .debs staged on a glibc CI host); this host's
-    installed-state must not learn about them. Idempotent: an already
-    published + verifying entry is returned as-is.
-    """
-    lockfile = _lockfile()
-    store = _store()
-    package = get_package(name)
-    version = lockfile.version(package.name)
-    if version is None:
-        raise InstallError(package.name, "not in the lockfile")
-    reason = package.missing_reason(target)
-    if reason is not None:
-        raise InstallError(package.name, f"unavailable on {target}: {reason}")
-    if getattr(package, "pin_only", False):
-        # A pure pin (e.g. the termux-docker digest): no bytes, no store
-        # entry, nothing to verify locally -- the pin IS the artifact.
-        return store.root / package.store_entry(version, target)
-    artifacts = lockfile.artifacts(package.name, target)
-    entry_name = package.store_entry(version, target)
-    # The stage pin marker (same identity shape as a fact's recorded
-    # artifacts: target + artifact digests) lets stage_only honor a
-    # same-version hash repin without any host-side facts: the entry
-    # belongs to ANOTHER machine, so the marker travels inside the entry.
-    pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
-    with store.install_lock():
-        entry = store.entry(entry_name)
-        previous_entry = store.entry(f".previous-stage-{entry_name}")
-        if previous_entry.exists():
-            # A killed publisher may have installed only part of the new tree.
-            _restore_previous_entry(store, entry, previous_entry)
-        if store.published(entry_name):
-            marker = entry / ".pm-stage-pin.json"
-            try:
-                recorded = marker.read_text(encoding="utf-8")
-            except OSError:
-                recorded = None
-            if not package.verify(entry, target) and recorded == pin:
-                _remove_downloads(store, artifacts)
-                return entry
-        if not artifacts:
-            raise InstallError(
-                package.name,
-                f"no artifact for {target} in the lockfile",
-                "run `hermes pm lock --bump` for this package",
-            )
-        with store.scratch() as scratch:
-            staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
-                                        progress=progress)
-            reason = package.verify(staged, target)
-            if reason:
-                raise InstallError(package.name, f"staged entry failed verification: {reason}")
-            (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
-            with _publish_entry(package, store, staged, entry, previous_entry, target):
-                pass  # Foreign entries carry the pin marker, never host facts.
-            _remove_downloads(store, artifacts)
-    return store.entry(entry_name)
+def stage_only(
+    name: str, target: str, progress=None, *,
+    pause_event: threading.Event | None = None,
+    download_progress: ProgressFn | None = None,
+) -> Path:
+    """Realize a cross-target pin without host facts or an executable Runner."""
+    return _install(get_package(name), _lockfile(), None, _store(), target,
+                    progress=progress, pause_event=pause_event, download_progress=download_progress)
 
 
 def ensure(
@@ -438,7 +401,7 @@ def ensure(
     policy names, so the policy does not apply to them.
 
     ``progress(stage, done, total, label)`` reports the slow parts of an
-    install to a UI; see _prepare_artifacts.
+    install to a UI, including ordered multi-archive labels.
     """
     if isinstance(get_package(name), StatePackage):
         sync_venv(explicit=explicit)
@@ -495,7 +458,7 @@ def _runtime_state_matches(fact: dict, stamp: str, *, project_root: Path | None 
     return (environment / "pyvenv.cfg").is_file()
 
 
-def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None,
+def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None, extra_plugin_dirs=(),
                     project_root: Path | None = None) -> bool:
     """Probe the requested union without changing recorded dependency state."""
     from hermes_cli.runtime_paths import runtime_facts_path
@@ -513,13 +476,16 @@ def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None,
             or any(not isinstance(extra, str) for extra in fact["extras"])):
         raise ValueError("invalid recorded dependency state")
     enabled = sorted(set(fact["extras"]) | set(extras or []))
-    members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
+    from pm.publication import candidate_members
+    if extra_plugin_dirs and plugin_dirs is not None:
+        raise ValueError("additional candidates require member discovery")
+    members = candidate_members(extra_plugin_dirs) if extra_plugin_dirs else plugin_dirs
     inputs = {} if members is None else {"plugin_dirs": members}
     stamp = package.expected_stamp(enabled, **inputs)
     return _runtime_state_matches(fact, stamp, project_root=root)
 
 
-def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, before_publish=None, repair: bool = False) -> None:
+def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, extra_plugin_dirs=(), selection=None, staged_plugin=None, repair: bool = False) -> None:
     """Make the venv match uv.lock + the enabled extras. Extras union into
     the installed state (one ledger); no-op when the stamp already matches.
     ``repair`` restores the recorded dependency graph into a fresh generation,
@@ -538,19 +504,15 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
     BEFORE the frozen/lazy refusals (a refusal is a recorded ``failed``
     outcome, not a silent raise); finalize runs in FINALLY — no-op syncs
     ("ok" with ``venv_rebuild`` false) and refusals ("failed") both get
-    a receipt. ``before_publish`` is the concrete selection hook: called
-    while the install lock is held, AFTER the environment staged and
-    BEFORE the facts write — it returns an undo callable that runs if
-    the facts write then fails, so a selection committed here is rolled
-    back atomically instead of drifting from the surviving environment.
-    No module globals, no callback framework — one hook, one consumer."""
+    a receipt. Plugin selection data is discovered and published by the worker
+    under this lock; no executable transaction phases cross the process boundary."""
     from pm import receipt
     from pm.features import read_features
 
     token = receipt.begin("sync")
     outcome = "failed"
     try:
-        if repair and (extras is not None or plugin_dirs is not None or before_publish is not None):
+        if repair and (extras is not None or plugin_dirs is not None or selection is not None or staged_plugin is not None or extra_plugin_dirs):
             raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
         if extras:
             from pm.extras import extra_supported
@@ -574,10 +536,26 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                 )
 
         package = get_package("venv")
-        from hermes_cli.runtime_state import runtime_lock, recover_publication
+        from hermes_cli.runtime_state import runtime_lock, recover_publication, finish_publication
+        from pm.publication import PluginSelection, StagedPlugin, candidate_members
         with runtime_lock(paths.repo_root()):
             recover_publication(paths.repo_root())
-            members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
+            if sum(value is not None for value in (selection, staged_plugin, plugin_dirs)) + bool(extra_plugin_dirs) > 1:
+                raise ValueError("publication owns plugin member discovery")
+            change = (PluginSelection(selection) if selection is not None else
+                      StagedPlugin(staged_plugin) if staged_plugin is not None else None)
+            if isinstance(change, StagedPlugin) and not change.active:
+                try:
+                    change.publish(paths.repo_root())
+                    finish_publication(paths.repo_root())
+                except BaseException:
+                    recover_publication(paths.repo_root())
+                    raise
+                receipt.record_venv_rebuild(False, "inactive plugin")
+                outcome = "ok"
+                return
+            members = (change.members if change is not None else
+                       candidate_members(extra_plugin_dirs) if extra_plugin_dirs else plugin_dirs)
             inputs = {} if members is None else {"plugin_dirs": members}
             facts = Facts(paths.runtime_facts_path(), strict=repair)
             fact = facts.get("venv") or _facts().get("venv") or {}
@@ -594,30 +572,21 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                 stamp = package.expected_stamp(enabled, **inputs)
             if not repair and not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
                 raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
-            if not repair and _runtime_state_matches(fact, stamp):
-                if before_publish is not None:
-                    publication = before_publish()
-                    if hasattr(publication, "finish"):
-                        publication.finish()
-                receipt.record_venv_rebuild(False, "already in sync")
-                outcome = "ok"
-                return
+            current = not repair and _runtime_state_matches(fact, stamp)
             receipt.record_feature_list(enabled)
-            undo = None
             try:
-                result = package.apply(enabled, **inputs) or {}
-                if before_publish is not None:
-                    undo = before_publish()
-                facts.record_state("venv", stamp, enabled, **result)
-                if hasattr(undo, "finish"):
-                    undo.finish()
-                receipt.record_venv_rebuild(True)
+                result = {} if current else (package.apply(enabled, explicit=explicit, **inputs) or {})
+                if not repair and package.expected_stamp(enabled, **inputs) != stamp:
+                    raise ValueError("Dependency inputs changed while preparing publication; retry.")
+                if change is not None:
+                    change.publish(paths.repo_root())
+                if not current:
+                    facts.record_state("venv", stamp, enabled, **result)
+                if change is not None:
+                    finish_publication(paths.repo_root())
+                receipt.record_venv_rebuild(not current, "already in sync" if current else "")
             except BaseException:
-                if undo is not None:
-                    try:
-                        undo()
-                    except Exception:
-                        LOG.exception("pm sync: publish undo failed; config may drift")
+                recover_publication(paths.repo_root())
                 raise
         outcome = "ok"
     except BaseException as exc:
@@ -696,17 +665,17 @@ def adopt() -> bool:
     return True
 
 
-def check() -> list[str]:
-    """The startup check: cheap stamp comparisons of the installed state
-    against the lockfile. Returns problems; empty means healthy. Never
+def drift() -> dict[str, str]:
+    """Cheap stamp comparisons of the installed state
+    against the lockfile. Maps package names to reasons; empty means healthy. Never
     installs, never touches the network. An install pm has never touched
     (no installed-state file) reports nothing — pm only vouches for what
     it installed. Lockfile packages this build doesn't know (version skew
     during a partial update) are skipped, not fatal."""
     if not paths.facts_path().is_file() and not paths.runtime_facts_path().is_file():
-        return []
+        return {}
 
-    problems: list[str] = []
+    problems: dict[str, str] = {}
     lockfile = _lockfile()
     facts = _facts()
     store = _store()
@@ -721,7 +690,7 @@ def check() -> list[str]:
         if package.missing_reason(target) is not None:
             continue
         if _installed_location(package, lockfile, target) is None:
-            problems.append(f"{name}: not installed or outdated")
+            problems[name] = "not installed or outdated"
     try:
         venv = get_package("venv")
     except KeyError:
@@ -729,10 +698,15 @@ def check() -> list[str]:
     if venv is not None and (paths.runtime_facts_path().is_file() or facts.get("venv") is not None):
         try:
             if not venv_is_current():
-                problems.append("venv: out of sync with uv.lock")
+                problems["venv"] = "out of sync with uv.lock"
         except (OSError, RuntimeError, ValueError) as exc:
-            problems.append(f"venv: {exc}")
+            problems["venv"] = str(exc)
     return problems
+
+
+def check() -> list[str]:
+    """Human-readable startup diagnostics. Use drift() for package identities."""
+    return [f"{name}: {reason}" for name, reason in drift().items()]
 
 
 def _store_path_dirs() -> list[str]:

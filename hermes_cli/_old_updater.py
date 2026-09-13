@@ -102,12 +102,21 @@ def _run_child(request: dict) -> tuple[int, dict]:
         return child.returncode if child.returncode >= 0 else 1, completed
 
 
-def stop_for_relaunch() -> NoReturn:
+def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
     """Finish in a fresh child, then exit rather than resume an old fallback.
 
     The historical name is retained. A finally/atexit path can call another
     shim while unwinding; it must receive the same result, not start again.
     """
+    if incomplete:
+        # A newly retired completion hook has no complete captured worklist.
+        # It must not start another update or invent a successful receipt.
+        print(
+            "You're updating from an older version of Hermes Agent. "
+            "To complete this update, run `hermes update` again.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     global _result
     if _result is not None:
         raise SystemExit(_result)

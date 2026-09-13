@@ -48,7 +48,6 @@ reclaim object storage.  A size-cap pass drops the oldest checkpoints per
 project until total store size is under ``max_total_size_mb``.
 """
 
-import functools
 import hashlib
 import json
 import logging
@@ -59,7 +58,7 @@ import subprocess
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int
@@ -289,33 +288,6 @@ def _project_meta_path(store: Path, dir_hash: str) -> Path:
 # Git env
 # ---------------------------------------------------------------------------
 
-@functools.lru_cache(maxsize=1)
-def _managed_git() -> Optional[Tuple[List[str], List[str]]]:
-    """(git invocation, extra PATH dirs) from pm's pinned Git for Windows.
-
-    pm's git package is the canonical Windows git (Git for Windows,
-    pinned in pm/lock.json); its PATH dirs make the MSYS helpers
-    (sh.exe, git-remote-*) resolvable to the child. Returns None when pm
-    cannot provide git — the deliberate POSIX gap (system git by choice),
-    not installed, or lazy installs disabled — and the caller falls back
-    to bare ``git`` on PATH. Cached: checkpoints fire several git calls
-    per turn, so the store lookup should not repeat.
-    """
-    try:
-        import pm
-
-        runner = pm.ensure("git")
-        for candidate in ("git.exe", "git"):
-            resolved = shutil.which(candidate, path=runner.env.get("PATH"))
-            if resolved:
-                git_dir = str(Path(resolved).resolve().parent)
-                usr_bin = str(Path(resolved).resolve().parent.parent / "usr" / "bin")
-                return [resolved], [git_dir, usr_bin]
-    except Exception:
-        pass
-    return None
-
-
 def _git_env(
     store: Path,
     working_dir: str,
@@ -341,7 +313,8 @@ def _git_env(
     # git child with hand-isolated config env; exact preservation — a HOME
     # rewrite would change which ~/.gitconfig the isolation vars are hiding.
     from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+
+    env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
     env["GIT_DIR"] = str(store)
     env["GIT_WORK_TREE"] = str(normalized_working_dir)
     env.pop("GIT_NAMESPACE", None)
@@ -384,15 +357,10 @@ def _run_git(
     env = _git_env(store, str(normalized_working_dir), index_file=index_file)
     if extra_env:
         env.update(extra_env)
-    managed = _managed_git()
-    if managed:
-        cmd, path_dirs = managed
-        # The store's MSYS dirs must be reachable so git.exe can resolve
-        # its helpers; prepend them to the isolated child env.
-        env["PATH"] = os.pathsep.join(path_dirs) + os.pathsep + env.get("PATH", "")
-    else:
-        cmd = ["git"]
-    cmd = cmd + list(args)
+    git = shutil.which("git", path=env.get("PATH", ""))
+    if git is None:
+        return False, "", "git is not installed or not on PATH"
+    cmd = [git, *args]
     allowed_returncodes = allowed_returncodes or set()
 
     try:
@@ -517,7 +485,8 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
     # subprocess with just the config-isolation env vars.
     from tools.environments.local import build_subprocess_env
-    init_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+
+    init_env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
     init_env["GIT_CONFIG_GLOBAL"] = os.devnull
     init_env["GIT_CONFIG_SYSTEM"] = os.devnull
     init_env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -526,14 +495,11 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
               "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         init_env.pop(k, None)
     try:
-        managed = _managed_git()
-        git_cmd, path_dirs = managed if managed else (["git"], None)
-        if path_dirs:
-            init_env["PATH"] = (
-                os.pathsep.join(path_dirs) + os.pathsep + init_env.get("PATH", "")
-            )
+        git = shutil.which("git", path=init_env.get("PATH", ""))
+        if git is None:
+            return "Shadow store init failed: git is not installed or not on PATH"
         result = subprocess.run(
-            git_cmd + ["init", "--bare", str(store)],
+            [git, "init", "--bare", str(store)],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             env=init_env, timeout=_GIT_TIMEOUT,
             stdin=subprocess.DEVNULL,
@@ -781,7 +747,6 @@ class CheckpointManager:
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: Set[str] = set()
-        self._git_available: Optional[bool] = None  # lazy probe
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -895,13 +860,6 @@ class CheckpointManager:
         Never raises — all errors are silently logged.
         """
         if not self.enabled:
-            return False
-
-        if self._git_available is None:
-            self._git_available = shutil.which("git") is not None
-            if not self._git_available:
-                logger.debug("Checkpoints disabled: git not found")
-        if not self._git_available:
             return False
 
         abs_dir = str(_normalize_path(working_dir))

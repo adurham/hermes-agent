@@ -181,20 +181,59 @@ def publish(manifest: dict, root: Path, public_base: str) -> None:
             put(tag=manifest["tag"], key=f"releases/termux/stable/{rel}", file=file, key_is_full=True, immutable=True)
 
 
+def write_appinstaller(out: Path, *, identity: str, publisher: str, version: str,
+                       self_uri: str, artifact_uri: str) -> None:
+    """Serialize verified package facts; callers own channel/acceptance policy."""
+    if not all((identity, publisher, version, self_uri, artifact_uri)):
+        raise ValueError("Explicit identity, publisher, version, self URI and artifact URI are required")
+    ns = "http://schemas.microsoft.com/appx/appinstaller/2017/2"
+    ET.register_namespace("", ns)
+    descriptor = ET.Element(f"{{{ns}}}AppInstaller", {"Uri": self_uri, "Version": version})
+    ET.SubElement(descriptor, f"{{{ns}}}MainBundle", {
+        "Name": identity, "Publisher": publisher, "Version": version, "Uri": artifact_uri,
+    })
+    settings = ET.SubElement(descriptor, f"{{{ns}}}UpdateSettings")
+    ET.SubElement(settings, f"{{{ns}}}OnLaunch", {"HoursBetweenUpdateChecks": "12"})
+    out.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(descriptor).write(out, encoding="utf-8", xml_declaration=True)
+
+
+def publish_canary_appinstaller(root: Path, *, tag: str, variant: str, bundle: Path,
+                               identity: str, publisher: str, version: str, public_base: str) -> None:
+    """Native SDK work is complete; verify its identity before writing a feed."""
+    from scripts.releases.r2 import put
+
+    if not re.fullmatch(r"v\d+\.\d+\.\d+-canary\.20\d{6}(?:\d{6})?", tag or ""):
+        raise ValueError("Only canary feeds publish directly; stable requires accepted candidates")
+    if variant not in ("bundled", "light"):
+        raise ValueError("Store and commit builds have no App Installer feed")
+    if not public_base:
+        raise ValueError("Public feed base URL is required")
+    with zipfile.ZipFile(bundle) as archive:
+        native = ET.fromstring(archive.read("AppxMetadata/AppxBundleManifest.xml")).find("{*}Identity")
+    for attr, expected in (("Name", identity), ("Publisher", publisher), ("Version", version)):
+        if native is None or native.get(attr) != expected:
+            raise ValueError(f"Universal bundle {attr} does not match its expected identity")
+    directory = f"releases/win32/{'light/' if variant == 'light' else ''}canary"
+    base = public_base.rstrip("/")
+    descriptor = root / "canary.appinstaller"
+    write_appinstaller(descriptor, identity=identity, publisher=publisher, version=version,
+                       self_uri=f"{base}/{directory}/{descriptor.name}",
+                       artifact_uri=f"{base}/{directory}/{bundle.name}")
+    # A failed upload or HEAD verification leaves the previous pointer intact.
+    put(tag=tag, key=f"{directory}/{bundle.name}", file=bundle, key_is_full=True, immutable=True)
+    put(tag=tag, key=f"{directory}/{descriptor.name}", file=descriptor, key_is_full=True)
+
+
 def promote(manifest: dict, root: Path, public_base: str) -> None:
     from scripts.releases.r2 import put, finalize
 
     materialize(manifest, root, public_base=public_base)
     windows = next(r for r in manifest["packages"] if r["platform"] == "windows")
     uri = f"{public_base.rstrip('/')}/releases/win32/stable/stable.appinstaller"
-    ns = "http://schemas.microsoft.com/appx/appinstaller/2017/2"
-    ET.register_namespace("", ns)
-    descriptor = ET.Element(f"{{{ns}}}AppInstaller", {"Uri": uri, "Version": windows["version"]})
-    ET.SubElement(descriptor, f"{{{ns}}}MainBundle", {"Name": windows["identity"], "Publisher": windows["publisher"], "Version": windows["version"], "Uri": windows["artifact"]["url"]})
-    settings = ET.SubElement(descriptor, f"{{{ns}}}UpdateSettings")
-    ET.SubElement(settings, f"{{{ns}}}OnLaunch", {"HoursBetweenUpdateChecks": "12"})
     appinstaller = root / "stable.appinstaller"
-    ET.ElementTree(descriptor).write(appinstaller, encoding="utf-8", xml_declaration=True)
+    write_appinstaller(appinstaller, identity=windows["identity"], publisher=windows["publisher"],
+                       version=windows["version"], self_uri=uri, artifact_uri=windows["artifact"]["url"])
     apt = root / "apt"
     indexes = sorted(p for p in apt.rglob("*") if p.is_file() and not p.relative_to(apt).as_posix().startswith("pool/") and "/by-hash/" not in p.relative_to(apt).as_posix())
     indexes.sort(key=lambda p: p.name == "InRelease")
@@ -218,7 +257,7 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["record", "assemble", "publish", "promote", "materialize"])
+    parser.add_argument("command", choices=["record", "assemble", "publish", "promote", "materialize", "appinstaller", "publish-appinstaller"])
     parser.add_argument("--platform", choices=["windows", "macos", "termux"])
     parser.add_argument("--arch")
     parser.add_argument("--root", type=Path, required=True)
@@ -227,7 +266,24 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
     parser.add_argument("--public-base", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL"))
     parser.add_argument("--store-only", action="store_true")
+    for name in ("identity", "publisher", "version", "self-uri", "artifact-uri"):
+        parser.add_argument(f"--{name}")
+    parser.add_argument("--variant", choices=["bundled", "light"])
+    parser.add_argument("--bundle", type=Path)
     args = parser.parse_args(argv)
+    if args.command == "publish-appinstaller":
+        if not args.bundle:
+            parser.error("publish-appinstaller requires --bundle")
+        publish_canary_appinstaller(args.root, tag=args.tag, variant=args.variant, bundle=args.bundle,
+                                   identity=args.identity, publisher=args.publisher, version=args.version,
+                                   public_base=args.public_base)
+        return
+    if args.command == "appinstaller":
+        if not args.out:
+            parser.error("appinstaller requires --out")
+        write_appinstaller(args.out, identity=args.identity, publisher=args.publisher,
+                           version=args.version, self_uri=args.self_uri, artifact_uri=args.artifact_uri)
+        return
     if args.command == "record":
         record(args.platform, args.arch, args.root, args.tag, args.commit, args.out)
     elif args.command == "assemble":

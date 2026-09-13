@@ -88,3 +88,44 @@ def test_dependency_free_enable_no_churn_and_tool_override_fails_closed(plugin_w
     config = yaml.safe_load((world.home / "config.yaml").read_text())
     assert "trusted-fixture" not in config["plugins"]["entries"]
     assert world.selected() == selected
+
+
+@pytest.mark.parametrize("config_changes", [False, True])
+def test_fallback_compares_the_preinteraction_selection(plugin_world, monkeypatch, config_changes):
+    from hermes_cli import plugins_cmd
+    from pm import receipt
+
+    world = plugin_world
+    origin, sha = world.origin()
+    world.command("install", identifier=origin.as_uri(), ref=sha, no_enable=True, allow_removed=True)
+    world.command("enable", name="plugin-worker-proof", no_allow_tool_override=True)
+    config_path = world.home / "config.yaml"
+    before = config_path.read_bytes()
+    selected = world.selected()
+    monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: world.core / "plugins")
+    monkeypatch.setattr(plugins_cmd, "_provider_categories", lambda: [])
+    monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setitem(plugins_cmd.sys.modules, "curses", None)
+    answers = iter(("1", ""))
+    edited = before + b"model: edited-during-input\n"
+
+    def respond(_prompt):
+        answer = next(answers)
+        if config_changes and answer == "1":
+            config_path.write_bytes(edited)
+        return answer
+
+    monkeypatch.setattr("builtins.input", respond)
+    plugins_cmd.cmd_toggle()
+    latest = receipt.latest()
+    assert latest is not None
+    if config_changes:
+        assert config_path.read_bytes() == edited
+        assert world.enabled() == ["plugin-worker-proof"]
+        assert world.selected() == selected
+        assert latest["outcome"] == "failed"
+        world.imports()
+    else:
+        assert world.enabled() == []
+        assert yaml.safe_load(config_path.read_text())["plugins"]["disabled"] == ["plugin-worker-proof"]
+        assert latest["outcome"] == "ok"

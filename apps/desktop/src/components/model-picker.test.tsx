@@ -1,18 +1,34 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+vi.mock('@/store/profile', async (): Promise<object> => {
+  const { atom } = await import('nanostores')
+
+  return { $activeGatewayProfile: atom<string>('default') }
+})
+vi.mock('@/store/session', async (): Promise<object> => {
+  const { atom } = await import('nanostores')
+
+  return { $connection: atom(null), $defaultReasoningEffort: atom<string>('') }
+})
+
+import type { QueryClient } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { queryClient } from '@/lib/query-client'
 import { $localModelsEnabled } from '@/store/local-models-flag'
-import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import type { LocalRuntimeJob, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelPickerDialog } from './model-picker'
 
 vi.mock('@/hermes', () => ({
-  getLocalModelsStatus: vi.fn().mockResolvedValue({ loading: {} })
+  getLocalModelsStatus: vi.fn().mockResolvedValue({ loading: {} }),
+  getLocalModelsJobs: vi.fn(async (): Promise<{ jobs: readonly LocalRuntimeJob[] }> => ({
+    jobs: queryClient.getQueryData<readonly LocalRuntimeJob[]>(localModelsKey(localModelsOwner(), 'jobs')) ?? []
+  }))
 }))
 vi.mock('@/lib/model-options', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -59,7 +75,7 @@ const DOWNLOAD_JOB: LocalRuntimeJob = {
 }
 
 function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client: QueryClient = queryClient
 
   const element: ReactElement = (
     <QueryClientProvider client={client}>
@@ -79,21 +95,24 @@ function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
   return render(element)
 }
 
-beforeEach(() => {
+beforeEach((): void => {
+  queryClient.clear()
+  queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
   vi.mocked(requestModelOptions).mockResolvedValue(OPTIONS)
-  $localRuntimeJobs.set([])
+  queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
 })
 
 afterEach(() => {
   cleanup()
+  queryClient.clear()
   vi.clearAllMocks()
 })
 
 describe('ModelPickerDialog download rows', () => {
   it('shows an in-flight download as a disabled progress row in the Local group', async () => {
-    $localRuntimeJobs.set([DOWNLOAD_JOB])
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [DOWNLOAD_JOB])
     renderPicker()
 
     expect(await screen.findByText('Qwen3.6-27B-UD-Q4_K_XL')).toBeTruthy()
@@ -110,7 +129,7 @@ describe('ModelPickerDialog download rows', () => {
   })
 
   it('shows a first-ever download under its own Local group when no local provider exists yet', async () => {
-    $localRuntimeJobs.set([DOWNLOAD_JOB])
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [DOWNLOAD_JOB])
     vi.mocked(requestModelOptions).mockResolvedValue({
       providers: [OPTIONS.providers![1]]
     })
@@ -124,26 +143,28 @@ describe('ModelPickerDialog download rows', () => {
   it('quickstart shows while downloading but not during later phases', async () => {
     const quickstart: LocalRuntimeJob = { ...DOWNLOAD_JOB, job_id: 'q1', kind: 'quickstart', phase: 'downloading' }
 
-    $localRuntimeJobs.set([quickstart])
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [quickstart])
     renderPicker()
     expect(await screen.findByText('Qwen3.8 Flash Next (UD-Q4_K_XL)')).toBeTruthy()
 
     // The model is staged once quickstart moves on to activating it — the
     // placeholder row must leave rather than sit beside the real model.
-    $localRuntimeJobs.set([{ ...quickstart, phase: 'starting-server' }])
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [{ ...quickstart, phase: 'starting-server' }])
     await waitFor(() => {
       expect(screen.queryByText('Qwen3.8 Flash Next (UD-Q4_K_XL)')).toBeNull()
     })
   })
 
   it('refetches the model options when a download it saw running completes', async () => {
-    $localRuntimeJobs.set([DOWNLOAD_JOB])
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [DOWNLOAD_JOB])
     renderPicker()
     await screen.findByText('Qwen3.6-27B-UD-Q4_K_XL')
 
     expect(vi.mocked(requestModelOptions).mock.calls.length).toBe(1)
 
-    $localRuntimeJobs.set([{ ...DOWNLOAD_JOB, status: 'done', phase: 'done' }])
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+      { ...DOWNLOAD_JOB, status: 'done', phase: 'done' }
+    ])
     await waitFor(() => {
       expect(vi.mocked(requestModelOptions).mock.calls.length).toBe(2)
     })

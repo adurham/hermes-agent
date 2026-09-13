@@ -7,20 +7,19 @@ name: Desktop Bundled Release
 #   files + receipts to R2 (releases/tag/<tag>/) → gated publish jobs write
 #   feeds → builds table. Stable candidates stop before feed publication.
 #
-# Per-OS topology (MSIX work is gated on the WINDOWS build only — mac/linux
-# legs never block the win32 feed or Store submission):
+# Per-OS topology (canary feeds follow their own platform builds; stable
+# publication and Store submission require the accepted cross-platform candidate):
 #
 #   build-win32 (win32-x64 + win32-arm64)   → stage packages + receipts to R2
 #   build-darwin (darwin-arm64 + darwin-x64) → sign + notarize + stage
 #     dmg/zip/blockmap + per-arch feed inputs to the R2 tag archive
 #   build-linux                              → DISABLED for now (dummy skips)
-#   publish-win32-updater                   → App Installer feed
-#     (needs build-win32): releases/win32/<stable|canary>/*.appinstaller +
-#       *.msixbundle (stage-msixbundle.mjs --variant bundled)
-#   publish-win32-store                     → Windows Store submission
-#     (needs build-win32, PARALLEL with the updater feed): bundle the two
-#     Store-*.msix into one universal Store .msixbundle and submit via the
-#     MSStore CLI. Only stable is eligible, gated on MS_STORE_PRODUCT_ID.
+#   publish-win32-updater                   → native universal bundles
+#     (needs build-win32): canary also publishes its App Installer feed;
+#     stable candidates stage sideload + Store bundles without touching feeds.
+#   stable-store                           → verified Store submission
+#     (needs stable-publish): materialize the immutable accepted Store bundle
+#     and submit via the MSStore CLI without rebuilding.
 #   publish-darwin-updater                  → macOS electron-updater feed
 #     (needs BOTH darwin legs): scripts.releases.r2 finalize merges the per-arch
 #     ymls into releases/darwin/<channel>/<channel>-mac.yml — the feed
@@ -29,7 +28,7 @@ name: Desktop Bundled Release
 #
 # Feed layout (matches apps/desktop/electron/app-updater.ts's arms):
 #   releases/win32/<stable|canary>/<ch>.appinstaller   App Installer feed
-#     releases/win32/<stable|canary>/*.msixbundle      (publish-win32-updater)
+#     canary bundles live beside the feed; stable points into releases/tag/<tag>/
 #   releases/darwin/<stable|canary>/<channel>-mac.yml  electron-updater feed
 #     (dmg/zip live once in releases/tag/<tag>/; the merged feed points at
 #     them with absolute object keys)
@@ -59,13 +58,13 @@ name: Desktop Bundled Release
 # non-secret vars. scripts/releases/r2.py derives the S3 endpoint from
 # the account id. Upload/list operations need only Python; feed operations use ruamel.yaml.
 #
-# Windows Store submission (publish-win32-store): MSStore CLI via
+# Windows Store submission (stable-store): MSStore CLI via
 # microsoft/microsoft-store-apppublisher. Credentials live in the
 # release-signing environment:
 #     secrets: MS_STORE_TENANT_ID, MS_STORE_SELLER_ID, MS_STORE_CLIENT_ID,
 #              MS_STORE_CLIENT_SECRET
 #     vars:    MS_STORE_PRODUCT_ID (the Partner Center product ID)
-#   msstore reconfigure → (delete pending) → msstore publish
+#   msstore reconfigure → msstore publish
 #   <Store-*.msixbundle> -id <productId>
 # The Store bundle is UNSIGNED on purpose — Partner Center re-signs on
 # ingestion (see sign-msix.mjs).
@@ -1037,148 +1036,6 @@ jobs:
               --name windows-universal --root apps/desktop/release --include '*.msixbundle'
           fi
 
-  # ── Windows Store submission (REAL — PARALLEL with publish-win32-updater) ─
-  # Bundles the two Store-*.msix into one universal Store .msixbundle and
-  # submits it to the Windows Store via the MSStore CLI.
-  #
-  # Only stable releases can claim the official Partner Center identity.
-  # Canary and commit builds are sideload-only, even when a flight exists.
-  publish-win32-store:
-    name: Publish the stable Windows Store submission
-    needs: [validate, build-win32]
-    if: |
-      inputs.build_commit == ''
-      && inputs.upload_release == true
-      && vars.MS_STORE_PRODUCT_ID != ''
-      && contains(inputs.tag, '-canary.') == false
-    runs-on: windows-2025
-    environment: release-signing
-    timeout-minutes: 60
-    env:
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-      MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}
-      MS_STORE_SELLER_ID: ${{ secrets.MS_STORE_SELLER_ID }}
-      MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
-      MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
-      MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          # Privileged job: pin to the SHA validate admitted, not the tag.
-          ref: ${{ needs.validate.outputs.sha }}
-          fetch-tags: true
-
-      - name: Set up the locked build toolchain
-        uses: ./.github/actions/setup-pm
-        with:
-          toolchain: all
-          archive-inputs: true
-          cache-python: false
-
-      - name: Install the locked Windows bundle tooling
-        uses: ./.github/actions/retry
-        with:
-          # No Electron/native postinstalls: only the builder's SDK downloader.
-          command: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
-
-      - name: Resolve toolchain cache key
-        id: toolchain
-        shell: bash
-        run: |
-          node -e '
-            const l = require("./package-lock.json")
-            const el = l.packages["apps/desktop/node_modules/electron"].version
-            const eb = l.packages["node_modules/electron-builder"].version
-            if (!el || !eb) process.exit(1)
-            console.log(`electron=${el}`)
-            console.log(`builder=${eb}`)
-          ' >> "$GITHUB_OUTPUT"
-
-      # Reuse the build cache when available. The bundle script also works
-      # cold by provisioning the same SDK through the pinned builder.
-      - name: Resolve electron's default download cache path
-        shell: bash
-        run: |
-          case "$RUNNER_OS" in
-            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
-            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
-            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
-          esac
-
-      - name: Cache electron + electron-builder toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ github.workspace }}/.cache/electron-builder
-            ${{ github.workspace }}/.cache/electron
-            ${{ env.ELECTRON_DEFAULT_CACHE }}
-          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
-          restore-keys: |
-            eb2-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Retrieve Store packages from R2
-        shell: bash
-        env:
-          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-        run: |
-          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
-            --name win32-x64 --name win32-arm64 --root apps/desktop/release --include 'Store-*.msix'
-
-      - name: Bundle the Store submission MSIX
-        id: storebundle
-        shell: bash
-        run: |
-          # The SDK downloader logs to stdout; the path has its own output.
-          result="$RUNNER_TEMP/store-bundle-path"
-          node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --output-file "$result"
-          bundle="$(< "$result")"
-          test -f "$bundle"
-          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
-          echo "Store bundle: $bundle"
-
-      - name: Archive the Store bundle to the tag dir
-        shell: bash
-        run: |
-          # The per-arch Store-*.msix are already in the immutable archive
-          # (uploaded by the build legs); keep the assembled universal bundle
-          # there too as the record of exactly what was submitted.
-          python -m scripts.releases.r2 put \
-            --tag "$HERMES_PAYLOAD_TAG" \
-            --key "$(basename "${{ steps.storebundle.outputs.bundle }}")" \
-            --file "${{ steps.storebundle.outputs.bundle }}"
-
-      - name: Setup MSStore CLI
-        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
-
-      - name: Configure Store credentials
-        shell: bash
-        run: |
-          msstore reconfigure \
-            --tenantId "$MS_STORE_TENANT_ID" \
-            --sellerId "$MS_STORE_SELLER_ID" \
-            --clientId "$MS_STORE_CLIENT_ID" \
-            --clientSecret "$MS_STORE_CLIENT_SECRET"
-
-      - name: Publish the Store submission
-        shell: bash
-        run: |
-          # The universal Store .msixbundle is accepted directly by msstore
-          # publish (PackageFilesExtensionInclude: .msix/.msixbundle/.msixupload).
-          # Partner Center signs on ingestion — no signing here.
-          #
-          # Partner Center allows one pending submission. Clear that draft
-          # before publishing. Only the publish result gates this step.
-          bundle="${{ steps.storebundle.outputs.bundle }}"
-          msstore submission delete "$MS_STORE_PRODUCT_ID" --no-confirm \
-            || echo "no pending submission to clear"
-          msstore publish "$bundle" -id "$MS_STORE_PRODUCT_ID"
-
   # ── macOS updater channel (REAL) ───────────────────────────────────────────
   # Merges the per-arch feed ymls (arm64-stable-mac.yml / x64-stable-mac.yml
   # …) into releases/darwin/<channel>/<channel>-mac.yml via
@@ -1681,6 +1538,7 @@ jobs:
           ref: ${{ needs.validate.outputs.sha }}
       - name: Render the full expected-binary matrix
         env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -1702,7 +1560,7 @@ jobs:
           PY
           )
           python3 scripts/render-builds-table.py \
-            --summary-commit "$RELEASE_COMMIT" \
+            --summary-commit "$RELEASE_COMMIT" --repo "$GITHUB_REPOSITORY" \
             --summary-out "$GITHUB_STEP_SUMMARY" \
             --summary-failed-legs "$failed" --run-url "$RUN_URL"
 
