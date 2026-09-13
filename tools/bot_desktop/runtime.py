@@ -48,8 +48,10 @@ BINARY_PACKAGES = {
     "apt": {"Xvnc": "tigervnc-standalone-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
             "xfdesktop": "xfdesktop4", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-x11",
             "xauth": "xauth", "xdpyinfo": "x11-utils", "setxkbmap": "x11-xkb-utils", "xprop": "x11-utils"},
-    "dnf": {"Xvnc": "tigervnc-server-minimal", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
-            "xfdesktop": "xfdesktop", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-x11",
+    # tigervnc-x11-server is the real package (tigervnc-server-minimal is only a Provides on it); dbus-run-session
+    # is in dbus-daemon (dbus-x11 ships dbus-launch only).
+    "dnf": {"Xvnc": "tigervnc-x11-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
+            "xfdesktop": "xfdesktop", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-daemon",
             "xauth": "xorg-x11-xauth", "xdpyinfo": "xdpyinfo", "setxkbmap": "setxkbmap", "xprop": "xprop"},
     "pacman": {"Xvnc": "tigervnc", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel", "xfdesktop": "xfdesktop",
                "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus",
@@ -60,8 +62,8 @@ PACKAGES = {
     "apt": ["tigervnc-standalone-server", "xfce4-panel", "xfwm4", "xfdesktop4", "xfce4-settings",
             "xfce4-terminal", "dbus-x11", "x11-xserver-utils", "x11-utils", "x11-xkb-utils", "xauth",
             "fonts-dejavu-core"],
-    "dnf": ["tigervnc-server-minimal", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings",
-            "xfce4-terminal", "dbus-x11", "xsetroot", "xset", "xdpyinfo", "xprop", "xorg-x11-xauth", "setxkbmap",
+    "dnf": ["tigervnc-x11-server", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings",
+            "xfce4-terminal", "dbus-daemon", "xsetroot", "xset", "xdpyinfo", "xprop", "xorg-x11-xauth", "setxkbmap",
             "dejavu-sans-fonts"],
     "pacman": ["tigervnc", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings", "xfce4-terminal", "dbus",
                "xorg-xsetroot", "xorg-xset", "xorg-xdpyinfo", "xorg-xprop", "xorg-xauth", "xorg-setxkbmap",
@@ -125,8 +127,13 @@ def _read(path: Path) -> Optional[str]:
 
 
 def _pid_alive(pid: int) -> bool:
+    """A zombie is dead for our purposes: a SIGKILLed launcher stays a zombie in the gateway until the next
+    Popen reaps it, and reporting it as running would hide its orphaned X server behind a live status."""
     import psutil
-    return psutil.pid_exists(pid)
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.Error:
+        return False
 
 
 def _create_time(pid: int) -> Optional[float]:
@@ -150,24 +157,83 @@ def _launcher_pid() -> Optional[int]:
     except ValueError:
         return None
     actual = _create_time(pid)
-    return pid if actual is not None and abs(actual - born) < 0.01 else None
+    return pid if actual is not None and abs(actual - born) < 0.01 and _pid_alive(pid) else None
+
+
+def _recorded_launcher_pid() -> Optional[int]:
+    """The pid ``launcher.pid`` names, alive or not (the orphan sweep matches process groups against it)."""
+    pid_s, _, born_s = (_read(state_dir() / "launcher.pid") or "").partition(" ")
+    return int(pid_s) if pid_s.isdigit() and born_s else None
 
 
 _X_LOCK_DIR = Path("/tmp")  # where X servers write .X<n>-lock (tests point it at a scratch dir)
 
 
+def _x_lock_pid(num: int) -> Optional[int]:
+    try:
+        return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
 def _display_in_use(num: int) -> bool:
     """A live X server owns ``:num``: its lock file names a running pid. A lock left by a crashed
     server (dead pid) does not count, so the number can be reclaimed."""
-    lock = _X_LOCK_DIR / f".X{num}-lock"
-    try:
-        pid = int(lock.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+    pid = _x_lock_pid(num)
+    return pid is not None and _pid_alive(pid)
+
+
+def _reap_orphaned_server(sd: Path) -> bool:
+    """Caller holds ``start.lock`` and has established that no live launcher exists. The launcher runs Xvnc in
+    its own session, so a SIGKILLed launcher leaves the X server alive, holding the display and ``rfb.sock``;
+    ``status()`` keys on the launcher and says stopped, and a naive restart allocates a second server next
+    to it and overwrites the socket path both now claim. The X lock of the recorded display names that
+    server: it is ours when it sits in the dead launcher's process group or its command line binds OUR
+    socket. Kill it (group first), drop the state it left, and report whether anything was signalled."""
+    import psutil
+
+    recorded = _read(sd / "display")
+    pid = _x_lock_pid(int(recorded)) if recorded and recorded.isdigit() else None
+    if pid is None or not _pid_alive(pid):
         return False
-    return _pid_alive(pid)
+    launcher = _recorded_launcher_pid()
+    try:
+        pgid = os.getpgid(pid)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+        cmdline = psutil.Process(pid).cmdline()
+    except (ProcessLookupError, psutil.Error):
+        return False
+    binds_our_socket = "Xvnc" in Path(cmdline[0] if cmdline else "").name and str(sd / "rfb.sock") in cmdline
+    if pgid != launcher and not binds_our_socket:
+        return False  # somebody else's server took the number after we died; never touch it
+    logger.warning("Bot Desktop launcher %s is gone but its X server (pid %s) survived on :%s; reaping",
+                   launcher, pid, recorded)
+    _kill_group_then_wait(pgid if pgid == launcher else None, pid)
+    (_X_LOCK_DIR / f".X{recorded}-lock").unlink(missing_ok=True)
+    for name in ("launcher.pid", "env", "rfb.sock"):
+        (sd / name).unlink(missing_ok=True)
+    return True
 
 
-_ALLOC_LOCK = Path("/tmp/.hermes-bot-desktop-alloc.lock")  # host-wide: profiles allocate from one band
+def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> None:
+    """SIGTERM the group (or the lone pid), SIGKILL whatever is still there after ``grace``."""
+    def _signal(sig: int) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            if pgid is not None:
+                os.killpg(pgid, sig)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+            else:
+                os.kill(pid, sig)
+    _signal(signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.05)
+    _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+
+
+# Host-wide (every profile allocates from one band), so it lives outside any profile home — but not in
+# world-writable /tmp, where a predictable name lets another local user pre-create or squat the file.
+_ALLOC_LOCK = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "hermes-bot-desktop-alloc.lock"
 
 
 @contextlib.contextmanager
@@ -194,6 +260,7 @@ def _pick_display() -> int:
 
 
 def _allocate_display() -> int:
+    _ALLOC_LOCK.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _flocked(_ALLOC_LOCK):
         return _pick_display()
 
@@ -307,6 +374,9 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     with _flocked(sd / "start.lock"):
         if _launcher_pid() is not None and published_env().get("DISPLAY"):
             return status()
+        if _launcher_pid() is None:
+            _reap_orphaned_server(sd)
+        _ALLOC_LOCK.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with _flocked(_ALLOC_LOCK):
             return _spawn_and_wait(sd, _pick_display(), wait_seconds)
 
@@ -348,11 +418,19 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
             logger.info("Bot Desktop for profile %s up on :%s", _profile_name(), num)
             return status()
         time.sleep(0.1)
+    # Giving up must take the launch down: left alone, the launcher publishes DISPLAY and rfb.sock a moment
+    # later and a screen whose start() reported failure stays up as "running". The launcher is its own
+    # session leader, so its group is exactly this launch (Xvnc, dbus, Xfce) and nothing else.
+    _kill_group_then_wait(proc.pid, proc.pid)
+    proc.wait()
+    for name in ("launcher.pid", "env", "rfb.sock"):
+        (sd / name).unlink(missing_ok=True)
     raise RuntimeError(f"Bot Desktop did not publish its display within {wait_seconds:.0f}s (see {sd / 'launcher.log'})")
 
 
 def stop() -> bool:
-    """Stop this profile's desktop; True when a running launcher was signalled."""
+    """Stop this profile's desktop; True when a running launcher (or the X server a dead one left behind)
+    was signalled."""
     if not is_supported_host():
         return False
     sd = state_dir()
@@ -364,22 +442,11 @@ def stop() -> bool:
 def _stop_locked(sd: Path) -> bool:
     pid = _launcher_pid()
     if pid is None:
+        reaped = _reap_orphaned_server(sd)
         (sd / "env").unlink(missing_ok=True)
-        return False
+        return reaped
     # The launcher runs in its own session; killing the group takes Xvnc, dbus and Xfce with it.
-    try:
-        os.killpg(pid, signal.SIGTERM)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start)
-    except ProcessLookupError:
-        pass
-    for _ in range(50):
-        if not _pid_alive(pid):
-            break
-        time.sleep(0.1)
-    else:
-        try:
-            os.killpg(pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start)
-        except ProcessLookupError:
-            pass
+    _kill_group_then_wait(pid, pid, grace=5.0)
     (sd / "launcher.pid").unlink(missing_ok=True)
     (sd / "env").unlink(missing_ok=True)
     return True
