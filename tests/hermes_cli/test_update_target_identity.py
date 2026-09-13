@@ -384,7 +384,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
         server.server_close()
 
 
-@pytest.mark.parametrize('sync_phase', ['origin', 'early', 'late'])
+@pytest.mark.parametrize('sync_phase', ['origin', 'early', 'late', 'late-other-branch'])
 @pytest.mark.parametrize('dirty', [False, True])
 def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch, capsys, sync_phase, dirty):
     t = update_tree
@@ -406,6 +406,14 @@ def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch
     git(remote, 'add', 'hermes_cli/config.py')
     git(remote, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         '-c', 'commit.gpgsign=false', 'commit', '-qm', 'invalid syntax')
+    unexpected_head = git(remote, 'rev-parse', 'HEAD')
+    if sync_phase == 'late-other-branch':
+        def switch_after_sync(*args, **kwargs):
+            result = _sync_with_upstream_if_needed(*args, **kwargs)
+            git(t.clone, 'checkout', '-qb', 'unexpected')
+            return result
+
+        monkeypatch.setattr(cli_main, '_sync_with_upstream_if_needed', switch_after_sync)
     local = t.clone / '.gitignore'
     staged = local.read_bytes() + b'# staged local work\n'
     unstaged = staged + b'# unstaged local work\n'
@@ -418,9 +426,17 @@ def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch
         cli_main.cmd_update(t.args)
     assert error.value.code == 1
     assert not t.requests
-    assert 'Pulled code has a syntax error' in capsys.readouterr().out
-    assert git(t.clone, 'rev-parse', 'HEAD') == t.base
-    assert not (t.clone / 'hermes_cli' / 'config.py').exists()
+    output = capsys.readouterr().out
+    if sync_phase == 'late-other-branch':
+        assert git(t.clone, 'rev-parse', 'unexpected') == unexpected_head
+        assert git(t.clone, 'branch', '--show-current') == 'unexpected'
+        assert (t.clone / 'hermes_cli/config.py').read_bytes() == bad.read_bytes()
+        assert "checkout is on 'unexpected'" in output
+        assert 'Rolling back' not in output
+    else:
+        assert 'Pulled code has a syntax error' in output
+        assert git(t.clone, 'rev-parse', 'HEAD') == t.base
+        assert not (t.clone / 'hermes_cli' / 'config.py').exists()
     assert not git(t.clone, 'status', '--porcelain')
     assert bool(git(t.clone, 'stash', 'list')) is dirty
     if dirty:

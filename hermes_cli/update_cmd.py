@@ -945,10 +945,11 @@ def _pull_updates(
                 _windows_gateway_resume=_windows_gateway_resume)
             _m()._sync_with_upstream_if_needed(
                 git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
-        _rollback_if_pulled_syntax_error(git_cmd, pre_sync_sha or pre_pull_sha)
+        # Refuse an unexpected branch before syntax rollback can reset its ref.
         _verify_head_after_pull(
             git_cmd, branch, pre_sync_sha or pre_pull_sha, in_place_update=in_place_update,
             _windows_gateway_resume=_windows_gateway_resume)
+        _rollback_if_pulled_syntax_error(git_cmd, pre_sync_sha or pre_pull_sha)
         update_succeeded = True
     finally:
         if auto_stash_ref is not None:
