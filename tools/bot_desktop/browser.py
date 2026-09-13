@@ -33,18 +33,41 @@ def profile_dir() -> Path:
 
 def executable() -> Optional[str]:
     """The Chromium agent-browser launches: an explicit ``AGENT_BROWSER_EXECUTABLE_PATH``, else the newest
-    Playwright Chromium it bundles, else a system Chrome/Chromium. ``None`` when there is none."""
+    Playwright Chromium it bundles, else a system Chrome/Chromium. ``None`` when there is none.
+
+    Non-root under ``kernel.apparmor_restrict_unprivileged_userns=1`` (Ubuntu 23.10+) flips the order:
+    Playwright's bundle has no setuid ``chrome_sandbox`` and dies 'FATAL: No usable sandbox!' there, while
+    a distro chromium ships the helper. The bundle stays the answer when it is the only browser — a dock
+    icon that fails loudly beats a non-root ``--no-sandbox``.
+    """
     explicit = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
     if explicit and os.access(explicit, os.X_OK):
         return explicit
+    finders = [_playwright_executable, _system_executable]
+    if not _is_root() and _userns_restricted():
+        finders.reverse()
+    return next((exe for find in finders if (exe := find())), None)
+
+
+def _playwright_executable() -> Optional[str]:
     from tools.browser_tool_install import _chromium_search_roots
     candidates = sorted(
         (p for root in _chromium_search_roots() for p in glob.glob(os.path.join(root, "chromium-*", "chrome-linux*", "chrome"))),
         key=os.path.getmtime, reverse=True)
-    for exe in candidates:
-        if os.access(exe, os.X_OK):
-            return exe
+    return next((exe for exe in candidates if os.access(exe, os.X_OK)), None)
+
+
+def _system_executable() -> Optional[str]:
     return next((shutil.which(name) for name in _SYSTEM_BROWSERS if shutil.which(name)), None)
+
+
+def _is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def _userns_restricted() -> bool:
+    from tools.browser_tool_session import apparmor_restricts_unprivileged_userns
+    return apparmor_restricts_unprivileged_userns()
 
 
 def dock_launch() -> Optional[Tuple[str, str]]:
@@ -53,14 +76,27 @@ def dock_launch() -> Optional[Tuple[str, str]]:
     return (exe, str(profile_dir())) if exe else None
 
 
-def dock_command(exe: str, user_data_dir: str) -> str:
-    """Shell line the dock's Browser icon runs. ``--remote-debugging-port=0`` makes a human-started
+def dock_argv(exe: str, user_data_dir: str) -> list[str]:
+    """Command the dock's Browser icon runs. ``--remote-debugging-port=0`` makes a human-started
     instance attachable (Chromium writes the chosen port to ``<user-data-dir>/DevToolsActivePort``);
     first-run / default-browser dialogs would sit between the human and the bot's tabs."""
     # --test-type hides the "Chrome for Testing is only for automated testing" and unsupported-flag
     # (--no-sandbox as root) infobars, which otherwise sit at the top of the human's takeover view.
-    return (f"{exe} --user-data-dir={user_data_dir} --remote-debugging-port=0 --no-first-run "
-            f"--no-default-browser-check --test-type")
+    # Root gets the same sandbox-bypass flags agent-browser starts this binary with (one policy).
+    from tools.browser_tool_session import CHROMIUM_SANDBOX_BYPASS_ARGS
+    return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0", "--no-first-run",
+            "--no-default-browser-check", "--test-type", *(CHROMIUM_SANDBOX_BYPASS_ARGS if _is_root() else ())]
+
+
+def dock_exec_line(exe: str, user_data_dir: str) -> str:
+    """The ``Exec=`` line of the dock's ``.desktop`` entry. Every argument is double-quoted per the
+    Desktop Entry spec (a browser under ``/opt/Google Chrome/`` or a profile under a spaced HERMES_HOME
+    otherwise splits into garbage): inside the quotes ``" ` $ \\`` are backslash-escaped, and because the
+    value is itself a string field, each of those backslashes is escaped once more."""
+    def quote(arg: str) -> str:
+        quoted = "".join("\\" + ch if ch in '"`$\\' else ch for ch in arg)
+        return '"' + quoted.replace("\\", "\\\\") + '"'
+    return "Exec=" + " ".join(quote(arg) for arg in dock_argv(exe, user_data_dir))
 
 
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:

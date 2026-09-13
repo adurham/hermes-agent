@@ -91,15 +91,23 @@ def package_manager() -> Optional[str]:
 
 
 def install_command() -> Optional[str]:
+    """The distro command that installs the Bot Desktop packages, as the human would type it on THIS host:
+    prefixed with ``sudo`` unless Hermes already runs as root (the official Docker image is uid 0 with no
+    sudo binary), so it is both what the pane shows and what :mod:`tools.bot_desktop.install` runs."""
     pm = package_manager()
     if pm is None:
         return None
     pkgs = " ".join(PACKAGES[pm])
-    return {
-        "apt": f"sudo apt-get install -y --no-install-recommends {pkgs}",
-        "dnf": f"sudo dnf install -y {pkgs}",
-        "pacman": f"sudo pacman -S --needed --noconfirm {pkgs}",
+    body = {
+        "apt": f"apt-get install -y --no-install-recommends {pkgs}",
+        "dnf": f"dnf install -y {pkgs}",
+        "pacman": f"pacman -S --needed --noconfirm {pkgs}",
     }[pm]
+    return body if is_root() else f"sudo {body}"
+
+
+def is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 @dataclass
@@ -114,6 +122,7 @@ class DesktopStatus:
     socket: Optional[str]
     geometry: str
     install_command: Optional[str]
+    browser: Optional[str]  # headed Chromium the dock's Browser icon and agent-browser share; None = no headed browser
 
     def as_dict(self) -> Dict[str, object]:
         return dict(self.__dict__)
@@ -329,6 +338,7 @@ def geometry() -> str:
 
 
 def status(profile: Optional[str] = None) -> DesktopStatus:
+    from tools.bot_desktop import browser as _bd_browser
     missing: list[str] = missing_binaries() if is_supported_host() else list(REQUIRED_BINARIES)
     pid = _launcher_pid()
     env = published_env()
@@ -343,6 +353,7 @@ def status(profile: Optional[str] = None) -> DesktopStatus:
         socket=str(rfb_socket_path()) if rfb_socket_path() else None,
         geometry=geometry(),
         install_command=install_command() if missing else None,
+        browser=_bd_browser.executable() if is_supported_host() else None,
     )
 
 
@@ -397,9 +408,11 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
         "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
         "HERMES_BD_GEOMETRY": geometry(),
     })
-    from tools.bot_desktop.browser import dock_command, dock_launch
+    from tools.bot_desktop.browser import dock_exec_line, dock_launch
     if (browser := dock_launch()) is not None:
-        child_env["HERMES_BD_BROWSER_EXEC"] = dock_command(*browser)
+        # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
+        child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
+        child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
     # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
     log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
