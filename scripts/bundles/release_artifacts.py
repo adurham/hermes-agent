@@ -74,7 +74,7 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         with tempfile.TemporaryDirectory() as temp:
             subprocess.run(["dpkg-deb", "--extract", str(package), temp], check=True)
             stamps = list(Path(temp).rglob("install-stamp.json"))
-            if not any((data := json.loads(p.read_text(encoding="utf-8"))).get("commit") == commit and data.get("tag") == tag for p in stamps):
+            if not any((data := json.loads(p.read_text(encoding="utf-8-sig"))).get("commit") == commit and data.get("tag") == tag for p in stamps):
                 raise ValueError("Termux package has no matching provenance")
     else:
         raise ValueError("Unknown platform")
@@ -93,7 +93,7 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path) -> 
         file = root / receipt_name(name)
         if not file.is_file():
             raise ValueError(f"Missing candidate handoff: {name}")
-        receipt = json.loads(file.read_text(encoding="utf-8"))
+        receipt = json.loads(file.read_text(encoding="utf-8-sig"))
         for row in validate_receipt(receipt, tag, commit, name):
             prior = by_name.get(row["path"])
             if prior is not None and prior != row:
@@ -106,7 +106,7 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path) -> 
             if not file.is_file() or sha256_file(file) != receipt["sha256"]:
                 raise ValueError(f"Candidate local digest mismatch: {name}")
             if name.startswith("metadata-"):
-                rows.append(json.loads(file.read_text(encoding="utf-8")))
+                rows.append(json.loads(file.read_text(encoding="utf-8-sig")))
     universal_name = single(name for name in by_name if name.endswith(".msixbundle") and not name.startswith("Store-"))
     single(name for name in by_name if name.endswith(".msixbundle") and name.startswith("Store-"))
     windows = [r for r in rows if r["platform"] == "windows"]

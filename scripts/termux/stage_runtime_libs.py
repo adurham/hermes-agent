@@ -85,7 +85,7 @@ def _cache_valid(out: Path, manifest_path: Path, table: dict) -> bool:
     if not out.is_dir() or not manifest_path.is_file():
         return False
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         files = manifest["files"]
     except (ValueError, KeyError, OSError):
         return False
@@ -218,7 +218,7 @@ def main() -> int:
         print("usage: stage_runtime_libs.py <payload-dir>", file=sys.stderr)
         return 2
     payload = Path(sys.argv[1]).resolve()
-    table = json.loads((HERE / "runtime_libs.json").read_text(encoding="utf-8"))
+    table = json.loads((HERE / "runtime_libs.json").read_text(encoding="utf-8-sig"))
     try:
         stage(payload, table["libs"], table.get("licenses"))
     except Exception as exc:  # noqa: BLE001 -- CLI boundary reports and exits

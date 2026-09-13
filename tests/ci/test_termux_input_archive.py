@@ -1,5 +1,8 @@
 """CI runs archival before the exact tool and payload consumers."""
+import json
 from pathlib import Path
+
+import pytest
 
 from ruamel.yaml import YAML
 
@@ -9,6 +12,25 @@ R2_ENV = {"CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE
 
 def load(name):
     return YAML(typ="base").load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
+
+
+def test_archive_reader_accepts_bom_without_changing_pin_authority(tmp_path):
+    from scripts.ci.archive_inputs import pinned_inputs
+
+    (tmp_path / "pm").mkdir()
+    (tmp_path / "pm/lock.json").write_bytes(b'\xef\xbb\xbf{"schema":1,"packages":{}}')
+    table = tmp_path / "scripts/termux/runtime_libs.json"
+    table.parent.mkdir(parents=True)
+    row = {"url": "https://example.invalid/café.deb", "sha256": "a" * 64}
+    table.write_bytes(b"\xef\xbb\xbf" + json.dumps({"libs": {"lib": row}}, ensure_ascii=False).encode("utf-8"))
+    before = table.read_bytes()
+    (pin,) = pinned_inputs(tmp_path, target="linux-arm64-bionic")
+    assert (pin.name, pin.url, pin.sha256) == ("lib", row["url"], row["sha256"])
+    assert table.read_bytes() == before
+    row["sha256"] = " " + row["sha256"]
+    table.write_bytes(b"\xef\xbb\xbf" + json.dumps({"libs": {"lib": row}}).encode("utf-8"))
+    with pytest.raises(ValueError):
+        pinned_inputs(tmp_path, target="linux-arm64-bionic")
 
 
 def test_archive_gate_uses_bootstrap_python_and_trusted_exact_revision():

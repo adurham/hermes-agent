@@ -119,7 +119,9 @@ def test_stage_cache_correctness(tmp_path, lib_source, corruption):
     out = _stage(tmp_path, table)
     names = {"liba.so", "libb.so"}
     assert {p.name for p in out.glob("*.so*")} == names
-    manifest = json.loads(out.parent.joinpath("manifest.json").read_text())
+    manifest_path = out.parent / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest_path.write_bytes(b"\xef\xbb\xbf" + manifest_path.read_bytes())
 
     # Same URL/table throughout: corruption must invalidate output evidence,
     # not accidentally trigger the independent table-identity check.

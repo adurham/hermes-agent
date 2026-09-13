@@ -13,6 +13,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "release.py"
 
 
@@ -85,8 +87,12 @@ def _patch_repo(tmp_path, monkeypatch, *, with_installer: bool = True):
     }
 
 
-def test_update_version_files_stamps_bootstrap_installer(tmp_path, monkeypatch):
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
+def test_update_version_files_stamps_bootstrap_installer(tmp_path, monkeypatch, bom):
     paths = _patch_repo(tmp_path, monkeypatch)
+    for key in ("installer_pkg", "tauri_conf", "cargo_toml"):
+        path = paths[key]
+        path.write_bytes(bom + path.read_bytes())
 
     staged = release.update_version_files("0.21.1", "2026.9.10")
     assert all(str(paths[key]) in staged for key in (
@@ -95,6 +101,8 @@ def test_update_version_files_stamps_bootstrap_installer(tmp_path, monkeypatch):
     assert _json_version(paths["installer_pkg"]) == "0.21.1"
     assert _json_version(paths["tauri_conf"]) == "0.21.1"
     assert 'version = "0.21.1"' in paths["cargo_toml"].read_text(encoding="utf-8")
+    assert all(not paths[key].read_bytes().startswith(b"\xef\xbb\xbf")
+               for key in ("installer_pkg", "tauri_conf", "cargo_toml"))
 
     # CONTROL: existing desktop / Python stamps still happen.
     assert _json_version(paths["desktop_pkg"]) == "0.21.1"

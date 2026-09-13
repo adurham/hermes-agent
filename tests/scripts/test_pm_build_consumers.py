@@ -109,6 +109,7 @@ def test_termux_gate_checks_real_offline_wheels_and_application_uses_same_graph(
     build_wheels.wheelhouse_gates(resolved, wheels, ["native-probe"])
     requirements = tmp_path / "requirements.txt"
     build_wheels.write_reqs_file(resolved, requirements)
+    requirements.write_bytes(b"\xef\xbb\xbf" + requirements.read_bytes())
     build_environment.application(tmp_path, requirements, Path(sys.executable))
     python = tmp_path / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     subprocess.run([str(python), "-I", "-c", "import native_probe"], check=True)

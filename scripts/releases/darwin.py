@@ -16,7 +16,7 @@ _TAG_PATTERN = re.compile(r"^v\d+\.\d+\.\d+(?:-canary\.\d{14})?$")
 
 def _darwin_feed(channel: str, light: bool = False) -> dict[str, Any]:
     """Read the same feed facts as the desktop runtime."""
-    with (Path(__file__).resolve().parents[2] / "apps/desktop/update-feed.json").open(encoding="utf-8") as file:
+    with (Path(__file__).resolve().parents[2] / "apps/desktop/update-feed.json").open(encoding="utf-8-sig") as file:
         feeds = json.load(file)
     if channel not in feeds:
         raise TypeError(f"Unknown update channel: {channel}")
@@ -169,7 +169,7 @@ def finalize(tag: str, dir: str, variant: str | None = None) -> None:
     import os
 
     legs = {
-        name: open(os.path.join(dir, name), encoding="utf-8").read()
+        name: open(os.path.join(dir, name), encoding="utf-8-sig").read()
         for name in sorted(os.listdir(dir))
         if name.endswith("-mac.yml")
     }

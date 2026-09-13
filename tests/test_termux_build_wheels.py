@@ -12,6 +12,23 @@ import pytest
 from scripts.termux import build_wheels as builder
 
 
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
+def test_requirement_readers_preserve_pins_and_reject_malformed_rows(tmp_path, bom):
+    lock, export, resolved, reqs = (tmp_path / name for name in
+                                    ("uv.lock", "export.txt", "resolved.txt", "reqs.txt"))
+    lock.write_bytes(bom + 'package = []\n# café\n'.encode("utf-8"))
+    export.write_bytes(bom + 'example==1.0\n# café\n'.encode("utf-8"))
+    builder.normalize_reqs(export, lock, resolved)
+    assert resolved.read_bytes() == b"example\t==1.0\t\t\n"
+    resolved.write_bytes(bom + resolved.read_bytes())
+    assert builder.load_entries(resolved) == {"example": "==1.0"}
+    builder.write_reqs_file(resolved, reqs)
+    assert reqs.read_bytes() == b"example==1.0\n"
+    resolved.write_bytes(bom + b"example\t==1.0\n")
+    with pytest.raises(ValueError, match="fields"):
+        builder.load_entries(resolved)
+
+
 def test_source_pin_survives_resolution_build_and_offline_install(tmp_path):
     repo = tmp_path / "source"
     repo.mkdir()

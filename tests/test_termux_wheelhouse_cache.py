@@ -24,9 +24,12 @@ def cache_tree(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return payload, identity
 
 
-def test_cache_rejects_changed_inputs_and_modified_outputs(tmp_path):
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
+def test_cache_rejects_changed_inputs_and_modified_outputs(tmp_path, bom):
     payload, identity = cache_tree(tmp_path)
     wheelhouse_cache.write_manifest(payload, identity)
+    index = payload / "index.json"
+    index.write_bytes(bom + index.read_bytes())
     assert wheelhouse_cache.is_usable(payload, identity)
     for key in identity:
         assert not wheelhouse_cache.is_usable(payload, {**identity, key: "changed"})

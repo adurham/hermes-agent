@@ -3,10 +3,34 @@ import importlib.util
 import io
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from PIL import Image
+
+
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
+def test_svg_readers_accept_bom_without_rewriting_assets(tmp_path, monkeypatch, bom):
+    monkeypatch.setitem(sys.modules, "resvg_py", ModuleType("resvg_py"))
+    script = Path(__file__).resolve().parents[2] / "scripts/generate_icons.py"
+    spec = importlib.util.spec_from_file_location("icon_readers_under_test", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    path = tmp_path / "art.svg"
+    element = '<path d="M0 0 L1 1" aria-label="café 東京"/>'
+    raw = bom + f'<svg viewBox="0 0 20 30">{element}</svg>'.encode("utf-8")
+    path.write_bytes(raw)
+    art = SimpleNamespace(girls={"black": path}, paths={}, backgrounds=tmp_path, colors=None)
+    assert module.girl_path(art, "black") == element
+    assert module.background_inner(art, path.name) == (element, 20, 30)
+    assert path.read_bytes() == raw
+    path.write_bytes(bom + b"<svg/>")
+    art.paths.clear()
+    with pytest.raises(AssertionError, match="no <path>"):
+        module.girl_path(art, "black")
+    with pytest.raises(AssertionError, match="viewBox"):
+        module.background_inner(art, path.name)
 
 
 @pytest.mark.parametrize("failure", [None, "render", "directory", "verify"])

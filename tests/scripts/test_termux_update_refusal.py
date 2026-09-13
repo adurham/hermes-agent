@@ -3,12 +3,30 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE
+
+
+@pytest.mark.platforms("posix")
+def test_validator_child_decodes_utf8_and_preserves_strict_errors(tmp_path, monkeypatch):
+    import os
+    from scripts.termux.validate_installed import run
+
+    # Force a non-UTF-8 locale fallback without pretending to be a different OS.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "ascii")
+    message = "café 東京\n"
+    command = [sys.executable, "-c", f"import os; os.write(1, {message.encode('utf-8')!r})"]
+    assert run(command, dict(os.environ), tmp_path).stdout == message
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        run([*command[:-1], command[-1] + "; raise SystemExit(7)"], dict(os.environ), tmp_path)
+    assert failed.value.returncode == 7 and failed.value.stdout == message
+    with pytest.raises(UnicodeDecodeError):
+        run([*command[:-1], "import os; os.write(1, bytes([255]))"], dict(os.environ), tmp_path)
 
 
 @pytest.fixture(params=["bundle", "commit-build"])

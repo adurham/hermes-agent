@@ -10,6 +10,25 @@ from scripts.termux.deb_version import channel_for_tag, deb_version_for_tag
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/termux/deb_version.py"
 
 
+@pytest.mark.parametrize("bom", ["", "\ufeff"])
+def test_apt_readers_accept_bom_and_keep_archive_bytes(tmp_path, bom):
+    from scripts.termux import stage_apt_repo as apt
+    from tests.termux_fixtures import build_deb
+
+    control = {bom + "Package": "example", "Version": "1.2.3-1", "Architecture": "aarch64",
+               "Description": "café 東京"}
+    package = tmp_path / "example.deb"
+    build_deb(package, control)
+    original = package.read_bytes()
+    fields, raw = apt.deb_control_fields_and_bytes(package)
+    assert fields == {key.removeprefix("\ufeff"): value for key, value in control.items()}
+    assert raw == original == package.read_bytes()
+    index = tmp_path / "dists/stable" / apt.COMPONENT / f"binary-{apt.ARCH}" / "Packages"
+    index.parent.mkdir(parents=True)
+    index.write_text(bom + "Package: example\nVersion: 1.2.3-1\n\nPackage: incomplete\n", encoding="utf-8")
+    assert apt.existing_published(tmp_path, "stable") == {("example", "1.2.3-1")}
+
+
 @pytest.mark.parametrize("tag,version,channel", [
     ("v1.2.3", "1.2.3-1", "stable"),
     ("v26.8.31", "26.8.31-1", "stable"),

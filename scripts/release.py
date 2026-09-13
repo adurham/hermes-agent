@@ -2414,7 +2414,7 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
     # package.json + tauri.conf.json; a hardcoded 0.0.1 ships in the DMG.
     installer_pkg = REPO_ROOT / "apps" / "bootstrap-installer" / "package.json"
     if installer_pkg.exists():
-        pkg_text = installer_pkg.read_text(encoding="utf-8")
+        pkg_text = installer_pkg.read_text(encoding="utf-8-sig")
         pkg_text = re.sub(
             r'("version"\s*:\s*)"[^"]+"',
             rf'\g<1>"{semver}"',
@@ -2428,7 +2428,7 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
         REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
     )
     if installer_tauri.exists():
-        pkg_text = installer_tauri.read_text(encoding="utf-8")
+        pkg_text = installer_tauri.read_text(encoding="utf-8-sig")
         pkg_text = re.sub(
             r'("version"\s*:\s*)"[^"]+"',
             rf'\g<1>"{semver}"',
@@ -2442,7 +2442,7 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
         REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml"
     )
     if installer_cargo.exists():
-        cargo_text = installer_cargo.read_text(encoding="utf-8")
+        cargo_text = installer_cargo.read_text(encoding="utf-8-sig")
         cargo_text = re.sub(
             r'^version\s*=\s*"[^"]+"',
             f'version = "{semver}"',

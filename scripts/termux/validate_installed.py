@@ -16,7 +16,7 @@ import time
 
 
 def run(argv: list[str], env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess:
-    result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, timeout=90)
+    result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=90)
     print("+", " ".join(argv), flush=True)
     print(result.stdout, result.stderr, flush=True)
     result.check_returncode()
@@ -120,7 +120,7 @@ def main() -> None:
             "assert detect_install_method() == 'apt'; "
             "print('CLI_AND_STDLIB_IMPORTS_OK')",
         ], env, home)
-        natives = json.loads((root / "native-wheels.json").read_text(encoding="utf-8"))
+        natives = json.loads((root / "native-wheels.json").read_text(encoding="utf-8-sig"))
         run([
             str(python), str(root / "app/scripts/termux/build_wheels.py"),
             "--import-modules", *natives,
@@ -141,7 +141,7 @@ def main() -> None:
             "import pm; issues = pm.check(); "
             "assert not issues, issues; print('PM_RUNTIME_TOOLS_OK')",
         ], env, home)
-        result = subprocess.run([str(launcher), "update"], env=env, cwd=home, capture_output=True, text=True, timeout=60)
+        result = subprocess.run([str(launcher), "update"], env=env, cwd=home, capture_output=True, text=True, encoding="utf-8", timeout=60)
         validate_update_refusal(root / "app", result)
         tui_smoke(launcher, env, home)
         print("INSTALLED_BUNDLE_VALIDATION_OK", flush=True)

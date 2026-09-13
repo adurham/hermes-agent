@@ -116,7 +116,7 @@ def cmd_build_commit(args) -> None:
             print("Dry run. Add --publish to dispatch.")
             return
         print("Starting workflow!")
-        result = subprocess.run(command, cwd=release.REPO_ROOT, capture_output=True, text=True,
+        result = subprocess.run(command, cwd=release.REPO_ROOT, capture_output=True, text=True,  # windows-footgun: ok — encoding and replacement policy are on the next line.
                                 encoding="utf-8", errors="replace", check=True, timeout=60)
         print((result.stdout or "").strip() or f"Dispatched commit build {commit}. No release was created.")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
