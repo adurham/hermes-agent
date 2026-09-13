@@ -134,6 +134,30 @@ describe('routing', () => {
     expect(rounds.groupReplyMentionTag({ name: 'ops', title: 'The Ops' }, MEMBERS)).toBe('the-ops')
   })
 
+  it('resolves a pre-rename handle to the renamed member (#110200)', async () => {
+    const { rounds } = await loadRoom()
+
+    const members: GroupMember[] = [{ name: 'niezalezny', previous_names: ['niezale-ny'] }, { name: 'builder' }]
+
+    const parsed = rounds.parseGroupChatMentions('@niezale-ny please check', members)
+
+    expect(parsed.mentioned.has('niezalezny')).toBe(true)
+    expect(parsed.mentioned.size).toBe(1)
+  })
+
+  it('prefers a live name over another member\u2019s rename history', async () => {
+    const { rounds } = await loadRoom()
+
+    // Someone later claimed the old name as their own profile: the live name
+    // wins, the alias must not steal the mention.
+    const members: GroupMember[] = [{ name: 'niezalezny', previous_names: ['niezale-ny'] }, { name: 'niezale-ny' }]
+
+    const parsed = rounds.parseGroupChatMentions('@niezale-ny take this', members)
+
+    expect(parsed.mentioned.has('niezale-ny')).toBe(true)
+    expect(parsed.mentioned.size).toBe(1)
+  })
+
   it('rotates the lead speaker each round', async () => {
     const { rounds } = await loadRoom()
 
