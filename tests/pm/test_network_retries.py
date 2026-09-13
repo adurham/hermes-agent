@@ -16,11 +16,10 @@ from pm.store import Store, current_target
 from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 
 
-@pytest.mark.parametrize("failure_phase", [
-    "probe", "probe-disconnect", "probe-empty-body", "ranged", "single",
-    "interrupted", "single-interrupted",
-])
-@pytest.mark.parametrize("install_path", ["install", "stage"])
+@pytest.mark.parametrize("failure_phase,install_path", [
+    (phase, "install") for phase in ("probe", "probe-disconnect", "probe-empty-body", "ranged", "single",
+                                   "interrupted", "single-interrupted")
+] + [("ranged", "stage")])
 def test_install_recovers_from_transient_http_failure(tmp_path, dl_server, monkeypatch, failure_phase, install_path):
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w") as archive:

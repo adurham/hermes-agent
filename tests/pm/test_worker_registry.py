@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import shutil
 import tarfile
 import textwrap
 
@@ -18,6 +17,7 @@ import pytest
 
 import pm
 from pm import registry
+from tests.pm._fixtures import isolated_python as worker_python  # noqa: F401
 from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 
 
@@ -25,15 +25,6 @@ from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 def restore_registry(monkeypatch):
     monkeypatch.setattr(registry, "_packages", dict(registry._packages))
 
-
-@pytest.fixture(scope="module")
-def worker_python(tmp_path_factory):
-    from pm.runtime_stage import stage_runtime
-
-    environment = tmp_path_factory.mktemp("registry-worker-python")
-    uv = shutil.which("uv")
-    assert uv, "the worker contract requires real uv"
-    return stage_runtime(Path(uv), Path(sys.executable), environment)
 
 
 @pytest.mark.parametrize("operation", ["ensure", "stage_only"])
@@ -58,7 +49,8 @@ def test_registered_package_installs_archive_in_real_worker(tmp_path, monkeypatc
             def verify(self, entry, target):
                 return '' if (entry / 'payload.txt').read_text() == 'plugin archive' else 'bad payload'
         """))
-    _load_file(source, monkeypatch)
+    module = _load_file(source, monkeypatch)
+    pm.register(module.ArchivePackage)
     payload = b"plugin archive"
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w:gz") as archive:
@@ -171,7 +163,6 @@ def test_file_registered_package_runs_its_own_definition_in_child(tmp_path, monk
     source.write_text(textwrap.dedent("""\
         from pm import Package, InstallError, register
 
-        @register
         class ExternalPackage(Package):
             name = "external-worker-test"
 

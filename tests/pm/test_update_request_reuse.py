@@ -166,6 +166,27 @@ def test_resolution_reuses_successful_responses_but_refreshes_next_operation(ups
         assert Counter(path for path, _ in calls) == dict.fromkeys(RangeHandler.payloads, 1)
 
 
+@pytest.mark.parametrize("pointer, tree, expected", [
+    ("b10679\n", [{"path": "b10326/linux"}, {"path": "b10098/win"}, {"path": "b10326/mac"}, {"path": "b9733/mac"}, {"path": "latest/other"}], ["10679", "10326", "10098", "9733"]),
+    (None, [], ["10362", "10217"]),
+    ("malformed", [{"path": "not-a-build"}, {}], ["10362", "10217"]),
+])
+def test_llama_real_index_fallback(upstream, monkeypatch, pointer, tree, expected):
+    calls, _ = upstream
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    latest = "/buckets/ggml-org/install.sh/resolve/latest"
+    if pointer is not None:
+        RangeHandler.payloads[latest] = pointer.encode()
+    RangeHandler.payloads["/api/buckets/ggml-org/install.sh/tree?limit=1000&offset=0"] = json.dumps(tree).encode()
+    github = "/repos/ggml-org/llama.cpp/releases?per_page=30&page=1"
+    RangeHandler.payloads[github] = b'[{"tag_name":"b10362"},{"tag_name":"b10217"}]'
+    assert packages.LlamaCppCpu().latest_versions("linux-x64") == expected
+    assert all(auth is None for _, auth in calls)
+    assert any(path == github for path, _ in calls) is (pointer != "b10679\n")
+
+
 def test_pinning_hashes_new_npm_url_once_and_keeps_existing_rows(upstream, tmp_path, monkeypatch):
     calls, failures = upstream
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))

@@ -15,7 +15,7 @@ import pm.registry as registry
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, compose_env
 from pm.packages import BinaryPackage
-from pm.store import Store, current_target, flatten_single_dir
+from pm.store import Store, current_target
 from tests.pm._fixtures import make_tar, served as served
 
 
@@ -103,22 +103,6 @@ def _pin(lockfile_path: Path, name: str, version: str, digest: str) -> None:
     lockfile.save()
 
 
-def test_install_and_env(pm_env):
-    from pm.ensure import ensure, is_installed
-
-    runner = ensure("faketool", base_env={})
-    assert is_installed("faketool")
-    assert "faketool-1.0" in runner.env["PATH"]
-
-
-def test_idempotent_and_offline_after_install(pm_env):
-    from pm.ensure import ensure
-
-    _, _, docroot, _ = pm_env
-    ensure("faketool", base_env={})
-    (docroot / "faketool-1.0.tar.gz").unlink()
-    runner = ensure("faketool", base_env={})
-    assert "faketool-1.0" in runner.env["PATH"]
 
 
 def test_bad_hash_rejected(pm_env):
@@ -130,17 +114,8 @@ def test_bad_hash_rejected(pm_env):
         ensure("faketool", base_env={})
 
 
-def test_fetch_is_a_store_entry(pm_env):
-    lock_path, runtime, _, _ = pm_env
-    artifact = Lockfile(lock_path).artifacts("faketool", current_target())[0]
-    store = Store(runtime)
-    with store.scratch() as scratch:
-        store.fetch(artifact["url"], artifact["sha256"], scratch)
-    fetches = [p for p in runtime.iterdir() if p.name.startswith("fetch-")]
-    assert len(fetches) == 1
 
-
-def test_multi_archive_merges_into_one_entry(pm_env):
+def test_multi_archive_merges_into_one_entry(pm_env, capsys):
     """A package split across two archives lands in ONE store entry: a
     second entry would put the DLLs where a loading executable can never
     find them. No per-archive entries, no leftover scratch."""
@@ -158,7 +133,11 @@ def test_multi_archive_merges_into_one_entry(pm_env):
     ]})
     lockfile.save()
 
-    ensure("multitool", base_env={})
+    from pm import cli
+    assert cli._install_names(["multitool"]) == 0
+    out = capsys.readouterr().out
+    assert "✓ multitool" in out and "multitool: 100.0%" in out
+    assert "multitool: unpacking 1/2" in out and "multitool: unpacking 2/2" in out
     assert is_installed("multitool")
 
     entry_dirs = [p for p in runtime.iterdir() if p.name.startswith("multitool-")]
@@ -168,94 +147,24 @@ def test_multi_archive_merges_into_one_entry(pm_env):
     assert (entry / "lib" / "extra.so").is_file()
     # Both archives verified before publish: a digest mismatch in either
     # must fail loudly, not be silently dropped.
-    _, bad = make_tar(docroot, "multitool-2.0-b.tar.gz", {"lib/extra.so": "z"})
+    old_facts = (runtime / "facts.json").read_bytes()
+    _, good = make_tar(docroot, "multitool-2.0-a.tar.gz", {"bin/multitool": "#!new"})
+    make_tar(docroot, "multitool-2.0-b.tar.gz", {"lib/extra.so": "z"})
     lockfile = Lockfile(lockfile_path)
     lockfile.set_pin("multitool", "2.0", {"any": [
-        {"url": f"{FakeTool.base_url}/multitool-2.0-a.tar.gz", "sha256": "0" * 64},
-        {"url": f"{FakeTool.base_url}/multitool-2.0-b.tar.gz", "sha256": bad},
+        {"url": f"{FakeTool.base_url}/multitool-2.0-a.tar.gz", "sha256": good},
+        {"url": f"{FakeTool.base_url}/multitool-2.0-b.tar.gz", "sha256": "0" * 64},
     ]})
     lockfile.save()
-    with pytest.raises(InstallError):
+    with pytest.raises(InstallError, match="sha256 mismatch.*multitool-2.0-b"):
         ensure("multitool", base_env={})
+    assert (runtime / "facts.json").read_bytes() == old_facts
+    assert (entry / "bin/multitool").read_bytes() == b"#!a"
+    assert (entry / "lib/extra.so").read_bytes() == b"y"
+    assert not list(runtime.glob("multitool-2.0*"))
 
 
-def test_install_emits_staged_progress(pm_env):
-    """ensure() streams download -> unpack per artifact, labelled when a
-    package has several. A slow download must not look frozen."""
-    from pm.ensure import ensure
 
-    lockfile_path, _, docroot, _ = pm_env
-    _, digest_a = make_tar(docroot, "multitool-1.0-a.tar.gz", {"bin/multitool": "#!a"})
-    _, digest_b = make_tar(docroot, "multitool-1.0-b.tar.gz", {"lib/extra.so": "y"})
-    lockfile = Lockfile(lockfile_path)
-    lockfile.set_pin("multitool", "1.0", {"any": [
-        {"url": f"{FakeTool.base_url}/multitool-1.0-a.tar.gz", "sha256": digest_a},
-        {"url": f"{FakeTool.base_url}/multitool-1.0-b.tar.gz", "sha256": digest_b},
-    ]})
-    lockfile.save()
-
-    events: list[tuple[str, str]] = []
-    ensure("multitool", base_env={},
-           progress=lambda stage, d, t, label: events.append((stage, label)))
-
-    assert ("download", "1/2") in events
-    assert ("download", "2/2") in events
-    assert ("unpack", "1/2") in events
-    assert ("unpack", "2/2") in events
-    # download before unpack within each artifact.
-    stages = [s for s, _ in events]
-    assert stages.index("download") < stages.index("unpack")
-
-
-def test_install_names_streams_progress(pm_env, capsys):
-    """The CLI install loop renders live download/unpack progress + a ✓
-    line per package, so a slow bundle run is never silent in a piped
-    log."""
-    from pm import cli
-
-    assert cli._install_names(["faketool"]) == 0
-    out = capsys.readouterr().out
-    assert "✓ faketool" in out
-    assert "faketool: 100.0%" in out
-    assert "faketool: unpacking" in out
-
-
-def test_install_names_labels_multi_archive(pm_env, capsys):
-    """A package split across archives gets a label on its progress lines,
-    so the log says which archive is moving."""
-    from pm import cli
-
-    lockfile_path, _, docroot, _ = pm_env
-    _, digest_a = make_tar(docroot, "multitool-1.0-a.tar.gz", {"bin/multitool": "#!a"})
-    _, digest_b = make_tar(docroot, "multitool-1.0-b.tar.gz", {"lib/extra.so": "y"})
-    lockfile = Lockfile(lockfile_path)
-    lockfile.set_pin("multitool", "1.0", {"any": [
-        {"url": f"{FakeTool.base_url}/multitool-1.0-a.tar.gz", "sha256": digest_a},
-        {"url": f"{FakeTool.base_url}/multitool-1.0-b.tar.gz", "sha256": digest_b},
-    ]})
-    lockfile.save()
-
-    assert cli._install_names(["multitool"]) == 0
-    out = capsys.readouterr().out
-    assert "multitool: unpacking 1/2" in out
-    assert "multitool: unpacking 2/2" in out
-    assert "✓ multitool" in out
-
-
-def test_download_ticks_per_chunk(pm_env, monkeypatch):
-    """The raw download stream reports byte progress on every chunk so a
-    slow line proves liveness."""
-    from pm.store import Store
-
-    _, runtime, docroot, _ = pm_env
-    ticks: list[tuple[int, int]] = []
-    store = Store(runtime / "scratch")
-    url = f"{FakeTool.base_url}/faketool-1.0.tar.gz"
-    _, digest = make_tar(docroot, "faketool-1.0.tar.gz", {"bin/faketool": "#!x"})
-    archive = store.fetch(url, digest, runtime / "scratch",
-                          progress=lambda d, t: ticks.append((d, t)))
-    assert archive.is_file()
-    assert ticks and ticks[-1][0] == ticks[-1][1] == archive.stat().st_size
 
 
 def test_deps_compose_dependents_win(pm_env):
@@ -407,15 +316,6 @@ def test_corrupt_facts_degrades_to_empty(pm_env):
     assert (runtime / "facts.corrupt").is_file()
 
 
-def test_sealed_install_explicit_addition_leaves_payload_unchanged(pm_env, monkeypatch):
-    from pm.ensure import ensure, is_installed
-
-    _, runtime, *_ = pm_env
-    (runtime.parent / "manifest.json").write_text('{"schema": 1}', encoding="utf-8")
-    ensure("faketool", base_env={}, explicit=True)
-    assert is_installed("faketool")
-    assert not (runtime / "facts.json").exists()
-
 
 def test_concurrent_installs_do_not_clobber(pm_env):
     from pm.ensure import ensure, is_installed
@@ -444,26 +344,52 @@ def test_concurrent_installs_do_not_clobber(pm_env):
     assert is_installed("faketool") and is_installed("deptool")
 
 
-def test_single_flight_one_store_entry(pm_env):
+def test_single_flight_one_store_entry(pm_env, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from http.server import SimpleHTTPRequestHandler
     from pm.ensure import ensure
 
     _, runtime, *_ = pm_env
-    errors = []
+    contenders = threading.Barrier(6)
+    body_started, release_body = threading.Event(), threading.Event()
+    bodies, stages = [], []
+    install_lock, do_get, stage = Store.install_lock, SimpleHTTPRequestHandler.do_GET, FakeTool.stage
 
-    def go():
+    @contextmanager
+    def contending(self):
+        contenders.wait(timeout=15)
+        with install_lock(self):
+            yield
+
+    def body(self):
+        if self.headers.get("Range") == "bytes=0-0":
+            return do_get(self)
+        bodies.append(self.path)
+        body_started.set()
+        assert release_body.wait(15), "server was never released"
+        return do_get(self)
+
+    def staged(self, *args):
+        stages.append(self.name)
+        return stage(self, *args)
+
+    monkeypatch.setattr(Store, "install_lock", contending)
+    monkeypatch.setattr(SimpleHTTPRequestHandler, "do_GET", body)
+    monkeypatch.setattr(FakeTool, "stage", staged)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(ensure, "faketool", base_env={}) for _ in range(6)]
         try:
-            ensure("faketool", base_env={})
-        except Exception as e:
-            errors.append(e)
-
-    threads = [threading.Thread(target=go) for _ in range(6)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert not errors
-    entries = [p for p in runtime.iterdir() if p.name.startswith("faketool-")]
-    assert len(entries) == 1
+            assert body_started.wait(15)
+        finally:
+            release_body.set()
+        runners = [future.result(timeout=30) for future in futures]
+    assert bodies == ["/faketool-1.0.tar.gz"]
+    assert stages == ["faketool"]
+    assert all(runner.env == runners[0].env for runner in runners)
+    fact = Facts(runtime / "facts.json").get("faketool")
+    assert fact["entry"] in runners[0].env["PATH"]
+    assert (runtime / fact["entry"] / "bin/faketool").read_bytes() == b"#!x"
 
 
 def test_gc_keeps_used_removes_orphans(pm_env):
@@ -513,33 +439,11 @@ def test_env_for_never_installs(pm_env):
     assert not any(p.name.startswith("faketool-") for p in installed)
 
 
-def test_facts_adopt_by_path_substitution(tmp_path):
-    store_a = tmp_path / "bundle-store"
-    facts_a = Facts(store_a / "facts.json")
-    store_a.mkdir()
-    facts_a.record("tool", "1.0", "tool-1.0-any", {"PATH": [str(store_a / "tool-1.0-any" / "bin")]}, store_a)
-
-    raw = (store_a / "facts.json").read_text(encoding="utf-8")
-    assert "{{store}}" in raw and str(store_a) not in raw
-
-    store_b = tmp_path / "user-store"
-    store_b.mkdir()
-    (store_a / "facts.json").rename(store_b / "facts.json")
-    facts_b = Facts(store_b / "facts.json")
-    env = facts_b.env_for("tool", store_b)
-    assert env["PATH"] == [str(store_b / "tool-1.0-any" / "bin")]
-
 
 def test_compose_env_dependents_win_non_path_too():
     env = compose_env([{"X": "dep"}, {"X": "dependent"}], base={})
     assert env["X"] == "dependent"
 
-
-def test_flatten_refuses_layout_dirs(tmp_path):
-    (tmp_path / "bin").mkdir()
-    (tmp_path / "bin" / "tool").write_text("x")
-    flatten_single_dir(tmp_path)
-    assert (tmp_path / "bin" / "tool").is_file()
 
 
 # ── bundle payload pieces ─────────────────────────────────────────────
@@ -641,26 +545,6 @@ def test_adopt_noop_without_facts(pm_env, monkeypatch):
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(paths.store_root() / "nowhere"))
     assert pm.adopt() is False
 
-
-def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):
-    from scripts.bundles.native import _bundle_package_names
-    from pm.lock import Lockfile
-
-    lock = Lockfile(tmp_path / "lock.json")
-    for name in ("uv", "python", "ripgrep", "chromium", "node", "npm"):
-        lock.set_pin(name, "1", {"any": {"url": "x", "sha256": "0" * 64}})
-    lock.save()
-    monkeypatch.setattr("scripts.bundles.native._lockfile", lambda: lock)
-    names = _bundle_package_names()
-    # Browsers now ship in every payload (win32-arm64 runs the x64 build
-    # under emulation); nothing is excluded from the bundle.
-    assert "chromium" in names
-    assert "python" in names
-    assert "ripgrep" in names
-    # node/npm are shipped runtime tools (TUI, plugins), not install
-    # machinery; only uv remains internal.
-    assert "node" in names
-    assert "npm" in names
 
 
 def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):

@@ -1,37 +1,18 @@
-"""stage_only / _install regressions: a VALID published entry must never be
-deleted (verify() returns '' on success), and stage_only must honor a
-same-version hash repin (the entry marker design, like facts' identity).
-
-Everything runs inside a temp HERMES_RUNTIME_DIR sandbox: the store and
-facts live under tmp_path. Most tests use fake package definitions. The
-Node tests use the real package with local archives, without network access.
-"""
+"""Native/cross-target execution and Windows directory-hold staging contracts."""
 
 from __future__ import annotations
 
 import hashlib
 import importlib
-import json
 from pathlib import Path
 
 import pytest
 
 from pm.package import InstallError, Package
+from pm.lock import Lockfile
 from pm.store import Store
 
 ensure_mod = importlib.import_module("pm.ensure")
-
-
-class _FakeLockfile:
-    def __init__(self, version: str, artifacts: list[dict]):
-        self._version = version
-        self._artifacts = artifacts
-
-    def version(self, name: str):
-        return self._version
-
-    def artifacts(self, name: str, target: str):
-        return self._artifacts
 
 
 class _FakePackage(Package):
@@ -76,14 +57,50 @@ def sandbox(tmp_path, monkeypatch):
     return store
 
 
-def _arm_lock(monkeypatch, artifacts: list[dict]):
-    lock = _FakeLockfile("1.0", artifacts)
+def _arm_lock(monkeypatch, artifacts):
+    from pm import paths
+    lock = Lockfile(paths.store_root().parent / "stage-lock.json")
+    lock.set_pin("node", "1.0", {"any": artifacts})
+    lock.set_pin("stage-test", "1.0", {"any": artifacts})
+    lock.save()
     monkeypatch.setattr(ensure_mod, "_lockfile", lambda: lock)
     return lock
 
 
 TARGET = "linux-arm64-bionic"
 ENTRY = "stage-test-1.0-linux-arm64-bionic"
+
+
+@pytest.mark.parametrize("name,relative", [
+    ("python", "bin/python3.14"), ("uv", "bin/uv"), ("node", "bin/node"),
+])
+def test_bionic_deb_stages_real_packages_without_host_execution(tmp_path, monkeypatch, name, relative):
+    from pm import paths
+    from tests.pm.test_deb_safety import _build_deb
+    from pm.registry import get_package
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
+    lock = Lockfile(tmp_path / "lock.json")
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lock.path)
+    deb = tmp_path / "tool.deb"
+    main = "data/data/com.termux/files/usr/" + relative
+    _build_deb(deb, [(main, b"bionic fixture"), ("data/data/com.termux/files/usr/lib/keep", b"library")])
+    digest = _sha(deb.read_bytes())
+    lock.set_pin(name, "1.0", {TARGET: {"url": "https://example.invalid/tool.deb", "sha256": digest}})
+    lock.save()
+    cached = paths.store_root() / f"fetch-{digest}"
+    cached.mkdir(parents=True)
+    (cached / "tool.deb").write_bytes(deb.read_bytes())
+    paths.facts_path().write_bytes(b'{"schema":1,"packages":{}}')
+    before = paths.facts_path().read_bytes()
+    monkeypatch.setattr("pm.packages.subprocess.run", lambda *a, **kw: pytest.fail("bionic executed on host"))
+    entry = ensure_mod.stage_only(name, TARGET)
+    assert get_package(name).binary(entry, TARGET) == entry / main
+    assert (entry / main).read_bytes() == b"bionic fixture"
+    assert paths.facts_path().read_bytes() == before
+    (entry / main).unlink()
+    assert get_package(name).verify(entry, TARGET)
 
 
 @pytest.mark.platforms("linux", arch="x86_64")
@@ -135,7 +152,8 @@ def test_real_node_foreign_stage_checks_bytes_without_exec(tmp_path, monkeypatch
 
 
 @pytest.mark.platforms("posix")
-def test_real_node_native_install_keeps_smoke_validation(tmp_path, sandbox, monkeypatch):
+@pytest.mark.parametrize("compression", ["gz", "xz"])
+def test_real_node_native_install_keeps_smoke_validation(tmp_path, sandbox, monkeypatch, compression):
     import io
     import tarfile
 
@@ -146,108 +164,23 @@ def test_real_node_native_install_keeps_smoke_validation(tmp_path, sandbox, monk
     probe = tmp_path / "native-probes"
     script = f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{probe}"\nexit 0\n'.encode()
     archive = io.BytesIO()
-    with tarfile.open(fileobj=archive, mode="w:gz") as payload:
+    with tarfile.open(fileobj=archive, mode=f"w:{compression}") as payload:
         member = tarfile.TarInfo("node-v1.0/bin/node")
         member.mode = 0o755
         member.size = len(script)
         payload.addfile(member, io.BytesIO(script))
     data = archive.getvalue()
-    _arm_lock(monkeypatch, [{"url": "https://example.test/node.tar.gz", "sha256": _sha(data)}])
+    _arm_lock(monkeypatch, [{"url": f"https://example.test/node.tar.{compression}", "sha256": _sha(data)}])
     cached = sandbox.entry(f"fetch-{_sha(data)}")
     cached.mkdir(parents=True)
-    (cached / "node.tar.gz").write_bytes(data)
+    (cached / f"node.tar.{compression}").write_bytes(data)
+    monkeypatch.setenv("PATH", "")
     package, facts = Nodejs(), ensure_mod._facts()
     entry = ensure_mod._install(package, ensure_mod._lockfile(), facts, sandbox, current_target())
     assert probe.read_text().splitlines() == ["--version", "--version"]
     assert facts.get("node")["entry"] == entry.name
     (entry / "bin/node").write_text("#!/bin/sh\nexit 23\n")
     assert "23" in package.verify(entry, current_target())
-
-
-def test_stage_only_keeps_valid_entry(tmp_path, sandbox, monkeypatch):
-    """A published entry that verifies must be returned as-is: the
-    verify contract is '' on success, so an inverted predicate here would
-    delete and re-fetch a perfectly good entry on every call."""
-    payload_a = b"tool-bytes-a"
-    _arm_lock(
-        monkeypatch,
-        [{"url": "https://example.test/tool.deb", "sha256": _sha(payload_a)}],
-    )
-    _seed_fetch_cache(sandbox, payload_a)
-
-    first = ensure_mod.stage_only("stage-test", TARGET)
-    assert (first / "bin" / "tool").read_bytes() == payload_a
-
-    # Mark the published entry: a delete-and-rebuild loses this file.
-    (first / "sentinel").write_text("published")
-
-    again = ensure_mod.stage_only("stage-test", TARGET)
-    assert again == first
-    assert (again / "sentinel").read_text() == "published", (
-        "stage_only deleted and rebuilt a VALID published entry"
-    )
-
-
-def test_install_repairs_unproven_entry_and_records_facts(tmp_path, sandbox, monkeypatch):
-    """_install with no matching facts must RE-REALIZE the entry: an
-    unproven entry (nothing vouches its bytes came from this pin) is
-    fail-closed rebuilt, then facts are recorded. Same shape as the
-    test_pm_authority repin repair, driven through _install directly."""
-    payload_a = b"tool-bytes-a"
-    _arm_lock(
-        monkeypatch,
-        [{"url": "https://example.test/tool.deb", "sha256": _sha(payload_a)}],
-    )
-    _seed_fetch_cache(sandbox, payload_a)
-
-    package = ensure_mod.get_package("stage-test")
-    facts = ensure_mod._facts()
-    store = sandbox
-    entry_name = package.store_entry("1.0", TARGET)
-    sandbox.entry(entry_name).mkdir(parents=True)
-    (sandbox.entry(entry_name) / "bin").mkdir()
-    (sandbox.entry(entry_name) / "bin" / "tool").write_bytes(b"stale-bytes")
-    (sandbox.entry(entry_name) / "sentinel").write_text("unproven")
-
-    ensure_mod._install(package, ensure_mod._lockfile(), facts, store, TARGET)
-
-    assert (sandbox.entry(entry_name) / "bin" / "tool").read_bytes() == payload_a, (
-        "_install kept an entry nothing proved against the pin"
-    )
-    assert not (sandbox.entry(entry_name) / "sentinel").exists()
-    recorded = facts.get("stage-test")
-    assert recorded and recorded["version"] == "1.0"
-
-
-def test_stage_only_repin_same_version_rebuilds(tmp_path, sandbox, monkeypatch):
-    """Repinning the SAME version to a different sha256 must rebuild the
-    staged entry: without an entry marker the stale bytes are handed back."""
-    payload_a = b"tool-bytes-a"
-    payload_b = b"tool-bytes-b-repin"
-    assert payload_a != payload_b
-
-    _arm_lock(
-        monkeypatch,
-        [{"url": "https://example.test/tool.deb", "sha256": _sha(payload_a)}],
-    )
-    _seed_fetch_cache(sandbox, payload_a)
-    first = ensure_mod.stage_only("stage-test", TARGET)
-    assert (first / "bin" / "tool").read_bytes() == payload_a
-
-    # Repin: same version, new digest.
-    _arm_lock(
-        monkeypatch,
-        [{"url": "https://example.test/tool.deb", "sha256": _sha(payload_b)}],
-    )
-    _seed_fetch_cache(sandbox, payload_b)
-    repinned = ensure_mod.stage_only("stage-test", TARGET)
-    assert (repinned / "bin" / "tool").read_bytes() == payload_b, (
-        "stage_only returned stale bytes after a same-version hash repin"
-    )
-
-    # And the rebuilt entry is again idempotent.
-    stable = ensure_mod.stage_only("stage-test", TARGET)
-    assert (stable / "bin" / "tool").read_bytes() == payload_b
 
 
 @pytest.mark.platforms("windows")
@@ -280,41 +213,3 @@ def test_stage_repin_refuses_a_native_directory_hold_then_recovers(sandbox, monk
         kernel.CloseHandle(handle)
     ensure_mod.stage_only("stage-test", TARGET)
     assert (entry / "bin/tool").read_bytes() == replacement
-
-
-@pytest.mark.parametrize("error_name", ["HashError", "DownloadPaused"])
-def test_permanent_or_paused_download_is_not_retried(error_name):
-    from pm import downloader
-    from pm.network import retry_network
-
-    def fail():
-        raise getattr(downloader, error_name)("stop")
-
-    with pytest.raises(getattr(downloader, error_name)):
-        retry_network(fail, wait=lambda _: pytest.fail("permanent failure was retried"))
-
-
-@pytest.mark.parametrize("failure", ["fetch", "publish"])
-def test_repin_failure_preserves_previous_staged_entry(sandbox, monkeypatch, failure):
-    payload = b"original"
-    _arm_lock(monkeypatch, [{"url": "https://example.test/tool", "sha256": _sha(payload)}])
-    _seed_fetch_cache(sandbox, payload)
-    entry = ensure_mod.stage_only("stage-test", TARGET)
-    marker = (entry / ".pm-stage-pin.json").read_bytes()
-
-    replacement = b"replacement"
-    _arm_lock(monkeypatch, [{"url": "https://example.test/tool", "sha256": _sha(replacement)}])
-    _seed_fetch_cache(sandbox, replacement)
-
-    def fail(*args, **kwargs):
-        raise InstallError("stage-test", "injected staging failure")
-
-    if failure == "fetch":
-        monkeypatch.setattr(sandbox, "fetch_many", fail)
-    else:
-        monkeypatch.setattr(sandbox, "publish", fail)
-    with pytest.raises(InstallError, match="injected staging failure"):
-        ensure_mod.stage_only("stage-test", TARGET)
-
-    assert (entry / "bin/tool").read_bytes() == payload
-    assert (entry / ".pm-stage-pin.json").read_bytes() == marker

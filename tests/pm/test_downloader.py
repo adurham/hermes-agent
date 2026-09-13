@@ -11,15 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-import time
-from pathlib import Path
 
 import pytest
 
 from pm.downloader import (Download, DownloadError, DownloadPaused,
                            HashError, Source)
 
-from tests.pm._range_server import RangeHandler as _Handler, dl_server, url as _url
+from tests.pm._range_server import RangeHandler as _Handler, url as _url
+from tests.pm._range_server import dl_server as dl_server
 
 
 def _payload(n: int, seed: bytes = b"x") -> bytes:
@@ -129,44 +128,6 @@ def test_no_hash_accepts_any_bytes_of_right_size(dl_server, tmp_path):
 # ── resume ────────────────────────────────────────────────────
 
 
-def test_resume_refetches_only_missing_ranges(dl_server, tmp_path):
-    payload = _payload(8 << 20)
-    _Handler.payloads["/r"] = payload
-    dest = tmp_path / "r.bin"
-    partials = tmp_path / "partials"
-    # first run: one connection, server drops after 2 MiB
-    _Handler.abort_after = 2 << 20
-    dl = Download([Source(_url(dl_server, "/r"), dest, _sha(payload))],
-                  partials_dir=partials, connections=1)
-    with pytest.raises(Exception):
-        dl.run()
-    first = list(_Handler.ranges_seen)
-    # second run resumes: only the missing tail is re-fetched
-    _Handler.abort_after = None
-    dl = Download([Source(_url(dl_server, "/r"), dest, _sha(payload))],
-                  partials_dir=partials, connections=1)
-    dl.run()
-    assert dest.read_bytes() == payload
-    assert _Handler.ranges_seen == first + [("/r", 2 << 20, (8 << 20) - 1)]
-
-
-def test_resume_after_crash_reads_sidecar(dl_server, tmp_path):
-    payload = _payload(4 << 20)
-    _Handler.payloads["/c"] = payload
-    dest = tmp_path / "c.bin"
-    partials = tmp_path / "partials"
-    partials.mkdir()
-    key = hashlib.sha256(_url(dl_server, "/c").encode("utf-8")).hexdigest()
-    (partials / f"{key}.part").write_bytes(payload[: 1 << 20])
-    (partials / f"{key}.ranges").write_text(json.dumps({
-        "total": len(payload), "etag": '"' + _sha(payload) + '"',
-        "sha256": _sha(payload), "ranges": [[0, 1 << 20]],
-    }), encoding="utf-8")
-    dl = Download([Source(_url(dl_server, "/c"), dest, _sha(payload))],
-                  partials_dir=partials)
-    dl.run()
-    assert dest.read_bytes() == payload
-    assert _Handler.ranges_seen == [("/c", 1 << 20, (4 << 20) - 1)]
 
 
 def test_partials_never_in_scratch_or_dest(dl_server, tmp_path):
@@ -185,12 +146,13 @@ def test_partials_never_in_scratch_or_dest(dl_server, tmp_path):
                 if p.suffix in (".part", ".ranges")]
 
 
-def test_completed_dest_is_skipped(dl_server, tmp_path):
+@pytest.mark.parametrize("hashed", [False, True])
+def test_completed_dest_is_skipped(dl_server, tmp_path, hashed):
     payload = _payload(1 << 20)
     _Handler.payloads["/s"] = payload
     dest = tmp_path / "s.bin"
     dest.write_bytes(payload)
-    dl = Download([Source(_url(dl_server, "/s"), dest, _sha(payload))],
+    dl = Download([Source(_url(dl_server, "/s"), dest, _sha(payload) if hashed else None)],
                   partials_dir=tmp_path / "partials")
     dl.run()
     assert _Handler.ranges_seen == []  # nothing fetched
@@ -207,18 +169,6 @@ def test_stale_dest_with_wrong_hash_is_refetched(dl_server, tmp_path):
     assert dest.read_bytes() == payload  # stale dest replaced
     assert _Handler.ranges_seen  # a fetch actually happened
 
-
-def test_completed_dest_without_hash_is_skipped(dl_server, tmp_path):
-    # Model-catalog policy: no pinned hash -> a present file is accepted
-    # (size is the only tripwire), matching fresh-download semantics.
-    payload = _payload(1 << 20)
-    _Handler.payloads["/s"] = payload
-    dest = tmp_path / "s.bin"
-    dest.write_bytes(payload)
-    dl = Download([Source(_url(dl_server, "/s"), dest)],
-                  partials_dir=tmp_path / "partials")
-    dl.run()
-    assert _Handler.ranges_seen == []  # nothing fetched
 
 
 def test_redirect_to_non_https_refused():
@@ -238,23 +188,6 @@ def test_redirect_to_non_https_refused():
 
 # ── pause ─────────────────────────────────────────────────────
 
-
-def test_pause_leaves_partials_intact(dl_server, tmp_path):
-    _Handler.payloads["/p"] = _payload(32 << 20)
-    dest = tmp_path / "p.bin"
-    partials = tmp_path / "partials"
-    dl = Download([Source(_url(dl_server, "/p"), dest)],
-                  partials_dir=partials)
-    def pause_after_bytes(done, total, ranges):
-        if done > 0:
-            dl.pause()
-
-    with pytest.raises(DownloadPaused):
-        dl.run(progress=pause_after_bytes)
-    assert not dest.exists()
-    names = {p.name for p in partials.iterdir()}
-    assert any(n.endswith(".part") for n in names)
-    assert any(n.endswith(".ranges") for n in names)
 
 
 # ── safety ────────────────────────────────────────────────────
@@ -328,11 +261,19 @@ def test_resume_across_plan_skips_completed_source(dl_server, tmp_path):
     with pytest.raises(Exception):
         dl.run()
 
+    sidecars = list(partials.glob("*.ranges"))
+    assert len(sidecars) == 1
+    assert json.loads(sidecars[0].read_text())["ranges"] == [[0, 2 << 20]]
+    assert da.read_bytes() == p_a and not db.exists()
     _Handler.abort_after = None
     dl = Download([Source(_url(dl_server, "/a"), da, _sha(p_a)),
                    Source(_url(dl_server, "/b"), db, _sha(p_b))],
                   partials_dir=partials, connections=1)
-    dl.run()
+    ticks = []
+    dl.run(progress=lambda d, t, r: ticks.append((d, t, dict(r))))
+    assert ticks[0] == (len(p_a) + (2 << 20), len(p_a) + len(p_b),
+                        {str(da): [(0, len(p_a))], str(db): [(0, 2 << 20)]})
+    assert not list(partials.glob("*.ranges")) and not list(partials.glob("*.part"))
     assert da.read_bytes() == p_a
     assert db.read_bytes() == p_b
     a_reqs = [r for r in _Handler.ranges_seen if r[0] == "/a"]
@@ -343,36 +284,6 @@ def test_resume_across_plan_skips_completed_source(dl_server, tmp_path):
     assert b_reqs[1][1] == 2 << 20
     assert b_reqs[1][1] != b_reqs[0][1]
 
-
-def test_resume_first_progress_shows_durable_prefix(dl_server, tmp_path):
-    """On a resumed download, the SECOND run's first progress tick already
-    reports the durable prefix as a covered range and overall_done starting
-    above zero."""
-    total = 8 << 20
-    payload = _payload(total)
-    _Handler.payloads["/rp"] = payload
-    dest = tmp_path / "rp.bin"
-    partials = tmp_path / "partials"
-
-    _Handler.abort_after = 2 << 20
-    dl = Download([Source(_url(dl_server, "/rp"), dest, _sha(payload))],
-                  partials_dir=partials, connections=1)
-    with pytest.raises(Exception):
-        dl.run()
-
-    _Handler.abort_after = None
-    dl = Download([Source(_url(dl_server, "/rp"), dest, _sha(payload))],
-                  partials_dir=partials, connections=1)
-    seen = []
-    dl.run(progress=lambda d, t, r: seen.append((d, t, dict(r))))
-    assert dest.read_bytes() == payload
-    d0, t0, r0 = seen[0]
-    assert d0 > 0  # overall_done starts above zero (durable prefix + new)
-    assert t0 == total
-    ranges = r0[str(dest)]
-    assert len(ranges) == 1  # coalesced
-    assert ranges[0][0] == 0  # the durable prefix is a covered range
-    assert ranges[0][1] > 0
 
 
 def test_pause_mid_plan_resumes_to_completion(dl_server, tmp_path):

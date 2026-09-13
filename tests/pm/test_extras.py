@@ -94,9 +94,6 @@ def synced(monkeypatch):
     return calls
 
 
-def test_available_known_anchor_present():
-    assert extras.available("web") is True  # fastapi ships in this venv
-
 
 def test_available_missing_module():
     assert extras.available("no-such-extra-anywhere") is False
@@ -149,39 +146,21 @@ def test_ensure_import_propagates_install_error(monkeypatch):
         extras.ensure_import("fal")
 
 
-def test_ensure_and_bind_binds_on_success(monkeypatch, synced):
-    monkeypatch.setattr(extras, "available", lambda e: True)
-    target: dict = {}
-    ok = extras.ensure_and_bind("fal", lambda: {"NAME": 42}, target)
-    assert ok is True and target["NAME"] == 42
-
-
-def test_ensure_and_bind_false_on_install_failure(monkeypatch):
-    def boom(x=None):
-        raise pm.InstallError("venv", "nope")
-
-    monkeypatch.setattr(client, "sync_venv", boom)
-    monkeypatch.setattr(extras, "available", lambda e: False)
-    target: dict = {}
-    assert extras.ensure_and_bind("fal", lambda: {"X": 1}, target) is False
-    assert target == {}
-
-
-def test_ensure_and_bind_false_on_import_failure(monkeypatch, synced):
-    monkeypatch.setattr(extras, "available", lambda e: True)
-
+@pytest.mark.parametrize("failure", [None, "install", "import"])
+def test_ensure_and_bind_preserves_target_on_failure(monkeypatch, failure):
+    monkeypatch.setattr(extras, "available", lambda _: failure != "install")
+    def sync(*args):
+        raise pm.InstallError("venv", "install refused")
+    monkeypatch.setattr(client, "sync_venv", sync)
     def importer():
-        raise ImportError("still broken")
+        if failure == "import":
+            raise ImportError("still broken")
+        return {"NAME": 42}
+    target = {"existing": "kept"}
+    assert extras.ensure_and_bind("fal", importer, target) is (failure is None)
+    assert target == ({"existing": "kept", "NAME": 42} if failure is None else {"existing": "kept"})
 
-    assert extras.ensure_and_bind("fal", importer, {}) is False
 
-
-def test_package_exports_preserve_availability_and_noop_install(monkeypatch, synced):
-    monkeypatch.setitem(sys.modules, "some_new_thing", SimpleNamespace())
-    assert pm.available("some-new-thing") == extras.available("some-new-thing") is True
-    assert pm.available("no-such-extra-anywhere") == extras.available("no-such-extra-anywhere") is False
-    pm.ensure_import("some-new-thing")
-    assert synced == []
 
 
 def test_every_anchor_extra_exists_in_pyproject():

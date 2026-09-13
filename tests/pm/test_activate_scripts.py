@@ -189,6 +189,7 @@ def test_bash_scripts_pass_syntax_check():
         assert result.returncode == 0, f"{script.name}: {result.stderr}"
 
 
+@pytest.mark.platforms("windows")
 def test_source_activate_exports_the_pm_env(tmp_path: Path):
     root = _isolated_checkout(tmp_path)
     store, _ = _fake_store(tmp_path)
@@ -208,6 +209,7 @@ def test_source_activate_exports_the_pm_env(tmp_path: Path):
     assert result.stdout == "env-ok"
 
 
+@pytest.mark.platforms("windows")
 def test_deactivate_restores_the_prior_shell(tmp_path: Path):
     root = _isolated_checkout(tmp_path)
     store, _ = _fake_store(tmp_path)

@@ -22,19 +22,15 @@ def rooted(tmp_path, monkeypatch):
 
 
 def test_write_then_read_roundtrip(rooted):
+    assert feats.read_features() is None
     path = feats.write_features(["web", "acp", "web"])
     assert path.is_file()
     got = feats.read_features()
     assert got == ["acp", "web"]  # sorted, deduped
-
-
-def test_read_features_none_when_absent(rooted):
+    path.write_text("{ not json", encoding="utf-8")
     assert feats.read_features() is None
 
 
-def test_read_features_none_on_garbage(rooted):
-    feats.features_path().write_text("{ not json", encoding="utf-8")
-    assert feats.read_features() is None
 
 
 def test_features_path_in_bundle_uses_payload_root(rooted):
@@ -55,6 +51,13 @@ def test_sync_venv_refuses_outside_frozen_extras(rooted, monkeypatch):
     with pytest.raises(InstallError) as exc:
         ensure_mod.sync_venv(["slack"], explicit=True)
     assert "frozen" in str(exc.value) or "outside" in str(exc.value)
+    from pm import receipt
+    saved = receipt.latest()
+    assert saved["refusal"]["code"] == "lazy-install"
+    assert saved["outcome"] == "failed" and saved["exit_code"] != 0
+    assert saved["steps"][-1]["ok"] is False
+    assert "slack" in saved["steps"][-1]["detail"]
+    assert "hermes pm install" in saved["steps"][-1]["detail"]
 
 
 def test_sync_venv_allows_frozen_extras_when_lazy_off(rooted, monkeypatch):

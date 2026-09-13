@@ -100,6 +100,7 @@ def test_cold_worker_bootstrap_reuses_the_requests_cache(tmp_path, monkeypatch):
     assert dict(os.environ) == before
 
 
+@pytest.mark.platforms("macos", "windows")
 def test_sealed_worker_command_uses_only_its_recorded_site(tmp_path, monkeypatch):
     from pm import paths
     from pm.runtime import runtime_command

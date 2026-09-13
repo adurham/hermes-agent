@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tests.pm.test_worker import client, isolated_python, _current_environment  # noqa: F401
+from tests.pm._fixtures import worker_toolchain
 
 
 def test_worker_publishes_selection_even_when_dependencies_are_current(client, tmp_path, monkeypatch):
@@ -39,19 +40,6 @@ def test_worker_publishes_selection_even_when_dependencies_are_current(client, t
     assert result["venv_rebuild"]["ok"] is False
     assert json.loads((home / "logs/update_receipts/latest.json").read_text())["outcome"] == "ok"
 
-
-def worker_toolchain(client, monkeypatch, isolated_python, injection=""):
-    uv = shutil.which("uv")
-    assert uv
-    worker = Path(client.__file__).with_name("worker.py")
-    script = (
-        "import runpy, sys, os; from pathlib import Path; "
-        f"sys.path.insert(0, {str(worker.parent.parent)!r}); "
-        "import pm._uv; "
-        f"pm._uv._toolchain = lambda **kwargs: (Path({uv!r}), Path({sys.executable!r}));\n"
-        + injection + f"\nrunpy.run_path({str(worker)!r}, run_name='__main__')"
-    )
-    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
 
 
 @pytest.mark.parametrize("active", [False, True])
@@ -142,7 +130,7 @@ def test_selection_refuses_config_edits_during_preparation(client, tmp_path, mon
 @pytest.mark.parametrize("invalid", ["name: [", "manifest_version: 999", "requires_hermes: '>=999'", "name: other"])
 def test_worker_rejects_unloadable_staged_plugin_without_app_dependencies(client, tmp_path, monkeypatch, invalid):
     from pm.store import tree_digest
-    repo = _current_environment(tmp_path, monkeypatch, [])
+    _current_environment(tmp_path, monkeypatch, [])
     target = tmp_path / "home/plugins/example"
     target.mkdir(parents=True)
     (target / "plugin.yaml").write_text("name: example\n")
@@ -252,9 +240,9 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
     assert (state / "publication.json").exists()
     source = Path(client.__file__).resolve().parent.parent
     program = (f"import sys; sys.path.insert(0, {str(source)!r}); from pathlib import Path; "
-               "from hermes_cli.runtime_state import runtime_lock, recover_publication; "
+               "from hermes_cli.runtime_paths import activate_dependencies; "
                f"project = Path({str(project)!r})\n"
-               "with runtime_lock(project):\n    recover_publication(project)\n    recover_publication(project)\n")
+               "activate_dependencies(project)\nactivate_dependencies(project)\n")
     recovery = subprocess.run([sys.executable, "-I", "-S", "-c", program], capture_output=True, text=True,
                               env=dict(os.environ), timeout=30)
     assert recovery.returncode == 0, recovery.stderr

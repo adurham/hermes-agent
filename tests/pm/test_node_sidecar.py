@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import shutil
 import shlex
-import subprocess
 
 import pytest
 
@@ -88,20 +87,10 @@ def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch
     assert not (tmp_path / "node_modules").exists()
     assert dict(os.environ) == ambient
     assert calls == [("npm", {"explicit": True})] * 2
+    (plugin / "package.json").write_text("{malformed")
+    reason = install_node_sidecar(plugin, explicit=True)
+    assert "exited" in reason and "JSON" in reason
 
-
-def test_npm_process_failure_is_reported(tmp_path, monkeypatch):
-    (tmp_path / "package.json").write_text('{}')
-    binary = tmp_path / ("npm.cmd" if os.name == "nt" else "npm")
-    binary.write_text("process boundary fixture")
-    binary.chmod(0o755)
-    class FailedRunner:
-        env = {"PATH": str(tmp_path)}
-        def run(self, command, **kwargs):
-            return subprocess.CompletedProcess(command, 1, "", "ERESOLVE dependency conflict")
-    monkeypatch.setattr(pm, "ensure", lambda *args, **kwargs: FailedRunner())
-    reason = install_node_sidecar(tmp_path, explicit=True)
-    assert "exited 1" in reason and "ERESOLVE" in reason
 
 
 def test_on_demand_sidecar_install_respects_lazy_refusal(tmp_path, monkeypatch):

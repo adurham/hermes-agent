@@ -223,10 +223,12 @@ def test_managed_consumers_run_their_business_protocol(consumer_store, monkeypat
         "if '--version' in sys.argv: print('bws fixture')\n"
         "else:\n"
         " assert sys.argv[1:] == ['secret','list','project','--output','json']\n"
+        " assert os.environ['BWS_SERVER_URL'] == 'https://vault.example.invalid'\n"
         " print(json.dumps([{'key':'FIXTURE_VALUE','value':os.environ['BWS_ACCESS_TOKEN']}]))\n"
     ).encode())
     install_bws()
-    assert fetch_bitwarden_secrets(access_token="local-token", project_id="project", use_cache=False) == (
+    assert fetch_bitwarden_secrets(access_token="local-token", project_id="project", use_cache=False,
+                                  server_url="https://vault.example.invalid") == (
         {"FIXTURE_VALUE": "local-token"}, []
     )
     pin(consumer_store, "iron-proxy", payload=(

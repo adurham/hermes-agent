@@ -91,11 +91,27 @@ print(json.dumps({canonicalize_name(d.metadata['Name']): d.version
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == versions
+    from pm import paths
+    from pm.runtime import runtime_command
+    repo = moved / "hermes-agent"
+    repo.mkdir()
+    (moved / "manifest.json").write_text('{"repo":"hermes-agent"}')
+    script = repo / "probe.py"
+    script.write_text("import sys,json; print(json.dumps(sys.path))")
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(paths, "repo_root", lambda: repo)
+        child = subprocess.run(runtime_command(script), cwd=tmp_path, env=runtime_environment(),
+                               capture_output=True, text=True, check=True, timeout=30)
+    entries = json.loads(child.stdout)
+    assert str((runtime / marker["sitePackages"]).resolve()) in entries
+    recorded_site = (runtime / marker["sitePackages"]).resolve()
+    assert not any(Path(entry).name in {"site-packages", "dist-packages"}
+                   and Path(entry).resolve() != recorded_site for entry in entries)
 
 
 @pytest.mark.platforms("linux")
 def test_offline_wheelhouse_rejects_missing_transitive_wheel(
-    tmp_path, isolated_builder, locked_wheelhouse, capfd,
+    tmp_path, isolated_builder, locked_wheelhouse, capfd, monkeypatch,
 ):
     from pm.package import InstallError
 
@@ -105,8 +121,10 @@ def test_offline_wheelhouse_rejects_missing_transitive_wheel(
     native_wheel, = incomplete.glob("ruamel_yaml_clib-*.whl")
     native_wheel.unlink()
     destination = tmp_path / "pm-runtime"
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (isolated_builder, Path(sys.executable)))
     with pytest.raises(InstallError, match="pip exited"):
-        stage_runtime(isolated_builder, Path(sys.executable), destination,
-                      wheelhouse=incomplete, offline=True)
+        from pm import stage_manager_runtime
+        stage_manager_runtime(python=Path(sys.executable), destination=destination,
+                              wheelhouse=incomplete, offline=True)
     assert "ruamel-yaml-clib" in capfd.readouterr().err
-    assert not (destination / "pm-runtime.json").exists()
+    assert not destination.exists()
