@@ -19,16 +19,17 @@ def test_managed_build_archives_native_code(tmp_path, build_worker):
     source = tmp_path / "native_archive_probe-1.0"
     source.mkdir()
     (source / "pyproject.toml").write_text(
-        '[build-system]\nrequires=[]\nbuild-backend="backend"\nbackend-path=["."]\n'
+        '[build-system]\nrequires=[]\nbuild-backend="backend"\nbackend-path=["."]\n',
+        encoding="utf-8",
     )
-    (source / "answer.c").write_text("int answer(void) { return 42; }\n")
+    (source / "answer.c").write_text("int answer(void) { return 42; }\n", encoding="utf-8")
     (source / "probe.c").write_text('''#include <Python.h>
 extern int answer(void);
 static PyObject *value(PyObject *self, PyObject *args) { return PyLong_FromLong(answer()); }
 static PyMethodDef methods[] = {{"value", value, METH_NOARGS, "answer"}, {NULL,NULL,0,NULL}};
 static struct PyModuleDef module = {PyModuleDef_HEAD_INIT, "native_archive_probe", NULL, -1, methods};
 PyMODINIT_FUNC PyInit_native_archive_probe(void) { return PyModule_Create(&module); }
-''')
+''', encoding="utf-8")
     (source / "backend.py").write_text('''import os, shlex, subprocess, sys, sysconfig
 from pathlib import Path
 from zipfile import ZipFile
@@ -56,7 +57,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         for path, body in entries.items():
             wheel.writestr(path, body)
     return name
-''')
+''', encoding="utf-8")
     archive = tmp_path / (source.name + ".tar.gz")
     with tarfile.open(archive, "w:gz") as tar:
         tar.add(source, arcname=source.name)
