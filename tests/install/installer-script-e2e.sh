@@ -85,8 +85,6 @@ case "$UPDATE_METHOD" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
 
 # Everything lives OUTSIDE the checkout; an untracked dir inside the repo
 # would make later dirty-tree checks lie.
@@ -103,6 +101,8 @@ source "$(dirname "$0")/e2e-assets/ts-prefix.sh" 2>/dev/null || ts_prefix() { ca
 source "$(dirname "$0")/e2e-assets/preserve-plugins.sh"
 # shellcheck source=e2e-assets/source-driver.sh
 source "$(dirname "$0")/e2e-assets/source-driver.sh"
+# shellcheck source=e2e-assets/installer-common.sh
+source "$(dirname "$0")/e2e-assets/installer-common.sh"
 # Full transcript in the job log, collapsed (GitHub renders ::group:: as a
 # fold; plain text anywhere else). Win or lose -- a green install's log is
 # how you diagnose the leg that fails next.
@@ -150,69 +150,9 @@ git -C "$SERVE_REPO" symbolic-ref HEAD refs/heads/main
 git -C "$SERVE_REPO" config uploadpack.allowAnySHA1InWant true
 ok "serve.git main = $OLD_SHA ($INSTALL_REF), update target $HEAD_SHA"
 
-arm_redirect() {
-  # --- the git URL redirect -----------------------------------------------------
-  # we redirect to our own repo so we can play around with what commit hermes thinks we're on.
-  # A driver-owned global gitconfig, NOT GIT_CONFIG_COUNT/KEY_n/VALUE_n env
-  # config: install.sh sets those itself and would clobber ours.
-  actual_git_url="$(git -C "$REPO_ROOT" remote get-url origin)"
-  GIT_CFG="$WORK_ROOT/gitconfig"
-  cat > "$GIT_CFG" <<EOF
-[url "file://$SERVE_REPO"]
-  insteadOf = $actual_git_url
-  insteadOf = $REPO_URL_HTTPS
-  insteadOf = $REPO_URL_SSH
-EOF
-  export GIT_CONFIG_GLOBAL="$GIT_CFG"
-
-  # check it worked
-  expected_git_url="file://$SERVE_REPO"
-  actual_git_url="$(git -C "$REPO_ROOT" remote get-url origin)"
-  if [[ "$actual_git_url" != "$expected_git_url" ]]; then
-    fail "failed git remote get-url shim: origin resolves to '$actual_git_url', expected '$expected_git_url'"
-  fi
-  ok "git URL redirect via GIT_CONFIG_GLOBAL=$GIT_CFG"
 
 
-  # shim git and make 'git remote get-url origin' report the actual HA upstream
-
-  # insteadOf is transparent for transport but `git remote get-url origin` gives you the
-  # replacement, so _get_origin_url() sees file://$SERVE_REPO and _is_fork() would return true.
-  # we check for the arguments "remote get-url origin" in order in any position
-  # to allow for e.g. -c with some config being passed.
-  # if we didn't do this, we'd need the  .skip_upstream_prompt file to prevent a hang in headless,"add the
-  # official repo as upstream?" prompt would hang a headless run. But we don't anymore :D
-  REAL_GIT="$(command -v git)"
-  REAL_GIT_QUOTED="$(printf '%q' "$REAL_GIT")"
-  SHIM_DIR="$WORK_ROOT/shim"
-  mkdir -p "$SHIM_DIR"
-  cat > "$SHIM_DIR/git" <<EOF
-#!/usr/bin/env bash
-prev2=""
-prev1=""
-for arg in "\$@"; do
-    if [ "\$prev2" = "remote" ] && [ "\$prev1" = "get-url" ] && [ "\$arg" = "origin" ]; then
-        echo "$REPO_URL_HTTPS"
-        exit 0
-    fi
-    prev2="\$prev1"
-    prev1="\$arg"
-done
-exec "$REAL_GIT_QUOTED" "\$@"
-EOF
-  chmod +x "$SHIM_DIR/git"
-  export PATH="$SHIM_DIR:$PATH"
-
-  # check it worked
-  observed_git_url="$(git -C "$REPO_ROOT" remote get-url origin)"
-  if [[ "$observed_git_url" != "$REPO_URL_HTTPS" ]]; then
-    fail "failed git remote get-url shim: origin resolves to '$observed_git_url', expected '$REPO_URL_HTTPS'"
-  fi
-  ok "git remote get-url shim: $SHIM_DIR/git -> $REAL_GIT (origin reports $REPO_URL_HTTPS)"
-}
-
-# later, we might factor this out into a separate step like the macos desktop one.
-arm_redirect
+arm_source_redirect "$REPO_ROOT" "$WORK_ROOT" "$SERVE_REPO"
 
 # Isolated HOME: the runner's real one may carry a preinstalled hermes or a
 # developer config, and old installer scripts hardcode $HOME/.hermes (the
@@ -226,50 +166,7 @@ mkdir -p "$HERMES_HOME"
 
 INSTALL_DIR="$HERMES_HOME/hermes-agent"
 
-# Does the installer script at REF accept FLAG? Read that ref's own
-# install.sh rather than assuming this checkout's flag set: the point of the
-# matrix is to install releases from months back, whose installers predate
-# options we take for granted.
-#
-# Buffered through a variable, NOT `git show | grep -q`: under pipefail,
-# grep -q exits at the first match (install.sh is ~140KB, the flags appear
-# in the first few KB), git show takes SIGPIPE on its next write, and the
-# pipeline reports 141 -- the probe answers NO for a flag the ref HAS.
-installer_supports() {
-  local text
-  text="$(git -C "$REPO_ROOT" show "$1:scripts/install.sh")"
-  grep -qF -- "$2" <<< "$text"
-}
 
-run_installer() {
-  # $1: ref whose scripts/install.sh to run; $2: log name; $3: "desktop" to
-  # opt the desktop stage in (--include-desktop)
-  local script="$WORK_ROOT/install-$2.sh"
-  git -C "$REPO_ROOT" show "$1:scripts/install.sh" > "$script"
-  chmod +x "$script"
-  # Installer flags have to match the installer being run, not this
-  # checkout's: older releases reject options added later. --skip-setup goes
-  # back further than any tag we sample; anything newer is probed for.
-  local flags=(--skip-setup)
-  if installer_supports "$1" "--skip-browser"; then
-    flags+=(--skip-browser)
-  fi
-  if [ "${3:-}" = "desktop" ]; then
-    # The desktop stage is the point of this leg, so a ref without the
-    # flag is a hard failure, not a silent downgrade to a plain install.
-    # (Releases that predate apps/desktop are already skipped upstream by
-    # the tag-has-desktop gate; the flag shipped with the app.)
-    installer_supports "$1" "--include-desktop" \
-      || fail "ref $1 does not support --include-desktop; this leg cannot mean what it claims"
-    flags+=(--include-desktop)
-  fi
-  # </dev/null: the script reads prompts from stdin when a tty is absent;
-  # EOF makes every remaining prompt take its default.
-  local rc=0
-  bash "$script" "${flags[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/install-$2.log" || rc=$?
-  log_group "install.sh ($2) transcript" "$LOG_DIR/install-$2.log"
-  [ "$rc" -eq 0 ] || fail "install.sh ($2) exited $rc; transcript above, log at $LOG_DIR/install-$2.log"
-}
 
 assert_desktop_artifact() {
   # $1: label. After a +desktop install the built app must exist under the
@@ -313,11 +210,11 @@ step "installing OLD ($INSTALL_REF) via its own scripts/install.sh ($INSTALL_MET
 EXPECT_DESKTOP=absent
 if [ "$INSTALL_METHOD" = "installer-script+desktop" ]; then
   EXPECT_DESKTOP=present
-  run_installer "$OLD_SHA" old desktop
+  run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$OLD_SHA" old desktop
   assert_checkout "$OLD_SHA" OLD
   assert_desktop_artifact OLD
 else
-  run_installer "$OLD_SHA" old
+  run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$OLD_SHA" old
   assert_checkout "$OLD_SHA" OLD
 fi
 preserve_before_upgrade
@@ -348,11 +245,11 @@ case "$UPDATE_METHOD" in
     ;;
   installer-script)
     # A user re-running the one-liner today gets the CURRENT script.
-    run_installer "$TARGET_SHA" "$TARGET_LABEL"
+    run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" "$TARGET_LABEL"
     ;;
   installer-script+desktop)
     EXPECT_DESKTOP=present
-    run_installer "$TARGET_SHA" "$TARGET_LABEL" desktop
+    run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" "$TARGET_LABEL" desktop
     assert_desktop_artifact "$TARGET_LABEL"
     ;;
   hermes-desktop-app-update)
@@ -399,7 +296,7 @@ case "$UPDATE_METHOD" in
     (cd "$PW_DIR" && npm install --no-save --no-audit --no-fund \
       "@playwright/test@1.58.2" 2>&1 | ts_prefix > "$LOG_DIR/playwright-install.log") \
       || { log_group "playwright install transcript" "$LOG_DIR/playwright-install.log"; fail "playwright install failed"; }
-    cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/source-update-observer.mjs" "$ASSETS/window-input.cjs" "$PW_DIR/"
+    cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/source-update-observer.mjs" "$ASSETS/window-input.cjs" "$ASSETS/update-ui.cjs" "$PW_DIR/"
     rc=0
     (cd "$PW_DIR" && node launch-from-spec.mjs \
       --spec "$SPEC" \

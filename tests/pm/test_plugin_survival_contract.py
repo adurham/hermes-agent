@@ -51,9 +51,7 @@ def _uv_available() -> bool:
     return shutil.which("uv") is not None
 
 
-# ---------------------------------------------------------------------------
 # 1. Sidecar with no root dependency surface never joins the union
-# ---------------------------------------------------------------------------
 
 def test_sidecar_no_root_pyproject_excludes_nested_and_external(tmp_path, monkeypatch):
     """The mnemosyne-wrapper shape: plugin root has ONLY plugin.yaml +
@@ -98,9 +96,7 @@ def test_sidecar_no_root_pyproject_excludes_nested_and_external(tmp_path, monkey
     assert all("runtime" not in str(p) for p in members)
 
 
-# ---------------------------------------------------------------------------
 # 2. Conflict through the PUBLIC admission path: refused, preserved, retry
-# ---------------------------------------------------------------------------
 
 def _local_conflict_members(home: Path) -> tuple[Path, Path, Path, Path]:
     """plug-a and plug-b both need a local project named sharedlib, but
@@ -197,6 +193,14 @@ def test_conflicting_candidate_refused_unenabled_and_unimported(admission_env):
     working = selected_venv(tmp_path / "core")
     config_before = (home / "config.yaml").read_bytes()
     tree_before = {p: sorted(str(f) for f in p.rglob("*")) for p in (plug_a, plug_b)}
+    wrapper = home / "plugins/mnemosyne-wrapper"
+    wrapper.mkdir()
+    marker = wrapper / "mnemosyne-wrapper.json"
+    marker.write_bytes(b'{"wrapper":true}\n')
+    sidecar = tmp_path / "external-sidecar"
+    subprocess.run([shutil.which("uv"), "venv", "--python", sys.executable, str(sidecar)], check=True, capture_output=True, timeout=60)
+    sidecar_python = sidecar / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    before = marker.read_bytes()
 
     with pytest.raises(admission.AdmissionRefused) as excinfo:
         admission.admit_plugin_set_change(
@@ -232,31 +236,6 @@ def test_conflicting_candidate_refused_unenabled_and_unimported(admission_env):
     assert "plug-b" in flattened or "sharedlib" in flattened, (
         "receipt must carry the conflict identity/reason"
     )
-
-
-@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
-def test_retry_after_conflict_enables_resolvable_candidate(admission_env):
-    """The retry path: re-admitting ONLY the resolvable candidate through
-    the same public admission commits config + environment together; the
-    conflicting plugin stays unenabled (never imported)."""
-    from hermes_cli import plugins_admission as admission
-
-    tmp_path, home = admission_env
-    plug_a, plug_b, *_ = _local_conflict_members(home)
-
-    wrapper = home / "plugins/mnemosyne-wrapper"
-    wrapper.mkdir()
-    marker = wrapper / "mnemosyne-wrapper.json"
-    marker.write_bytes(b'{"wrapper":true}\n')
-    sidecar = tmp_path / "external-sidecar"
-    subprocess.run([shutil.which("uv"), "venv", "--python", sys.executable, str(sidecar)], check=True, capture_output=True, timeout=60)
-    sidecar_python = sidecar / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    before = marker.read_bytes()
-    with pytest.raises(admission.AdmissionRefused):
-        admission.admit_plugin_set_change(
-            {"plug-a", "plug-b"}, set(), active_plugins_dir=home / "plugins"
-        )
-
     # retry: drop the conflicting candidate, keep the good one
     admission.admit_plugin_set_change(
         {"plug-a"}, set(), active_plugins_dir=home / "plugins"
@@ -282,10 +261,6 @@ def test_retry_after_conflict_enables_resolvable_candidate(admission_env):
     assert marker.read_bytes() == before
     subprocess.run([str(sidecar_python), "-c", "import sys; assert sys.prefix != sys.base_prefix"], check=True, timeout=30)
 
-
-# ---------------------------------------------------------------------------
-# 4. Active context home propagates to wrapper subprocess launches
-# ---------------------------------------------------------------------------
 
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override

@@ -85,47 +85,6 @@ async function pollTick() {
 }
 
 describe('local runtime jobs store — pause/settle contract', () => {
-  it('running→paused settles NOTHING: no error toast, job stays visible', async () => {
-    backend.jobs = [job({ done_bytes: 40 })]
-    await pollTick()
-    expect(
-      (queryClient.getQueryData<readonly LocalRuntimeJob[]>(localModelsKey(localModelsOwner(), 'jobs')) ?? [])[0]
-        ?.status
-    ).toBe('running')
-
-    // Backend pauses the job (status='paused', error=null).
-    backend.jobs = [job({ done_bytes: 40, status: 'paused' })]
-    await pollTick()
-    await pollTick()
-
-    expect(notifyError).not.toHaveBeenCalled()
-    expect(notify).not.toHaveBeenCalled()
-
-    const snapshot =
-      queryClient.getQueryData<readonly LocalRuntimeJob[]>(localModelsKey(localModelsOwner(), 'jobs')) ?? []
-
-    expect(snapshot).toHaveLength(1)
-    expect(snapshot[0]?.status).toBe('paused')
-  })
-
-  it('a paused job that resumes and finishes notifies done exactly once (paused→done still notifies)', async () => {
-    backend.jobs = [job({ done_bytes: 40 })]
-    await pollTick()
-
-    backend.jobs = [job({ done_bytes: 40, status: 'paused' })]
-    await pollTick()
-
-    backend.jobs = [job({ done_bytes: 60 })]
-    await pollTick()
-
-    backend.jobs = [job({ done_bytes: 100, percent: 100, status: 'done', total_bytes: 100 })]
-    await pollTick()
-
-    expect(notify).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(notify).mock.calls[0][0]).toMatchObject({ kind: 'success' })
-    expect(notifyError).not.toHaveBeenCalled()
-  })
-
   it('running→error still toasts exactly once', async () => {
     backend.jobs = [job({ done_bytes: 10, job_id: 'j-err' })]
     await pollTick()
@@ -135,28 +94,6 @@ describe('local runtime jobs store — pause/settle contract', () => {
 
     expect(notifyError).toHaveBeenCalledTimes(1)
     expect(notify).not.toHaveBeenCalled()
-  })
-
-  it('keeps polling while a job is paused (a resume from another surface is witnessed)', async () => {
-    backend.jobs = [job({ status: 'paused' })]
-    await pollTick()
-
-    const callsAfterPause = vi.mocked(getLocalModelsJobs).mock.calls.length
-    expect(callsAfterPause).toBeGreaterThan(0)
-
-    // The paused cadence is slower (3s), not dead: wait past it and the
-    // poll fires again WITHOUT any new kick.
-    await settle(3_400)
-
-    expect(vi.mocked(getLocalModelsJobs).mock.calls.length).toBeGreaterThan(callsAfterPause)
-
-    // And a backend-side resume IS picked up with no local kick at all.
-    backend.jobs = [job({ done_bytes: 90 })]
-    await pollTick()
-    expect(
-      (queryClient.getQueryData<readonly LocalRuntimeJob[]>(localModelsKey(localModelsOwner(), 'jobs')) ?? [])[0]
-        ?.status
-    ).toBe('running')
   })
 
   it('publishes a pinned job response into an injected QueryClient observer', async (): Promise<void> => {

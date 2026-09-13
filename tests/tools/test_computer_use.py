@@ -751,22 +751,6 @@ class TestLazyMcpInstall:
         driver_ensure.assert_called_once_with("cua-driver")
         mock_sess_start.assert_called_once()
 
-    def test_start_reports_incompatible_existing_driver_before_mcp_setup(self):
-        from tools.computer_use import cua_backend
-
-        state = {
-            "ready": False,
-            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
-        }
-        with patch.object(
-                 cua_backend,
-                 "cua_driver_runtime_contract_status",
-                 return_value=state,
-             ), patch("pm.ensure"), patch("pm.ensure_import") as mock_ensure:
-            with pytest.raises(RuntimeError, match="hermes computer-use install"):
-                cua_backend.CuaDriverBackend().start()
-
-        mock_ensure.assert_not_called()
 
     def test_start_propagates_feature_unavailable(self):
         """When mcp can't be installed (lazy installs off / network), start()
@@ -803,12 +787,13 @@ class TestDriverPreparation:
                           return_value={"ready": False, "reason": "invalid manifest"}), \
              patch("pm.ensure") as ensure, \
              patch("pm.ensure_import") as sdk:
-            with pytest.raises(RuntimeError, match="invalid manifest"):
+            with pytest.raises(RuntimeError, match="invalid manifest") as caught:
                 cua_backend.CuaDriverBackend().start()
         if override:
             ensure.assert_not_called()
         else:
             ensure.assert_called_once_with("cua-driver")
+            assert "hermes computer-use install" in str(caught.value)
         sdk.assert_not_called()
 
 

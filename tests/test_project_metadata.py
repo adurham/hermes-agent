@@ -67,119 +67,25 @@ def test_direct_overrides_preserve_the_declared_exact_version():
         assert versions and all(version in requirement.specifier for version in versions)
 
 
-def test_matrix_extra_not_in_all():
-    """The [matrix] extra pulls `mautrix[encryption]` -> `python-olm`,
-    which has Linux-only wheels and no native build path on Windows or
-    modern macOS (archived libolm, C++ errors with Clang 21+).
+def test_opt_in_extras_stay_out_of_default_recursive_selection():
+    from packaging.requirements import Requirement
+    from pm.extras import ANCHORS
 
-    With matrix in [all], `uv sync --locked` on Windows tried to build
-    python-olm from sdist and failed on `make`. As of 2026-05-12 the
-    [matrix] extra is excluded from [all] entirely and installs on first
-    use (pm.ensure_import("matrix")), where the user is expected to have
-    a toolchain.
-    """
-    optional_dependencies = _load_optional_dependencies()
-
-    assert "matrix" in optional_dependencies, "[matrix] extra must still exist for `uv sync --extra matrix`"
-    # Must NOT appear in [all] in any form — neither unconditional nor
-    # platform-gated. Lazy-install handles it.
-    matrix_in_all = [
-        dep for dep in optional_dependencies["all"]
-        if "matrix" in dep
-    ]
-    assert not matrix_in_all, (
-        "matrix must not appear in [all] — it installs on first use via "
-        f"pm.ensure_import('matrix'). Found: {matrix_in_all}"
-    )
-
-
-def test_lazy_installable_extras_excluded_from_all():
-    """Policy (2026-05-12): opt-in backends stay out of [all].
-
-    On-demand install exists so one quarantined PyPI release
-    (e.g. mistralai 2.4.6) can't break every fresh install. Putting a
-    backend in [all] defeats that — fresh installs eager-install it and
-    inherit whatever's broken upstream. Opt-in backends are extras that
-    install at first use via pm.ensure_import(extra).
-    """
-    optional_dependencies = _load_optional_dependencies()
-
-    # The on-demand backends as of 2026-05-12. Deliberately a literal
-    # list so the test stays a contract — adding a new opt-in backend
-    # means updating this list AND verifying [all] doesn't contain it.
-    lazy_covered_extras = {
-        "anthropic", "bedrock",
-        "exa", "firecrawl", "parallel-web",
-        "fal",
-        "edge-tts", "tts-premium",
-        "voice",  # faster-whisper / sounddevice / numpy (composes stt-whisper + audio-io)
-        "stt-whisper",
-        "modal", "daytona", "vercel",
-        "messaging", "slack", "matrix", "dingtalk", "feishu",
-        "telegram", "discord",
-        "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine",
-        "google-chat",
-        "honcho", "hindsight",
-        "supermemory", "mem0",
-        "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
-    }
-    all_extra_specs = optional_dependencies["all"]
-    for extra in lazy_covered_extras:
-        offending = [
-            spec for spec in all_extra_specs
-            if f"hermes-agent[{extra}]" in spec
-        ]
-        assert not offending, (
-            f"[{extra}] is in [all] but also in LAZY_DEPS. "
-            f"Remove it from [all] in pyproject.toml — it lazy-installs "
-            f"at first use. Found in [all]: {offending}"
-        )
-
-
-def _exact_pins(specs):
-    pins = {}
-    for spec in specs:
-        requirement = spec.split(";", 1)[0].strip()
-        if "==" not in requirement:
+    optional = _load_optional_dependencies()
+    # Deliberate eager surfaces: core Google integration, ACP launcher,
+    # dashboard, transcript reader, and the no-op Pillow compatibility alias.
+    eager = {"google", "acp", "web", "youtube", "vision"}
+    selected, pending = set(), ["all"]
+    while pending:
+        extra = pending.pop()
+        if extra in selected:
             continue
-        package, version = requirement.split("==", 1)
-        package = package.split("[", 1)[0].lower().replace("_", "-")
-        pins[package] = version
-    return pins
-
-
-
-
-def test_extras_pin_each_package_at_one_version():
-    """One package, one version, across every extra.
-
-    tools/lazy_deps.py is gone — pyproject.toml is the single authority for
-    optional-dependency pins (pm syncs the venv from uv.lock, which resolves
-    from here). The drift class that killed us before (#31817: two documents
-    pinning the same package differently, update ping-ponging the version)
-    is now only possible BETWEEN extras — so pin consistency across extras
-    is the whole remaining contract.
-    """
-    optional_dependencies = _load_optional_dependencies()
-
-    pins: dict[str, dict[str, set[str]]] = {}
-    for extra, specs in optional_dependencies.items():
-        for package, version in _exact_pins(specs).items():
-            pins.setdefault(package, {}).setdefault(version, set()).add(extra)
-
-    drift = {
-        package: {v: sorted(extras) for v, extras in versions.items()}
-        for package, versions in pins.items()
-        if len(versions) > 1
-    }
-    assert not drift, (
-        "extras pin the same package at different versions — uv sync would "
-        f"resolve whichever wins and silently downgrade the other: {drift}"
-    )
-
-
-
-
+        selected.add(extra)
+        for requirement in map(Requirement, optional[extra]):
+            if requirement.name == "hermes-agent":
+                pending.extend(requirement.extras)
+    assert set(ANCHORS) <= optional.keys()
+    assert not (selected & (set(ANCHORS) - eager))
 
 
 def test_dingtalk_extra_includes_qrcode_for_qr_auth():

@@ -18,5 +18,6 @@ test.each(['bundled', 'bootstrap', 'light'] as const)('bootstrap state retains t
   expect(bootstrapSnapshot(state, artifact)).toEqual({ ...state, bundled: payload === 'bundled' })
   expect(bootstrapSnapshot({ error: null, setupChoice: null }, artifact).bundled).toBe(payload === 'bundled')
   expect(state).not.toHaveProperty('bundled')
+  expect(bootstrapSnapshot(state, null).bundled).toBe(false)
   expect(bootstrapSnapshot({ ...state, bundled: payload !== 'bundled' }, artifact).bundled).toBe(payload === 'bundled')
 })

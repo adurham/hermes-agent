@@ -1,14 +1,17 @@
 """Native metadata and artifact publication use the same verified bytes."""
 import hashlib
-import io
+import copy
 import json
 import zipfile
-from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
 from scripts.bundles.release_artifacts import materialize, record, stamp_matches
 from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_stable_release import https_origin  # noqa: F401
+from tests.scripts.test_release_darwin import _inputs
+from scripts.bundles import release_artifacts as artifacts
 
 
 def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_path):
@@ -40,11 +43,14 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
         stamp_matches({}, tag, commit)
 
 
-def test_assemble_uses_staged_receipts_and_only_publishes_the_manifest(tmp_path, monkeypatch, r2_server):
+@pytest.fixture
+def staged_candidate(tmp_path, r2_server, https_origin):
     from scripts.bundles.release_artifacts import assemble
     from scripts.releases import handoff
 
-    tag, commit, base = 'v1.2.3', 'a' * 40, 'https://releases.example'
+    tag, commit, base = 'v1.2.3', 'a' * 40, https_origin.base
+    https_origin.store = r2_server.store
+    legs, mac_bytes = _inputs('1.2.3')
     built = tmp_path / 'built'
     built.mkdir()
     for platform, arches in [('windows', ('x64', 'arm64')), ('macos', ('x64', 'arm64')), ('termux', ('aarch64',))]:
@@ -55,7 +61,7 @@ def test_assemble_uses_staged_receipts_and_only_publishes_the_manifest(tmp_path,
                 package = f'Product-win-{arch}.msix'
                 handoff_name = f'win32-{arch}'
             elif platform == 'macos':
-                package = f'Product-mac-{arch}.zip'
+                package = f'HermesBundled-1.2.3-mac-{arch}.zip'
                 row.update(version='1.2.3', teamId='ABCDEFGHIJ', filename=package)
                 handoff_name = f'darwin-{arch}'
             else:
@@ -64,10 +70,21 @@ def test_assemble_uses_staged_receipts_and_only_publishes_the_manifest(tmp_path,
                 handoff_name = 'termux'
             file = built / package
             file.parent.mkdir(parents=True, exist_ok=True)
-            file.write_bytes(b'package transport fixture')
+            file.write_bytes(mac_bytes.get(f'releases/tag/{tag}/{package}', b'package transport fixture'))
             metadata = built / f'metadata-{platform}-{arch}.json'
             metadata.write_text(json.dumps(row), encoding='utf-8')
-            handoff.stage(tag, commit, handoff_name, built, [package, metadata.name])
+            includes = [package, metadata.name]
+            if platform == 'macos':
+                feed = f'{arch}-stable-mac.yml'
+                (built / feed).write_text(legs[feed], encoding='utf-8')
+                includes.append(feed)
+            if platform == 'termux':
+                for name in ('pool/package.deb', 'dists/hermes-stable/InRelease', 'dists/hermes-stable/Release'):
+                    path = built / 'apt' / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(f'index transport fixture: {name}'.encode())
+                includes.append('apt/**/*')
+            handoff.stage(tag, commit, handoff_name, built, includes)
     bundle = built / 'Product-win.msixbundle'
     with zipfile.ZipFile(bundle, 'w') as archive:
         archive.writestr('AppxMetadata/AppxBundleManifest.xml', '<Bundle><Identity Name="Product" Publisher="CN=Test" Version="1.2.3.0"/></Bundle>')
@@ -84,6 +101,14 @@ def test_assemble_uses_staged_receipts_and_only_publishes_the_manifest(tmp_path,
     puts = [path for method, path, _ in r2_server.requests if method == 'PUT']
     assert puts == [f'/hermes-releases/releases/tag/{tag}/release-candidates.json']
     assert all(key.startswith(f'releases/tag/{tag}/') for key in r2_server.store)
+    return manifest, fetched, base
+
+
+def test_assemble_rejects_missing_and_changed_receipts(tmp_path, staged_candidate):
+    from scripts.bundles.release_artifacts import assemble
+
+    manifest, fetched, base = staged_candidate
+    tag, commit = manifest['tag'], manifest['commit']
     receipt = fetched / 'handoff-darwin-arm64.json'
     original = receipt.read_bytes()
     receipt.unlink()
@@ -95,61 +120,58 @@ def test_assemble_uses_staged_receipts_and_only_publishes_the_manifest(tmp_path,
         assemble(fetched, tag, commit, base, tmp_path / 'changed.json')
 
 
-def test_materialize_validates_the_published_file_receipt_before_using_bytes(tmp_path, monkeypatch):
-    base, tag, commit = 'https://releases.example', 'v1.2.3', 'a' * 40
-    data = b'package transport fixture, not native signing proof'
-    digest = hashlib.sha256(data).hexdigest()
-    files, packages = [], []
-    for platform in ('windows', 'macos'):
-        for arch in ('x64', 'arm64'):
-            filename = f'{platform}-{arch}.' + ('msixbundle' if platform == 'windows' else 'zip')
-            url = f'{base}/releases/tag/{tag}/{filename}'
-            files.append({'path': filename, 'url': url, 'sha256': digest})
-            packages.append({'platform': platform, 'arch': arch, 'identity': 'Product', 'tag': tag, 'commit': commit,
-                             'version': '1.2.3.0' if platform == 'windows' else '1.2.3',
-                             **({'publisher': 'CN=Test', 'applicationId': 'App'} if platform == 'windows' else {'teamId': 'ABCDEFGHIJ'}),
-                             'artifact': {'url': url, 'sha256': digest}})
-    manifest = {'schema': 1, 'tag': tag, 'commit': commit, 'packages': packages, 'files': files}
-    class Response(io.BytesIO):
-        def geturl(self):
-            return base + "/package"
-
-    monkeypatch.setattr('urllib.request.urlopen', lambda *a, **kw: Response(data))
-    materialize(manifest, tmp_path / 'good', public_base=base)
-    assert all((tmp_path / 'good' / f['path']).read_bytes() == data for f in files)
-    with pytest.raises(ValueError, match='one Store candidate'):
-        materialize(manifest, tmp_path / 'store-missing', public_base=base, store_only=True)
-    store = {'path': 'Store-App.msixbundle', 'url': f'{base}/releases/tag/{tag}/Store-App.msixbundle', 'sha256': digest}
-    files.append(store)
-    materialize(manifest, tmp_path / 'store', public_base=base, store_only=True)
-    assert [p.name for p in (tmp_path / 'store').iterdir()] == [store['path']]
-
-    from scripts.bundles import release_artifacts
-    from scripts.releases import stable
-    raw_manifest = json.dumps(manifest).encode()
-    seen = []
-
-    def read_remote(url, expected_hash, *, expected_origin):
-        seen.append((url, expected_hash, expected_origin))
-        return stable.read_manifest(url, expected_hash, expected_origin=expected_origin,
-                                    opener=lambda *args, **kwargs: Response(raw_manifest))
-
-    monkeypatch.setattr(release_artifacts, 'read_manifest', read_remote)
-    monkeypatch.setenv('CANDIDATE_MANIFEST_SHA256', hashlib.sha256(raw_manifest).hexdigest())
-    release_artifacts.main(['materialize', '--tag', tag, '--commit', commit, '--public-base', base,
-                            '--root', str(tmp_path / 'remote-store'), '--store-only'])
-    assert (tmp_path / 'remote-store' / store['path']).read_bytes() == data
-    assert seen[0][0] == f'{base}/releases/tag/{tag}/release-candidates.json'
-    assert seen[0][2] == base
+def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_server, staged_candidate):
+    manifest, _, base = staged_candidate
+    tag, commit = manifest['tag'], manifest['commit']
+    raw = r2_server.store[f'releases/tag/{tag}/release-candidates.json'][0]
+    args = ['--tag', tag, '--commit', commit, '--public-base', base]
+    monkeypatch.setenv('CANDIDATE_MANIFEST_SHA256', hashlib.sha256(raw).hexdigest())
+    artifacts.main(['materialize', *args, '--root', str(tmp_path / 'store'), '--store-only'])
+    assert [p.name for p in (tmp_path / 'store').iterdir()] == ['Store-Product-win.msixbundle']
+    assert (tmp_path / 'store/Store-Product-win.msixbundle').read_bytes() == b'Store bundle transport fixture'
     monkeypatch.setenv('CANDIDATE_MANIFEST_SHA256', 'f' * 64)
     with pytest.raises(ValueError, match='digest mismatch'):
-        release_artifacts.main(['materialize', '--tag', tag, '--commit', commit, '--public-base', base,
-                                '--root', str(tmp_path / 'wrong-manifest'), '--store-only'])
-    assert not (tmp_path / 'wrong-manifest').exists()
-    files[0]['sha256'] = 'b' * 64
+        artifacts.main(['materialize', *args, '--root', str(tmp_path / 'wrong')])
+    assert not (tmp_path / 'wrong').exists()
+    missing = copy.deepcopy(manifest)
+    missing['files'] = [f for f in missing['files'] if not f['path'].startswith('Store-')]
+    with pytest.raises(ValueError, match='one Store candidate'):
+        materialize(missing, tmp_path / 'missing-store', public_base=base, store_only=True)
+    changed = copy.deepcopy(manifest)
+    changed['files'][0]['sha256'] = 'b' * 64
     with pytest.raises(ValueError, match='receipts differ'):
-        materialize(manifest, tmp_path / 'bad', public_base=base)
-    files[0]['sha256'] = digest
-    monkeypatch.setattr('urllib.request.urlopen', lambda *a, **kw: Response(b'changed bytes'))
+        materialize(changed, tmp_path / 'bad', public_base=base)
+
+    r2_server.requests.clear()
+    artifacts.publish(manifest, tmp_path / 'publish', base)
+    assert [path for method, path, _ in r2_server.requests if method == 'PUT'] == [
+        '/hermes-releases/releases/termux/stable/pool/package.deb']
+    r2_server.requests.clear()
+    artifacts.promote(manifest, tmp_path / 'promote', base)
+    puts = [path for method, path, _ in r2_server.requests if method == 'PUT']
+    assert puts == ['/hermes-releases/' + name for name in (
+        'releases/darwin/stable/stable-mac.yml', 'releases/win32/stable/stable.appinstaller',
+        'releases/termux/stable/dists/hermes-stable/Release', 'releases/termux/stable/dists/hermes-stable/InRelease')]
+    for item in manifest['files']:
+        assert (tmp_path / 'promote' / item['path']).read_bytes() == r2_server.store[f'releases/tag/{tag}/{item["path"]}'][0]
+    descriptor = ET.fromstring(r2_server.store['releases/win32/stable/stable.appinstaller'][0])
+    assert descriptor.attrib == {'Uri': base + '/releases/win32/stable/stable.appinstaller', 'Version': '1.2.3.0'}
+    assert descriptor.find('{*}MainBundle').attrib == {
+        'Name': 'Product', 'Publisher': 'CN=Test', 'Version': '1.2.3.0',
+        'Uri': base + '/releases/tag/v1.2.3/Product-win.msixbundle'}
+    pointer = 'releases/win32/stable/stable.appinstaller'
+    original = r2_server.store[pointer]
+    r2_server.corrupt_put = pointer
+    r2_server.requests.clear()
+    with pytest.raises(ValueError, match='Channel read-back differs'):
+        artifacts.promote(manifest, tmp_path / 'bad-readback', base)
+    assert [path for method, path, _ in r2_server.requests if method == 'PUT'] == ['/hermes-releases/' + pointer]
+    r2_server.corrupt_put = None
+    r2_server.store[pointer] = original
+    before = dict(r2_server.store)
+    r2_server.store[f'releases/tag/{tag}/Product-win.msixbundle'] = (b'corrupt', '"e"')
+    r2_server.requests.clear()
     with pytest.raises(ValueError, match='digest mismatch'):
-        materialize(manifest, tmp_path / 'corrupt', public_base=base)
+        artifacts.promote(manifest, tmp_path / 'broken', base)
+    assert not any(method == 'PUT' for method, _, _ in r2_server.requests)
+    assert all(value == r2_server.store[key] for key, value in before.items() if not key.startswith('releases/tag/'))

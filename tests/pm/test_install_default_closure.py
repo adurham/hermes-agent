@@ -18,9 +18,6 @@ import importlib
 import pytest
 
 import pm.cli
-from pm.lock import Lockfile
-from pm.paths import repo_root
-from pm.registry import get_package
 
 
 @pytest.fixture()
@@ -40,27 +37,11 @@ def install_spy(monkeypatch):
     return calls
 
 
-def test_default_closure_includes_the_boot_interpreter(install_spy) -> None:
+def test_default_closure_includes_the_boot_interpreter(install_spy):
     assert pm.cli.cmd_install(argparse.Namespace(names=None)) == 0
-
-    lockfile = Lockfile(repo_root() / "pm" / "lock.json")
-    names = install_spy["names"]
-    # The launchers' interpreter must be requested...
-    assert "python" in names
-    # ...through the existing authorities: it is pinned in pm/lock.json and
-    # defined in the package registry — no parallel hand-written list here.
-    assert "python" in lockfile.names()
-    get_package("python")
-    # ...and the rest of the root closure is unchanged (non-optional packages).
-    expected = {
-        n for n in lockfile.names() if not get_package(n).optional
-    } | {"python"}
-    assert set(names) == expected
-
-
-def test_default_closure_still_syncs_the_venv_with_all_extras(install_spy) -> None:
-    assert pm.cli.cmd_install(argparse.Namespace(names=None)) == 0
+    assert "python" in install_spy["names"]
     assert install_spy["sync_extras"] == ["all"]
+
 
 
 def test_explicit_names_pass_through_untouched(install_spy) -> None:

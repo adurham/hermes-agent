@@ -18,21 +18,54 @@ def isolated_machine_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
 
+def _buildable_source(plugin):
+    (plugin / "build").mkdir(parents=True, exist_ok=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="replay-plugin"\nversion="1.0"\nrequires-python=">=3.11"\nreadme="README.md"\nlicense="MIT"\nlicense-files=["LICENSE"]\n'
+        '[build-system]\nrequires=[]\nbuild-backend="backend"\nbackend-path=["build"]\n',
+        encoding="utf-8",
+    )
+    (plugin / "plugin.yaml").write_text("name: replay-plugin\n", encoding="utf-8")
+    (plugin / "replay_plugin").mkdir()
+    (plugin / "replay_plugin/__init__.py").write_text("from .values import VALUE\n", encoding="utf-8")
+    (plugin / "replay_plugin/values.py").write_text("VALUE = 'recorded plugin bytes'\n", encoding="utf-8")
+    (plugin / "README.md").write_text("# fixture readme")
+    (plugin / "LICENSE").write_text("MIT")
+    # The backend must consume the copied metadata inputs too.
+    (plugin / "build/backend.py").write_text('''
+from pathlib import Path
+from zipfile import ZipFile
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    assert Path("README.md").read_text() == "# fixture readme"
+    assert Path("LICENSE").read_text() == "MIT"
+    name = "replay_plugin-1.0-py3-none-any.whl"
+    dist = "replay_plugin-1.0.dist-info"
+    entries = {
+        "replay_plugin/__init__.py": Path("replay_plugin/__init__.py").read_bytes(),
+        "replay_plugin/values.py": Path("replay_plugin/values.py").read_bytes(),
+        dist + "/METADATA": "Metadata-Version: 2.1\\nName: replay-plugin\\nVersion: 1.0\\n",
+        dist + "/WHEEL": "Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
+    }
+    entries[dist + "/RECORD"] = "".join(path + ",,\\n" for path in entries)
+    with ZipFile(Path(wheel_directory) / name, "w") as wheel:
+        for path, body in entries.items():
+            wheel.writestr(path, body)
+    return name
+
+build_editable = build_wheel
+''', encoding="utf-8")
+
+
 def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     core = tmp_path / "core"
     core.mkdir()
-    (core / "pyproject.toml").write_text(
-        '[project]\nname="buildable-core"\nversion="1.0"\nreadme="README.md"\n'
-        'requires-python=">=3.11"\nlicense="MIT"\nlicense-files=["LICENSE"]\n'
-        '[build-system]\nrequires=["setuptools==83.0.0","wheel==0.46.3"]\n'
-        'build-backend="setuptools.build_meta"\n'
-        '[tool.setuptools.packages.find]\ninclude=["buildable_core", "buildable_core.*"]\n', encoding="utf-8",
-    )
-    (core / "README.md").write_text("# Real core\n")
-    (core / "LICENSE").write_text("MIT\n")
-    package = core / "buildable_core"
-    package.mkdir()
-    (package / "__init__.py").write_text("VALUE = 'from actual source'\n")
+    _buildable_source(core)
+    # Core snapshots exclude build/ output; the member replay below deliberately
+    # retains that backend-path. Keep the core backend at the source root.
+    (core / "build/backend.py").rename(core / "backend.py")
+    metadata = core / "pyproject.toml"
+    metadata.write_text(metadata.read_text().replace('backend-path=["build"]', 'backend-path=["."]'))
     (core / ".env").write_text("must not copy")
     monkeypatch.setattr(workspace.paths, "repo_root", lambda: core)
     root, venv = tmp_path / "staging", tmp_path / "venv"
@@ -42,9 +75,9 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     workspace.lock_and_sync([], [], root=root, source=core, seed_lock=None,
                             environment=managed_environment(venv))
     python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-    probe = subprocess.run([str(python), "-c", "import buildable_core; print(buildable_core.VALUE)"],
+    probe = subprocess.run([str(python), "-c", "import replay_plugin; print(replay_plugin.VALUE)"],
                            cwd=tmp_path, text=True, capture_output=True, check=True, timeout=30)
-    assert probe.stdout.strip() == "from actual source"
+    assert probe.stdout.strip() == "recorded plugin bytes"
     assert not (root / ".env").exists()
     assert not list(core.glob("*.egg-info")), "build must not write into the original core"
     assert not (core / "uv.lock").exists()
@@ -63,34 +96,7 @@ def test_repair_replays_saved_in_tree_build_backend(tmp_path):
         '[project]\nname="replay-core"\nversion="1"\nrequires-python=">=3.11"\n'
         '[tool.uv]\npackage=false\nno-index=true\n', encoding="utf-8",
     )
-    (plugin / "pyproject.toml").write_text(
-        '[project]\nname="replay-plugin"\nversion="1.0"\nrequires-python=">=3.11"\n'
-        '[build-system]\nrequires=[]\nbuild-backend="backend"\nbackend-path=["build"]\n',
-        encoding="utf-8",
-    )
-    (plugin / "plugin.yaml").write_text("name: replay-plugin\n", encoding="utf-8")
-    (plugin / "replay_plugin.py").write_text("VALUE = 'recorded plugin bytes'\n", encoding="utf-8")
-    # A real, dependency-free PEP 517/660 backend. Its directory is source, not output.
-    (plugin / "build/backend.py").write_text('''
-from pathlib import Path
-from zipfile import ZipFile
-
-def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
-    name = "replay_plugin-1.0-py3-none-any.whl"
-    dist = "replay_plugin-1.0.dist-info"
-    entries = {
-        "replay_plugin.py": Path("replay_plugin.py").read_bytes(),
-        dist + "/METADATA": "Metadata-Version: 2.1\\nName: replay-plugin\\nVersion: 1.0\\n",
-        dist + "/WHEEL": "Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
-    }
-    entries[dist + "/RECORD"] = "".join(path + ",,\\n" for path in entries)
-    with ZipFile(Path(wheel_directory) / name, "w") as wheel:
-        for path, body in entries.items():
-            wheel.writestr(path, body)
-    return name
-
-build_editable = build_wheel
-''', encoding="utf-8")
+    _buildable_source(plugin)
     inputs = {p.relative_to(plugin): p.read_bytes() for p in plugin.rglob("*") if p.is_file()}
     uv = shutil.which("uv")
     assert uv, "saved backend replay test requires real uv"
@@ -110,7 +116,7 @@ build_editable = build_wheel
     (plugin / "pyproject.toml").write_text("damaged [", encoding="utf-8")
     (plugin / "plugin.yaml").write_text("damaged [", encoding="utf-8")
     (plugin / "build/backend.py").unlink()
-    (plugin / "replay_plugin.py").write_text("raise RuntimeError('damaged live source')\n", encoding="utf-8")
+    (plugin / "replay_plugin/values.py").write_text("raise RuntimeError('damaged live source')\n", encoding="utf-8")
     repair = PythonEnvironment(
         uv=Path(uv), python=Path(sys.executable), destination=tmp_path / "repair-env",
         # A fresh cache forces uv to invoke the saved backend again, not reuse a wheel.

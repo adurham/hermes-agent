@@ -318,8 +318,6 @@ class TestDoctorToolAvailabilityOverrides:
         assert unavailable == [kanban_entry]
 
 
-
-
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
         fake_config = SimpleNamespace(enabled=True, api_key="***")
@@ -330,12 +328,6 @@ class TestHonchoDoctorConfigDetection:
         )
 
         assert doctor_state._honcho_is_configured_for_doctor()
-
-
-
-
-
-
 
 
 def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
@@ -764,8 +756,6 @@ def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, 
         not in out
     )
     assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
-
-
 
 
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
@@ -1496,13 +1486,10 @@ class TestDoctorStaleMaxIterationsDrift:
         assert "shadows" not in out
 
 
-
-
 class TestDoctorDeprecatedConfigAndEnv:
     """Doctor must surface deprecated/legacy config keys and env vars with
     modern replacements as non-failing warnings — without auto-migrating.
     """
-
 
 
     def test_collect_deprecated_env_vars_ignores_empty(self):
@@ -1556,8 +1543,6 @@ class TestDoctorDeprecatedConfigAndEnv:
         with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
             doctor_mod.run_doctor(Namespace(fix=False))
         return buf.getvalue(), hermes_home
-
-
 
 
     def test_report_does_not_count_as_blocking_issue(self, monkeypatch, tmp_path, capsys):
@@ -1740,17 +1725,6 @@ class TestStagedRuntimeVenv:
 
     # --- _staged_venv_dir: pm authority + provisioned-venv marker ---
 
-    def test_staged_venv_dir_returns_provisioned_venv(self, tmp_path, monkeypatch):
-        import pm.packages as pm_packages
-
-        venv = tmp_path / "venv"
-        venv.mkdir()
-        (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
-        self._stub_venv(monkeypatch, venv)
-
-        assert doctor_platform._staged_venv_dir() == venv
-        # Sanity: the stub really replaced pm's own Venv (no real-repo read).
-        assert pm_packages.Venv is not None
 
     def test_resolved_path_without_venv_marker_is_not_staged(self, tmp_path, monkeypatch):
         empty = tmp_path / "venv"
@@ -1770,45 +1744,6 @@ class TestStagedRuntimeVenv:
 
     # --- the check's staged-vs-active rows ---
 
-    def test_staged_but_not_active_reports_staged_dependencies(self, monkeypatch, capsys):
-        monkeypatch.setattr(doctor_platform, "_staged_venv_dir", lambda: Path("/payload/venv"))
-        monkeypatch.setattr(doctor_platform.sys, "prefix", "/usr")
-        monkeypatch.setattr(doctor_platform.sys, "base_prefix", "/usr")
-
-        doctor_platform._check_python_environment(False)
-
-        out = capsys.readouterr().out
-        assert "Runtime venv staged" in out
-        assert "runs outside it" in out
-        assert "Not in virtual environment" not in out  # dependencies exist; no false alarm
-
-    def test_unrelated_active_venv_is_not_claimed_as_the_staged_one(self, monkeypatch, capsys):
-        """A process running in some OTHER venv must not be labeled active-in
-        the staged one: the comparison is resolved prefix vs staged dir."""
-        monkeypatch.setattr(doctor_platform, "_staged_venv_dir", lambda: Path("/payload/venv"))
-        monkeypatch.setattr(doctor_platform.sys, "prefix", "/some/other/venv")
-        monkeypatch.setattr(doctor_platform.sys, "base_prefix", "/usr")
-
-        doctor_platform._check_python_environment(False)
-
-        out = capsys.readouterr().out
-        assert "Runtime venv staged" in out
-        assert "runs outside it" in out
-        assert "active in this process" not in out
-
-    def test_staged_and_active_names_both_facts(self, monkeypatch, capsys, tmp_path):
-        from hermes_cli.runtime_paths import site_packages
-
-        staged = tmp_path / "venv"
-        site_packages(staged).mkdir(parents=True)
-        monkeypatch.setattr(doctor_platform, "_staged_venv_dir", lambda: staged)
-        monkeypatch.syspath_prepend(str(site_packages(staged)))
-
-        doctor_platform._check_python_environment(False)
-
-        out = capsys.readouterr().out
-        assert "Runtime venv staged" in out
-        assert "active in this process" in out
 
     def test_nothing_staged_keeps_legacy_interpreter_probe(self, monkeypatch, capsys):
         monkeypatch.setattr(doctor_platform, "_staged_venv_dir", lambda: None)

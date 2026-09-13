@@ -142,13 +142,17 @@ def test_fixed_root_keeps_privilege_shim_and_resolves_venv_command_symlink(tmp_p
     out, data = inputs_fixture(tmp_path)
     # Docker source already occupies /opt/hermes; its bin/hermes belongs to s6.
     shutil.copytree(data["code"], out, dirs_exist_ok=True)
-    data.update(placement="fixed", repo=".", code=str(out), project=str(out / "pyproject.toml"), bin_dir="libexec")
+    data.update(placement="fixed", repo=".", code=str(out), project=str(out / "pyproject.toml"), bin_dir="libexec", python=sys.executable)
     bindir = out / "bin"
     bindir.mkdir()
     (bindir / "probe").write_text("privilege shim", encoding="utf-8")
+    stale = out / "hermes_cli/web_dist/stale"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"old surface")
     result = build_cli(data, out, tmp_path)
     assert result.returncode == 0, result.stderr
     assert (bindir / "probe").read_text() == "privilege shim"
+    assert not stale.exists()
     link = out / "venv/bin/probe"
     link.parent.mkdir()
     link.symlink_to("../../libexec/probe")
@@ -185,7 +189,7 @@ def test_source_metadata_keeps_declared_requirements_extras_and_entrypoints(tmp_
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("fault", ["missing-pm", "missing-resource", "missing-tui", "unknown-field", "bad-repo", "bad-target"])
+@pytest.mark.parametrize("fault", ["missing-pm", "missing-resource", "missing-tui", "missing-web", "unknown-field", "bad-repo", "bad-target"])
 def test_failed_inputs_cannot_leave_a_completion_claim(tmp_path, fault):
     out, data = inputs_fixture(tmp_path)
     (out / "manifest.json").write_text('{"runtime": {"commands": {}}}', encoding="utf-8")
@@ -195,6 +199,8 @@ def test_failed_inputs_cannot_leave_a_completion_claim(tmp_path, fault):
         data["resources"]["skills"] = str(tmp_path / "missing skills")
     elif fault == "missing-tui":
         (Path(data["frontends"]["tui"]) / "dist/entry.js").unlink()
+    elif fault == "missing-web":
+        (Path(data["frontends"]["web"]) / "index.html").unlink()
     elif fault == "unknown-field":
         data["typo"] = True
     elif fault == "bad-repo":
@@ -216,21 +222,12 @@ def test_incremental_copy_drops_removed_source_without_deleting_provider_files(t
     sentinel = out / "provider-file"
     sentinel.write_text("retain", encoding="utf-8")
     (source / "obsolete.py").unlink()
+    (out / "app/hermes_cli/web_dist/stale").write_text("old", encoding="utf-8")
     assert build_cli(data, out, tmp_path).returncode == 0
     assert not (out / "app/obsolete.py").exists()
+    assert not (out / "app/hermes_cli/web_dist/stale").exists()
+    assert (out / "app/hermes_cli/tui_dist/entry.js").read_bytes() == (Path(data["frontends"]["tui"]) / "dist/entry.js").read_bytes()
     assert sentinel.read_text() == "retain"
-
-
-@pytest.mark.platforms("posix")
-def test_fixed_launcher_accepts_explicit_external_python_without_path_guessing(tmp_path):
-    out, data = inputs_fixture(tmp_path)
-    data.update(placement="fixed", python=sys.executable)
-    result = build_cli(data, out, tmp_path)
-    assert result.returncode == 0, result.stderr
-    run = subprocess.run([str(out / "bin/probe")], cwd=tmp_path,
-                         env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")},
-                         capture_output=True, text=True)
-    assert run.returncode == 7, run.stderr
 
 
 @pytest.mark.platforms("posix")

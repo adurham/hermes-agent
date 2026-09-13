@@ -66,57 +66,37 @@ def hermes_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.mark.parametrize("mode,component", [("cli", None), ("gateway", "gateway.log"), ("gui", "gui.log")])
+@pytest.mark.parametrize("configured,explicit,minimum", [(None, None, logging.INFO), ("DEBUG", "WARNING", logging.WARNING), ("DEBUG", None, logging.DEBUG)])
+def test_repeated_setup_routes_records_once(hermes_home, mode, component, configured, explicit, minimum):
+    if configured:
+        (hermes_home / "config.yaml").write_text(f"logging:\n  level: {configured}\n", encoding="utf-8")
+    for _ in range(2):
+        assert hermes_logging.setup_logging(hermes_home=hermes_home, mode=mode, log_level=explicit) == hermes_home / "logs"
+    hermes_logging.set_session_context("routing-session")
+    sources = ["tools.terminal_tool", "agent.context_compressor", "gateway.run",
+               "plugins.platforms.telegram.adapter", "hermes_cli.web_server", "tui_gateway.ws"]
+    for index, source in enumerate(sources):
+        for level in (logging.DEBUG, logging.INFO, logging.WARNING):
+            logging.getLogger(source).log(level, "routing-witness-%s-%s", index, level)
+    hermes_logging.flush_log_queue()
+    outputs = {path.name: path.read_text(encoding="utf-8-sig") for path in (hermes_home / "logs").glob("*.log")}
+    assert set(outputs) == {"agent.log", "errors.log"} | ({component} if component else set())
+    for filename, content in outputs.items():
+        for index, source in enumerate(sources):
+            for level in (logging.DEBUG, logging.INFO, logging.WARNING):
+                accepted = {
+                    "agent.log": level >= minimum,
+                    "errors.log": level >= logging.WARNING,
+                    "gateway.log": index in (2, 3) and level >= max(logging.INFO, minimum),
+                    "gui.log": index in (4, 5) and level >= max(logging.INFO, minimum),
+                }[filename]
+                witness = f"routing-witness-{index}-{level}"
+                assert content.count(witness) == int(accepted), (mode, filename, witness, content)
+        assert "[routing-session]" in content
+
+
 class TestSetupLogging:
-    """setup_logging() creates agent.log + errors.log with RotatingFileHandler."""
-
-    def test_creates_log_directory(self, hermes_home):
-        log_dir = hermes_logging.setup_logging(hermes_home=hermes_home)
-        assert log_dir == hermes_home / "logs"
-        assert log_dir.is_dir()
-
-    def test_creates_agent_log_handler(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        root = logging.getLogger()
-
-        agent_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "agent.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(agent_handlers) == 1
-        assert agent_handlers[0].level == logging.INFO
-
-
-    def test_idempotent_no_duplicate_handlers(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        hermes_logging.setup_logging(hermes_home=hermes_home)  # second call — should be no-op
-
-        root = logging.getLogger()
-        agent_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "agent.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(agent_handlers) == 1
-
-
-
-
-
-    def test_writes_to_agent_log(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-
-        test_logger = logging.getLogger("test_hermes_logging.write_test")
-        test_logger.info("test message for agent.log")
-
-        # Flush handlers
-        hermes_logging.flush_log_queue()
-
-        agent_log = hermes_home / "logs" / "agent.log"
-        assert agent_log.exists()
-        content = agent_log.read_text(encoding="utf-8-sig")
-        assert "test message for agent.log" in content
-
     def test_profile_routing_follows_context_home(self, hermes_home, tmp_path):
         """Desktop multiplex cron records are written to their owning profile."""
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -141,162 +121,6 @@ class TestSetupLogging:
         ).read_text(encoding="utf-8-sig")
         default_log = hermes_home / "logs" / "agent.log"
         assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text(encoding="utf-8-sig")
-
-
-
-
-    def test_explicit_params_override_config(self, hermes_home):
-        """Explicit function params take precedence over config.yaml."""
-        import hermes_yaml as yaml
-        config = {"logging": {"level": "DEBUG"}}
-        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
-
-        hermes_logging.setup_logging(hermes_home=hermes_home, log_level="WARNING")
-
-        root = logging.getLogger()
-        agent_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "agent.log" in getattr(h, "baseFilename", "")
-        ]
-        assert agent_handlers[0].level == logging.WARNING
-
-
-
-class TestGatewayMode:
-    """setup_logging(mode='gateway') creates a filtered gateway.log."""
-
-    def test_gateway_log_created(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
-        root = logging.getLogger()
-
-        gw_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "gateway.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(gw_handlers) == 1
-
-    def test_gateway_log_not_created_in_cli_mode(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
-        root = logging.getLogger()
-
-        gw_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "gateway.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(gw_handlers) == 0
-
-
-
-    def test_gateway_log_receives_gateway_records(self, hermes_home):
-        """gateway.log captures records from gateway.* loggers."""
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
-
-        gw_logger = logging.getLogger("plugins.platforms.telegram.adapter")
-        gw_logger.info("telegram connected")
-
-        hermes_logging.flush_log_queue()
-
-        gw_log = hermes_home / "logs" / "gateway.log"
-        assert gw_log.exists()
-        assert "telegram connected" in gw_log.read_text(encoding="utf-8-sig")
-
-    def test_gateway_log_rejects_non_gateway_records(self, hermes_home):
-        """gateway.log does NOT capture records from tools.*, agent.*, etc."""
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
-
-        tool_logger = logging.getLogger("tools.terminal_tool")
-        tool_logger.info("running command")
-
-        agent_logger = logging.getLogger("agent.context_compressor")
-        agent_logger.info("compressing context")
-
-        hermes_logging.flush_log_queue()
-
-        gw_log = hermes_home / "logs" / "gateway.log"
-        if gw_log.exists():
-            content = gw_log.read_text(encoding="utf-8-sig")
-            assert "running command" not in content
-            assert "compressing context" not in content
-
-
-
-class TestGuiMode:
-    """setup_logging(mode='gui') creates a filtered gui.log."""
-
-    def test_gui_log_created(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
-        root = logging.getLogger()
-
-        gui_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "gui.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(gui_handlers) == 1
-
-
-    def test_gui_log_receives_only_gui_components(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
-
-        logging.getLogger("hermes_cli.web_server").info("dashboard online")
-        logging.getLogger("tui_gateway.ws").info("ws connected")
-        logging.getLogger("gateway.run").info("gateway event")
-
-        hermes_logging.flush_log_queue()
-
-        gui_log = hermes_home / "logs" / "gui.log"
-        assert gui_log.exists()
-        content = gui_log.read_text(encoding="utf-8-sig")
-        assert "dashboard online" in content
-        assert "ws connected" in content
-        assert "gateway event" not in content
-
-
-class TestSessionContext:
-    """set_session_context / clear_session_context + _SessionFilter."""
-
-    def test_session_tag_in_log_output(self, hermes_home):
-        """When session context is set, log lines include [session_id]."""
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        hermes_logging.set_session_context("abc123")
-
-        test_logger = logging.getLogger("test.session_tag")
-        test_logger.info("tagged message")
-
-        hermes_logging.flush_log_queue()
-
-        agent_log = hermes_home / "logs" / "agent.log"
-        content = agent_log.read_text(encoding="utf-8-sig")
-        assert "[abc123]" in content
-        assert "tagged message" in content
-
-
-
-
-
-
-
-class TestComponentFilter:
-    """Unit tests for _ComponentFilter."""
-
-    def test_passes_matching_prefix(self):
-        f = hermes_logging._ComponentFilter(("gateway",))
-        record = logging.LogRecord(
-            "gateway.run", logging.INFO, "", 0, "msg", (), None
-        )
-        assert f.filter(record) is True
-
-
-    def test_blocks_non_matching(self):
-        f = hermes_logging._ComponentFilter(("gateway",))
-        record = logging.LogRecord(
-            "tools.terminal_tool", logging.INFO, "", 0, "msg", (), None
-        )
-        assert f.filter(record) is False
-
 
 
 
@@ -745,41 +569,10 @@ class TestSafeStderr:
         assert isinstance(result, io.TextIOWrapper)
         assert result.encoding == "utf-8"
         assert result.errors == "replace"
-
-    def test_handler_emits_unicode_without_crash(self, tmp_path):
-        """StreamHandler with _safe_stderr can emit Unicode messages."""
-        import io
-
-        # Create a stderr-like stream with ASCII encoding
-        class AsciiStream:
-            encoding = "ascii"
-            buffer = io.BytesIO()
-
-            def write(self, s):
-                self.buffer.write(s.encode("ascii", errors="replace"))
-
-            def flush(self):
-                pass
-
-        # Without the fix, this would crash on cp949/ASCII stderr.
-        # With the wrapper, the em-dash is replaced with '?'
-        handler = logging.StreamHandler(
-            io.TextIOWrapper(
-                io.BytesIO(),
-                encoding="utf-8",
-                errors="replace",
-            )
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger = logging.getLogger("_test_unicode")
-        logger.addHandler(handler)
-        logger.setLevel(logging.DEBUG)
-        try:
-            # Em-dash U+2014 — the exact character from the bug report
-            logger.info("Session hygiene: 400 messages — auto-compressing")
-        finally:
-            logger.removeHandler(handler)
-
+        handler = logging.StreamHandler(result)
+        handler.handle(logging.LogRecord("unicode", logging.INFO, "", 0, "Session — 日本", (), None))
+        handler.flush()
+        assert fake.buffer.getvalue() == "Session — 日本\n".encode("utf-8")
 
 class TestAsyncQueueLogging:
     """File logging runs through a QueueListener so emits never block on the

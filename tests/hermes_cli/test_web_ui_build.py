@@ -36,40 +36,6 @@ def _make_web_dir(tmp_path: Path) -> tuple[Path, Path]:
 
 
 
-@pytest.mark.platforms("linux")
-class TestBuildWebUIFlock:
-    def test_contended_lock_without_dist_waits_then_skips_fresh_build(self, tmp_path):
-        """First-ever build race: the waiter blocks, and once it acquires the
-        lock the callee's own staleness check (running under the lock) sees
-        the winner's output and skips a duplicate build."""
-        import fcntl
-        import threading
-        from hermes_cli.main_web_build import _build_web_ui as build
-
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        # No dist yet — contender must take the blocking-wait path.
-        lock_path = tmp_path / ".web_ui_build.lock"
-        holder = open(lock_path, "a")
-        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
-
-        def release_after_building():
-            # Simulate the winning process finishing its build.
-            _touch(dist_dir / "index.html")
-            stamp_product(tmp_path, "web", dist_dir)
-            holder.close()  # releases the flock
-
-        t = threading.Timer(0.2, release_after_building)
-        t.start()
-        try:
-            with patch("hermes_cli.source_build.source_build_env", side_effect=AssertionError("fresh build must skip preparation")) as mock_run:
-                result = build(web_dir)
-        finally:
-            t.join()
-
-        assert result is True
-        mock_run.assert_not_called()  # fresh after the wait -> no rebuild
-
-
 @pytest.mark.platforms("posix")
 def test_web_build_prepares_once_and_skips_a_current_product(source_products):
     root, acquired = source_products
@@ -122,29 +88,40 @@ def test_web_rebuild_reuses_the_existing_desktop_union(source_products):
 
 
 @pytest.mark.platforms("linux")
-def test_contended_stale_dist_waits_for_the_lock_holder(tmp_path):
+@pytest.mark.parametrize('existing', [False, True])
+def test_contended_build_waits_and_rechecks_winner(tmp_path, monkeypatch, existing):
     import fcntl
     import threading
 
     web, dist = _make_web_dir(tmp_path)
-    dist.mkdir(parents=True)
-    (dist / "index.html").write_text("stale")
-    holder = open(tmp_path / ".web_ui_build.lock", "a")
+    if existing:
+        _touch(dist / 'index.html')
+    holder = open(tmp_path / '.web_ui_build.lock', 'a', encoding='utf-8')
     fcntl.flock(holder, fcntl.LOCK_EX)
-
-    def finish_build():
-        (dist / "index.html").write_text("winner")
-        stamp_product(tmp_path, "web", dist)
-        holder.close()
-
-    worker = threading.Timer(2, finish_build)
+    real_flock = fcntl.flock
+    contended = threading.Event()
+    def flock(fd, operation):
+        contended.set()
+        return real_flock(fd, operation)
+    monkeypatch.setattr(fcntl, 'flock', flock)
+    def finish():
+        try:
+            assert contended.wait(10), 'waiter never attempted the lock'
+            _touch(dist / 'index.html')
+            (dist / 'index.html').write_text('winner', encoding='utf-8')
+            stamp_product(tmp_path, 'web', dist)
+        finally:
+            holder.close()
+    worker = threading.Thread(target=finish)
     worker.start()
     try:
-        assert _build_web_ui(web, fatal=True)
-        at_return = (dist / "index.html").read_text()
+        with patch('hermes_cli.source_build.source_build_env', side_effect=AssertionError('duplicate preparation')):
+            assert _build_web_ui(web, fatal=True)
+        assert (dist / 'index.html').read_text(encoding='utf-8') == 'winner'
     finally:
-        worker.join()
-    assert at_return == "winner", "a contended stale index must not count as success"
+        worker.join(timeout=15)
+        holder.close()
+    assert not worker.is_alive()
 
 
 @pytest.mark.platforms("posix")

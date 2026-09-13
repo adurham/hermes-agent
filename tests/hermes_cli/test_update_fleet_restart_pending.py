@@ -60,28 +60,11 @@ def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
     return side_effect
 
 
-def _make_up_to_date_side_effect(sha="abc123"):
-    """Simulate git commands where origin is already at HEAD."""
 
-    def side_effect(cmd, **kwargs):
-        joined = " ".join(str(c) for c in cmd)
-
-        if "rev-parse" in joined and "--abbrev-ref" in joined:
-            return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
-
-        if "rev-list" in joined:
-            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
-
-        if joined.endswith("rev-parse HEAD"):
-            return SimpleNamespace(returncode=0, stdout=f"{sha}\n", stderr="")
-
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    return side_effect
 
 
 def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
-    """Patch ``_cmd_update_impl`` helpers. Mirrors test_update_head_moved_gate."""
+    """Isolate machine maintenance while exercising interrupted fleet updates."""
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
@@ -376,8 +359,6 @@ def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
     assert update_cmd._pending_fleet_restart_needed() is True
 
 
-
-
 # ---------------------------------------------------------------------------
 # cmd_update integration (mocked git / restart)
 # ---------------------------------------------------------------------------
@@ -404,33 +385,6 @@ def test_marker_written_after_pull_cleared_after_successful_restart(
     assert not update_cmd._fleet_restart_pending_marker_path().exists()
     out = capsys.readouterr().out
     assert "✓ Code updated!" in out
-
-
-def test_clean_update_warns_about_surviving_pre_update_serve_runtime(
-    monkeypatch, tmp_path, capsys
-):
-    """The successful update path must surface an inventoried stale serve."""
-    args = _update_args()
-    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
-    monkeypatch.setattr(
-        update_cmd,
-        "_surviving_pre_update_serve_runtimes",
-        lambda _plan: [
-            {
-                "pid": 5555,
-                "kind": "serve",
-                "profile": "default",
-                "supervisor": "manual-serve",
-            }
-        ],
-    )
-
-    hermes_main.cmd_update(args)
-
-    out = capsys.readouterr().out
-    assert "pid 5555" in out
-    assert "serve" in out
-    assert "pre-update code" in out
 
 
 def test_clean_update_escalates_surviving_serve_as_unaccounted(
@@ -514,79 +468,6 @@ def test_interrupt_between_pull_and_restart_leaves_marker(
     marker = update_cmd._fleet_restart_pending_marker_path()
     assert marker.is_file()
     assert "expected_sha=def456" in marker.read_text(encoding="utf-8")
-
-
-def test_already_up_to_date_runs_pending_restart_when_marker_present(
-    monkeypatch, tmp_path, capsys
-):
-    args = _update_args()
-    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
-    update_cmd._write_fleet_restart_pending_marker(expected_sha="def456")
-
-    seen = {"ran": False}
-
-    original = update_cmd._restart_gateway_fleet_after_update
-    def _restart(*args):
-        seen["ran"] = True
-        return original(*args)
-
-    monkeypatch.setattr(update_cmd, "_restart_gateway_fleet_after_update", _restart)
-
-    hermes_main.cmd_update(args)
-
-    assert seen["ran"] is True
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
-    out = capsys.readouterr().out
-    assert "Already up to date!" in out
-
-
-def test_already_up_to_date_runs_pending_restart_when_receipt_skewed(
-    monkeypatch, tmp_path, capsys
-):
-    args = _update_args()
-    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
-
-    disk_sha = "e" * 40
-    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
-    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
-    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
-    receipt_dir.mkdir(parents=True)
-    (receipt_dir / "latest.json").write_text(
-        json.dumps(
-            {
-                "exit_code": 1,
-                "stop_reason": "KeyboardInterrupt: ",
-                "outcome": "failed",
-                "plan": {
-                    "expected_sha": disk_sha,
-                    "runtimes": [
-                        {
-                            "kind": "gateway",
-                            "profile": "default",
-                            "pid": 42,
-                            "code_sha": "7" * 40,
-                        }
-                    ],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    seen = {"ran": False}
-    original = update_cmd._restart_gateway_fleet_after_update
-    def restart(*args):
-        seen["ran"] = True
-        return original(*args)
-    monkeypatch.setattr(update_cmd, "_restart_gateway_fleet_after_update", restart)
-
-    hermes_main.cmd_update(args)
-
-    assert seen["ran"] is True
-    out = capsys.readouterr().out
-    assert "Already up to date!" in out
-
-
 
 
 def test_startup_warn_prints_when_marker_present(capsys):

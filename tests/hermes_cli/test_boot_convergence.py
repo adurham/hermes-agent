@@ -152,6 +152,22 @@ print(json.dumps(boot_bootstrap.run_boot_bootstrap(root)))
             assert len(list(directory.glob("config.yaml.bak-*"))) == 1
             with sqlite3.connect(directory / "state.db") as db:
                 assert db.execute("SELECT value FROM retained").fetchall() == [("before",)]
+        # A changed artifact or Git identity must run the real migration again.
+        for revision in ('sealed', 'git'):
+            (home / 'config.yaml').write_text(f"_config_version: {DEFAULT_CONFIG['_config_version'] - 1}\n")
+            if revision == 'sealed':
+                (root / 'install-stamp.json').write_text(json.dumps({
+                    'commit': 'fedcba987654', 'updateMechanism': 'external'}))
+            else:
+                subprocess.run(['git', 'init', '-q', str(root)], check=True)
+                subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=t@example.invalid',
+                                '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'revision'],
+                               cwd=root, check=True)
+            changed = subprocess.run([*command, 'go'], env=env, capture_output=True, text=True, timeout=30)
+            assert changed.returncode == 0, changed.stderr
+            assert json.loads(changed.stdout.splitlines()[-1])['home']['migrate']['ok']
+            import hermes_yaml
+            assert hermes_yaml.safe_load((home / 'config.yaml').read_text())['_config_version'] == DEFAULT_CONFIG['_config_version']
     finally:
         release.touch()
         if first.poll() is None:
@@ -190,3 +206,6 @@ def test_failed_migration_is_restored_and_not_retried(tmp_path, monkeypatch):
     assert {p: p.read_bytes() for p in original} == original
     assert boot_bootstrap.run_boot_bootstrap(root) == {"home": "skipped"}
     assert calls == [True]
+    record = boot_bootstrap.read_last_known(boot_bootstrap.record_path(root))
+    assert record['identity'] == 'abcdef012345'
+    assert record['results']['migrate']['ok'] is False

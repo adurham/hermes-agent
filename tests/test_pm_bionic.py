@@ -9,23 +9,11 @@ this host's installed facts.
 from __future__ import annotations
 
 import json
-import tarfile
-import io
-import zipfile
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _pm():
-    import sys
-
-    sys.path.insert(0, str(REPO_ROOT))
-    import pm
-
-    return pm
 
 
 @pytest.fixture(scope="module")
@@ -91,130 +79,70 @@ def test_uv_bionic_row_matches_supplier(lock):
     """The uv bionic row is an explicit pin of the termux-main pool .deb;
     the row and Uv.fetch_url(bionic arm) must agree."""
     _assert_pinned_bionic_row(lock, "uv", r"/u/uv/uv_(?P<ver>[0-9.]+)_aarch64\.deb$")
-def _build_fake_deb(path: Path, control: dict[str, str], files: dict[str, bytes]) -> None:
-    def ar_member(name: str, data: bytes) -> bytes:
-        hdr = (
-            name.ljust(16).encode()
-            + b"0".ljust(12)
-            + b"0".ljust(6)
-            + b"0".ljust(6)
-            + b"100644".ljust(8)
-            + str(len(data)).encode().ljust(10)
-            + b"`\n"
-        )
-        pad = b"\n" if len(data) % 2 else b""
-        return hdr + data + pad
-
-    ctrl_buf = io.BytesIO()
-    with tarfile.open(fileobj=ctrl_buf, mode="w:gz") as tf:
-        body = "".join(f"{k}: {v}\n" for k, v in control.items()).encode()
-        info = tarfile.TarInfo("control")
-        info.size = len(body)
-        tf.addfile(info, io.BytesIO(body))
-    data_buf = io.BytesIO()
-    with tarfile.open(fileobj=data_buf, mode="w:gz") as tf:
-        for name, content in files.items():
-            info = tarfile.TarInfo(name)
-            info.size = len(content)
-            tf.addfile(info, io.BytesIO(content))
-    path.write_bytes(
-        b"!<arch>\n"
-        + ar_member("debian-binary", b"2.0\n")
-        + ar_member("control.tar.gz", ctrl_buf.getvalue())
-        + ar_member("data.tar.gz", data_buf.getvalue())
-    )
-
-
-def test_debpackage_unpack_hardened(tmp_path: Path):
-    """DebPackage.unpack extracts data members and refuses traversal."""
-    from pm.package import DebPackage
-
-    class _P(DebPackage):
-        name = "test-deb"
-
-    deb = tmp_path / "test.deb"
-    _build_fake_deb(
-        deb,
-        {"Package": "test-deb", "Version": "1.0"},
-        {"data/data/com.termux/files/usr/bin/tool": b"\x7fELF"},
-    )
-    staged = tmp_path / "staged"
-    staged.mkdir()
-    _P().unpack(deb, staged, "linux-arm64-bionic")
-    assert (staged / "data/data/com.termux/files/usr/bin/tool").read_bytes() == b"\x7fELF"
-
-    # traversal member must be refused
-    evil = tmp_path / "evil.deb"
-    _build_fake_deb(
-        evil, {"Package": "evil", "Version": "1.0"}, {"../escape": b"x"}
-    )
-    with pytest.raises(Exception):
-        _P().unpack(evil, tmp_path / "staged2", "linux-arm64-bionic")
-
-
-@pytest.mark.parametrize("name", ["python", "uv", "node"])
-def test_bionic_verify_is_file_evidence(tmp_path: Path, monkeypatch, name):
-    """bionic verify never executes the staged binary; presence is the
-    contract (the digest already proved the bytes)."""
-    from pm.registry import get_package
-
-    def refuse_exec(*args, **kwargs):
-        pytest.fail(f"bionic verification attempted execution: {args}")
-
-    monkeypatch.setattr("pm.packages.subprocess.run", refuse_exec)
-    package = get_package(name)
-    bin_rel = Path(package.prefix_rel) / package.main_rel("linux-arm64-bionic")
-    entry = tmp_path / "entry"
-    (entry / bin_rel).parent.mkdir(parents=True)
-    (entry / bin_rel).write_bytes(b"bionic-elf-bytes")
-    assert package.verify(entry, "linux-arm64-bionic") == ""
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    assert "missing" in package.verify(empty, "linux-arm64-bionic")
-
-
-def test_bionic_binary_and_env_contract(tmp_path: Path):
-    """Bionic binaries retain their staged paths, but only on_path packages
-    expose them in the environment; internal uv stays private to PM."""
-    from pm.registry import get_package
-
-    for name in ("uv", "python", "node"):
-        pkg = get_package(name)
-        entry = tmp_path / name
-        main = entry / pkg.prefix_rel / pkg.main_rel("linux-arm64-bionic")
-        main.parent.mkdir(parents=True)
-        main.write_bytes(b"bionic-elf")
-
-        binary = pkg.binary(entry, "linux-arm64-bionic")
-        assert binary == main, f"{name}.binary() on bionic: {binary}"
-
-        env = pkg.env(entry, "linux-arm64-bionic")
-        expected_path = [str(main.parent)] if pkg.on_path else None
-        assert env.get("PATH") == expected_path, (
-            f"{name}.env() on bionic does not follow its on_path declaration"
-        )
-        if pkg.internal:
-            assert "PATH" not in env, f"internal {name} must not leak into public PATH"
-
-
-def test_stage_only_does_not_record_host_facts(tmp_path, monkeypatch):
-    """stage_only publishes the entry but must not touch this machine's
-    installed facts -- the fact slot belongs to the HOST target."""
-    pm = _pm()
+@pytest.mark.parametrize("name,main,on_path", [
+    ("python", None, True), ("uv", "bin/uv", False), ("node", "bin/node", True),
+])
+def test_registered_bionic_stage_preserves_host_facts(tmp_path, monkeypatch, lock, name, main, on_path):
+    import hashlib
+    from pm import paths
     from pm.ensure import stage_only
-    from pm.lock import Facts
-    from pm.paths import facts_path
+    from pm.lock import Lockfile
+    from pm.package import InstallError
+    from pm.registry import get_package
+    from pm.store import Store
+    from tests.termux_fixtures import build_deb
 
-    def snapshot() -> dict:
-        path = facts_path()
-        if not path.is_file():
-            return {}
-        return Facts(path)._packages
+    target = "linux-arm64-bionic"
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
+    facts = paths.facts_path()
+    facts.parent.mkdir(parents=True, exist_ok=True)
+    facts.write_bytes(b'{"sentinel": "host state must not change"}')
+    before = facts.read_bytes()
+    if main is None:
+        # Archive filename is the independent supplier authority, not main_rel().
+        version = lock["packages"]["python"]["artifacts"][target]["url"].rsplit("/", 1)[1].split("_")[1]
+        main = "bin/python" + ".".join(version.split(".")[:2])
+    relative = "data/data/com.termux/files/usr/" + main
+    package = get_package(name)
+    store = Store(paths.store_root())
 
-    before = snapshot()
-    entry = stage_only("termux-docker", "linux-arm64-bionic")
-    after = snapshot()
-    assert before == after
-    # termux-docker is a pin_only package: stage_only returns the would-be
-    # entry path (store root + entry name) without staging bytes.
-    assert "termux-docker" in str(entry)
+    def archive(files):
+        deb = tmp_path / "fixture.deb"
+        build_deb(deb, {"Package": name, "Version": "1.0"}, files)
+        digest = hashlib.sha256(deb.read_bytes()).hexdigest()
+        lock = Lockfile(paths.lockfile_path())
+        lock.set_pin(name, "1.0", {target: {"url": "https://example.test/fixture.deb", "sha256": digest}})
+        lock.save()
+        cached = store.entry(f"fetch-{digest}")
+        cached.mkdir(parents=True)
+        (cached / "fixture.deb").write_bytes(deb.read_bytes())
+
+    def no_exec(*args, **kwargs):
+        pytest.fail(f"cross-target staging executed foreign bytes: {args}")
+
+    monkeypatch.setattr("pm.packages.subprocess.run", no_exec)
+    archive({relative: b"bionic-payload"})
+    entry = stage_only(name, target)
+    assert (entry / relative).read_bytes() == b"bionic-payload"
+    assert package.binary(entry, target) == entry / relative
+    assert package.env(entry, target).get("PATH") == ([str((entry / relative).parent)] if on_path else None)
+    assert stage_only(name, target) == entry
+    archive({"unrelated": b"not the main executable"})
+    with pytest.raises(InstallError, match="missing"):
+        stage_only(name, target)
+    assert (entry / relative).read_bytes() == b"bionic-payload"
+    assert facts.read_bytes() == before
+
+
+def test_deb_rejects_traversal_before_touching_outside(tmp_path):
+    from pm.package import DebPackage, InstallError
+    from tests.termux_fixtures import build_deb
+
+    sentinel = tmp_path / "escape"
+    sentinel.write_bytes(b"owned outside extraction")
+    deb = tmp_path / "evil.deb"
+    build_deb(deb, {"Package": "evil"}, {"../escape": b"overwrite"})
+    with pytest.raises(InstallError, match="unsafe|escape|traversal"):
+        DebPackage().unpack(deb, tmp_path / "staged", "linux-arm64-bionic")
+    assert sentinel.read_bytes() == b"owned outside extraction"

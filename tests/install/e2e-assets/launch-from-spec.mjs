@@ -30,6 +30,7 @@ import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { _electron } from '@playwright/test';
 import { prepareWindowForInput } from './window-input.cjs';
+import { pickAppWindow, openAbout, waitForUpdate } from './update-ui.cjs';
 import { observeSourceUpdate } from './source-update-observer.mjs';
 
 /**
@@ -122,31 +123,7 @@ async function main() {
     cwd: launch.cwd,
     env: launch.env,
   });
-  // The app spawns several BrowserWindows (wake indicator, helper surfaces)
-  // and firstWindow() grabs whichever webContents came first, which is not
-  // always the main app window. Pick the window that actually renders the
-  // app UI (a button renders only in the real renderer), retrying as
-  // windows appear.
-  await app.firstWindow({ timeout: 120_000 });
-  let window = null;
-  const windowDeadline = Date.now() + 120_000;
-  while (!window) {
-    for (const candidate of app.windows()) {
-      const hasUi = await candidate
-        .evaluate(() => document.querySelector('button') !== null)
-        .catch(() => false);
-      if (hasUi) { window = candidate; break; }
-    }
-    if (!window) {
-      if (Date.now() > windowDeadline) {
-        for (const c of app.windows()) log(`  window seen: url=${c.url()}`);
-        throw new Error('no window with app UI (a <button>) appeared within 120s');
-      }
-      await new Promise((r) => setTimeout(r, 1_000));
-    }
-  }
-  await window.waitForLoadState('domcontentloaded');
-  log(`window up: ${await window.title()} (${app.windows().length} windows, picked url=${window.url()})`);
+  const window = await pickAppWindow(app, log);
   await window.screenshot({ path: `${values.spec}.window.png` }).catch(() => {});
 
   await prepareWindowForInput(app, window);
@@ -164,29 +141,7 @@ async function main() {
   const deadline = Date.now() + Number(values['timeout-ms']);
 
 
-  // Dismiss the onboarding overlay when present. The drivers seed a
-  // provider so the overlay SHOULD never mount, but it has a real boot
-  // window: the renderer inits `configured` from a localStorage cache
-  // (null on a fresh install) and only flips after gateway probes, so the
-  // overlay can mount late - first as a buttonless boot-progress card,
-  // then as the provider picker with the real escape hatch, "I'll choose
-  // a provider later" (i18n en: chooseLater). Two traps this loop avoids:
-  // a one-shot dismiss probe loses to the late mount, and visibility is
-  // the wrong readiness signal - the settings gear is "visible" UNDER the
-  // fullscreen overlay while the overlay intercepts every click. So:
-  // alternate short-timeout dismiss clicks with short-timeout settings
-  // clicks until a settings click actually LANDS (Playwright's hit-target
-  // check makes a landed click proof the overlay is gone).
   phase('overlay-loop');
-  const later = window.getByRole('button', { name: /choose a provider later|skip/i }).first()
-  const settingsButton = window.getByRole('button', { name: /open settings|settings/i }).first()
-
-  const overlayDeadline = Date.now() + 180_000
-  let settingsOpened = false
-  const brief = (e) => String(e && e.message || e).split('\n').slice(0, 25).join(' | ')
-  // When a settings click fails, record what wins the hit-test at the
-  // button's center plus the titlebar geometry, so a CI-only interception
-  // is attributable from the log alone.
   const hitDump = () => window.evaluate(() => {
     const describe = (el) => el ? {
       tag: el.tagName,
@@ -213,70 +168,13 @@ async function main() {
       win: `${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio}`,
     }
   }).then((d) => JSON.stringify(d)).catch((e) => `hit-dump failed: ${e.message}`)
-  for (let iter = 1; ; iter++) {
-    await prepareWindowForInput(app, window);
-    await later
-      .click({ timeout: 2_000 })
-      .then(async () => {
-        log('dismissed onboarding overlay')
-        await later.waitFor({ state: 'hidden', timeout: 15_000 }).catch(() => {})
-      })
-      .catch((e) => log(`[overlay] iter ${iter} chooseLater click failed: ${brief(e)}`))
-    try {
-      await settingsButton.click({ timeout: 4_000 })
-      // A landed click during shell hydration can be lost on a remount.
-      // Confirm the destination before looking for its About control.
-      await window.waitForURL(/[#/]settings(?:[/?]|$)/, { timeout: 4_000 })
-      settingsOpened = true
-      break
-    } catch (e) {
-      log(`[overlay] iter ${iter} settings click failed: ${brief(e)}`)
-      // Every 5th failure, log the hit-test stack (every iteration would be
-      // noise; the interceptor identity is what matters, not its frequency).
-      if (iter === 1 || iter % 5 === 0) {
-        log(`[overlay] iter ${iter} hit-test: ${await hitDump()}`)
-      }
-    }
-    if (Date.now() > overlayDeadline) break
-  }
-  if (!settingsOpened) {
-    await window.screenshot({ path: `${values.spec}.overlay-stuck.png` }).catch(() => {})
-    throw new Error('onboarding overlay never cleared: Settings not clickable within 180s')
-  }
-
+  const ui = {
+    log,
+    shot: (page, name) => page.screenshot({ path: `${values.spec}.${name}.png` }).catch(() => {}),
+  };
+  await openAbout(window, { ...ui, prepare: () => prepareWindowForInput(app, window), confirmSettings: true, hitDump });
   phase('about-update');
-  // Settings is open: About -> Update now.
-  await window.getByRole('tab', { name: /about/i }).or(
-    window.getByRole('button', { name: /about/i })).first().click();
-  const updateNow = window.getByRole('button', { name: /update now/i }).first();
-  // "Update now" only renders once a check reports behind > 0, and the
-  // About panel starts at "Last checked: never". The boot-time auto-check
-  // can also fail transiently and latch the error UI, while a fresh check
-  // succeeds. Nudge like an impatient user: click Check now whenever it is
-  // clickable (not a spinner), re-test Update now, 3 minute ceiling.
-  const checkNow = window.getByRole('button', { name: /check now/i }).first();
-  const nudgeDeadline = Date.now() + 180_000;
-  let updateVisible = await updateNow.isVisible().catch(() => false);
-  while (!updateVisible && Date.now() < nudgeDeadline) {
-    await checkNow.click({ timeout: 5_000 })
-      .then(() => log('nudged Check now'))
-      .catch(() => {}); // spinner or mid-transition - fine, just wait
-    await window.waitForTimeout(15_000);
-    updateVisible = await updateNow.isVisible().catch(() => false);
-  }
-  try {
-    await updateNow.waitFor({ state: 'visible', timeout: 15_000 });
-  } catch (e) {
-    // The About UI flattens every check failure to a generic "couldn't
-    // reach the update server", hiding the git stderr the main process
-    // captured. Pull the full status over the same IPC the panel uses so
-    // the log names the real error.
-    const status = await window.evaluate(() =>
-      window.hermesDesktop?.updates?.check?.() ?? Promise.resolve('no updates.check bridge')
-    ).catch((err) => `updates.check failed: ${err?.message || err}`);
-    log(`[update-status] ${JSON.stringify(status)}`);
-    throw e;
-  }
+  const updateNow = await waitForUpdate(window, ui);
   const observe = observeSourceUpdate({
     home: spec.env.HERMES_HOME,
     resultPath: values.result,

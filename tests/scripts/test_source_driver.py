@@ -113,91 +113,15 @@ def test_observer_preserves_no_desktop_and_refuses_incomplete_app(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_observer_checks_real_compiler_receipts_without_repairing(tmp_path):
-    verify = runpy.run_path(str(ASSETS / "source_driver.py"))["verify_products"]
-    path = os.pathsep.join(p for p in os.get_exec_path() if ".hermes" not in Path(p).parts)
-    node = shutil.which("node", path=path)
-    assert node, "source-driver tests require the prepared Node tool"
-    root = tmp_path / "source"
-    build = root / "scripts/build"
-    build.mkdir(parents=True)
-    repo = ASSETS.parents[2]
-    for name in ("freshness.mjs", "frontend-common.mjs"):
-        shutil.copy2(repo / "scripts/build" / name, build / name)
-    outputs = {"tui": root / "ui-tui/dist", "web": root / "hermes_cli/web_dist",
-               "desktop": root / "apps/desktop/release/linux-unpacked/resources/app.asar.unpacked/dist"}
-    for out in outputs.values():
-        out.mkdir(parents=True)
-        (out / "index.html").write_text("fixture renderer", encoding="utf-8")
-    (root / "apps/desktop/release/linux-unpacked/hermes").write_text("fixture executable", encoding="utf-8")
-    record = '''import { buildInputs, recordProduct } from './scripts/build/freshness.mjs';
-const source = process.cwd();
-for (const [product, out] of Object.entries(JSON.parse(process.argv[1]))) {
-  recordProduct({ source, product, out, inputs: buildInputs(source, product) });
-}
-'''
-    subprocess.run([node, "--input-type=module", "-e", record, json.dumps({k: str(v) for k, v in outputs.items()})],
-                   cwd=root, check=True, timeout=30)
-    def snapshot():
-        return {str(p.relative_to(root)): (p.read_bytes(), p.stat().st_mtime_ns)
-                for p in root.rglob("*") if p.is_file()}
-    before = snapshot()
-    verify(root, "present", Path(node))
-    assert snapshot() == before
-    # The successful receipts cannot bless damaged or missing outputs.
-    damaged = outputs["web"] / "index.html"
-    damaged.write_text("damaged renderer", encoding="utf-8")
-    before = snapshot()
-    with pytest.raises(RuntimeError, match="web output"):
-        verify(root, "present", Path(node))
-    assert snapshot() == before
-    damaged.unlink()
-    with pytest.raises(RuntimeError, match="web output"):
-        verify(root, "present", Path(node))
-    assert not damaged.exists()
-
-
-@pytest.mark.platforms("posix")
-def test_pm_probe_rejects_foreign_launcher_before_any_bootstrap(tmp_path, monkeypatch):
-    from hermes_cli import _launchers
-
-    root = tmp_path / "installed source"
-    foreign = tmp_path / "other source"
-    repo = ASSETS.parents[2]
-    # Real published-launcher protocol, with only the stdlib pre-boot closure.
-    for tree in (root, foreign):
-        for name in ("hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
-                     "hermes_cli/runtime_paths.py"):
-            dest = tree / name
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(repo / name, dest)
-        (tree / "pm").mkdir()
-        (tree / "pm/lock.json").write_text("{}", encoding="utf-8")
-        (tree / "hermes_bootstrap.py").write_text("raise RuntimeError('bootstrap must not run')", encoding="utf-8")
-    home = tmp_path / "home"
-    store = home / "tools"
-    store.mkdir(parents=True)
-    interpreter = Path(sys._base_executable).resolve()
-    (store / "facts.json").write_text(json.dumps({"packages": {"python": {
-        "entry": str(interpreter.parents[1])}}}), encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
-    bin_dir = root / ".hermes/bin"
-    bin_dir.mkdir(parents=True)
-    launcher = _launchers.mint_launcher("hermes", foreign, bin_dir, interpreter, None)
-    assert launcher is not None
-    result = subprocess.run([sys.executable, "-B", str(ASSETS / "source_driver.py"),
-                             "--root", str(root), "--launcher", str(launcher), "--desktop", "absent"],
-                            cwd=tmp_path, env=dict(os.environ, HOME=str(tmp_path)),
-                            capture_output=True, text=True, timeout=30)
-    assert result.returncode != 0
-    assert "belongs to another installation" in result.stderr
-    assert "bootstrap must not run" not in result.stderr
-    assert not (root / "venv").exists()
-
-
-@pytest.mark.platforms("posix")
-def test_pm_observer_accepts_ready_fixture_and_leaves_failed_fixture_untouched(tmp_path):
+@pytest.mark.parametrize("fault,error", [
+    ("uv-lock", "dependency generation is not current"),
+    ("no-desktop", "dependency generation is not current"),
+    ("foreign-launcher", "belongs to another installation"),
+    ("missing-launcher", ""),
+    ("incomplete", "incomplete"),
+    ("web-changed", "web output"), ("web-missing", "web output"),
+])
+def test_pm_observer_accepts_ready_fixture_and_leaves_failed_fixture_untouched(tmp_path, fault, error):
     # This exercises the complete observer process, not a whole install. The
     # fixture borrows prepared test dependencies and records real PM input
     # stamps / compiler receipts. It never resolves or acquires a package.
@@ -250,14 +174,18 @@ ensure_install_launchers(root, root / '.hermes/bin')
     record = '''import { mkdirSync, writeFileSync } from 'node:fs';
 import { buildInputs, recordProduct } from './scripts/build/freshness.mjs';
 const source = process.cwd();
-for (const [product, out] of [['tui', 'ui-tui/dist'], ['web', 'hermes_cli/web_dist']]) {
+for (const [product, out] of [['tui', 'ui-tui/dist'], ['web', 'hermes_cli/web_dist'], ['desktop', 'apps/desktop/release/linux-unpacked/resources/app.asar.unpacked/dist']]) {
   mkdirSync(out, { recursive: true }); writeFileSync(out + '/index.html', 'fixture product');
   recordProduct({source, product, out, inputs: buildInputs(source, product)});
 }
 '''
     subprocess.run([node, "--input-type=module", "-e", record], cwd=root, env=env, check=True, timeout=30)
+    (root / "apps/desktop/release/linux-unpacked/hermes").write_bytes(b"fixture executable")
     command = [sys.executable, "-B", str(ASSETS / "source_driver.py"), "--root", str(root),
-               "--launcher", str(root / ".hermes/bin/hermes"), "--desktop", "absent"]
+               "--launcher", str(root / ".hermes/bin/hermes"), "--desktop", "present"]
+    if fault == "no-desktop":
+        shutil.rmtree(root / "apps/desktop")
+        command[-1] = "absent"
     # The passive query must not write even import caches: -I ignores the
     # environment's bytecode switch, so the published query enforces it.
     def snapshot():
@@ -267,9 +195,27 @@ for (const [product, out] of [['tui', 'ui-tui/dist'], ['web', 'hermes_cli/web_di
     result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
     assert snapshot() == before
-    (root / "uv.lock").write_text("changed graph without preparation", encoding="utf-8")
+    if fault in {"uv-lock", "no-desktop"}:
+        (root / "uv.lock").write_text("changed graph without preparation", encoding="utf-8")
+    elif fault == "foreign-launcher":
+        foreign = tmp_path / "foreign"
+        shutil.copytree(root, foreign)
+        from hermes_cli._launchers import mint_launcher
+        launcher = mint_launcher("hermes", foreign, root / ".hermes/bin", Path(sys.executable), None)
+        assert launcher is not None
+    elif fault == "missing-launcher":
+        (root / ".hermes/bin/hermes").unlink()
+    elif fault == "incomplete":
+        (root / ".update-incomplete").write_text("incomplete", encoding="utf-8")
+    else:
+        damaged = root / "hermes_cli/web_dist/index.html"
+        if fault == "web-missing":
+            damaged.unlink()
+        else:
+            damaged.write_bytes(b"damaged")
     before = snapshot()
     result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert result.returncode != 0
-    assert "dependency generation is not current" in result.stderr
+    assert error in result.stderr
+    assert "bootstrap must not run" not in result.stderr
     assert snapshot() == before

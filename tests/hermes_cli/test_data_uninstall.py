@@ -24,7 +24,8 @@ def layout(tmp_path, monkeypatch):
     for path in witnesses:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("keep", encoding="utf-8")
-    data = [home / "config.yaml", home / "sessions" / "session.json", home / "workspace" / "notes.txt"]
+    data = [home / "config.yaml", home / "sessions" / "session.json", home / "workspace" / "notes.txt",
+            home / ".env", home / "logs" / "file"]
     for path in data:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}" if path.suffix in {".yaml", ".json"} else "user data", encoding="utf-8")

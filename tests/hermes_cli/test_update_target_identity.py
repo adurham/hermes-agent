@@ -14,6 +14,7 @@ import pytest
 
 from hermes_cli import main as cli_main, update_cmd, update_receipt
 from hermes_cli.update_inventory import UpdatePlan
+from hermes_cli.update_cmd import _sync_with_upstream_if_needed
 
 
 def git(root, *args):
@@ -84,6 +85,77 @@ def update_tree(tmp_path, monkeypatch):
                            check=False, plan=False, gateway=False, install_id=False, set_channel=None)
     return SimpleNamespace(origin=origin, clone=clone, base=base, wanted=wanted, newer=newer,
                            args=args, resumed=resumed, requests=requests, plans=plans)
+
+
+@pytest.mark.parametrize('case', ['main', 'explicit', 'missing', 'no-move', 'wrong-branch',
+                                'fork-no-upstream', 'fork-upstream', 'check-main',
+                                'check-explicit', 'check-missing', 'check-upstream'])
+def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkeypatch, case, capsys):
+    t = update_tree
+    git(t.clone, 'checkout', '-q', 'main')
+    t.args.channel = 'main'
+    t.args.gateway = True
+    t.args.check = case.startswith('check-')
+    monkeypatch.setattr(cli_main, '_sync_with_upstream_if_needed', _sync_with_upstream_if_needed)
+    if case in {'explicit', 'check-explicit'}:
+        git(t.origin, 'branch', 'chosen', t.wanted)
+        t.args.branch = 'chosen'
+    if case in {'missing', 'check-missing'}:
+        t.args.branch = 'absent'
+    if case.startswith('fork-') or case == 'check-upstream':
+        # Origin is current; only upstream has the next commit.
+        git(t.origin, 'reset', '--hard', t.base)
+        if case in {'fork-upstream', 'check-upstream'}:
+            upstream = t.origin.parent / 'upstream'
+            git(t.origin.parent, 'clone', '-q', str(t.origin), str(upstream))
+            git(upstream, 'reset', '--hard', t.newer)
+            git(t.clone, 'remote', 'add', 'upstream', str(upstream))
+    run = subprocess.run
+
+    def fault(command, *args, **kwargs):
+        if 'merge' in command and '--ff-only' in command:
+            if case == 'no-move':
+                return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+            result = run(command, *args, **kwargs)
+            if case == 'wrong-branch':
+                run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
+            return result
+        return run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', fault)
+    if case == 'fork-upstream':
+        # The checkout policy must consult upstream even when origin is current.
+        plan = update_cmd._prepare_checkout_for_update(
+            ['git'], 'main', 'main', is_fork=True, assume_yes=True, gateway_mode=False,
+            gw_input_fn=None, switch_branch=False, _windows_gateway_resume=None)
+        assert plan.commit_count > 0 and plan.upstream_checked
+        assert git(t.clone, 'rev-parse', 'HEAD') == t.newer
+        return
+    fails = case in {'missing', 'check-missing', 'no-move', 'wrong-branch'}
+    if fails:
+        with pytest.raises(SystemExit) as error:
+            cli_main.cmd_update(t.args)
+        assert error.value.code == 1
+        assert t.requests == []
+    else:
+        cli_main.cmd_update(t.args)
+        if t.args.check:
+            assert t.requests == []
+            assert git(t.clone, 'rev-parse', 'HEAD') == t.base
+            output = capsys.readouterr().out
+            assert ('absent' if case == 'check-missing' else 'update') in output.lower()
+            if case == 'check-upstream':
+                assert git(t.clone, 'rev-parse', 'upstream/main') == t.newer
+        else:
+            request, = t.requests
+            assert request['assume_yes'] is True
+            assert request['gateway_mode'] is True
+            expected = t.base if case == 'fork-no-upstream' else t.wanted if case == 'explicit' else t.newer
+            assert git(t.clone, 'rev-parse', 'HEAD') == expected
+            assert request['source'] == str(t.clone)
+            if case == 'fork-no-upstream':
+                assert 'official repo not checked' in request['completion_message']
+                assert git(t.clone, 'remote') == 'origin'
 
 
 @pytest.mark.parametrize('server', ['sha', 'tag-fallback', 'moved-sha', 'moved-fallback',

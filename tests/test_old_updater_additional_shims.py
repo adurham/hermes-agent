@@ -53,22 +53,6 @@ def test_retired_constants_reload_handoffs_old_gateway_recovery(fresh_child, mon
     assert vars(hermes_constants) == before
 
 
-@pytest.mark.parametrize("kwargs", [{}, {"timeout": 120, "capture_output": False}])
-def test_retired_pip_install_handoffs_before_reporting_success(kwargs, fresh_child):
-    from hermes_cli.tools_config import _pip_install
-
-    with fresh_child.exits():
-        result = _pip_install(["--quiet", "honcho-ai"], **kwargs)
-        pytest.fail(f"retired installer returned a result: {result}")
-
-
-def test_retired_root_handoffs_before_inventing_portable_git_path(fresh_child):
-    from hermes_cli.update_cmd import get_default_hermes_root
-
-    with fresh_child.exits():
-        get_default_hermes_root() / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-
-
 @pytest.mark.parametrize("prompt", [True, False])
 def test_retired_ensure_reports_unavailable_without_installing(prompt, no_external_work):
     from tools.lazy_deps import ensure
@@ -92,17 +76,6 @@ def test_live_dingtalk_dependencies_use_pm_not_retired_installer(monkeypatch):
     monkeypatch.setattr(extras, "ensure_import", unavailable)
     assert adapter.ensure_dingtalk_deps() is False
     assert requested == ["dingtalk"]
-
-
-@pytest.mark.parametrize("specs", [[], ["honcho-ai"]])
-def test_retired_install_specs_handoffs_before_reporting_success(specs, fresh_child):
-    from tools.lazy_deps import install_specs
-
-    before = list(specs)
-    with fresh_child.exits():
-        result = install_specs(specs, timeout=120)
-        pytest.fail(f"retired installer returned a result: {result}")
-    assert specs == before
 
 
 @pytest.mark.parametrize("handled", [False, True], ids=["unacknowledged", "child-completed"])

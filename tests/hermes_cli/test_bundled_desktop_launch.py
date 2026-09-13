@@ -100,6 +100,8 @@ def _host_bundle(tmp_path: Path) -> tuple[Path, Path]:
     if sys.platform == "win32":
         repo = _windows_bundle(tmp_path)
         return repo, tmp_path / "Hermes" / "Hermes.exe"
+    if sys.platform == "darwin":
+        return _macos_bundle(tmp_path), tmp_path / "Hermes.app/Contents/MacOS/Hermes"
     repo = _linux_bundle(tmp_path)
     return repo, tmp_path / "linux-unpacked" / "Hermes"
 
@@ -177,7 +179,7 @@ class TestShapePredicate:
 
 
 class TestLaunchDetached:
-    def test_the_child_outlives_this_process_and_owns_no_stdio(self):
+    def test_detach_flags_and_unowned_stdio_are_forwarded(self):
         seen = {}
 
         def fake_popen(argv, **kwargs):
@@ -198,7 +200,7 @@ class TestLaunchDetached:
         detach_key = "creationflags" if sys.platform == "win32" else "start_new_session"
         assert seen["kwargs"][detach_key]
 
-    def test_a_real_child_survives_and_is_reachable(self, tmp_path):
+    def test_a_real_detached_child_runs(self, tmp_path):
         """The one E2E rung: spawn a real process and prove it ran."""
         marker = tmp_path / "ran.txt"
         pid = launch_detached(
@@ -214,6 +216,7 @@ class TestLaunchDetached:
         assert marker.read_text() == "yes"
 
 
+@pytest.mark.platforms("windows", "linux", "macos")
 class TestCmdGuiOnABundle:
     """The behavior the checkout ladder got wrong: never build in a bundle."""
 

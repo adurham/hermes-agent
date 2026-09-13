@@ -6,16 +6,15 @@ output (no secret logging).
 """
 
 import gzip
-import io
 import os
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 from pathlib import Path
 
 import pytest
+from tests.termux_fixtures import build_deb
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts" / "termux"
@@ -27,71 +26,15 @@ GPG_PRESENT = shutil.which("gpg") is not None
 
 
 def make_deb(path: Path, package: str, version: str, arch: str = "aarch64", compression: str = "gz") -> None:
-    """Build a minimal .deb (ar archive with control.tar.gz) using stdlib only."""
-    control = (
-        f"Package: {package}\n"
-        f"Version: {version}\n"
-        f"Architecture: {arch}\n"
-        f"Maintainer: Test <test@example.com>\n"
-        f"Description: test package {package}\n"
-    )
-    buf = io.BytesIO()
-    mode = f"w:{compression}"
-    member = f"control.tar.{compression}" if compression != "tar" else "control.tar"
-    with tarfile.open(fileobj=buf, mode=mode) as tf:
-        data = control.encode("utf-8")
-        ti = tarfile.TarInfo("control")
-        ti.size = len(data)
-        tf.addfile(ti, io.BytesIO(data))
-
-    ar = io.BytesIO()
-    ar.write(b"!<arch>\n")
-    payload = buf.getvalue()
-    header = "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}".format(
-        member, "0", "0", "0", "100644", str(len(payload))
-    ).encode() + b"`\n"
-    ar.write(header)
-    ar.write(payload)
-    if len(payload) % 2:
-        ar.write(b"\n")
-    path.write_bytes(ar.getvalue())
+    build_deb(path, {"Package": package, "Version": version, "Architecture": arch,
+                     "Maintainer": "Test <test@example.com>", "Description": f"test package {package}"},
+              compression=compression)
 
 
 @pytest.fixture
 def no_gpg(monkeypatch):
     """Make the script believe gpg is absent so signing is skipped (exit 3)."""
     monkeypatch.setattr(stage_apt_repo.shutil, "which", lambda _: None)
-
-
-@pytest.fixture
-def fake_gpg(monkeypatch, tmp_path):
-    """Make the script believe gpg is present, but stub out signing."""
-    monkeypatch.setattr(stage_apt_repo.shutil, "which", lambda _: "C:/fake/gpg.exe")
-    monkeypatch.setattr(stage_apt_repo, "sign", lambda *a, **k: None)
-    key = tmp_path / "signing.asc"
-    key.write_text("stub-key\n")
-    return key
-
-
-def test_stages_xz_control_deb(tmp_path):
-    """dpkg >= 1.21 emits xz/zst control members; our build uses -Zxz so the
-    stager must read xz controls (gz is covered by every other test)."""
-    pool = tmp_path / "pool"
-    pool.mkdir()
-    make_deb(pool / "hermes-agent_1.0-1_aarch64.deb", "hermes-agent", "1.0-1", compression="xz")
-    out = tmp_path / "out"
-    out.mkdir()
-    rc = stage_apt_repo.stage(pool, out, "hermes-canary", None)
-    assert rc == 3  # unsigned (no gpg key file) but staged
-
-
-def test_control_field_extraction(tmp_path):
-    deb = tmp_path / "pkg_a.deb"
-    make_deb(deb, "hermes-agent", "1.2.3-1")
-    fields = stage_apt_repo.deb_control_fields(deb)
-    assert fields["Package"] == "hermes-agent"
-    assert fields["Version"] == "1.2.3-1"
-    assert fields["Architecture"] == "aarch64"
 
 
 def test_canary_versions_below_stable():
@@ -105,97 +48,51 @@ def test_canary_versions_below_stable():
     ]
 
 
-def test_dists_layout_and_pool_copy(tmp_path, fake_gpg):
-    pool = tmp_path / "pool-in"
-    pool.mkdir()
-    make_deb(pool / "hermes-agent_1.2.3-1_aarch64.deb", "hermes-agent", "1.2.3-1")
-    out = tmp_path / "repo"
-    r = stage_apt_repo.main(
-        [
-            "--pool", str(pool), "--out", str(out), "--suite", "hermes-stable",
-            "--gpg-key-file", str(fake_gpg),
-        ]
-    )
-    assert r == 0
-
-    dists = out / "dists" / "hermes-stable" / "main" / "binary-aarch64"
-    assert (dists / "Packages").exists()
-    assert (dists / "Packages.gz").exists()
-    assert (out / "dists" / "hermes-stable" / "Release").exists()
-
-    deb_out = out / "pool" / "h" / "hermes-agent_1.2.3-1_aarch64.deb"
-    assert deb_out.exists()
-
-    text = (dists / "Packages").read_text(encoding="utf-8")
-    assert "Package: hermes-agent" in text
-    assert "Version: 1.2.3-1" in text
-    assert "Filename: pool/h/hermes-agent_1.2.3-1_aarch64.deb" in text
-    assert "SHA256: " in text
-
-    gz_text = gzip.decompress((dists / "Packages.gz").read_bytes()).decode()
-    assert gz_text == text
-
-    release = (out / "dists" / "hermes-stable" / "Release").read_text()
-    assert "Suite: hermes-stable" in release
-    assert "SHA256:" in release
-    assert "SHA512:" in release
-    # apt contract (learned from a real device rejecting our first repo):
-    # Date is mandatory, and the checksum sections must live in the SAME
-    # deb822 stanza as the header fields -- a blank line ends the record,
-    # after which apt "provides only weak security information" and
-    # disables the repository.
-    assert "Date: " in release
-    assert "\n\n" not in release, "blank line splits the Release stanza"
-    head, _, checksums_block = release.partition("SHA256:\n")
-    assert "Date: " in head, "Date must precede the checksum sections"
-
-
-def test_immutability_refusal(tmp_path, fake_gpg, capsys):
-    pool = tmp_path / "pool-in"
-    pool.mkdir()
-    make_deb(pool / "hermes-agent_1.2.3-1_aarch64.deb", "hermes-agent", "1.2.3-1")
-    out = tmp_path / "repo"
-    assert stage_apt_repo.main(
-        [
-            "--pool", str(pool), "--out", str(out), "--suite", "hermes-stable",
-            "--gpg-key-file", str(fake_gpg),
-        ]
-    ) == 0
-    with pytest.raises(SystemExit) as ei:
-        stage_apt_repo.main(
-            [
-                "--pool", str(pool), "--out", str(out), "--suite", "hermes-stable",
-                "--gpg-key-file", str(fake_gpg),
-            ]
-        )
-    assert ei.value.code == 2
-    assert "already published" in capsys.readouterr().err
-
-
-def test_by_hash_indexes_match_release_and_survive_later_publication(tmp_path):
+def test_unsigned_multiversion_publication_and_immutable_indexes(tmp_path, capsys):
     import hashlib
 
     pool = tmp_path / "pool"
     pool.mkdir()
-    package = pool / "hermes-agent.deb"
-    make_deb(package, "hermes-agent", "1.0-1")
+    versions = ["1.2.3~canary.20260901000000-1", "1.2.3-1"]
+    for filename, version, compression in zip(("a.deb", "b.deb"), versions, ("gz", "xz")):
+        make_deb(pool / filename, "hermes-agent", version, compression=compression)
     out = tmp_path / "repo"
-    assert stage_apt_repo.stage(pool, out, "hermes-canary", None) == 3
+    args = ["--pool", str(pool), "--out", str(out), "--suite", "hermes-canary"]
+    assert stage_apt_repo.main(args) == 3
     binary = out / "dists/hermes-canary/main/binary-aarch64"
-    original = {}
+    text = (binary / "Packages").read_text(encoding="utf-8")
+    records = [dict(line.split(": ", 1) for line in stanza.splitlines()) for stanza in text.strip().split("\n\n")]
+    assert [row["Version"] for row in records] == versions
+    for row in records:
+        assert row["Package"] == "hermes-agent" and row["Architecture"] == "aarch64"
+        copied = out / row["Filename"]
+        original = pool / copied.name
+        assert copied.read_bytes() == original.read_bytes()
+        assert row["SHA256"] == hashlib.sha256(copied.read_bytes()).hexdigest()
+        assert row["Size"] == str(copied.stat().st_size)
+    assert gzip.decompress((binary / "Packages.gz").read_bytes()).decode() == text
+    release = (out / "dists/hermes-canary/Release").read_text(encoding="utf-8")
+    assert "Suite: hermes-canary\n" in release and "Acquire-By-Hash: yes\n" in release
+    assert "\n\n" not in release
+    assert "Date: " in release.partition("SHA256:\n")[0]
+    immutable = {}
     for name in ("Packages", "Packages.gz"):
         data = (binary / name).read_bytes()
         for algorithm in ("SHA256", "SHA512"):
             digest = hashlib.new(algorithm.lower(), data).hexdigest()
-            immutable = binary / "by-hash" / algorithm / digest
-            assert immutable.read_bytes() == data
-            original[immutable] = data
-    release = (out / "dists/hermes-canary/Release").read_text()
-    assert "Acquire-By-Hash: yes\n" in release
-    make_deb(package, "hermes-agent", "1.1-1")
-    assert stage_apt_repo.stage(pool, out, "hermes-canary", None) == 3
-    for path, data in original.items():
-        assert path.read_bytes() == data
+            assert [digest, str(len(data)), f"main/binary-aarch64/{name}"] in [line.split() for line in release.splitlines()]
+            path = binary / "by-hash" / algorithm / digest
+            assert path.read_bytes() == data
+            immutable[path] = data
+    assert stage_apt_repo.existing_published(out, "hermes-canary") == {("hermes-agent", v) for v in versions}
+    with pytest.raises(SystemExit) as stopped:
+        stage_apt_repo.main(args)
+    assert stopped.value.code == 2 and "already published" in capsys.readouterr().err
+    for old in pool.iterdir():
+        old.unlink()
+    make_deb(pool / "c.deb", "hermes-agent", "1.2.4-1")
+    assert stage_apt_repo.main(args) == 3
+    assert all(path.read_bytes() == data for path, data in immutable.items())
 
 
 def test_unsigned_release_exit_3_without_gpg(tmp_path, no_gpg):
@@ -211,78 +108,6 @@ def test_unsigned_release_exit_3_without_gpg(tmp_path, no_gpg):
     assert not (out / "dists" / "hermes-canary" / "InRelease").exists()
     assert not (out / "dists" / "hermes-canary" / "Release.gpg").exists()
 
-
-def test_signing_invoked_when_gpg_and_key_present(tmp_path, monkeypatch):
-    """No real gpg: assert sign() is called with the right dists dir/key file."""
-    calls = []
-
-    def fake_sign(dists, release_path, gpg_key_file):
-        calls.append((str(dists), str(release_path), str(gpg_key_file)))
-        (dists / "InRelease").write_text("stub", encoding="utf-8")
-        (dists / "Release.gpg").write_text("stub", encoding="utf-8")
-
-    monkeypatch.setattr(stage_apt_repo.shutil, "which", lambda _: "C:/fake/gpg.exe")
-    monkeypatch.setattr(stage_apt_repo, "sign", fake_sign)
-
-    pool = tmp_path / "pool-in"
-    pool.mkdir()
-    make_deb(pool / "hermes-agent_1.2.3-1_aarch64.deb", "hermes-agent", "1.2.3-1")
-    out = tmp_path / "repo"
-    keyfile = tmp_path / "signing.asc"
-    keyfile.write_text("-----BEGIN PGP PRIVATE KEY BLOCK-----\n")
-    code = stage_apt_repo.main(
-        [
-            "--pool", str(pool), "--out", str(out), "--suite", "hermes-stable",
-            "--gpg-key-file", str(keyfile),
-        ]
-    )
-    assert code == 0
-    assert len(calls) == 1
-    dists, release_path, kf = calls[0]
-    assert dists == str(out / "dists" / "hermes-stable")
-    assert release_path == str(out / "dists" / "hermes-stable" / "Release")
-    assert kf == str(keyfile)
-    assert (out / "dists" / "hermes-stable" / "InRelease").exists()
-
-
-# ---------------------------------------------------------------------------
-# deb822 record separation (multiversion Packages correctness)
-# ---------------------------------------------------------------------------
-
-def _stanza_count(packages_text: str) -> int:
-    return len([s for s in packages_text.split("\n\n") if s.strip()])
-
-
-def test_multiversion_packages_records_are_blank_line_separated(tmp_path):
-    """Multiple versions of one package must be separate deb822 records:
-    apt splits records on blank lines, so a missing blank line merges two
-    versions into one garbled stanza and drops the later one."""
-    pool = tmp_path / "pool-in"
-    pool.mkdir()
-    make_deb(pool / "a.deb", "hermes-agent", "1.2.3~canary.20260901000000-1")
-    make_deb(pool / "b.deb", "hermes-agent", "1.2.3-1")
-    out = tmp_path / "repo"
-    assert stage_apt_repo.main(
-        ["--pool", str(pool), "--out", str(out), "--suite", "hermes-canary"]
-    ) == 3  # staged unsigned
-
-    text = (out / "dists" / "hermes-canary" / "main" / "binary-aarch64" / "Packages").read_text()
-    assert _stanza_count(text) == 2
-    assert "Version: 1.2.3~canary.20260901000000-1\n" in text
-    assert "Version: 1.2.3-1\n" in text
-    # each stanza carries its own checksum
-    assert text.count("SHA256: ") == 2
-    # the repo's own published-set parser agrees (it feeds immutability)
-    published = stage_apt_repo.existing_published(out, "hermes-canary")
-    assert published == {
-        ("hermes-agent", "1.2.3~canary.20260901000000-1"),
-        ("hermes-agent", "1.2.3-1"),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Real-GPG behavioral tests (throwaway key in a temp GNUPGHOME)
-# ---------------------------------------------------------------------------
 
 def _generate_test_key(home: Path, passphrase: str = "") -> str:
     """Generate a throwaway ed25519 signing key inside `home` and return
@@ -349,18 +174,19 @@ def tracked_gpg_argv(monkeypatch):
 
 
 @pytest.mark.skipif(not GPG_PRESENT, reason="gpg binary not available")
-def test_real_gpg_signs_and_published_public_key_verifies(tmp_path, monkeypatch, tracked_gpg_argv, short_home):
+@pytest.mark.parametrize("secret_pass", ["", "correct-horse-battery-staple"])
+def test_real_gpg_signs_and_published_public_key_verifies(tmp_path, monkeypatch, tracked_gpg_argv, short_home, secret_pass):
     """Full behavior: a staged repo signs in an isolated temp GNUPGHOME, and
     InRelease + detached Release.gpg verify as GOOD signatures using ONLY
     the published key.asc (independent gpgv keyring)."""
-    monkeypatch.delenv("TERMUX_APT_GPG_PASSPHRASE", raising=False)
+    monkeypatch.setenv("TERMUX_APT_GPG_PASSPHRASE", secret_pass)
     kh = short_home()
-    fpr = _generate_test_key(kh)
+    fpr = _generate_test_key(kh, passphrase=secret_pass)
     stage_apt_repo._gpg_run(
-        kh, ["--quick-add-key", fpr, "ed25519", "sign", "never"], passphrase="",
+        kh, ["--quick-add-key", fpr, "ed25519", "sign", "never"], passphrase=secret_pass,
     )
     keyfile = tmp_path / "signing.asc"
-    keyfile.write_bytes(_export_secret_key(kh, fpr))
+    keyfile.write_bytes(_export_secret_key(kh, fpr, passphrase=secret_pass))
 
     pool = tmp_path / "pool-in"
     pool.mkdir()
@@ -379,6 +205,8 @@ def test_real_gpg_signs_and_published_public_key_verifies(tmp_path, monkeypatch,
     # the system temp dir, never the user's default keyring.
     temp_root = stage_apt_repo._gpg_homedir_arg(Path(tempfile.gettempdir()))
     for argv in tracked_gpg_argv:
+        if secret_pass:
+            assert secret_pass not in " ".join(argv)
         assert "--homedir" in argv, f"gpg called without --homedir: {argv}"
         homedir = argv[argv.index("--homedir") + 1]
         assert homedir.startswith(temp_root), homedir
@@ -409,38 +237,6 @@ def test_real_gpg_signs_and_published_public_key_verifies(tmp_path, monkeypatch,
 
 
 @pytest.mark.skipif(not GPG_PRESENT, reason="gpg binary not available")
-def test_real_gpg_passphrase_reaches_gpg_via_stdin_never_argv(tmp_path, monkeypatch, tracked_gpg_argv, short_home):
-    """A passphrase-protected signing key works (env var -> stdin fd), and
-    the passphrase never appears in any spawned argv."""
-    secret_pass = "correct-horse-battery-staple"
-    monkeypatch.setenv("TERMUX_APT_GPG_PASSPHRASE", secret_pass)
-    kh = short_home()
-    fpr = _generate_test_key(kh, passphrase=secret_pass)
-    keyfile = tmp_path / "signing.asc"
-    keyfile.write_bytes(_export_secret_key(kh, fpr, passphrase=secret_pass))
-
-    pool = tmp_path / "pool-in"
-    pool.mkdir()
-    make_deb(pool / "h.deb", "hermes-agent", "1.2.3-1")
-    out = tmp_path / "repo"
-    assert stage_apt_repo.main(
-        ["--pool", str(pool), "--out", str(out),
-         "--suite", "hermes-canary", "--gpg-key-file", str(keyfile)]
-    ) == 0
-
-    for argv in tracked_gpg_argv:
-        assert secret_pass not in " ".join(argv), "passphrase leaked into argv"
-
-    dists = out / "dists" / "hermes-canary"
-    vr = short_home(prefix="apt-test-verify-")
-    stage_apt_repo._gpg_run(vr, ["--import"], stdin=(out / "key.asc").read_bytes())
-    r = _independent_gpgv_verify(vr, dists / "InRelease")
-    assert r.returncode == 0, r.stderr.decode()
-    r = _independent_gpgv_verify(vr, dists / "Release.gpg", dists / "Release")
-    assert r.returncode == 0, r.stderr.decode()
-
-
-@pytest.mark.skipif(not GPG_PRESENT, reason="gpg binary not available")
 def test_real_gpg_tampered_metadata_fails_closed(tmp_path, monkeypatch, short_home):
     """Fail-closed contract: verification of the signed artifacts is done
     with the signing key, and any post-sign mutation of the Release is
@@ -458,27 +254,24 @@ def test_real_gpg_tampered_metadata_fails_closed(tmp_path, monkeypatch, short_ho
     pool.mkdir()
     make_deb(pool / "h.deb", "hermes-agent", "1.2.3-1")
     out = tmp_path / "repo"
-    assert stage_apt_repo.main(
-        ["--pool", str(pool), "--out", str(out),
-         "--suite", "hermes-stable", "--gpg-key-file", str(keyfile)]
-    ) == 0
+    real_gpg = stage_apt_repo._gpg_run
 
-    dists = out / "dists" / "hermes-stable"
-    # untouched artifacts verify with the exact signing fingerprint
-    stage_apt_repo._verify_signature(kh, fpr, dists / "InRelease", None)
-    stage_apt_repo._verify_signature(kh, fpr, dists / "Release.gpg", dists / "Release")
+    def tamper_after_sign(home, args, **kwargs):
+        result = real_gpg(home, args, **kwargs)
+        if "--detach-sign" in args:
+            release = Path(args[-1])
+            release.write_bytes(release.read_bytes() + b"Architectures: amd64\n")
+        return result
 
-    # tamper with the signed Release -> detached sig no longer validates
-    # (gpg exits non-zero during re-verification -> fail closed)
-    release_path = dists / "Release"
-    release_path.write_text(release_path.read_text() + "Architectures: amd64\n")
+    monkeypatch.setattr(stage_apt_repo, "_gpg_run", tamper_after_sign)
     with pytest.raises(stage_apt_repo.StageError):
-        stage_apt_repo._verify_signature(kh, fpr, dists / "Release.gpg", release_path)
-
-    # and gpgv agrees independently
+        stage_apt_repo.stage(pool, out, "hermes-stable", keyfile)
+    assert not (out / "key.asc").exists(), "verification must precede public-key publication"
+    dists = out / "dists/hermes-stable"
     vr = short_home(prefix="apt-test-verify-")
-    stage_apt_repo._gpg_run(vr, ["--import"], stdin=(out / "key.asc").read_bytes())
-    assert _independent_gpgv_verify(vr, dists / "Release.gpg", release_path).returncode != 0
+    public = real_gpg(kh, ["--armor", "--export", fpr]).stdout
+    real_gpg(vr, ["--import"], stdin=public)
+    assert _independent_gpgv_verify(vr, dists / "Release.gpg", dists / "Release").returncode != 0
 
 
 @pytest.mark.skipif(not GPG_PRESENT, reason="gpg binary not available")

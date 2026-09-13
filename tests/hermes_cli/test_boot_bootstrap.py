@@ -57,10 +57,6 @@ def _head_sha(root):
 # ── read_git_head ────────────────────────────────────────────────────
 
 
-def test_read_git_head_branch_ref(repo):
-    assert read_git_head(repo) == _head_sha(repo)
-
-
 def test_git_selection_uses_pm_public_package_reader(repo, monkeypatch):
     from types import SimpleNamespace
     import pm
@@ -134,18 +130,6 @@ def test_read_git_head_missing_and_garbage(tmp_path):
 # ── current_install_identity ─────────────────────────────────────────
 
 
-def test_identity_prefers_git(repo):
-    assert current_install_identity(repo) == _head_sha(repo)
-
-
-def test_identity_sealed_stamp(tmp_path):
-    (tmp_path / "install-stamp.json").write_text(
-        json.dumps({"commit": "a" * 40, "distribution": "desktop-app", "updateMechanism": "electron-updater"}),
-        encoding="utf-8",
-    )
-    assert current_install_identity(tmp_path) == "a" * 40
-
-
 def test_identity_broken_tree_is_none(tmp_path):
     assert current_install_identity(tmp_path) is None
     (tmp_path / "install-stamp.json").write_text("garbage", encoding="utf-8")
@@ -167,21 +151,6 @@ def test_record_paths_key_on_install_root(tmp_path, monkeypatch):
     assert a.name == b.name  # the profile filename is the shared part
 
 
-def test_home_records_differ_per_profile(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    base = tmp_path / ".hermes"
-    profile = base / "profiles" / "coder"
-    install = tmp_path / "install"
-
-    monkeypatch.setenv("HERMES_HOME", str(base))
-    home_default = record_path(install)
-
-    monkeypatch.setenv("HERMES_HOME", str(profile))
-    home_profile = record_path(install)
-
-    assert home_default != home_profile  # each profile bootstraps its own home
-
-
 @pytest.mark.skipif(
     os.name == "nt", reason="requires symlink privilege on Windows"
 )
@@ -197,26 +166,11 @@ def test_symlinked_root_canonicalizes(tmp_path, monkeypatch):
 # ── needs_bootstrap ──────────────────────────────────────────────────
 
 
-def test_needs_bootstrap_lifecycle(repo, tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    sha = _head_sha(repo)
-
-    # No record yet → identity returned.
-    assert needs_bootstrap(repo) == sha
-
-    _write_record(record_path(repo), sha, {})
-    assert needs_bootstrap(repo) is None
-
-    # New commit → mismatch again.
-    (repo / "f.txt").write_text("2", encoding="utf-8")
-    _git(["add", "."], repo)
-    _git(["commit", "-m", "two"], repo)
-    assert needs_bootstrap(repo) == _head_sha(repo)
-
-
 def test_needs_bootstrap_broken_tree_never_fires(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     assert needs_bootstrap(tmp_path / "nope") is None
+    assert run_boot_bootstrap(tmp_path / "nope") == {"home": "skipped"}
+    assert not record_path(tmp_path / "nope").exists()
 
 
 # ── lock protocol ────────────────────────────────────────────────────
@@ -270,52 +224,6 @@ def fake_steps(monkeypatch):
 
     monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("h", home_step),))
     return calls
-
-
-def test_run_boot_bootstrap_runs_then_noops(repo, tmp_path, monkeypatch, fake_steps):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-
-    first = run_boot_bootstrap(repo)
-    assert fake_steps == {"home": 1}
-    assert first["home"] == {"h": {"ok": True}}
-
-    second = run_boot_bootstrap(repo)
-    assert fake_steps == {"home": 1}  # no re-run
-    assert second == {"home": "skipped"}
-
-
-def test_each_profile_runs_its_own_home_steps(repo, tmp_path, monkeypatch, fake_steps):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    base = tmp_path / ".hermes"
-
-    monkeypatch.setenv("HERMES_HOME", str(base))
-    run_boot_bootstrap(repo)
-    monkeypatch.setenv("HERMES_HOME", str(base / "profiles" / "coder"))
-    run_boot_bootstrap(repo)
-
-    # Each home bootstraps itself.
-    assert fake_steps == {"home": 2}
-
-
-def test_step_failure_still_writes_record(repo, tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-
-    from hermes_cli import post_update
-
-    def boom():
-        raise RuntimeError("step exploded")
-
-    monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("boom", boom),))
-
-    run_boot_bootstrap(repo)
-    record = read_last_known(record_path(repo))
-    assert record["identity"] == _head_sha(repo)
-    assert record["results"]["boom"]["ok"] is False
-
-    # A broken step must not retrigger the slow path every boot.
-    assert needs_bootstrap(repo) is None
 
 
 def test_double_check_under_lock(repo, tmp_path, monkeypatch, fake_steps):

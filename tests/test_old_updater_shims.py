@@ -17,8 +17,9 @@ from tests.compat.old_updater_support import (
 
 
 @pytest.mark.parametrize(
-    "module,name,args,kwargs",
+    "module,name,args,kwargs,cached",
     [
+        *((f"hermes_cli.{module}", name, args, kwargs, None) for module, name, args, kwargs in [
         ("managed_uv", "ensure_uv", (), {}),
         ("managed_uv", "ensure_uv", (), {"repair_observer": lambda result: pytest.fail("repair observer ran")}),
         ("managed_uv", "update_managed_uv", (), {}),
@@ -53,18 +54,70 @@ from tests.compat.old_updater_support import (
         ("update_cmd", "_write_lazy_refresh_incomplete_marker", (), {}),
         ("update_cmd", "_reload_updated_runtime_modules", (), {}),
         ("update_cmd_maint", "_reload_updated_runtime_modules", (), {}),
+    ]),
+        *(("hermes_cli.main", name, args, kwargs, None) for name, args, kwargs in [
+        ("_desktop_stamp_path", (), {}),
+        ("_expected_windows_pe_machines", (), {}),
+        ("_hermes_exe_shims", (Path("venv"),), {}),
+        ("_insert_python_pin", (["uv", "pip", "install", "-e", "."],), {}),
+        ("_interpreter_scripts_dir", (), {}),
+        ("_load_installable_optional_extras", (), {"group": "termux-all"}),
+        ("_parse_pe_machine", (Path("Hermes.exe"),), {}),
+        ("_quarantine_running_hermes_exe", (Path("venv"),), {"max_attempts": 1, "failed_out": []}),
+        ("_repair_broken_lazy_refresh_imports", (["uv", "pip"], ["certifi"]), {"env": {"VIRTUAL_ENV": "venv"}}),
+        ("_run_install_with_heartbeat", (["uv", "pip", "install", "-e", "."],),
+         {"env": {"VIRTUAL_ENV": "venv"}, "heartbeat_interval_seconds": 1}),
+        ("_run_package_only_install", (["uv", "pip", "install", "-e", "."],), {"env": {"VIRTUAL_ENV": "venv"}}),
+        ("_run_quarantined_install", (["uv", "pip", "install", "-e", "."],),
+         {"env": {"VIRTUAL_ENV": "venv"}, "scripts_dir": Path("venv"), "strict_quarantine": True}),
+        ("_run_quarantined_install", (["uv", "pip", "install", "-e", "."],), {}),
+        ("_run_with_idle_timeout", (["uv", "pip", "install", "-e", "."], Path("venv")),
+         {"env": {"VIRTUAL_ENV": "venv"}, "idle_timeout_seconds": 1, "indent": ""}),
+        ("_self", (), {}),
+        ("_verify_console_scripts_installed", (["uv", "pip"],), {"env": {"VIRTUAL_ENV": "venv"}}),
+        ("_verify_core_dependencies_installed", (["uv", "pip"],), {"env": {"VIRTUAL_ENV": "venv"}, "group": "all"}),
+        ("_web_ui_build_needed", (Path("web"),), {}),
+        ("_windows_native_machine", (), {}),
+        ("_windows_shim_in_process_chain", (), {}),
+    ]),
+        *(("hermes_cli.main", name, args, kwargs, cached) for name, args, kwargs in [
+        ("_capture_active_lazy_features", (), {}),
+        ("_refresh_active_lazy_features", (), {}),
+        ("_refresh_active_lazy_features", (["browser"],), {}),
+        ("_refresh_active_lazy_features", (["uv", "pip"],),
+         {"env": {"VIRTUAL_ENV": "venv"}, "features": ["browser"]}),
+        ("_refresh_active_memory_provider_dependencies", (), {}),
+        ("_npm_lockfile_changed", (Path("checkout"),), {}),
+        ("_write_update_incomplete_marker", (), {}),
+        ("_reload_updated_runtime_modules", (), {}),
+    ] for cached in (False, True)),
+        ("hermes_cli.main_web_build", "_run_with_idle_timeout", (["npm", "ci"], Path("web")), {}, None),
+        ("hermes_cli.main_web_build", "_run_npm_install_deterministic", ("npm", Path("web")), {}, None),
+        ("hermes_cli.main_web_build", "_nixos_build_env", (), {}, None),
+        ("hermes_cli.main", "_reexec_dependency_sync_off_windows_shim", (), {}, None),
+        ("hermes_cli.update_cmd", "get_default_hermes_root", (), {}, None),
+        ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {}, None),
+        ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {"timeout": 120, "capture_output": False}, None),
+        ("tools.lazy_deps", "install_specs", ([],), {"timeout": 120}, None),
+        ("tools.lazy_deps", "install_specs", (["honcho-ai"],), {"timeout": 120}, None),
     ],
 )
-def test_retired_dependency_entrypoints_handoff_without_fallback(module, name, args, kwargs, fresh_child):
+def test_retired_dependency_entrypoints_handoff_without_fallback(module, name, args, kwargs, cached, fresh_child, monkeypatch):
     # Some boundaries (notably psutil_android) hand off during import itself.
     # Resolve ordinary modules before the guard: their CLI startup is not a shim.
-    if module != "psutil_android":
-        importlib.import_module(f"hermes_cli.{module}")
+    if module != "hermes_cli.psutil_android":
+        resolved = importlib.import_module(module)
+        if cached is not None:
+            # Reset lazy exports even when earlier rows warmed the facade.
+            monkeypatch.setitem(resolved.__dict__, name, None)
+            monkeypatch.delitem(resolved.__dict__, name)
+            if cached:
+                getattr(resolved, name)
     # Exceptions have identity equality; preserve the caller's instance too.
     memo = {id(arg): arg for arg in args if isinstance(arg, BaseException)}
     before = deepcopy((args, kwargs), memo)
     with fresh_child.exits():
-        getattr(importlib.import_module(f"hermes_cli.{module}"), name)(*args, **kwargs)
+        getattr(importlib.import_module(module), name)(*args, **kwargs)
     assert (args, kwargs) == before
 
 
@@ -97,8 +150,11 @@ def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):
     assert config.format_unsupported_install_warning("pip") == ""
     assert main._detect_venv_python_processes() == []
     assert main._detect_venv_python_processes(exclude_pids={123}) == []
-    assert browser_tool.warm_agent_browser_npx_cache() is False
-    assert browser_tool.warm_agent_browser_npx_cache(timeout=0.1) is False
+    # Require the permanent historical definition, never the temporary lazy pointer.
+    warmer = vars(browser_tool)["warm_agent_browser_npx_cache"]
+    assert warmer.__module__ == browser_tool.__name__
+    assert warmer() is False
+    assert warmer(timeout=0.1) is False
     # A private, never-raised type keeps historical `except helper():` valid
     # without swallowing real errors or resolving the removed quarantine code.
     error_type = update_cmd._shim_quarantine_error_type()

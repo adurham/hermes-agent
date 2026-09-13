@@ -130,6 +130,9 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     source, uv, env = installable_project
     monkeypatch.setattr(pm.paths, "repo_root", lambda: tmp_path / "unrelated-project")
     monkeypatch.setattr(pm.workspace, "enabled_member_dirs", lambda: pytest.fail("user plugins"))
+    monkeypatch.setenv("UV_PYTHON", "/not-the-interpreter")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "wrong-environment"))
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "wrong-environment"))
     before = dict(os.environ)
     locked = (source / "uv.lock").read_bytes()
     executable = build_environment(explicit=True,
@@ -141,6 +144,8 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
                  "import root_app, member_dep, chosen_dep, other_dep; print(root_app.VALUE)"],
                 cwd=tmp_path, env=env) == "installed from the explicit source"
     assert executable.parent.parent == tmp_path / "native environment"
+    assert not (tmp_path / "wrong-environment").exists()
+    assert "root_app" not in sys.modules
     from hermes_cli.runtime_paths import site_packages
 
     site = site_packages(executable.parent.parent)
@@ -631,6 +636,9 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     _wheel(tmp_path / "wheels", "base_dep", "1.1")
     original_member = source / "member"
     before_member = (original_member / "pyproject.toml").read_bytes()
+    stamp = workspace.members_stamp([original_member])
+    assert stamp != workspace.members_stamp([])
+    assert workspace.members_stamp([original_member, original_member]) == stamp
     monkeypatch.setattr(workspace.paths, "repo_root", lambda: pytest.fail("implicit source discovery"))
     monkeypatch.setattr(workspace, "enabled_member_dirs", lambda: pytest.fail("profile discovery"))
 
@@ -648,6 +656,15 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     assert (original_member / "pyproject.toml").read_bytes() == before_member
     recorded = tmp_path / "first" / "workspace"
     recorded_lock = (recorded / "uv.lock").read_bytes()
+    import tomllib
+    document = tomllib.loads((recorded / "pyproject.toml").read_text())
+    assert document["project"] == tomllib.loads(project.read_text())["project"]
+    [relative] = document["tool"]["uv"]["workspace"]["members"]
+    copied = recorded / relative / "pyproject.toml"
+    assert copied.read_bytes() == before_member
+    assert copied.resolve().is_relative_to(recorded.resolve())
+    (original_member / "pyproject.toml").unlink()
+    assert workspace.members_stamp([original_member]) != stamp
 
     # Repair replays recorded inputs, not today's edited source/plugins.
     (original_member / "pyproject.toml").write_text("broken plugin TOML")
@@ -664,6 +681,51 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
                 cwd=tmp_path, env=env) == "1.0"
     assert (tmp_path / "second" / "workspace" / "uv.lock").read_bytes() == recorded_lock
     assert (recorded / "uv.lock").read_bytes() == recorded_lock
+
+
+@pytest.mark.parametrize("failure", ["facts", "missing-cfg", "restart"])
+def test_real_sync_retains_selection_until_commit(locked_project, tmp_path, monkeypatch, failure):
+    import importlib
+    import pm.extras as extras
+    from pm import paths
+    from pm.lock import Facts
+    from hermes_cli.runtime_paths import selected_venv
+
+    source, uv, env = locked_project
+    monkeypatch.setattr(paths, "repo_root", lambda: source)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (uv, Path(sys.executable)))
+    engine = importlib.import_module("pm.ensure")
+    monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
+    engine.sync_venv(["chosen"], plugin_dirs=[], explicit=True)
+    old = selected_venv(source)
+    facts = paths.runtime_facts_path().read_bytes()
+    home = Path(os.environ["HERMES_HOME"])
+    config = home / "config.yaml"
+    config.write_text("plugins: {enabled: []}\nsecurity: {allow_lazy_installs: true}\n")
+    config_bytes = config.read_bytes()
+    if failure == "facts":
+        def refuse(*args, **kwargs):
+            raise OSError("facts disk full")
+        with monkeypatch.context() as fault:
+            fault.setattr(Facts, "record_state", refuse)
+            with pytest.raises(OSError, match="facts disk full"):
+                engine.sync_venv(["other"], plugin_dirs=[], explicit=True)
+        assert selected_venv(source) == old
+        assert paths.runtime_facts_path().read_bytes() == facts
+    elif failure == "missing-cfg":
+        (old / "pyvenv.cfg").unlink()
+        engine.sync_venv(["chosen"], plugin_dirs=[], explicit=True)
+        assert selected_venv(source) != old
+        assert (selected_venv(source) / "pyvenv.cfg").is_file()
+    else:
+        monkeypatch.setattr("pm.client.sync_venv", engine.sync_venv)
+        monkeypatch.setattr(extras, "available", lambda _: False)
+        with pytest.raises(engine.InstallError, match="restart"):
+            extras.ensure_import("other")
+        assert selected_venv(source) != old
+        assert "other_dep" not in sys.modules
+    assert old.is_dir()
+    assert config.read_bytes() == config_bytes
 
 
 def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, monkeypatch):

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import importlib
-import os
 from pathlib import Path
 import subprocess
 import shutil
@@ -33,36 +32,6 @@ def test_isolated_worker_preserves_install_error(client, monkeypatch):
     assert caught.value.remedy == "add it with `hermes pm lock --bump`"
     assert not paths.facts_path().exists()
 
-
-def test_worker_build_owns_creation_and_preserves_parent_environment(build_worker, tmp_path, monkeypatch):
-    import json
-    client = build_worker
-    source = tmp_path / "project with spaces"
-    source.mkdir()
-    wheels = tmp_path / "wheels"
-    wheels.mkdir()
-    _wheel(wheels, "worker_dep")
-    (source / "pyproject.toml").write_text(
-        '[project]\nname="worker-proof"\nversion="1"\nrequires-python=">=3.11"\n'
-        'dependencies=["worker-dep==1.0"]\n[tool.uv]\npackage=false\nno-index=true\n'
-        f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8",
-    )
-    monkeypatch.setenv("UV_PYTHON", "/not-the-interpreter")
-    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "wrong-environment"))
-    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "wrong-environment"))
-    before = dict(os.environ)
-    python = client.build_environment(source=source, out=tmp_path / "dependency tree",
-                                      frozen=False, offline=True, explicit=True)
-    result = subprocess.run([str(python), "-I", "-c", "import json,sys,worker_dep; print(json.dumps([sys.prefix, worker_dep.__version__]))"],
-                            capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == [str(python.parent.parent), "1.0"]
-    assert "worker_dep" not in sys.modules
-    assert not (tmp_path / "wrong-environment").exists()
-    assert dict(os.environ) == before
-    with pytest.raises(OSError, match="already exists"):
-        client.build_environment(source=source, out=python.parent.parent, explicit=True)
-    assert python.is_file()
 
 
 def test_refused_or_already_paused_install_does_not_acquire_runtime(client, monkeypatch):
@@ -138,6 +107,12 @@ def test_currency_probe_preserves_union_and_candidate_inputs(client, tmp_path, m
         return {path.relative_to(tmp_path): (path.read_bytes() if path.is_file() else None)
                 for path in tmp_path.rglob("*")}
 
+    from pm.lock import Lockfile
+    pins = Lockfile(paths.lockfile_path())
+    pins.set_pin("python", "test.1", {"any": {"url": "https://example.invalid/python", "sha256": "1" * 64}})
+    pins.save()
+    Facts(facts_path).record_state("venv", Venv(repo).expected_stamp(recorded, plugin_dirs=members), recorded,
+                                   environment=environment)
     before = snapshot()
     assert client.venv_is_current(extras=["provider-extra"], plugin_dirs=members, **root_args)
     assert client.venv_is_current(extras=[], plugin_dirs=members, **root_args)
@@ -145,6 +120,27 @@ def test_currency_probe_preserves_union_and_candidate_inputs(client, tmp_path, m
     assert not client.venv_is_current(extras=recorded, plugin_dirs=[], **root_args)
     assert snapshot() == before, "currency queries changed dependency state"
     assert bool(acquisitions) is (route != "direct")
+    pins.set_pin("uv", "unrelated", {"any": {"url": "https://example.invalid/uv", "sha256": "3" * 64}})
+    pins.save()
+    unchanged = snapshot()
+    assert client.venv_is_current(extras=[], plugin_dirs=members, **root_args)
+    assert snapshot() == unchanged
+    for version, digest in [("test.1", "2" * 64), ("test.2", "1" * 64)]:
+        pins.set_pin("python", version, {"any": {"url": "https://example.invalid/python", "sha256": digest}})
+        pins.save()
+        changed = snapshot()
+        assert not client.venv_is_current(plugin_dirs=members, **root_args)
+        assert snapshot() == changed
+    pins.set_pin("python", "test.1", {"any": {"url": "https://example.invalid/python", "sha256": "1" * 64}})
+    pins.save()
+    marker = environment / "pyvenv.cfg"
+    contents = marker.read_bytes()
+    marker.unlink()
+    changed = snapshot()
+    assert not client.venv_is_current(plugin_dirs=members, **root_args)
+    assert snapshot() == changed
+    marker.write_bytes(contents)
+    assert client.venv_is_current(plugin_dirs=members, **root_args)
 
     manifest.write_text('name: candidate\npython_dependencies: ["candidate-dep==2"]\n')
     changed = snapshot()
@@ -174,7 +170,7 @@ def test_sync_discovers_profile_members_after_worker_acquires_lock(client, tmp_p
     from concurrent.futures import ThreadPoolExecutor
     import time
     from hermes_cli.runtime_state import runtime_lock
-    from tests.pm.test_worker_publication import worker_toolchain
+    from tests.pm._fixtures import worker_toolchain
 
     sibling = tmp_path / "home/profiles/sibling/plugins/dependency"
     sibling.mkdir(parents=True)
@@ -466,7 +462,7 @@ def test_resolution_conflict_survives_worker_and_receipt(client, tmp_path, monke
 
 
 def test_failed_facts_write_restores_exact_config_before_reporting(client, tmp_path, monkeypatch, isolated_python):
-    from tests.pm.test_worker_publication import worker_toolchain
+    from tests.pm._fixtures import worker_toolchain
     from hermes_cli.runtime_paths import install_state_dir
 
     repo = _current_environment(tmp_path, monkeypatch, [])
@@ -508,18 +504,8 @@ def test_foreign_checkout_sync_uses_its_own_pm_generation(client, tmp_path, monk
     from pm import venv_is_current
     from hermes_cli.runtime_paths import selected_venv, runtime_facts_path
 
-    uv = shutil.which("uv")
-    assert uv
-    worker = Path(client.__file__).with_name("worker.py")
-    script = (
-        "import runpy, sys; "
-        f"sys.path.insert(0, {str(worker.parent.parent)!r}); "
-        "import pm._uv; "
-        f"pm._uv._toolchain = lambda **kwargs: (__import__('pathlib').Path({uv!r}), "
-        f"__import__('pathlib').Path({sys.executable!r})); "
-        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
-    )
-    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
+    from tests.pm._fixtures import worker_toolchain
+    worker_toolchain(client, monkeypatch, isolated_python)
     foreign = tmp_path / "other checkout"
     foreign.mkdir()
     (foreign / "pyproject.toml").write_text(
@@ -562,18 +548,8 @@ def test_worker_side_environment_reuses_and_keeps_selection_on_failed_tool(clien
     import zipfile
     from pm import environment_python, python_tool
 
-    uv = shutil.which("uv")
-    assert uv
-    worker = Path(client.__file__).with_name("worker.py")
-    script = (
-        "import runpy, sys; "
-        f"sys.path.insert(0, {str(worker.parent.parent)!r}); "
-        "import pm._uv; "
-        f"pm._uv._toolchain = lambda **kwargs: (__import__('pathlib').Path({uv!r}), "
-        f"__import__('pathlib').Path({sys.executable!r})); "
-        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
-    )
-    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
+    from tests.pm._fixtures import worker_toolchain
+    worker_toolchain(client, monkeypatch, isolated_python)
     wheel = _wheel(tmp_path, "side_dep")
     with zipfile.ZipFile(wheel, "a") as archive:
         archive.writestr("side_dep/cli.py", "def main():\n    print('real side dependency')\n")

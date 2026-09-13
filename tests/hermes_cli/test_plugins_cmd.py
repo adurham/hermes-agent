@@ -39,18 +39,7 @@ class TestSanitizePluginName:
             _sanitize_plugin_name("../../etc/passwd", tmp_path)
 
 
-
-
-
-
-
     # ── allow_subdir=True ──
-
-
-
-
-
-
 
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
@@ -60,14 +49,10 @@ class TestResolveGitUrl:
     """Shorthand and full-URL resolution, with optional subdirectory."""
 
 
-
-
-
     def test_url_with_fragment_subdir(self):
         url, subdir = _resolve_git_url("https://github.com/owner/repo.git#my-plugin")
         assert url == "https://github.com/owner/repo.git"
         assert subdir == "my-plugin"
-
 
 
     @pytest.mark.parametrize(
@@ -100,7 +85,6 @@ class TestResolveSubdirWithin:
         (tmp_path / "a" / "b" / "c").mkdir(parents=True)
         result = _resolve_subdir_within(tmp_path, "a/b/c")
         assert result == (tmp_path / "a" / "b" / "c").resolve()
-
 
 
     def test_rejects_symlink_escape(self, tmp_path):
@@ -165,23 +149,6 @@ class TestResolveGitExecutable:
         for call in run.call_args_list:
             assert call.args[0][0] == "/resolved/git"
         assert run.call_args_list[2].args[0][1:] == ["pull", "--ff-only"]
-
-    def test_git_pull_clean_tree_never_stashes(self, tmp_path):
-        import hermes_cli.plugins_cmd as pc
-
-        _resolve_git_executable.cache_clear()
-        with patch.object(pc, "_resolve_git_executable", return_value="/g"):
-            with patch.object(pc.subprocess, "run") as run:
-                run.side_effect = [
-                    MagicMock(returncode=0, stdout="", stderr=""),      # status
-                    MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),  # remote get-url
-                    MagicMock(returncode=0, stdout="Updated\n", stderr=""),  # pull
-                ]
-                ok, msg = pc._git_pull_plugin_dir(tmp_path)
-        assert ok is True
-        assert msg == "Updated"
-        commands = [c.args[0][1] for c in run.call_args_list]
-        assert "stash" not in commands
 
 
 class TestGitPullPluginDirAutostash:
@@ -294,6 +261,7 @@ class TestGitPullPluginDirAutostash:
         ok, msg = pc._git_pull_plugin_dir(checkout)
         assert ok is True
         assert "Already up to date" in msg
+        assert git(checkout, "stash", "list").strip() == ""
 
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────
@@ -306,8 +274,6 @@ class TestRepoNameFromUrl:
         assert (
             _repo_name_from_url("https://github.com/owner/my-plugin.git") == "my-plugin"
         )
-
-
 
 
 # ── plugins_command dispatch ──────────────────────────────────────────────
@@ -455,7 +421,6 @@ class TestCmdRemove:
         assert exc_info.value.code == 1
 
 
-
 # ── _copy_example_files tests ─────────────────────────────────────────────────
 
 
@@ -503,8 +468,6 @@ class TestPromptPluginEnvVars:
     """Tests for _prompt_plugin_env_vars."""
 
 
-
-
     def test_prompts_for_missing_var_rich_format(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
         from unittest.mock import MagicMock, patch
@@ -550,8 +513,6 @@ class TestPromptPluginEnvVars:
         mock_prompt.assert_called_once()
 
 
-
-
 # ── curses_radiolist ─────────────────────────────────────────────────────
 
 
@@ -571,7 +532,6 @@ class TestCursesRadiolist:
 
 class TestProviderDiscovery:
     """Test provider plugin discovery and config helpers."""
-
 
 
     def test_save_context_engine(self, tmp_path, monkeypatch):
@@ -597,19 +557,14 @@ class TestProviderDiscovery:
 # ── Auto-activation fix ──────────────────────────────────────────────────
 
 
-class TestNoAutoActivation:
-    """Verify that plugin engines don't auto-activate when config says 'compressor'."""
-
-    def test_compressor_default_ignores_plugin(self):
-        """When context.engine is 'compressor', a plugin-registered engine should NOT
-        be used — only explicit config triggers plugin engines."""
-        # This tests the run_agent.py logic indirectly by checking that the
-        # code path for default config doesn't call get_plugin_context_engine.
-        import run_agent as ra_module
-        source = Path(ra_module.__file__).read_text(encoding="utf-8")
-        # The old code had: "Even with default config, check if a plugin registered one"
-        # The fix removes this. Verify it's gone.
-        assert "Even with default config, check if a plugin registered one" not in source
+def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
+    from agent.agent_init import _select_context_engine
+    from types import SimpleNamespace
+    candidate = SimpleNamespace(name='offered')
+    monkeypatch.setattr('plugins.context_engine.load_context_engine', lambda _: None)
+    monkeypatch.setattr('hermes_cli.plugins.get_plugin_context_engine', lambda: candidate)
+    assert _select_context_engine({'context': {'engine': 'compressor'}}) is None
+    assert _select_context_engine({'context': {'engine': 'offered'}}).name == 'offered'
 
 
 # ── End-to-end subdirectory install ──────────────────────────────────────────

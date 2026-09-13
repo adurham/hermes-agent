@@ -38,6 +38,7 @@ def test_ambient_uv_config_does_not_affect_pm_venv_sync(tmp_path, monkeypatch):
         "UV_NO_CONFIG": "1", "UV_CONFIG_FILE": "/poison/uv.toml",
         "UV_DEFAULT_INDEX": "https://poison.invalid/simple", "UV_PYTHON": "/poison/python",
         "UV_PROJECT_ENVIRONMENT": str(tmp_path / "unrelated-environment"),
+        "UV_CACHE_DIR": str(tmp_path / "hostile-cache"),
         "UV_PROJECT": "/poison/project", "VIRTUAL_ENV": "/poison/venv",
         "PYTHONPATH": "/poison/imports", "XDG_CONFIG_HOME": str(config), "XDG_CONFIG_DIRS": str(config),
     }.items():
@@ -51,6 +52,8 @@ def test_ambient_uv_config_does_not_affect_pm_venv_sync(tmp_path, monkeypatch):
     environment.sync(project, locked=True)
     environment.check()
     assert environment.executable.is_file()
+    assert environment.cache.is_dir()
+    assert not (tmp_path / "hostile-cache").exists()
     assert not (tmp_path / "unrelated-environment").exists()
     assert (project / "uv.lock").read_bytes() == locked
     assert dict(os.environ) == before

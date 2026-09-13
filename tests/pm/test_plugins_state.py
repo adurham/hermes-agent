@@ -90,13 +90,6 @@ def test_missing_config_parser_is_not_an_empty_plugin_selection(homes, monkeypat
     assert (default_home / "config.yaml").read_bytes() == before
 
 
-def test_enabled_list_preserves_config_order(homes):
-    default_home, _ = homes
-    # NOT alphabetical: recency order must survive the read
-    _write_config(default_home, ["z-first-enabled", "a-second"])
-    by_root = pstate.enabled_plugins_ordered()
-    assert by_root[default_home / "plugins"] == ["z-first-enabled", "a-second"]
-
 
 @pytest.mark.parametrize("content", ["{ not yaml", "[]", "plugins: wrong", "plugins:\n  enabled: wrong", "memory: wrong"])
 def test_enabled_read_refuses_invalid_existing_config(homes, content):
@@ -116,49 +109,42 @@ def test_empty_config_is_an_explicit_empty_selection(homes, content):
     assert pstate.enabled_plugins_ordered() == {}
 
 
-def test_active_memory_provider_joins_union(homes, tmp_path):
-    """The mnemosyne path: a provider installed via memory.provider (not
-    plugins.enabled) must join the union — deps ride the lock either way."""
-    default_home, _ = homes
-    provider_dir = default_home / "plugins" / "mnemosyne-like"
-    provider_dir.mkdir(parents=True)
-    (provider_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+@pytest.mark.parametrize("enabled, provider, exists, expected", [
+    (["z-first", "a-second"], "provider", True, ["z-first", "a-second", "provider"]),
+    (["provider"], "provider", True, ["provider"]),
+    ([], "ghost", False, []),
+])
+def test_memory_provider_joins_ordered_selection(homes, enabled, provider, exists, expected):
     import hermes_yaml as yaml
-
-    with (default_home / "config.yaml").open("w", encoding="utf-8") as f:
-        yaml.safe_dump(
-            {"plugins": {"enabled": ["regular-plug"]},
-             "memory": {"provider": "mnemosyne-like"}},
-            f,
-        )
-
+    home, sibling = homes
+    if exists:
+        (home / "plugins" / provider).mkdir(parents=True)
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": enabled}, "memory": {"provider": provider}}))
+    _write_config(sibling, ["sibling"])
     by_root = pstate.enabled_plugins_ordered()
-    assert by_root[default_home / "plugins"] == ["regular-plug", "mnemosyne-like"]
+    assert by_root.get(home / "plugins", []) == expected
+    assert by_root[sibling / "plugins"] == ["sibling"]
 
 
-def test_memory_provider_without_dir_is_skipped(homes):
-    """memory.provider set but no plugin dir on disk — not a member."""
-    default_home, _ = homes
-    import hermes_yaml as yaml
+def test_member_discovery_uses_real_enabled_config(homes):
+    from pm.workspace import enabled_member_dirs
+    home, _ = homes
+    manifests = {
+        "modern/pyproject.toml": "[project]\n",
+        "legacy/plugin.yaml": 'name: legacy\npip_dependencies: ["requests>=2"]\n',
+        "plain/plugin.yaml": "name: plain\n",
+        "orphan/pyproject.toml": "[project]\n",
+    }
+    for relative, body in manifests.items():
+        path = home / "plugins" / relative
+        path.parent.mkdir(parents=True)
+        path.write_text(body)
+    _write_config(home, ["legacy", "modern", "plain"])
+    assert enabled_member_dirs() == [home / "plugins/legacy", home / "plugins/modern"]
+    _write_config(home, [])
+    assert enabled_member_dirs() == []
 
-    with (default_home / "config.yaml").open("w", encoding="utf-8") as f:
-        yaml.safe_dump({"memory": {"provider": "ghost-provider"}}, f)
 
-    assert pstate.enabled_plugins_ordered() == {}
-
-
-def test_memory_provider_already_enabled_not_duplicated(homes):
-    default_home, _ = homes
-    (default_home / "plugins" / "dual").mkdir(parents=True)
-    import hermes_yaml as yaml
-
-    with (default_home / "config.yaml").open("w", encoding="utf-8") as f:
-        yaml.safe_dump(
-            {"plugins": {"enabled": ["dual"]}, "memory": {"provider": "dual"}}, f
-        )
-
-    by_root = pstate.enabled_plugins_ordered()
-    assert by_root[default_home / "plugins"] == ["dual"]  # once, not twice
 
 
 def test_read_parses_config_once_per_home(homes, monkeypatch):

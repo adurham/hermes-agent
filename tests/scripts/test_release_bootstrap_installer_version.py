@@ -88,7 +88,9 @@ def _patch_repo(tmp_path, monkeypatch, *, with_installer: bool = True):
 def test_update_version_files_stamps_bootstrap_installer(tmp_path, monkeypatch):
     paths = _patch_repo(tmp_path, monkeypatch)
 
-    release.update_version_files("0.21.1", "2026.9.10")
+    staged = release.update_version_files("0.21.1", "2026.9.10")
+    assert all(str(paths[key]) in staged for key in (
+        'init_py', 'pyproject', 'desktop_pkg', 'installer_pkg', 'tauri_conf', 'cargo_toml'))
 
     assert _json_version(paths["installer_pkg"]) == "0.21.1"
     assert _json_version(paths["tauri_conf"]) == "0.21.1"
@@ -105,7 +107,9 @@ def test_update_version_files_stamps_bootstrap_installer(tmp_path, monkeypatch):
 def test_update_version_files_skips_missing_installer_dir(tmp_path, monkeypatch):
     paths = _patch_repo(tmp_path, monkeypatch, with_installer=False)
 
-    release.update_version_files("0.21.1", "2026.9.10")
+    staged = release.update_version_files("0.21.1", "2026.9.10")
+    assert all(str(paths[key]) not in staged for key in ('installer_pkg', 'tauri_conf', 'cargo_toml'))
+    assert all(str(paths[key]) in staged for key in ('init_py', 'pyproject', 'desktop_pkg'))
 
     assert not paths["installer_pkg"].exists()
     assert not paths["tauri_conf"].exists()
@@ -125,29 +129,3 @@ def test_update_version_files_does_not_invent_version_keys(tmp_path, monkeypatch
     assert paths["installer_pkg"].read_text(encoding="utf-8") == original
     assert paths["tauri_conf"].read_text(encoding="utf-8") == original
     assert _json_version(paths["desktop_pkg"]) == "0.21.1"
-
-
-def test_updated_files_include_installer_when_present(tmp_path, monkeypatch):
-    paths = _patch_repo(tmp_path, monkeypatch)
-
-    staged = release.update_version_files("0.21.1", "2026.9.10")
-
-    assert str(paths["init_py"]) in staged
-    assert str(paths["pyproject"]) in staged
-    assert str(paths["desktop_pkg"]) in staged
-    assert str(paths["installer_pkg"]) in staged
-    assert str(paths["tauri_conf"]) in staged
-    assert str(paths["cargo_toml"]) in staged
-
-
-def test_updated_files_omit_missing_installer(tmp_path, monkeypatch):
-    paths = _patch_repo(tmp_path, monkeypatch, with_installer=False)
-
-    staged = release.update_version_files("0.21.1", "2026.9.10")
-
-    assert str(paths["installer_pkg"]) not in staged
-    assert str(paths["tauri_conf"]) not in staged
-    assert str(paths["cargo_toml"]) not in staged
-    assert str(paths["desktop_pkg"]) in staged
-    assert str(paths["init_py"]) in staged
-    assert str(paths["pyproject"]) in staged

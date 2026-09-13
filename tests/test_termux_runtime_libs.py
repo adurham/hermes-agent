@@ -7,14 +7,13 @@ then unpacked through pm's DebPackage — the same production path.
 from __future__ import annotations
 
 import hashlib
-import io
 import json
-import tarfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from tests.termux_fixtures import build_deb
 
 import sys
 
@@ -29,53 +28,9 @@ PREFIX = srl.PREFIX_REL
 
 # ---------------------------------------------------------------- fixtures
 
-def _ar_header(name: str, size: int) -> bytes:
-    hdr = name.ljust(16).encode()
-    hdr += b"0".ljust(12)          # mtime
-    hdr += b"0".ljust(6)           # uid
-    hdr += b"0".ljust(6)           # gid
-    hdr += b"644".ljust(8)         # mode
-    hdr += str(size).ljust(10).encode()
-    hdr += b"`\n"
-    assert len(hdr) == 60
-    return hdr
-
-
 def _build_deb(path: Path, lib_name: str, content: bytes) -> None:
-    """A minimal but real .deb: ar{debian-binary, control.tar.gz, data.tar}
-    with data.tar carrying <PREFIX>/lib/<lib_name>."""
-    data = io.BytesIO()
-    with tarfile.open(fileobj=data, mode="w") as tf:
-        lib_dir = f"{PREFIX}/lib/"
-        ti = tarfile.TarInfo(lib_dir)
-        ti.type = tarfile.DIRTYPE
-        ti.mode = 0o755
-        tf.addfile(ti)
-        payload = f"FAKE-ELF {lib_name}\n".encode() + content
-        ti = tarfile.TarInfo(lib_dir + lib_name)
-        ti.size = len(payload)
-        ti.mode = 0o755
-        tf.addfile(ti, io.BytesIO(payload))
-
-    control = io.BytesIO()
-    with tarfile.open(fileobj=control, mode="w") as tf:
-        stanza = f"Package: pkg-{lib_name}\nVersion: 1.0\n".encode()
-        ti = tarfile.TarInfo("control")
-        ti.size = len(stanza)
-        tf.addfile(ti, io.BytesIO(stanza))
-
-    members = [
-        (b"debian-binary/", b"2.0\n"),
-        (b"control.tar.gz/", control.getvalue()),
-        (b"data.tar/", data.getvalue()),
-    ]
-    out = b"!<arch>\n"
-    for name, body in members:
-        out += _ar_header(name.decode().rstrip("/"), len(body))
-        out += body
-        if len(body) % 2:
-            out += b"\n"
-    path.write_bytes(out)
+    build_deb(path, {"Package": f"pkg-{lib_name}", "Version": "1.0"},
+              {f"{PREFIX}/lib/{lib_name}": f"FAKE-ELF {lib_name}\n".encode() + content})
 
 
 class _Server:
@@ -83,9 +38,16 @@ class _Server:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.requests = []
+        self.available = True
+        owner = self
 
         class H(BaseHTTPRequestHandler):
             def do_GET(self):
+                owner.requests.append(self.path)
+                if not owner.available:
+                    self.send_error(503)
+                    return
                 f = self.server.root / self.path.lstrip("/")  # type: ignore[attr-defined]
                 if not f.is_file():
                     self.send_error(404)
@@ -113,6 +75,7 @@ class _Server:
     def stop(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+        self.thread.join(timeout=5)
 
 
 @pytest.fixture()
@@ -158,30 +121,23 @@ def test_stage_cache_correctness(tmp_path, lib_source, corruption):
     assert {p.name for p in out.glob("*.so*")} == names
     manifest = json.loads(out.parent.joinpath("manifest.json").read_text())
 
-    # True cache hit: source deleted, no downloads possible.
-    server.stop()
+    # Same URL/table throughout: corruption must invalidate output evidence,
+    # not accidentally trigger the independent table-identity check.
+    server.available = False
     import shutil
     shutil.rmtree(tmp_path / "payload" / ".work")
+    requests = list(server.requests)
     assert srl.stage(tmp_path / "payload", table) == out
-    assert {p.name for p in out.glob("*.so*")} == names
-
-    # Corrupt the cache and restore the source so a rebuild is possible.
+    assert server.requests == requests
+    server.available = True
     if corruption == "missing":
         (out / "liba.so").unlink()
     elif corruption == "extra":
         (out / "libjunk.so").write_bytes(b"bogus")
     else:
         (out / "libb.so").write_bytes(b"corrupted bytes")
-
-    src = tmp_path / "debs"
-    server2 = _Server(src)
-    for name in table:
-        table[name]["url"] = f"{server2.url}/{name}.deb"
-    try:
-        result = srl.stage(tmp_path / "payload", table)
-        assert result == out
-    finally:
-        server2.stop()
+    assert srl.stage(tmp_path / "payload", table) == out
+    assert len(server.requests) > len(requests)
     assert {p.name for p in out.glob("*.so*")} == names
     for name in names:
         assert hashlib.sha256((out / name).read_bytes()).hexdigest() == \
@@ -201,8 +157,9 @@ def test_collision_identical_ok_conflicting_raises(tmp_path, lib_source):
         (tmp_path / "debs" / "libc.deb").read_bytes()).hexdigest()
 
     # Force a miss: current manifest no longer validates for libc's bytes.
-    with pytest.raises(Exception):
+    with pytest.raises(srl.StageError, match="soname collision.*libb.so"):
         srl.stage(tmp_path / "payload", table)
+    assert not (out.parent / "manifest.json").exists()
 
 
 def test_rebuild_removes_superseded_license_files(tmp_path, lib_source):

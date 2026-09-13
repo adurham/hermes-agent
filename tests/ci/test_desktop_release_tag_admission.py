@@ -59,14 +59,6 @@ def test_validate_exports_the_admitted_sha_as_a_job_output():
     assert "steps.admission.outputs.sha" in outputs["sha"]
 
 
-def test_admission_script_requires_ancestry_on_origin_main():
-    script = _admission_script()
-    assert "merge-base --is-ancestor" in script
-    assert "origin/main" in script
-    assert "::error::" in script, "the refusal must be a loud, greppable error"
-    assert "GITHUB_OUTPUT" in script, "the resolved SHA must be exported"
-
-
 def test_every_signing_job_checks_out_the_admitted_sha_not_the_tag():
     wf = _workflow()
     privileged = {

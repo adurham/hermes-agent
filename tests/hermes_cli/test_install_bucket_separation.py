@@ -13,50 +13,19 @@ import pytest
 from hermes_cli.uninstall import remove_legacy_runtime_trees
 
 
-class TestRemoveLegacyRuntimeTrees:
-    def test_removes_a_pre_split_node_tree(self, tmp_path):
-        home = tmp_path / "home"
-        (home / "node" / "bin").mkdir(parents=True)
-        (home / "node" / "bin" / "node").write_text("#!/bin/sh\n", encoding="utf-8")
-
-        removed = remove_legacy_runtime_trees(home)
-
-        assert (home / "node") not in [p for p in home.iterdir()]
-        assert removed == [home / "node"]
-
-    def test_removes_only_the_uv_binary_not_the_whole_bin_dir(self, tmp_path):
-        """A user's own scripts live in bin/ — deleting the directory would
-        take them with it."""
-        home = tmp_path / "home"
-        (home / "bin").mkdir(parents=True)
-        (home / "bin" / "uv").write_text("#!/bin/sh\n", encoding="utf-8")
-        (home / "bin" / "my-script").write_text("#!/bin/sh\n", encoding="utf-8")
-
-        removed = remove_legacy_runtime_trees(home)
-
-        assert removed == [home / "bin" / "uv"]
-        assert (home / "bin").is_dir()
-        assert (home / "bin" / "my-script").is_file()
-
-    def test_never_touches_profile_state(self, tmp_path):
-        home = tmp_path / "home"
-        home.mkdir()
-        for name in ("config.yaml", "auth.json", "SOUL.md"):
-            (home / name).write_text("keep me", encoding="utf-8")
-        for name in ("sessions", "skills", "memories", "profiles"):
-            (home / name).mkdir()
-
-        remove_legacy_runtime_trees(home)
-
-        for name in ("config.yaml", "auth.json", "SOUL.md"):
-            assert (home / name).is_file(), name
-        for name in ("sessions", "skills", "memories", "profiles"):
-            assert (home / name).is_dir(), name
-
-    def test_no_runtime_trees_is_a_quiet_no_op(self, tmp_path):
-        home = tmp_path / "home"
-        home.mkdir()
-        assert remove_legacy_runtime_trees(home) == []
+def test_legacy_cleanup_removes_only_runtime_bytes_and_is_idempotent(tmp_path):
+    runtime = ('node/bin/node', 'bin/uv', 'bin/uv.exe')
+    user = ('bin/my-script', 'config.yaml', 'auth.json', 'SOUL.md',
+            'sessions/session', 'skills/demo/SKILL.md', 'memories/MEMORY.md', 'profiles/other/config.yaml')
+    for name in (*runtime, *user):
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(name, encoding='utf-8')
+    removed = remove_legacy_runtime_trees(tmp_path)
+    assert set(removed) == {tmp_path / 'node', tmp_path / 'bin/uv', tmp_path / 'bin/uv.exe'}
+    assert all(not (tmp_path / name).exists() for name in runtime)
+    assert all((tmp_path / name).read_text(encoding='utf-8') == name for name in user)
+    assert remove_legacy_runtime_trees(tmp_path) == []
 
 
 class TestProfileCopyExclusions:

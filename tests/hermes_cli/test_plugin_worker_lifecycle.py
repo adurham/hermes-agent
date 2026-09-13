@@ -20,20 +20,21 @@ def test_declaration_consent_admission_and_resync(plugin_world, monkeypatch, cap
     world = plugin_world
     origin, revision = world.origin(surface=surface, suffix=suffix)
     before = (world.home / "config.yaml").read_bytes()
-    monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: False)
-    world.command("install", identifier=origin.as_uri(), ref=revision, enable=True, allow_removed=True)
-    assert world.enabled() == [], "non-interactive Python admission bypassed consent"
-    assert (world.home / "config.yaml").read_bytes() == before
-    assert "skipped (non-interactive)" in " ".join(capsys.readouterr().out.split())
-
+    if (surface, suffix) == ("pyproject", "yaml"):
+        monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: False)
+        world.command("install", identifier=origin.as_uri(), ref=revision, enable=True, allow_removed=True)
+        assert world.enabled() == [], "non-interactive Python admission bypassed consent"
+        assert (world.home / "config.yaml").read_bytes() == before
+        assert "skipped (non-interactive)" in " ".join(capsys.readouterr().out.split())
+        monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(plugins_cmd.sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "no")
+        world.command("install", identifier=origin.as_uri(), force=True, enable=True, allow_removed=True)
+        assert world.enabled() == []
+        assert (world.home / "config.yaml").read_bytes() == before
+        assert "declined" in capsys.readouterr().out
     monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(plugins_cmd.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda prompt: "no")
-    world.command("install", identifier=origin.as_uri(), force=True, enable=True, allow_removed=True)
-    assert world.enabled() == []
-    assert (world.home / "config.yaml").read_bytes() == before
-    assert "declined" in capsys.readouterr().out
-
     monkeypatch.setattr("builtins.input", lambda prompt: "yes")
     world.command("install", identifier=origin.as_uri(), force=True, enable=True, allow_removed=True)
     assert world.enabled() == ["plugin-worker-proof"]

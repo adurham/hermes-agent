@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import partial
+from contextlib import contextmanager
 import hashlib
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import importlib
@@ -40,6 +41,21 @@ def _run(command, *, cwd: Path, env: dict) -> str:
     return result.stdout.strip()
 
 
+def _ar_member(name: str, data: bytes) -> bytes:
+    hdr = (
+        name.ljust(16).encode()
+        + b"0".ljust(12)
+        + b"0".ljust(6)
+        + b"0".ljust(6)
+        + b"100644".ljust(8)
+        + str(len(data)).encode().ljust(10)
+        + b"`\n"
+    )
+    pad = b"\n" if len(data) % 2 else b""
+    return hdr + data + pad
+
+
+
 def make_tar(docroot: Path, name: str, files: dict[str, str]) -> tuple[str, str]:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
@@ -54,19 +70,26 @@ def make_tar(docroot: Path, name: str, files: dict[str, str]) -> tuple[str, str]
     return name, hashlib.sha256(payload).hexdigest()
 
 
+@contextmanager
+def threaded_server(handler):
+    with ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield server
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
 @pytest.fixture
 def served(tmp_path):
     docroot = tmp_path / "www"
     docroot.mkdir()
     handler = partial(SimpleHTTPRequestHandler, directory=str(docroot))
-    with ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            yield docroot, f"http://127.0.0.1:{server.server_port}"
-        finally:
-            server.shutdown()
-            thread.join(timeout=5)
+    with threaded_server(handler) as server:
+        yield docroot, f"http://127.0.0.1:{server.server_port}"
 
 
 @pytest.fixture(scope="module")
@@ -95,20 +118,25 @@ def client(tmp_path, monkeypatch, isolated_python):
     return client
 
 
+def worker_toolchain(client, monkeypatch, isolated_python, injection=""):
+    uv = shutil.which("uv")
+    assert uv
+    worker = Path(client.__file__).with_name("worker.py")
+    script = (
+        "import runpy, sys, os; from pathlib import Path; "
+        f"sys.path.insert(0, {str(worker.parent.parent)!r}); "
+        "import pm._uv; "
+        f"pm._uv._toolchain = lambda **kwargs: (Path({uv!r}), Path({sys.executable!r}));\n"
+        + injection + f"\nrunpy.run_path({str(worker)!r}, run_name='__main__')"
+    )
+    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
+
+
+
 @pytest.fixture
 def build_worker(client, isolated_python, monkeypatch):
     """Inject prepared real tools only inside the independent worker process."""
-    uv = shutil.which("uv")
-    assert uv, "the worker contract requires real uv"
-    worker = Path(client.__file__).with_name("worker.py")
-    script = (
-        "import runpy, sys; from pathlib import Path; "
-        f"sys.path.insert(0, {str(worker.parent.parent)!r}); "
-        "import pm._uv; "
-        f"pm._uv._toolchain = lambda **kwargs: (Path({uv!r}), Path({sys.executable!r})); "
-        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
-    )
-    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
+    worker_toolchain(client, monkeypatch, isolated_python)
     monkeypatch.setattr(client, "is_runtime", lambda: False)
 
     def caller_engine(*args, **kwargs):

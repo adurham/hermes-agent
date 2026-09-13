@@ -84,15 +84,21 @@ def _assert_syncs(root: Path):
 
 
 @pytest.mark.platforms("posix")
-def test_bash_cold_sync_changed_input_and_warm_noop(tmp_path):
+@pytest.mark.parametrize("canary", [None, "caller-canary"])
+def test_bash_cold_sync_changed_input_and_warm_noop(tmp_path, canary):
     root, env = _sync_checkout(tmp_path)
     assert not (root / ".venv").exists()
+    if canary is not None:
+        env["HERMES_PM_ACTIVATE_CANARY"] = canary
+    from tests.pm.test_activate_scripts import _fake_store
+    _fake_store(tmp_path)
     script = f'''
         set -e
         export PYTHONPATH=caller-original VIRTUAL_ENV=caller-venv
         original_path="$PATH"
         source "{_posix(root / 'activate')}"
         printf '%s\\n' "$PYTHONPATH"
+        test "$HERMES_PM_ACTIVATE_CANARY" = env-ok
         printf second > "{_posix(root / 'input')}"
         source "{_posix(root / 'activate')}"
         printf '%s\\n' "$PYTHONPATH"
@@ -103,6 +109,9 @@ def test_bash_cold_sync_changed_input_and_warm_noop(tmp_path):
         test "$PATH" = "$original_path"
         test "$PYTHONPATH" = caller-original
         test "$VIRTUAL_ENV" = caller-venv
+        {('test "$HERMES_PM_ACTIVATE_CANARY" = caller-canary' if canary else 'test -z "${HERMES_PM_ACTIVATE_CANARY+set}"')}
+        test -z "${{__HERMES_ACTIVATED+set}}"
+        ! declare -F deactivate >/dev/null
     '''
     run = subprocess.run([_bash(), "-c", script], cwd=tmp_path, env=env,
                          capture_output=True, text=True, timeout=40)

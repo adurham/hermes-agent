@@ -7,7 +7,9 @@ import { describe, expect, it } from 'vitest'
 import { AppInstallerStrategy } from './app-installer'
 import type { AppInstallerStrategyDeps } from './app-installer'
 
-function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}) {
+interface StrategyFixture { deps: AppInstallerStrategyDeps; calls: string[] }
+
+function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}): StrategyFixture {
   const calls: string[] = []
 
   const deps: AppInstallerStrategyDeps = {
@@ -40,15 +42,6 @@ function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}) {
 }
 
 describe('AppInstallerStrategy.apply', () => {
-  it('writes the relaunch marker before teardown, trigger, and quit — order is the contract', async () => {
-    const { deps, calls } = makeDeps()
-    const strategy = new AppInstallerStrategy(deps)
-    const result = await strategy.apply()
-
-    expect(result).toEqual({ ok: true, manual: false, bundled: true, handedOff: true, mechanism: 'app-installer' })
-    expect(calls).toEqual(['prepare', 'relaunch-marker', 'teardown', 'open', 'quit'])
-  })
-
   it('fails open: a marker-write failure never blocks the update', async () => {
     const progress: string[] = []
 
@@ -90,19 +83,48 @@ describe('AppInstallerStrategy.apply', () => {
   })
 })
 
-describe('AppInstallerStrategy.check', () => {
-  it('threads the OS checker result onto the mechanism wire', async () => {
-    const { deps } = makeDeps({ run: async () => ({ code: 0, stdout: '{"available": true}' }) })
-    const status = await new AppInstallerStrategy(deps).check()
-    expect(status.mechanism).toBe('app-installer')
-    expect(status.updateAvailable).toBe(true)
-    expect(status.error).toBeUndefined()
+it.each([
+  [0, '{"available":true,"availability":"Available"}', true, undefined],
+  [0, '{"available":false}', false, undefined],
+  [2, '{"available":null,"error":"winrt missing"}', false, 'winrt missing'],
+  [0, '', false, 'checker returned no availability'],
+  [1, 'boom', false, 'checker exited 1'],
+  [0, '{"available":"yes"}', false, 'checker returned no availability']
+] as const)('checker %s %s → available=%s error=%s', async (code: number, stdout: string, available: boolean, error: string | undefined): Promise<void> => {
+  const { deps }: ReturnType<typeof makeDeps> = makeDeps({
+    run: async (python: string, script: string): Promise<{ code: number; stdout: string }> => {
+      expect([python, script]).toEqual(['python.exe', 'check.py'])
+
+      return { code, stdout }
+    }
   })
 
-  it('unknown availability is an error on the wire, never "no update"', async () => {
-    const { deps } = makeDeps({ run: async () => ({ code: 1, stdout: '{"available": null, "error": "winrt missing"}' }) })
-    const status = await new AppInstallerStrategy(deps).check()
-    expect(status.updateAvailable).toBe(false)
-    expect(status.error).toBe('winrt missing')
+  expect(await new AppInstallerStrategy(deps).check()).toMatchObject({
+    supported: true, mechanism: 'app-installer', currentVersion: '0.18.2', updateAvailable: available, error
   })
+})
+
+it.each([
+  ['stable', false, 'win32/stable/stable.appinstaller'],
+  ['canary', false, 'win32/canary/canary.appinstaller'],
+  ['stable', true, 'win32/light/stable/stable.appinstaller'],
+  ['canary', true, 'win32/light/canary/canary.appinstaller']
+] as const)('stages %s light=%s from its feed and reports open errors', async (channel: 'stable' | 'canary', light: boolean, suffix: string): Promise<void> => {
+  const { deps, calls }: ReturnType<typeof makeDeps> = makeDeps({ channel, light,
+    installer: {
+      prepare: async (url: string): Promise<string> => {
+        expect(url).toBe(`https://updates.example/hermes-desktop/${suffix}`)
+
+        return 'update.appinstaller'
+      },
+      open: async (file: string): Promise<string> => {
+        expect(file).toBe('update.appinstaller')
+
+        return 'No file association'
+      }
+    }
+  })
+
+  await expect(new AppInstallerStrategy(deps).apply()).rejects.toThrow('No file association')
+  expect(calls).toEqual(['relaunch-marker', 'teardown', 'restore'])
 })

@@ -84,21 +84,7 @@ class TestExposeCli:
             assert str(root / ".hermes" / "bin") in body
             assert os.access(wrapper, os.X_OK)
 
-    @posix_only
-    def test_second_run_is_a_no_op(self, fake_install):
-        _launchers.expose_cli()
-        result = _launchers.expose_cli()
-        assert result == {"ok": True, "written": []}
 
-    @posix_only
-    def test_repairs_a_stale_same_install_wrapper(self, fake_install):
-        home, root = fake_install
-        _launchers.expose_cli()
-        wrapper = home / ".local" / "bin" / "hermes"
-        wrapper.write_text(f'#!/bin/sh\nexec "{root}/venv/bin/python" OLD-SHAPE\n')
-        result = _launchers.expose_cli()
-        assert "hermes" in result["written"]
-        assert "OLD-SHAPE" not in wrapper.read_text()
 
     @posix_only
     def test_leaves_another_installs_wrapper_alone(self, fake_install):

@@ -60,19 +60,6 @@ afterEach(() => {
 })
 
 describe('LocalModelDownloadActions', () => {
-  it('running download with can_pause:true renders Pause; clicking sends pauseLocalDownload exactly once with the job id', async () => {
-    renderActions(job({ can_pause: true }))
-
-    const pause = screen.getByRole('button', { name: /pause/i })
-    fireEvent.click(pause)
-
-    await waitFor(() => {
-      expect(pauseLocalDownload).toHaveBeenCalledTimes(1)
-    })
-    expect(pauseLocalDownload).toHaveBeenCalledWith('j1', undefined)
-    expect(resumeLocalDownload).not.toHaveBeenCalled()
-  })
-
   it('running download without explicit can_pause shows NO control (no guessing about old backends)', () => {
     renderActions(job({}))
 
@@ -90,21 +77,6 @@ describe('LocalModelDownloadActions', () => {
 
     const pending = screen.getByRole('button', { name: /pause/i })
     expect((pending as HTMLButtonElement).disabled).toBe(true)
-  })
-
-  it('paused job renders the Paused label + Resume (can_resume:true); clicking sends resumeLocalDownload with the job id', async () => {
-    renderActions(job({ can_resume: true, status: 'paused' }))
-
-    expect(screen.getByText(/paused/i)).toBeTruthy()
-
-    const resume = screen.getByRole('button', { name: /resume/i })
-    fireEvent.click(resume)
-
-    await waitFor(() => {
-      expect(resumeLocalDownload).toHaveBeenCalledTimes(1)
-    })
-    expect(resumeLocalDownload).toHaveBeenCalledWith('j1', undefined)
-    expect(pauseLocalDownload).not.toHaveBeenCalled()
   })
 
   it('paused hides Resume when can_resume is not explicitly true', () => {

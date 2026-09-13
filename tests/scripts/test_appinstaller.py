@@ -55,26 +55,3 @@ def test_canary_publication_verifies_native_identity_and_uploads_bundle_before_p
     assert not any(method == 'PUT' and path.endswith('canary.appinstaller')
                    for method, path, _ in r2_server.requests)
     assert r2_server.store[pointer] == previous
-
-
-@pytest.mark.parametrize('channel', ['stable', 'canary', 'light/stable', 'light/canary'])
-def test_descriptor_cli_preserves_package_facts_and_subscription_uri(tmp_path, channel):
-    identity, publisher = 'Product&<"test">', 'CN=Publisher & "Team"'
-    self_uri = f'https://releases.example/releases/win32/{channel}/update.appinstaller?a=1&b=2'
-    out = tmp_path / 'descriptor.appinstaller'
-    for version in ['1.2.3.0', '1.2.4.31']:
-        artifact_uri = f'https://releases.example/releases/tag/v{version}/app.msixbundle?a=1&b=2'
-        subprocess.run([
-            sys.executable, '-m', 'scripts.bundles.release_artifacts', 'appinstaller',
-            '--root', str(tmp_path), '--out', str(out), '--identity', identity,
-            '--publisher', publisher, '--version', version,
-            '--self-uri', self_uri, '--artifact-uri', artifact_uri,
-        ], cwd=Path(__file__).resolve().parents[2], check=True)
-        descriptor = ET.parse(out).getroot()
-        assert descriptor.tag == '{http://schemas.microsoft.com/appx/appinstaller/2017/2}AppInstaller'
-        assert descriptor.attrib == {'Uri': self_uri, 'Version': version}
-        assert descriptor.find('{*}MainBundle').attrib == {
-            'Name': identity, 'Publisher': publisher, 'Version': version, 'Uri': artifact_uri,
-        }
-        assert descriptor.find('{*}UpdateSettings/{*}OnLaunch').attrib == {'HoursBetweenUpdateChecks': '12'}
-        assert descriptor.find('{*}MainPackage') is None

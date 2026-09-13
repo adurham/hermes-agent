@@ -118,7 +118,6 @@ def _staging_dir_from(cmd) -> Path:
     raise AssertionError(f"no staging output override in {cmd!r}")
 
 
-
 def _packaged_exe_rel() -> Path:
     """Packaged-exe path relative to electron-builder's output dir on THIS host."""
     if sys.platform == "darwin":
@@ -126,7 +125,6 @@ def _packaged_exe_rel() -> Path:
     if sys.platform == "win32":
         return Path("win-unpacked") / "Hermes.exe"
     return Path("linux-unpacked") / "hermes"
-
 
 
 def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
@@ -146,76 +144,16 @@ def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
     return _run
 
 
-
 # Dependency admission and staging are exercised by test_desktop_source_build.py.
-
-
-
-
 
 
 # ── Content-hash stamp tests ──────────────────────────────────────────
 
 
-
-
-
-
-
-
 # ── Electron build-cache recovery tests ───────────────────────────────
 
 
-
-
-
-
-
-
-
-
-
-
 # ── electronDist (re)download helper tests (#47266) ───────────────────
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-class _FakeProc:
-    """Minimal psutil.Process stand-in for the lock-breaker tests."""
-
-    def __init__(self, pid: int, exe: str | None):
-        self.pid = pid
-        self.info = {"pid": pid, "exe": exe}
-        self.terminated = False
-        self.killed = False
-
-    def terminate(self):
-        self.terminated = True
-
-    def kill(self):
-        self.killed = True
-
-
-
-
-
-
-
 
 
 
@@ -284,8 +222,6 @@ def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatc
     signed = [c[-1] for c in calls if c[:3] == ["/usr/bin/codesign", "--force", "--sign"]]
     assert str(app / "Contents" / "Resources" / "app.asar.unpacked" / "node_modules" / "pty" / "pty.node") in signed
     assert str(app / "Contents" / "Frameworks" / "chrome_crashpad_handler") in signed
-
-
 
 
 @pytest.mark.platforms("macos")
@@ -579,8 +515,6 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     mock_install.assert_not_called()
 
 
-
-
 @pytest.mark.platforms("macos")
 def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, monkeypatch):
     """A successful stable-identity re-sign must NOT delete the safeStorage item.
@@ -747,8 +681,6 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
 # --- desktop.* launch options (config.yaml) -------------------------------
 
 
-
-
 # --- Linux launcher entry registration ------------------------------------
 
 
@@ -873,49 +805,6 @@ def test_desktop_launch_options_ozone_hint_defaults_auto():
         assert main_desktop._desktop_launch_options()[3] == "auto"
 
 
-@pytest.mark.platforms("linux")
-def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
-    """COSMIC HUD: ``desktop.ozone_platform_hint: x11`` sets
-    ``ELECTRON_OZONE_PLATFORM_HINT`` on the launched Electron process."""
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch)
-
-    ok = subprocess.CompletedProcess([], 0)
-    cfg = {"desktop": {"ozone_platform_hint": "x11"}}
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.config.load_config", return_value=cfg), \
-         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store", return_value=None), \
-         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
-         pytest.raises(SystemExit):
-        cli_main.cmd_gui(_ns())
-
-    launch_env = mock_run.call_args_list[-1].kwargs["env"]
-    assert launch_env.get("ELECTRON_OZONE_PLATFORM_HINT") == "x11"
-
-    monkeypatch.setenv("ELECTRON_OZONE_PLATFORM_HINT", "wayland")
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.config.load_config", return_value=cfg), \
-         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store", return_value=None), \
-         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run2, \
-         pytest.raises(SystemExit):
-        cli_main.cmd_gui(_ns())
-
-    launch_env = mock_run2.call_args_list[-1].kwargs["env"]
-    assert launch_env.get("ELECTRON_OZONE_PLATFORM_HINT") == "wayland"
-
-
 # --- desktop.password_store detection & bridging (linux) ------------------
 
 
@@ -998,6 +887,30 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
 
 
 @pytest.mark.platforms("linux")
+@pytest.mark.parametrize("explicit,configured,detected,expected", [
+    (None, "auto", "gnome-libsecret", "gnome-libsecret"),
+    (None, "kwallet6", None, "kwallet6"),
+    ("basic", "kwallet6", None, "basic"),
+])
+def test_desktop_environment_precedence(monkeypatch, explicit, configured, detected, expected):
+    _clear_keychain_env(monkeypatch)
+    monkeypatch.delenv('ELECTRON_OZONE_PLATFORM_HINT', raising=False)
+    monkeypatch.setattr('hermes_cli.config.load_config', lambda: {
+        'desktop': {'password_store': configured, 'ozone_platform_hint': 'x11'}})
+    def detect():
+        assert configured == 'auto' and explicit is None
+        return detected
+    monkeypatch.setattr(main_desktop, '_detect_linux_password_store', detect)
+    if explicit:
+        monkeypatch.setenv('HERMES_DESKTOP_PASSWORD_STORE', explicit)
+    env, _ = main_desktop._desktop_launch_env(_ns())
+    assert env['HERMES_DESKTOP_PASSWORD_STORE'] == expected
+    assert env['ELECTRON_OZONE_PLATFORM_HINT'] == 'x11'
+    monkeypatch.setenv('ELECTRON_OZONE_PLATFORM_HINT', 'wayland')
+    assert main_desktop._desktop_launch_env(_ns())[0]['ELECTRON_OZONE_PLATFORM_HINT'] == 'wayland'
+
+
+@pytest.mark.platforms("linux")
 def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     root = _make_desktop_tree(tmp_path)
@@ -1023,61 +936,6 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
     assert mock_run.call_args_list[-1].args[0] == [str(electron / "dist/electron"), "."]
     launch_env = mock_run.call_args_list[-1].kwargs["env"]
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
-
-
-@pytest.mark.platforms("linux")
-def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
-    _clear_keychain_env(monkeypatch)
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch)
-
-    ok = subprocess.CompletedProcess([], 0)
-    cfg = {"desktop": {"password_store": "kwallet6"}}
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.config.load_config", return_value=cfg), \
-         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store") as mock_detect, \
-         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
-         pytest.raises(SystemExit):
-        cli_main.cmd_gui(_ns())
-
-    mock_detect.assert_not_called()
-    launch_env = mock_run.call_args_list[-1].kwargs["env"]
-    assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
-
-
-@pytest.mark.platforms("linux")
-def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path, monkeypatch):
-    _clear_keychain_env(monkeypatch)
-    monkeypatch.setenv("HERMES_DESKTOP_PASSWORD_STORE", "basic")
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch)
-
-    ok = subprocess.CompletedProcess([], 0)
-    cfg = {"desktop": {"password_store": "kwallet6"}}
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.config.load_config", return_value=cfg), \
-         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store") as mock_detect, \
-         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
-         pytest.raises(SystemExit):
-        cli_main.cmd_gui(_ns())
-
-    mock_detect.assert_not_called()
-    launch_env = mock_run.call_args_list[-1].kwargs["env"]
-    assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "basic"
 
 
 @pytest.mark.platforms("macos")

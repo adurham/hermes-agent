@@ -45,32 +45,6 @@ def test_install_python_server_uses_pm_tool_environment(tmp_path, monkeypatch):
     assert install_mod.detect_status("fake-lsp") == "installed"
 
 
-# ---------------------------------------------------------------------------
-# Fix 2: ``hermes lsp status`` surfaces shellcheck-missing for bash
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
-def test_backend_warnings_fires_when_bash_installed_but_shellcheck_missing(tmp_path, monkeypatch):
-    """The exact scenario from the bug report."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from agent.lsp import cli as lsp_cli
-
-    def which(name):
-        if name == "bash-language-server":
-            return "/fake/bin/bash-language-server"
-        return None  # shellcheck missing
-
-    with patch("shutil.which", side_effect=which):
-        notes = lsp_cli._backend_warnings()
-    assert len(notes) == 1
-    assert "shellcheck" in notes[0].lower()
-    assert "bash-language-server" in notes[0].lower()
-
-
 def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
     """End-to-end: status command output includes the warning section."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -90,19 +64,7 @@ def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
     output = buf.getvalue()
     assert "Backend warnings" in output
     assert "shellcheck" in output
-
-
-# ---------------------------------------------------------------------------
-# Fix 3: tier-1 lint treats unusable linters as ``skipped``, not ``error``
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
+    assert "bash-language-server" in output
 
 
 def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path, monkeypatch):
