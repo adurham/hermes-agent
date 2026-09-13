@@ -141,9 +141,7 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
       readSourceUpdate: (install: string, opts: { force?: boolean }): Promise<SourceUpdate | null> => readSourceUpdate({
         python, git: 'git', updateRoot: install, hermesHome: home, force: opts.force
       }),
-      directoryExists: fs.existsSync,
       resolveUpdaterBinary: (): null => null,
-      firstLine: (text: string): string => text.split('\n')[0],
 
       emitUpdateProgress: vi.fn(),
       rememberLog: vi.fn(),

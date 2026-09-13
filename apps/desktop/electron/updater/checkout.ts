@@ -33,9 +33,7 @@ export interface CheckoutStrategyDeps {
   isMac: boolean
   defaultUpdateBranch: string
   updateHandoffDwellMs: number
-  directoryExists: (filePath: string) => boolean
   resolveUpdaterBinary: () => string | null
-  firstLine: (text: string) => string
 
   emitUpdateProgress: (payload: { stage: string; message: string; percent: number | null }) => void
   rememberLog: (chunk: unknown) => void

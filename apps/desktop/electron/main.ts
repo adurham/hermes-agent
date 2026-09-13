@@ -2948,8 +2948,6 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
   })
 }
 
-const firstLine = text => (text || '').split('\n').find(Boolean) || ''
-
 function emitUpdateProgress(payload) {
   const merged = { stage: 'idle', message: '', percent: null, error: null, ...payload, at: Date.now() }
   rememberLog(`[updates] ${merged.stage}: ${merged.message || merged.error || ''}`)
@@ -3116,7 +3114,6 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     isMac: IS_MAC,
     defaultUpdateBranch: DEFAULT_UPDATE_BRANCH,
     updateHandoffDwellMs: UPDATE_HANDOFF_DWELL_MS,
-    directoryExists,
     readSourceUpdate: (updateRoot: string, opts: { force?: boolean }): Promise<SourceUpdate | null> => readSourceUpdate({
       python: findPythonForRoot(updateRoot),
       git: resolveGitBinary(),
@@ -3127,7 +3124,6 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     }),
     resolveUpdateRoot,
     resolveUpdaterBinary,
-    firstLine,
 
     emitUpdateProgress,
     rememberLog,
