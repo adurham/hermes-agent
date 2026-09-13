@@ -30,9 +30,10 @@ import {
   shell,
   systemPreferences
 } from 'electron'
+import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
-import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
+import { destroyKeepaliveAgents, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
 import { appVersionInfo, type AppVersionInfo, assertSourceUpdateChannel, packagedReleaseChannel } from './app-version'
@@ -147,15 +148,17 @@ import {
   parseBackendScopeKey,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
-  registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
+  type ResolvedConnectionDescriptor,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  reuseMatchingPrimaryRemoteBackend,
   reuseMatchingPrimarySshBackend,
   setConnectionLaunchMode,
   setLastUsedConnection,
   setPrimaryConnection,
+  type SharedRegistryProfileScope,
   shouldDeferLocalEnumeration,
   shouldRetrySshInventory,
   updateEligibility,
@@ -201,17 +204,20 @@ import {
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
+import type {
+  GatewayFileSaveContext,
+  GatewayFileSaveDeps,
+  GatewayFileSaveResult,
+  GatewaySaveDialogOptions,
+  GatewaySaveDialogResult
+} from './gateway-file-download'
 import {
-  filenameFromContentDisposition,
-  fsPumpDeps,
   gatewayFilePath,
   gatewayFileRequestPaths,
-  isNotFoundError,
-  parseDataUrlToBuffer,
-  pumpStreamToFile,
   resolveGatewayFileBackend,
-  writeBufferToFile
+  saveGatewayDownload
 } from './gateway-file-download'
+import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway-file-download-transport'
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
@@ -272,6 +278,7 @@ import {
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
+import type { GatedDownloadAuth } from './native-auth-decisions'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
@@ -4649,65 +4656,6 @@ function fetchJson(url, token, options: any = {}) {
   )
 }
 
-// Token-auth download that streams the response body straight to a
-// user-selected destination (via finalizeGatewayDownload) instead of buffering
-// the whole file in memory. The connect timeout is cleared once headers arrive
-// so a slow save dialog or a large stream doesn't trip it. `options.bearer`
-// switches the header to Authorization (RFC 8252 native flow), matching fetchJson.
-function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
-  return new Promise((resolve, reject) => {
-    let parsed
-
-    try {
-      parsed = new URL(url)
-    } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
-
-      return
-    }
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-      return
-    }
-
-    const client = parsed.protocol === 'https:' ? https : http
-    const agent = downloadAgentFor(parsed.protocol)
-    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-    const req = client.request(
-      parsed,
-      {
-        agent,
-        method: 'GET',
-        headers: options.bearer ? { Authorization: `Bearer ${options.bearer}` } : { 'X-Hermes-Session-Token': token }
-      },
-      res => {
-        // Headers arrived — the connection phase is done. Drop the idle timeout
-        // so it can't abort mid-stream or while the save dialog is open.
-        req.setTimeout(0)
-        finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
-          ...ctx,
-          abort: () => {
-            try {
-              req.destroy()
-            } catch {
-              // already finished
-            }
-          }
-        }).then(resolve, reject)
-      }
-    )
-
-    req.on('error', reject)
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    })
-    req.end()
-  })
-}
-
 function fetchPublicJson(url, options: any = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints
   // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
@@ -7164,164 +7112,10 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
   }
 }
 
-// OAuth-session download that streams the response body straight to a
-// user-selected destination (via finalizeGatewayDownload). The connect timeout
-// is cleared once the response headers arrive.
-function downloadViaOauthSessionToFile(url, ctx, options: any = {}) {
-  return new Promise((resolve, reject) => {
-    const sess = getOauthSessionForUrl(url)
-
-    if (!sess) {
-      reject(new Error('OAuth session partition is unavailable.'))
-
-      return
-    }
-
-    let parsed
-
-    try {
-      parsed = new URL(url)
-    } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
-
-      return
-    }
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-      return
-    }
-
-    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-    const request = electronNet.request({
-      method: 'GET',
-      url,
-      session: sess,
-      useSessionCookies: true,
-      redirect: 'follow'
-    } as any)
-
-    let settled = false
-
-    const timer = setTimeout(() => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-
-      try {
-        request.abort()
-      } catch {
-        // already finished
-      }
-
-      reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    }, timeoutMs)
-
-    request.on('response', res => {
-      if (settled) {
-        return
-      }
-
-      // Response headers arrived — cancel the connect timeout so it can't abort
-      // the stream while the save dialog is open or bytes are still flowing.
-      settled = true
-      clearTimeout(timer)
-      finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
-        ...ctx,
-        abort: () => {
-          try {
-            request.abort()
-          } catch {
-            // already finished
-          }
-        }
-      }).then(resolve, reject)
-    })
-    request.on('error', error => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-      clearTimeout(timer)
-      reject(error)
-    })
-    request.end()
-  })
-}
-
-// Shared tail for both transports: validate status, pick a filename, prompt the
-// save dialog, then stream the (still-unconsumed) response body to the chosen
-// destination. On an HTTP error the status code is attached so saveGatewayFile
-// can trigger the 404-only compatibility fallback.
-async function finalizeGatewayDownload(res, statusCode, headers, ctx: any = {}) {
-  if (statusCode >= 400) {
-    const message = await readGatewayErrorText(res)
-    const error: any = new Error(`${statusCode}: ${message}`)
-    error.statusCode = statusCode
-    throw error
-  }
-
-  const disposition = headers['content-disposition'] || headers['Content-Disposition']
-  const filename = filenameFromContentDisposition(disposition) || ctx.suggested || ctx.fallbackName
-
-  const result = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: filename,
-    title: 'Save File'
-  })
-
-  if (result.canceled || !result.filePath) {
-    ctx.abort?.()
-
-    return { canceled: true, saved: false }
-  }
-
-  try {
-    // Failure-atomic: exclusive temp create beside the destination, rename into
-    // place only once the body is complete (#96597).
-    await pumpStreamToFile(res, result.filePath, fsPumpDeps())
-  } catch (error) {
-    ctx.abort?.()
-    throw error
-  }
-
-  return { path: result.filePath, saved: true }
-}
-
-// Read a bounded amount of an error response body for the thrown message.
-function readGatewayErrorText(res): Promise<string> {
-  return new Promise(resolve => {
-    const chunks = []
-    let total = 0
-
-    res.on('data', chunk => {
-      if (total >= 500) {
-        return
-      }
-
-      const buffer = Buffer.from(chunk)
-
-      total += buffer.length
-      chunks.push(buffer)
-    })
-    res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8').slice(0, 500)))
-    res.on('error', () => resolve(Buffer.concat(chunks).toString('utf8').slice(0, 500)))
-  })
-}
-
 interface GatewayFileConnection extends RegistryBackendRequestScope {
   authMode?: 'oauth' | 'token'
   baseUrl: string
   token?: null | string
-}
-
-interface GatewayFileSaveContext {
-  fallbackName: string
-  suggested: string
 }
 
 interface GatewayFileSavePayload {
@@ -7332,7 +7126,7 @@ interface GatewayFileSavePayload {
   suggestedName?: unknown
 }
 
-async function gatedFileAuth(connection: GatewayFileConnection) {
+async function gatedFileAuth(connection: GatewayFileConnection): Promise<GatedDownloadAuth> {
   const nativeAt =
     connection.authMode === 'oauth' ? await ensureNativeAccessToken(connection.baseUrl).catch(() => null) : null
 
@@ -7344,13 +7138,13 @@ function gatewayFileRequestPath(
   connectionId: null | string,
   profile: null | string,
   requestPath: string
-) {
+): string {
   return connectionId
     ? pathForRegistryBackendRequest(requestPath, profile, connection)
     : pathWithGlobalRemoteProfile(requestPath, profile, profileRouteOptions(profile))
 }
 
-async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
+async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<GatewayFileSaveResult> {
   const filePath = gatewayFilePath(payload.path)
 
   if (!filePath) {
@@ -7364,7 +7158,7 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
 
   const suggested = String(payload.suggestedName || '').trim()
   const fallbackName = path.basename(filePath) || suggested || 'download'
-  const ctx = { suggested, fallbackName }
+  const ctx: GatewayFileSaveContext = { suggested, fallbackName }
 
   const requestPaths = gatewayFileRequestPaths(
     filePath,
@@ -7372,41 +7166,38 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
     payload.sessionId
   )
 
-  const url = `${connection.baseUrl}${requestPaths.download}`
-
-  try {
-    const auth = await gatedFileAuth(connection)
-
-    if (auth.kind === 'bearer') {
-      return await downloadViaTokenToFile(url, auth.token, ctx, { bearer: auth.token })
-    }
-
-    if (auth.kind === 'cookie') {
-      return await downloadViaOauthSessionToFile(url, ctx)
-    }
-
-    return await downloadViaTokenToFile(url, auth.token, ctx)
-  } catch (error) {
-    // Desktop and the remote gateway update independently. A gateway predating
-    // /api/fs/download 404s here; fall back (ONLY on 404) to the older capped
-    // data-URL route so downloads keep working against older backends.
-    if (isNotFoundError(error)) {
-      return await saveGatewayFileViaDataUrl(connection, requestPaths.dataUrl, ctx)
-    }
-
-    throw error
+  const deps: GatewayFileSaveDeps = {
+    showSaveDialog: (options: GatewaySaveDialogOptions): Promise<GatewaySaveDialogResult> =>
+      dialog.showSaveDialog(mainWindow, options)
   }
+
+  return saveGatewayDownload(requestPaths, ctx, {
+    ...deps,
+    download: async (requestPath: string, context: GatewayFileSaveContext): Promise<GatewayFileSaveResult> => {
+      const url: string = `${connection.baseUrl}${requestPath}`
+      const auth: GatedDownloadAuth = await gatedFileAuth(connection)
+
+      if (auth.kind === 'cookie') {
+        return downloadViaOauthSessionToFile<Session>(url, context, {
+          ...deps,
+          getSession: getOauthSessionForUrl,
+          request: electronNet.request
+        })
+      }
+
+      return downloadViaTokenToFile(
+        url,
+        auth.token,
+        context,
+        deps,
+        auth.kind === 'bearer' ? { bearer: auth.token } : {}
+      )
+    },
+    readDataUrl: (requestPath: string): Promise<string> => readGatewayFileDataUrl(connection, requestPath)
+  })
 }
 
-// Compatibility fallback: fetch the file through the capped
-// `/api/fs/read-data-url` route, decode it, and save. Bounded by the gateway's
-// data-URL cap, so it only serves smaller files — enough to keep older gateways
-// working until they gain the streaming route.
-async function saveGatewayFileViaDataUrl(
-  connection: GatewayFileConnection,
-  requestPath: string,
-  ctx: GatewayFileSaveContext
-) {
+async function readGatewayFileDataUrl(connection: GatewayFileConnection, requestPath: string): Promise<string> {
   const url = `${connection.baseUrl}${requestPath}`
   const auth = await gatedFileAuth(connection)
   let json: unknown
@@ -7426,23 +7217,7 @@ async function saveGatewayFileViaDataUrl(
     throw new Error('Gateway returned no file data')
   }
 
-  const buffer = parseDataUrlToBuffer(dataUrl)
-  const filename = ctx.suggested || ctx.fallbackName
-
-  const result = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: filename,
-    title: 'Save File'
-  })
-
-  if (result.canceled || !result.filePath) {
-    return { canceled: true, saved: false }
-  }
-
-  // Same failure-atomic contract as the streaming path: a direct writeFile
-  // truncates an existing destination before the write completes (#96597).
-  await writeBufferToFile(buffer, result.filePath, fsPumpDeps())
-
-  return { path: result.filePath, saved: true }
+  return dataUrl
 }
 
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
@@ -10759,23 +10534,17 @@ async function ensureRegistryBackend(
     }
   }
 
-  // The v1 primary and the registry primary can describe the same remote
-  // backend beyond the SSH-fingerprint path above (cloud/url remotes have no
-  // ssh -G identity). Reuse the already-running primary when the registry
-  // resolves its live descriptor back to this exact source id; otherwise one
-  // Desktop window starts two isolated servers whose transient runtime ids
-  // are not interchangeable.
-  if (id === registry.primary && source.kind !== 'local' && source.kind !== 'ssh') {
-    const primaryDescriptor = await ensureBackend(profile)
+  const sharedPrimary: (ResolvedConnectionDescriptor & SharedRegistryProfileScope) | null =
+    await reuseMatchingPrimaryRemoteBackend({
+      connectionId: id,
+      ensurePrimary: ensureBackend,
+      profile,
+      registry,
+      source
+    })
 
-    if (registrySourceOwnsPrimaryBackend(registry, id, primaryDescriptor)) {
-      return {
-        ...primaryDescriptor,
-        profile: profileKey,
-        connectionId: id,
-        sharedRemote: true
-      }
-    }
+  if (sharedPrimary) {
+    return sharedPrimary
   }
 
   if (source.kind === 'local') {
