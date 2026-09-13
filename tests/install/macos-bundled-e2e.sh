@@ -123,18 +123,15 @@ manifest_side() { # $1: old|new, $2: field
 
 require_manifest() {
   [ -f "$MANIFEST" ] || fail "no bundle manifest at $MANIFEST — run the install phase first"
-  # Assert the common resolver's normalized output for this arm (schema 1,
-  # platform macos, this arch, downloaded artifacts, old != new, SAME
-  # CFBundleIdentifier, SAME teamId, same feed channel). The heavy schema/
-  # semver/sha256 validation already happened inside bundle-inputs.mjs.
+  # Revalidate normalized inputs and downloaded files before every phase.
   "$NODE_BIN" -e '
     const fs = require("node:fs")
-    const { validateBundleManifest } = require(process.argv[2])
+    const { validateDownloadedBundle } = require(process.argv[2])
     const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
-    validateBundleManifest(m, { platform: "macos", arch: process.env.E2E_ARCH })
+    validateDownloadedBundle(m, "macos", process.env.E2E_ARCH)
     console.log("bundle manifest valid: " + m.old.tag + " -> " + m.new.tag +
       " (identity " + m.old.identity + ", team " + m.old.teamId + ")")
-  ' "$MANIFEST" "$ASSETS/mac-bundled-manifest.cjs" 2>&1 | ts_prefix
+  ' "$MANIFEST" "$ASSETS/bundle-manifest.cjs" 2>&1 | ts_prefix
 }
 
 stage_bundle_inputs() {
@@ -321,7 +318,7 @@ phase_update() {
   pw_dir="$(ensure_playwright)"
   cp "$ASSETS/mac-bundled-update-driver.mjs" \
      "$ASSETS/process-close.cjs" \
-     "$ASSETS/window-input.cjs" \
+     "$ASSETS/window-input.cjs" "$ASSETS/update-ui.cjs" \
      "$pw_dir/"
   local rc=0
   (cd "$pw_dir" && node mac-bundled-update-driver.mjs \

@@ -461,6 +461,7 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     Copy-Item (Join-Path $AssetsDir "launch-from-spec.mjs") (Join-Path $driverDir "launch-from-spec.mjs") -Force
     Copy-Item (Join-Path $AssetsDir "source-update-observer.mjs") (Join-Path $driverDir "source-update-observer.mjs") -Force
     Copy-Item (Join-Path $AssetsDir "window-input.cjs") (Join-Path $driverDir "window-input.cjs") -Force
+    Copy-Item (Join-Path $AssetsDir "update-ui.cjs") (Join-Path $driverDir "update-ui.cjs") -Force
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     Push-Location $driverDir
     try {
@@ -789,6 +790,7 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
         $driver = Join-Path $driverDir "e2e-drive-update.cjs"
         Copy-Item (Join-Path $AssetsDir "drive-update.cjs") $driver -Force
         Copy-Item (Join-Path $AssetsDir "window-input.cjs") (Join-Path $driverDir "window-input.cjs") -Force
+        Copy-Item (Join-Path $AssetsDir "update-ui.cjs") (Join-Path $driverDir "update-ui.cjs") -Force
         Copy-Item (Join-Path $AssetsDir "process-close.cjs") (Join-Path $driverDir "process-close.cjs") -Force
         Push-Location $driverDir
         $prevEap = $ErrorActionPreference

@@ -76,8 +76,6 @@ esac
 [ "$(uname -s)" = "Darwin" ] || { echo "error: this driver runs on macOS only" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
 ASSETS="$REPO_ROOT/tests/install/e2e-assets"
 
 WORK_ROOT="${HERMES_E2E_WORKROOT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hermes-macos-desktop-e2e}"
@@ -95,6 +93,8 @@ source "$(dirname "$0")/e2e-assets/ts-prefix.sh" 2>/dev/null || ts_prefix() { ca
 source "$(dirname "$0")/e2e-assets/preserve-plugins.sh"
 # shellcheck source=e2e-assets/source-driver.sh
 source "$(dirname "$0")/e2e-assets/source-driver.sh"
+# shellcheck source=e2e-assets/installer-common.sh
+source "$(dirname "$0")/e2e-assets/installer-common.sh"
 log_group() {
   printf '::group::%s\n' "$1"
   cat "$2"
@@ -104,67 +104,7 @@ log_group() {
 # Every phase runs in its own process (separate CI steps), so the redirect
 # env is re-established here, not inherited.
 arm_redirect() {
-  # --- the git URL redirect -----------------------------------------------------
-
-  # we redirect to our own repo so we can play around with what commit hermes thinks we're on.
-  # A driver-owned global gitconfig, NOT GIT_CONFIG_COUNT/KEY_n/VALUE_n env
-  # config: install.sh sets those itself and would clobber ours.
-  actual_git_url="$(git -C "$REPO_ROOT" remote get-url origin)"
-  GIT_CFG="$WORK_ROOT/gitconfig"
-  cat > "$GIT_CFG" <<EOF
-[url "file://$SERVE_REPO"]
-  insteadOf = $actual_git_url
-  insteadOf = $REPO_URL_HTTPS
-  insteadOf = $REPO_URL_SSH
-EOF
-  export GIT_CONFIG_GLOBAL="$GIT_CFG"
-
-  # check it worked
-  expected_git_url="file://$SERVE_REPO"
-  actual_git_url="$(git -C "$REPO_ROOT" remote get-url origin)"
-  if [[ "$actual_git_url" != "$expected_git_url" ]]; then
-    fail "failed git remote get-url shim: origin resolves to '$actual_git_url', expected '$expected_git_url'"
-  fi
-  ok "git URL redirect via GIT_CONFIG_GLOBAL=$GIT_CFG"
-
-
-  # shim git and make 'git remote get-url origin' report the actual HA upstream
-
-  # insteadOf is transparent for transport but `git remote get-url origin` gives you the
-  # replacement, so _get_origin_url() sees file://$SERVE_REPO and _is_fork() would return true.
-  # we check for the arguments "remote get-url origin" in order in any position
-  # to allow for e.g. -c with some config being passed.
-  # if we didn't do this, we'd need the  .skip_upstream_prompt file to prevent a hang in headless,"add the
-  # official repo as upstream?" prompt would hang a headless run. But we don't anymore :D
-  REAL_GIT="$(command -v git)"
-  REAL_GIT_QUOTED="$(printf '%q' "$REAL_GIT")"
-  SHIM_DIR="$WORK_ROOT/shim"
-  mkdir -p "$SHIM_DIR"
-  cat > "$SHIM_DIR/git" <<EOF
-#!/usr/bin/env bash
-prev2=""
-prev1=""
-for arg in "\$@"; do
-    if [ "\$prev2" = "remote" ] && [ "\$prev1" = "get-url" ] && [ "\$arg" = "origin" ]; then
-        echo "$REPO_URL_HTTPS"
-        exit 0
-    fi
-    prev2="\$prev1"
-    prev1="\$arg"
-done
-exec "$REAL_GIT_QUOTED" "\$@"
-EOF
-  chmod +x "$SHIM_DIR/git"
-  export PATH="$SHIM_DIR:$PATH"
-
-  # check it worked
-  observed_git_url="$(git -C "$REPO_ROOT" remote get-url origin)"
-  if [[ "$observed_git_url" != "$REPO_URL_HTTPS" ]]; then
-    fail "failed git remote get-url shim: origin resolves to '$observed_git_url', expected '$REPO_URL_HTTPS'"
-  fi
-  ok "git remote get-url shim: $SHIM_DIR/git -> $REAL_GIT (origin reports $REPO_URL_HTTPS)"
-
-  # -------
+  arm_source_redirect "$REPO_ROOT" "$WORK_ROOT" "$SERVE_REPO"
   export HOME="$HOME_SANDBOX"
   export PATH="$HOME/.local/bin:$PATH"
   export HERMES_HOME="$HOME/.hermes"
@@ -290,45 +230,14 @@ ensure_playwright() {
   printf '%s' "$pw_dir"
 }
 
-installer_supports() {
-  # $1: ref; $2: flag. Installer flags must match the installer being run,
-  # not this checkout's: older releases reject options added later.
-  # Capture before grepping: a `git show | grep -q` pipe takes SIGPIPE
-  # under pipefail when grep exits at first match, so a supported flag
-  # would read as unsupported.
-  local text
-  text="$(git -C "$REPO_ROOT" show "$1:scripts/install.sh")"
-  grep -qF -- "$2" <<< "$text"
-}
 
-run_installer() {
-  # $1: ref whose scripts/install.sh to run; $2: log name; $3: "desktop" to
-  # opt the desktop stage in (--include-desktop). Mirrors the POSIX driver.
-  local script="$WORK_ROOT/install-$2.sh"
-  git -C "$REPO_ROOT" show "$1:scripts/install.sh" > "$script"
-  chmod +x "$script"
-  local flags=(--skip-setup)
-  if installer_supports "$1" "--skip-browser"; then
-    flags+=(--skip-browser)
-  fi
-  if [ "${3:-}" = "desktop" ]; then
-    installer_supports "$1" "--include-desktop" \
-      || fail "ref $1 does not support --include-desktop; this leg cannot mean what it claims"
-    flags+=(--include-desktop)
-  fi
-  # </dev/null: EOF makes every prompt take its default.
-  local rc=0
-  bash "$script" "${flags[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/install-$2.log" || rc=$?
-  log_group "installer ($2) transcript" "$LOG_DIR/install-$2.log"
-  [ "$rc" -eq 0 ] || fail "installer ($2) exited $rc; transcript above"
-}
 
 run_playwright_update() {
   # $1: spec file to launch from.
   local spec="$1"
   local pw_dir
   pw_dir="$(ensure_playwright)"
-  cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/source-update-observer.mjs" "$ASSETS/window-input.cjs" "$pw_dir/"
+  cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/source-update-observer.mjs" "$ASSETS/window-input.cjs" "$ASSETS/update-ui.cjs" "$pw_dir/"
   local rc=0
   (cd "$pw_dir" && node launch-from-spec.mjs \
     --spec "$spec" \
@@ -377,10 +286,10 @@ phase_update() {
       ;;
     installer-script)
       # A dmg user re-running today's install one-liner.
-      run_installer "$TARGET_SHA" head
+      run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" head
       ;;
     installer-script+desktop)
-      run_installer "$TARGET_SHA" head desktop
+      run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" head desktop
       # The desktop stage is this leg's claim: the rebuilt app must exist.
       head_app=""
       for cand in \
