@@ -166,21 +166,3 @@ def test_tui_rebuild_preserves_the_prepared_desktop_and_web_union(tui_source):
     assert acquired == ["npm", "npm"]
     assert (root / "node_modules/web").exists()
     assert (root / "node_modules/apps-desktop").exists()
-
-
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize("changed", ["ui-tui/src/entry.tsx", "package.json", "package-lock.json", "apps/shared/shared.ts"])
-def test_tui_rebuild_tracks_root_and_shared_inputs(tui_source, changed):
-    root, _ = tui_source
-    tui = root / "ui-tui"
-    changed_file = root / changed
-    changed_file.parent.mkdir(parents=True, exist_ok=True)
-    if not changed_file.exists():
-        changed_file.write_text("original input\n", encoding="utf-8")
-    main_tui_launch._make_tui_argv(tui, tui_dev=False)
-    assert not main_tui_launch._tui_need_rebuild(tui), "must have a current receipt before invalidation"
-    before = changed_file.stat()
-    changed_file.write_text(changed_file.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    # A content change must invalidate even when mtimes are restored.
-    os.utime(changed_file, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert main_tui_launch._tui_need_rebuild(tui)

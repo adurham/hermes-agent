@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -288,9 +288,29 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
   put(source, 'ui-tui/src/value.ts', 'export const value: string = "shared source";')
   put(source, 'apps/shared/src/value.ts', 'export { value } from "../../../ui-tui/src/value";')
   put(source, 'ui-tui/src/entry.tsx', 'import { value } from "../../apps/shared/src/value"; console.log(value);')
+  put(source, 'package-lock.json', '{"lockfileVersion":3}')
+  const preservedTimes = new Date('2020-01-01T00:00:00Z')
+  const sameLengthChanges = [
+    ['ui-tui/src/value.ts', 'shared', 'edited'],
+    ['apps/shared/src/value.ts', 'value', 'VALUE'],
+    ['package.json', 'true', 'null'],
+    ['package-lock.json', ':3', ':2'],
+  ]
+  for (const [name] of sameLengthChanges) utimesSync(path.join(source, name), preservedTimes, preservedTimes)
   await buildTui({ source, out })
   const current = () => productCurrent({ source, product: 'tui', out: path.join(out, 'dist') })
   expect(current()).toBe(true)
+  for (const [name, from, to] of sameLengthChanges) {
+    const file = path.join(source, name), previous = readFileSync(file, 'utf8'), before = statSync(file)
+    expect(previous).toContain(from)
+    writeFileSync(file, previous.replace(from, to))
+    utimesSync(file, preservedTimes, preservedTimes)
+    expect([statSync(file).size, statSync(file).mtimeMs]).toEqual([before.size, before.mtimeMs])
+    expect(current(), `same-size and same-mtime change in ${name}`).toBe(false)
+    writeFileSync(file, previous)
+    utimesSync(file, preservedTimes, preservedTimes)
+    expect(current(), `restored ${name}`).toBe(true)
+  }
   for (const name of [
     'ui-tui/src/value.ts', 'apps/shared/src/value.ts',
     'ui-tui/packages/hermes-ink/src/entry-exports.ts',

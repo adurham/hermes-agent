@@ -29,6 +29,27 @@ def test_install_tree_not_writable_by_hermes(
     """
     start_container(built_image, container_name)
 
+    probe = docker_exec(container_name, "/opt/hermes/.venv/bin/python", "-c", """
+import os
+from pathlib import Path
+from hermes_cli.config import detect_install_method
+assert os.geteuid() != 0
+code = Path('/opt/hermes/.install_method')
+home = Path('/opt/data/.install_method')
+assert code.read_text().strip() == 'docker'
+assert detect_install_method(Path('/opt/hermes')) == 'docker'
+assert not home.exists() or home.read_text().strip() != 'docker'
+try:
+    with code.open('a'):
+        pass
+except PermissionError:
+    pass
+else:
+    raise AssertionError('runtime user can alter installation method')
+assert code.read_text().strip() == 'docker'
+""")
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+
     r = docker_exec_sh(
         container_name,
         # Try to create a file under /opt/hermes as the hermes user
