@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 // ─── fs-open-limit.cjs ─────────────────────────────────────────────
@@ -15,20 +17,25 @@ import { test } from 'vitest'
 
 const PRELOAD = path.join(import.meta.dirname, 'fs-open-limit.cjs')
 const POSIX = process.platform !== 'win32'
+const require = createRequire(import.meta.url)
+const supplierWalk = pathToFileURL(path.join(path.dirname(require.resolve('@electron/osx-sign')), 'util.js')).href
 
 /** Run `body` in a child node process, optionally with the preload + a soft fd limit. */
 function runNode(body, { preload = false, ulimit = null, env = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fsopen-test-'))
   const script = path.join(dir, 'body.mjs')
   fs.writeFileSync(script, body)
+  const childEnv = { ...process.env, NODE_OPTIONS: '', ...env }
+  delete childEnv.HERMES_FS_OPEN_LIMIT_DEBUG
+  if (!Object.hasOwn(env, 'HERMES_FS_OPEN_LIMIT')) delete childEnv.HERMES_FS_OPEN_LIMIT
   const nodeArgs = preload ? ['--require', PRELOAD, script] : [script]
   // ulimit needs a shell; keep the arg vector explicit either way.
   const cmd = ulimit
-    ? `ulimit -n ${ulimit}; exec "$0" ${nodeArgs.map((a) => `'${a}'`).join(' ')}`
+    ? `ulimit -n ${ulimit} || exit; exec "$0" ${nodeArgs.map((a) => `'${a}'`).join(' ')}`
     : null
   const res = cmd
-    ? spawnSync('/bin/sh', ['-c', cmd, process.execPath], { encoding: 'utf8', env: { ...process.env, ...env } })
-    : spawnSync(process.execPath, nodeArgs, { encoding: 'utf8', env: { ...process.env, ...env } })
+    ? spawnSync('/bin/sh', ['-c', cmd, process.execPath], { encoding: 'utf8', env: childEnv, timeout: 15000 })
+    : spawnSync(process.execPath, nodeArgs, { encoding: 'utf8', env: childEnv, timeout: 15000 })
   fs.rmSync(dir, { recursive: true, force: true })
   return res
 }
@@ -44,56 +51,71 @@ function mkTree(fileCount) {
   return root
 }
 
-/** The osx-sign walk, verbatim in shape: Promise.all + an open per file. */
+// Import the installed supplier: a lookalike walk cannot prove that its
+// isbinaryfile dependency's actual descriptor lifetime is protected.
 const WALK_BODY = (root) => `
 import fs from 'node:fs'
 import path from 'node:path'
-async function walk(dir) {
-  const children = await fs.promises.readdir(dir)
-  return Promise.all(children.map(async (child) => {
-    const p = path.resolve(dir, child)
-    const st = await fs.promises.lstat(p)
-    if (st.isFile()) {
-      const fh = await fs.promises.open(p, 'r')
-      try { const b = Buffer.alloc(4); await fh.read(b, 0, 4, 0); return null }
-      finally { await fh.close() }
-    }
-    if (st.isDirectory() && !st.isSymbolicLink()) return walk(p)
-    return null
-  }))
+const root = ${JSON.stringify(root)}
+const framework = path.join(root, 'Child.app/Contents/Demo.framework')
+fs.mkdirSync(framework, { recursive: true })
+fs.writeFileSync(path.join(framework, 'Demo'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0]))
+fs.writeFileSync(path.join(root, 'old.cstemp'), 'temporary signature')
+const link = path.join(root, 'framework-link')
+if (!fs.existsSync(link)) fs.symlinkSync(framework, link)
+
+let live = 0, peak = 0, opens = 0
+const open = fs.open, close = fs.close
+fs.open = function (...args) {
+  const callback = args.pop()
+  return open.call(fs, ...args, (error, fd) => {
+    if (!error) { live++; opens++; peak = Math.max(peak, live) }
+    callback(error, fd)
+  })
 }
-await walk(${JSON.stringify(root)})
-console.log('WALK_OK')
+fs.close = function (fd, callback) {
+  return close.call(fs, fd, error => {
+    if (!error) live--
+    callback(error)
+  })
+}
+const { walk } = await import(${JSON.stringify(supplierWalk)})
+const selected = await walk(root)
+// isbinaryfile resolves before its close callback; drain without a timed sleep.
+while (live) await new Promise(resolve => setImmediate(resolve))
+console.log(JSON.stringify({ selected: selected.map(p => path.relative(root, p)), opens, peak, live,
+  tempRemoved: !fs.existsSync(path.join(root, 'old.cstemp')) }))
 `
 
-test.skipIf(!POSIX)('the unbounded walk hits EMFILE under a low fd limit', () => {
-  // The bug, reproduced. If this ever stops failing, the test below is
-  // no longer proving anything and the preload could be silently useless.
+test.skipIf(!POSIX)('the real supplier walk survives a low fd limit without changing signing candidates', () => {
   const tree = mkTree(3000)
   try {
-    const res = runNode(WALK_BODY(tree), { ulimit: 64 })
-    assert.notEqual(res.status, 0, 'expected the unbounded walk to fail')
-    assert.match(res.stderr, /EMFILE/, `expected EMFILE, got: ${res.stderr.slice(0, 300)}`)
-  } finally {
-    fs.rmSync(tree, { recursive: true, force: true })
-  }
-})
-
-test.skipIf(!POSIX)('the preload lets the same walk finish under the same limit', () => {
-  const tree = mkTree(3000)
-  try {
-    const res = runNode(WALK_BODY(tree), { preload: true, ulimit: 64 })
-    assert.equal(res.status, 0, `walk failed with preload: ${res.stderr.slice(0, 400)}`)
-    assert.match(res.stdout, /WALK_OK/)
+    const unbounded = runNode(WALK_BODY(tree), { ulimit: 64 })
+    assert.notEqual(unbounded.status, 0)
+    assert.match(unbounded.stderr, /EMFILE/)
+    const reference = runNode(WALK_BODY(tree), { ulimit: 4096 })
+    const limited = runNode(WALK_BODY(tree), { preload: true, ulimit: 64 })
+    assert.equal(reference.status, 0, reference.error?.message || reference.stderr)
+    assert.equal(limited.status, 0, limited.error?.message || limited.stderr)
+    const before = JSON.parse(reference.stdout)
+    const after = JSON.parse(limited.stdout)
+    assert.deepEqual(after.selected, before.selected)
+    assert.deepEqual(after.selected, [
+      'Child.app/Contents/Demo.framework/Demo', 'Child.app/Contents/Demo.framework', 'Child.app',
+    ])
+    assert.equal(after.opens, 3001)
+    assert.equal(after.live, 0)
+    assert.equal(after.tempRemoved, true)
+    assert.ok(after.peak < 64, JSON.stringify(after))
+    assert.ok(before.peak > after.peak, JSON.stringify({ before, after }))
   } finally {
     fs.rmSync(tree, { recursive: true, force: true })
   }
 })
 
 test.skipIf(!POSIX)('both fs.open forms are queued, so a huge fan-out survives', () => {
-  // isbinaryfile uses promisify(fs.open) (the callback form) while the
-  // walk itself uses fs.promises.open — the patch has to cover both, or
-  // half the demand escapes the queue.
+  // isbinaryfile uses promisify(fs.open); other packaging callers may use
+  // fs.promises.open. Both public interfaces remain covered by the preload.
   //
   // Each iteration opens AND CLOSES before the next needs a descriptor,
   // which is the shape the cap can actually satisfy. (Holding 400

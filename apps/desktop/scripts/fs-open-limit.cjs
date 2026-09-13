@@ -50,11 +50,12 @@
 
 const fs = require('fs')
 
-// The cap must sit well BELOW the process's fd limit, not near it. Each
-// queued open is held across the caller's read+close (osx-sign's walk
-// does exactly that), so `LIMIT` descriptors can be live at once, on top
-// of the fds node already holds for stdio, the module loader, sockets
-// and spawned children. Measured against the real walk: cap 100 fails at
+// The cap must sit well BELOW the process's fd limit, not near it. The
+// slot ends before read+close, so live descriptors can exceed LIMIT.
+// The supplier test measures the actual walk, including isbinaryfile's
+// late close callback; this is not a descriptor-lifetime bound. Leave room
+// for Node's stdio, module loader, sockets and spawned children.
+// Measured against the real walk: cap 100 fails at
 // a 64 limit and passes at 256; cap 16 passes at 64.
 //
 // So: a quarter of the soft limit, clamped to a sane band. On the macOS
