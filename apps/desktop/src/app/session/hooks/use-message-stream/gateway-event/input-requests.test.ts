@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $activeSessionId } from '@/store/session'
 import { $sudoRequest, clearSudoRequest } from '@/store/prompts'
+import { $activeSessionId } from '@/store/session'
 
 import { handleInputRequestEvent } from './input-requests'
 import type { GatewayEventContext } from './types'
