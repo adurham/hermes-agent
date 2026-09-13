@@ -479,6 +479,15 @@ def match_runtime_outcomes(
                 live = successors.get(r.profile)
                 if live and r.pid not in live:
                     return "restarted"
+                if not live:
+                    # No row for this profile: the fallback has nothing to work with and reconciliation
+                    # stays on the service-name path. Logged because the tripwire below reads identically
+                    # whether the evidence was missing or the restart was actually missed.
+                    logger.debug(
+                        "No post-restart gateway evidence for profile %r (planned pid %s via %s) — "
+                        "reconciling on restart bookkeeping alone",
+                        r.profile, r.pid, r.restart_via,
+                    )
             return "external" if r.pid in external else "unaccounted"
 
         for r in plan.runtimes:

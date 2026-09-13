@@ -2008,9 +2008,11 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         if _pre_update_plan is not None and _pre_update_plan.runtimes:
             from hermes_cli.update_inventory import (match_runtime_outcomes, report_unaccounted_runtimes)
             from hermes_cli.update_receipt import row_is_external
-            # Gateway incarnation evidence: a service can serve a profile its own name does not
-            # encode (root-home launchd label + sticky active profile, hashed custom HERMES_HOME),
-            # so the bookkeeping's service names alone cannot credit the planned runtime.
+            # Gateway incarnation evidence, from the post-restart fleet snapshot collected above: a
+            # service can serve a profile its own name does not encode (root-home launchd label +
+            # sticky active profile, hashed custom HERMES_HOME), so the bookkeeping's service names
+            # alone cannot credit the planned runtime. A profile the probe produced no row for simply
+            # has no evidence — that runtime stays on the name-matching path (and logs it).
             _live_gateway_pids = _live_gateway_pids_from_fleet(_fleet_snapshot)
             _runtime_outcomes = match_runtime_outcomes(
                 _pre_update_plan,

@@ -450,6 +450,23 @@ def test_gateway_successor_credit_requires_a_live_replacement():
     assert empty_evidence[0]["outcome"] == "unaccounted"
 
 
+def test_missing_successor_evidence_is_logged(caplog):
+    """A profile the fleet probe has no row for logs why reconciliation stayed on
+    the name-matching path: the tripwire output reads identically whether the
+    evidence was missing or the restart was genuinely missed."""
+    import logging
+
+    with caplog.at_level(logging.DEBUG, logger="hermes_cli.update_inventory"):
+        outcomes = match_runtime_outcomes(
+            _plan(_rt("coder", 76508, supervisor="launchd")),
+            restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
+            externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+            live_gateway_pids={},
+        )
+    assert outcomes[0]["outcome"] == "unaccounted"
+    assert "No post-restart gateway evidence for profile 'coder'" in caplog.text
+
+
 def test_successor_evidence_never_outranks_stopped_or_failed():
     """Bookkeeping verdicts stay authoritative when the incarnation evidence is
     also passed: the successor branch is reached only after them, so a killed or
