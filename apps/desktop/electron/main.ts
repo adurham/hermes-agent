@@ -293,6 +293,7 @@ import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } fr
 import { registerNativeNotifications } from './notification-ipc'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { bundledPayload, installIdForRoot } from './payload-backend'
@@ -431,6 +432,7 @@ import {
 } from './updater/checkout'
 import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
+import { readUpdatesFeedBaseFromConfig } from './updater/feed-config'
 import { createMacStrategy } from './updater/mac-client'
 import { type ConsumedRelaunch, consumePendingRelaunch, registerUpdateRelaunch, type RelaunchRegistration } from './updater/relaunch'
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
@@ -3150,32 +3152,14 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
  * Windows' registered App Installer source when no override is set.
  */
 function resolveDesktopFeedBaseUrl(): string {
-  const configured = readUpdatesFeedBaseFromConfig()
+  const configured: string = readUpdatesFeedBaseFromConfig(path.join(HERMES_HOME, 'config.yaml'))
 
   if (configured) {return configured}
-  const env = process.env.HERMES_DESKTOP_FEED_BASE_URL
+  const env: string | undefined = process.env.HERMES_DESKTOP_FEED_BASE_URL
 
   if (env) {return env}
 
   return ''
-}
-
-/** Read `updates.desktop_feed_base_url` from the user's config.yaml. */
-function readUpdatesFeedBaseFromConfig(): string {
-  try {
-    const configPath = path.join(HERMES_HOME, 'config.yaml')
-
-    if (!fileExists(configPath)) {return ''}
-    const raw = fs.readFileSync(configPath, 'utf8')
-    const match = raw.match(/^\s*desktop_feed_base_url\s*:\s*(.+)\s*$/m)
-
-    if (!match) {return ''}
-    const value = match[1].trim().replace(/^['"]|['"]$/g, '')
-
-    return value
-  } catch {
-    return ''
-  }
 }
 
 /** The updater channel from the baked install stamp ('canary' vs 'stable'). */
@@ -7026,46 +7010,13 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
       reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
     }, timeoutMs)
 
-    request.on('response', res => {
-      const chunks = []
-      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
-      res.on('end', () => {
-        if (timedOut) {
-          return
-        }
-
-        clearTimeout(timer)
-        const text = Buffer.concat(chunks).toString('utf8')
-        const statusCode = res.statusCode || 500
-
-        if (statusCode >= 400) {
-          const err = new Error(`${statusCode}: ${text || ''}`) as any
-          err.statusCode = statusCode
-          reject(err)
-
-          return
-        }
-
-        if (!text) {
-          resolve(null)
-
-          return
-        }
-
-        const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
-        const contentType = String(res.headers['content-type'] || res.headers['Content-Type'] || '')
-
-        if (looksHtml || contentType.includes('text/html')) {
-          reject(new Error(`Expected JSON from ${url} but got HTML (status ${statusCode}).`))
-
-          return
-        }
-
-        try {
-          resolve(JSON.parse(text))
-        } catch {
-          reject(new Error(`Invalid JSON from ${url} (status ${statusCode}): ${text.slice(0, 200)}`))
-        }
+    request.on('response', (res: Electron.IncomingMessage): void => {
+      wireOauthSessionResponse(res, {
+        url,
+        isTimedOut: (): boolean => timedOut,
+        clearTimer: (): void => clearTimeout(timer),
+        resolve,
+        reject
       })
     })
     request.on('error', error => {

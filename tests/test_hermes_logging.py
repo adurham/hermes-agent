@@ -1,4 +1,5 @@
 """Tests for hermes_logging — centralized logging setup."""
+import importlib.util
 import io
 import logging
 import os
@@ -113,7 +114,7 @@ class TestSetupLogging:
 
         agent_log = hermes_home / "logs" / "agent.log"
         assert agent_log.exists()
-        content = agent_log.read_text()
+        content = agent_log.read_text(encoding="utf-8-sig")
         assert "test message for agent.log" in content
 
     def test_profile_routing_follows_context_home(self, hermes_home, tmp_path):
@@ -137,9 +138,9 @@ class TestSetupLogging:
 
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
-        ).read_text()
+        ).read_text(encoding="utf-8-sig")
         default_log = hermes_home / "logs" / "agent.log"
-        assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text()
+        assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text(encoding="utf-8-sig")
 
 
 
@@ -148,7 +149,7 @@ class TestSetupLogging:
         """Explicit function params take precedence over config.yaml."""
         import hermes_yaml as yaml
         config = {"logging": {"level": "DEBUG"}}
-        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config))
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 
         hermes_logging.setup_logging(hermes_home=hermes_home, log_level="WARNING")
 
@@ -200,7 +201,7 @@ class TestGatewayMode:
 
         gw_log = hermes_home / "logs" / "gateway.log"
         assert gw_log.exists()
-        assert "telegram connected" in gw_log.read_text()
+        assert "telegram connected" in gw_log.read_text(encoding="utf-8-sig")
 
     def test_gateway_log_rejects_non_gateway_records(self, hermes_home):
         """gateway.log does NOT capture records from tools.*, agent.*, etc."""
@@ -216,7 +217,7 @@ class TestGatewayMode:
 
         gw_log = hermes_home / "logs" / "gateway.log"
         if gw_log.exists():
-            content = gw_log.read_text()
+            content = gw_log.read_text(encoding="utf-8-sig")
             assert "running command" not in content
             assert "compressing context" not in content
 
@@ -248,7 +249,7 @@ class TestGuiMode:
 
         gui_log = hermes_home / "logs" / "gui.log"
         assert gui_log.exists()
-        content = gui_log.read_text()
+        content = gui_log.read_text(encoding="utf-8-sig")
         assert "dashboard online" in content
         assert "ws connected" in content
         assert "gateway event" not in content
@@ -268,7 +269,7 @@ class TestSessionContext:
         hermes_logging.flush_log_queue()
 
         agent_log = hermes_home / "logs" / "agent.log"
-        content = agent_log.read_text()
+        content = agent_log.read_text(encoding="utf-8-sig")
         assert "[abc123]" in content
         assert "tagged message" in content
 
@@ -366,7 +367,7 @@ class TestAddRotatingHandler:
         hermes_logging.set_session_context("factory_test")
         logger.info("test msg")
         hermes_logging.flush_log_queue()
-        content = log_path.read_text()
+        content = log_path.read_text(encoding="utf-8-sig")
         assert "[factory_test]" in content
 
         # Clean up
@@ -501,43 +502,74 @@ class TestWindowsConcurrentLogLockTimeout:
         assert len(warnings) == 1
         assert "concurrent-log-handler" in warnings[0].getMessage()
 
-    def test_portalocker_probe_false_when_lock_raises(self, monkeypatch):
-        """The import-time probe catches a dead portalocker (the sealed-bundle
-        pywintypes failure) instead of letting CLH drop records silently."""
+    @pytest.fixture
+    def fresh_logging(self):
+        def load():
+            spec = importlib.util.spec_from_file_location(
+                "_hermes_logging_import_test", hermes_logging.__file__,
+            )
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        return load
 
-        class FakePortalocker:
-            LOCK_EX = 2
+    @pytest.mark.platforms("windows")
+    def test_fresh_import_selects_working_concurrent_handler(self, tmp_path, fresh_logging):
+        """Native locking must work at import, before the handler class is defined."""
+        from concurrent_log_handler import ConcurrentRotatingFileHandler
 
-            @staticmethod
-            def lock(f, flags):
-                raise ImportError("pywintypes is required for Win32Locker but not found")
+        module = fresh_logging()
+        assert module.RotatingFileHandler is ConcurrentRotatingFileHandler
+        assert module._WINDOWS_CLH_FALLBACK is False
+        assert module._WINDOWS_CLH_FALLBACK_REASON == ""
 
-            @staticmethod
-            def unlock(f):
-                return None
+        log_path = tmp_path / "agent.log"
+        handler = module._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=1, backup_count=1,
+            formatter=logging.Formatter("%(message)s"),
+        )
+        try:
+            for message in ("before rollover", "after rollover"):
+                handler.handle(logging.LogRecord("test", logging.INFO, "", 0, message, (), None))
+            handler.flush()
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["after rollover"]
+            assert (tmp_path / "agent.log.1").read_text(encoding="utf-8-sig").splitlines() == ["before rollover"]
+        finally:
+            handler.close()
 
-        monkeypatch.setitem(sys.modules, "portalocker", FakePortalocker)
-        monkeypatch.setattr(sys, "platform", "win32")
-        assert hermes_logging._portalocker_probe() is False
-        assert "pywintypes" in hermes_logging._WINDOWS_CLH_FALLBACK_REASON
+    @pytest.mark.platforms("windows")
+    def test_fresh_import_retains_lock_failure_and_writes_without_rollover(
+        self, tmp_path, monkeypatch, fresh_logging,
+    ):
+        """A post-import platform fake misses both handler selection and fallback resets."""
+        import portalocker
+        from logging.handlers import RotatingFileHandler as StdlibRotatingFileHandler
 
-    def test_portalocker_probe_true_off_windows(self):
-        # Off Windows the probe is a no-op: stdlib rotation is already in use.
-        assert hermes_logging._portalocker_probe() is True
+        failure = ImportError("pywintypes is required for Win32Locker but not found")
 
-    def test_fallback_handler_disables_rollover(self, tmp_path, monkeypatch):
-        """The stdlib fallback must not roll over: multi-process append
-        handles make Windows renames fail with WinError 32, pinning the file
-        and spamming stderr on every emit (#44873)."""
-        monkeypatch.setattr(hermes_logging, "_WINDOWS_CLH_FALLBACK", True)
-        handler = hermes_logging._new_file_handler(
-            tmp_path / "agent.log", level=logging.INFO,
-            max_bytes=5 * 1024 * 1024, backup_count=3,
+        def fail_lock(stream, flags):
+            raise failure
+
+        monkeypatch.setattr(portalocker, "lock", fail_lock)
+        module = fresh_logging()
+        assert module.RotatingFileHandler is StdlibRotatingFileHandler
+        assert module._WINDOWS_CLH_FALLBACK is True
+        assert module._WINDOWS_CLH_FALLBACK_REASON == repr(failure)
+
+        log_path = tmp_path / "agent.log"
+        handler = module._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=1, backup_count=1,
             formatter=logging.Formatter("%(message)s"),
         )
         try:
             assert handler.maxBytes == 0
             assert handler.backupCount == 0
+            for message in ("first message", "second message"):
+                handler.handle(logging.LogRecord("test", logging.INFO, "", 0, message, (), None))
+            handler.flush()
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["first message", "second message"]
+            assert not list(tmp_path.glob("agent.log.*"))
         finally:
             handler.close()
 
@@ -555,7 +587,7 @@ class TestReadLoggingConfig:
     def test_reads_logging_section(self, hermes_home):
         import hermes_yaml as yaml
         config = {"logging": {"level": "DEBUG", "max_size_mb": 10, "backup_count": 5}}
-        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config))
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 
         level, max_size, backup = hermes_logging._read_logging_config()
         assert level == "DEBUG"
@@ -606,7 +638,7 @@ class TestExternalRotationRecovery:
         handler = self._make_handler(log_path)
         try:
             self._emit(handler, "before rotation")
-            assert log_path.read_text() == "before rotation\n"
+            assert log_path.read_text(encoding="utf-8-sig") == "before rotation\n"
 
             # External rotation (NOT via handler.doRollover()).
             os.rename(log_path, rotated)
@@ -617,8 +649,8 @@ class TestExternalRotationRecovery:
             # The new write should land in a freshly recreated gateway.log,
             # not appended to the rotated backup.
             assert log_path.exists(), "handler did not recreate gateway.log"
-            assert log_path.read_text() == "after rotation\n"
-            assert rotated.read_text() == "before rotation\n"
+            assert log_path.read_text(encoding="utf-8-sig") == "after rotation\n"
+            assert rotated.read_text(encoding="utf-8-sig") == "before rotation\n"
         finally:
             handler.close()
 
@@ -638,12 +670,12 @@ class TestExternalRotationRecovery:
             self._emit(handler, "AAAA" * 32)
             assert log_path.stat().st_size > 0
 
-            with open(log_path, "w"):
+            with open(log_path, "w", encoding="utf-8"):
                 pass  # truncate to zero
             assert log_path.stat().st_size == 0
 
             self._emit(handler, "after truncate")
-            assert log_path.read_text() == "after truncate\n"
+            assert log_path.read_text(encoding="utf-8-sig") == "after truncate\n"
         finally:
             handler.close()
 
@@ -665,7 +697,7 @@ class TestExternalRotationRecovery:
 
         logging.getLogger("gateway.run").info("line BEFORE rotation")
         hermes_logging.flush_log_queue()
-        assert "BEFORE rotation" in gw_path.read_text()
+        assert "BEFORE rotation" in gw_path.read_text(encoding="utf-8-sig")
 
         # External actor renames the file out from under us.
         os.rename(gw_path, rotated)
@@ -683,8 +715,8 @@ class TestExternalRotationRecovery:
         # backup.  Allen's logs had everything past the rotation point
         # going into agent.log only, never gateway.log.
         assert gw_path.exists(), "gateway.log was never recreated"
-        assert "AFTER rotation" in gw_path.read_text()
-        assert "AFTER rotation" not in rotated.read_text()
+        assert "AFTER rotation" in gw_path.read_text(encoding="utf-8-sig")
+        assert "AFTER rotation" not in rotated.read_text(encoding="utf-8-sig")
 
 
 class TestSafeStderr:
