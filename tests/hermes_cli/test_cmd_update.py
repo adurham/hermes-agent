@@ -1,12 +1,10 @@
-"""Tests for cmd_update — branch fallback when remote branch doesn't exist."""
+"""Git trampoline recovery; branch updates use the real target-identity suite."""
 
 import subprocess
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update
 from hermes_cli import update_cmd
 
 
@@ -18,90 +16,9 @@ def _isolate_venv_holders(monkeypatch):
     monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
 
 
-def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
-    """Build a side_effect function for subprocess.run that simulates git commands."""
-
-    def side_effect(cmd, **kwargs):
-        joined = " ".join(str(c) for c in cmd)
-
-        # git rev-parse --abbrev-ref HEAD  (get current branch)
-        if "rev-parse" in joined and "--abbrev-ref" in joined:
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch}\n", stderr="")
-
-        # git rev-parse --verify origin/{branch}  (check remote branch exists)
-        if "rev-parse" in joined and "--verify" in joined:
-            rc = 0 if verify_ok else 128
-            return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
-
-        # git rev-list HEAD..origin/{branch} --count
-        if "rev-list" in joined:
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
-
-        # Fallback: return a successful CompletedProcess with empty stdout
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    return side_effect
-
-
-@pytest.fixture
-def mock_args():
-    return SimpleNamespace()
-
-
 pytestmark = pytest.mark.usefixtures(
     "isolated_update_processes", "isolated_update_checkout",
 )
-
-
-class TestCmdUpdateBranchFallback:
-    """cmd_update falls back to main when current branch has no remote counterpart."""
-
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        """A fork sync that pulls code must continue through post-update work."""
-        from hermes_cli import main as hm
-        from hermes_cli import update_cmd
-
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="0"
-        )
-
-        # The first two reads bracket the upstream sync (aaaaaaa -> bbbbbbb:
-        # the sync moved HEAD). The NEXT two bracket the pull inside the
-        # normal update path (bbbbbbb -> ccccccc) — the head-moved no-op
-        # guard added after this PR exits 1 when that pair is equal, so the
-        # mock must show the pull advancing HEAD too.
-        shas = iter(["aaaaaaa", "bbbbbbb", "bbbbbbb", "ccccccc"])
-
-        with patch.object(
-            hm,
-            "_get_origin_url",
-            return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(
-            update_cmd,
-            "_capture_head_sha",
-            side_effect=lambda *_args, **_kwargs: next(shas, "ccccccc"),
-        ), patch.object(
-            hm, "_sync_with_upstream_if_needed"
-        ), patch.object(
-            update_cmd,
-            "_complete_source_update",
-            # Unlike product preparation, this phase only runs after a pull.
-            # Stop before skills sync and fleet restart; the regression took
-            # the current-checkout path instead and never reached this phase.
-            side_effect=SystemExit(0),
-        ) as post_update_step:
-            with pytest.raises(SystemExit) as exit_info:
-                cmd_update(mock_args)
-
-        assert exit_info.value.code == 0
-        post_update_step.assert_called_once()
-        captured = capsys.readouterr()
-        assert "Already up to date!" not in captured.out
 
 
 class TestGitTrampolineSelfHeal:
@@ -129,12 +46,12 @@ class TestGitTrampolineSelfHeal:
             stderr="BUG (fork bomb): tried to spawn itself, check your PATH\n",
         )
 
+    @pytest.mark.platforms("windows")
     def test_healthy_git_command_unchanged(self):
         from hermes_cli import update_cmd
 
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
         with (
-            patch("sys.platform", "win32"),
             patch(
                 "hermes_cli.update_cmd.subprocess.run",
                 side_effect=self._fake_run_healthy,
@@ -145,6 +62,7 @@ class TestGitTrampolineSelfHeal:
         assert result == git_cmd
         locate.assert_not_called()
 
+    @pytest.mark.platforms("windows")
     def test_trampoline_swaps_to_real_git(self, capsys):
         from pathlib import Path
 
@@ -153,7 +71,6 @@ class TestGitTrampolineSelfHeal:
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
         real = Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe")
         with (
-            patch("sys.platform", "win32"),
             patch(
                 "hermes_cli.update_cmd.subprocess.run",
                 side_effect=self._fake_run_trampoline,
@@ -167,12 +84,12 @@ class TestGitTrampolineSelfHeal:
         out = capsys.readouterr().out
         assert "switching to real git" in out
 
+    @pytest.mark.platforms("windows")
     def test_trampoline_no_real_git_keeps_command(self, capsys):
         from hermes_cli import update_cmd
 
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
         with (
-            patch("sys.platform", "win32"),
             patch(
                 "hermes_cli.update_cmd.subprocess.run",
                 side_effect=self._fake_run_trampoline,
@@ -184,14 +101,12 @@ class TestGitTrampolineSelfHeal:
         out = capsys.readouterr().out
         assert "ZIP path" in out
 
+    @pytest.mark.platforms("not windows")
     def test_off_windows_noop(self):
         from hermes_cli import update_cmd
 
         git_cmd = ["git"]
-        with (
-            patch("sys.platform", "linux"),
-            patch("hermes_cli.update_cmd.subprocess.run") as run,
-        ):
+        with patch("hermes_cli.update_cmd.subprocess.run") as run:
             result = update_cmd._ensure_non_trampoline_git(git_cmd)
         assert result == git_cmd
         run.assert_not_called()

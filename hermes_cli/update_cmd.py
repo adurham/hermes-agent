@@ -916,15 +916,14 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha) -> None:
 
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
-    keep_stash, target_ref=None, pre_sync_sha=None):
+    keep_stash, target_ref=None, pre_sync_sha=None, sync_upstream=False, assume_yes=False,
+    in_place_update=False, _windows_gateway_resume=None):
     """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
     custom branch -> merge, same branch -> reset, orphan history -> rescue ref first; a
     post-pull syntax error in a critical file rolls back. Exits on failure; returns pre-pull SHA."""
     update_succeeded = False
-    # Pre-pull SHA for auto-rollback (stray conflict markers once bricked every updater).
-    # Capture the pre-pull SHA so we can auto-roll-back if the new code has a syntax error in a
-    # critical-path file (PR #28452 incident: orphan merge-conflict markers in hermes_cli/config.py bricked
-    # every user who ran ``hermes update`` for the 7 minutes between the bad commit and the fix landing).
+    # Rescue refs must retain the immediate pre-pull tip, even when syntax
+    # rollback needs to cross an earlier upstream sync.
     pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
     try:
         # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
@@ -938,7 +937,18 @@ def _pull_updates(
             _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
         elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
             _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+        if sync_upstream:
+            # Do not let a second mutation hide a failed origin merge or move an
+            # unexpected branch. Keep local edits parked through the final check.
+            _verify_head_after_pull(
+                git_cmd, branch, pre_sync_sha or pre_pull_sha, in_place_update=in_place_update,
+                _windows_gateway_resume=_windows_gateway_resume)
+            _m()._sync_with_upstream_if_needed(
+                git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
         _rollback_if_pulled_syntax_error(git_cmd, pre_sync_sha or pre_pull_sha)
+        _verify_head_after_pull(
+            git_cmd, branch, pre_sync_sha or pre_pull_sha, in_place_update=in_place_update,
+            _windows_gateway_resume=_windows_gateway_resume)
         update_succeeded = True
     finally:
         if auto_stash_ref is not None:
@@ -1328,16 +1338,12 @@ def _finish_already_up_to_date(
 
 
 def _apply_pulled_update(
-    git_cmd, branch, pre_pull_sha, _plan, opts, *, is_fork,
-    _windows_gateway_resume, completion_request: dict) -> None:
+    git_cmd, branch, pre_pull_sha, _plan, *, _windows_gateway_resume, completion_request: dict) -> None:
     """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
     post_pull_sha = _verify_head_after_pull(
         git_cmd, branch, _plan.pre_sync_sha or pre_pull_sha, in_place_update=_plan.in_place_update,
         _windows_gateway_resume=_windows_gateway_resume)
 
-    if is_fork and branch == "main":
-        _m()._sync_with_upstream_if_needed(
-            git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
     if completion_request is not None:
         completion_request["expected_sha"] = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or post_pull_sha
     _complete_source_update(completion_request)
@@ -1487,9 +1493,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _pull_updates(
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha)
+            keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
+            sync_upstream=is_fork and branch == "main" and not release_tag, assume_yes=assume_yes,
+            in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
         _apply_pulled_update(
-            git_cmd, branch, pre_pull_sha, _plan, opts, is_fork=is_fork and not release_tag,
+            git_cmd, branch, pre_pull_sha, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
     except subprocess.CalledProcessError as e:
         try:

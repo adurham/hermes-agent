@@ -72,10 +72,9 @@ def test_every_route_hands_off_once(route, tmp_path, monkeypatch):
     plan = update_cmd._CheckoutPlan(
         in_place_update=False, auto_stash_ref=None, parked_branch_switched=False,
         upstream_checked=True, commit_count=1, prompt_for_restore=False, switch_block_reason=None)
-    opts = SimpleNamespace(assume_yes=True, gw_input_fn=None, pre_update_version="old")
     if route == "pulled":
         update_cmd._apply_pulled_update(
-            ["git"], "main", "old-sha", plan, opts, is_fork=False, _windows_gateway_resume=None,
+            ["git"], "main", "old-sha", plan, _windows_gateway_resume=None,
             completion_request=request)
     elif route == "current":
         update_cmd._finish_already_up_to_date(
