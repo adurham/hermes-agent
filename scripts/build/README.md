@@ -87,6 +87,10 @@ receipt described below.
 
 Each compiler publishes `hermes-build.json` inside its output (inside `dist/`
 for TUI). `freshness.mjs` owns this receipt and all source input selection.
+TUI inputs are its source tree, the Ink source alias, shared sources, their
+manifests and TypeScript configuration, dependency locks, and its compiler and
+shared compiler helpers. Tests, workspace documentation, dependency-provider
+recipes, and other products' compiler recipes do not invalidate the TUI.
 It records product/host identity, content hashes of workspace/shared sources and
 build inputs, and the exact supplied icon directory, desktop install stamp, and
 native-dependency tree. Inputs are checked again before publication: a concurrent
