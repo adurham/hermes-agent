@@ -99,6 +99,14 @@ successful preparation, before product compilation or signing. Failed
 preparation leaves completed provider data locally but does not save an overall
 snapshot. The general `setup-pm` action remains available for other workflows.
 
+Native wheel caches use compact 128-bit partitions under `python/runtime`, keyed
+by the target and observed compiler/SDK inputs. Missing identities still get a
+fresh partition. uv builds source distributions inside this cache, so partition
+names must leave room for nested compiler outputs below Windows `MAX_PATH`.
+Keep a custom `--cache` root short as well; enabling OS long paths does not make
+every native compiler long-path aware. This layout retains the shared cache
+transport and all target-compatible extras, including Silk.
+
 The strict boundary forbids dependency acquisition during consumption, not all
 network access: signing, timestamping, notarization and publication retain their
 online responsibilities. A network-denied unsigned native build is still needed

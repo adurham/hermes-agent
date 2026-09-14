@@ -244,6 +244,40 @@ def test_native_cache_identity_tracks_compilers_sdk_and_openssl(tmp_path, monkey
     assert desktop_toolchain.native_cache_path(cache, env) != desktop_toolchain.native_cache_path(cache, env)
 
 
+@pytest.mark.parametrize("complete", [False, True])
+def test_native_cache_leaves_room_for_sdist_compiler_outputs(tmp_path, monkeypatch, complete):
+    from pathlib import PureWindowsPath
+    from scripts.bundles import desktop_toolchain
+
+    # Replay the Windows CI layout as path data, without faking the host OS.
+    # uv builds in its cached sdist; /Fo is relative to that working directory.
+    cache = tmp_path / "cache"
+    desktop_toolchain.platform.platform()
+
+    def probe(*args, **kwargs):
+        if not complete:
+            raise FileNotFoundError()
+        return SimpleNamespace(returncode=0, stdout="compiler identity", stderr="")
+
+    openssl = cache / "native/openssl"
+    for name in ("include/openssl/opensslv.h", "lib/libcrypto.lib"):
+        path = openssl / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"native input")
+    monkeypatch.setattr(desktop_toolchain.subprocess, "run", probe)
+    selected = desktop_toolchain.native_cache_path(cache, {
+        "WindowsSDKVersion": "10.0.1", "VCToolsVersion": "14.1", "OPENSSL_DIR": str(openssl),
+    })
+    assert selected.is_relative_to(cache / "python/runtime")
+    runner_cache = PureWindowsPath("D:/a/hermes-agent/hermes-agent/.cache/desktop-inputs")
+    sdist = PureWindowsPath("sdists-v9/pypi/pilk/0.2.4/5b4cbVXt0GPuGQrp/src")
+    for architecture in ("win-amd64", "win-arm64"):
+        output = (runner_cache.joinpath(*selected.relative_to(cache).parts) / sdist
+                  / f"build/temp.{architecture}-cpython-314/Release/src/SKP_SILK_SRC"
+                  / "SKP_Silk_NLSF_VQ_rate_distortion_FIX.obj")
+        assert len(str(output)) < 260, str(output)
+
+
 @pytest.mark.parametrize("on_demand", [False, True])
 def test_icon_environment_prepares_locked_group_before_generation(tmp_path, monkeypatch, on_demand):
     import pm

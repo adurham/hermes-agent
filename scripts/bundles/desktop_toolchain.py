@@ -179,8 +179,10 @@ def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
     encoded = json.dumps(identity, sort_keys=True)
     owned = str(cache.resolve())
     encoded = encoded.replace(json.dumps(owned)[1:-1], "<build-cache>")
-    digest = hashlib.sha256(encoded.encode()).hexdigest() if complete else uuid.uuid4().hex
-    return cache.resolve() / "python/runtime" / f"native-{target}-{digest}"
+    # uv builds sdists below this root. Keep the partition compact so compiler
+    # outputs fit Windows MAX_PATH; the target is already part of the identity.
+    digest = hashlib.sha256(encoded.encode()).hexdigest()[:32] if complete else uuid.uuid4().hex
+    return cache.resolve() / "python/runtime" / digest
 
 
 if __name__ == "__main__":
