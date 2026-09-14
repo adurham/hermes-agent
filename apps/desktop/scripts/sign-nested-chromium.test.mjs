@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
+import childProcess from 'node:child_process'
 import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
-import { test } from 'vitest'
+import { MacTargetHelper } from 'app-builder-lib/internal'
+import { test, vi } from 'vitest'
 
 import {
-  parseDeveloperId,
   repairFrameworkLinks,
   resolveSigningIdentity,
   signNestedChromium
@@ -42,16 +44,6 @@ test('repairFrameworkLinks turns a flattened Foo.framework/Foo into a symlink', 
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
-})
-
-test('parseDeveloperId takes the first Developer ID Application line', () => {
-  const listing = `
-  1) ABC "Apple Development: someone@example.com (TEAM)"
-  2) DEF "Developer ID Application: Nous Research Inc (763K57MW7Z)"
-  3) GHI "Developer ID Installer: Nous Research Inc (763K57MW7Z)"
-`
-  assert.equal(parseDeveloperId(listing), 'Developer ID Application: Nous Research Inc (763K57MW7Z)')
-  assert.equal(parseDeveloperId('nothing here'), null)
 })
 
 test('signNestedChromium no-ops without an identity', () => {
@@ -99,19 +91,89 @@ test('signNestedChromium --deep signs the .app and file-signs loose Mach-O', () 
   }
 })
 
-test('resolveSigningIdentity reads the packager keychain', async () => {
-  const seen = []
+test('nested Chromium uses the same keychain certificate selector as the installed builder', async () => {
+  const payload = tempRoot()
+  const keychain = path.join(payload, 'builder.keychain')
+  const hash = '0123456789ABCDEF0123456789ABCDEF01234567'
+  const otherHash = 'F'.repeat(40)
+  const listing = `  1) ${hash} "Developer ID Application: Signing Fixture (TEAM)"\n  2) ${otherHash} "Developer ID Application: Other Fixture (TEAM)"\n  2 valid identities found\n`
+  let ready = false
   const packager = {
+    config: {},
+    resourceList: Promise.resolve([]),
     codeSigningInfo: {
-      value: Promise.resolve({ keychainFile: '/tmp/builder.keychain' })
+      value: Promise.resolve().then(() => {
+        ready = true
+        return { keychainFile: keychain }
+      })
     }
   }
-  const listing = '  1) DEF "Developer ID Application: Nous Research Inc (763K57MW7Z)"\n'
-  const r = await resolveSigningIdentity(packager, (_cmd, args) => {
-    seen.push(args)
+  const readIdentity = (cmd, args) => {
+    assert.ok(ready, 'identity discovery must await builder keychain initialization')
+    assert.equal(path.basename(cmd), 'security')
+    assert.equal(args[0], 'find-identity', 'never import credentials in this test')
+    assert.equal(args.at(-1), keychain)
     return listing
+  }
+  // Exercise the installed builder's discovery and options, replacing only the
+  // native process boundary. This proves selector parity, not native signing.
+  const native = vi.spyOn(childProcess, 'execFile').mockImplementation((cmd, args, options, callback) => {
+    callback(null, readIdentity(cmd, args), '')
+    return undefined
   })
-  assert.equal(r.identity, 'Developer ID Application: Nous Research Inc (763K57MW7Z)')
-  assert.equal(r.keychain, '/tmp/builder.keychain')
-  assert.ok(seen[0].includes('/tmp/builder.keychain'))
+  syncBuiltinESMExports()
+  vi.stubEnv('CSC_NAME', undefined)
+  vi.stubEnv('CSC_IDENTITY_AUTO_DISCOVERY', 'true')
+  try {
+    const app = path.join(payload, 'tools', 'chromium-1208', 'Browser.app')
+    fs.mkdirSync(app, { recursive: true })
+    const entitlements = path.join(payload, 'entitlements.plist')
+    fs.writeFileSync(entitlements, '<plist/>')
+    const helper = new MacTargetHelper(packager)
+    const nested = await resolveSigningIdentity(packager, readIdentity)
+    const identity = await helper.findSigningIdentity('mac', undefined, keychain, false)
+    const outer = await helper.buildSignOptions(app, identity, undefined, keychain, undefined, 'mac')
+    const calls = []
+    const signed = signNestedChromium(payload, {
+      ...nested, entitlements, exec: (cmd, args) => calls.push([cmd, ...args])
+    })
+    assert.equal(signed.signed, 1)
+    assert.equal(calls.length, 1)
+    const args = calls[0]
+    assert.equal(outer.identity, hash)
+    assert.equal(args[args.indexOf('--sign') + 1], outer.identity)
+    assert.equal(args[args.indexOf('--keychain') + 1], outer.keychain)
+    assert.ok(args.includes('--deep') && args.includes('--timestamp') && args.includes('runtime'))
+    assert.equal(args.at(-1), app)
+    vi.stubEnv('CSC_NAME', 'Other Fixture')
+    const qualified = await resolveSigningIdentity(packager, readIdentity)
+    const selected = await helper.findSigningIdentity('mac', undefined, keychain, false)
+    assert.equal(selected.hash, otherHash)
+    assert.equal(qualified.identity, selected.hash, 'CSC_NAME is a qualifier, not a codesign selector')
+  } finally {
+    native.mockRestore()
+    syncBuiltinESMExports()
+    vi.unstubAllEnvs()
+    fs.rmSync(payload, { recursive: true, force: true })
+  }
+})
+
+test('identity preparation failures abort instead of selecting another keychain or skipping signing', async () => {
+  vi.stubEnv('CSC_NAME', 'Signing Fixture')
+  try {
+    const importFailure = new Error('builder keychain initialization failed')
+    const packager = { codeSigningInfo: { value: Promise.reject(importFailure) } }
+    await assert.rejects(resolveSigningIdentity(packager, () => {
+      assert.fail('must not discover identities after the builder keychain failed')
+    }), error => error === importFailure)
+    const keychain = path.join(os.tmpdir(), 'builder.keychain')
+    packager.codeSigningInfo = { value: Promise.resolve({ keychainFile: keychain }) }
+    const discoveryFailure = new Error('security could not read the keychain')
+    await assert.rejects(resolveSigningIdentity(packager, () => { throw discoveryFailure }),
+      error => error === discoveryFailure)
+    vi.stubEnv('CSC_NAME', undefined)
+    await assert.rejects(resolveSigningIdentity(packager, () => '  0 valid identities found\n'), /Developer ID/)
+  } finally {
+    vi.unstubAllEnvs()
+  }
 })
