@@ -259,12 +259,12 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     store_dir = out / "tools"
     store_dir.mkdir(parents=True, exist_ok=True)
     repo_dir = out / "hermes-agent"
-    from scripts.bundles.payload import snapshot
+    from scripts.bundles.payload import INERT_SNAPSHOT_DIRS, snapshot
     print(f"staging repo snapshot ({ref})…", flush=True)
     revision = subprocess.check_output(
         ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=source,
         text=True, encoding="utf-8").strip()
-    snapshot(source, revision, repo_dir)
+    snapshot(source, revision, repo_dir, exclude=INERT_SNAPSHOT_DIRS)
     # PM's provider code reads its adjacent lock. Never combine that tool graph
     # with a revision selecting different pins.
     if (repo_dir / "pm/lock.json").read_bytes() != paths.lockfile_path().read_bytes():
@@ -366,6 +366,9 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
         Path(os.path.relpath(repo_dir, site)).as_posix() + "\n", encoding="utf-8")
     from scripts.bundles.payload import relativize_links
     relativize_links(out)
+    from scripts.bundles.bytecode import bake_bytecode
+    baked = bake_bytecode(out, python_bin)
+    print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, read-only caches)")
     inputs = AgentInputs(
         project=repo_dir / "pyproject.toml", code=repo_dir, repo="hermes-agent",
         placement="contained", target=current_target(), python=python_bin,

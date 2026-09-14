@@ -40,11 +40,16 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     target_python = output / "tools" / source_python.relative_to(canonical)
     source_python.parent.mkdir(parents=True)
     # PM seals a payload-owned base interpreter, not an external venv launcher.
-    # The POSIX host supplies its stdlib; Windows needs it beside the executable.
+    # Windows carries its stdlib beside the executable; POSIX PM pythons are
+    # RELOCATABLE builds that resolve sys.prefix relative to their own
+    # tree — a bare ELF copy falls back to the compile-time /install prefix
+    # and cannot even create its venv. Stage the full toolchain, mirroring
+    # the store layout the payload's tools/ directory promises.
     if os.name == "nt":
         shutil.copytree(Path(sys.base_prefix), source_python.parent, dirs_exist_ok=True)
     else:
-        shutil.copy2(Path(getattr(sys, "_base_executable")).resolve(), source_python)
+        shutil.copytree(Path(getattr(sys, "_base_executable")).resolve().parents[1],
+                        source_python.parents[1], dirs_exist_ok=True)
     repo = tmp_path / "repo"
     repo.mkdir()
     source = Path(__file__).resolve().parents[2]

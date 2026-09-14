@@ -16,14 +16,31 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def snapshot(repo: Path, ref: str, destination: Path) -> None:
+# Snapshot dirs the sealed agent payload never reads. Tests, docs and CI
+# definitions never ship; the frontend/desktop sources and build scripts are
+# prebuilt by CI into staged products (AgentInputs.frontends) — a sealed
+# payload never re-enters the source-build graph (is_bundled_payload routes
+# updates to the channel updater), and linux_desktop_entry degrades to the
+# themed icon when apps/desktop/assets is absent. Excluded here means:
+# not packaged, not compiled, not baked. Frontend product staging
+# (scripts/bundles/stage.py) needs its full tree and passes no exclusions.
+INERT_SNAPSHOT_DIRS = (
+    "tests", "tests-js", "website", "evals", ".github", "nix", "docker",
+    "apps", "ui-tui", "web", "scripts",
+)
+
+
+def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] = ()) -> None:
     """Archive a resolved git revision without carrying checkout metadata."""
     repo, destination = repo.resolve(), destination.resolve()
     if repo == destination or repo.is_relative_to(destination):
         raise ValueError("the snapshot destination must not contain the source checkout")
     with tempfile.TemporaryDirectory(prefix="hermes-archive-") as temp:
         archive = Path(temp) / "source.tar"
-        subprocess.run(["git", "archive", "--format=tar", "--output", str(archive), ref], cwd=repo, check=True)
+        pathspecs = [f":(exclude){name}" for name in exclude]
+        subprocess.run(
+            ["git", "archive", "--format=tar", "--output", str(archive), ref, "--", *pathspecs],
+            cwd=repo, check=True)
         if destination.exists():
             shutil.rmtree(destination)
         destination.mkdir(parents=True)
