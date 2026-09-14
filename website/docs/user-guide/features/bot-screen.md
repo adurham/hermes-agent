@@ -46,7 +46,13 @@ reverse proxy's access log may record an already-spent ticket.
   runs as root — the usual case in a container — the installer runs the package
   manager directly, with no sudo and no password card. When it is not root and
   the host has no `sudo` at all, the pane and the CLI print the exact install
-  command for you to run on the host instead of showing a card. From a shell,
+  command for you to run on the host instead of showing a card. The official
+  Docker image (`nousresearch/hermes-agent`, which also powers Hermes Cloud) is
+  that second case: the gateway runs as an unprivileged user and the image has no
+  `sudo`, so the pane shows the `apt-get` line and an operator runs it once as
+  root in the container (`docker exec -u 0 <container> apt-get install -y …`).
+  Add `chromium` to that line if you want the dock's Browser icon; see
+  [Browser sessions](#browser-sessions-that-survive-the-handoff) below. From a shell,
   `hermes computer-use screen status` prints the exact line and
   `hermes computer-use screen install` runs it:
 
@@ -140,7 +146,9 @@ with an AppArmor profile that allows it. If the pick is wrong for your host, set
 gateway's environment. The official Docker image ships only Playwright's
 *headless shell*, which cannot draw a window, so inside it the dock has no
 Browser icon and the pane / `screen status` report **no headed browser** until
-you install a headed one (`apt-get install chromium`).
+you install a headed one (`apt-get install chromium`); once one is present the
+dock icon starts it with the same sandbox settings agent-browser uses in that
+container, so the human's Browser and the bot's browser are one and the same.
 
 ## CLI
 
