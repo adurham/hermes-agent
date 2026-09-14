@@ -5,10 +5,16 @@ from dataclasses import dataclass
 import os
 import re
 
+# A lease is the workflow run id alone: "re-run failed jobs" must re-enter the
+# SAME namespace (succeeded jobs are skipped and their outputs persist). The
+# legacy <run-id>-<attempt> shape stays readable for allocations minted before
+# the one-dispatch collapse.
+_RUN_LEASE = r"[1-9][0-9]{0,19}(?:-[1-9][0-9]{0,5})?"
+
 
 def require_run(value: str) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,19}-[1-9][0-9]{0,5}", value):
-        raise ValueError("Disposable R2 run must be <run-id>-<attempt>")
+    if not isinstance(value, str) or not re.fullmatch(_RUN_LEASE, value):
+        raise ValueError("Disposable R2 run must be <run-id> or legacy <run-id>-<attempt>")
     return value
 
 
@@ -18,7 +24,7 @@ class R2Scope:
 
     def __post_init__(self):
         if self.prefix and not re.fullmatch(
-                r"ci-disposable/[1-9][0-9]{0,19}/[1-9][0-9]{0,19}-[1-9][0-9]{0,5}/", self.prefix):
+                r"ci-disposable/[1-9][0-9]{0,19}/" + _RUN_LEASE + r"/", self.prefix):
             raise ValueError("Invalid disposable R2 namespace")
 
     @classmethod

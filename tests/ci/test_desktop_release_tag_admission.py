@@ -66,20 +66,24 @@ def test_signing_jobs_pin_source_and_controller_revisions_not_mutable_tags():
                 continue
             ref = step.get("with", {}).get("ref")
             expected = "${{ needs.validate.outputs.sha }}"
-            if name in {"publish-channel", "allocate-disposable"} or step.get("if") == "inputs.channel_build != ''":
+            if name in {"publish-channel", "allocate-disposable"} or step.get("if") == "needs.validate.outputs.channel-build != ''":
                 expected = "${{ github.sha }}"
             elif name == "validate":
                 expected = "${{ (inputs.build_commit != '' || inputs.channel_build != '') && github.sha || inputs.tag }}"
             elif name == "assemble-win32-bundle":
-                expected = "${{ inputs.channel_build != '' && github.sha || needs.validate.outputs.sha }}"
+                expected = "${{ needs.validate.outputs.channel-build != '' && github.sha || needs.validate.outputs.sha }}"
             assert ref == expected, (
                 f"signing job {name!r} checks out {ref!r} — it must check out "
                 "the admitted source or explicitly selected trusted controller, never a mutable tag"
             )
-    # The admission and allocation controllers do not consume a prior admission.
+    # The allocation controller does not consume a prior admission; validate's
+    # only allowed need is this run's own allocation (the one-dispatch design).
     for name, job in privileged.items():
-        if name in {"validate", "allocate-disposable"}:
+        if name == "allocate-disposable":
             assert not job.get("needs")
+            continue
+        if name == "validate":
+            assert job.get("needs") in ([], None, ["allocate-disposable"])
             continue
         needs = job.get("needs") or []
         needs = [needs] if isinstance(needs, str) else needs

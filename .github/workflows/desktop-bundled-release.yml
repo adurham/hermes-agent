@@ -155,11 +155,15 @@ permissions:
   id-token: write
 
 concurrency:
-  group: desktop-bundled-release-${{ inputs.channel_build || inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}
+  # One dispatch: a disposable run's identity is its channel name, so a
+  # re-dispatch of the same channel serializes instead of racing the namespace.
+  group: desktop-bundled-release-${{ inputs.channel_build || inputs.disposable_channel || inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}
   cancel-in-progress: false
 
 env:
-  R2_DISPOSABLE_RUN: ${{ inputs.disposable_run }}
+  # One dispatch: a disposable-mode run leases its namespace by run id alone
+  # (no attempt suffix) so "re-run failed jobs" re-enters the same namespace.
+  R2_DISPOSABLE_RUN: ${{ inputs.disposable_run || (inputs.disposable_channel != '' && github.run_id) || '' }}
 
 jobs:
   allocate-disposable:
@@ -205,11 +209,24 @@ jobs:
           cache-python: false
           archive-inputs: false
       - name: Probe scoped storage and allocate without dispatching
+        id: allocate
         run: python -m scripts.releases.channel_disposable
+    outputs:
+      channel_build: ${{ steps.allocate.outputs.channel_build }}
+      channel_request_sha256: ${{ steps.allocate.outputs.channel_request_sha256 }}
+      disposable_run: ${{ steps.allocate.outputs.disposable_run }}
+      public_base: ${{ steps.allocate.outputs.public_base }}
+      storage_prefix: ${{ steps.allocate.outputs.storage_prefix }}
 
   validate:
     name: Validate the build source
-    if: inputs.disposable_channel == ''
+    # One dispatch: in disposable mode the channel pin comes from this run's
+    # allocation (needs below), not a second dispatch's inputs. A failed
+    # allocation skips admission; non-disposable runs have nothing allocated.
+    if: >-
+      !cancelled() && (inputs.disposable_channel == ''
+      || needs.allocate-disposable.result == 'success')
+    needs: [allocate-disposable]
     runs-on: ubuntu-24.04
     # Public root is an environment variable, not a repository variable. No
     # secret is injected into admission; downstream jobs consume its outputs.
@@ -230,6 +247,9 @@ jobs:
       receiver-candidate: ${{ steps.admission.outputs.receiver-candidate }}
       public-root: ${{ steps.admission.outputs.public-root }}
       public-base: ${{ steps.admission.outputs.public-base }}
+      channel-build: ${{ (inputs.disposable_channel != '' && needs.allocate-disposable.outputs.channel_build) || inputs.channel_build || '' }}
+      channel-request-sha256: ${{ (inputs.disposable_channel != '' && needs.allocate-disposable.outputs.channel_request_sha256) || inputs.channel_request_sha256 || '' }}
+      disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -244,8 +264,8 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
-          CHANNEL_BUILD: ${{ inputs.channel_build }}
-          CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 }}
+          CHANNEL_BUILD: ${{ inputs.channel_build || needs.allocate-disposable.outputs.channel_build || '' }}
+          CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 || needs.allocate-disposable.outputs.channel_request_sha256 || '' }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
           TERMUX_ONLY: ${{ inputs.termux_only }}
           BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
@@ -345,7 +365,7 @@ jobs:
   # Windows assembly and publication depend on these native Windows legs.
   archive-inputs:
     name: Archive every pinned input
-    if: inputs.disposable_run == '' && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+    if: inputs.disposable_run == '' && inputs.disposable_channel == '' && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
     needs: [validate]
     uses: ./.github/workflows/archive-inputs.yml
     with:
@@ -371,7 +391,7 @@ jobs:
           - label: win32-arm64
             runner: windows-11-arm
     env: &win32-env
-      CHANNEL_BUILD: ${{ inputs.channel_build }}
+      CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
@@ -412,7 +432,7 @@ jobs:
           fetch-tags: true
 
       - name: Check out trusted channel controller
-        if: inputs.channel_build != ''
+        if: needs.validate.outputs.channel-build != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
@@ -420,12 +440,12 @@ jobs:
           persist-credentials: false
 
       - name: Retrieve pinned channel request
-        if: inputs.channel_build != ''
+        if: needs.validate.outputs.channel-build != ''
         shell: bash
         working-directory: .build/channel-controller
         env:
-          CHANNEL_BUILD: ${{ inputs.channel_build }}
-          CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 }}
+          CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
+          CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
         run: python -m scripts.releases.channel_publish request --out "$RUNNER_TEMP/channel-request.json"
 
       - name: Restore desktop dependency inputs
@@ -537,7 +557,7 @@ jobs:
             --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
 
       - name: Record and stage channel windows packages
-        if: inputs.channel_build != ''
+        if: needs.validate.outputs.channel-build != ''
         shell: bash
         working-directory: .build/channel-controller
         env:
@@ -588,7 +608,7 @@ jobs:
     name: bundled ${{ matrix.target.label }} (commit)
     if: >-
       !cancelled() && needs.validate.result == 'success'
-      && (needs.archive-inputs.result == 'success' || (inputs.disposable_run != '' && needs.archive-inputs.result == 'skipped'))
+      && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
       && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.build_commit != '' || inputs.channel_build != '')
     needs: [validate, archive-inputs]
@@ -607,7 +627,7 @@ jobs:
     if: >-
       always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
-      && (needs.archive-inputs.result == 'success' || (inputs.disposable_run != '' && needs.archive-inputs.result == 'skipped'))
+      && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
     needs: [validate, archive-inputs, build-win32-release, build-win32-commit]
     runs-on: ubuntu-24.04
     permissions: {}
@@ -653,7 +673,7 @@ jobs:
           - label: darwin-x64
             runner: macos-15-intel
     env: &darwin-env
-      CHANNEL_BUILD: ${{ inputs.channel_build }}
+      CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
@@ -678,7 +698,7 @@ jobs:
           fetch-depth: 0
 
       - name: Check out trusted channel controller
-        if: inputs.channel_build != ''
+        if: needs.validate.outputs.channel-build != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
@@ -686,12 +706,12 @@ jobs:
           persist-credentials: false
 
       - name: Retrieve pinned channel request
-        if: inputs.channel_build != ''
+        if: needs.validate.outputs.channel-build != ''
         shell: bash
         working-directory: .build/channel-controller
         env:
-          CHANNEL_BUILD: ${{ inputs.channel_build }}
-          CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 }}
+          CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
+          CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
         run: python -m scripts.releases.channel_publish request --out "$RUNNER_TEMP/channel-request.json"
 
       - name: Restore desktop dependency inputs
@@ -833,7 +853,7 @@ jobs:
           mv "$f" "apps/desktop/release/${arch}-${channel}-mac.yml"
 
       - name: Record and stage channel macos packages
-        if: inputs.channel_build != ''
+        if: needs.validate.outputs.channel-build != ''
         shell: bash
         working-directory: .build/channel-controller
         env:
@@ -884,7 +904,7 @@ jobs:
     name: bundled ${{ matrix.target.label }} (commit)
     if: >-
       !cancelled() && needs.validate.result == 'success'
-      && (needs.archive-inputs.result == 'success' || (inputs.disposable_run != '' && needs.archive-inputs.result == 'skipped'))
+      && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
       && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.build_commit != '' || inputs.channel_build != '')
     needs: [validate, archive-inputs]
@@ -903,7 +923,7 @@ jobs:
     if: >-
       always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
-      && (needs.archive-inputs.result == 'success' || (inputs.disposable_run != '' && needs.archive-inputs.result == 'skipped'))
+      && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
     needs: [validate, archive-inputs, build-darwin-release, build-darwin-commit]
     runs-on: ubuntu-24.04
     permissions: {}
@@ -953,13 +973,13 @@ jobs:
       format: ${{ matrix.format }}
       sha: ${{ needs.validate.outputs.sha }}
       tag: ${{ inputs.tag }}
-      commit-build: ${{ inputs.build_commit != '' }}
-      channel-build: ${{ inputs.channel_build }}
-      channel-request-sha256: ${{ inputs.channel_request_sha256 }}
+      commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
+      channel-build: ${{ needs.validate.outputs.channel-build }}
+      channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
       controller-sha: ${{ github.sha }}
       public-base: ${{ needs.validate.outputs.public-base }}
       public-root: ${{ needs.validate.outputs.public-root }}
-      disposable-run: ${{ inputs.disposable_run }}
+      disposable-run: ${{ needs.validate.outputs.disposable-run }}
 
   smoke-win32:
     name: Smoke Windows ${{ matrix.arch }} MSIX
@@ -982,13 +1002,13 @@ jobs:
       format: msix
       sha: ${{ needs.validate.outputs.sha }}
       tag: ${{ inputs.tag }}
-      commit-build: ${{ inputs.build_commit != '' }}
-      channel-build: ${{ inputs.channel_build }}
-      channel-request-sha256: ${{ inputs.channel_request_sha256 }}
+      commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
+      channel-build: ${{ needs.validate.outputs.channel-build }}
+      channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
       controller-sha: ${{ github.sha }}
       public-base: ${{ needs.validate.outputs.public-base }}
       public-root: ${{ needs.validate.outputs.public-root }}
-      disposable-run: ${{ inputs.disposable_run }}
+      disposable-run: ${{ needs.validate.outputs.disposable-run }}
 
   smoke-win32-universal:
     name: Smoke Windows ${{ matrix.arch }} MSIXBUNDLE
@@ -1011,13 +1031,13 @@ jobs:
       format: msixbundle
       sha: ${{ needs.validate.outputs.sha }}
       tag: ${{ inputs.tag }}
-      commit-build: ${{ inputs.build_commit != '' }}
-      channel-build: ${{ inputs.channel_build }}
-      channel-request-sha256: ${{ inputs.channel_request_sha256 }}
+      commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
+      channel-build: ${{ needs.validate.outputs.channel-build }}
+      channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
       controller-sha: ${{ github.sha }}
       public-base: ${{ needs.validate.outputs.public-base }}
       public-root: ${{ needs.validate.outputs.public-root }}
-      disposable-run: ${{ inputs.disposable_run }}
+      disposable-run: ${{ needs.validate.outputs.disposable-run }}
 
   # Assembly never writes a feed, including for canaries.
   assemble-win32-bundle:
@@ -1033,8 +1053,8 @@ jobs:
     cache-mode: read
     timeout-minutes: 45
     env:
-      CHANNEL_BUILD: ${{ inputs.channel_build }}
-      CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 }}
+      CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
+      CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
@@ -1054,21 +1074,24 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # Channel assembly/publishing code stays at the trusted controller.
-          ref: ${{ inputs.channel_build != '' && github.sha || needs.validate.outputs.sha }}
+          ref: ${{ needs.validate.outputs.channel-build != '' && github.sha || needs.validate.outputs.sha }}
           # stage-msixbundle derives the canary MSIX build number as
           # minutes-since-the-last-stable from git tags — must see them.
           fetch-tags: true
 
       - name: Retrieve pinned channel request
-        if: inputs.channel_build != ''
+        if: needs.validate.outputs.channel-build != ''
         shell: bash
+        env:
+          CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
+          CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
         run: python -m scripts.releases.channel_publish request --out "$RUNNER_TEMP/channel-request.json"
 
       - name: Set up the locked build toolchain
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          archive-inputs: ${{ inputs.disposable_run == '' }}
+          archive-inputs: ${{ inputs.disposable_run == '' && inputs.disposable_channel == '' }}
           cache-python: false
           save-tools-cache: false
           save-node-cache: false
@@ -1198,7 +1221,7 @@ jobs:
     name: Publish the complete native-smoked channel build
     needs: [validate, build-darwin, build-win32, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal]
     if: >-
-      !cancelled() && inputs.channel_build != '' && needs.validate.result == 'success'
+      !cancelled() && needs.validate.outputs.channel-build != '' && needs.validate.result == 'success'
       && needs.build-darwin.result == 'success' && needs.build-win32.result == 'success'
       && needs.assemble-win32-bundle.result == 'success' && needs.smoke-darwin.result == 'success'
       && needs.smoke-win32.result == 'success' && needs.smoke-win32-universal.result == 'success'
@@ -1209,8 +1232,8 @@ jobs:
     permissions:
       contents: read
     env:
-      CHANNEL_BUILD: ${{ inputs.channel_build }}
-      CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 }}
+      CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
+      CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       GH_TOKEN: ${{ github.token }}
       RELEASE_NEEDS: ${{ toJSON(needs) }}
@@ -1385,7 +1408,7 @@ jobs:
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
     needs: [validate, archive-inputs]
-    if: inputs.channel_build == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
+    if: inputs.channel_build == '' && inputs.disposable_channel == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
     runs-on: ubuntu-24.04-arm
     environment: release-signing
     timeout-minutes: 90
@@ -1799,7 +1822,7 @@ jobs:
     name: Commit build summary (every binary, built or not)
     needs: [validate, build-win32, build-darwin, build-linux, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, termux-deb]
     if: |
-      always() && inputs.build_commit != ''
+      always() && inputs.build_commit != '' && inputs.disposable_channel == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
     runs-on: ubuntu-24.04
     environment: release-signing

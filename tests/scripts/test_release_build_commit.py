@@ -57,17 +57,6 @@ def run(argv, *args, **kwargs):
             value = 'main\\n'
         elif argv[1:3] == ['workflow', 'run']:
             value = 'fixture dispatch accepted\\n'
-        elif argv[1:3] == ['run', 'list']:
-            value = json.dumps([{'databaseId': 777, 'status': 'queued', 'conclusion': '',
-                                 'createdAt': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()}]) + '\\n'
-        elif argv[1:3] == ['run', 'view'] and '--log' in argv:
-            if os.environ.get('PROBE_ALLOCATION_FAIL'):
-                return subprocess.CompletedProcess(argv, 1, stdout='', stderr='fixture log unavailable')
-            record = json.loads(os.environ.get('PROBE_ALLOCATION_LOG', '{}'))
-            line = json.dumps(record, sort_keys=True) if record else ''
-            value = 'allocate-disposable\\tProbe scoped storage\\t2026-09-14T00:00:00Z ' + line + '\\n'
-        elif argv[1:3] == ['run', 'view']:
-            value = json.dumps({'status': 'completed', 'conclusion': 'success'}) + '\\n'
         elif argv[1] == 'api':
             value = os.environ.get('PROBE_PERMISSION', 'write') + '\\n'
         else:
@@ -170,42 +159,10 @@ def test_fork_commit_build_routes_through_disposable_allocation(fixture_repo):
     assert not any(call[1:3] == ['workflow', 'run'] for call in calls)
     assert 'disposable' in result.stdout.lower()
 
-def test_fork_allocation_polls_extracts_and_dispatches_followup(fixture_repo):
-    repo, _, invoke = fixture_repo
-    tip = git(repo, 'rev-parse', 'HEAD')
-    follow_up = ['gh', 'workflow', 'run', 'desktop-bundled-release.yml', '--repo',
-                 'fixture-owner/fixture-repo', '--ref', 'main', '-f', 'channel_build=' + 'a' * 32,
-                 '-f', 'channel_request_sha256=' + 'b' * 64, '-f', 'disposable_run=12345-1',
-                 '-f', 'tag=', '-f', 'upload_release=false', '-f', 'termux_only=false',
-                 '-f', 'termux_upgrade_from_tag=']
-    result, calls = invoke('--build-commit', tip, '--publish',
-                           extra={'PROBE_ALLOCATION_LOG': json.dumps({'command': follow_up})})
-    assert result.returncode == 0, result.stderr
-    dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
-    assert len(dispatches) == 2
-    assert 'disposable_channel=' in ' '.join(dispatches[0])
-    # The extracted follow-up is dispatched verbatim: pinned build, digest and
-    # disposable_run from the allocation, and no bundle_env re-passed.
-    assert dispatches[1] == follow_up
-    assert 'bundle_env=' not in ' '.join(dispatches[1])
-    run_lists = [call for call in calls if call[1:3] == ['run', 'list']]
-    assert run_lists and all('--repo' in call for call in run_lists)
-    run_views = [call for call in calls if call[1:3] == ['run', 'view']]
-    assert run_views and all(call[3] == '777' for call in run_views)
-    assert 'channel_build=' in result.stdout
+# (One-dispatch redesign) The allocation poll/extract/auto-dispatch machinery these
+# two tests exercised was deleted: a fork commit build is now a SINGLE dispatch whose
+# run both allocates and builds. See test_fork_commit_build_routes_through_disposable_allocation.
 
-def test_fork_allocation_extraction_failure_prints_summary_pointer(fixture_repo):
-    repo, _, invoke = fixture_repo
-    tip = git(repo, 'rev-parse', 'HEAD')
-    result, calls = invoke('--build-commit', tip, '--publish',
-                           extra={'PROBE_ALLOCATION_FAIL': '1'})
-    # The allocation itself succeeded, so the command completes; the follow-up
-    # must be surfaced via a clear pointer to the run summary.
-    assert result.returncode == 0, result.stderr
-    dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
-    assert len(dispatches) == 1 and 'disposable_channel=' in ' '.join(dispatches[0])
-    assert 'actions/runs/777' in result.stdout
-    assert 'Traceback' not in result.stderr
 
 def test_commit_bundle_environment_is_literal_and_validated(fixture_repo):
     repo, _, invoke = fixture_repo

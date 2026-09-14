@@ -155,11 +155,20 @@ def test_smoke_matrix_native_routes_and_driver_only_dependencies():
     assert set(executions) == {(platform, arch, fmt) for arch in ('arm64', 'x64')
                                for platform, formats in [('darwin', ('dmg', 'zip')), ('win32', ('msix', 'msixbundle'))]
                                for fmt in formats}
-    for job in workflow['jobs'].values():
+    for name, job in workflow['jobs'].items():
+        # validate is the admission job (rejects unsupported targets before any
+        # runner spawns, no checkout, no runner resources); every other job is a
+        # read-only smoke runner.
+        if name == 'validate':
+            continue
         assert job['cache-mode'] == 'read' and 'environment' not in job
         checkout = next(step for step in job['steps'] if 'actions/checkout@' in step.get('uses', ''))
         assert checkout['with']['persist-credentials'] is False
-        assert checkout['with']['ref'] == '${{ inputs.sha }}'
+        # A channel build smokes the trusted controller's checkout, not the
+        # admitted source — the runner fetches the pinned channel request itself.
+        assert checkout['with']['ref'] in (
+            '${{ inputs.sha }}',
+            "${{ inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}")
         recording = next(step for step in job['steps'] if step.get('id') == 'recording')
         assert 'save-cache' not in recording['with']
         upload = next(step for step in job['steps'] if 'actions/upload-artifact@' in step.get('uses', ''))
@@ -179,8 +188,10 @@ def test_smoke_matrix_native_routes_and_driver_only_dependencies():
     workflows = [workflow] + [hermes_yaml.safe_load((ROOT / '.github/workflows' / name).read_text(encoding='utf-8-sig'))
                              for name in ('install-e2e-run.yml', 'install-e2e-macos-run.yml', 'install-e2e-windows-run.yml')]
     for document in workflows:
-        for job in document['jobs'].values():
-            if 'steps' not in job:
+        for name, job in document['jobs'].items():
+            if 'steps' not in job or name == 'validate':
+                # the smoke workflow's validate job rejects unsupported targets
+                # with a bare case statement; it needs no toolchain setup.
                 continue
             steps = job['steps']
             setup = next(step for step in steps if step.get('uses') == './.github/actions/setup-pm')

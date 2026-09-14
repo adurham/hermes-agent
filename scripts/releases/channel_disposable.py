@@ -1,4 +1,4 @@
-"""Privileged allocation only: print a separate maintainer build dispatch."""
+"""Privileged allocation: probe CAS/CDN and allocate the channel this run builds."""
 from __future__ import annotations
 
 import hashlib
@@ -81,13 +81,14 @@ def allocate(env: dict[str, str]) -> dict:
     name = validate_name(env.get("DISPOSABLE_CHANNEL", ""))
     if name in {"ci-cas-probe", "stable", "canary", "main"}:
         raise ValueError("Use a non-protected disposable preview name")
-    if env.get("CHANNEL_BUILD") or env.get("CHANNEL_REQUEST_SHA256") or env.get("R2_DISPOSABLE_RUN"):
+    if env.get("CHANNEL_BUILD") or env.get("CHANNEL_REQUEST_SHA256"):
         raise ValueError("Allocation cannot reuse a build request or select a storage scope")
     if env.get("TERMUX_ONLY") == "true":
         raise ValueError("Disposable allocation cannot select Termux")
-    # A fresh attempt gets a fresh prefix, including controller reruns. Never
-    # accept a caller-supplied path, public URL, or allocation namespace.
-    run = require_run(env.get("GITHUB_RUN_ID", "") + "-" + env.get("GITHUB_RUN_ATTEMPT", ""))
+    # One dispatch now allocates AND builds, so the namespace must survive a
+    # "re-run failed jobs": lease by the run id alone (no attempt suffix), and
+    # never accept a caller-supplied path, public URL, or allocation namespace.
+    run = require_run(env.get("GITHUB_RUN_ID", ""))
     admitted = commit_build.admit(env)
     controller = commit_build.require_commit(env.get("GITHUB_SHA", ""))
     os.environ["R2_DISPOSABLE_RUN"] = run
@@ -106,7 +107,7 @@ def allocate(env: dict[str, str]) -> dict:
     publisher.create(name)
     from scripts.releases.bundle_env import decode
     request = publisher.allocate(name, admitted["sha"], admitted["payload-version"],
-                                 decode(env.get("BUNDLE_ENV_JSON", "")), controller)
+                                  decode(env.get("BUNDLE_ENV_JSON", "")), controller)
     requests = {"A": request}
     if env.get("DISPOSABLE_RECEIVERS") == "true":
         requests["B"] = publisher.allocate(name, admitted["sha"], admitted["payload-version"],
@@ -122,12 +123,24 @@ def allocate(env: dict[str, str]) -> dict:
 
 def main() -> None:
     result = allocate(dict(os.environ))
+    # Job outputs feed the build legs of THIS run (one dispatch). The summary
+    # stays informational; the printed commands are no longer required.
+    if os.environ.get("GITHUB_OUTPUT"):
+        with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
+            stream.write("".join(f"{key}={value}\n" for key, value in {
+                "channel_build": result["request"]["buildId"],
+                "channel_request_sha256": result["requestSha256"],
+                "disposable_run": result["disposableRun"],
+                "public_base": channel_public_base(),
+                "storage_prefix": result["storagePrefix"],
+            }.items()))
     summary = ("## Disposable channel allocation\n\n"
                "CAS, stale-writer rejection, listing and public readback passed. "
                "No native build or production record was published.\n\n"
                f"Storage prefix: `{result['storagePrefix']}`\n\n"
-               "Run this separately using your maintainer login; the controller token "
-               "does not dispatch a publication run:\n\n" + "\n\n".join(
+               "This run's build legs consume the allocation through job outputs; "
+               "no separate follow-up dispatch is needed. The command below is "
+               "informational only:\n\n" + "\n\n".join(
                    f"### {slot}\n```sh\n{shlex.join(cmd)}\n```" for slot, cmd in result["commands"].items()) + "\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
         stream.write(summary)

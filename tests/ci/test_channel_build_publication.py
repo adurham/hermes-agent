@@ -387,14 +387,16 @@ def test_disposable_controller_allocates_then_separate_admission(tmp_path):
         assert result.returncode == 0, result.stdout + result.stderr
         allocation = json.loads(result.stdout)
         request = allocation["request"]
-        assert request["publicBase"] == url + "/bucket/ci-disposable/12345/98765-1"
-        assert allocation["storagePrefix"] == "ci-disposable/12345/98765-1/"
-        assert "disposable_run=98765-1" in allocation["command"]
+        assert request["publicBase"] == url + "/bucket/ci-disposable/12345/98765"
+        assert allocation["storagePrefix"] == "ci-disposable/12345/98765/"
+        assert "disposable_run=98765" in allocation["command"]
         assert "channel_build=" + request["buildId"] in allocation["command"]
         assert objects["releases/channels/stable.json"] == b"production sentinel"
         assert all(key.startswith(allocation["storagePrefix"]) for method, key in requests if method == "PUT")
         before = dict(objects)
-        for change in ({"R2_DISPOSABLE_RUN": "98765-1"}, {"DISPOSABLE_CHANNEL": "stable"},
+        # One dispatch: a preset R2_DISPOSABLE_RUN no longer fails admission — the
+        # allocator derives and overwrites the lease from GITHUB_RUN_ID.
+        for change in ({"DISPOSABLE_CHANNEL": "stable"},
                        {"GITHUB_REF": "refs/heads/other"}, {"GITHUB_ACTOR": "", "GITHUB_TRIGGERING_ACTOR": ""}):
             failed = run_shell(tmp_path, server, script, {**env, **change}, cwd=clone)
             assert failed.returncode != 0
