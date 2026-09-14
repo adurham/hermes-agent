@@ -1,7 +1,7 @@
-import path from 'node:path'
-
 import type { PayloadInfo } from '../payload-backend'
+
 import { runRetirementCommand } from './retirement-native'
+import type { RetirementSnapshotTools } from './retirement-preservation'
 import type { RetirementRecord } from './retirement-state'
 
 const compatibilityProbe: string = `import os, pathlib, sys
@@ -11,10 +11,10 @@ home = pathlib.Path(root)
 if profile != 'default': home = home / 'profiles' / profile
 os.environ['HERMES_HOME'] = str(home)
 os.environ['HERMES_SHARED_AUTH_DIR'] = str(pathlib.Path(root) / 'shared')
-import yaml
+import hermes_yaml
 from hermes_cli.config import validate_config_structure
 config_file = home / 'config.yaml'
-config = yaml.safe_load(config_file.read_text()) if config_file.exists() else {}
+config = hermes_yaml.safe_load(config_file.read_text(encoding='utf-8')) if config_file.exists() else {}
 if not isinstance(config, dict): raise RuntimeError('Configuration must be a mapping')
 issues = validate_config_structure(config)
 if any(issue.severity == 'error' for issue in issues): raise RuntimeError('Snapshot configuration is incompatible; run hermes doctor in the preview')
@@ -33,12 +33,12 @@ if file.exists():
     finally: db.close()
 `
 
-/** Exact cohort admission is checked separately; this catches damaged local state. */
+/** Exercise destination readers before any live migrations; not a universal compatibility proof. */
 export async function probeRetirementSnapshot(record: RetirementRecord, payload: PayloadInfo): Promise<void> {
   await runRetirementCommand(payload.storePython, ['-c', compatibilityProbe,
-    payload.repoDir, payload.sitePackages, record.state.snapshotHome, record.request.selection.profile], 120_000)
+    payload.repoDir, payload.sitePackages, record.state.snapshotHome, record.request.source.profile], 120_000)
 }
 
-export function retirementSnapshotTools(payload: PayloadInfo): { python: string; backupScript: string } {
-  return { python: payload.storePython, backupScript: path.join(payload.repoDir, 'hermes_cli/backup_sqlite.py') }
+export function retirementSnapshotTools(payload: PayloadInfo): RetirementSnapshotTools {
+  return { python: payload.storePython, repo: payload.repoDir, sitePackages: payload.sitePackages }
 }

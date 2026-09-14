@@ -100,7 +100,7 @@ def test_icon_portrait_overlays_border_inside_outer_silhouette(monkeypatch, plat
     spec.loader.exec_module(module)
     art = SimpleNamespace(
         backgrounds=source / "assets/backgrounds", colors=colors, commit="0123456",
-        bboxes={girl: (0, 0, 100, 90)}, paths={girl: '<path d="M0 0H100V90H0Z"/>'},
+        bboxes={girl: (0, 0, 100, 90)}, paths={girl: '<path d="M 0 0 L 100 0 L 100 90 L 0 90 z"/>'},
     )
     name = f"squircle-{platform}{appearance}.svg"
     ns = {"svg": "http://www.w3.org/2000/svg"}
@@ -126,26 +126,27 @@ def test_icon_portrait_overlays_border_inside_outer_silhouette(monkeypatch, plat
     )
     group = result[-1]
     portrait = group[-1]
+    assert len(group) == 1, "extend the existing contour, not a duplicate strip"
     assert portrait is not None and group is not None
     assert portrait.get("preserveAspectRatio") == "xMidYMax meet"
     assert tuple(float(portrait.attrib[key]) for key in ("x", "y", "width", "height")) == module.GIRL_BOXES[name]
     clip_path = result.find("svg:defs/svg:clipPath", ns)
     assert clip_path is not None
     assert group.get("clip-path") == f"url(#{clip_path.attrib['id']})"
-    extension = group[0]
-    assert extension is not portrait
-    join_clip = result.find("svg:defs/svg:clipPath[@id='icon-join']/svg:rect", ns)
-    assert join_clip is not None
-    strip_x, strip_y, strip_width, strip_height = (
-        float(join_clip.attrib[key]) for key in ("x", "y", "width", "height")
-    )
-    px, py, pw, ph = module.GIRL_BOXES[name]
-    assert (strip_x, strip_width) == (px, pw)
-    assert 0 < py + ph - strip_y < ph / 50
-    assert strip_y + strip_height > y + height - thickness
-    assert strip_y + strip_height < y + height
-    assert extension.get("clip-path") == "url(#icon-join)"
-    extension_ink = extension.find("svg:g/svg:path", ns)
-    portrait_ink = portrait.find("svg:path", ns)
-    assert extension_ink is not None and portrait_ink is not None
-    assert extension_ink.get("d") == portrait_ink.get("d")
+    assert portrait.get("overflow") == "visible"
+    assert len(result.findall(".//svg:path", ns)) == 2  # one badge and one portrait
+
+
+def test_bottom_node_drag_preserves_upper_geometry_and_path_transform(monkeypatch):
+    monkeypatch.setitem(sys.modules, "resvg_py", ModuleType("resvg_py"))
+    script = Path(__file__).resolve().parents[2] / "scripts/generate_icons.py"
+    spec = importlib.util.spec_from_file_location("icon_nodes_under_test", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    path = ET.fromstring('<path transform="matrix(2,0,0,2,10,-100)" d="M 0 0 C 0 90 10 98 20 100 L 0 100 z"/>')
+    module.drag_bottom_nodes(path, cutoff=80, band=20, distance=10)
+    assert path.get("transform") == "matrix(2,0,0,2,10,-100)"
+    assert path.get("d") == "M 0 0 C 0 90 10 102.48 20 105 L 0 105 z"
+    with pytest.raises(ValueError, match="absolute M/L/C"):
+        module.drag_bottom_nodes(ET.fromstring('<path d="m 0 0 l 1 1"/>'), cutoff=0, band=1, distance=1)

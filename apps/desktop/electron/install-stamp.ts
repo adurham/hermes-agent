@@ -39,6 +39,9 @@ export interface ChannelBuildRequest {
   commit: string
   controllerCommit?: string
   sourceVersion: string
+  /** Build-only official receiver rehearsal, admitted under a disposable authority. */
+  receiverCandidate?: true
+  releaseTag?: string
   version: string
   windowsVersion: string
   identity: {
@@ -77,6 +80,8 @@ export interface InstallStamp {
   runtime?: PayloadRuntime
   /** Complete channel inputs, absent on legacy releases and one-off builds. */
   channelBuild?: Readonly<ChannelBuildRequest>
+  /** Cross-application receiver shipped in this artifact, absent on older builds. */
+  receiverProtocol?: 1
   /** Pinned release tag; null for channel builds, one-offs and bootstrap. */
   tag: string | null
 }

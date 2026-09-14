@@ -24,11 +24,13 @@ class PublicVisibilityError(ChannelError):
 
 
 class R2ChannelStore:
-    def __init__(self, creds: dict, base: str, bucket: str):
+    def __init__(self, creds: dict, base: str, bucket: str, *, scope=None):
+        from scripts.releases.r2_scope import R2Scope
         self.creds, self.base, self.bucket = creds, base.rstrip("/"), bucket
+        self.scope = R2Scope.configured() if scope is None else scope
 
     def get(self, key: str) -> tuple[bytes, str] | None:
-        url = f"{self.base}/{self.bucket}/{r2.encode_key_path(artifact_key(key))}"
+        url = self.scope.object_url(self.base, self.bucket, artifact_key(key))
         try:
             response = r2.signed_request("GET", url, creds=self.creds, now=r2.amz_timestamp())
         except r2.R2RequestError as exc:
@@ -44,7 +46,7 @@ class R2ChannelStore:
         return body, etag
 
     def put(self, key: str, body: bytes, etag: str | None = None) -> None:
-        url = f"{self.base}/{self.bucket}/{r2.encode_key_path(artifact_key(key))}"
+        url = self.scope.object_url(self.base, self.bucket, artifact_key(key))
         condition = {"If-Match": etag} if etag is not None else {"If-None-Match": "*"}
         condition["Cache-Control"] = r2.cache_control_for(key) or "no-store"
         try:
@@ -65,15 +67,16 @@ class R2ChannelStore:
 
     def keys(self, prefix: str) -> list[str]:
         keys, seen = [], set()
+        prefix = self.scope.listing_prefix(prefix)
         token = None
         while True:
             params = {"list-type": "2", "max-keys": "1000", "prefix": prefix}
             if token is not None:
                 params["continuation-token"] = token
-            url = f"{self.base}/{self.bucket}?{r2.canonical_query(params)}"
+            url = f"{self.scope.bucket_url(self.base, self.bucket)}?{r2.canonical_query(params)}"
             response = r2.signed_request("GET", url, creds=self.creds, now=r2.amz_timestamp())
             page = r2.parse_list_xml(response.text())
-            keys.extend(page["keys"])
+            keys.extend(self.scope.logical_key(key) for key in page["keys"])
             if not page["truncated"]:
                 return keys
             token = page["nextToken"]
@@ -93,14 +96,14 @@ def preview_identity(name: str, token: str) -> dict:
 
 class ChannelPublisher:
     def __init__(self, store: R2ChannelStore, repository: str, public_base: str,
-                 authorize, verify_build=None, verify_retirement=None):
+                 authorize, verify_build=None):
         self.store = store
         self.repository = validate_repository(repository)
         self.public_base = validate_public_base(public_base)
         self.reader = ChannelReader(self.public_base, self.repository)
         self.authorize = authorize
         self.verify_build = verify_build
-        self.verify_retirement = verify_retirement
+
 
     def _read(self, name: str) -> tuple[dict, str] | None:
         value = self.store.get(channel_key(name))
@@ -376,7 +379,7 @@ class ChannelPublisher:
         raise ChannelConflict("Channel promotion remained contended")
 
     def retire(self, name: str, destination: str, minimum_version: str,
-               compatibility_key: str, compatibility_sha256: str, *, publish: bool = True) -> dict:
+               *, publish: bool = True) -> dict:
         validate_name(destination)
         if name == destination:
             raise ChannelError("Channel retirement cycle")
@@ -391,25 +394,20 @@ class ChannelPublisher:
         target, target_etag = target_read
         # Do not discard incomparable intermediate identity floors.
         if target["state"] != "active" or target["policy"] != "stable-release" or target["head"] is None:
-            raise ChannelError("Retirement requires a directly qualified active stable-release destination")
-        qualification = decode_json(self.reader.read_bytes(compatibility_key, compatibility_sha256))
-        expected = {"schema": 1, "source": name, "sourceHead": record["head"],
-                    "destination": destination, "destinationHead": target["head"], "minimumVersion": minimum_version}
-        if any(qualification.get(field) != value for field, value in expected.items()):
-            raise ChannelError("Retirement qualification does not cover current heads and floor")
+            raise ChannelError("Retirement requires a directly active stable-release destination")
         target_raw = self.reader.read_bytes(target["head"]["manifestKey"], target["head"]["sha256"])
         manifest = validate_manifest(decode_json(target_raw), target, self.public_base)
         retired = {**record, "state": "retired", "revision": record["revision"] + 1,
                    "destination": destination, "minimumVersion": minimum_version,
-                   "compatibilityKey": compatibility_key, "compatibilitySha256": compatibility_sha256,
+                   "destinationHead": target["head"], "receiverProtocol": 1,
                    "lastHead": record["head"]}
         validate_record(retired)
         if tuple(map(int, manifest["request"]["sourceVersion"].split("."))) < tuple(map(int, minimum_version.split("."))):
             raise ChannelError("Destination does not meet minimum version")
-        if self.verify_retirement is None or self.verify_retirement(record, target, qualification) is not True:
-            raise ChannelError("Retirement requires signed cohort compatibility qualification")
+        if manifest.get("receiverProtocol") != 1:
+            raise ChannelError("Stable release does not declare retirement receiver support")
         if self._read(destination) != (target, target_etag):
-            raise ChannelConflict("Retirement destination changed; re-qualify")
+            raise ChannelConflict("Retirement destination changed; review the new target before retrying")
         if publish:
             self._write(channel_key(name), retired, etag)
         return retired

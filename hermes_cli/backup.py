@@ -262,6 +262,19 @@ def _is_non_regular_path(path: Path) -> bool:
         return False
 
 
+def _is_link_path(path: Path) -> bool:
+    """True for symlinks and Windows junctions/reparse points — the only
+    directory entries a strict walk must never descend (os.walk already
+    refuses POSIX dir symlinks; this also covers junctions, which it follows)."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    return os.name == "nt" and bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
@@ -274,14 +287,18 @@ def _should_exclude(rel_path: Path) -> bool:
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
 
 
-def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
+def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None, *, strict: bool = False):
     """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
 
     The one owner of the walk policy (directory pruning so os.walk never descends a multi-GB
     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
     shared by ``hermes backup`` and the pre-update / pre-migration path so they can never drift.
     """
-    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
+    def walk_error(error: OSError) -> None:
+        if strict:
+            raise error
+
+    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False, onerror=walk_error):
         rel_dir = Path(dirpath).relative_to(hermes_root)
         is_root = rel_dir == Path(".")
         kept = [
@@ -290,13 +307,19 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             and not _in_excluded_root_dir(rel_dir / d)]
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
-        dirnames[:] = kept
+        if strict:
+            for name in kept:
+                yield Path(dirpath) / name, rel_dir / name
+        # Migration inventories links themselves; no walk may follow a junction.
+        dirnames[:] = [name for name in kept if not _is_link_path(Path(dirpath) / name)]
         for fname in filenames:
             rel = rel_dir / fname
             fpath = hermes_root / rel
             # zipfile.write() follows file symlinks, so skip links before any archive write can
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
-            if _should_exclude(rel) or _is_non_regular_path(fpath):
+            if _should_exclude(rel):
+                continue
+            if not strict and _is_non_regular_path(fpath):
                 continue
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():

@@ -64,13 +64,7 @@ def reader_result(source, name, destination=None, repository="NousResearch/herme
                        state="retired" if destination else "active", destination=destination)
     terminal = record(destination or name, repository=repository)
     terminal["head"] = {"buildId": "build-fixture", "sequence": 1}
-    constraints = ()
-    if destination:
-        qualification = {"schema": 1, "source": name, "sourceHead": requested["head"],
-            "destination": destination, "destinationHead": terminal["head"], "minimumVersion": "1.0.0"}
-        constraints = ({"channel": name, "destination": destination, "minimumVersion": "1.0.0",
-                        "qualification": qualification},)
-    return SimpleNamespace(requested=requested, terminal=terminal, constraints=constraints, manifest={
+    return SimpleNamespace(requested=requested, terminal=terminal, manifest={
         "schema": 1, "request": {"buildId": "build-fixture", "channel": terminal["name"],
         "sequence": 1, "repository": repository, "commit": source.commits[1],
         "sourceVersion": "1.2.3", "version": "0.0.1", "identity": {}, "bundleEnv": {},
@@ -226,7 +220,7 @@ def publish_channel_build(channel_archive, name, build_id, commit, *, sequence=1
                "identity": identity, "bundleEnv": {}, "publicBase": base}
     if stable:
         request["releaseTag"] = "v" + version
-    manifest = {"schema": 1, "request": request, "packages": [{
+    manifest = {"schema": 1, "receiverProtocol": 1, "request": request, "packages": [{
         "platform": "darwin", "arch": "arm64", "variant": "bundled",
         "artifact": {"key": prefix + "fixture.zip", "size": 1, "sha256": "d" * 64},
         "identity": identity["appId"], "version": version, "teamId": "ABCDEFGHIJ",
@@ -266,31 +260,24 @@ def test_real_http_reader_resolves_tagless_build_through_cli(source, monkeypatch
 
 @pytest.fixture
 def retired_channel_archive(source, channel_archive):
-    from hashlib import sha256
     from hermes_cli.release_channels import canonical_json
 
     archive, _ = channel_archive
     name = "offline-preview"
     preview = publish_channel_build(channel_archive, name, "a" * 32, source.commits[0])
     qualified = publish_channel_build(channel_archive, "stable", "b" * 32, source.commits[1], stable=True)
-    qualification = {"schema": 1, "source": name, "sourceHead": preview["head"],
-                     "destination": "stable", "destinationHead": qualified["head"], "minimumVersion": "1.0.0"}
-    body = canonical_json(qualification)
-    key = "releases/channel-builds/" + preview["head"]["buildId"] + "/retirement.json"
-    (archive / key).write_bytes(body)
     retired = dict(preview, state="retired", destination="stable", minimumVersion="1.0.0",
-                   compatibilityKey=key, compatibilitySha256=sha256(body).hexdigest(), lastHead=preview["head"])
+                   destinationHead=qualified["head"], receiverProtocol=1, lastHead=preview["head"])
     (archive / f"releases/channels/{name}.json").write_bytes(canonical_json(retired))
     publish_channel_build(channel_archive, "stable", "c" * 32, source.commits[2], sequence=2, stable=True)
     set_install_channel(name, source.root)
     return SimpleNamespace(archive=archive, name=name, retired=retired,
-                           qualified=qualified, qualification=qualification)
+                           qualified=qualified)
 
 
 @pytest.mark.parametrize("fault", [None, "binding", "manifest"])
 def test_offline_retirement_uses_qualified_build_before_current_stable(
         source, monkeypatch, retired_channel_archive, fault):
-    from hashlib import sha256
     from hermes_cli import source_check
     from hermes_cli.release_channels import canonical_json
 
@@ -304,10 +291,7 @@ def test_offline_retirement_uses_qualified_build_before_current_stable(
     monkeypatch.setattr(update_cmd, "run_completion", completion)
     monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", lambda **kw: None)
     if fault == "binding":
-        fixture.qualification["source"] = "wrong-preview"
-        body = canonical_json(fixture.qualification)
-        (fixture.archive / fixture.retired["compatibilityKey"]).write_bytes(body)
-        fixture.retired["compatibilitySha256"] = sha256(body).hexdigest()
+        fixture.retired["destinationHead"]["sequence"] += 1
         (fixture.archive / f"releases/channels/{fixture.name}.json").write_bytes(canonical_json(fixture.retired))
     elif fault == "manifest":
         path = fixture.archive / fixture.qualified["head"]["manifestKey"]
@@ -477,21 +461,20 @@ def test_changed_checkout_cannot_repin_selected_channel_during_apply(source, mon
     assert saved(source)["channel"] == "preview"
 
 
-@pytest.mark.parametrize("fault", ["floor", "qualification", "build", "chain", "missing"])
-def test_source_retirement_does_not_discard_compatibility_constraints(source, monkeypatch, fault):
-    resolved = reader_result(source, "preview", "stable")
-    constraint = resolved.constraints[0]
+@pytest.mark.parametrize("fault", ["floor", "protocol", "build", "chain", "missing"])
+def test_source_retirement_rejects_invalid_archive_constraints(source, retired_channel_archive, fault):
+    from hermes_cli.release_channels import canonical_json
+    fixture = retired_channel_archive
     if fault == "floor":
-        constraint["minimumVersion"] = "9.0.0"
-        constraint["qualification"]["minimumVersion"] = "9.0.0"
-    elif fault == "qualification":
-        constraint["qualification"]["source"] = "another-preview"
+        fixture.retired["minimumVersion"] = "9.0.0"
+    elif fault == "protocol":
+        fixture.retired["receiverProtocol"] = 2
     elif fault == "build":
-        resolved.manifest["request"]["buildId"] = "another-build"
+        fixture.retired["destinationHead"]["buildId"] = "f" * 32
     elif fault == "chain":
-        constraint["destination"] = "intermediate"
+        fixture.retired["destination"] = fixture.name
     else:
-        resolved.constraints = ()
-    install_reader(monkeypatch, resolved)
-    with pytest.raises(ValueError, match="retirement|Retirement"):
-        source_releases.resolve_source_target("preview", ["git"], source.root)
+        del fixture.retired["destinationHead"]
+    (fixture.archive / f"releases/channels/{fixture.name}.json").write_bytes(canonical_json(fixture.retired))
+    with pytest.raises(ValueError):
+        source_releases.resolve_source_target(fixture.name, ["git"], source.root)

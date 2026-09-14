@@ -36,10 +36,13 @@ export function bundleIdentity(commit, tag = '', channelRequest = null) {
     applicationId: identity.appNamePascal, publisher: OUT_OF_STORE_PUBLISHER }
 }
 
+/** @param {object} stamp
+ * @param {{commit: string, tag?: string, platform: string,
+ * channelRequest?: import('../../../apps/desktop/electron/install-stamp.js').ChannelBuildRequest | null}} options */
 export function verifyBundleStamp(stamp, { commit, tag = '', platform, channelRequest = null }) {
   if (!['darwin', 'win32'].includes(platform)) throw new Error('Unsupported native platform')
   const request = channelRequest === null ? null : admitChannelRequest(channelRequest, commit, tag)
-  const expected = { commit, tag: tag || null, payload: 'bundled', distribution: 'desktop-app', dirty: false,
+  const expected = { commit, tag: request?.receiverCandidate ? request.releaseTag : tag || null, payload: 'bundled', distribution: 'desktop-app', dirty: false,
     updateMechanism: tag || request ? { darwin: 'electron-updater', win32: 'app-installer' }[platform] : 'external' }
   if (!tag && !request) Object.assign(expected, { source: 'commit-build', branch: null })
   for (const [key, value] of Object.entries(expected)) {

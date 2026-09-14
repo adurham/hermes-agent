@@ -33,7 +33,7 @@ and the shared master SVGs retain the default brand.
 
 The girl's position and uniform scale are registered to the reference artwork.
 She renders in front of the border, clipped only to the outer rounded silhouette.
-Only her bottom sliver extends to the border; the fitted face and hair stay fixed.
+Only nodes near her bottom edge extend to the border; the fitted face and hair stay fixed.
 Standalone wordmarks remain centered and have no border.
 
 GENERATED OUTPUTS ARE NOT COMMITTED. Everything this script writes is
@@ -305,6 +305,41 @@ def commit_layer(commit: str, bg: str) -> str:
     )
 
 
+def drag_bottom_nodes(path: ET.Element, *, cutoff: float, band: float, distance: float) -> None:
+    """Drag lower nodes and curve handles, tapering to zero above the bottom band."""
+    y_scale, y_offset = 1.0, 0.0
+    transform = path.get("transform")
+    if transform:
+        matrix = re.fullmatch(r"matrix\(([^)]+)\)", transform)
+        if matrix is None:
+            raise ValueError("bottom node edits require an axis-aligned matrix")
+        _, b, c, y_scale, _, y_offset = map(float, re.split(r"[\s,]+", matrix[1].strip()))
+        if b != 0 or c != 0 or y_scale <= 0:
+            raise ValueError("bottom node edits require an upright axis-aligned matrix")
+
+    # The brand exports use explicit absolute M/L/C commands. Reject other
+    # commands rather than silently corrupting relative coordinates or arcs.
+    tokens = re.findall(r"[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][-+]?\d+)?", path.attrib["d"])
+    counts = {"M": 2, "L": 2, "C": 6, "z": 0, "Z": 0}
+    index = 0
+    while index < len(tokens):
+        command = tokens[index]
+        if command not in counts:
+            raise ValueError("bottom node edits require explicit absolute M/L/C commands")
+        count = counts[command]
+        if index + count >= len(tokens):
+            raise ValueError("incomplete SVG path command")
+        for offset in range(2, count + 1, 2):
+            token_index = index + offset
+            raw_y = float(tokens[token_index])
+            amount = min(1.0, max(0.0, (raw_y * y_scale + y_offset - cutoff) / band))
+            if amount:
+                weight = amount * amount * (3 - 2 * amount)
+                tokens[token_index] = f"{raw_y + distance * weight / y_scale:.12g}"
+        index += count + 1
+    path.set("d", " ".join(tokens))
+
+
 def compose_svg(art: IconArt, girl: str, bg: str) -> str:
     """Full svg text: background + girl layer, in the background's native
     coordinate space (resvg scales to whatever output size is requested, so
@@ -327,37 +362,23 @@ def compose_svg(art: IconArt, girl: str, bg: str) -> str:
     clip = ET.tostring(silhouette, encoding="unicode")
     box = GIRL_BOXES[bg]
     portrait = ET.fromstring(girl_layer(art, girl, box, align="xMidYMax"))
-    x, y, portrait_width, portrait_height = box
-    # Extrude a thin slice just above the bottom contour behind the artwork.
-    # Sampling above its antialiased tips avoids stretching transparent padding.
-    strip_height = 1
-    strip_top = y + portrait_height - portrait_height * 0.01
-    join_bottom = geometry["y"] + geometry["height"] - thickness + 4
-    stretch = (join_bottom - strip_top) / strip_height
-    bx, by, bw, bh = girl_bbox(art, girl)
+    _, y, portrait_width, portrait_height = box
+    _, by, bw, bh = girl_bbox(art, girl)
     scale = min(portrait_width / bw, portrait_height / bh)
-    tx = x + (portrait_width - bw * scale) / 2 - bx * scale
-    ty = y + portrait_height - bh * scale - by * scale
-    # Flatten the viewport transform: very thin nested SVG viewBoxes can be
-    # culled by the renderer at small icon sizes, silently losing the extension.
-    extension_path = ET.fromstring(girl_path(art, girl))
-    extension_path.attrib.pop("id", None)
-    join_clip = (
-        f'<clipPath id="icon-join"><rect x="{x}" y="{strip_top}" '
-        f'width="{portrait_width}" height="{join_bottom - strip_top}"/></clipPath>'
+    join_bottom = geometry["y"] + geometry["height"] - thickness + 10
+    drag_bottom_nodes(
+        portrait[0], cutoff=by + bh * 0.97, band=bh * 0.02,
+        distance=max(0.0, join_bottom - (y + portrait_height)) / scale,
     )
-    extension = (
-        '<g clip-path="url(#icon-join)">'
-        f'<g transform="matrix({scale} 0 0 {scale * stretch} {tx} {stretch * ty + (1 - stretch) * strip_top})">'
-        f'{ET.tostring(extension_path, encoding="unicode")}</g></g>'
-    )
+    # Keep the fitted viewBox fixed, but let edited nodes reach into the border.
+    portrait.set("overflow", "visible")
     badge = f"  {commit_layer(art.commit, bg)}\n" if art.commit else ""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}">\n'
-        f'  <defs><clipPath id="icon-silhouette">{clip}</clipPath>{join_clip}</defs>\n'
+        f'  <defs><clipPath id="icon-silhouette">{clip}</clipPath></defs>\n'
         f"  {inner.strip()}\n"
         f"{badge}"
-        f'  <g clip-path="url(#icon-silhouette)">{extension}{ET.tostring(portrait, encoding="unicode")}</g>\n'
+        f'  <g clip-path="url(#icon-silhouette)">{ET.tostring(portrait, encoding="unicode")}</g>\n'
         "</svg>\n"
     )
 

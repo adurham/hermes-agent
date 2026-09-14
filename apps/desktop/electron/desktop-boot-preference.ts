@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -19,6 +19,7 @@ export function readStartupDesktopPreference(file: string, warn: (message: strin
   try { return readDesktopBootPreference(file) }
   catch (error) {
     warn(`Desktop boot preference was not loaded; preserving the original file: ${error instanceof Error ? error.message : String(error)}`)
+
     return null
   }
 }
@@ -38,6 +39,13 @@ export function readDesktopBootPreference(file: string): DesktopBootPreference |
     throw error
   }
 
+  return parseDesktopBootPreference(text)
+}
+
+// Only this disk-JSON boundary inspects primitive representations. Callers get
+// a complete preference contract, including preserved fields owned by others.
+/* oxlint-disable anti-slop/no-runtime-typeof */
+function parseDesktopBootPreference(text: string): DesktopBootPreference {
   const parsed: unknown = JSON.parse(text)
 
   if (!parsed || typeof parsed !== 'object' || !('profile' in parsed)) {
@@ -50,21 +58,27 @@ export function readDesktopBootPreference(file: string): DesktopBootPreference |
     throw new Error('Invalid profile in desktop boot preference')
   }
 
-  if ('home' in parsed && (typeof parsed.home !== 'string' || !path.isAbsolute(parsed.home))) {
-    throw new Error('Invalid home in desktop boot preference')
+  const preference: DesktopBootPreference = { ...parsed, profile: typeof profile === 'string' ? profile : null }
+
+  if ('home' in parsed) {
+    if (typeof parsed.home !== 'string' || !path.isAbsolute(parsed.home)) {
+      throw new Error('Invalid home in desktop boot preference')
+    }
+
+    preference.home = parsed.home
   }
 
-  if ('_migrated' in parsed && typeof parsed._migrated !== 'boolean') {
-    throw new Error('Invalid migration marker in desktop boot preference')
+  if ('_migrated' in parsed) {
+    if (typeof parsed._migrated !== 'boolean') {
+      throw new Error('Invalid migration marker in desktop boot preference')
+    }
+
+    preference._migrated = parsed._migrated
   }
 
-  return {
-    ...parsed,
-    profile: typeof profile === 'string' ? profile : null,
-    ...('home' in parsed && typeof parsed.home === 'string' ? { home: parsed.home } : {}),
-    ...('_migrated' in parsed && typeof parsed._migrated === 'boolean' ? { _migrated: parsed._migrated } : {})
-  }
+  return preference
 }
+/* oxlint-enable anti-slop/no-runtime-typeof */
 
 function updatePreference(file: string, update: (current: DesktopBootPreference | null) => DesktopBootPreference): DesktopBootPreference {
   mkdirSync(path.dirname(file), { recursive: true })
@@ -84,7 +98,13 @@ function updatePreference(file: string, update: (current: DesktopBootPreference 
     const next: DesktopBootPreference = update(current)
 
     writeFileSync(temporary, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
+    const handle: number = openSync(temporary, 'r+')
+    try { fsyncSync(handle) } finally { closeSync(handle) }
     renameSync(temporary, file)
+    if (process.platform !== 'win32') {
+      const directory: number = openSync(path.dirname(file), 'r')
+      try { fsyncSync(directory) } finally { closeSync(directory) }
+    }
 
     return next
   } finally {

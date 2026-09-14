@@ -2661,6 +2661,8 @@ export interface Translations {
     retirementBody: string
     retirementAction: string
     retirementConsent: string
+    retirementKeepStable: string
+    retirementOpenPreview: string
     retirementBlocked: string
     retirementMoving: string
     retirementComplete: string

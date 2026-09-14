@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 
 import {
-  buildPrefix, channelKey, channelPublicBase, decodeChannelManifest, decodeChannelRecord,
-  sameChannelIdentity, validateChannelName, decodeChannelQualification, type ChannelQualification,
-  type ActiveChannel, type ChannelBuild, type ChannelManifest, type ChannelPackage, type RetiredChannel
+  type ActiveChannel, buildPrefix, type ChannelBuild, channelKey, type ChannelManifest,
+  type ChannelPackage, channelPublicBase, decodeChannelManifest, decodeChannelRecord,
+  type RetiredChannel, sameChannelIdentity, validateChannelName
 } from './channel-protocol'
 
 export interface ChannelTarget {
@@ -17,8 +17,6 @@ export interface ChannelTarget {
 export interface ChannelRetirement {
   source: ChannelBuild
   target: ChannelTarget
-  constraints: RetiredChannel[]
-  qualifications: ChannelQualification[]
 }
 export type ChannelResolution =
   | { kind: 'active'; target: ChannelTarget }
@@ -90,50 +88,24 @@ export class ChannelResolver {
     let record = decodeChannelRecord(await this.read(`releases/channels/${this.deps.build.channel}.json`))
     this.assertRecord(record, this.deps.build.channel)
     if (!sameChannelIdentity(record.identity, this.deps.build.identity)) { throw new Error('Installed channel identity changed') }
-    const constraints: RetiredChannel[] = []
-    const seen = new Set<string>()
-    while (record.state === 'retired') {
-      if (seen.has(record.name) || seen.has(record.destination) || record.name === record.destination) { throw new Error('Channel retirement cycle') }
-      seen.add(record.name)
-      if (seen.size >= 16) { throw new Error('Channel retirement hop limit exceeded') }
-      constraints.push(record)
-      const destination = record.destination
-      record = decodeChannelRecord(await this.read(`releases/channels/${destination}.json`))
-      this.assertRecord(record, destination)
+    if (record.state === 'active') {
+      return record.head ? { kind: 'active', target: await this.target(record) } : { kind: 'empty', channel: record }
     }
-    if (!record.head && !constraints.length) { return { kind: 'empty', channel: record } }
-    if (!constraints.length) { return { kind: 'active', target: await this.target(record) } }
-    if (record.policy !== 'stable-release') { throw new Error('Retirement requires a protected stable-release destination') }
-    let target: ChannelTarget | null = null
-    const qualifications: ChannelQualification[] = []
-    for (const constraint of constraints) {
-      // A floor for a different native identity cannot be compared to the terminal
-      // one. Require a directly qualified retirement rather than dropping a floor.
-      if (constraint.destination !== record.name) { throw new Error('Retirement chain requires direct terminal qualification') }
-      const qualification = decodeChannelQualification(await this.read(constraint.compatibilityKey, constraint.compatibilitySha256))
-      // Migrate to the exact accepted receiver, which then follows its own stable
-      // subscription. Advancing stable must not strand long-offline previews.
-      if (qualification.destinationHead.sequence >= record.nextSequence) { throw new Error('Qualified destination exceeds allocation') }
-      target = await this.target({ ...record, head: qualification.destinationHead })
-      assertVersionFloor(target.manifest.request.sourceVersion, constraint.minimumVersion)
-      this.assertQualification(qualification, constraint, target)
-      qualifications.push(qualification)
+    const retired: RetiredChannel = record
+    if (retired.destination === retired.name) { throw new Error('Channel retirement cycle') }
+    record = decodeChannelRecord(await this.read(`releases/channels/${retired.destination}.json`))
+    this.assertRecord(record, retired.destination)
+    if (record.state !== 'active' || record.policy !== 'stable-release') {
+      throw new Error('Retirement requires a directly active stable-release destination')
     }
-    if (!target) { throw new Error('Retirement has no qualified target') }
-    return { kind: 'retirement', retirement: { source: this.deps.build, target, constraints, qualifications } }
-  }
-
-  private assertQualification(qualification: ChannelQualification, constraint: RetiredChannel, target: ChannelTarget): void {
-    const build = this.deps.build
-    const coverage = qualification.coverage.find((entry): boolean => entry.platform === this.deps.platform && entry.arch === this.deps.arch)
-    const sourceIdentity = this.deps.platform === 'darwin' ? build.identity.appId : build.identity.msixAppIdWithOrg
-    if (qualification.source !== constraint.name || qualification.destination !== target.channel.name ||
-        JSON.stringify(qualification.sourceHead) !== JSON.stringify(constraint.lastHead) ||
-        JSON.stringify(qualification.destinationHead) !== JSON.stringify(target.channel.head) || qualification.minimumVersion !== constraint.minimumVersion ||
-        !coverage || coverage.sourceIdentity !== sourceIdentity || coverage.destinationIdentity !== target.package.identity ||
-        !coverage.cohorts.some((cohort): boolean => cohort.buildId === build.buildId && cohort.commit === build.commit)) {
-      throw new Error('Retirement qualification does not cover this install and destination')
+    if (!record.head || retired.destinationHead.sequence > record.head.sequence) {
+      throw new Error('Retirement destination exceeds published head')
     }
+    // Stable may advance while preview is offline; preserve its first receiver.
+    const target: ChannelTarget = await this.target({ ...record, head: retired.destinationHead })
+    if (target.manifest.receiverProtocol !== retired.receiverProtocol) { throw new Error('Stable build has no supported retirement receiver') }
+    assertVersionFloor(target.manifest.request.sourceVersion, retired.minimumVersion)
+    return { kind: 'retirement', retirement: { source: this.deps.build, target } }
   }
 
   private assertRecord(record: ActiveChannel | RetiredChannel, name: string): void {

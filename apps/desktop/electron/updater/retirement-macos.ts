@@ -1,14 +1,17 @@
 import { constants } from 'node:fs'
 import { access, lstat, mkdir, mkdtemp, readdir, readFile, rename } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
+import { downloadPinnedArtifact } from './artifact'
 
 import type * as Electron from 'electron'
+
+import { removeBundleCliLinks } from '../cli-provision'
 
 import { assertNativeRetirementRemoval, type RetirementNativeAdapter } from './retirement'
 import {
   assertRetirementStamp,
   assertRunningRetirementStamp,
-  downloadRetirementArtifact,
   type NativeCommandResult,
   retirementPathExists,
   runRetirementCommand
@@ -107,6 +110,64 @@ async function verifyMacBundle(identity: RetirementNativeIdentity, app: string =
   return executable
 }
 
+export interface MacRetirementDiscovery {
+  roots?: string[]
+  registered?: (identity: string) => Promise<string[]>
+  inspect?: (app: string, target: RetirementDestination) => Promise<{ identity: string }>
+}
+
+async function registeredMacBundles(identity: string): Promise<string[]> {
+  requireMac()
+  const result: NativeCommandResult = await runRetirementCommand('/usr/bin/mdfind', [
+    '-0', `kMDItemCFBundleIdentifier == '${identity}'`
+  ])
+  return result.stdout.split('\0').filter(Boolean)
+}
+
+async function inspectMacDestination(app: string, target: RetirementDestination): Promise<{ identity: string }> {
+  requireMac()
+  const result: NativeCommandResult = await runRetirementCommand('/usr/bin/plutil', [
+    '-convert', 'json', '-o', '-', path.join(app, 'Contents/Info.plist')
+  ])
+  const plist: MacInfoPlist = JSON.parse(result.stdout)
+  if (plist.CFBundleIdentifier === target.identity) {
+    await assertOwnedBundle(app)
+    await verifyMacBundle({ ...target, appPath: app, nativeVersion: plist.CFBundleShortVersionString })
+    const stamp: MacSourceStamp = JSON.parse(await readFile(path.join(app, 'Contents/Resources/install-stamp.json'), 'utf8'))
+    if (stamp.distribution !== 'desktop-app' || stamp.payload !== 'bundled' || stamp.updateMechanism !== 'electron-updater') {
+      throw new Error('Existing stable has a different installation steward')
+    }
+  }
+  return { identity: plist.CFBundleIdentifier }
+}
+
+/** Search by native identity, including renamed bundles; never silently create a duplicate. */
+export async function discoverMacRetirementPath(target: RetirementDestination, discovery: MacRetirementDiscovery = {}): Promise<string> {
+  const roots: string[] = discovery.roots ?? [path.dirname(target.appPath), '/Applications', path.join(os.homedir(), 'Applications')]
+  const candidates: Set<string> = new Set(await (discovery.registered ?? registeredMacBundles)(target.identity))
+  for (const root of new Set(roots)) {
+    if (!(await retirementPathExists(root))) { continue }
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      if (entry.name.endsWith('.app')) { candidates.add(path.join(root, entry.name)) }
+    }
+  }
+  const matches: Set<string> = new Set()
+  for (const candidate of candidates) {
+    if (!(await retirementPathExists(candidate))) { continue }
+    // Ignore incomplete directories; an identified matching bundle must pass
+    // signature and ownership checks rather than silently falling through.
+    if (!(await retirementPathExists(path.join(candidate, 'Contents/Info.plist')))) { continue }
+    const app: string = await canonicalRetirementPath(candidate)
+    const inspected = await (discovery.inspect ?? inspectMacDestination)(app, target)
+    if (inspected.identity === target.identity) { matches.add(app) }
+  }
+  if (matches.size > 1) { throw new Error('Multiple stable applications found; choose one through its installation steward') }
+  const existing: string | undefined = [...matches][0]
+  if (existing) { return existing }
+  if (await retirementPathExists(target.appPath)) { throw new Error('Stable install location belongs to another application') }
+  return canonicalRetirementPath(target.appPath)
+}
+
 async function assertNoBundleProcesses(app: string): Promise<void> {
   const result: NativeCommandResult = await runRetirementCommand('/bin/ps', ['-axo', 'comm='])
 
@@ -116,7 +177,7 @@ async function assertNoBundleProcesses(app: string): Promise<void> {
 }
 
 async function stageMacBundle(request: RetirementRequest, journal: RetirementJournal): Promise<string> {
-  const artifact: string = await downloadRetirementArtifact(journal, request.destination)
+  const artifact: string = await downloadPinnedArtifact(journal.directory, request.destination.artifact)
 
   if (request.destination.artifact.format !== 'zip') {
     throw new Error('macOS retirement requires the signed update ZIP')
@@ -147,6 +208,7 @@ async function stageMacBundle(request: RetirementRequest, journal: RetirementJou
 
 export class MacRetirementAdapter implements RetirementNativeAdapter {
   async verifyDestination(request: RetirementRequest): Promise<void> {
+    await assertOwnedBundle(request.destination.appPath)
     await verifyMacBundle(request.destination)
     await assertRetirementStamp(
       path.join(request.destination.appPath, 'Contents/Resources/install-stamp.json'),
@@ -285,7 +347,7 @@ export class MacRetirementAdapter implements RetirementNativeAdapter {
     )
 
     if (
-      stamp.commit !== request.qualification.sourceCommit ||
+      stamp.commit !== request.sourceBuild.commit ||
       stamp.distribution !== 'desktop-app' ||
       stamp.payload !== 'bundled'
     ) {
@@ -293,6 +355,7 @@ export class MacRetirementAdapter implements RetirementNativeAdapter {
     }
 
     await assertNoBundleProcesses(source)
+    removeBundleCliLinks(path.join(source, 'Contents/Resources/agent-payload'), path.join(os.homedir(), '.local/bin'))
     const { shell }: typeof Electron = await import('electron')
     await shell.trashItem(source)
   }

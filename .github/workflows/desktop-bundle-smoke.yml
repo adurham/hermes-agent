@@ -30,6 +30,12 @@ on:
       controller-sha:
         default: ''
         type: string
+      disposable-run:
+        default: ''
+        type: string
+      public-root:
+        default: ''
+        type: string
       public-base:
         required: true
         type: string
@@ -68,6 +74,8 @@ jobs:
       CHANNEL_BUILD: ${{ inputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ inputs.channel-request-sha256 }}
       PUBLIC_BASE: ${{ inputs.public-base }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ inputs.public-root }}
+      R2_DISPOSABLE_RUN: ${{ inputs.disposable-run }}
       PLATFORM: ${{ inputs.platform }}
       ARCH: ${{ inputs.arch }}
       FORMAT: ${{ inputs.format }}

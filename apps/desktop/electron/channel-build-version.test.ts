@@ -114,12 +114,51 @@ test('channel stamps verify the real checkout and retain source version and nati
     assert.equal(built.updateMechanism, 'electron-updater')
     assert.equal(built.baseVersion, build.sourceVersion)
     assert.equal(built.tag, null)
+    assert.equal(built.receiverProtocol, 1)
     assert.deepEqual(built.channelBuild, build)
     assert.ok(Object.isFrozen(built.channelBuild?.identity))
     fs.mkdirSync(path.join(dir, 'out/agent-payload/repo'), { recursive: true })
     writeDesktopStamp(path.join(dir, 'out'), built)
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'out/install-stamp.json'), 'utf8')), JSON.parse(fs.readFileSync(path.join(dir, 'out/agent-payload/repo/install-stamp.json'), 'utf8')))
     assert.throws((): void => { resolveStamp({ env: { ...env, _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(request()) }, repoRoot: dir }) }, /checkout/)
+    delete process.env._HERMES_CHANNEL_REQUEST_JSON
+    process.env.HERMES_PAYLOAD_TAG = 'v0.0.1'
+    delete require.cache[require.resolve('../product-identity.cjs')]
+    const official: ProductIdentity = require('../product-identity.cjs')
+    delete process.env.HERMES_PAYLOAD_TAG
+    const receiver: ChannelBuildRequest = {
+      ...build, channel: 'stable', sequence: 1, version: '0.0.1', windowsVersion: '0.0.1.0',
+      releaseTag: 'v0.0.1', receiverCandidate: true, bundleEnv: {},
+      publicBase: 'https://builds.example.test/ci-disposable/1/2-1',
+      identity: { ...official, token: build.identity.token }
+    }
+    const receiverEnv: NodeJS.ProcessEnv = { ...env, _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(receiver) }
+    const stable: InstallStamp = buildStampPayload(resolveStamp({ env: receiverEnv, repoRoot: dir }), receiverEnv, 'darwin', payload)
+    assert.equal(stable.channelBuild, undefined)
+    assert.equal(stable.source, 'build')
+    assert.equal(stable.tag, receiver.releaseTag)
+    assert.equal(stable.displayVersion, receiver.version)
+    assert.equal(stable.updateMechanism, 'electron-updater')
+    const packaged: PackagingFacts = load(receiver)
+    assert.deepEqual(packaged.config.mac?.publish, [{ provider: 'generic', url: `${receiver.publicBase}/releases/darwin/stable/`, channel: 'stable' }])
+    const { verifyBundleStamp }: { verifyBundleStamp: (stamp: InstallStamp, options: {
+      commit: string; platform: string; channelRequest: ChannelBuildRequest
+    }) => string } = await import('../../../tests/install/e2e-assets/bundle-smoke-metadata.mjs')
+    assert.equal(verifyBundleStamp(stable, { commit: receiver.commit, platform: 'darwin', channelRequest: receiver }), receiver.version)
+    assert.throws((): void => { verifyBundleStamp(built, { commit: receiver.commit, platform: 'darwin', channelRequest: receiver }) })
+    execFileSync(process.env.HERMES_PYTHON || 'python3', ['-c', `
+import json, sys
+from scripts.bundles.release_artifacts import stamp_matches
+stamp, request = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+stamp_matches(stamp, '', request['commit'], channel_request=request)
+stamp['channelBuild'] = request
+try:
+    stamp_matches(stamp, '', request['commit'], channel_request=request)
+except ValueError:
+    pass
+else:
+    raise AssertionError('receiver accepted preview updater ownership')
+`, JSON.stringify(stable), JSON.stringify(receiver)], { cwd: repo })
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -130,6 +169,7 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
   const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'channel-manifest-'))
   const app: string = path.join(root, 'apps/desktop')
   interface ManifestFacts { version: string; semver: string; appId: string; xml: string }
+  interface RecordedMetadata { applicationId: string; version: string }
 
   try {
     for (const file of ['apps/desktop/product-identity.cjs', 'apps/desktop/electron-builder.config.cjs',
@@ -192,6 +232,38 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       assert.match(row.xml, new RegExp(`Version="${build.windowsVersion.replaceAll('.', '\\.')}"`))
       assert.equal((row.xml.match(/Category="windows.appExecutionAlias"/g) || []).length, 2)
       assert.match(row.xml, /HermesChannelab12cd34ef56ab78Cli1/)
+
+      const recordScript: string = `
+import json, pathlib, sys, zipfile, xml.etree.ElementTree as ET
+sys.path.insert(0, sys.argv[1])
+from scripts.bundles.release_artifacts import record, desktop_application
+root = pathlib.Path(sys.argv[2])
+request = json.loads(sys.argv[3])
+package = root / 'Recorder-win-x64.msix'
+with zipfile.ZipFile(package, 'w') as archive:
+    archive.writestr('AppxManifest.xml', (root / 'manifest.xml').read_bytes())
+    archive.writestr('app/resources/install-stamp.json', json.dumps({
+        'source': 'channel-build', 'channelBuild': request, 'commit': request['commit'], 'tag': None}))
+out = root / 'metadata.json'
+record('windows', 'x64', root, '', request['commit'], out, channel_request=request)
+manifest = ET.fromstring((root / 'manifest.xml').read_bytes())
+desktop = desktop_application(manifest, request)
+desktop.set('Id', 'WrongDesktop')
+try:
+    desktop_application(manifest, request)
+except ValueError:
+    pass
+else:
+    raise AssertionError('Recorder accepted the wrong desktop application ID')
+print(out.read_text(encoding='utf-8'))
+`
+
+      const recorded: string = execFileSync(process.env.HERMES_PYTHON || 'python3',
+        ['-c', recordScript, repo, root, JSON.stringify(build)], { encoding: 'utf8' })
+
+      const metadata: RecordedMetadata = JSON.parse(recorded)
+      assert.equal(metadata.applicationId, build.identity.appNamePascal)
+      assert.equal(metadata.version, build.windowsVersion)
       facts.push(row)
     }
 

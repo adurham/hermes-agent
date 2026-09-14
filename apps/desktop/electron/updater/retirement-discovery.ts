@@ -2,8 +2,9 @@ import path from 'node:path'
 
 import type { ChannelBuild } from './channel-protocol'
 import type { ChannelTarget } from './channel'
+import { discoverMacRetirementPath, type MacRetirementDiscovery } from './retirement-macos'
 import { runRetirementCommand, type NativeCommandResult } from './retirement-native'
-import { canonicalRetirementPath, insideRetirementRoot, type RetirementDestination, type RetirementSource } from './retirement-state'
+import { canonicalRetirementPath, type RetirementDestination, type RetirementSource } from './retirement-state'
 
 interface InstalledApp {
   identity: string
@@ -70,7 +71,41 @@ export async function discoverRetirementSource(build: ChannelBuild, home: string
     userData: await canonicalRetirementPath(userData), profile, connectionId: 'local' }
 }
 
-export async function discoverRetirementDestination(target: ChannelTarget, source: RetirementSource): Promise<RetirementDestination> {
+interface RetirementDiscovery {
+  mac?: MacRetirementDiscovery
+  windows?: (target: ChannelTarget, source: RetirementSource, family: string) => Promise<string>
+}
+
+async function discoverWindowsDestination(target: ChannelTarget, source: RetirementSource, family: string): Promise<string> {
+  const result: NativeCommandResult = await runRetirementPowerShell(String.raw`
+$ErrorActionPreference='Stop'
+$p=[Console]::In.ReadToEnd() | ConvertFrom-Json
+$packages=@(Get-AppxPackage -Name $p.identity | Where-Object { $_.Name -ceq $p.identity })
+if ($packages.Count -gt 1) { throw 'Stable package is not uniquely registered' }
+if ($packages.Count) {
+  $pkg=$packages[0]
+  if ($pkg.Publisher -cne $p.signer -or $pkg.PackageFamilyName -cne $p.family -or $pkg.Architecture.ToString() -ine $p.arch -or $pkg.Status.ToString() -cne 'Ok') { throw 'Stable native identity/status mismatch' }
+  if ($pkg.SignatureKind.ToString() -cne 'Developer' -or $pkg.IsDevelopmentMode -or $pkg.NonRemovable -or $pkg.IsPartiallyStaged) { throw 'Stable is owned by another installation steward' }
+  $manifest=Get-AppxPackageManifest -Package $pkg.PackageFullName
+  if (@($manifest.Package.Applications.Application | Where-Object { $_.Id -ceq $p.applicationId }).Count -ne 1) { throw 'Stable registered application identity mismatch' }
+  if ($pkg.Version.ToString() -ceq $p.version) { $pkg.InstallLocation | ConvertTo-Json -Compress; exit }
+  $store=Split-Path -Parent $pkg.InstallLocation
+} else {
+  $volume=Get-AppxDefaultVolume
+  if (-not $volume -or $volume.IsOffline) { throw 'No online default package volume' }
+  $store=$volume.PackageStorePath
+}
+if (-not $store) { throw 'Native package store location missing' }
+Join-Path $store ($p.identity+'_'+$p.version+'_'+$p.arch+'__'+$p.publisherId) | ConvertTo-Json -Compress
+`, JSON.stringify({ identity: target.package.identity, version: target.package.version, arch: target.package.arch,
+    signer: source.signer, family, publisherId: family.split('_').at(-1), applicationId: target.manifest.request.identity.appNamePascal }))
+  const appPath: string = JSON.parse(result.stdout)
+  return canonicalRetirementPath(appPath)
+}
+
+export async function discoverRetirementDestination(
+  target: ChannelTarget, source: RetirementSource, discovery: RetirementDiscovery = {}
+): Promise<RetirementDestination> {
   const pkg = target.package
   const artifact: RetirementDestination['artifact'] = {
     url: target.artifactUrl, sha256: pkg.artifact.sha256, size: pkg.artifact.size,
@@ -79,25 +114,17 @@ export async function discoverRetirementDestination(target: ChannelTarget, sourc
   const common = { platform: pkg.platform, architecture: pkg.arch, identity: pkg.identity,
     nativeVersion: pkg.version, signer: source.signer, artifact, commit: target.manifest.request.commit }
   if (pkg.platform === 'darwin') {
-    // The established sibling Applications location is writable by the same owner.
-    const appPath: string = path.join(path.dirname(source.appPath), `${target.manifest.request.identity.appNamePascal}.app`)
-    return { ...common, appPath, applicationId: null, packageFamilyName: null }
+    const proposed: RetirementDestination = { ...common,
+      appPath: path.join(path.dirname(source.appPath), `${target.manifest.request.identity.displayName}.app`),
+      applicationId: null, packageFamilyName: null }
+    return { ...proposed, appPath: await discoverMacRetirementPath(proposed, discovery.mac) }
   }
   if (!source.packageFullName) { throw new Error('Missing running package identity') }
   const publisherId: string = source.packageFullName.split('_').at(-1) || ''
   if (!/^[a-z0-9]{13}$/.test(publisherId)) { throw new Error('Invalid native publisher ID') }
   const packageFamilyName: string = `${pkg.identity}_${publisherId}`
-  // Add-AppxPackage installs current-user sideloads beside the registered source.
-  const appPath: string = path.join(path.dirname(source.appPath), `${pkg.identity}_${pkg.version}_${pkg.arch}__${publisherId}`)
-  const applicationId: string = source.applicationId || ''
+  const appPath: string = await (discovery.windows ?? discoverWindowsDestination)(target, source, packageFamilyName)
+  const applicationId: string = target.manifest.request.identity.appNamePascal
   if (!applicationId) { throw new Error('Missing native application ID') }
   return { ...common, appPath, packageFamilyName, applicationId }
-}
-
-export function assertPersistentRetirementHome(source: RetirementSource): void {
-  for (const root of source.removalRoots) {
-    if (insideRetirementRoot(root, source.home) || insideRetirementRoot(root, source.userData)) {
-      throw new Error('Your workspace or desktop credentials are inside package-private storage. Move the workspace to a persistent folder and reopen the preview before migrating; the preview has not been removed.')
-    }
-  }
 }

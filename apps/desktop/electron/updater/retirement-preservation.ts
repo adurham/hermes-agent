@@ -1,5 +1,4 @@
-import { chmod, copyFile, lstat, mkdir, open, readdir, rename } from 'node:fs/promises'
-import type { FileHandle } from 'node:fs/promises'
+import { lstat, open, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 
 import { runRetirementCommand } from './retirement-native'
@@ -7,78 +6,47 @@ import { canonicalRetirementPath, insideRetirementRoot } from './retirement-stat
 
 export interface RetirementSnapshotTools {
   python: string
-  backupScript: string
+  repo: string
+  sitePackages: string
 }
 
-const sqliteSnapshot: string = `import importlib.util, pathlib, sqlite3, sys
-spec = importlib.util.spec_from_file_location('hermes_retirement_backup', sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-source, target = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
-if not module._safe_copy_db(source, target):
-    raise RuntimeError('WAL-safe retirement snapshot failed')
-with sqlite3.connect(target) as connection:
-    if connection.execute('PRAGMA quick_check').fetchall() != [('ok',)]:
-        raise RuntimeError('Retirement snapshot integrity failed')
+const migrationSnapshot: string = `import os, pathlib, sys
+repo, site, source, target = sys.argv[1:]
+sys.path[:0] = [repo, site]
+os.environ['HERMES_HOME'] = source
+os.environ['HERMES_SHARED_AUTH_DIR'] = str(pathlib.Path(source) / 'shared')
+from hermes_cli.backup_migration import snapshot_migration_home
+snapshot_migration_home(pathlib.Path(source), pathlib.Path(target))
 `
 
-async function isSqlite(file: string): Promise<boolean> {
-  const handle: FileHandle = await open(file, 'r')
 
+async function assertPrivateDirectory(directory: string): Promise<void> {
+  const info: Awaited<ReturnType<typeof lstat>> = await lstat(directory)
+
+  if (
+    !info.isDirectory() ||
+    info.isSymbolicLink() ||
+    (process.platform !== 'win32' && ((info.mode & 0o077) !== 0 || info.uid !== process.getuid?.()))
+  ) {
+    throw new Error('Snapshot staging must be a private owned directory')
+  }
+}
+
+async function discardInterruptedSnapshot(directory: string): Promise<void> {
   try {
-    const header: Buffer = Buffer.alloc(16)
-    await handle.read(header, 0, 16, 0)
+    await assertPrivateDirectory(directory)
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return
+    }
 
-    return header.toString('utf8') === 'SQLite format 3\0'
-  } finally {
-    await handle.close()
+    throw error
   }
+
+  await rm(directory, { recursive: true })
 }
 
-async function copyStateTree(source: string, target: string, tools: RetirementSnapshotTools): Promise<void> {
-  await mkdir(target, { mode: 0o700 })
-  const names: string[] = await readdir(source)
-
-  for (const name of names) {
-    const input: string = path.join(source, name)
-    const output: string = path.join(target, name)
-    const info: Awaited<ReturnType<typeof lstat>> = await lstat(input)
-
-    if (info.isSymbolicLink()) {
-      throw new Error('Snapshot contains a symlink; resolve its preservation policy before retirement')
-    }
-
-    if (info.isDirectory()) {
-      await copyStateTree(input, output, tools)
-
-      continue
-    }
-
-    if (!info.isFile()) {
-      throw new Error('Snapshot contains a live socket or special file; quiesce its owner first')
-    }
-
-    if (name.endsWith('-wal') || name.endsWith('-shm')) {
-      const database: string = input.slice(0, -4)
-
-      if (!(await isSqlite(database))) {
-        throw new Error('Unrecognized SQLite sidecar in retirement snapshot')
-      }
-
-      continue
-    }
-
-    if (await isSqlite(input)) {
-      await runRetirementCommand(tools.python, ['-c', sqliteSnapshot, tools.backupScript, input, output])
-    } else {
-      await copyFile(input, output)
-    }
-
-    await chmod(output, info.mode & 0o700)
-  }
-}
-
-/** Caller holds the lifecycle lock. This is private preservation, not a profile export. */
+/** Caller holds journal.exclusive and has not published the prepared journal yet. */
 export async function snapshotRetirementHome(
   home: string,
   destination: string,
@@ -91,9 +59,21 @@ export async function snapshotRetirementHome(
     throw new Error('Snapshot and live state roots overlap')
   }
 
+  if (target !== path.resolve(destination)) {
+    throw new Error('Snapshot staging must be a private owned directory')
+  }
+
+  await assertPrivateDirectory(path.dirname(target))
   const partial: string = `${target}.partial`
-  await copyStateTree(source, partial, tools)
+  // Neither tree is authoritative until preparation publishes its journal.
+  await discardInterruptedSnapshot(partial)
+  await discardInterruptedSnapshot(target)
+  await runRetirementCommand(tools.python, ['-c', migrationSnapshot, tools.repo, tools.sitePackages, source, partial])
   await rename(partial, target)
+  if (process.platform !== 'win32') {
+    const parent = await open(path.dirname(target), 'r')
+    try { await parent.sync() } finally { await parent.close() }
+  }
 
   return target
 }

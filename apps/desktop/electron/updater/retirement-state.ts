@@ -5,8 +5,10 @@ import type { FileHandle } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { runRetirementCommand } from './retirement-native'
 import type { ChannelBuild } from './channel-protocol'
+import type { PinnedArtifact } from './artifact'
+import type { RetirementConnection } from './retirement-connections'
+import { runRetirementCommand } from './retirement-native'
 
 export type RetirementStage =
   'prepared' | 'destination-installed' | 'destination-ready' | 'preview-removed' | 'complete'
@@ -35,16 +37,25 @@ export interface RetirementSource extends RetirementNativeIdentity {
 
 export interface RetirementDestination extends RetirementNativeIdentity {
   packageFamilyName: string | null
-  artifact: { url: string; sha256: string; size: number; format: 'zip' | 'msix' | 'msixbundle' }
+  artifact: PinnedArtifact
   commit: string
+}
+
+export type RetirementWorkspaceChoice = 'open-preview' | 'keep-stable'
+
+export interface RetirementConsent {
+  installStable: true
+  removePreview: true
+  workspaceChoice: RetirementWorkspaceChoice
 }
 
 export interface RetirementSelection {
   home: string
   profile: string
   connectionId: string
-  choice: 'open-preview' | 'keep-stable'
+  choice: RetirementWorkspaceChoice
   reauthenticate: boolean
+  connection?: RetirementConnection
   conflictConsent?: { home: string; profile: string; connectionId: string; operatorOverride: boolean }
 }
 
@@ -55,7 +66,8 @@ export interface RetirementRequest {
   source: RetirementSource
   destination: RetirementDestination
   selection: RetirementSelection
-  qualification: { sha256: string; sourceCommit: string; destinationCommit: string; receiverProtocol: 1; sourceBuild?: ChannelBuild }
+  sourceBuild: ChannelBuild
+  destinationManifestSha256: string
   consent: { install: boolean; removePreview: boolean; replaceExistingStable: boolean }
 }
 
@@ -175,6 +187,10 @@ export function validateRetirementRequest(request: RetirementRequest): void {
     }
   }
 
+  if (!['open-preview', 'keep-stable'].includes(request.selection.choice)) {
+    throw new Error('Explicit retirement workspace choice required')
+  }
+
   if (!request.selection.connectionId || !request.source.removalRoots.length) {
     throw new Error('Incomplete retirement state inventory')
   }
@@ -199,12 +215,10 @@ function validateRetirementTarget(request: RetirementRequest): void {
   }
 
   if (
-    request.qualification.receiverProtocol !== 1 ||
-    request.qualification.destinationCommit !== destination.commit ||
-    !/^[a-f0-9]{64}$/.test(request.qualification.sha256) ||
-    !/^[a-f0-9]{40}$/.test(request.qualification.sourceCommit)
+    !/^[a-f0-9]{64}$/.test(request.destinationManifestSha256) ||
+    !/^[a-f0-9]{40}$/.test(request.sourceBuild.commit)
   ) {
-    throw new Error('Missing exact retirement qualification')
+    throw new Error('Missing pinned retirement build')
   }
 }
 
@@ -300,12 +314,25 @@ export class RetirementJournal {
       [request.source.appPath, ...request.source.removalRoots].map(canonicalRetirementPath)
     )
 
-    for (const candidate of [this.directory, request.selection.home, request.source.home, request.source.userData]) {
+    for (const candidate of [this.directory, request.selection.home]) {
       const canonical: string = await canonicalRetirementPath(candidate)
 
       if (roots.some((root: string): boolean => insideRetirementRoot(root, canonical))) {
         throw new Error('State or journal is inside the preview removal footprint; preserve it before retirement')
       }
+    }
+
+    const sourceHome: string = await canonicalRetirementPath(request.source.home)
+    if (roots.some(root => insideRetirementRoot(root, sourceHome))) {
+      const relocated = await lstat(path.join(this.directory, 'home'))
+      if (!relocated.isDirectory() || relocated.isSymbolicLink()) {
+        throw new Error('Removal-scoped home has not been preserved')
+      }
+    }
+    // Windows archives all package-private bytes before removal. No other
+    // adapter may claim preservation of an Electron credential store it deletes.
+    if (request.source.platform !== 'win32' && roots.some(root => insideRetirementRoot(root, request.source.userData))) {
+      throw new Error('Desktop credentials are inside the removal footprint')
     }
 
     const sourceApp: string = await canonicalRetirementPath(request.source.appPath)

@@ -1,23 +1,25 @@
 import path from 'node:path'
+import { mkdtemp, rm } from 'node:fs/promises'
 
 import type { ChannelTarget } from './channel'
 import { runRetirementPowerShell } from './retirement-discovery'
-import { downloadRetirementArtifact } from './retirement-native'
-import { newRetirementCorrelation, RetirementJournal, defaultRetirementRoot } from './retirement-state'
+import { downloadPinnedArtifact } from './artifact'
+import type { NativeCommandResult } from './retirement-native'
 
 /** Verify downloaded bytes and native metadata before App Installer can stop the backend. */
-export async function verifyPreparedChannelInstaller(file: string, target: ChannelTarget): Promise<void> {
+export async function verifyPreparedChannelInstaller(
+  file: string, target: ChannelTarget,
+  command: (script: string, input: string) => Promise<NativeCommandResult> = runRetirementPowerShell
+): Promise<void> {
   const pkg = target.package
   if (pkg.platform !== 'win32' || !pkg.publisher) { throw new Error('Expected a publisher-bound Windows package') }
-  const journal: RetirementJournal = await RetirementJournal.open(defaultRetirementRoot(), newRetirementCorrelation().id)
-  const artifact: string = await downloadRetirementArtifact(journal, {
-    platform: 'win32', appPath: path.dirname(file), identity: pkg.identity, nativeVersion: pkg.version,
-    signer: pkg.publisher, architecture: pkg.arch, applicationId: null, packageFamilyName: null,
-    commit: target.manifest.request.commit,
-    artifact: { url: target.artifactUrl, sha256: pkg.artifact.sha256, size: pkg.artifact.size,
+  const directory: string = await mkdtemp(path.join(path.dirname(file), '.channel-artifact-'))
+  try {
+    const artifact: string = await downloadPinnedArtifact(directory,
+      { url: target.artifactUrl, sha256: pkg.artifact.sha256, size: pkg.artifact.size,
       format: pkg.artifact.key.endsWith('.msixbundle') ? 'msixbundle' : 'msix' }
-  })
-  await runRetirementPowerShell(String.raw`
+    )
+  await command(String.raw`
 $ErrorActionPreference='Stop'
 $p=[Console]::In.ReadToEnd() | ConvertFrom-Json
 function Read-SafeXml($stream) {
@@ -48,4 +50,5 @@ try {
 } finally { $zip.Dispose() }
 `, JSON.stringify({ file, artifact, feedUrl: target.feedUrl, artifactUrl: target.artifactUrl,
     identity: pkg.identity, publisher: pkg.publisher, version: pkg.version, arch: pkg.arch }))
+  } finally { await rm(directory, { recursive: true, force: true }) }
 }

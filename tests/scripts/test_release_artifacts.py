@@ -32,10 +32,10 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
     package = root / 'Product-win-x64.msix'
     manifest = '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Product" Publisher="CN=Test" Version="1.2.3.0" ProcessorArchitecture="x64"/><Applications><Application Id="App"/></Applications></Package>'
 
-    def write_package(sha):
+    def write_package(sha, receiver=None):
         with zipfile.ZipFile(package, 'w') as archive:
             archive.writestr('AppxManifest.xml', manifest)
-            archive.writestr('app/resources/install-stamp.json', json.dumps({'tag': tag, 'commit': sha}))
+            archive.writestr('app/resources/install-stamp.json', json.dumps({'tag': tag, 'commit': sha, 'receiverProtocol': receiver}))
 
     write_package(commit)
     out = root / 'metadata-windows-x64.json'
@@ -47,6 +47,10 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
     assert metadata['publisher'] == 'CN=Test'
     assert metadata['applicationId'] == 'App'
     assert package.read_bytes() == original
+    assert 'receiverProtocol' not in metadata
+    write_package(commit, receiver=1)
+    record('windows', 'x64', root, tag, commit, out)
+    assert json.loads(out.read_text())['receiverProtocol'] == 1
     write_package('b' * 40)
     with pytest.raises(ValueError, match='provenance'):
         record('windows', 'x64', root, tag, commit, tmp_path / 'bad.json')
@@ -98,7 +102,7 @@ def staged_candidate(tmp_path, r2_server, https_origin):
             handoff.stage(tag, commit, handoff_name, built, includes)
     bundle = built / 'Product-win.msixbundle'
     with zipfile.ZipFile(bundle, 'w') as archive:
-        archive.writestr('AppxMetadata/AppxBundleManifest.xml', '<Bundle><Identity Name="Product" Publisher="CN=Test" Version="1.2.3.0"/></Bundle>')
+        archive.writestr('AppxMetadata/AppxBundleManifest.xml', '<Bundle><Identity Name="Product" Publisher="CN=Test" Version="1.2.3.0"/><Packages><Package Type="application" Architecture="arm64"/><Package Type="application" Architecture="x64"/></Packages></Bundle>')
     (built / 'Store-Product-win.msixbundle').write_bytes(b'Store bundle transport fixture')
     handoff.stage(tag, commit, 'windows-universal', built, ['*.msixbundle'])
     fetched = tmp_path / 'fetched'
@@ -113,6 +117,34 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     assert puts == [f'/hermes-releases/releases/tag/{tag}/release-candidates.json']
     assert all(key.startswith(f'releases/tag/{tag}/') for key in r2_server.store)
     return manifest, fetched, base
+
+
+def test_bootstrap_reuses_published_candidate_and_rejects_substitution(staged_candidate, r2_server, monkeypatch):
+    from scripts.releases import channel_releases
+    candidate, _, base = staged_candidate
+    request = {'releaseTag': candidate['tag'], 'commit': candidate['commit'], 'publicBase': base,
+               'identity': {'token': 'a' * 16, 'appNamePascal': 'App'}}
+    packages = []
+    for row in candidate['packages']:
+        if row['platform'] == 'termux':
+            continue
+        packages.append({**row, 'platform': 'darwin' if row['platform'] == 'macos' else 'win32',
+                         'artifact': {'key': row['artifact']['url'].removeprefix(base + '/'),
+                                      'sha256': row['artifact']['sha256']}})
+    manifest = {'request': request, 'packages': packages}
+    monkeypatch.setattr(channel_releases, 'product_identity', lambda tag: request['identity'])
+    published = {'draft': False, 'prerelease': False, 'published_at': 'fixture-published'}
+    monkeypatch.setattr(channel_releases.stable, 'output', lambda args: candidate['commit']
+                        if '/commits/' in args[2] else json.dumps(published))
+    r2_server.store['releases/stable/release-candidates.json'] = r2_server.store[f"releases/tag/{candidate['tag']}/release-candidates.json"]
+    assert channel_releases.verify_bootstrap(request, manifest, base, 'fixture/repo')
+    substituted = copy.deepcopy(manifest)
+    substituted['packages'][0]['artifact']['sha256'] = 'f' * 64
+    with pytest.raises(ValueError, match='accepted'):
+        channel_releases.verify_bootstrap(request, substituted, base, 'fixture/repo')
+    published['draft'] = True
+    with pytest.raises(ValueError, match='published'):
+        channel_releases.verify_bootstrap(request, manifest, base, 'fixture/repo')
 
 
 def test_assemble_rejects_missing_and_changed_receipts(tmp_path, staged_candidate):

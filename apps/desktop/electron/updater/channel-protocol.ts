@@ -50,8 +50,8 @@ export interface RetiredChannel extends ChannelRecordBase {
   state: 'retired'
   destination: string
   minimumVersion: string
-  compatibilityKey: string
-  compatibilitySha256: string
+  destinationHead: ChannelHead
+  receiverProtocol: 1
   lastHead: ChannelHead | null
 }
 export type ChannelRecord = ActiveChannel | RetiredChannel
@@ -66,25 +66,8 @@ export interface ChannelPackage {
   teamId?: string
   feed: { key: string; channel: string }
 }
-export interface ChannelManifest { schema: 1; request: ChannelRequest; packages: ChannelPackage[] }
-export interface ChannelCohort { buildId: string; commit: string }
-export interface ChannelQualification {
-  schema: 1
-  source: string
-  sourceHead: ChannelHead | null
-  destination: string
-  destinationHead: ChannelHead
-  minimumVersion: string
-  receiverProtocol: 1
-  coverage: ChannelCoverage[]
-}
-export interface ChannelCoverage {
-  platform: ChannelPackage['platform']
-  arch: ChannelPackage['arch']
-  sourceIdentity: string
-  destinationIdentity: string
-  cohorts: ChannelCohort[]
-}
+export interface ChannelManifest { schema: 1; request: ChannelRequest; packages: ChannelPackage[]; receiverProtocol?: number }
+
 
 const SHA256 = /^[a-f0-9]{64}$/
 const COMMIT = /^[a-f0-9]{40}$/
@@ -199,7 +182,7 @@ function head(value: unknown): ChannelHead | null {
 
 function requiredHead(value: unknown): ChannelHead {
   const result = head(value)
-  if (!result) { throw new Error('Missing qualification destination head') }
+  if (!result) { throw new Error('Missing retirement destination head') }
   return result
 }
 
@@ -222,11 +205,11 @@ export function decodeChannelRecord(body: string): ChannelRecord {
   if (state !== 'retired') { throw new Error('Invalid channel state') }
   const lastHead = head(fields.get('lastHead'))
   if (JSON.stringify(lastHead) !== JSON.stringify(common.head)) { throw new Error('Retirement lastHead mismatch') }
+  if (fields.get('receiverProtocol') !== 1) { throw new Error('Unsupported retirement receiver protocol') }
   return {
     ...common, state, lastHead, destination: validateChannelName(fields.text('destination')),
     minimumVersion: fields.text('minimumVersion', VERSION),
-    compatibilityKey: channelKey(fields.text('compatibilityKey')),
-    compatibilitySha256: fields.text('compatibilitySha256', SHA256)
+    destinationHead: requiredHead(fields.get('destinationHead')), receiverProtocol: 1
   }
 }
 
@@ -242,7 +225,8 @@ function request(fields: Fields): ChannelRequest {
   }
   const publicBase = fields.text('publicBase')
   if (channelPublicBase(publicBase) !== publicBase) { throw new Error('Noncanonical request publicBase') }
-  const windowsVersion = fields.text('windowsVersion', /^\d+\.\d+\.\d+\.0$/)
+  const releaseTag = fields.optional('releaseTag', /^v\d+\.\d+\.\d+(?:-canary\.\d+)?$/)
+  const windowsVersion = fields.text('windowsVersion', releaseTag?.includes('-canary.') ? /^\d+\.\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+\.0$/)
   if (windowsVersion.split('.').some((part: string): boolean => Number(part) > 65535)) { throw new Error('Invalid Windows version') }
   return {
     schema: 1, buildId: fields.text('buildId', BUILD_ID), channel: validateChannelName(fields.text('channel')),
@@ -250,7 +234,7 @@ function request(fields: Fields): ChannelRequest {
     commit: fields.text('commit', COMMIT), sourceVersion: fields.text('sourceVersion', VERSION),
     version: fields.text('version', VERSION), windowsVersion, publicBase, bundleEnv,
     identity: identity(fields.object('identity')), controllerCommit: fields.optional('controllerCommit', COMMIT),
-    releaseTag: fields.optional('releaseTag', /^v\d+\.\d+\.\d+(?:-canary\.\d+)?$/)
+    releaseTag
   }
 }
 
@@ -264,50 +248,13 @@ function packageEntry(value: unknown): ChannelPackage {
   const artifact = fields.object('artifact')
   const feed = fields.object('feed')
   return {
-    platform, arch, variant: 'bundled', version: fields.text('version', platform === 'darwin' ? VERSION : /^\d+\.\d+\.\d+\.0$/), identity: fields.text('identity'),
+    platform, arch, variant: 'bundled', version: fields.text('version', platform === 'darwin' ? VERSION : /^\d+\.\d+\.\d+\.\d+$/), identity: fields.text('identity'),
     artifact: { key: channelKey(artifact.text('key')), sha256: artifact.text('sha256', SHA256), size: artifact.integer('size') },
     publisher: fields.optional('publisher'), teamId: fields.optional('teamId', /^[A-Z0-9]{10}$/),
     feed: { key: channelKey(feed.text('key')), channel: feed.text('channel', /^[a-z][a-z0-9-]{0,31}$/) }
   }
 }
 
-function coverageEntry(value: unknown): ChannelCoverage {
-  const fields = new Fields(value)
-  const platform = fields.text('platform')
-  const arch = fields.text('arch')
-  if ((platform !== 'darwin' && platform !== 'win32') || (arch !== 'x64' && arch !== 'arm64')) {
-    throw new Error('Unsupported retirement platform')
-  }
-  const entries: unknown = fields.get('cohorts')
-  if (!Array.isArray(entries) || !entries.length) { throw new Error('Retirement has no qualified cohorts') }
-  const cohorts = entries.map((entry: unknown): ChannelCohort => {
-    const cohort = new Fields(entry)
-    return { buildId: cohort.text('buildId', BUILD_ID), commit: cohort.text('commit', COMMIT) }
-  })
-  if (new Set(cohorts.map((cohort: ChannelCohort): string => cohort.buildId)).size !== cohorts.length) {
-    throw new Error('Duplicate retirement cohort')
-  }
-  return { platform, arch, sourceIdentity: fields.text('sourceIdentity'),
-    destinationIdentity: fields.text('destinationIdentity'), cohorts }
-}
-
-export function decodeChannelQualification(body: string): ChannelQualification {
-  const fields = new Fields(parseChannelJson(body))
-  fields.schema()
-  if (fields.get('receiverProtocol') !== 1) { throw new Error('Unsupported retirement receiver') }
-  const entries: unknown = fields.get('coverage')
-  if (!Array.isArray(entries) || !entries.length || entries.length > 4) { throw new Error('Missing retirement platform coverage') }
-  const coverage: ChannelCoverage[] = entries.map(coverageEntry)
-  if (new Set(coverage.map((entry: ChannelCoverage): string => `${entry.platform}/${entry.arch}`)).size !== coverage.length) {
-    throw new Error('Duplicate retirement platform coverage')
-  }
-  return {
-    schema: 1, receiverProtocol: 1, coverage,
-    source: validateChannelName(fields.text('source')), sourceHead: head(fields.get('sourceHead')),
-    destination: validateChannelName(fields.text('destination')), destinationHead: requiredHead(fields.get('destinationHead')),
-    minimumVersion: fields.text('minimumVersion', VERSION)
-  }
-}
 
 export function decodeChannelManifest(body: string): ChannelManifest {
   const fields = new Fields(parseChannelJson(body))
@@ -317,5 +264,7 @@ export function decodeChannelManifest(body: string): ChannelManifest {
   const packages: ChannelPackage[] = entries.map(packageEntry)
   const keys = new Set(packages.map((entry: ChannelPackage): string => `${entry.platform}/${entry.arch}`))
   if (keys.size !== packages.length) { throw new Error('Duplicate channel package') }
-  return { schema: 1, request: request(fields.object('request')), packages }
+  const manifest: ChannelManifest = { schema: 1, request: request(fields.object('request')), packages }
+  if (fields.get('receiverProtocol') !== undefined) { manifest.receiverProtocol = fields.integer('receiverProtocol') }
+  return manifest
 }

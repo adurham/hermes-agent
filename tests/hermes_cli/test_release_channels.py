@@ -17,7 +17,7 @@ object_server, publisher = _fixture.object_server, _fixture.publisher
 def seed_manifest(pub, request, objects):
     from hermes_cli.release_channels import build_prefix, canonical_json
     key = build_prefix(request["buildId"]) + "build.json"
-    manifest = {"schema": 1, "request": request, "packages": [{"platform": "darwin", "arch": "arm64", "variant": "bundled",
+    manifest = {"schema": 1, "receiverProtocol": 1, "request": request, "packages": [{"platform": "darwin", "arch": "arm64", "variant": "bundled",
         "artifact": {"key": build_prefix(request["buildId"]) + "darwin/package.zip", "sha256": "f" * 64, "size": 123},
         "version": request["version"], "identity": request["identity"]["appId"], "teamId": "ABCDEFGHIJ",
         "feed": {"key": build_prefix(request["buildId"]) + "darwin/stable-mac.yml", "channel": "stable"}}]}
@@ -38,23 +38,23 @@ def test_resolve_verifies_exact_manifest_and_preserves_retirement_constraints():
         for name in ("old-preview", "next-preview"):
             pub.create(name)
         request = pub.allocate("next-preview", "a" * 40, "1.2.3")
+        request.update(version="1.2.3", windowsVersion="1.2.3.0", releaseTag="v1.2.3")
         manifest, record = seed_manifest(pub, request, objects)
+        record["policy"] = "stable-release"
+        objects["releases/channels/next-preview.json"] = canonical_json(record)
         reader = ChannelReader(url + "/bucket", repository="example/hermes-agent")
         assert reader.resolve("next-preview").manifest == manifest
         old = pub._read("old-preview")[0]
-        qualification = {"schema": 1, "source": "old-preview", "sourceHead": None, "destination": "next-preview",
-                         "destinationHead": record["head"], "minimumVersion": "1.0.0"}
-        raw = canonical_json(qualification)
-        objects["releases/channel-builds/" + request["buildId"] + "/retirement.json"] = raw
         old.update(state="retired", destination="next-preview", minimumVersion="1.0.0",
-                   compatibilityKey="releases/channel-builds/" + request["buildId"] + "/retirement.json",
-                   compatibilitySha256=hashlib.sha256(raw).hexdigest(), lastHead=None)
+                   destinationHead=record["head"], receiverProtocol=1, lastHead=None)
         objects["releases/channels/old-preview.json"] = canonical_json(old)
         resolved = reader.resolve("old-preview")
         assert resolved.requested == old and resolved.terminal == record
-        assert resolved.constraints[0]["minimumVersion"] == "1.0.0"
+        assert resolved.requested["minimumVersion"] == "1.0.0"
         # Retirement pins the qualified destination, not an unqualified later head.
-        newer = pub.allocate("next-preview", "b" * 40, "1.3.0")
+        newer = dict(request, buildId="f" * 32, sequence=2, sourceVersion="1.3.0", version="1.3.0", windowsVersion="1.3.0.0", releaseTag="v1.3.0")
+        record["nextSequence"] = 3
+        objects["releases/channels/next-preview.json"] = canonical_json(record)
         seed_manifest(pub, newer, objects)
         after_advance = reader.resolve("old-preview")
         assert after_advance.manifest == manifest
@@ -93,7 +93,7 @@ def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
             reader.resolve("alpha")
         record["repository"] = "example/hermes-agent"
         record.update(state="retired", destination="alpha", minimumVersion="1.0.0", lastHead=record["head"],
-                      compatibilityKey="releases/retirement.json", compatibilitySha256="a" * 64)
+                      destinationHead=record["head"], receiverProtocol=1)
         objects["releases/channels/alpha.json"] = canonical_json(record)
         with pytest.raises(ChannelError, match="cycle"):
             reader.resolve("alpha")
@@ -109,7 +109,7 @@ def test_legacy_bootstrap_uses_real_archive_keys_and_source_main_has_no_bundle()
         for name, policy, tag in [("stable", "stable-release", "v2.0.0"), ("canary", "canary-release", "v2.1.0-canary.20260913000100")]:
             legacy = deepcopy(manifest)
             legacy["request"].update(channel=name, buildId=("a" if name == "stable" else "b") * 32,
-                                     releaseTag=tag, version=tag[1:], windowsVersion="2.0.0.0")
+                                     releaseTag=tag, version=tag[1:], windowsVersion="2.0.0.0" if name == "stable" else "2.1.0.10")
             legacy["packages"][0].update(version=tag[1:])
             legacy["packages"][0]["artifact"]["key"] = f"releases/tag/{tag}/actual.zip"
             legacy["packages"][0]["feed"]["key"] = f"releases/tag/{tag}/stable-mac.yml"
@@ -120,6 +120,13 @@ def test_legacy_bootstrap_uses_real_archive_keys_and_source_main_has_no_bundle()
             pub.bootstrap(record, legacy, publish=True)
             assert pub.reader.resolve(name).manifest == legacy
             assert pub.request(legacy["request"]["buildId"]) == legacy["request"]
+            from hermes_cli.release_channels import validate_request
+            invalid_versions = ["2.1.0.65536", "65536.1.0.0", "2.1.0.-1", "2.1.0.1.0", "2.1.0.x"]
+            if policy == "stable-release":
+                invalid_versions.append("2.0.0.10")
+            for windows_version in invalid_versions:
+                with pytest.raises(ChannelError, match="Windows version"):
+                    validate_request(dict(legacy["request"], windowsVersion=windows_version), policy=policy)
             with pytest.raises(ChannelError, match="Protected"):
                 pub.promote(legacy["request"]["buildId"])
             with pytest.raises(ChannelError, match="Protected"):
@@ -158,14 +165,12 @@ def test_malformed_record_and_unqualified_retirement_never_resolve():
         objects["releases/channels/preview.json"] = canonical_json(record)
         pub.create("destination")
         request = pub.allocate("destination", "a" * 40, "1.0.0")
+        request.update(version="1.0.0", windowsVersion="1.0.0.0", releaseTag="v1.0.0")
         _, target = seed_manifest(pub, request, objects)
-        qualification = {"schema": 1, "source": "preview", "sourceHead": None,
-                         "destination": "destination", "destinationHead": target["head"], "minimumVersion": "2.0.0"}
-        raw = canonical_json(qualification)
-        key = "releases/channel-builds/" + request["buildId"] + "/retirement.json"
-        objects[key] = raw
+        target["policy"] = "stable-release"
+        objects["releases/channels/destination.json"] = canonical_json(target)
         record.update(state="retired", destination="destination", minimumVersion="2.0.0", lastHead=None,
-                      compatibilityKey=key, compatibilitySha256=hashlib.sha256(raw).hexdigest())
+                      destinationHead=target["head"], receiverProtocol=1)
         objects["releases/channels/preview.json"] = canonical_json(record)
         with pytest.raises(ChannelError, match="minimum version"):
             pub.reader.resolve("preview")

@@ -125,6 +125,17 @@ before the channel head advances.
 
 Preview a custom build, then explicitly dispatch it:
 
+For an official release-authority remote, use the existing publisher configuration.
+Fork channel administration requires a disposable allocation first; even a local
+command refuses to read or write the unscoped release namespace. Dispatch the
+desktop workflow with `disposable_channel` and `build_commit`, then use the exact
+scoped build command in its summary. For local administration of that allocation,
+carry its `R2_DISPOSABLE_RUN` and `GITHUB_REPOSITORY_ID` in the command environment,
+with the configured public URL still at the unscoped root. These are test-run
+inputs, not persistent application settings; the repository ID is checked against
+the selected remote before credentials are read. The examples using `fork` below
+assume that allocation scope is present.
+
 ```sh
 python scripts/release.py --channel pm-preview --build-commit my-branch --remote fork
 python scripts/release.py --channel pm-preview --build-commit my-branch --remote fork --publish
@@ -139,18 +150,25 @@ Conditional writes reject stale publication and permanently retired channels.
 Use the printed build ID and request digest with `--resume-channel-build` and
 `--request-sha256` to retry an admitted request rather than allocate another one.
 
-Retirement names an official destination and immutable native qualification:
+Retirement pins the current official stable build as the first receiver:
 
 ```text
-python scripts/release.py --retire-channel pm-preview --to stable --minimum-version VERSION --compatibility-key KEY --compatibility-sha256 SHA256 --remote fork
+python scripts/release.py --retire-channel pm-preview --to stable --minimum-version VERSION --remote fork
 ```
 
 Add `--publish` only after reviewing the dry run and the exact native acceptance
 evidence. This does not rebuild stable under the preview identity or silently
 uninstall clients. Protocol-aware clients offer a consented cross-application
 handoff; the destination must confirm readiness before preview removal. Keep
-the retirement object and qualified artifacts available for offline clients.
+the retirement object and pinned artifacts available for offline clients.
 Existing one-off builds have no retirement reader and require replacement.
+
+The destination manifest must declare receiver support read from its packaged
+stamp. The existing protected release workflow owns acceptance; there is no
+separate public certification document or dependency on expiring Actions artifacts.
+Native signature and identity checks, recipient consent, preserved-state preflight,
+and destination readiness remain mandatory. An offline preview reaches its pinned
+first receiver even after stable advances; that app then updates through stable.
 
 Before shipping R2-only source readers, seed the existing `main` source-branch
 record and published stable/canary records through the explicit protected

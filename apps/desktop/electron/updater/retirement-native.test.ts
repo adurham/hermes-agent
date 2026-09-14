@@ -1,12 +1,18 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, expect, test } from 'vitest'
 
-import { assertRetirementStamp, assertRunningRetirementStamp, verifyRetirementArtifact } from './retirement-native'
+import { assertRetirementStamp, assertRunningRetirementStamp } from './retirement-native'
+import { downloadPinnedArtifact, verifyPinnedArtifact } from './artifact'
+import { verifyPreparedChannelInstaller } from './channel-windows-host'
+import type { ChannelTarget } from './channel'
+import type { NativeCommandResult } from './retirement-native'
 import { snapshotRetirementHome } from './retirement-preservation'
 import type { RetirementDestination } from './retirement-state'
 
@@ -31,7 +37,7 @@ test('snapshot includes WAL-backed state and private config without copying Elec
   try {
     const snapshot: string = await snapshotRetirementHome(home, path.join(directory, 'snapshot'), {
       python: 'python3',
-      backupScript: path.resolve('../../hermes_cli/backup_sqlite.py')
+      repo: path.resolve('../..'), sitePackages: ''
     })
 
     const copied: DatabaseSync = new DatabaseSync(path.join(snapshot, 'state.db'), { readOnly: true })
@@ -46,6 +52,52 @@ test('snapshot includes WAL-backed state and private config without copying Elec
   } finally {
     database.close()
   }
+})
+
+test('ordinary Windows preparation owns temporary bytes while retirement retains its resumable download', async (): Promise<void> => {
+  const directory: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-artifact-lifetime-'))
+  directories.push(directory)
+  const bytes: Buffer = Buffer.from('digest-bound download')
+  const server = createServer((_request, response): void => { response.end(bytes) })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  if (!address || !(address instanceof Object)) { throw new Error('Expected TCP server') }
+  const url: string = `http://127.0.0.1:${address.port}/stable.msixbundle`
+  const identity = { token: 'a'.repeat(16), displayName: 'Preview', appId: 'chat.nous.preview', appNamePascal: 'Preview',
+    artifactNamePascal: 'Preview', cliName: 'preview', windowsExecutableName: 'preview', msixAppIdWithOrg: 'NousResearch.Preview' }
+  const target: ChannelTarget = {
+    channel: { schema: 1, state: 'active', name: 'preview', repository: 'NousResearch/hermes-agent', policy: 'preview',
+      revision: 1, nextSequence: 2, head: null, identity },
+    manifest: { schema: 1, packages: [], request: { schema: 1, buildId: 'b'.repeat(32), channel: 'preview', sequence: 1,
+      repository: 'NousResearch/hermes-agent', commit: 'c'.repeat(40), sourceVersion: '1.0.0', version: '0.0.1',
+      windowsVersion: '0.0.1.0', identity, bundleEnv: {}, publicBase: 'https://example.com' } },
+    package: { platform: 'win32', arch: 'x64', variant: 'bundled', version: '0.0.1.0', identity: identity.msixAppIdWithOrg,
+      publisher: 'CN=Test', artifact: { key: 'stable.msixbundle', sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length },
+      feed: { key: 'stable.appinstaller', channel: 'stable' } },
+    artifactUrl: url, feedUrl: 'https://example.com/stable.appinstaller', manifestSha256: 'd'.repeat(64)
+  }
+  try {
+    const file: string = path.join(directory, 'stable.appinstaller')
+    await writeFile(file, 'native descriptor checked by command')
+    const command = async (_script: string, input: string): Promise<NativeCommandResult> => {
+      const payload: { artifact: string } = JSON.parse(input)
+      expect(await readFile(payload.artifact)).toEqual(bytes)
+      return { stdout: '', stderr: '' }
+    }
+    await verifyPreparedChannelInstaller(file, target, command)
+    expect(await readdir(directory)).toEqual(['stable.appinstaller'])
+    await expect(verifyPreparedChannelInstaller(file, target, async (): Promise<never> => {
+      throw new Error('native signature refused')
+    })).rejects.toThrow('signature refused')
+    expect(await readdir(directory)).toEqual(['stable.appinstaller'])
+    const durable: string = path.join(directory, 'retirement')
+    await mkdir(durable, { mode: 0o700 })
+    const artifact = { url, sha256: target.package.artifact.sha256, size: bytes.length, format: 'msixbundle' as const }
+    const downloaded: string = await downloadPinnedArtifact(durable, artifact)
+    expect(await downloadPinnedArtifact(durable, artifact)).toBe(downloaded)
+    expect(await readFile(downloaded)).toEqual(bytes)
+  } finally { server.close(); await once(server, 'close') }
 })
 
 test('native preparation rejects bytes changed after download and wrong stamped commit or owner', async (): Promise<void> => {
@@ -74,9 +126,9 @@ test('native preparation rejects bytes changed after download and wrong stamped 
   }
 
   expect((): void => assertRunningRetirementStamp(target)).toThrow('baked stamp')
-  await expect(verifyRetirementArtifact(artifact, target.artifact)).resolves.toBeUndefined()
+  await expect(verifyPinnedArtifact(artifact, target.artifact)).resolves.toBeUndefined()
   await writeFile(artifact, Buffer.alloc(bytes.length))
-  await expect(verifyRetirementArtifact(artifact, target.artifact)).rejects.toThrow('digest')
+  await expect(verifyPinnedArtifact(artifact, target.artifact)).rejects.toThrow('digest')
   const stamp: string = path.join(directory, 'install-stamp.json')
   await writeFile(
     stamp,
@@ -85,10 +137,18 @@ test('native preparation rejects bytes changed after download and wrong stamped 
       payload: 'bundled',
       distribution: 'desktop-app',
       dirty: false,
+      receiverProtocol: 1,
+      source: 'build',
+      tag: 'v1.0.0',
       updateMechanism: 'electron-updater'
     })
   )
   await expect(assertRetirementStamp(stamp, target)).resolves.toBeUndefined()
+  const accepted = JSON.parse(await readFile(stamp, 'utf8'))
+  for (const invalid of [{ tag: null }, { tag: 'v1.0.0-canary.20260913' }, { source: 'channel-build' }, { channelBuild: {} }]) {
+    await writeFile(stamp, JSON.stringify({ ...accepted, ...invalid }))
+    await expect(assertRetirementStamp(stamp, target)).rejects.toThrow('stamp')
+  }
   await writeFile(
     stamp,
     JSON.stringify({

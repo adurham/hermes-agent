@@ -2521,6 +2521,8 @@ export const zhHant = defineLocale({
   },
 
   updates: {
+    retirementKeepStable: '保留穩定版現有的工作區',
+    retirementOpenPreview: '在穩定版中開啟此預覽版工作區',
     channels: { stable: '穩定版', canary: '預覽版' },
     bundleSwapPending: '重新啟動以完成更新',
     bundleSwapPendingDesc: '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',

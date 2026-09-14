@@ -23,6 +23,11 @@ def sha256_file(file: Path) -> str:
 
 
 def stamp_matches(stamp: dict, tag: str, commit: str, *, channel_request: dict | None = None) -> None:
+    if channel_request is not None and channel_request.get("receiverCandidate"):
+        if (stamp.get("channelBuild") is not None or stamp.get("source") != "build"
+                or stamp.get("receiverProtocol") != 1 or stamp.get("displayVersion") != channel_request["version"]):
+            raise ValueError("Receiver candidate must use ordinary stable update ownership")
+        tag, channel_request = channel_request["releaseTag"], None
     if channel_request is not None:
         if (stamp.get("source") != "channel-build" or stamp.get("channelBuild") != channel_request
                 or stamp.get("commit") != channel_request["commit"] or stamp.get("tag")):
@@ -39,6 +44,19 @@ def single(items):
     return items[0]
 
 
+def desktop_application(manifest: ET.Element, channel_request: dict | None) -> ET.Element:
+    # CLI aliases are separate hidden Applications, not extra desktop entries.
+    applications = manifest.findall("{*}Applications/{*}Application")
+    visible = [app for app in applications if (
+        (visual := app.find("{*}VisualElements")) is None or visual.get("AppListEntry") != "none")]
+    application = single(visible)
+    if channel_request is not None:
+        expected = channel_request["identity"]["appNamePascal"]
+        if application.get("Id") != expected or sum(app.get("Id") == expected for app in applications) != 1:
+            raise ValueError("Desktop application ID differs from channel request")
+    return application
+
+
 def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Path,
            *, channel_request: dict | None = None) -> None:
     """Read identities from the built packages, never from the workflow matrix."""
@@ -48,13 +66,16 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         with zipfile.ZipFile(package) as archive:
             manifest = ET.fromstring(archive.read("AppxManifest.xml"))
             identity = manifest.find("{*}Identity")
-            application = single(manifest.findall("{*}Applications/{*}Application"))
+            application = desktop_application(manifest, channel_request)
             stamp_name = single(n for n in archive.namelist() if n.replace("\\", "/").endswith("/resources/install-stamp.json"))
-            stamp_matches(json.loads(archive.read(stamp_name)), tag, commit, channel_request=channel_request)
+            stamp = json.loads(archive.read(stamp_name))
+            stamp_matches(stamp, tag, commit, channel_request=channel_request)
         if identity.attrib["ProcessorArchitecture"].lower() != arch:
             raise ValueError("MSIX architecture differs from release target")
         row.update(identity=identity.attrib["Name"], publisher=identity.attrib["Publisher"],
                    applicationId=application.attrib["Id"], version=identity.attrib["Version"])
+        if stamp.get("receiverProtocol") == 1:
+            row["receiverProtocol"] = 1
     elif platform == "macos":
         package = single(root.glob(f"*-mac-{arch}.zip"))
         app = single(root.glob("mac*/*.app"))
@@ -67,6 +88,8 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
             info = plistlib.loads(archive.read(single(n for n in archive.namelist() if re.fullmatch(r"[^/]+\.app/Contents/Info.plist", n))))
             stamp = json.loads(archive.read(single(n for n in archive.namelist() if re.fullmatch(r"[^/]+\.app/Contents/Resources/install-stamp.json", n))))
         stamp_matches(stamp, tag, commit, channel_request=channel_request)
+        if stamp.get("receiverProtocol") == 1:
+            row["receiverProtocol"] = 1
         row.update(identity=info["CFBundleIdentifier"], teamId=team.group(1), version=info["CFBundleShortVersionString"], filename=package.name)
         if row["version"] != (channel_request["version"] if channel_request else tag[1:]):
             raise ValueError("App version differs from release tag")
@@ -92,6 +115,23 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         row["request"] = channel_request
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(row, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+def validate_windows_bundle(bundle: Path, windows: list[dict]) -> None:
+    if sorted(row["arch"] for row in windows) != ["arm64", "x64"]:
+        raise ValueError("Windows metadata must include both architectures")
+    for field in ("identity", "publisher", "version", "applicationId"):
+        if not windows[0].get(field) or windows[0][field] != windows[1].get(field):
+            raise ValueError(f"Windows packages disagree on {field}")
+    with zipfile.ZipFile(bundle) as archive:
+        manifest = ET.fromstring(archive.read("AppxMetadata/AppxBundleManifest.xml"))
+    identity = manifest.find("{*}Identity")
+    if identity is None or any(identity.get(attr) != windows[0][field] for attr, field in
+                               (("Name", "identity"), ("Publisher", "publisher"), ("Version", "version"))):
+        raise ValueError("Universal bundle identity does not match its packages")
+    if sorted(p.get("Architecture", "") for p in manifest.findall("{*}Packages/{*}Package")
+              if p.get("Type") == "application") != ["arm64", "x64"]:
+        raise ValueError("Universal bundle must cover both architectures")
 
 
 def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
@@ -124,17 +164,7 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
     universal_name = single(name for name in by_name if name.endswith(".msixbundle") and not name.startswith("Store-"))
     single(name for name in by_name if name.endswith(".msixbundle") and name.startswith("Store-"))
     windows = [r for r in rows if r["platform"] == "windows"]
-    if sorted(r["arch"] for r in windows) != ["arm64", "x64"]:
-        raise ValueError("Windows metadata must include both architectures")
-    for field in ("identity", "publisher", "version", "applicationId"):
-        if len({r[field] for r in windows}) != 1:
-            raise ValueError(f"Windows packages disagree on {field}")
-    with zipfile.ZipFile(root / universal_name) as archive:
-        manifest = ET.fromstring(archive.read("AppxMetadata/AppxBundleManifest.xml"))
-        identity = manifest.find("{*}Identity")
-        for attr, field in (("Name", "identity"), ("Publisher", "publisher"), ("Version", "version")):
-            if identity.attrib[attr] != windows[0][field]:
-                raise ValueError("Universal bundle identity does not match its packages")
+    validate_windows_bundle(root / universal_name, windows)
     files = [{**row, "url": f"{public_base.rstrip('/')}/{staging_key_for(tag, name)}"}
              for name, row in sorted(by_name.items()) if not name.startswith("metadata-")]
     by_name = {item["path"]: item for item in files}

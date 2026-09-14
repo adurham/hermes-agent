@@ -1,11 +1,12 @@
-import path from 'node:path'
+import { runRetirementPowerShell } from './retirement-discovery'
+import { downloadPinnedArtifact } from './artifact'
+import { channelPublicBase } from './channel-protocol'
+import { win32AppInstallerFeedPath } from '../app-updater'
 
 import { assertNativeRetirementRemoval, type RetirementNativeAdapter } from './retirement'
 import {
   assertRunningRetirementStamp,
-  downloadRetirementArtifact,
-  type NativeCommandResult,
-  runRetirementCommand
+  type NativeCommandResult
 } from './retirement-native'
 import { retirementArgument } from './retirement-receiver'
 import { canonicalRetirementPath, type RetirementJournal, type RetirementRequest } from './retirement-state'
@@ -15,7 +16,7 @@ interface WindowsInstalled {
   packageFullName: string
   appPath: string
 }
-type WindowsOperation = 'install' | 'verify' | 'activate' | 'remove' | 'removed'
+type WindowsOperation = 'install' | 'register-updater' | 'verify' | 'activate' | 'remove' | 'removed'
 
 // AppX cmdlets and manifest/signature checks follow windows-bundle-smoke.ps1.
 // The activation COM ABI is IApplicationActivationManager from shobjidl_core.h.
@@ -71,8 +72,24 @@ function Assert-NoProcesses($pkg) {
   $live = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($pkg.InstallLocation.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) })
   if ($live.Count) { throw 'Package has live processes; lifecycle owner must stop them' }
 }
-function Assert-Destination {
+function Assert-Updater($pkg) {
+  $manager=[Windows.Management.Deployment.PackageManager,Windows.Management.Deployment,ContentType=WindowsRuntime]::new()
+  $native=$manager.FindPackageForUser('', $pkg.PackageFullName)
+  $source=$native.GetAppInstallerInfo()
+  if (-not $source -or $source.Uri.AbsoluteUri -cne $p.appInstallerUri) { throw 'Stable App Installer update source mismatch' }
+}
+function Register-Updater {
+  $pkg=Get-ExactPackage $d $true
+  Assert-Sideload $pkg
+  # Register metadata only: never open a mutable .appinstaller during the
+  # pinned handoff. Automatic deployment stays off until an ordinary update.
+  Set-AppxPackageAutoUpdateSettings -PackageFamilyName $d.packageFamilyName -AppInstallerUri $p.appInstallerUri -Version $d.nativeVersion -UpdateUris @() -RepairUris @() -OptionalPackages @() -DependencyPackages @() -EnableAutomaticBackgroundTask:$false -ForceUpdateFromAnyVersion:$false -DisableAutoRepairs -CheckOnLaunch:$false -ShowPrompt:$false -UpdateBlocksActivation:$false -UseSystemPolicySource:$false -HoursBetweenUpdateChecks 12 -ErrorAction Stop | Out-Null
+  Assert-Updater $pkg
+}
+function Assert-Destination([bool]$requireUpdater=$true) {
   $pkg = Get-ExactPackage $d $true
+  Assert-Sideload $pkg
+  if ($requireUpdater) { Assert-Updater $pkg }
   if ($pkg.Version.ToString() -cne $d.nativeVersion -or $pkg.PackageFamilyName -cne $d.packageFamilyName -or $pkg.InstallLocation -ine $d.appPath) { throw 'Installed destination binding mismatch' }
   $manifest = Get-AppxPackageManifest -Package $pkg.PackageFullName
   $apps = @($manifest.Package.Applications.Application | Where-Object { $_.Id -ceq $d.applicationId })
@@ -80,15 +97,16 @@ function Assert-Destination {
   $exe = [IO.Path]::GetFullPath((Join-Path $pkg.InstallLocation $apps[0].Executable))
   if (-not $exe.StartsWith($pkg.InstallLocation.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Invalid registered executable' }
   $stamp = Get-Content -Raw -LiteralPath (Join-Path (Split-Path -Parent $exe) 'resources\install-stamp.json') | ConvertFrom-Json
-  if ($stamp.commit -cne $d.commit -or $stamp.payload -cne 'bundled' -or $stamp.distribution -cne 'desktop-app' -or $stamp.dirty -ne $false -or $stamp.updateMechanism -cne 'app-installer') { throw 'Destination stamp mismatch' }
+  if ($stamp.commit -cne $d.commit -or $stamp.payload -cne 'bundled' -or $stamp.distribution -cne 'desktop-app' -or $stamp.dirty -ne $false -or $stamp.receiverProtocol -ne 1 -or $stamp.updateMechanism -cne 'app-installer') { throw 'Destination stamp mismatch' }
   return @{ executable=$exe; packageFullName=$pkg.PackageFullName; appPath=$pkg.InstallLocation }
 }
 $d = $p.request.destination
 switch ($p.operation) {
   'install' {
+    Get-Command Set-AppxPackageAutoUpdateSettings -ErrorAction Stop | Out-Null
     $existing = Get-ExactPackage $d $false
     if ($existing -and $existing.Version.ToString() -ceq $d.nativeVersion) {
-      Assert-Destination | ConvertTo-Json -Compress
+      Assert-Destination $false | ConvertTo-Json -Compress
       break
     }
     if ($existing) {
@@ -97,8 +115,14 @@ switch ($p.operation) {
       Assert-NoProcesses $existing
     }
     Assert-Artifact
-    Add-AppxPackage -Path $p.artifact -ErrorAction Stop
-    Assert-Destination | ConvertTo-Json -Compress
+    $volumes=@(Get-AppxVolume | Where-Object { $_.PackageStorePath.TrimEnd('\') -ieq (Split-Path -Parent $d.appPath) -and -not $_.IsOffline })
+    if ($volumes.Count -ne 1) { throw 'Pinned native destination volume is unavailable' }
+    Add-AppxPackage -Path $p.artifact -Volume $volumes[0] -ErrorAction Stop
+    Assert-Destination $false | ConvertTo-Json -Compress
+  }
+  'register-updater' {
+    Assert-Destination $false | Out-Null
+    Register-Updater
   }
   'verify' { Assert-Destination | ConvertTo-Json -Compress }
   'activate' {
@@ -149,7 +173,7 @@ public static class RetirementActivation {
       }
     }
     $sourceStamp = Get-Content -Raw -LiteralPath (Join-Path (Split-Path -Parent $p.request.source.executable) 'resources\install-stamp.json') | ConvertFrom-Json
-    if ($sourceStamp.commit -cne $p.request.qualification.sourceCommit -or $sourceStamp.distribution -cne 'desktop-app' -or $sourceStamp.payload -cne 'bundled' -or $sourceStamp.updateMechanism -cne 'app-installer') { throw 'Preview source stamp mismatch' }
+    if ($sourceStamp.commit -cne $p.request.sourceBuild.commit -or $sourceStamp.distribution -cne 'desktop-app' -or $sourceStamp.payload -cne 'bundled' -or $sourceStamp.updateMechanism -cne 'app-installer') { throw 'Preview source stamp mismatch' }
     Assert-NoProcesses $source
     Remove-AppxPackage -Package $source.PackageFullName -ErrorAction Stop
     if (Get-ExactPackage $p.request.source $false) { throw 'Preview package remains registered' }
@@ -161,14 +185,25 @@ public static class RetirementActivation {
 }
 `
 
+function retirementAppInstallerUri(request: RetirementRequest): string {
+  const build = request.sourceBuild
+  const base: string = channelPublicBase(build.publicBase)
+  if (!request.destination.artifact.url.startsWith(`${base}/`) ||
+      new URL(request.destination.artifact.url).origin !== new URL(base).origin) {
+    throw new Error('Retirement artifact authority mismatch')
+  }
+  return `${base}/releases/${win32AppInstallerFeedPath('stable', false)}stable.appinstaller`
+}
+
 export class WindowsRetirementAdapter implements RetirementNativeAdapter {
+  constructor(private readonly command: (script: string, input: string) => Promise<NativeCommandResult> = runRetirementPowerShell) {}
   private async run(
     operation: WindowsOperation,
     request: RetirementRequest,
     artifact: string | null = null,
     journalDirectory: string | null = null
   ): Promise<string> {
-    if (process.platform !== 'win32' || request.destination.platform !== 'win32') {
+    if (request.destination.platform !== 'win32') {
       throw new Error('Native Windows retirement requires Windows')
     }
 
@@ -185,25 +220,23 @@ export class WindowsRetirementAdapter implements RetirementNativeAdapter {
       request,
       artifact,
       journalDirectory,
+      appInstallerUri: retirementAppInstallerUri(request),
       argument: retirementArgument(request.id, request.token),
       receiverExecutable: process.execPath
     })
 
     const script: string = `$p = [Console]::In.ReadToEnd() | ConvertFrom-Json\n${windowsNativeScript}`
 
-    const result: NativeCommandResult = await runRetirementCommand(
-      path.join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-      600_000,
-      payload
-    )
+    const result: NativeCommandResult = await this.command(script, payload)
 
     return result.stdout.trim()
   }
 
   async install(request: RetirementRequest, journal: RetirementJournal): Promise<void> {
-    const artifact: string = await downloadRetirementArtifact(journal, request.destination)
+    const artifact: string = await downloadPinnedArtifact(journal.directory, request.destination.artifact)
     await this.run('install', request, artifact)
+    await this.run('register-updater', request)
+    await this.verifyDestination(request)
   }
 
   async verifyDestination(request: RetirementRequest): Promise<void> {

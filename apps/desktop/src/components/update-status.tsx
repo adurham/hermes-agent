@@ -37,37 +37,53 @@ export interface UpdateStatusView {
   supported: boolean
 }
 
+function retirementStatus(
+  retirement: NonNullable<DesktopUpdateStatus['retirement']>,
+  applying: boolean,
+  supported: boolean,
+  u: Translations['updates']
+): UpdateStatusView {
+  const available: boolean = retirement.state === 'available' || retirement.state === 'cleanup-pending'
+  const line: string = applying ? u.retirementMoving : retirement.state === 'complete' ? u.retirementComplete : u.retirementTitle
+
+  return { applying, supported, updateAvailable: false, tone: available ? 'available' : 'error', line, error: retirement.message }
+}
+
 /**
  * One status derivation for every "am I up to date?" surface (About page,
  * updates overlay). Pure so the tone/copy contract is unit-testable.
  */
-export function deriveUpdateStatus({
-  apply,
-  checking,
-  status,
-  target,
-  u
-}: {
+interface UpdateStatusInput {
   apply: UpdateApplyState
   checking: boolean
   status: DesktopUpdateStatus | null
   target: UpdateTarget
   u: Translations['updates']
-}): UpdateStatusView {
+}
+
+export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
+  const { apply, status, target, u } = input
+
+  if (target === 'client' && status?.retirement) {
+    return retirementStatus(status.retirement, apply.applying || apply.stage === 'restart', status.supported !== false, u)
+  }
+
+  return ordinaryUpdateStatus(input)
+}
+
+function ordinaryUpdateStatus({
+  apply,
+  checking,
+  status,
+  target,
+  u
+}: UpdateStatusInput): UpdateStatusView {
   const behind = status?.behind ?? 0
   // behind is null when the exact count is unknowable (shallow clone): the
   // backend flags that case via updateAvailable instead of a number.
   const updateAvailable = behind > 0 || Boolean(status?.updateAvailable)
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
-
-  if (target === 'client' && status?.retirement) {
-    const retirement = status.retirement
-    const available: boolean = retirement.state === 'available' || retirement.state === 'cleanup-pending'
-    return { applying, supported, updateAvailable: false, tone: available ? 'available' : 'error',
-      line: applying ? u.retirementMoving : retirement.state === 'complete' ? u.retirementComplete : u.retirementTitle,
-      error: retirement.message }
-  }
 
   if (!supported) {
     return { applying, line: status?.message ?? u.unsupportedMessage, supported, tone: 'unsupported', updateAvailable }
@@ -206,6 +222,30 @@ export function VersionHero({
   )
 }
 
+interface UpdateActionsProps {
+  retirement: boolean
+  target: UpdateTarget
+  u: Translations['updates']
+  view: UpdateStatusView
+}
+
+function UpdateActions({ retirement, target, u, view }: UpdateActionsProps): ReactElement | null {
+  if (view.applying) { return null }
+
+  if (retirement) {
+    return <Button onClick={() => openUpdateOverlayFor('client')} size="sm">{u.retirementAction}</Button>
+  }
+
+  if (!view.updateAvailable || !view.supported) { return null }
+
+  return (
+    <>
+      <Button onClick={() => startActiveUpdate(target)} size="sm">{u.updateNow}</Button>
+      <Button onClick={() => openUpdateOverlayFor(target)} size="sm" variant="textStrong">{u.seeWhatsNew}</Button>
+    </>
+  )
+}
+
 /**
  * The bordered update-state card (status line, last-checked age, check /
  * update / release-notes actions) in the About page's visual language.
@@ -275,19 +315,7 @@ export function UpdateStatusCard({
             {checking ? u.checkingShort : u.checkNow}
           </Button>
 
-          {!isBackend && status?.retirement && !view.applying && (
-            <Button onClick={() => openUpdateOverlayFor('client')} size="sm">{u.retirementAction}</Button>
-          )}
-          {view.updateAvailable && view.supported && !view.applying && (
-            <>
-              <Button onClick={() => startActiveUpdate(target)} size="sm">
-                {u.updateNow}
-              </Button>
-              <Button onClick={() => openUpdateOverlayFor(target)} size="sm" variant="textStrong">
-                {u.seeWhatsNew}
-              </Button>
-            </>
-          )}
+          <UpdateActions retirement={!isBackend && Boolean(status?.retirement)} target={target} u={u} view={view} />
 
           {showReleaseNotes && (
             <Button asChild className="ml-auto" size="sm" variant="text">

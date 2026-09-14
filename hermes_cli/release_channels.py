@@ -11,7 +11,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MAX_SEQUENCE = 2**32 - 1
 MAX_METADATA = 4 * 1024 * 1024
-MAX_HOPS = 16
+
 _POLICIES = ("preview", "stable-release", "canary-release", "source-branch")
 _RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
              *(f"lpt{i}" for i in range(1, 10))}
@@ -151,7 +151,10 @@ def validate_request(value: object, *, repository: str | None = None,
         _match(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-canary\.[0-9]+)?", request.get("releaseTag"), "legacy release tag")
         if request.get("version") != request["releaseTag"][1:]:
             raise ChannelError("Legacy package version mismatch")
-        quad = _match(r"[0-9]+\.[0-9]+\.[0-9]+\.0", request.get("windowsVersion"), "Windows version")
+        # Canary revisions encode minutes since the stable baseline; only stable
+        # packages reserve revision zero.
+        pattern = r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" if policy == "canary-release" else r"[0-9]+\.[0-9]+\.[0-9]+\.0"
+        quad = _match(pattern, request.get("windowsVersion"), "Windows version")
         if any(int(part) > 65535 for part in quad.split(".")):
             raise ChannelError("Invalid Windows version")
     validate_identity(request.get("identity"))
@@ -212,8 +215,10 @@ def validate_record(value: object, *, name: str | None = None, repository: str |
     if record["state"] == "retired":
         validate_name(record.get("destination"))
         _match(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", record.get("minimumVersion"), "retirement minimum version")
-        artifact_key(record.get("compatibilityKey"))
-        require_sha256(record.get("compatibilitySha256"))
+        if _head(record.get("destinationHead")) is None:
+            raise ChannelError("Retirement requires a pinned destination head")
+        if type(record.get("receiverProtocol")) is not int or record["receiverProtocol"] != 1:
+            raise ChannelError("Unsupported retirement receiver protocol")
         if _head(record.get("lastHead")) != head:
             raise ChannelError("Retirement last head mismatch")
     return record
@@ -224,7 +229,7 @@ class ChannelResolution:
     requested: dict
     terminal: dict
     manifest: dict | None
-    constraints: tuple[dict, ...] = ()
+
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -264,51 +269,38 @@ class ChannelReader:
 
     def resolve(self, name: str) -> ChannelResolution:
         requested = record = self.read_record(name)
-        seen, retired = set(), []
-        while record["state"] == "retired":
-            if record["name"] in seen or record["destination"] in seen or record["destination"] == record["name"]:
+
+        if record["state"] == "retired":
+            if record["destination"] == name:
                 raise ChannelError("Channel retirement cycle")
-            seen.add(record["name"])
-            if len(seen) >= MAX_HOPS:
-                raise ChannelError("Channel retirement hop limit exceeded")
-            retired.append(record)
             record = self.read_record(record["destination"])
             if record["repository"].casefold() != requested["repository"].casefold():
                 raise ChannelError("Retirement repository authority mismatch")
-        constraints = tuple({"channel": item["name"], "destination": item["destination"],
-                             "minimumVersion": item["minimumVersion"],
-                             "compatibilityKey": item["compatibilityKey"],
-                             "compatibilitySha256": item["compatibilitySha256"],
-                             "qualification": decode_json(self.read_bytes(item["compatibilityKey"], item["compatibilitySha256"]))}
-                            for item in retired)
+            if record["state"] != "active" or record["policy"] != "stable-release":
+                raise ChannelError("Retirement requires a directly active stable-release destination")
         head = record["head"]
-        if constraints:
-            # Stable may advance while a preview is offline. Migrate to the exact
-            # qualified build first; its own subscription can then update normally.
-            head = _head(constraints[0]["qualification"].get("destinationHead"))
+        if requested["state"] == "retired":
+            # The first receiver stays pinned even when stable advances offline.
+            head = requested["destinationHead"]
             if head is None or record["head"] is None or head["sequence"] > record["head"]["sequence"]:
-                raise ChannelError("Invalid qualified retirement destination head")
+                raise ChannelError("Invalid retirement destination head")
         manifest = None if head is None else validate_manifest(
             decode_json(self.read_bytes(head["manifestKey"], head["sha256"])), {**record, "head": head}, self.base_url)
-        for item, constraint in zip(retired, constraints):
-            if manifest is None:
-                raise ChannelError("Retirement destination has no published build")
-            if item["destination"] != record["name"]:
-                raise ChannelError("Retirement chain requires direct terminal qualification")
+        if requested["state"] == "retired":
+            assert manifest is not None
+            if manifest.get("receiverProtocol") != requested["receiverProtocol"]:
+                raise ChannelError("Stable build has no supported retirement receiver")
             actual = tuple(map(int, manifest["request"]["sourceVersion"].split(".")))
-            floor = tuple(map(int, item["minimumVersion"].split(".")))
+            floor = tuple(map(int, requested["minimumVersion"].split(".")))
             if actual < floor:
                 raise ChannelError("Destination does not meet retirement minimum version")
-            expected = {"schema": 1, "source": item["name"], "sourceHead": item["lastHead"],
-                        "destination": record["name"], "destinationHead": head,
-                        "minimumVersion": item["minimumVersion"]}
-            if any(constraint["qualification"].get(field) != value for field, value in expected.items()):
-                raise ChannelError("Retirement qualification does not bind source, destination and floor")
-        return ChannelResolution(requested, record, manifest, constraints)
+        return ChannelResolution(requested, record, manifest)
 
 
 def validate_manifest(value: object, record: dict, base_url: str) -> dict:
     manifest = _schema(value)
+    if "receiverProtocol" in manifest:
+        _integer(manifest["receiverProtocol"], "receiver protocol", maximum=2**53 - 1)
     request = validate_request(manifest.get("request"), repository=record["repository"],
                                base_url=base_url, policy=record["policy"])
     if request["identity"] != record["identity"]:

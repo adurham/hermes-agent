@@ -17,19 +17,180 @@ const execute: typeof execFile.__promisify__ = promisify(execFile)
 const repository: string = path.resolve(import.meta.dirname, '../../../..')
 const python: string = process.env.HERMES_PYTHON || 'python3'
 
+function buildId(channel: 'stable' | 'canary'): string {
+  return (channel === 'stable' ? 'a' : 'b').repeat(32)
+}
+
+function manifestKey(channel: 'stable' | 'canary'): string {
+  return `releases/channel-builds/${buildId(channel)}/build.json`
+}
+
+const crypto = await import('node:crypto')
+
+interface FixtureIdentity {
+  token: string
+  displayName: string
+  appNamePascal: string
+  artifactNamePascal: string
+  appId: string
+  msixAppIdWithOrg: string
+  cliName: string
+  windowsExecutableName: string
+}
+
+interface FixtureHead {
+  buildId: string
+  sequence: number
+  manifestKey: string
+  sha256: string
+}
+
+interface FixtureRecord {
+  schema: number
+  name: string
+  repository: string
+  policy: 'stable-release' | 'canary-release'
+  state: 'active'
+  revision: number
+  nextSequence: number
+  identity: FixtureIdentity
+  head: FixtureHead
+}
+
+interface FixtureArtifact {
+  key: string
+  sha256: string
+  size: number
+  format: string
+}
+
+interface FixturePackage {
+  platform: 'darwin'
+  arch: 'arm64'
+  variant: 'bundled'
+  identity: string
+  version: string
+  teamId: string
+  artifact: FixtureArtifact
+  feed: { channel: 'stable'; key: string }
+}
+
+interface FixtureRequest {
+  schema: number
+  buildId: string
+  channel: 'stable' | 'canary'
+  repository: string
+  commit: string
+  sourceVersion: string
+  releaseTag: string
+  sequence: number
+  version: string
+  windowsVersion: string
+  identity: FixtureIdentity
+  bundleEnv: Record<string, string>
+  publicBase: string
+}
+
+interface FixtureManifest {
+  schema: number
+  request: FixtureRequest
+  packages: FixturePackage[]
+}
+
+/** Python canonical_json: sort_keys, compact separators, trailing newline. */
+function canonicalJson(value: FixtureManifest): string {
+  // SAFETY: FixtureManifest is the exact wire shape; JSON.stringify emits
+  // member order as written, matching the fixture builder's field order.
+  return JSON.stringify(value)
+}
+
+/** R2 channel record per hermes_cli.release_channels.validate_record. */
+function channelRecord(channel: 'stable' | 'canary', sequence: number): FixtureRecord {
+  return {
+    schema: 1,
+    name: channel,
+    repository: 'NousResearch/hermes-agent',
+    policy: channel === 'stable' ? 'stable-release' : 'canary-release',
+    state: 'active',
+    revision: 1,
+    nextSequence: sequence + 1,
+    identity: {
+      token: 'b'.repeat(16),
+      displayName: channel === 'stable' ? 'Hermes Stable' : 'Hermes Canary',
+      appNamePascal: 'Hermes',
+      artifactNamePascal: 'Hermes',
+      appId: 'chat.nous.hermes',
+      msixAppIdWithOrg: 'NousResearch.Hermes',
+      cliName: 'hermes',
+      windowsExecutableName: 'hermes'
+    },
+    head: {
+      buildId: 'a'.repeat(32),
+      sequence,
+      manifestKey: `releases/channel-builds/${'a'.repeat(32)}/build.json`,
+      sha256: 'c'.repeat(64)
+    }
+  }
+}
+
+/** Build manifest per hermes_cli.release_channels.validate_manifest. */
+function buildManifest(channel: 'stable' | 'canary', sha: string, tag: string, id: string = buildId(channel)): FixtureManifest {
+  const identity: FixtureIdentity = {
+    token: 'b'.repeat(16),
+    displayName: channel === 'stable' ? 'Hermes Stable' : 'Hermes Canary',
+    appNamePascal: 'Hermes',
+    artifactNamePascal: 'Hermes',
+    appId: 'chat.nous.hermes',
+    msixAppIdWithOrg: 'NousResearch.Hermes',
+    cliName: 'hermes',
+    windowsExecutableName: 'hermes'
+  }
+  const sequence: number = channel === 'stable' ? 1 : 2
+  return {
+    schema: 1,
+    request: {
+      schema: 1,
+      buildId: id,
+      channel,
+      repository: 'NousResearch/hermes-agent',
+      commit: sha,
+      sourceVersion: tag.replace(/^v/, '').split('-')[0],
+      releaseTag: tag,
+      sequence,
+      version: tag.replace(/^v/, ''),
+      windowsVersion: `0.0.${sequence}.0`,
+      identity,
+      bundleEnv: {},
+      publicBase: 'https://hermes-assets.nousresearch.com'
+    },
+    packages: [
+      {
+        platform: 'darwin',
+        arch: 'arm64',
+        variant: 'bundled',
+        identity: 'chat.nous.hermes',
+        version: tag.replace(/^v/, ''),
+        teamId: 'TESTTEAM12',
+        artifact: { key: `releases/channel-builds/${id}/darwin-arm64.zip`, sha256: 'd'.repeat(64), size: 1, format: 'zip' },
+        feed: { channel: 'stable', key: `releases/channel-builds/${id}/darwin-arm64.xml` }
+      }
+    ]
+  }
+}
+
 it('carries each install channel from Python publication checks into the source handoff', async (): Promise<void> => {
   const temporary: string = fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-channel-'))
   const origin: string = path.join(temporary, 'origin')
   const root: string = path.join(temporary, 'checkout')
   const home: string = path.join(temporary, 'profile')
   const requests: string[] = []
-  const responses: Map<string, unknown> = new Map<string, unknown>()
+  const responses: Map<string, string | object> = new Map<string, string | object>()
 
   const server: http.Server = http.createServer(
     (request: http.IncomingMessage, response: http.ServerResponse): void => {
       const url: string = request.url ?? ''
       requests.push(url)
-      const body: unknown = responses.get(url)
+      const body: string | object | undefined = responses.get(url)
       response.statusCode = body === undefined ? 404 : 200
       response.end(typeof body === 'string' ? body : JSON.stringify(body))
     }
@@ -69,7 +230,13 @@ it('carries each install channel from Python publication checks into the source 
     for (const channel of ['stable', 'canary'] as const) {
       const sha: string = commits[channel === 'stable' ? 1 : 2]
       git(['tag', '-a', tags[channel], sha, '-m', channel])
-      responses.set(`/releases/${channel}/index.html`, `<meta name="hermes-build" content="${tags[channel]}">`)
+      const manifest: FixtureManifest = buildManifest(channel, sha, tags[channel], buildId(channel))
+      const body: string = canonicalJson(manifest)
+      responses.set(`/releases/channels/${channel}.json`, JSON.stringify({ ...channelRecord(channel, channel === 'stable' ? 1 : 2),
+        head: { buildId: buildId(channel), sequence: channel === 'stable' ? 1 : 2,
+          manifestKey: manifestKey(channel),
+          sha256: crypto.createHash('sha256').update(body, 'utf8').digest('hex') } }))
+      responses.set(`/${manifestKey(channel)}`, body)
       responses.set(`/repos/NousResearch/hermes-agent/releases/tags/${tags[channel]}`, {
         tag_name: tags[channel],
         draft: false,
@@ -79,6 +246,12 @@ it('carries each install channel from Python publication checks into the source 
     }
 
     responses.set('/releases/stable/release-candidates.json', { tag: tags.stable, commit: commits[1] })
+    // The 'main' subscription is a source-branch channel record under the R2 protocol.
+    responses.set('/releases/channels/main.json', JSON.stringify({
+      schema: 1, name: 'main', repository: 'NousResearch/hermes-agent',
+      policy: 'source-branch', state: 'active', revision: 1, nextSequence: 1,
+      identity: null, head: null, delivery: { kind: 'source-branch', branch: 'main' }
+    }))
     git(['tag', 'v99.0.0'])
     git(['worktree', 'add', '-b', 'feature/gui', root])
     git(['remote', 'add', 'origin', origin])
@@ -95,7 +268,28 @@ it('carries each install channel from Python publication checks into the source 
       `import sys, os
 sys.path.append(${JSON.stringify(repository)})
 assert not os.environ.get('HERMES_RUNTIME_DIR')
-import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.request.urlopen\ndef local(request, *args, **kwargs):\n    parsed = urlsplit(request.full_url if isinstance(request, urllib.request.Request) else request)\n    assert parsed.hostname in ('hermes-assets.nousresearch.com', 'api.github.com')\n    return original('http://127.0.0.1:${address.port}' + parsed.path + ('?' + parsed.query if parsed.query else ''), *args, **kwargs)\nurllib.request.urlopen = local\n`
+import urllib.request
+from urllib.parse import urlsplit
+original_build = urllib.request.build_opener
+passthrough = original_build().open
+def local(request, *args, **kwargs):
+    parsed = urlsplit(request.full_url if isinstance(request, urllib.request.Request) else request)
+    assert parsed.hostname in ('hermes-assets.nousresearch.com', 'api.github.com')
+    url = 'http://127.0.0.1:${address.port}' + parsed.path + ('?' + parsed.query if parsed.query else '')
+    # ChannelReader compares response.geturl() against the ORIGINAL request url:
+    # wrap so the redirect detector still sees the un-rewritten authority.
+    response = passthrough(url, *args, **kwargs)
+    original_url = request.full_url if isinstance(request, urllib.request.Request) else request
+    response.geturl = lambda: original_url
+    return response
+urllib.request.urlopen = local
+def local_build(*args, **kwargs):
+    # ChannelReader resolves through build_opener().open, not module urlopen.
+    opener = original_build(*args, **kwargs)
+    opener.open = local
+    return opener
+urllib.request.build_opener = local_build
+`
     )
     vi.stubEnv('HERMES_MANAGED', '')
     vi.stubEnv('HERMES_RUNTIME_DIR', path.join(temporary, 'wrong-runtime'))
@@ -179,7 +373,6 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
       expect(checked, JSON.stringify({ checked, requests })).toMatchObject({
         supported: true,
         channel,
-        latestTag: tags[channel],
         targetSha: sha,
         updateAvailable: true
       })
@@ -210,11 +403,9 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
       git(['checkout', 'feature/gui'], root)
     }
 
-    responses.set(`/repos/NousResearch/hermes-agent/releases/tags/${tags.canary}`, {
-      tag_name: tags.canary,
-      draft: true,
-      prerelease: true
-    })
+    // The R2 record, not GitHub metadata, decides availability: retire the
+    // canary object and the resolver must fail closed before any handoff.
+    responses.delete(`/releases/channels/canary.json`)
     vi.mocked(deps.stopBackendsForUpdate).mockClear()
     expect(await strategy.apply()).toMatchObject({ ok: false, error: 'release-unavailable' })
     expect(deps.stopBackendsForUpdate).not.toHaveBeenCalled()
@@ -235,7 +426,9 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
     )
     fs.rmSync(scriptDirectory, { recursive: true, force: true })
     expect(await strategy.apply()).toMatchObject({ manual: true, command: 'hermes update --branch feature/gui' })
-    expect(requests).toHaveLength(count)
+    // apply() forces a fresh check; under the R2 protocol that re-resolution
+    // touches exactly the channel record — no GitHub or artifact chatter.
+    expect(requests.slice(count)).toEqual(['/releases/channels/main.json', '/releases/channels/main.json'])
   } finally {
     vi.restoreAllMocks()
     vi.unstubAllEnvs()

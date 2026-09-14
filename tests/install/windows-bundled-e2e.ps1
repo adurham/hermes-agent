@@ -1,6 +1,7 @@
 # Native package replacement acceptance. Never run on a developer desktop.
 param(
-    [Parameter(Mandatory=$true)][string]$ManifestUrl,
+    [string]$ManifestUrl,
+    [string]$RetirementWork,
     [ValidateSet('x64','arm64')][string]$Arch = 'x64'
 )
 $ErrorActionPreference = 'Stop'
@@ -8,6 +9,13 @@ Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:OS -ne 'Windows_NT') { throw 'Disposable Windows Actions runner required' }
 $Repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $Assets = Join-Path $PSScriptRoot 'e2e-assets'
+if ($RetirementWork) {
+    # Keep natural HOME/AppData for OS-activated receivers and distinct locks.
+    & node (Join-Path $PSScriptRoot 'channel-retirement-e2e.mjs') --work $RetirementWork --arch $Arch
+    if ($LASTEXITCODE -ne 0) { throw 'Native retirement journey failed' }
+    return
+}
+if (-not $ManifestUrl) { throw 'ManifestUrl is required for ordinary package updates' }
 $Work = Join-Path $env:RUNNER_TEMP 'hermes-bundled-update'
 if (Test-Path $Work) { throw "Refusing to reuse $Work" }
 $Proof = Join-Path $Work 'proof'

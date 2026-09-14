@@ -93,25 +93,7 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
     if resolved.manifest is None:
         raise ValueError(f"No build published for channel {destination}")
     request = resolved.manifest["request"]
-    if resolved.requested["state"] == "retired":
-        # Native identity floors across intermediate channels are incomparable.
-        # Until qualified directly, refuse a chain rather than discard a floor.
-        if len(resolved.constraints) != 1:
-            raise ValueError("Source retirement requires direct destination qualification")
-        constraint = resolved.constraints[0]
-        qualification = constraint["qualification"]
-        # The reader checks the qualified manifest's digest, not today's head.
-        # Its immutable build identity must remain the migration target.
-        qualified_head = qualification.get("destinationHead")
-        expected = {"schema": 1, "source": channel, "sourceHead": resolved.requested["head"],
-                    "destination": destination, "minimumVersion": constraint["minimumVersion"]}
-        if (constraint["channel"] != channel or constraint["destination"] != destination
-                or any(qualification.get(key) != value for key, value in expected.items())
-                or not isinstance(qualified_head, dict)
-                or any(qualified_head.get(key) != request[key] for key in ("buildId", "sequence"))):
-            raise ValueError("Source retirement qualification does not cover this destination")
-        if tuple(map(int, request["sourceVersion"].split("."))) < tuple(map(int, constraint["minimumVersion"].split("."))):
-            raise ValueError("Source retirement destination does not meet the minimum version")
+
     commit = request["commit"]
     if not isinstance(commit, str) or not _SHA.fullmatch(commit):
         raise ValueError("Channel build has no exact source commit")

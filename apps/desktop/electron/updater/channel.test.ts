@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
+
 import { afterEach, expect, test } from 'vitest'
 
-import { ChannelResolver } from './channel'
-import { ChannelStrategy } from './channel-strategy'
 import feedContract from '../../update-feed.cjs'
+
+import { ChannelResolver } from './channel'
 import type { ChannelBuild, ChannelManifest, ChannelRecord, RetiredChannel } from './channel-protocol'
+import { ChannelStrategy } from './channel-strategy'
+import type { RetirementConsent } from './retirement-state'
 
 const servers: Server[] = []
 afterEach(async (): Promise<void> => {
@@ -21,17 +24,21 @@ async function fixture(): Promise<{
 }> {
   const objects = new Map<string, string>()
   const requests: string[] = []
+
   const server = createServer((request, response): void => {
     requests.push(request.url!)
     const value = objects.get(request.url!)
     response.writeHead(value === undefined ? 404 : 200, { 'Content-Type': 'application/json' })
     response.end(value ?? 'missing')
   })
+
   servers.push(server)
   await new Promise<void>((resolve): void => { server.listen(0, '127.0.0.1', resolve) })
   const address = server.address()
+
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Node's listen() address boundary admits pipes or TCP; this fixture requires TCP.
   if (!address || typeof address === 'string') { throw new Error('No fixture port') }
+
   const build: ChannelBuild = {
     buildId: 'a'.repeat(32), channel: 'fresh-preview-29', sequence: 1,
     repository: 'example/hermes-agent', commit: 'b'.repeat(40), sourceVersion: '1.2.3',
@@ -43,8 +50,10 @@ async function fixture(): Promise<{
       windowsExecutableName: 'HermesH1234567890abcdef.exe', msixAppIdWithOrg: 'NousResearch.HermesH1234567890abcdef'
     }
   }
+
   const next = { ...build, buildId: 'c'.repeat(32), sequence: 2, version: '0.0.2', windowsVersion: '0.0.2.0' }
   const prefix = `releases/channel-builds/${next.buildId}/`
+
   const manifest: ChannelManifest = {
     schema: 1, request: { schema: 1, ...next }, packages: [{
       platform: 'darwin', arch: 'arm64', variant: 'bundled', version: next.version,
@@ -53,82 +62,124 @@ async function fixture(): Promise<{
       feed: { key: `${prefix}darwin/stable-mac.yml`, channel: 'stable' }
     }]
   }
+
   const record: ChannelRecord = {
     schema: 1, name: build.channel, repository: build.repository, policy: 'preview', state: 'active',
     revision: 2, nextSequence: 3, identity: build.identity,
     head: { buildId: next.buildId, sequence: 2, manifestKey: `${prefix}build.json`, sha256: '' }
   }
+
   const publish = (): void => {
     const body = JSON.stringify(manifest)
+
     if (record.state !== 'active' || !record.head) { throw new Error('Fixture requires active head') }
     record.head.sha256 = createHash('sha256').update(body).digest('hex')
     objects.set(`/${record.head.manifestKey}`, body)
     objects.set(`/releases/channels/${record.name}.json`, JSON.stringify(record))
   }
+
   publish()
+
   return { build, record, manifest, objects, requests, publish }
 }
 
 async function retiredFixture(): Promise<Awaited<ReturnType<typeof fixture>> & { retired: RetiredChannel }> {
   const f = await fixture()
-  const retired: RetiredChannel = {
-    ...f.record, head: structuredClone(f.record.head), state: 'retired', destination: 'stable', minimumVersion: '1.0.0',
-    compatibilityKey: 'releases/retirements/receipt.json', compatibilitySha256: '', lastHead: structuredClone(f.record.head)
-  }
+
+  const sourceRecord: ChannelRecord = structuredClone(f.record)
+
   f.record.name = 'stable'
   f.record.policy = 'stable-release'
   f.record.identity = { ...f.build.identity, appId: 'chat.nous.hermes', token: 'fedcba0987654321' }
   f.manifest.request = { ...f.manifest.request, channel: 'stable', identity: f.record.identity, version: '1.2.3', windowsVersion: '1.2.3.0', releaseTag: 'v1.2.3' }
   f.manifest.packages[0].identity = f.record.identity.appId
   f.manifest.packages[0].version = '1.2.3'
+  f.manifest.receiverProtocol = 1
   f.publish()
-  const qualification = JSON.stringify({
-    schema: 1, source: f.build.channel, destination: 'stable',
-    sourceHead: retired.lastHead, destinationHead: f.record.head, minimumVersion: retired.minimumVersion,
-    receiverProtocol: 1, coverage: [{ platform: 'darwin', arch: 'arm64',
-      sourceIdentity: f.build.identity.appId, destinationIdentity: f.record.identity.appId,
-      cohorts: [{ buildId: f.build.buildId, commit: f.build.commit }]
-    }, { platform: 'win32', arch: 'x64',
-      sourceIdentity: f.build.identity.msixAppIdWithOrg, destinationIdentity: f.record.identity.msixAppIdWithOrg,
-      cohorts: [{ buildId: f.build.buildId, commit: f.build.commit }]
-    }]
-  })
-  retired.compatibilitySha256 = createHash('sha256').update(qualification).digest('hex')
-  f.objects.set(`/${retired.compatibilityKey}`, qualification)
+
+  if (!f.record.head) { throw new Error('Expected published stable') }
+  const retired: RetiredChannel = {
+    ...sourceRecord, state: 'retired', destination: 'stable', minimumVersion: '1.0.0',
+    destinationHead: structuredClone(f.record.head), receiverProtocol: 1, lastHead: sourceRecord.head
+  }
   f.objects.set(`/releases/channels/${retired.name}.json`, JSON.stringify(retired))
+
   return { ...f, retired }
 }
 
-test('offers only a digest-bound qualified retirement to the official destination', async (): Promise<void> => {
-  const { build } = await retiredFixture()
+test('protected canary accepts bounded Windows revisions without relaxing stable', async (): Promise<void> => {
+  const f = await fixture()
+  f.record.policy = 'canary-release'
+  f.manifest.packages = [{
+    platform: 'win32', arch: 'x64', variant: 'bundled', version: '1.2.4.10',
+    identity: f.build.identity.msixAppIdWithOrg, publisher: 'CN=Nous Research',
+    artifact: { key: `releases/channel-builds/${f.manifest.request.buildId}/win32/Hermes.msixbundle`, sha256: 'd'.repeat(64), size: 100 },
+    feed: { key: `releases/channel-builds/${f.manifest.request.buildId}/win32/stable.appinstaller`, channel: 'stable' }
+  }]
+  f.manifest.request.releaseTag = 'v1.2.4-canary.20260913001000'
+  f.manifest.request.version = f.manifest.request.releaseTag.slice(1)
+  f.manifest.request.windowsVersion = '1.2.4.10'
+  f.publish()
+  const resolver = new ChannelResolver({ build: f.build, platform: 'win32', arch: 'x64', signer: 'CN=Nous Research' })
+  expect((await resolver.resolve()).kind).toBe('active')
+
+  for (const version of ['1.2.4.65536', '65536.2.4.0', '1.2.4.-1', '1.2.4.1.0', '1.2.4.x']) {
+    f.manifest.request.windowsVersion = version
+    f.publish()
+    await expect(resolver.resolve()).rejects.toThrow(/[Ww]indows[Vv]ersion|Windows version/)
+  }
+
+  f.record.policy = 'stable-release'
+  f.manifest.request.releaseTag = 'v1.2.4'
+  f.manifest.request.version = '1.2.4'
+  f.manifest.request.windowsVersion = '1.2.4.10'
+  f.publish()
+  await expect(resolver.resolve()).rejects.toThrow(/[Ww]indows[Vv]ersion|Windows version/)
+  f.manifest.request.windowsVersion = '1.2.4.0'
+  f.manifest.packages[0].version = '1.2.4.0'
+  f.publish()
+  expect((await resolver.resolve()).kind).toBe('active')
+})
+
+test('offers a digest-bound retirement without a second proof document', async (): Promise<void> => {
+  const { build, retired, requests } = await retiredFixture()
   const result = await new ChannelResolver({ build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }).resolve()
   expect(result.kind).toBe('retirement')
+
   if (result.kind !== 'retirement') { throw new Error('Expected retirement') }
   expect(result.retirement.target.channel.name).toBe('stable')
-  expect(result.retirement.qualifications[0].coverage[0].cohorts).toEqual([{ buildId: build.buildId, commit: build.commit }])
+  expect(result.retirement.target.manifestSha256).toBe(retired.destinationHead.sha256)
+  expect(requests).toEqual([`/releases/channels/${build.channel}.json`, '/releases/channels/stable.json', `/${retired.destinationHead.manifestKey}`])
 })
 
 test('pins the checked target during apply even after R2 advances, and never auto-downloads', async (): Promise<void> => {
   const f = await fixture()
   const calls: string[] = []
+
   let enteredResolve: () => void = (): void => {}
+
   let releaseResolve: () => void = (): void => {}
   const entered = new Promise<void>((resolve): void => { enteredResolve = resolve })
   const release = new Promise<void>((resolve): void => { releaseResolve = resolve })
+
   const strategy = new ChannelStrategy({
     resolver: new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }),
     build: f.build, mechanism: 'electron-updater',
     nativeFactory: (target) => ({
       mechanism: 'electron-updater',
-      check: async () => { calls.push('check'); return { supported: true, updateAvailable: true } },
+      check: async () => { calls.push('check');
+
+ return { supported: true, updateAvailable: true } },
       apply: async () => {
         calls.push(target.manifest.request.buildId)
         enteredResolve()
         await release
+
         return { ok: true }
       }
     })
   })
+
   expect((await strategy.check()).updateAvailable).toBe(true)
   expect(calls).toEqual(['check'])
   const pending = strategy.apply()
@@ -145,40 +196,55 @@ test('pins the checked target during apply even after R2 advances, and never aut
 test('retirement has a separate consented path and never invokes the ordinary native updater', async (): Promise<void> => {
   const f = await retiredFixture()
   let applied = false
+  const consents: RetirementConsent[] = []
+
   const strategy = new ChannelStrategy({
     resolver: new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }),
     build: f.build, mechanism: 'electron-updater',
     nativeFactory: (): never => { throw new Error('Not a same-identity update') },
     retirement: {
       check: async () => ({ state: 'available' }),
-      apply: async () => { applied = true; return { ok: true, handedOff: true } }
+      apply: async (_retirement, consent: RetirementConsent) => { consents.push(consent); applied = true;
+
+ return { ok: true, handedOff: true } }
     }
   })
+
   const status = await strategy.check()
   expect(status.updateAvailable).toBeUndefined()
   expect(status.retirement).toMatchObject({ state: 'available', destination: 'stable' })
   expect(applied).toBe(false)
   expect(await strategy.apply()).toMatchObject({ ok: false })
   expect(applied).toBe(false)
-  expect(await strategy.applyRetirement()).toMatchObject({ ok: true })
+  const consent: RetirementConsent = { installStable: true, removePreview: true, workspaceChoice: 'keep-stable' }
+  expect(await strategy.applyRetirement(consent)).toMatchObject({ ok: true })
   expect(applied).toBe(true)
+  expect(consents).toEqual([consent])
 })
 
 test.each(['hash', 'identity', 'repository', 'signer', 'escape', 'schema', 'version'] as const)('rejects untrusted %s without falling back', async (fault): Promise<void> => {
   const f = await fixture()
+
   if (fault === 'identity') { f.manifest.request.identity.appId = 'chat.other.identity' }
+
   if (fault === 'repository') { f.manifest.request.repository = 'other/hermes-agent' }
+
   if (fault === 'signer') { f.manifest.packages[0].teamId = 'ZZZZZ99999' }
+
   if (fault === 'escape') { f.manifest.packages[0].feed.key = 'releases/other/stable-mac.yml' }
+
   if (fault === 'version') { f.manifest.request.version = '1.0.0' }
   f.publish()
+
   if (fault === 'hash') { f.objects.set(`/${f.record.head!.manifestKey}`, '{}') }
+
   if (fault === 'schema') { f.objects.set(`/releases/channels/${f.record.name}.json`, '{"schema":2}') }
   await expect(new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }).resolve()).rejects.toThrow()
 })
 
-test.each(['floor', 'cycle', 'coverage', 'digest', 'missing', 'unprotected'] as const)('blocks retirement with invalid %s', async (fault): Promise<void> => {
+test.each(['floor', 'cycle', 'protocol', 'receiver', 'digest', 'missing', 'unprotected'] as const)('blocks retirement with invalid %s', async (fault): Promise<void> => {
   const f = await retiredFixture()
+
   if (fault === 'unprotected') {
     f.record.policy = 'preview'
     f.manifest.request.version = '0.0.2'
@@ -186,12 +252,25 @@ test.each(['floor', 'cycle', 'coverage', 'digest', 'missing', 'unprotected'] as 
     f.manifest.packages[0].version = '0.0.2'
     f.publish()
   }
+
   if (fault === 'floor') { f.retired.minimumVersion = '2.0.0' }
+
+  if (fault === 'receiver') {
+    delete f.manifest.receiverProtocol
+    f.publish()
+    if (!f.record.head) { throw new Error('Expected published stable') }
+    f.retired.destinationHead = structuredClone(f.record.head)
+  }
+
   if (fault === 'cycle') { f.retired.destination = f.build.channel }
-  if (fault === 'coverage') { f.build.buildId = 'f'.repeat(32) }
-  if (fault === 'digest') { f.retired.compatibilitySha256 = 'f'.repeat(64) }
-  if (fault === 'missing') { f.objects.delete(`/${f.retired.compatibilityKey}`) }
+
+  if (fault === 'digest') { f.retired.destinationHead.sha256 = 'f'.repeat(64) }
+
+  if (fault === 'missing') { f.objects.delete(`/${f.retired.destinationHead.manifestKey}`) }
   f.objects.set(`/releases/channels/${f.retired.name}.json`, JSON.stringify(f.retired))
+  if (fault === 'protocol') {
+    f.objects.set(`/releases/channels/${f.retired.name}.json`, JSON.stringify({ ...f.retired, receiverProtocol: 2 }))
+  }
   await expect(new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }).resolve()).rejects.toThrow()
 })
 
@@ -228,6 +307,7 @@ test('Windows resolves its numeric native version, publisher and immutable descr
   f.publish()
   const result = await new ChannelResolver({ build: f.build, platform: 'win32', arch: 'x64', signer: 'CN=Nous Research' }).resolve()
   expect(result.kind).toBe('active')
+
   if (result.kind !== 'active') { throw new Error('Expected active') }
   expect(result.target.package.version).toBe('0.0.2.0')
   expect(result.target.feedUrl).toContain('/win32/stable.appinstaller')
@@ -236,14 +316,18 @@ test('Windows resolves its numeric native version, publisher and immutable descr
 test('failed checks clear a previously checked selection, never authorizing a stale apply', async (): Promise<void> => {
   const f = await fixture()
   let applied = false
+
   const strategy = new ChannelStrategy({
     resolver: new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }),
     build: f.build, mechanism: 'electron-updater',
     nativeFactory: () => ({ mechanism: 'electron-updater',
       check: async () => ({ supported: true, updateAvailable: true }),
-      apply: async () => { applied = true; return { ok: true } }
+      apply: async () => { applied = true;
+
+ return { ok: true } }
     })
   })
+
   await strategy.check()
   f.objects.clear()
   await expect(strategy.check()).rejects.toThrow('404')
@@ -264,6 +348,7 @@ test('long-offline previews retain the qualified migration target after stable a
   f.publish()
   const result = await new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }).resolve()
   expect(result.kind).toBe('retirement')
+
   if (result.kind !== 'retirement') { throw new Error('Expected retirement') }
   expect(result.retirement.target.manifest.request.buildId).toBe(qualifiedBuild)
   expect(result.retirement.target.manifest.request.channel).toBe('stable')
@@ -280,6 +365,7 @@ test('resolves an arbitrary R2 name through a real HTTP channel and digest-bound
   const { build, requests } = await fixture()
   const result = await new ChannelResolver({ build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }).resolve()
   expect(result.kind).toBe('active')
+
   if (result.kind !== 'active') { throw new Error('Expected active build') }
   expect(result.target.manifest.request.sequence).toBe(2)
   expect(result.target.feedUrl).toBe(`${build.publicBase}/releases/channel-builds/${'c'.repeat(32)}/darwin/stable-mac.yml`)

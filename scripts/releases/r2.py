@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from typing import Callable, Iterable, cast
 from urllib.parse import quote, urlparse
 
+from scripts.releases.r2_scope import R2Scope
+
 REGION = "auto"
 SERVICE = "s3"
 EMPTY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -322,7 +324,7 @@ def download_object(
     creds: dict[str, str], base: str, bucket: str, key: str, file: Path, now: str,
     *, expected_size: int, expected_sha256: str,
 ) -> None:
-    url = f"{base}/{bucket}/{encode_key_path(key)}"
+    url = R2Scope.configured().object_url(base, bucket, key)
     parsed = urlparse(url)
     def headers(attempt: int) -> dict[str, str]:
         return r2_headers("GET", parsed.netloc, parsed.path, "", EMPTY_SHA,
@@ -506,9 +508,9 @@ DEFAULT_PUBLIC_URL = "https://hermes-assets.nousresearch.com"
 
 
 def public_base_url(explicit: str | None = None) -> str:
-    return (
+    return R2Scope.configured().public_base(
         explicit or os.environ.get("CLOUDFLARE_R2_PUBLIC_URL") or DEFAULT_PUBLIC_URL
-    ).rstrip("/")
+    )
 
 
 def public_url_for(base_url: str, key: str) -> str:
@@ -564,6 +566,7 @@ def required_env(name: str) -> str:
 
 def credentials() -> tuple[dict[str, str], str, str]:
     """(creds, base, bucket) from the R2 env vars. No secrets are printed."""
+    R2Scope.configured()  # Fail closed before exposing an unscoped fork transport.
     creds = {
         "access_key_id": required_env("CLOUDFLARE_R2_ACCESS_KEY_ID"),
         "secret_key": required_env("CLOUDFLARE_R2_SECRET_ACCESS_KEY"),
@@ -616,7 +619,7 @@ def put_object(
     if cache_control:
         extra["Cache-Control"] = cache_control
 
-    url = f"{base}/{bucket}/{encode_key_path(key)}"
+    url = R2Scope.configured().object_url(base, bucket, key)
     last_error: Exception | None = None
     response: Response | None = None
     for _ in range(3):
@@ -762,6 +765,8 @@ def list_objects(
     if creds is None:
         creds, base, bucket = credentials()
     assert creds is not None and base is not None and bucket is not None
+    scope = R2Scope.configured()
+    prefix = scope.listing_prefix(prefix)
     keys: list[str] = []
     last_modified: dict[str, int] = {}
     token: str | None = None
@@ -772,7 +777,7 @@ def list_objects(
         if token:
             params["continuation-token"] = token
         query = canonical_query(params)
-        url = f"{base}/{bucket}?{query}"
+        url = f"{scope.bucket_url(base, bucket)}?{query}"
         if fetcher is not None:
             response = fetcher(method="GET", url=url, body_hash=EMPTY_SHA)
             if response.status >= 400:
@@ -785,7 +790,8 @@ def list_objects(
         if not parsed["truncated"] or not parsed["nextToken"]:
             break
         token = parsed["nextToken"]
-    return {"keys": keys, "lastModified": last_modified}
+    return {"keys": [scope.logical_key(key) for key in keys],
+            "lastModified": {scope.logical_key(key): value for key, value in last_modified.items()}}
 
 
 def get_object(
@@ -793,7 +799,7 @@ def get_object(
     fetcher: Callable[..., Response] | None = None,
 ) -> str | None:
     """GET one object's body, or None when it does not exist / cannot be read."""
-    url = f"{base}/{bucket}/{encode_key_path(key)}"
+    url = R2Scope.configured().object_url(base, bucket, key)
     response = (
         fetcher(method="GET", url=url, body_hash=EMPTY_SHA)
         if fetcher is not None
@@ -960,7 +966,7 @@ def prune(
         if dry_run:
             print(f"(dry-run) would delete r2:{key}")
             continue
-        url = f"{base}/{bucket}/{encode_key_path(key)}"
+        url = R2Scope.configured().object_url(base, bucket, key)
         response = (
             fetcher(method="DELETE", url=url, body_hash=EMPTY_SHA)
             if fetcher is not None

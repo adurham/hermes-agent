@@ -66,16 +66,21 @@ def test_signing_jobs_pin_source_and_controller_revisions_not_mutable_tags():
                 continue
             ref = step.get("with", {}).get("ref")
             expected = "${{ needs.validate.outputs.sha }}"
-            if name == "publish-channel" or step.get("if") == "inputs.channel_build != ''":
+            if name in {"publish-channel", "allocate-disposable"} or step.get("if") == "inputs.channel_build != ''":
                 expected = "${{ github.sha }}"
+            elif name == "validate":
+                expected = "${{ (inputs.build_commit != '' || inputs.channel_build != '') && github.sha || inputs.tag }}"
             elif name == "assemble-win32-bundle":
                 expected = "${{ inputs.channel_build != '' && github.sha || needs.validate.outputs.sha }}"
             assert ref == expected, (
                 f"signing job {name!r} checks out {ref!r} — it must check out "
                 "the admitted source or explicitly selected trusted controller, never a mutable tag"
             )
-    # jobs that need the SHA must actually need validate
+    # The admission and allocation controllers do not consume a prior admission.
     for name, job in privileged.items():
+        if name in {"validate", "allocate-disposable"}:
+            assert not job.get("needs")
+            continue
         needs = job.get("needs") or []
         needs = [needs] if isinstance(needs, str) else needs
         assert "validate" in needs, f"signing job {name!r} reads needs.validate.outputs.sha but does not need validate"

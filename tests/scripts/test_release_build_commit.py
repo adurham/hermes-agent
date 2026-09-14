@@ -32,7 +32,7 @@ def fixture_repo(tmp_path):
     for relative in ('scripts/release.py', 'scripts/releases/commit_build.py',
                      'scripts/releases/bundle_env.py',
                      'scripts/releases/channel_build.py', 'scripts/releases/channels.py',
-                     'scripts/releases/r2.py', 'scripts/release-content-types.json',
+                     'scripts/releases/r2.py', 'scripts/releases/r2_scope.py', 'scripts/release-content-types.json',
                      'hermes_cli/__init__.py', 'hermes_cli/update_channel.py',
                      'hermes_cli/release_channels.py',
                      'hermes_cli/runtime_paths.py', 'hermes_constants.py'):

@@ -77,11 +77,14 @@ async function fixture(): Promise<{
       commit: 'd'.repeat(40)
     },
     selection: { home, profile: 'default', connectionId: 'local', choice: 'open-preview', reauthenticate: false },
-    qualification: {
-      sha256: 'e'.repeat(64),
-      sourceCommit: 'f'.repeat(40),
-      destinationCommit: 'd'.repeat(40),
-      receiverProtocol: 1
+    destinationManifestSha256: 'e'.repeat(64),
+    sourceBuild: {
+      buildId: '1'.repeat(32), channel: 'preview', sequence: 1, repository: 'NousResearch/hermes-agent',
+      commit: 'f'.repeat(40), version: '0.0.1', sourceVersion: '1.2.2', windowsVersion: '0.0.1.0',
+      publicBase: 'https://example.com', bundleEnv: {},
+      identity: { token: '2'.repeat(16), displayName: 'Preview', appId: 'chat.nous.preview',
+        appNamePascal: 'Preview', artifactNamePascal: 'Preview', cliName: 'preview',
+        windowsExecutableName: 'preview', msixAppIdWithOrg: 'NousResearch.Preview' }
     },
     consent: { install: true, removePreview: true, replaceExistingStable: false }
   }
@@ -90,7 +93,7 @@ async function fixture(): Promise<{
   const store: RetirementJournal = await RetirementJournal.open(path.join(directory, 'transactions'), request.id)
 
   const deps: RetirementDependencies = {
-    assertQualified: async (): Promise<void> => {
+    assertAdmitted: async (): Promise<void> => {
       calls.push('qualified')
     },
     prepareState: async (): Promise<{ snapshotHome: string; selectedHome: string }> => {
@@ -98,7 +101,6 @@ async function fixture(): Promise<{
 
       return { snapshotHome: snapshot, selectedHome: home }
     },
-    acquireLifecycle: async (): Promise<() => Promise<void>> => async (): Promise<void> => {},
     assertSourceQuiescent: async (): Promise<void> => {
       calls.push('quiescent')
     },
@@ -249,34 +251,38 @@ test('cancel, backup failure and removal-scoped state do not reach native instal
   expect(await readFile(path.join(request.source.home, 'witness'), 'utf8')).toBe('preserve me')
 })
 
-test('activation can enter the receiver and interruption after native removal does not remove twice', async (): Promise<void> => {
-  const { store, request, calls, deps } = await fixture()
-  await prepareRetirement(store, request, deps)
-  const receiver: RetirementReceiverDependencies = receiverDeps(request, calls)
+test.each(['preview-removed', 'complete'] as const)(
+  'activation can enter the receiver and interruption before %s does not remove twice',
+  async (failedStage): Promise<void> => {
+    const { store, request, calls, deps } = await fixture()
+    await prepareRetirement(store, request, deps)
+    const receiver: RetirementReceiverDependencies = receiverDeps(request, calls)
 
-  deps.native.activate = async (): Promise<void> => {
-    await receiveRetirement(store, request.token, receiver)
-  }
-
-  await resumeRetirement(store, deps, 'source')
-  await completeRetirementReception(store, request.token, receiver)
-  const write: RetirementJournal['write'] = store.write.bind(store)
-
-  store.write = async (record: RetirementRecord): Promise<void> => {
-    if (record.stage === 'preview-removed') {
-      throw new Error('power loss before journal rename')
+    deps.native.activate = async (): Promise<void> => {
+      await receiveRetirement(store, request.token, receiver)
     }
 
-    await write(record)
-  }
+    await resumeRetirement(store, deps, 'source')
+    await completeRetirementReception(store, request.token, receiver)
+    const write: RetirementJournal['write'] = store.write.bind(store)
 
-  expect((await resumeRetirement(store, deps, 'destination')).status).toBe('cleanup-pending')
-  expect((await store.read()).stage).toBe('destination-ready')
-  store.write = write
-  const reopened: RetirementJournal = await RetirementJournal.open(store.root, request.id)
-  expect((await resumeRetirement(reopened, deps, 'destination')).status).toBe('complete')
-  expect(calls.filter((call: string): boolean => call === 'remove')).toHaveLength(1)
-})
+    store.write = async (record: RetirementRecord): Promise<void> => {
+      if (record.stage === failedStage) {
+        throw new Error('power loss before journal rename')
+      }
+
+      await write(record)
+    }
+
+    expect((await resumeRetirement(store, deps, 'destination')).status).toBe('cleanup-pending')
+    expect((await store.read()).stage).toBe(failedStage === 'preview-removed' ? 'destination-ready' : 'preview-removed')
+    store.write = write
+    const reopened: RetirementJournal = await RetirementJournal.open(store.root, request.id)
+    await receiveRetirement(reopened, request.token, receiver)
+    expect((await resumeRetirement(reopened, deps, 'destination')).status).toBe('complete')
+    expect(calls.filter((call: string): boolean => call === 'remove')).toHaveLength(1)
+  }
+)
 
 test('an installed target without a correlated ready receipt never authorizes removal, including restart', async (): Promise<void> => {
   const { store, request, calls, deps } = await fixture()

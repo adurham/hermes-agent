@@ -125,7 +125,7 @@ def put_build(objects, request):
     prefix = build_prefix(request["buildId"])
     data = b"fixture native artifact"
     objects[prefix + "darwin/package.zip"] = data
-    manifest = {"schema": 1, "request": request, "packages": [{"platform": "darwin", "arch": "arm64", "variant": "bundled",
+    manifest = {"schema": 1, "receiverProtocol": 1, "request": request, "packages": [{"platform": "darwin", "arch": "arm64", "variant": "bundled",
         "artifact": {"key": prefix + "darwin/package.zip", "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)},
         "version": request["version"], "identity": request["identity"]["appId"], "teamId": "ABCDEFGHIJ",
         "feed": {"key": prefix + "darwin/stable-mac.yml", "channel": "stable"}}]}
@@ -138,9 +138,8 @@ def test_concurrent_allocations_reverse_completion_retirement_and_readback():
     from hermes_cli.release_channels import ChannelError, canonical_json
     from scripts.releases.channels import PublicVisibilityError
     with object_server() as (url, objects, headers, requests, faults):
-        pub = publisher(url, verify_build=lambda request, manifest: True,
-                        verify_retirement=lambda record, target, qualification: True)
         with ThreadPoolExecutor(max_workers=2) as pool:
+            pub = publisher(url, verify_build=lambda request, manifest: True)
             created = list(pool.map(pub.create, ["race-preview"] * 2))
         assert created[0]["identity"] == created[1]["identity"]
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -162,11 +161,18 @@ def test_concurrent_allocations_reverse_completion_retirement_and_readback():
         raw = canonical_json(stable_manifest)
         target.update(nextSequence=stable["sequence"] + 1, head={"buildId": stable["buildId"], "sequence": stable["sequence"], "manifestKey": "releases/channel-builds/" + stable["buildId"] + "/build.json", "sha256": hashlib.sha256(raw).hexdigest()})
         objects["releases/channels/destination.json"] = canonical_json(target)
-        key = "releases/channel-builds/" + two["buildId"] + "/retirement.json"
-        qualification = {"schema": 1, "source": "race-preview", "sourceHead": pub._read("race-preview")[0]["head"], "destination": "destination", "destinationHead": target["head"], "minimumVersion": "2.0.0"}
-        raw = canonical_json(qualification)
-        objects[key] = raw
-        retired = pub.retire("race-preview", "destination", "2.0.0", key, hashlib.sha256(raw).hexdigest())
+        unsupported = dict(stable_manifest)
+        del unsupported["receiverProtocol"]
+        objects[target["head"]["manifestKey"]] = canonical_json(unsupported)
+        old_target = {**target, "head": {**target["head"], "sha256": hashlib.sha256(canonical_json(unsupported)).hexdigest()}}
+        objects["releases/channels/destination.json"] = canonical_json(old_target)
+        with pytest.raises(ChannelError, match="receiver support"):
+            pub.retire("race-preview", "destination", "2.0.0")
+        assert pub._read("race-preview")[0]["state"] == "active"
+        objects[target["head"]["manifestKey"]] = raw
+        objects["releases/channels/destination.json"] = canonical_json(target)
+        retired = pub.retire("race-preview", "destination", "2.0.0")
+        assert retired["destinationHead"] == target["head"]
         assert retired["lastHead"]["buildId"] == two["buildId"]
         with pytest.raises(ChannelError, match="Retired"):
             pub.promote(two["buildId"])
@@ -207,12 +213,11 @@ def test_list_bootstrap_protected_roles_and_qualification_gate():
         assert pub.reader.resolve("first").terminal["head"] is None
 
 
-def test_retirement_race_never_reuses_stale_qualification():
+def test_retirement_race_requires_a_new_explicit_attempt():
     from hermes_cli.release_channels import ChannelError, canonical_json
     from scripts.releases.channels import ChannelConflict
     with object_server() as (url, objects, headers, requests, faults):
-        pub = publisher(url, verify_build=lambda request, manifest: True,
-                        verify_retirement=lambda record, target, qualification: True)
+        pub = publisher(url, verify_build=lambda request, manifest: True)
         pub.create("preview")
         first = pub.allocate("preview", "a" * 40, "1.0.0")
         second = pub.allocate("preview", "b" * 40, "1.0.0")
@@ -226,11 +231,7 @@ def test_retirement_race_never_reuses_stale_qualification():
         manifest = put_build(objects, stable)
         target.update(nextSequence=2, head={"buildId": stable["buildId"], "sequence": 1, "manifestKey": "releases/channel-builds/" + stable["buildId"] + "/build.json", "sha256": hashlib.sha256(canonical_json(manifest)).hexdigest()})
         objects["releases/channels/stable.json"] = canonical_json(target)
-        before = pub._read("preview")[0]
-        qualification = {"schema": 1, "source": "preview", "sourceHead": before["head"], "destination": "stable", "destinationHead": target["head"], "minimumVersion": "2.0.0"}
-        key = "releases/channel-builds/" + first["buildId"] + "/retirement.json"
-        raw = canonical_json(qualification)
-        objects[key] = raw
+
         def race(store, object_key):
             record = json.loads(store[object_key])
             record["revision"] += 1
@@ -238,12 +239,11 @@ def test_retirement_race_never_reuses_stale_qualification():
             store[object_key] = canonical_json(record)
         faults["conflict"] = race
         with pytest.raises(ChannelConflict):
-            pub.retire("preview", "stable", "2.0.0", key, hashlib.sha256(raw).hexdigest())
+            pub.retire("preview", "stable", "2.0.0")
         assert pub.reader.resolve("preview").manifest["request"] == second
-        with pytest.raises(ChannelError, match="qualification"):
-            pub.retire("preview", "stable", "2.0.0", key, hashlib.sha256(raw).hexdigest())
         with pytest.raises(ChannelError, match="cycle"):
-            pub.retire("preview", "preview", "2.0.0", key, hashlib.sha256(raw).hexdigest())
+            pub.retire("preview", "preview", "2.0.0")
+        assert pub.retire("preview", "stable", "2.0.0")["lastHead"]["buildId"] == second["buildId"]
 
 
 def test_mutable_read_loss_recovery_never_clones_another_allocation():
@@ -382,18 +382,23 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         assert channel_releases.select_channel(pub, "stable-release") == "released"
         native = channel_releases.read_native_receipts(tmp_path, tag, commit)
         request = pub.allocate_protected("released", commit, "2.0.0", release_tag=tag, version="2.0.0", windows_version="2.0.0.0", identity=identity, policy="stable-release", release_gate=lambda request: True)
-        manifest, feeds = channel_releases.assemble(request, native, tmp_path)
+        from scripts.bundles.channel_artifacts import assemble
+        manifest, feeds = assemble(request, native, tmp_path, artifact_prefix=prefix)
         assert {p["arch"] for p in manifest["packages"]} == {"arm64", "x64"}
         assert all(p["artifact"]["key"].startswith(prefix) for p in manifest["packages"])
         assert all(f.is_file() for f in feeds)
         accepted = {"packages": []}
         for row in manifest["packages"]:
             accepted["packages"].append({"platform": "macos" if row["platform"] == "darwin" else "windows", "arch": row["arch"], "identity": row["identity"], "version": row["version"], "artifact": {"url": base + "/" + row["artifact"]["key"], "sha256": row["artifact"]["sha256"]}, **{k: row[k] for k in ("teamId", "publisher") if k in row}})
+            if row["platform"] == "win32":
+                accepted["packages"][-1]["applicationId"] = identity["appNamePascal"]
         channel_releases.match_accepted_packages(manifest, accepted)
         wrong = deepcopy(accepted)
         wrong["packages"][0]["artifact"]["sha256"] = "0" * 64
         with pytest.raises(ChannelError, match="accepted"):
             channel_releases.match_accepted_packages(manifest, wrong)
+        with pytest.raises(ChannelError, match="every native"):
+            channel_releases.match_accepted_packages(dict(manifest, packages=manifest["packages"][:1]), accepted)
         # Exercise the real controller, HTTP receipt downloader, immutable feeds,
         # manifest and final CAS; only GitHub admission and generated product facts
         # are fixture inputs (no native signature acceptance is claimed here).

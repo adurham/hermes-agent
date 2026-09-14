@@ -3083,9 +3083,11 @@ export const en: Translations = {
 
   updates: {
     retirementTitle: 'This preview channel has closed',
-    retirementBody: 'Move to the official stable app. Your local workspace stays in place. Stable must open it successfully before this preview is removed. Saved remote credentials are not copied.',
+    retirementBody: 'Move to the official stable app. Both workspaces stay in place. Stable must open your chosen workspace successfully before this preview is removed. Saved remote credentials are not copied.',
     retirementAction: 'Move to stable',
     retirementConsent: 'Install or update stable and remove this preview only after stable is ready.',
+    retirementKeepStable: 'Keep stable’s existing workspace',
+    retirementOpenPreview: 'Open this preview workspace in stable',
     retirementBlocked: 'Migration paused — preview preserved',
     retirementMoving: 'Moving to stable…',
     retirementComplete: 'Stable is ready',

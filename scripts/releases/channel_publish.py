@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import os
 from pathlib import Path
 import tempfile
-import xml.etree.ElementTree as ET
-import zipfile
 
 from hermes_cli.release_channels import ChannelReader, build_prefix, canonical_json, decode_json, require_sha256, validate_request
 from scripts.releases import commit_build, handoff, r2
@@ -39,19 +36,38 @@ def require_success(needs: dict) -> None:
         raise ValueError("Channel publication requires successful jobs: " + ", ".join(failed))
 
 
+def receiver_request(request: dict) -> bool:
+    """An explicit marker is never sufficient without the physical CI scope."""
+    if not request.get("receiverCandidate"):
+        return False
+    from scripts.releases.channel_releases import product_identity
+    from scripts.releases.r2_scope import R2Scope, channel_public_base
+    scope = R2Scope.configured()
+    if (request["receiverCandidate"] is not True or not scope.prefix
+            or request["publicBase"] != channel_public_base()
+            or request["identity"] != product_identity(request.get("releaseTag", ""))
+            or request.get("releaseTag") != "v" + request["version"]
+            or request.get("channel") != "stable" or request.get("bundleEnv") != {}):
+        raise ValueError("Receiver candidate escaped disposable official identity admission")
+    validate_request(request, policy="stable-release")
+    return True
+
+
 def admit(request: dict, env: dict[str, str]) -> dict[str, str]:
     if (env.get("BUILD_COMMIT") or env.get("TAG") or env.get("RELEASE_PHASE")
             or env.get("TERMUX_UPGRADE_FROM_TAG") or env.get("TERMUX_ONLY") == "true"
             or env.get("UPLOAD_RELEASE", "false") != "false"
             or env.get("BUNDLE_ENV_JSON", "") not in ("", "{}")):
         raise ValueError("Channel requests cannot select one-off, release, Termux or bundle overrides")
+    validate_request(request, repository=env.get("GITHUB_REPOSITORY"))
     admitted = commit_build.admit({**env, "BUILD_COMMIT": request["commit"],
                                    "BUNDLE_ENV_JSON": json.dumps(request["bundleEnv"])})
     if admitted["payload-version"] != request["sourceVersion"]:
         raise ValueError("Channel request source version differs from admitted commit")
     if request.get("controllerCommit", env.get("GITHUB_SHA")) != env.get("GITHUB_SHA"):
         raise ValueError("Channel request controller differs from trusted workflow revision")
-    return {"sha": request["commit"], "channel": request["channel"], "payload-version": request["version"]}
+    return {"sha": request["commit"], "channel": request["channel"], "payload-version": request["version"],
+            "receiver-candidate": str(receiver_request(request)).lower()}
 
 
 def _metadata(root: Path, request: dict, platform: str, arch: str) -> dict:
@@ -71,7 +87,7 @@ def _metadata(root: Path, request: dict, platform: str, arch: str) -> dict:
 
 def assemble(request: dict, root: Path, *, needs: dict) -> tuple[dict, list[Path]]:
     """Consume downloaded receipts; derive immutable feeds without another build."""
-    from scripts.bundles.release_artifacts import single, write_appinstaller
+    from scripts.bundles.channel_artifacts import assemble as assemble_native
 
     require_success(needs)
     validate_request(request)
@@ -101,60 +117,41 @@ def assemble(request: dict, root: Path, *, needs: dict) -> tuple[dict, list[Path
             if file.stat().st_size != row["size"] or r2.file_sha256(file) != row["sha256"]:
                 raise ValueError("Channel artifact differs from its receipt")
             files[row["path"]] = row
-    name = request["identity"]["artifactNamePascal"]
-    bundle_name = f"{name}-{request['windowsVersion']}-win.msixbundle"
-    if bundle_name not in files:
-        raise ValueError("Missing Windows universal bundle")
-    windows = [_metadata(root, request, "win32", arch) for arch in ("arm64", "x64")]
-    for field in ("publisher", "version", "identity", "applicationId"):
-        if not windows[0].get(field) or windows[0][field] != windows[1].get(field):
-            raise ValueError(f"Windows native metadata disagrees on {field}")
-    with zipfile.ZipFile(root / bundle_name) as archive:
-        manifest = ET.fromstring(archive.read("AppxMetadata/AppxBundleManifest.xml"))
-        native = manifest.find("{*}Identity")
-        for attr, field in (("Name", "identity"), ("Publisher", "publisher"), ("Version", "version")):
-            if native is None or native.get(attr) != windows[0][field]:
-                raise ValueError("Windows universal envelope differs from native metadata")
-        architectures = sorted(p.get("Architecture", "") for p in manifest.findall("{*}Packages/{*}Package")
-                               if p.get("Type") == "application")
-        if architectures != ["arm64", "x64"]:
-            raise ValueError("Universal bundle must contain both native architectures")
-    descriptor = root / "win32" / "stable.appinstaller"
-    base = request["publicBase"]
-    write_appinstaller(descriptor, identity=windows[0]["identity"], publisher=windows[0]["publisher"],
-                       version=request["windowsVersion"], self_uri=f"{base}/{prefix}win32/stable.appinstaller",
-                       artifact_uri=f"{base}/{prefix}{bundle_name}", update_policy="pinned")
-    packages = []
-    mac_files = []
-    for platform in ("darwin", "win32"):
-        for arch in ("arm64", "x64"):
-            metadata = _metadata(root, request, platform, arch)
-            filename = f"{name}-{request['version']}-mac-{arch}.zip" if platform == "darwin" else bundle_name
-            row = files[filename]
-            signing_field = "teamId" if platform == "darwin" else "publisher"
-            if not metadata.get(signing_field):
-                raise ValueError("Missing native signing identity")
-            packages.append({"platform": platform, "arch": arch, "variant": "bundled",
-                             "version": metadata["version"], "identity": metadata["identity"],
-                             signing_field: metadata[signing_field],
-                             "artifact": {"key": prefix + filename, "sha256": row["sha256"], "size": row["size"]},
-                             "feed": {"key": prefix + ("darwin/stable-mac.yml" if platform == "darwin"
-                                                       else "win32/stable.appinstaller"), "channel": "stable"}})
-            if platform == "darwin":
-                for extension in ("zip", "dmg"):
-                    artifact = f"{name}-{request['version']}-mac-{arch}.{extension}"
-                    if artifact not in files or artifact + ".blockmap" not in files:
-                        raise ValueError("Missing macOS native package or blockmap")
-                    with (root / artifact).open("rb") as stream:
-                        sha512 = base64.b64encode(hashlib.file_digest(stream, "sha512").digest()).decode("ascii")
-                    mac_files.append({"url": base + "/" + prefix + artifact, "sha512": sha512, "size": files[artifact]["size"]})
-    # JSON is valid YAML. A neutral filename avoids electron-updater prerelease-name parsing.
-    feed = root / "darwin" / "stable-mac.yml"
-    feed.parent.mkdir(parents=True, exist_ok=True)
-    first_zip = single(f for f in mac_files if f["url"].endswith("-arm64.zip"))
-    feed.write_text(json.dumps({"version": request["version"], "files": mac_files,
-                                "path": first_zip["url"], "sha512": first_zip["sha512"]}, indent=2) + "\n", encoding="utf-8")
-    return {"schema": 1, "request": request, "packages": packages}, [feed, descriptor]
+    rows = [_metadata(root, request, platform, arch)
+            for platform in ("darwin", "win32") for arch in ("arm64", "x64")]
+    return assemble_native(request, {"files": files, "packages": rows}, root, artifact_prefix=prefix)
+
+
+def publish_receiver(request: dict, root: Path, *, needs: dict, publisher) -> dict:
+    from scripts.releases.channel_disposable import require_receiver_scope
+    from hermes_cli.release_channels import channel_key, validate_manifest
+
+    require_receiver_scope(publisher)
+    if not receiver_request(request) or publisher.request(request["buildId"]) != request:
+        raise ValueError("Receiver request admission mismatch")
+    current = publisher._read(request["channel"])
+    if current is None or current[0].get("testOnly") is not True or current[0]["state"] != "active":
+        raise ValueError("Receiver requires a test-only active stable record")
+    handoff.fetch_channel_build(request, list(NATIVE_LEGS), root, public_base=request["publicBase"])
+    manifest, feeds = assemble(request, root, needs=needs)
+    prefix = build_prefix(request["buildId"])
+    validate_manifest(manifest, {**current[0], "head": None}, publisher.public_base)
+    if manifest.get("receiverProtocol") != 1:
+        raise ValueError("Candidate packages have no retirement receiver")
+    for file in feeds:
+        key = prefix + file.relative_to(root).as_posix()
+        r2.put(tag="", key=key, file=str(file), key_is_full=True, immutable=True)
+        if publisher.reader.read_bytes(key) != file.read_bytes():
+            raise ValueError("Receiver feed readback mismatch")
+    publisher._write(prefix + "build.json", manifest)
+    head = {"buildId": request["buildId"], "sequence": request["sequence"], "manifestKey": prefix + "build.json",
+            "sha256": hashlib.sha256(canonical_json(manifest)).hexdigest()}
+    # S becomes the initial disposable destination. T is immutable but deliberately
+    # unpromoted until the actual handoff chat asks the lifecycle controller to advance.
+    if request["sequence"] == 1 and current[0]["head"] is None:
+        publisher._write(channel_key(request["channel"]), {**current[0], "head": head,
+                         "revision": current[0]["revision"] + 1}, current[1])
+    return {"head": head, "manifest": manifest}
 
 
 def publish(request: dict, root: Path, *, needs: dict, publisher) -> dict:
@@ -180,20 +177,27 @@ def publish(request: dict, root: Path, *, needs: dict, publisher) -> dict:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["request", "admit", "publish"])
+    parser.add_argument("command", choices=["request", "admit", "publish", "receiver-publish"])
     parser.add_argument("--build-id", default=os.environ.get("CHANNEL_BUILD", ""))
     parser.add_argument("--request-sha256", default=os.environ.get("CHANNEL_REQUEST_SHA256", ""))
-    parser.add_argument("--public-base", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL", ""))
+    parser.add_argument("--public-base", help="Expected public authority (not an override in disposable CI)")
+    parser.add_argument("--disposable-run", help="Controller run-id-attempt; propagated to R2 object scope")
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--out", type=Path)
     parser.add_argument("--root", type=Path)
     args = parser.parse_args(argv)
+    from scripts.releases.r2_scope import channel_public_base, require_run
+    if args.disposable_run is not None:
+        os.environ["R2_DISPOSABLE_RUN"] = require_run(args.disposable_run)
+    args.public_base = channel_public_base(args.public_base)
     request = read_request(args.build_id, args.request_sha256, args.public_base, args.repository)
     if args.command == "admit":
         values = admit(request, dict(os.environ))
+        values["public-root"] = os.environ["CLOUDFLARE_R2_PUBLIC_URL"]
+        values["public-base"] = args.public_base
         with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
             stream.write("".join(f"{key}={value}\n" for key, value in values.items()))
-    elif args.command == "publish":
+    elif args.command in {"publish", "receiver-publish"}:
         from scripts.releases.channels import ChannelPublisher, R2ChannelStore
         needs = json.loads(os.environ.get("RELEASE_NEEDS", "{}"))
         require_success(needs)
@@ -211,7 +215,11 @@ def main(argv: list[str] | None = None) -> None:
 
         publisher = ChannelPublisher(R2ChannelStore(*r2.credentials()), args.repository, args.public_base,
                                      authorize=authorize, verify_build=qualified)
-        if args.root:
+        if args.command.startswith("receiver-"):
+            if args.root is None:
+                parser.error("receiver publication requires --root")
+            result = publish_receiver(request, args.root, needs=needs, publisher=publisher)
+        elif args.root:
             root = args.root
             result = publish(request, args.root, needs=needs, publisher=publisher)
         else:

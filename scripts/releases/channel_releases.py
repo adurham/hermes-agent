@@ -2,25 +2,23 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
-import xml.etree.ElementTree as ET
-import zipfile
 
 from hermes_cli.release_channels import (
-    ChannelError, build_prefix, canonical_json, validate_identity, validate_manifest,
+    ChannelError, build_prefix, canonical_json, validate_identity,
 )
+from scripts.bundles.channel_artifacts import assemble
 from scripts.releases import handoff, r2, stable
 from scripts.releases.channels import ChannelPublisher, R2ChannelStore
 
 NATIVE_LEGS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "windows-universal")
-STABLE_NEEDS = ("admit", "ci", "docker", "acceptance", "candidates", "publication", "promote-docker", "promote-bundles")
-CANARY_NEEDS = ("build-win32", "build-darwin", "build-linux", "builds-table", "assemble-win32-bundle",
+STABLE_NEEDS = ("admit", "ci", "docker", "acceptance", "candidates", "publication", "promote-docker", "promote-bundles", "windows-packaged", "macos-packaged")
+CANARY_NEEDS = ("validate", "build-win32", "build-darwin", "build-linux", "builds-table", "assemble-win32-bundle",
                 "smoke-darwin", "smoke-win32", "smoke-win32-universal", "publish-win32-updater", "publish-darwin-updater")
 
 
@@ -75,67 +73,11 @@ def read_native_receipts(root: Path, tag: str, commit: str) -> dict:
     return {"packages": rows, "files": files}
 
 
-def assemble(request: dict, native: dict, root: Path) -> tuple[dict, list[Path]]:
-    from scripts.bundles.release_artifacts import single, write_appinstaller
-
-    files = native["files"]
-    tag_prefix = f"releases/tag/{request['releaseTag']}/"
-    prefix = build_prefix(request["buildId"])
-    base = request["publicBase"]
-    windows = [row for row in native["packages"] if row["platform"] == "windows"]
-    for field in ("identity", "publisher", "version", "applicationId"):
-        if len(windows) != 2 or not windows[0].get(field) or windows[0][field] != windows[1].get(field):
-            raise ChannelError(f"Windows native metadata disagrees on {field}")
-    if windows[0]["applicationId"] != request["identity"]["appNamePascal"]:
-        raise ChannelError("Windows application identity mismatch")
-    bundle_name = single(name for name in files if name.endswith(".msixbundle") and not name.startswith("Store-"))
-    with zipfile.ZipFile(root / bundle_name) as archive:
-        envelope = ET.fromstring(archive.read("AppxMetadata/AppxBundleManifest.xml"))
-        identity = envelope.find("{*}Identity")
-        if identity is None or any(identity.get(attr) != windows[0][field] for attr, field in
-                                   (("Name", "identity"), ("Publisher", "publisher"), ("Version", "version"))):
-            raise ChannelError("Universal bundle differs from native metadata")
-        if sorted(p.get("Architecture", "") for p in envelope.findall("{*}Packages/{*}Package")
-                  if p.get("Type") == "application") != ["arm64", "x64"]:
-            raise ChannelError("Universal bundle must cover both architectures")
-    descriptor = root / "win32" / "stable.appinstaller"
-    write_appinstaller(descriptor, identity=windows[0]["identity"], publisher=windows[0]["publisher"],
-                       version=windows[0]["version"], self_uri=f"{base}/{prefix}win32/stable.appinstaller",
-                       artifact_uri=f"{base}/{tag_prefix}{bundle_name}", update_policy="pinned")
-    packages, mac_files = [], []
-    for row in native["packages"]:
-        mac = row["platform"] == "macos"
-        filename = row["filename"] if mac else bundle_name
-        receipt = files.get(filename)
-        if receipt is None or not (root / filename).is_file():
-            raise ChannelError("Missing receipt-bound native artifact")
-        signing = "teamId" if mac else "publisher"
-        packages.append({"platform": "darwin" if mac else "win32", "arch": row["arch"], "variant": "bundled",
-                         "identity": row["identity"], "version": row["version"], signing: row.get(signing),
-                         "artifact": {"key": tag_prefix + filename, "sha256": receipt["sha256"], "size": receipt["size"]},
-                         "feed": {"key": prefix + ("darwin/stable-mac.yml" if mac else "win32/stable.appinstaller"),
-                                  "channel": "stable"}})
-        if mac:
-            for name in (filename, filename.removesuffix(".zip") + ".dmg"):
-                if any(item not in files or not (root / item).is_file() for item in (name, name + ".blockmap")):
-                    raise ChannelError("Missing receipt-bound macOS package or blockmap")
-                with (root / name).open("rb") as stream:
-                    digest = base64.b64encode(hashlib.file_digest(stream, "sha512").digest()).decode("ascii")
-                mac_files.append({"url": f"{base}/{tag_prefix}{name}", "sha512": digest, "size": files[name]["size"]})
-    feed = root / "darwin" / "stable-mac.yml"
-    feed.parent.mkdir(parents=True, exist_ok=True)
-    first = single(row for row in mac_files if row["url"].endswith("-arm64.zip"))
-    feed.write_bytes(canonical_json({"version": request["version"], "files": mac_files,
-                                     "path": first["url"], "sha512": first["sha512"]}))
-    manifest = {"schema": 1, "request": request, "packages": packages}
-    record = {"name": request["channel"], "repository": request["repository"], "identity": request["identity"],
-              "policy": "canary-release" if "-canary." in request["releaseTag"] else "stable-release", "head": None}
-    validate_manifest(manifest, record, base)
-    return manifest, [feed, descriptor]
-
-
 def match_accepted_packages(manifest: dict, accepted: dict) -> None:
     by_target = {(row["platform"], row["arch"]): row for row in accepted["packages"]}
+    if {(row["platform"], row["arch"]) for row in manifest["packages"]} != {
+            (platform, arch) for platform in ("darwin", "win32") for arch in ("arm64", "x64")}:
+        raise ChannelError("Protected manifest must include every native target")
     for package in manifest["packages"]:
         platform = "macos" if package["platform"] == "darwin" else "windows"
         row = by_target.get((platform, package["arch"]), {})
@@ -144,6 +86,11 @@ def match_accepted_packages(manifest: dict, accepted: dict) -> None:
                 or row.get("artifact") != {"url": manifest["request"]["publicBase"] + "/" + package["artifact"]["key"],
                                            "sha256": package["artifact"]["sha256"]}):
             raise ChannelError("Protected package differs from the accepted release")
+        if platform == "windows" and row.get("applicationId") != manifest["request"]["identity"]["appNamePascal"]:
+            raise ChannelError("Protected application ID differs from the accepted release")
+    if manifest.get("receiverProtocol") == 1 and any(
+            row.get("receiverProtocol") != 1 for row in accepted["packages"] if row["platform"] in ("windows", "macos")):
+        raise ChannelError("Accepted packages do not declare retirement receiver support")
 
 
 def admit_transaction(policy: str, env: dict, *, run=stable.output) -> tuple[str, str]:
@@ -207,10 +154,72 @@ def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: st
     return candidate
 
 
+def verify_bootstrap(request: dict, manifest: dict, base: str, repository: str) -> bool:
+    """Bootstrap from published release outputs, never caller attestations."""
+    from hermes_cli.release_channels import ChannelReader, decode_json
+    tag = request.get("releaseTag", "")
+    if not tag or manifest.get("request") != request:
+        raise ChannelError("Bootstrap requires published release metadata")
+    canary = "-canary." in tag
+    reader = ChannelReader(base, repository)
+    if canary:
+        verify_canary_outputs(request, manifest, reader)
+    else:
+        candidate = decode_json(reader.read_bytes(f"releases/tag/{tag}/release-candidates.json"))
+        stable.validate_candidates(candidate, tag, request["commit"], base)
+        if decode_json(reader.read_bytes("releases/stable/release-candidates.json")) != candidate:
+            raise ChannelError("Bootstrap must use the current accepted stable transaction")
+        match_accepted_packages(manifest, candidate)
+    identity = product_identity(tag)
+    if any(request["identity"][key] != value for key, value in identity.items() if key != "token"):
+        raise ChannelError("Bootstrap must retain official native identity")
+    release = json.loads(stable.output(["gh", "api", f"repos/{repository}/releases/tags/{tag}"]))
+    commit = stable.output(["gh", "api", f"repos/{repository}/commits/{tag}", "--jq", ".sha"])
+    if (release.get("draft") is not False or release.get("prerelease") is not canary
+            or not release.get("published_at") or commit != request["commit"]):
+        raise ChannelError("Bootstrap requires the published release")
+    return True
+
+
+def verify_canary_outputs(request: dict, manifest: dict, reader) -> None:
+    """Canary has native promoted feeds, not stable's candidate transaction."""
+    import xml.etree.ElementTree as ET
+
+    from scripts.releases.darwin import parse_mac_feed
+    tag, base = request["releaseTag"], request["publicBase"]
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        handoff.fetch(tag, request["commit"], list(NATIVE_LEGS), root,
+                      ["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"], public_base=base)
+        expected, feeds = assemble(request, read_native_receipts(root, tag, request["commit"]), root,
+                                   artifact_prefix=f"releases/tag/{tag}/")
+        if manifest != expected:
+            raise ChannelError("Canary bootstrap differs from receipt-bound native packages")
+        live = parse_mac_feed(reader.read_bytes("releases/darwin/canary/canary-mac.yml").decode())
+        pinned = parse_mac_feed(feeds[0].read_text(encoding="utf-8-sig"))
+        files = [{**entry, "url": base + entry["url"] if entry["url"].startswith("/releases/") else entry["url"]}
+                 for entry in live["files"]]
+        if live["version"] != request["version"] or sorted(files, key=lambda x: x["url"]) != sorted(pinned["files"], key=lambda x: x["url"]):
+            raise ChannelError("Canary macOS feed has not promoted these packages")
+        descriptor = ET.fromstring(reader.read_bytes("releases/win32/canary/canary.appinstaller"))
+        bundle = descriptor.find("{*}MainBundle")
+        native = next(p for p in manifest["packages"] if p["platform"] == "win32")
+        if bundle is None or any(bundle.get(k) != v for k, v in {
+                "Name": native["identity"], "Publisher": native["publisher"], "Version": native["version"]}.items()):
+            raise ChannelError("Canary Windows feed has not promoted these packages")
+        uri = bundle.get("Uri", "")
+        if not uri.startswith(base + "/releases/win32/canary/"):
+            raise ChannelError("Canary Windows feed archive mismatch")
+        r2.download_public_object(base, uri.removeprefix(base + "/"), root / "promoted.msixbundle",
+                                  expected_size=native["artifact"]["size"], expected_sha256=native["artifact"]["sha256"])
+
+
 def publish_release(policy: str, env: dict, root: Path) -> dict:
     from scripts.releases.commit_build import version_at
 
     tag, commit = admit_transaction(policy, env)
+    if env.get("R2_DISPOSABLE_RUN"):
+        raise ChannelError("Disposable receiver builds cannot enter production release publication")
     publisher = ChannelPublisher(R2ChannelStore(*r2.credentials()), env["GITHUB_REPOSITORY"],
                                  r2.public_base_url(), authorize=lambda action, record: admit_transaction(policy, env))
     name = select_channel(publisher, policy)
@@ -237,7 +246,7 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     request = publisher.allocate_protected(name, commit, version_at(None, commit), release_tag=tag,
                                            version=tag[1:], windows_version=windows["version"],
                                            identity=identity, policy=policy, release_gate=release_gate)
-    manifest, feeds = assemble(request, native, root)
+    manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/")
     if accepted is not None:
         match_accepted_packages(manifest, accepted)
     prefix = build_prefix(request["buildId"])
@@ -250,9 +259,11 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
     def qualified(pinned: dict, actual: dict) -> bool:
         # Rehash local receipt-bound bytes rather than trusting caller-supplied claims.
-        expected, _ = assemble(pinned, read_native_receipts(root, tag, commit), root)
+        expected, _ = assemble(pinned, read_native_receipts(root, tag, commit), root,
+                               artifact_prefix=f"releases/tag/{tag}/")
         if accepted is not None:
             match_accepted_packages(expected, accepted)
+
         return pinned == request and actual == expected
 
     publisher.verify_build = qualified
@@ -262,9 +273,14 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("role", choices=("stable", "canary"), help="Protected release policy, not a channel name")
+
+    parser.add_argument("--root", type=Path)
     args = parser.parse_args(argv)
-    with tempfile.TemporaryDirectory() as directory:
-        result = publish_release(args.role + "-release", dict(os.environ), Path(directory))
+    if args.root:
+        result = publish_release(args.role + "-release", dict(os.environ), args.root)
+    else:
+        with tempfile.TemporaryDirectory() as directory:
+            result = publish_release(args.role + "-release", dict(os.environ), Path(directory))
     print(json.dumps(result, sort_keys=True))
 
 

@@ -1,5 +1,8 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
+import type { UpdaterApplyResultWire } from './updater/index'
+import type { RetirementConsent } from './updater/retirement-state'
+
 // Which translucency the OS can back. Asked synchronously because the renderer
 // needs it before its first paint, and answered by main because deciding it
 // needs `os.release()` — a sandboxed preload may only require electron, events,
@@ -536,7 +539,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   updates: {
     check: opts => ipcRenderer.invoke('hermes:updates:check', opts),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
-    retire: consent => ipcRenderer.invoke('hermes:updates:retire', consent),
+    retire: (consent: RetirementConsent): Promise<UpdaterApplyResultWire> => ipcRenderer.invoke('hermes:updates:retire', consent),
     getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
     setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
     onProgress: callback => {

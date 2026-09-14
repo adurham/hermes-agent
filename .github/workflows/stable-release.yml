@@ -256,11 +256,12 @@ jobs:
   complete:
     name: Stable release is green
     if: always()
-    needs: [admit, ci, docker, acceptance, candidates, publication, promote-docker, promote-bundles]
+    needs: [admit, ci, docker, acceptance, candidates, publication, promote-docker, promote-bundles, windows-packaged, macos-packaged]
     runs-on: ubuntu-24.04
     environment: release-signing
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -282,7 +283,7 @@ jobs:
         # must leave protocol-aware readers on the previous accepted release.
         run: |
           python -m scripts.releases.stable complete
-          python -m scripts.releases.channel_releases stable
+          python -m scripts.releases.channel_releases stable --root "$RUNNER_TEMP/stable-channel"
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           GH_TOKEN: ${{ github.token }}

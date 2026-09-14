@@ -39,6 +39,7 @@
 set -euo pipefail
 
 PHASE="all"
+RETIREMENT_WORK=""
 MANIFEST_URL=""
 ARCH="arm64"
 UPDATE_WATCH_TIMEOUT_MS=900000
@@ -51,6 +52,9 @@ while [ "$#" -gt 0 ]; do
     --manifest-url)
       [ "$#" -ge 2 ] || { echo 'error: --manifest-url needs a value' >&2; exit 1; }
       MANIFEST_URL="$2"; shift 2 ;;
+    --retirement-work)
+      [ "$#" -ge 2 ] || { echo 'error: --retirement-work needs a value' >&2; exit 1; }
+      RETIREMENT_WORK="$2"; shift 2 ;;
     --arch)
       [ "$#" -ge 2 ] || { echo 'error: --arch needs a value' >&2; exit 1; }
       ARCH="$2"; shift 2 ;;
@@ -70,6 +74,13 @@ ASSETS="$REPO_ROOT/tests/install/e2e-assets"
 export TS_BASE=$SECONDS
 NODE_BIN="${HERMES_E2E_NODE:-$(command -v node)}"
 export HERMES_E2E_NODE="$NODE_BIN"
+
+# OS activation does not inherit the ordinary journey's sandbox overrides.
+# Retirement uses the unused natural home of this disposable hosted account.
+if [ "$PHASE" = retirement ]; then
+  [ -n "$RETIREMENT_WORK" ] || { echo 'error: retirement requires controller work directory' >&2; exit 1; }
+  exec "$NODE_BIN" "$REPO_ROOT/tests/install/channel-retirement-e2e.mjs" --work "$RETIREMENT_WORK" --arch "$ARCH"
+fi
 
 WORK_ROOT="${HERMES_E2E_WORKROOT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hermes-bundled-e2e}"
 LOG_DIR="${HERMES_E2E_LOG_DIR:-$WORK_ROOT/logs}"

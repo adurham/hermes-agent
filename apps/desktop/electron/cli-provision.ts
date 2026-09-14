@@ -4,6 +4,22 @@ import path from 'node:path'
 
 type ProvisionFs = Pick<typeof fs, 'mkdirSync' | 'lstatSync' | 'readlinkSync' | 'statSync' | 'symlinkSync' | 'renameSync' | 'unlinkSync'>
 
+/** Remove only the absolute, same-name links this bundle's provisioner creates. */
+export function removeBundleCliLinks(payloadRoot: string, binDir: string): void {
+  if (!fs.existsSync(binDir)) { return }
+  const payloadBin: string = path.resolve(payloadRoot, 'bin')
+
+  for (const entry of fs.readdirSync(binDir, { withFileTypes: true })) {
+    if (!entry.isSymbolicLink()) { continue }
+    const link: string = path.join(binDir, entry.name)
+    const destination: string = fs.readlinkSync(link)
+
+    if (path.isAbsolute(destination) && path.dirname(destination) === payloadBin && path.basename(destination) === entry.name) {
+      fs.unlinkSync(link)
+    }
+  }
+}
+
 export function provisionCliLinks(
   commands: Readonly<Record<string, string>>,
   binDir: string,
