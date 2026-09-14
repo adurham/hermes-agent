@@ -116,7 +116,8 @@ def test_unprivileged_user_under_apparmor_userns_restriction_gets_the_system_bro
     """Playwright's bundled Chromium has no setuid chrome_sandbox; with
     kernel.apparmor_restrict_unprivileged_userns=1 it dies 'FATAL: No usable sandbox!' for a non-root user,
     so the dock icon is dead. A distro chromium (which ships the sandbox helper) must win there — and
-    the Playwright build stays the answer when it is the only one (no --no-sandbox for non-root)."""
+    the Playwright build stays the answer when it is the only one, started with exactly the flags
+    agent-browser starts it with on that host (one sandbox policy for the human's and the bot's browser)."""
     pw_exe, sys_exe = _install_browsers(tmp_path, monkeypatch, playwright=True, system=True)
     monkeypatch.setattr(browser.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(browser, "_userns_restricted", lambda: True)
@@ -129,7 +130,13 @@ def test_unprivileged_user_under_apparmor_userns_restriction_gets_the_system_bro
     monkeypatch.setattr(browser, "_userns_restricted", lambda: True)
     exe = browser.executable()
     assert exe and exe.endswith("chrome-linux/chrome")
-    assert "--no-sandbox" not in browser.dock_argv(exe, "/p/dir")
+    from tools import browser_tool_session as session
+
+    agent_env: dict = {}
+    session._apply_chromium_sandbox_args(agent_env)
+    agent_flags = set(agent_env.get("AGENT_BROWSER_ARGS", "").split(",")) - {""}
+    assert agent_flags <= set(browser.dock_argv(exe, "/p/dir"))
+    assert ("--no-sandbox" in browser.dock_argv(exe, "/p/dir")) == ("--no-sandbox" in agent_flags)
 
 
 def test_root_dock_browser_starts_with_the_same_sandbox_args_as_the_agents_browser(monkeypatch):
