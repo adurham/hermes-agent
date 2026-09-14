@@ -120,7 +120,10 @@ def cmd_build_commit(args) -> None:
                                 encoding="utf-8", errors="replace", check=True, timeout=60)
         print((result.stdout or "").strip() or f"Dispatched commit build {commit}. No release was created.")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        raise SystemExit(f"release: commit build refused: {exc}") from exc
+        stderr = ""
+        if isinstance(exc, subprocess.CalledProcessError):
+            stderr = "\n" + exc.stderr
+        raise SystemExit(f"release: commit build refused: {exc}{stderr}") from exc
 
 
 def main() -> None:
