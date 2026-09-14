@@ -41,7 +41,7 @@ def executable() -> Optional[str]:
     icon that fails loudly beats a non-root ``--no-sandbox``.
     """
     explicit = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
-    if explicit and os.access(explicit, os.X_OK):
+    if explicit and os.access(explicit, os.X_OK) and not _is_headless_shell(explicit):
         return explicit
     finders = [_playwright_executable, _system_executable]
     if not _is_root() and _userns_restricted():
@@ -55,6 +55,13 @@ def _playwright_executable() -> Optional[str]:
         (p for root in _chromium_search_roots() for p in glob.glob(os.path.join(root, "chromium-*", "chrome-linux*", "chrome"))),
         key=os.path.getmtime, reverse=True)
     return next((exe for exe in candidates if os.access(exe, os.X_OK)), None)
+
+
+def _is_headless_shell(exe: str) -> bool:
+    """Playwright's ``chrome-headless-shell`` can drive pages but cannot open a window: the official Docker
+    image ships only that build and its boot hook exports it as ``AGENT_BROWSER_EXECUTABLE_PATH``, so
+    trusting the override blindly would pin a windowless binary to the dock's Browser icon."""
+    return "headless" in os.path.basename(exe).lower() or "headless_shell" in exe
 
 
 def _system_executable() -> Optional[str]:

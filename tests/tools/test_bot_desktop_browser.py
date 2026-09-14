@@ -170,3 +170,21 @@ def test_dock_exec_line_survives_spaces_in_the_executable_and_profile_paths():
     assert line.startswith('Exec="/opt/Google Chrome/chrome" ')
     assert r'"--user-data-dir=/home/a b/.hermes/browser \\"x\\"/profile"' in line  # spec: \" quoted, then \ string-escaped
     assert "--remote-debugging-port=0" in line
+
+
+def test_headless_shell_override_is_not_a_headed_browser(tmp_path, monkeypatch):
+    """The official Docker image ships only Playwright's chrome-headless-shell and its boot hook exports it
+    as AGENT_BROWSER_EXECUTABLE_PATH. That binary cannot open a window: taken at face value the dock's
+    Browser icon would point at it and status would claim a headed browser exists. Live in the image:
+    status.browser named the headless shell while the dock had no working Browser."""
+    shell = tmp_path / "shell" / "chromium_headless_shell-1243" / "chrome-headless-shell-linux64" / "chrome-headless-shell"
+    shell.parent.mkdir(parents=True)
+    shell.write_text("#!/bin/sh\n", encoding="utf-8")
+    shell.chmod(0o755)
+    _install_browsers(tmp_path, monkeypatch, playwright=False, system=False)
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(shell))
+    assert browser.executable() is None
+
+    _, sys_exe = _install_browsers(tmp_path / "with-sys", monkeypatch, playwright=False, system=True)
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(shell))
+    assert browser.executable() == sys_exe  # a real headed browser elsewhere still wins over the override
