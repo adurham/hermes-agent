@@ -129,7 +129,7 @@ def describe_holder(holder: UpdateHolder | None) -> str:
     minutes, seconds = divmod(int(max(0 if holder is None else holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
     return (
-        f"✗ Another Hermes update is already running {f"(PID {holder.pid})" if holder else ""}, "
+        f"✗ Another Hermes update is already running {f'(PID {holder.pid})' if holder else ''}, "
         f"started {elapsed} ago).\n"
         "\n"
         "  Two updates running at once can corrupt Hermes. Wait for the update to finish, then try again."
