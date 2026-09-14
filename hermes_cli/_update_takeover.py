@@ -14,7 +14,7 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     from pm import paths, receipt
     from pm.client import ensure, sync_venv, venv_is_current
     from pm.lock import Lockfile
-    from pm.registry import get_package
+    from pm.registry import source_install_packages
     from hermes_cli.runtime_paths import activation_environment, install_state_dir, runtime_facts_path
     from hermes_cli._launchers import resolve_store_python
     from hermes_cli.venv_sync import publish_launchers
@@ -24,9 +24,8 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
         lock = Lockfile(paths.lockfile_path())
         # A pre-PM installation has no required-tool facts. A current Python
         # generation alone does not prove its Node/Git/tool closure is ready.
-        for name in lock.names():
-            if not get_package(name).optional or name == "python":
-                ensure(name, explicit=True)
+        for name in source_install_packages(lock.names()):
+            ensure(name, explicit=True)
         extras = ["all"] if not runtime_facts_path(root).is_file() else None
         repair_marker = install_state_dir(root) / ".repair-incomplete"
         # Repair preserves the old stamp. Changed source inputs instead need

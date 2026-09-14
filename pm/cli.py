@@ -14,7 +14,7 @@ from pm.ensure import _facts, _lockfile, _store, ensure, stage_only
 from pm.operations import lock_project
 from pm.package import InstallError
 from pm.paths import repo_root
-from pm.registry import get_package
+from pm.registry import get_package, source_install_packages
 from pm.store import ALL_TARGETS, current_target, hash_url
 from pm.update import Resolved, resolve_package, reuse_index_responses
 
@@ -121,9 +121,7 @@ def cmd_install(args) -> int:
             return 1
     # Source-install launchers require the store interpreter, even though
     # Python remains optional when provisioning individual tools.
-    names = args.names or [
-        n for n in _lockfile().names() if not get_package(n).optional or n == "python"
-    ]
+    names = args.names or source_install_packages(_lockfile().names())
     failed = _install_names(names, target=cross_target)
     if not args.names:
         from pm.ensure import sync_venv

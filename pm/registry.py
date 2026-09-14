@@ -32,6 +32,12 @@ def all_packages() -> list[str]:
     return sorted(_packages)
 
 
+def source_install_packages(names: list[str]) -> list[str]:
+    """Select runtime roots; internal tools enter only through dependencies."""
+    return [name for name in names
+            if not get_package(name).internal and (name == "python" or not get_package(name).optional)]
+
+
 def package_definitions(names: list[str] | None = None) -> list[dict[str, Any]]:
     """Declarations for a fresh worker; built-ins already load with pm.
 

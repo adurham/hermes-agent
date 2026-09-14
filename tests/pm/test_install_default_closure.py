@@ -40,11 +40,13 @@ def install_spy(monkeypatch):
 def test_default_closure_includes_the_boot_interpreter(install_spy):
     assert pm.cli.cmd_install(argparse.Namespace(names=None)) == 0
     assert "python" in install_spy["names"]
+    assert all(not pm.cli.get_package(name).internal for name in install_spy["names"])
     assert install_spy["sync_extras"] == ["all"]
 
 
 
-def test_explicit_names_pass_through_untouched(install_spy) -> None:
-    assert pm.cli.cmd_install(argparse.Namespace(names=["npm", "ripgrep"])) == 0
-    assert install_spy["names"] == ["npm", "ripgrep"]
+@pytest.mark.parametrize("names", [["npm", "ripgrep"], ["dmgbuild"]])
+def test_explicit_names_pass_through_untouched(install_spy, names) -> None:
+    assert pm.cli.cmd_install(argparse.Namespace(names=names)) == 0
+    assert install_spy["names"] == names
     assert install_spy["sync_extras"] is None
