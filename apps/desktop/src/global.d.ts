@@ -764,7 +764,7 @@ export interface DesktopRetirementConsent {
 export interface DesktopUpdateStatus {
   supported: boolean
   retirement?: {
-    state: 'available' | 'waiting' | 'incompatible' | 'conflict' | 'migrating' | 'cleanup-pending' | 'complete'
+    state: 'available' | 'waiting' | 'incompatible' | 'conflict' | 'migrating' | 'cleanup-pending' | 'complete' | 'discontinued'
     destination: string
     version: string
     message?: string

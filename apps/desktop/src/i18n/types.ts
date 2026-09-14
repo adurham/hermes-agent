@@ -2666,6 +2666,8 @@ export interface Translations {
     retirementBlocked: string
     retirementMoving: string
     retirementComplete: string
+    discontinuedTitle: string
+    discontinuedBody: string
     channels: { stable: string; canary: string }
     bundleSwapPending: string
     bundleSwapPendingDesc: string

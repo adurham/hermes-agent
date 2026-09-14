@@ -26,6 +26,11 @@ import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
+/** Keyed per retired-channel revision: a new retirement (or a revision bump on
+ *  the same channel) re-shows the notice, a plain re-check never does. */
+const DISCONTINUED_DISMISS_KEY = 'hermes:discontinued-notice-dismissed-for'
+const DISCONTINUED_TOAST_ID = 'desktop-build-discontinued'
+
 export interface UpdateApplyState {
   applying: boolean
   stage: DesktopUpdateStage
@@ -264,6 +269,41 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, t
   })
 }
 
+/** Which retired-channel revision the discontinued notice was dismissed for. */
+function discontinuedDismissKey(retirement: NonNullable<DesktopUpdateStatus['retirement']>): string {
+  return `${retirement.destination}@${retirement.version}`
+}
+
+/** Persist the dismissal so plain re-checks never nag; a new retirement re-shows. */
+export function dismissDiscontinuedNotice(retirement: NonNullable<DesktopUpdateStatus['retirement']>): void {
+  persistString(DISCONTINUED_DISMISS_KEY, discontinuedDismissKey(retirement))
+  dismissNotification(DISCONTINUED_TOAST_ID)
+}
+
+/**
+ * The discontinued retirement tier surfaces as a warning toast on check — no
+ * download is ever offered. Suppressed once dismissed for this channel
+ * revision; a fresh retirement re-notifies.
+ */
+function maybeNotifyDiscontinued(retirement: NonNullable<DesktopUpdateStatus['retirement']>): void {
+  if (retirement.state !== 'discontinued') { return }
+  if (storedString(DISCONTINUED_DISMISS_KEY) === discontinuedDismissKey(retirement)) { return }
+
+  notify({
+    action: {
+      label: translateNow('notifications.seeWhatsNew'),
+      onClick: () => openUpdateOverlayFor('client')
+    },
+    durationMs: 0,
+    icon: 'warning',
+    id: DISCONTINUED_TOAST_ID,
+    kind: 'warning',
+    message: translateNow('updates.discontinuedBody'),
+    onDismiss: () => dismissDiscontinuedNotice(retirement),
+    title: translateNow('updates.discontinuedTitle')
+  })
+}
+
 /** The target a generic, surface-less update command acts on: the machine the
  *  user is connected to. Surfaces that display one target's status must pass
  *  that target explicitly instead of inheriting this. */
@@ -445,6 +485,7 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
   try {
     const status = await bridge.check({ force })
     $updateStatus.set(status)
+    if (status.retirement) { maybeNotifyDiscontinued(status.retirement) }
     maybeNotifyUpdateAvailable(status, 'client')
     void refreshDesktopVersion()
 

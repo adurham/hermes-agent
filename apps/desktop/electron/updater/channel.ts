@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import {
   type ActiveChannel, buildPrefix, type ChannelBuild, channelKey, type ChannelManifest,
   type ChannelPackage, channelPublicBase, decodeChannelManifest, decodeChannelRecord,
-  type RetiredChannel, sameChannelIdentity, validateChannelName
+  type ReceiverKind, type RetiredChannel, sameChannelIdentity, validateChannelName
 } from './channel-protocol'
 
 export interface ChannelTarget {
@@ -17,6 +17,8 @@ export interface ChannelTarget {
 export interface ChannelRetirement {
   source: ChannelBuild
   target: ChannelTarget
+  /** Publisher-pinned at retire() time; in-place shares the destination's identity. */
+  receiverKind: ReceiverKind
 }
 export type ChannelResolution =
   | { kind: 'active'; target: ChannelTarget }
@@ -105,7 +107,7 @@ export class ChannelResolver {
     const target: ChannelTarget = await this.target({ ...record, head: retired.destinationHead })
     if (target.manifest.receiverProtocol !== retired.receiverProtocol) { throw new Error('Stable build has no supported retirement receiver') }
     assertVersionFloor(target.manifest.request.sourceVersion, retired.minimumVersion)
-    return { kind: 'retirement', retirement: { source: this.deps.build, target } }
+    return { kind: 'retirement', retirement: { source: this.deps.build, target, receiverKind: retired.receiver.kind } }
   }
 
   private assertRecord(record: ActiveChannel | RetiredChannel, name: string): void {

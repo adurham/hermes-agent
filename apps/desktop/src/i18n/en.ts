@@ -3091,6 +3091,8 @@ export const en: Translations = {
     retirementBlocked: 'Migration paused — preview preserved',
     retirementMoving: 'Moving to stable…',
     retirementComplete: 'Stable is ready',
+    discontinuedTitle: 'This build of Hermes is no longer supported',
+    discontinuedBody: 'This build of Hermes is no longer supported and may break — uninstall it. Your data stays on disk.',
     channels: { stable: 'Stable', canary: 'Canary' },
     bundleSwapPending: 'Restart to finish the update',
     bundleSwapPendingDesc: 'The updated app is already installed — Hermes only needs to restart to load it. Chats and settings are untouched.',

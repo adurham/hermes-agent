@@ -43,6 +43,11 @@ function retirementStatus(
   supported: boolean,
   u: Translations['updates']
 ): UpdateStatusView {
+  if (retirement.state === 'discontinued') {
+    // Suffixed-identity build: nothing to download or migrate — just the notice.
+    return { applying, supported, updateAvailable: false, tone: 'error', line: u.discontinuedTitle, error: u.discontinuedBody }
+  }
+
   const available: boolean = retirement.state === 'available' || retirement.state === 'cleanup-pending'
   const line: string = applying ? u.retirementMoving : retirement.state === 'complete' ? u.retirementComplete : u.retirementTitle
 
@@ -315,7 +320,12 @@ export function UpdateStatusCard({
             {checking ? u.checkingShort : u.checkNow}
           </Button>
 
-          <UpdateActions retirement={!isBackend && Boolean(status?.retirement)} target={target} u={u} view={view} />
+          <UpdateActions
+            retirement={!isBackend && status?.retirement?.state !== undefined && status.retirement.state !== 'discontinued'}
+            target={target}
+            u={u}
+            view={view}
+          />
 
           {showReleaseNotes && (
             <Button asChild className="ml-auto" size="sm" variant="text">

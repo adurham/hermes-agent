@@ -5,7 +5,7 @@ import type { RetirementConsent } from './retirement-state'
 import type { UpdaterApplyResultWire, UpdaterStatusWire, UpdaterStrategy } from './index'
 
 export interface ChannelRetirementStatus {
-  state: 'available' | 'waiting' | 'incompatible' | 'conflict' | 'migrating' | 'cleanup-pending' | 'complete'
+  state: 'available' | 'waiting' | 'incompatible' | 'conflict' | 'migrating' | 'cleanup-pending' | 'complete' | 'discontinued'
   destination: string
   version: string
   message?: string
@@ -61,19 +61,31 @@ export class ChannelStrategy implements UpdaterStrategy {
     }
 
     if (result.kind === 'retirement') {
-      const status = this.deps.retirement ? await this.deps.retirement.check(result.retirement) :
-        { state: 'waiting' as const, message: 'The retirement receiver is not available in this installation.' }
+      // In-place retirement IS a same-identity update to the pinned stable
+      // build: run it through the native factory (app-installer/electron-updater
+      // available → download → apply), identical to a stable update. Only the
+      // suffixed-identity tier talks to the migration machinery.
+      if (result.retirement.receiverKind === 'in-place') {
+        // Sequence counters are per-channel; a retired preview's sequence says
+        // nothing about the pinned stable build. The native strategy's own
+        // version comparison decides availability, exactly as for stable.
+        return await this.selectNative(base, result.retirement.target, { crossChannel: true })
+      }
 
-      this.selection = { kind: 'retirement', value: result.retirement, state: status.state }
+      // Discontinued (suffixed identity): notice only. No migration callbacks,
+      // no download — the user uninstalls; data stays on disk.
+      this.selection = { kind: 'retirement', value: result.retirement, state: 'discontinued' }
 
       return {
-        ...base, retirement: { ...status, destination: result.retirement.target.channel.name, version: result.retirement.target.manifest.request.version }
+        ...base, retirement: { state: 'discontinued', destination: result.retirement.target.channel.name, version: result.retirement.target.manifest.request.version }
       }
     }
 
-    const target = result.target
+    return await this.selectNative(base, result.target)
+  }
 
-    if (target.manifest.request.sequence <= this.deps.build.sequence) {
+  private async selectNative(base: UpdaterStatusWire, target: ChannelTarget, options: { crossChannel?: boolean } = {}): Promise<UpdaterStatusWire> {
+    if (!options.crossChannel && target.manifest.request.sequence <= this.deps.build.sequence) {
       this.selection = { kind: 'empty' }
 
       return { ...base, updateAvailable: false }

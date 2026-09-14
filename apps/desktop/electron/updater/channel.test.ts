@@ -84,14 +84,20 @@ async function fixture(): Promise<{
   return { build, record, manifest, objects, requests, publish }
 }
 
-async function retiredFixture(): Promise<Awaited<ReturnType<typeof fixture>> & { retired: RetiredChannel }> {
+async function retiredFixture(kind: 'in-place' | 'discontinued' = 'discontinued'): Promise<Awaited<ReturnType<typeof fixture>> & { retired: RetiredChannel }> {
   const f = await fixture()
 
   const sourceRecord: ChannelRecord = structuredClone(f.record)
 
   f.record.name = 'stable'
   f.record.policy = 'stable-release'
-  f.record.identity = { ...f.build.identity, appId: 'chat.nous.hermes', token: 'fedcba0987654321' }
+  if (kind === 'in-place') {
+    // Mainline-like prerelease: the destination IS the stable identity.
+    f.build = { ...f.build, identity: structuredClone(sourceRecord.identity) }
+    f.record.identity = structuredClone(sourceRecord.identity)
+  } else {
+    f.record.identity = { ...f.build.identity, appId: 'chat.nous.hermes', token: 'fedcba0987654321' }
+  }
   f.manifest.request = { ...f.manifest.request, channel: 'stable', identity: f.record.identity, version: '1.2.3', windowsVersion: '1.2.3.0', releaseTag: 'v1.2.3' }
   f.manifest.packages[0].identity = f.record.identity.appId
   f.manifest.packages[0].version = '1.2.3'
@@ -102,7 +108,7 @@ async function retiredFixture(): Promise<Awaited<ReturnType<typeof fixture>> & {
   const retired: RetiredChannel = {
     ...sourceRecord, state: 'retired', destination: 'stable', minimumVersion: '1.0.0',
     destinationHead: structuredClone(f.record.head), receiverProtocol: 1,
-    receiver: { kind: 'discontinued' }, lastHead: sourceRecord.head
+    receiver: { kind }, lastHead: sourceRecord.head
   }
   f.objects.set(`/releases/channels/${retired.name}.json`, JSON.stringify(retired))
 
@@ -215,7 +221,86 @@ test('pins the checked target during apply even after R2 advances, and never aut
   expect(f.requests).toHaveLength(2)
 })
 
-test('retirement has a separate consented path and never invokes the ordinary native updater', async (): Promise<void> => {
+test('in-place retirement resolves with the receiver kind and routes through the normal apply path, never the migration machinery', async (): Promise<void> => {
+  const f = await retiredFixture('in-place')
+  let retirementChecks = 0
+  let retirementApplies = 0
+  const nativeCalls: string[] = []
+
+  const resolver = new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' })
+  const result = await resolver.resolve()
+  expect(result.kind).toBe('retirement')
+
+  if (result.kind !== 'retirement') { throw new Error('Expected retirement') }
+  expect(result.retirement.receiverKind).toBe('in-place')
+
+  const strategy = new ChannelStrategy({
+    resolver, build: f.build, mechanism: 'electron-updater',
+    nativeFactory: (target) => ({
+      mechanism: 'electron-updater',
+      check: async () => { nativeCalls.push(`check:${target.manifest.request.buildId}`);
+ return { supported: true, updateAvailable: true } },
+      apply: async () => { nativeCalls.push('apply');
+ return { ok: true, handedOff: true } }
+    }),
+    retirement: {
+      check: async () => { retirementChecks += 1;
+ return { state: 'available' } },
+      apply: async () => { retirementApplies += 1;
+ return { ok: true, handedOff: true } }
+    }
+  })
+
+  // Same surface as a stable update: available, no retirement status block.
+  const status = await strategy.check()
+  expect(status.updateAvailable).toBe(true)
+  expect(status.retirement).toBeUndefined()
+  expect(nativeCalls).toEqual([`check:${'c'.repeat(32)}`])
+
+  // Ordinary apply path runs the native strategy, not applyRetirement.
+  expect(await strategy.apply()).toMatchObject({ ok: true, handedOff: true })
+  expect(nativeCalls).toEqual([`check:${'c'.repeat(32)}`, 'apply'])
+  expect(retirementChecks).toBe(0)
+  expect(retirementApplies).toBe(0)
+})
+
+test('discontinued retirement surfaces the notice and never downloads or applies', async (): Promise<void> => {
+  const f = await retiredFixture('discontinued')
+  const migrationCalls: string[] = []
+
+  const resolver = new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' })
+  const result = await resolver.resolve()
+  expect(result.kind).toBe('retirement')
+
+  if (result.kind !== 'retirement') { throw new Error('Expected retirement') }
+  expect(result.retirement.receiverKind).toBe('discontinued')
+
+  const strategy = new ChannelStrategy({
+    resolver, build: f.build, mechanism: 'electron-updater',
+    nativeFactory: (): never => { throw new Error('Discontinued retirement must never reach the native updater') },
+    retirement: {
+      check: async () => { migrationCalls.push('check');
+ return { state: 'available' } },
+      apply: async () => { migrationCalls.push('apply');
+ return { ok: true, handedOff: true } }
+    }
+  })
+
+  const status = await strategy.check()
+  expect(status.updateAvailable).toBeUndefined()
+  expect(status.retirement).toMatchObject({ state: 'discontinued', destination: 'stable', version: '1.2.3' })
+  // Neither the migration host nor the native updater was consulted.
+  expect(migrationCalls).toEqual([])
+  // Only channel records and the pinned manifest were read — no artifact fetch.
+  for (const request of f.requests) {
+    expect(request).toMatch(/^\/releases\/(channels\/|channel-builds\/[a-f0-9]+\/build\.json$)/)
+  }
+  expect(f.requests).not.toContain('/releases/channel-builds/cccccccccccccccccccccccccccccccc/darwin/Hermes.zip')
+  // The ordinary apply path refuses rather than downloading.
+  expect(await strategy.apply()).toMatchObject({ ok: false })
+})
+
+test('discontinued retirement never consults the migration callbacks; the consented path is refused', async (): Promise<void> => {
   const f = await retiredFixture()
   let applied = false
   const consents: RetirementConsent[] = []
@@ -225,7 +310,7 @@ test('retirement has a separate consented path and never invokes the ordinary na
     build: f.build, mechanism: 'electron-updater',
     nativeFactory: (): never => { throw new Error('Not a same-identity update') },
     retirement: {
-      check: async () => ({ state: 'available' }),
+      check: async () => { throw new Error('Discontinued retirement must not reach the migration host') },
       apply: async (_retirement, consent: RetirementConsent) => { consents.push(consent); applied = true;
 
  return { ok: true, handedOff: true } }
@@ -234,14 +319,14 @@ test('retirement has a separate consented path and never invokes the ordinary na
 
   const status = await strategy.check()
   expect(status.updateAvailable).toBeUndefined()
-  expect(status.retirement).toMatchObject({ state: 'available', destination: 'stable' })
+  expect(status.retirement).toMatchObject({ state: 'discontinued', destination: 'stable' })
   expect(applied).toBe(false)
   expect(await strategy.apply()).toMatchObject({ ok: false })
   expect(applied).toBe(false)
   const consent: RetirementConsent = { installStable: true, removePreview: true, workspaceChoice: 'keep-stable' }
-  expect(await strategy.applyRetirement(consent)).toMatchObject({ ok: true })
-  expect(applied).toBe(true)
-  expect(consents).toEqual([consent])
+  expect(await strategy.applyRetirement(consent)).toMatchObject({ ok: false })
+  expect(applied).toBe(false)
+  expect(consents).toEqual([])
 })
 
 test.each(['hash', 'identity', 'repository', 'signer', 'escape', 'schema', 'version'] as const)('rejects untrusted %s without falling back', async (fault): Promise<void> => {

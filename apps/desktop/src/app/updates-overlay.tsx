@@ -17,7 +17,6 @@ import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
 import { UpdateStatusCard, VersionHero } from '@/components/update-status'
 import { VersionDetails } from '@/components/version-details'
-import { RetirementView } from './retirement-view'
 import type {
 
   DesktopUpdateCommit,
@@ -45,10 +44,13 @@ import {
   applyUpdates,
   checkBackendUpdates,
   checkUpdates,
+  dismissDiscontinuedNotice,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
   type UpdateApplyState
 } from '@/store/updates'
+
+import { DiscontinuedNotice, RetirementView } from './retirement-view'
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -138,8 +140,17 @@ export function UpdatesOverlay() {
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
         ) : null}
 
-        {phase === 'idle' && !isBackend && status?.retirement && (
-          <RetirementView retirement={status.retirement} onLater={() => handleClose(false)} onRetry={() => void check()} />
+        {phase === 'idle' && !isBackend && status?.retirement?.state === 'discontinued' && (
+          <DiscontinuedNotice
+            onDismiss={() => {
+              dismissDiscontinuedNotice(status.retirement!)
+              handleClose(false)
+            }}
+            retirement={status.retirement}
+          />
+        )}
+        {phase === 'idle' && !isBackend && status?.retirement && status.retirement.state !== 'discontinued' && (
+          <RetirementView onLater={() => handleClose(false)} onRetry={() => void check()} retirement={status.retirement} />
         )}
         {phase === 'idle' && (isBackend || !status?.retirement) && (
           <IdleView
