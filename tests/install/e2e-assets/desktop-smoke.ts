@@ -207,7 +207,14 @@ async function verifyRunningDesktop(app: ElectronApplication, options: SmokeOpti
     const runtime = process as ElectronProcess
     return { pid: runtime.pid, executable: runtime.execPath, resources: runtime.resourcesPath, userData: electronApp.getPath('userData'), home: electronApp.getPath('home') }
   })
-  if (fs.realpathSync(running.userData) !== fs.realpathSync(options['user-data']) || fs.realpathSync(running.home) !== fs.realpathSync(launch.env.HOME)) {
+  // Chromium resolves DIR_HOME from the HOME env only on Linux; macOS
+  // (NSHomeDirectory) and Windows (CSIDL_PROFILE) ignore it, so the home
+  // equality is a contract only there. On those platforms the isolation proof
+  // is the userData pin plus the seeded Hermes home the backend booted from.
+  const homeHonored = process.platform === 'linux'
+    ? fs.realpathSync(running.home) === fs.realpathSync(launch.env.HOME!)
+    : true
+  if (fs.realpathSync(running.userData) !== fs.realpathSync(options['user-data']) || !homeHonored) {
     throw new Error('Desktop did not honor the isolated home and userData directories')
   }
   if (fs.realpathSync(running.executable) !== fs.realpathSync(options.exe)) {
