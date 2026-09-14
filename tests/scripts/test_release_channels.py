@@ -246,6 +246,37 @@ def test_retirement_race_requires_a_new_explicit_attempt():
         assert pub.retire("preview", "stable", "2.0.0")["lastHead"]["buildId"] == second["buildId"]
 
 
+def test_retire_derives_receiver_kind_from_channel_identity_match():
+    """The pinned kind is derived from identity comparison, never caller-asserted."""
+    from hermes_cli.release_channels import canonical_json
+    with object_server() as (url, objects, headers, requests, faults):
+        pub = publisher(url, verify_build=lambda request, manifest: True)
+        for name in ("mainline-preview", "suffixed-preview", "stable"):
+            pub.create(name)
+        # A mainline-like prerelease shares the destination stable identity.
+        preview = pub._read("mainline-preview")[0]
+        first = pub.allocate("mainline-preview", "a" * 40, "1.0.0")
+        put_build(objects, first)
+        pub.promote(first["buildId"])
+        target = pub._read("stable")[0]
+        target["policy"] = "stable-release"
+        target["identity"] = preview["identity"]
+        stable = dict(first, channel="stable", identity=target["identity"], releaseTag="v2.0.0", version="2.0.0", windowsVersion="2.0.0.0", sourceVersion="2.0.0", buildId="e" * 32)
+        manifest = put_build(objects, stable)
+        target.update(nextSequence=stable["sequence"] + 1, head={"buildId": stable["buildId"], "sequence": stable["sequence"], "manifestKey": "releases/channel-builds/" + stable["buildId"] + "/build.json", "sha256": hashlib.sha256(canonical_json(manifest)).hexdigest()})
+        objects["releases/channels/stable.json"] = canonical_json(target)
+        in_place = pub.retire("mainline-preview", "stable", "2.0.0")
+        assert in_place["receiver"] == {"kind": "in-place"}
+        assert pub.reader.resolve("mainline-preview").requested["receiver"] == {"kind": "in-place"}
+        # A suffixed channel identity can never match stable's.
+        second = pub.allocate("suffixed-preview", "b" * 40, "1.0.0")
+        put_build(objects, second)
+        pub.promote(second["buildId"])
+        discontinued = pub.retire("suffixed-preview", "stable", "2.0.0")
+        assert discontinued["receiver"] == {"kind": "discontinued"}
+        assert pub.reader.resolve("suffixed-preview").requested["receiver"] == {"kind": "discontinued"}
+
+
 def test_mutable_read_loss_recovery_never_clones_another_allocation():
     from scripts.releases.channels import ChannelConflict
     from hermes_cli.release_channels import canonical_json

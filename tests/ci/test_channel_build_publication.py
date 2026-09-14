@@ -306,7 +306,8 @@ def test_real_publication_cas_and_manifest_summary(tmp_path, r2_server, staged_c
         assert evidence["request"] == request
     # A retired publisher can stage immutable diagnostics, but never revive its pointer.
     retired = {**stored, "state": "retired", "destination": "stable", "minimumVersion": "1.2.3",
-               "lastHead": stored["head"], "destinationHead": stored["head"], "receiverProtocol": 1}
+               "lastHead": stored["head"], "destinationHead": stored["head"], "receiverProtocol": 1,
+               "receiver": {"kind": "discontinued"}}
     r2_server.store[channel_key] = (canonical_json(retired), '"retired"')
     result = run_shell(tmp_path, r2_server, script, env, cwd=tmp_path / "clone")
     assert result.returncode != 0 and "Retired" in result.stderr

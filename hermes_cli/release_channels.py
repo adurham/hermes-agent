@@ -219,6 +219,9 @@ def validate_record(value: object, *, name: str | None = None, repository: str |
             raise ChannelError("Retirement requires a pinned destination head")
         if type(record.get("receiverProtocol")) is not int or record["receiverProtocol"] != 1:
             raise ChannelError("Unsupported retirement receiver protocol")
+        receiver = record.get("receiver")
+        if not isinstance(receiver, dict) or receiver.get("kind") not in ("in-place", "discontinued"):
+            raise ChannelError("Invalid retirement receiver kind")
         if _head(record.get("lastHead")) != head:
             raise ChannelError("Retirement last head mismatch")
     return record

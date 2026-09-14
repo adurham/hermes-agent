@@ -397,9 +397,15 @@ class ChannelPublisher:
             raise ChannelError("Retirement requires a directly active stable-release destination")
         target_raw = self.reader.read_bytes(target["head"]["manifestKey"], target["head"]["sha256"])
         manifest = validate_manifest(decode_json(target_raw), target, self.public_base)
+        # Two-tier retirement: the kind is derived, never asserted by the caller.
+        # A suffixed (canary/commit) identity can never match stable's, so
+        # "in-place" cannot be mis-assigned; the kind is a client routing hint.
+        identity = record.get("identity")
+        kind = "in-place" if identity is not None and identity == target.get("identity") else "discontinued"
         retired = {**record, "state": "retired", "revision": record["revision"] + 1,
                    "destination": destination, "minimumVersion": minimum_version,
                    "destinationHead": target["head"], "receiverProtocol": 1,
+                   "receiver": {"kind": kind},
                    "lastHead": record["head"]}
         validate_record(retired)
         if tuple(map(int, manifest["request"]["sourceVersion"].split("."))) < tuple(map(int, minimum_version.split("."))):

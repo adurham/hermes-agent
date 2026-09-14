@@ -267,7 +267,8 @@ def retired_channel_archive(source, channel_archive):
     preview = publish_channel_build(channel_archive, name, "a" * 32, source.commits[0])
     qualified = publish_channel_build(channel_archive, "stable", "b" * 32, source.commits[1], stable=True)
     retired = dict(preview, state="retired", destination="stable", minimumVersion="1.0.0",
-                   destinationHead=qualified["head"], receiverProtocol=1, lastHead=preview["head"])
+                   destinationHead=qualified["head"], receiverProtocol=1,
+                   receiver={"kind": "discontinued"}, lastHead=preview["head"])
     (archive / f"releases/channels/{name}.json").write_bytes(canonical_json(retired))
     publish_channel_build(channel_archive, "stable", "c" * 32, source.commits[2], sequence=2, stable=True)
     set_install_channel(name, source.root)

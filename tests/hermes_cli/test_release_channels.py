@@ -46,7 +46,8 @@ def test_resolve_verifies_exact_manifest_and_preserves_retirement_constraints():
         assert reader.resolve("next-preview").manifest == manifest
         old = pub._read("old-preview")[0]
         old.update(state="retired", destination="next-preview", minimumVersion="1.0.0",
-                   destinationHead=record["head"], receiverProtocol=1, lastHead=None)
+                   destinationHead=record["head"], receiverProtocol=1,
+                   receiver={"kind": "discontinued"}, lastHead=None)
         objects["releases/channels/old-preview.json"] = canonical_json(old)
         resolved = reader.resolve("old-preview")
         assert resolved.requested == old and resolved.terminal == record
@@ -93,7 +94,8 @@ def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
             reader.resolve("alpha")
         record["repository"] = "example/hermes-agent"
         record.update(state="retired", destination="alpha", minimumVersion="1.0.0", lastHead=record["head"],
-                      destinationHead=record["head"], receiverProtocol=1)
+                      destinationHead=record["head"], receiverProtocol=1,
+                      receiver={"kind": "discontinued"})
         objects["releases/channels/alpha.json"] = canonical_json(record)
         with pytest.raises(ChannelError, match="cycle"):
             reader.resolve("alpha")
@@ -170,7 +172,8 @@ def test_malformed_record_and_unqualified_retirement_never_resolve():
         target["policy"] = "stable-release"
         objects["releases/channels/destination.json"] = canonical_json(target)
         record.update(state="retired", destination="destination", minimumVersion="2.0.0", lastHead=None,
-                      destinationHead=target["head"], receiverProtocol=1)
+                      destinationHead=target["head"], receiverProtocol=1,
+                      receiver={"kind": "discontinued"})
         objects["releases/channels/preview.json"] = canonical_json(record)
         with pytest.raises(ChannelError, match="minimum version"):
             pub.reader.resolve("preview")

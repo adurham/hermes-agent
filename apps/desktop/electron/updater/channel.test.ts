@@ -7,6 +7,7 @@ import feedContract from '../../update-feed.cjs'
 
 import { ChannelResolver } from './channel'
 import type { ChannelBuild, ChannelManifest, ChannelRecord, RetiredChannel } from './channel-protocol'
+import { decodeChannelRecord, sameChannelIdentity } from './channel-protocol'
 import { ChannelStrategy } from './channel-strategy'
 import type { RetirementConsent } from './retirement-state'
 
@@ -100,12 +101,33 @@ async function retiredFixture(): Promise<Awaited<ReturnType<typeof fixture>> & {
   if (!f.record.head) { throw new Error('Expected published stable') }
   const retired: RetiredChannel = {
     ...sourceRecord, state: 'retired', destination: 'stable', minimumVersion: '1.0.0',
-    destinationHead: structuredClone(f.record.head), receiverProtocol: 1, lastHead: sourceRecord.head
+    destinationHead: structuredClone(f.record.head), receiverProtocol: 1,
+    receiver: { kind: 'discontinued' }, lastHead: sourceRecord.head
   }
   f.objects.set(`/releases/channels/${retired.name}.json`, JSON.stringify(retired))
 
   return { ...f, retired }
 }
+
+test('receiver kind mirrors the identity comparison between retired channel and destination', async (): Promise<void> => {
+  const f = await retiredFixture()
+  const read = (): RetiredChannel => decodeChannelRecord(
+    f.objects.get(`/releases/channels/${f.retired.name}.json`)!) as RetiredChannel
+  const stable = decodeChannelRecord(f.objects.get('/releases/channels/stable.json')!)
+  // The fixture destination identity is suffixed away from the preview's, so the
+  // publisher-pinned tier is the one a mismatch implies.
+  expect(sameChannelIdentity(read().identity, stable.identity)).toBe(false)
+  expect(read().receiver).toEqual({ kind: 'discontinued' })
+  // A mainline-like prerelease shares the destination identity: in-place.
+  f.objects.set(`/releases/channels/${f.retired.name}.json`,
+    JSON.stringify({ ...f.retired, receiver: { kind: 'in-place' } }))
+  expect(read().receiver).toEqual({ kind: 'in-place' })
+  for (const kind of ['unknown', 'In-Place', '', 'discontinue'] as const) {
+    f.objects.set(`/releases/channels/${f.retired.name}.json`,
+      JSON.stringify({ ...f.retired, receiver: { kind } }))
+    expect(read).toThrow(/kind/)
+  }
+})
 
 test('protected canary accepts bounded Windows revisions without relaxing stable', async (): Promise<void> => {
   const f = await fixture()

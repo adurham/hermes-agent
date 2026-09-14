@@ -46,12 +46,14 @@ interface ChannelRecordBase {
   head: ChannelHead | null
 }
 export interface ActiveChannel extends ChannelRecordBase { state: 'active' }
+export type ReceiverKind = 'in-place' | 'discontinued'
 export interface RetiredChannel extends ChannelRecordBase {
   state: 'retired'
   destination: string
   minimumVersion: string
   destinationHead: ChannelHead
   receiverProtocol: 1
+  receiver: { kind: ReceiverKind }
   lastHead: ChannelHead | null
 }
 export type ChannelRecord = ActiveChannel | RetiredChannel
@@ -206,10 +208,14 @@ export function decodeChannelRecord(body: string): ChannelRecord {
   const lastHead = head(fields.get('lastHead'))
   if (JSON.stringify(lastHead) !== JSON.stringify(common.head)) { throw new Error('Retirement lastHead mismatch') }
   if (fields.get('receiverProtocol') !== 1) { throw new Error('Unsupported retirement receiver protocol') }
+  const receiverFields = fields.object('receiver')
+  const kind = receiverFields.text('kind')
+  if (kind !== 'in-place' && kind !== 'discontinued') { throw new Error('Invalid retirement receiver kind') }
   return {
     ...common, state, lastHead, destination: validateChannelName(fields.text('destination')),
     minimumVersion: fields.text('minimumVersion', VERSION),
-    destinationHead: requiredHead(fields.get('destinationHead')), receiverProtocol: 1
+    destinationHead: requiredHead(fields.get('destinationHead')), receiverProtocol: 1,
+    receiver: { kind }
   }
 }
 
