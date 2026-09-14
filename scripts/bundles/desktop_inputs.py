@@ -54,6 +54,16 @@ def build_environment(prepared: PreparedDesktop, variant: str, inherited: Mappin
     return env
 
 
+def packaging_environment(build: Mapping[str, str], inherited: Mapping[str, str],
+                          target: str) -> dict[str, str]:
+    env = dict(build)
+    if target.startswith("darwin-"):
+        # Security.framework needs the login HOME for both key import and signing,
+        # even with an explicit keychain. Keep dependency preparation isolated.
+        env["HOME"] = inherited.get("HERMES_REAL_HOME") or inherited.get("HOME") or str(Path.home())
+    return env
+
+
 def select_variant(prepared: PreparedDesktop, variant: str | None) -> str:
     from scripts.termux.deb_version import channel_for_tag
 

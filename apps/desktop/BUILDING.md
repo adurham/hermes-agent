@@ -140,6 +140,11 @@ Timestamp services, Azure signing, Apple notarization and publication remain
 online operations. Validate unsigned packaging with dependency networking denied
 on each target, then verify signed installers and launchers on their native hosts.
 
+macOS packaging retains the caller's login `HOME` for keychain import and signing.
+An explicit keychain path does not make Security.framework work under a scratch
+home. Dependency preparation and product compilation still use the isolated home.
+Hermes state and explicit dependency-cache paths remain build-owned during packaging.
+
 ## Commit-only builds
 
 To preview a build for a pushed revision, run:

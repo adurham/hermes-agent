@@ -150,6 +150,25 @@ def test_bootstrap_real_pm_resolves_only_build_owned_state(tmp_path):
     assert all(path.is_relative_to(work) for path in (partials, uv_default, state))
 
 
+@pytest.mark.parametrize("target", ["darwin-arm64", "darwin-x64", "linux-x64", "win32-arm64"])
+def test_packaging_preserves_keychain_home_without_retargeting_build_state(tmp_path, target):
+    from scripts.bundles.desktop_inputs import packaging_environment
+    from scripts.bundles.desktop_toolchain import bootstrap_environment
+
+    source, work, cache = (tmp_path / name for name in ("source", "work", "cache"))
+    login_home = str(tmp_path / "login")
+    inherited = {"HOME": login_home, "CSC_KEYCHAIN": "explicit.keychain"}
+    isolated = bootstrap_environment(source, work, cache, inherited)
+    before = isolated.copy()
+    for caller in (inherited, {**inherited, "HOME": str(work / "launcher-home"),
+                               "HERMES_REAL_HOME": login_home}, {}):
+        packaged = packaging_environment(isolated, caller, target)
+        expected_home = (caller.get("HERMES_REAL_HOME") or caller.get("HOME") or str(Path.home())
+                         if target.startswith("darwin-") else isolated["HOME"])
+        assert packaged == {**isolated, "HOME": expected_home}
+    assert isolated == before
+
+
 @pytest.mark.platforms("linux", "macos", "windows")
 def test_prepare_tools_uses_pm_native_pins_and_separate_cache(tmp_path, monkeypatch):
     import pm

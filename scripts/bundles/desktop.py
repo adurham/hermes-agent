@@ -59,7 +59,7 @@ def build_prepared(path: Path, builder_args: list[str], variant: str | None = No
 
 def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> None:
     prepared.validate()
-    from scripts.bundles.desktop_inputs import build_environment, select_variant
+    from scripts.bundles.desktop_inputs import build_environment, packaging_environment, select_variant
     from scripts.bundles.native import finish_native
 
     request = prepared.request
@@ -109,7 +109,8 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
         if metadata["file"]:
             version_args = [f'-c.extraMetadata.shortVersion={metadata["file"]}', f'-c.extraMetadata.shortVersionWindows={metadata["file"]}']
     require_source(repo, request.commit)
-    run([node, "scripts/run-electron-builder.mjs", *package_args, *version_args, *builder_args], cwd=desktop, env=env)
+    run([node, "scripts/run-electron-builder.mjs", *package_args, *version_args, *builder_args], cwd=desktop,
+        env=packaging_environment(env, os.environ, request.target))
 
 
 def main() -> None:
