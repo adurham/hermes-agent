@@ -161,14 +161,20 @@ def test_smoke_matrix_native_routes_and_driver_only_dependencies():
         assert checkout['with']['persist-credentials'] is False
         assert checkout['with']['ref'] == '${{ inputs.sha }}'
         recording = next(step for step in job['steps'] if step.get('id') == 'recording')
-        assert recording['with']['save-cache'] is False
+        assert 'save-cache' not in recording['with']
         upload = next(step for step in job['steps'] if 'actions/upload-artifact@' in step.get('uses', ''))
         assert upload['if'] == 'always()' and upload['with']['path'].endswith('/out')
 
     recorder = hermes_yaml.safe_load((ROOT / '.github/actions/e2e-screen-record/action.yml').read_text())
-    assert all(not step.get('uses', '').startswith('actions/cache@') for step in recorder['runs']['steps'])
-    save = next(step for step in recorder['runs']['steps'] if step.get('uses', '').startswith('actions/cache/save@'))
-    assert "inputs.save-cache == 'true'" in save['if']
+    assert all(not step.get('uses', '').startswith('actions/cache') for step in recorder['runs']['steps'])
+    assert 'save-cache' not in recorder['inputs']
+    # ffmpeg comes from the PM toolchain: the action must verify, not install.
+    verify = next(step for step in recorder['runs']['steps'] if step.get('name') == 'Verify ffmpeg from the PM toolchain')
+    assert verify['if'] == "inputs.mode == 'start'"
+    for step in recorder['runs']['steps']:
+        run = step.get('run', '')
+        assert 'ffmpeg' not in run or 'winget' not in run and 'brew install' not in run and 'apt-get' not in run, \
+            f"step {step.get('name')} installs ffmpeg through an OS package manager"
 
     workflows = [workflow] + [hermes_yaml.safe_load((ROOT / '.github/workflows' / name).read_text(encoding='utf-8-sig'))
                              for name in ('install-e2e-run.yml', 'install-e2e-macos-run.yml', 'install-e2e-windows-run.yml')]
@@ -179,12 +185,13 @@ def test_smoke_matrix_native_routes_and_driver_only_dependencies():
             steps = job['steps']
             setup = next(step for step in steps if step.get('uses') == './.github/actions/setup-pm')
             assert setup['with']['toolchain'] == 'all' and not setup['with'].get('extras')
+            assert setup['with']['packages'] == 'ffmpeg'
             assert all(setup['with'][key] is False for key in ('cache', 'cache-node', 'cache-python'))
             install = next(step for step in steps if step.get('name') == 'Install locked chat driver dependencies')
             assert steps.index(setup) < steps.index(install)
             args = install['run'].split()
-            assert args[:2] == ['npm', 'ci'] and args[args.index('--workspace') + 1] == 'apps/desktop'
-            assert {'--include-workspace-root', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund'} <= set(args)
+            assert args[:2] == ['npm', 'ci'] and args[args.index('--workspace') + 1] == 'tests-js'
+            assert {'--include-workspace-root', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'} <= set(args)
 
 
 def transport_env(tmp_path, server, *, commit=False):

@@ -267,7 +267,7 @@ def test_ci_toolchain_seed_runs_before_the_tool_installer(tmp_path, upstream, r2
     write_pins(repo, packages)
     monkeypatch.setattr(paths, "repo_root", lambda: repo)
     home = tmp_path / "ci-home"
-    setup_toolchain.archive_inputs(SimpleNamespace(home=home, toolchain="python"))
+    setup_toolchain.archive_inputs(SimpleNamespace(home=home, toolchain="python", packages=[]))
     (root / "lib.deb").unlink()
     store = Store(home / "tools")
     with store.scratch() as scratch:

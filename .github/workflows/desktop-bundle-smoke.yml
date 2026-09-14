@@ -59,6 +59,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
+          packages: ffmpeg
           cache: false
           cache-python: false
           cache-node: false
@@ -66,7 +67,7 @@ jobs:
       - name: Install locked chat driver dependencies
         id: dependencies
         shell: bash
-        run: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
 
       - name: Fetch one exact downloadable artifact
         id: artifact
@@ -117,7 +118,6 @@ jobs:
         uses: ./.github/actions/e2e-screen-record
         with:
           mode: start
-          save-cache: false
           output: ${{ env.SMOKE_ROOT }}/out/recording.mkv
 
       - name: Install and chat on macOS
